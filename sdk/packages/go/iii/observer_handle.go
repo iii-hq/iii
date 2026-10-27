@@ -7,9 +7,9 @@ import (
 	"sync"
 )
 
-// ObserverHandle is what [Client.Observe] returns: the observing side of one observer
-// (sdk.md §2). It is kept for replay, with the same id, on every connection until it is
-// disposed. Safe for concurrent use.
+// ObserverHandle is what [Client.Observe] returns: the observing side of one observer.
+// It is kept for replay, with the same id, on every connection until it is disposed.
+// Safe for concurrent use.
 type ObserverHandle struct {
 	id     string
 	client *Client

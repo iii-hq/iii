@@ -205,6 +205,36 @@ to reject the connection.**
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go main.go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/workerconnection"
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithName("auth"))
+
+    client.RegisterFunction("auth::browser", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var input workerconnection.AuthInput
+        if err := json.Unmarshal(data, &input); err != nil {
+            return nil, err
+        }
+        expected := os.Getenv("BROWSER_TOKEN")
+        if expected == "" {
+            expected = "dev-token"
+        }
+        if token := input.QueryParams["token"]; len(token) == 0 || token[0] != expected {
+            return nil, errors.New("unauthorized")
+        }
+        return map[string]any{
+            "allowed_functions":               []string{}, // extra IDs to allow beyond expose_functions
+            "forbidden_functions":             []string{}, // denied even if matched; supersedes allowed
+            "allow_trigger_type_registration": false,      // register its own trigger types
+            "allow_function_registration":     true,       // register its own callbacks
+            // forwarded to middleware on every call
+            "context": map[string]string{"source": "browser"},
+        }, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 The auth worker itself connects to the **trusted** `49134` port; it is one of your own workers. Only
@@ -385,6 +415,38 @@ engine:
             }
         }),
     );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go main.go
+    client.RegisterFunction("auth::middleware", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var input iii.MiddlewareFunctionInput
+        if err := json.Unmarshal(data, &input); err != nil {
+            return nil, err
+        }
+        var payload, session map[string]any
+        if err := json.Unmarshal(input.Payload, &payload); err != nil {
+            return nil, err
+        }
+        if err := json.Unmarshal(input.Context, &session); err != nil {
+            return nil, err
+        }
+        // stamp the authenticated caller onto every payload, then forward the call
+        if payload == nil {
+            payload = map[string]any{}
+        }
+        payload["_source"] = session["source"]
+        forwarded, err := json.Marshal(payload)
+        if err != nil {
+            return nil, err
+        }
+        return client.Trigger(ctx, iii.TriggerRequest{
+            FunctionID: input.FunctionID,
+            Payload:    forwarded,
+            Namespace:  input.Namespace, // stay in the namespace the caller addressed
+        })
+    })
     ```
 
   </Tab>

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
+import { icons } from '@/lib/seo'
 import { getAllSpecs } from '@/lib/specs'
 import { DeckMount } from './deck-mount'
 
@@ -23,7 +24,7 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
     title: `${spec.title} — interactive deck`,
     description: spec.tagline,
     alternates: { canonical: url },
-    icons: { icon: '/favicon.svg' },
+    icons,
     openGraph: { type: 'article', url, title: spec.title, description: spec.tagline },
   }
 }

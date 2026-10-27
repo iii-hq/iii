@@ -88,9 +88,10 @@ To see the bindings that the engine records, call
 [`engine::registered-triggers::list`](../reference/engine-protocol#engine-discovery-functions). Pass
 `include_pending: true` to also see the stored bindings that are `pending`.
 
-To remove the trigger type at runtime, call `worker.unregisterTriggerType(...)` (Node) or
-`worker.unregister_trigger_type(...)` (Python, Rust). The engine also removes it when your worker
-disconnects. See [Unregister a Trigger Type](#unregister-a-trigger-type).
+To remove the trigger type at runtime, call `worker.unregisterTriggerType(...)` (Node),
+`worker.unregister_trigger_type(...)` (Python, Rust), or `client.UnregisterTriggerType(...)` (Go).
+The engine also removes it when your worker disconnects. See
+[Unregister a Trigger Type](#unregister-a-trigger-type).
 
 ### Example: A mini `http` from scratch
 
@@ -214,6 +215,61 @@ worker that publishes the real `http` trigger type. The publisher worker:
       ));
       ```
     </Tab>
+    <Tab title="Go">
+      ```go
+      type miniHTTPConfig struct {
+          APIPath    string `json:"api_path"`              // leading slash, e.g. "/orders"
+          HTTPMethod string `json:"http_method,omitempty"` // GET, POST, PUT or DELETE
+      }
+
+      type httpHandler struct {
+          mu       sync.Mutex
+          bindings map[string]iii.TriggerConfig
+      }
+
+      func (h *httpHandler) RegisterTrigger(ctx context.Context, cfg iii.TriggerConfig) error {
+          var config miniHTTPConfig
+          if err := json.Unmarshal(cfg.Config, &config); err != nil {
+              return err // reject a config this trigger type cannot route
+          }
+          h.mu.Lock()
+          defer h.mu.Unlock()
+          h.bindings[cfg.ID] = cfg
+          return nil
+      }
+
+      func (h *httpHandler) UnregisterTrigger(ctx context.Context, cfg iii.TriggerConfig) error {
+          h.mu.Lock()
+          defer h.mu.Unlock()
+          delete(h.bindings, cfg.ID)
+          return nil
+      }
+
+      // lookup returns the binding registered under a trigger id.
+      func (h *httpHandler) lookup(id string) (iii.TriggerConfig, bool) {
+          h.mu.Lock()
+          defer h.mu.Unlock()
+          cfg, ok := h.bindings[id]
+          return cfg, ok
+      }
+
+      func main() {
+          client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+          handler := &httpHandler{bindings: map[string]iii.TriggerConfig{}}
+          _, err := client.RegisterTriggerType(iii.RegisterTriggerTypeInput{
+              ID:          "mini-http",
+              Description: "Routes HTTP requests to bound functions",
+          }, handler)
+          if err != nil {
+              log.Fatal(err)
+          }
+
+          // Start the HTTP listener here; it finds bindings with handler.lookup (see below).
+      }
+      ```
+
+    </Tab>
 
   </Tabs>
 </Accordion>
@@ -245,16 +301,17 @@ Each SDK accepts these in its own idiomatic way:
 | [Node](../reference/sdk-node#registertriggertype) / [Browser](../reference/sdk-browser#registertriggertype) | Raw JSON Schema objects on `trigger_request_format` / `call_request_format`. Convert Zod 4+ schemas with `z.toJSONSchema(...)`.                |
 | [Python](../reference/sdk-python#register_trigger_type)                                                     | A Pydantic model class (auto-converted) or a raw dict on the same fields of `RegisterTriggerTypeInput`.                                        |
 | [Rust](../reference/sdk-rust#register_trigger_type)                                                         | Builder methods on `RegisterTriggerType`: `.trigger_request_format::<T>()` and `.call_request_format::<T>()`, where `T: schemars::JsonSchema`. |
+| [Go](../reference/sdk-go#client-registertriggertype)                                                        | Raw JSON in the `TriggerRequestFormat` / `CallRequestFormat` fields of `RegisterTriggerTypeInput`; `iii.InferSchema[T]()` builds either.       |
 
 {/* TODO: Re-review against the SDK surface after the SDK rework */}
 
 ### Unregister a Trigger Type
 
 The engine removes a trigger type when the worker that registered it disconnects or calls
-`worker.unregisterTriggerType(...)` (Node) or `worker.unregister_trigger_type(...)` (Python, Rust).
-Rust takes the type `id`. Node and Python take the input object and use only its `id`. The engine
-ignores the call from a worker that does not provide the type. Engines before 0.25 ignored the call
-in all cases.
+`worker.unregisterTriggerType(...)` (Node), `worker.unregister_trigger_type(...)` (Python, Rust), or
+`client.UnregisterTriggerType(...)` (Go). Rust and Go take the type `id`. Node and Python take the
+input object and use only its `id`. The engine ignores the call from a worker that does not provide
+the type. Engines before 0.25 ignored the call in all cases.
 
 The bindings to the removed type then move to another provider of the type, go to a function that
 declares the type as `legacy_trigger_type`, or stay stored until a worker registers the type again.
@@ -321,6 +378,28 @@ Continuing the `mini-http` example from above:
             request = request.metadata(metadata);
         }
         worker.trigger(request).await?;
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // Inside the worker's HTTP listener, after matching method+path to an
+    // entry in the handler's `bindings` map from the declare-trigger-type example:
+    binding, ok := handler.lookup(matchedTriggerID)
+    if ok {
+        payload, err := json.Marshal(map[string]any{"method": method, "headers": headers, "body": body})
+        if err != nil {
+            return err
+        }
+        _, err = client.Trigger(ctx, iii.TriggerRequest{
+            FunctionID: binding.FunctionID,
+            Namespace:  binding.Namespace, // the namespace the consumer bound from
+            Payload:    payload,
+        })
+        if err != nil {
+            return err
+        }
     }
     ```
 

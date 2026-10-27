@@ -48,7 +48,10 @@
     "light": "/assets/iii-black.svg",
     "dark": "/assets/iii-white.svg"
   },
-  "favicon": "/assets/favicon.svg",
+  "favicon": {
+    "light": "/assets/favicon-black.svg",
+    "dark": "/assets/favicon-white.svg"
+  },
   "navbar": {
     "links": [
       {
@@ -183,6 +186,7 @@
                   "next/reference/sdk-node",
                   "next/reference/sdk-python",
                   "next/reference/sdk-rust",
+                  "next/reference/sdk-go",
                   "next/reference/sdk-browser"
                 ]
               },
@@ -192,7 +196,8 @@
                 "pages": [
                   "next/reference/helpers-node",
                   "next/reference/helpers-python",
-                  "next/reference/helpers-rust"
+                  "next/reference/helpers-rust",
+                  "next/reference/helpers-go"
                 ]
               },
               {

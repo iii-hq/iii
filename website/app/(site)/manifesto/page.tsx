@@ -35,7 +35,7 @@ const articleJsonLd = {
   description,
   url: `${site.url}/manifesto`,
   inLanguage: 'en',
-  author: { '@type': 'Organization', name: 'III, Inc.', url: `${site.url}/` },
+  author: { '@type': 'Organization', name: 'Motia LLC', url: `${site.url}/` },
   publisher: { '@id': `${site.url}/#organization` },
 }
 

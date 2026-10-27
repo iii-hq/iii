@@ -113,6 +113,27 @@ name:
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
+
+    res, err := client.Trigger(ctx, iii.TriggerRequest{
+        FunctionID: "email::send",
+        Payload:    json.RawMessage(`{"to":"a@b.com","subject":"hi"}`),
+        Action:     iii.EnqueueAction("email-jobs"), // "email-jobs" is the name of the queue
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    var receipt queue.EnqueueResult
+    if err := json.Unmarshal(res, &receipt); err != nil {
+        log.Fatal(err)
+    }
+    // receipt.MessageReceiptID identifies the enqueued job
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Durable pub/sub
@@ -223,6 +244,36 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("email-worker"),
+        iii.WithNamespace("orders"),
+    )
+
+    // receives the `data` from each published message
+    client.RegisterFunction("email::send", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var msg struct {
+            To      string `json:"to"`
+            Subject string `json:"subject"`
+        }
+        if err := json.Unmarshal(data, &msg); err != nil {
+            return nil, err
+        }
+        // do the work here; return an error to nack and let the message retry
+        return map[string]bool{"sent": true}, nil
+    })
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "durable:subscriber",
+        FunctionID: "email::send",
+        Config:     json.RawMessage(`{"topic":"emails"}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 Add the worker to start it:
@@ -291,6 +342,18 @@ For example, to process messages strictly one at a time, register the trigger wi
         "email::send",
         json!({ "topic": "emails", "queue_config": { "type": "fifo" } }),
     ))?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "durable:subscriber",
+        FunctionID: "email::send",
+        Config:     json.RawMessage(`{"topic":"emails","queue_config":{"type":"fifo"}}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
     ```
 
   </Tab>

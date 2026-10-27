@@ -39,33 +39,36 @@ type TypedHandler[Req any, Resp any] func(ctx context.Context, req Req) (Resp, e
 //	iii.RegisterFunctionTyped[CreateOrderRequest, OrderResult](client, "orders::create",
 //	    func(ctx context.Context, req CreateOrderRequest) (OrderResult, error) { ... })
 //
-// Use [Client.RegisterFunction] directly for schemaless functions or when you need to
-// hand the engine a hand-written schema. See [InferSchema] to obtain a type's schema on
-// its own. Pass a single [RegisterFunctionOptions] value to attach registration
-// metadata or observe hooks.
-func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp], opts ...RegisterFunctionOptions) error {
+// It returns the function's handle, as [Client.RegisterFunction] does.
+//
+// Use [Client.RegisterFunction] directly for schemaless functions. See [InferSchema] to
+// obtain a type's schema on its own. Pass a single [RegisterFunctionOptions] value to
+// attach a description, registration metadata or observe hooks; its RequestFormat and
+// ResponseFormat, when set, are sent instead of the inferred schemas (that type is then
+// not reflected).
+func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp], opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if handler == nil {
-		return fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)
+		return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)
 	}
 	cfg, err := resolveRegisterFunctionOptions("RegisterFunctionTyped", id, opts)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	reqSchema, err := reflectSchema[Req]()
+	msg, err := registerFunctionMessage("RegisterFunctionTyped", id, cfg)
 	if err != nil {
-		return fmt.Errorf("iii: RegisterFunctionTyped(%q): request schema: %w", id, err)
+		return nil, err
 	}
-	respSchema, err := reflectSchema[Resp]()
-	if err != nil {
-		return fmt.Errorf("iii: RegisterFunctionTyped(%q): response schema: %w", id, err)
+	// Explicit formats win over the inferred ones.
+	if len(msg.RequestFormat) == 0 {
+		if msg.RequestFormat, err = reflectSchema[Req](); err != nil {
+			return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): request schema: %w", id, err)
+		}
 	}
-
-	msg := &RegisterFunctionMessage{
-		ID:             id,
-		RequestFormat:  reqSchema,
-		ResponseFormat: respSchema,
-		Metadata:       cfg.Metadata,
+	if len(msg.ResponseFormat) == 0 {
+		if msg.ResponseFormat, err = reflectSchema[Resp](); err != nil {
+			return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): response schema: %w", id, err)
+		}
 	}
 
 	// Adapt the typed handler to the raw Handler the dispatcher calls.
@@ -79,7 +82,7 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
 		return handler(ctx, req)
 	}
 
-	return c.storeFunction(id, msg, raw, cfg)
+	return c.storeFunction("RegisterFunctionTyped", id, msg, raw, cfg)
 }
 
 // InferSchema reflects a JSON Schema for T, exposed for callers that want to build a

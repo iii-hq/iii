@@ -23,7 +23,7 @@ import (
 func TestHTTPTriggerRoundtrip(t *testing.T) {
 	c := connect(t)
 
-	if err := c.RegisterFunction("test::http::go::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::http::go::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
 				Name string `json:"name"`
@@ -45,13 +45,7 @@ func TestHTTPTriggerRoundtrip(t *testing.T) {
 	// engine's global HTTP route registry.
 	suffix := uniqueSuffix(t)
 	path := "/test-go-greet-" + suffix
-	if err := c.RegisterTrigger(
-		"test-go-http-"+suffix,
-		"http",
-		"test::http::go::greet",
-		json.RawMessage(`{"api_path":"`+path+`","http_method":"POST"}`),
-		nil,
-	); err != nil {
+	if _, err := c.RegisterTrigger(iii.RegisterTriggerInput{ID: "test-go-http-" + suffix, Type: "http", FunctionID: "test::http::go::greet", Config: json.RawMessage(`{"api_path":"` + path + `","http_method":"POST"}`)}); err != nil {
 		t.Fatalf("RegisterTrigger: %v", err)
 	}
 	settle()
@@ -91,10 +85,10 @@ func TestConflictingRouteStructureIsRejected(t *testing.T) {
 	handler := func(_ context.Context, _ json.RawMessage) (any, error) {
 		return map[string]any{"status_code": 200, "body": map[string]bool{"ok": true}}, nil
 	}
-	if err := c.RegisterFunction("test::api::conflict::a::go", handler); err != nil {
+	if _, err := c.RegisterFunction("test::api::conflict::a::go", handler); err != nil {
 		t.Fatalf("RegisterFunction A: %v", err)
 	}
-	if err := c.RegisterFunction("test::api::conflict::b::go", handler); err != nil {
+	if _, err := c.RegisterFunction("test::api::conflict::b::go", handler); err != nil {
 		t.Fatalf("RegisterFunction B: %v", err)
 	}
 
@@ -103,23 +97,11 @@ func TestConflictingRouteStructureIsRejected(t *testing.T) {
 	suffix := uniqueSuffix(t)
 	base := "test/go/conflict-" + suffix
 
-	if err := c.RegisterTrigger(
-		"test-go-conflict-a-"+suffix,
-		"http",
-		"test::api::conflict::a::go",
-		json.RawMessage(`{"api_path":"`+base+`/:listId/:userId","http_method":"GET"}`),
-		nil,
-	); err != nil {
+	if _, err := c.RegisterTrigger(iii.RegisterTriggerInput{ID: "test-go-conflict-a-" + suffix, Type: "http", FunctionID: "test::api::conflict::a::go", Config: json.RawMessage(`{"api_path":"` + base + `/:listId/:userId","http_method":"GET"}`)}); err != nil {
 		t.Fatalf("RegisterTrigger A: %v", err)
 	}
 	// Second route has the same axum shape with swapped param names -> conflict.
-	if err := c.RegisterTrigger(
-		"test-go-conflict-b-"+suffix,
-		"http",
-		"test::api::conflict::b::go",
-		json.RawMessage(`{"api_path":"`+base+`/:userId/:listId","http_method":"GET"}`),
-		nil,
-	); err != nil {
+	if _, err := c.RegisterTrigger(iii.RegisterTriggerInput{ID: "test-go-conflict-b-" + suffix, Type: "http", FunctionID: "test::api::conflict::b::go", Config: json.RawMessage(`{"api_path":"` + base + `/:userId/:listId","http_method":"GET"}`)}); err != nil {
 		t.Fatalf("RegisterTrigger B: %v", err)
 	}
 	settle()
@@ -151,7 +133,7 @@ func TestConflictingRouteStructureIsRejected(t *testing.T) {
 	for _, fid := range []string{"test::api::conflict::a::go", "test::api::conflict::b::go"} {
 		res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 			FunctionID: iii.FnListRegisteredTriggers,
-			Data:       json.RawMessage(`{"function_id":"` + fid + `"}`),
+			Payload:    json.RawMessage(`{"function_id":"` + fid + `"}`),
 		})
 		if err != nil {
 			t.Fatalf("engine::registered-triggers::list (%s): %v", fid, err)

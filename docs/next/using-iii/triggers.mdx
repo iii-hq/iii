@@ -93,6 +93,20 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 Each worker's Worker Docs describe the config, payload, and result shape of its trigger types (for
@@ -107,12 +121,13 @@ Without `status_code`, the response status is `200`. Without `body`, the respons
 
 The optional `metadata` field on a trigger registration holds arbitrary JSON. In Node and Python,
 add a `metadata` key next to `config`. In Rust, call `.with_metadata(json!({ ... }))` on
-`RegisterTriggerInput`. The engine sends the metadata with the registration to the worker that
-provides the trigger type. When the trigger fires, that worker sends the metadata to the target
-function. The handler gets it as a second argument next to the payload. Support for metadata depends
-on the trigger type. The `cron`, `state`, and `durable:subscriber` trigger types and the trigger
-types of the `database` worker send it. The `http` trigger type does not send it. For other types,
-check the Worker Docs for the trigger type.
+`RegisterTriggerInput`. In Go, set the `Metadata` field of `iii.RegisterTriggerInput`. The engine
+sends the metadata with the registration to the worker that provides the trigger type. When the
+trigger fires, that worker sends the metadata to the target function. The handler gets it as a
+second argument next to the payload. A Go handler reads it from `ctx` with
+`iii.MetadataFromContext`. Support for metadata depends on the trigger type. The `cron`, `state`,
+and `durable:subscriber` trigger types and the trigger types of the `database` worker send it. The
+`http` trigger type does not send it. For other types, check the Worker Docs for the trigger type.
 
 When many triggers share one target function, the handler can use `metadata` to find which
 registration fired. See
@@ -238,6 +253,27 @@ each trigger. Each trigger type sends its own payload shape, so the handler must
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    // Same handler runs for an HTTP POST and a weekly cron tick.
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "reports::generate",
+        Config:     json.RawMessage(`{"api_path":"/reports/generate","http_method":"POST"}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "cron",
+        FunctionID: "reports::generate",
+        Config:     json.RawMessage(`{"expression":"0 0 9 * * 1"}`), // Every Monday at 09:00
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Gate a trigger with a condition
@@ -335,6 +371,32 @@ function fails, it responds with status `500`. See [http](https://workers.iii.de
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("orders::is-priority", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            CustomerTier string `json:"customer_tier"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return payload.CustomerTier == "gold", nil
+    })
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "orders::expedite",
+        Config: json.RawMessage(`{
+            "api_path": "/orders/expedite",
+            "http_method": "POST",
+            "condition_function_id": "orders::is-priority"
+        }`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Unregister a trigger
@@ -379,6 +441,23 @@ runtime; when the worker disconnects, all of its triggers are removed automatica
     ))?;
 
     trigger.unregister();
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    trigger, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := trigger.Unregister(); err != nil {
+        log.Fatal(err)
+    }
     ```
 
   </Tab>

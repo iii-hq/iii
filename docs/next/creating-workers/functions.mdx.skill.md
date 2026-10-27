@@ -79,6 +79,23 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            A float64 `json:"a"`
+            B float64 `json:"b"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return map[string]float64{"c": payload.A + payload.B}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Attach request and response schemas
@@ -180,6 +197,28 @@ console can read them. `iii trigger <function> --help` shows the request schema.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    type AddInput struct {
+        A float64 `json:"a"`
+        B float64 `json:"b"`
+    }
+
+    type AddOutput struct {
+        C float64 `json:"c"`
+    }
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    // Go infers `request_format` and `response_format` from the handler's
+    // request and response types; fields without `omitempty` are required.
+    // Shape the schemas with `json` and `jsonschema` struct tags.
+    iii.RegisterFunctionTyped(client, "math::add", func(ctx context.Context, input AddInput) (AddOutput, error) {
+        return AddOutput{C: input.A + input.B}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Attach metadata
@@ -229,6 +268,14 @@ to gate access on that field.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("math::add", handler, iii.RegisterFunctionOptions{
+        Metadata: json.RawMessage(`{"owner":"math-team","public":true}`),
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Receive per-invocation metadata
@@ -271,6 +318,16 @@ execution context to the function. See [trigger metadata](../using-iii/triggers#
             Ok(serde_json::json!({ "ok": true, "metadata": metadata }))
         }),
     );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // MetadataFromContext reports false when the invocation carries none.
+    client.RegisterFunction("audit::write", func(ctx context.Context, data json.RawMessage) (any, error) {
+        metadata, _ := iii.MetadataFromContext(ctx)
+        return map[string]any{"ok": true, "metadata": metadata}, nil
+    })
     ```
 
   </Tab>
@@ -377,6 +434,26 @@ trigger type (queue, cron, state, http) all work without any other changes.
 
       The Rust worker needs the `iii-helpers` crate as a dependency.
     </Tab>
+    <Tab title="Go">
+      ```go
+      client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+      timeoutMs := uint64(5000)
+      _, err := client.RegisterHTTPFunction("notifications::send", iii.HTTPInvocationRef{
+          URL:       "https://hooks.provider.example.com/notify",
+          Method:    "POST",
+          TimeoutMs: &timeoutMs,
+          Headers:   map[string]string{"X-Service": "iii-worker"},
+          Auth:      iii.BearerAuth("PROVIDER_API_TOKEN"),
+      }, iii.RegisterFunctionOptions{
+          Description: "POST a notification to the provider webhook",
+      })
+      if err != nil {
+          log.Fatal(err)
+      }
+      ```
+
+    </Tab>
 
   </Tabs>
 </Accordion>
@@ -384,7 +461,8 @@ trigger type (queue, cron, state, http) all work without any other changes.
 ### `HttpInvocationConfig` fields
 
 A local function takes an `id` and a handler. An HTTP-invoked function takes an `id` and an
-`HttpInvocationConfig`.
+`HttpInvocationConfig`. In Go, `client.RegisterHTTPFunction` takes an `iii.HTTPInvocationRef` with
+the same fields.
 
 | Field        | Type                                              | Default    | Description                                                                                                          |
 | ------------ | ------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -424,12 +502,14 @@ other functions.
 
 Return a value that matches the documented [response schema](#attach-request-and-response-schemas).
 For an expected failure, return a structured error value. For an unexpected failure, throw, raise,
-or return `Err`. The caller gets an invocation error with the worker's stack trace. Node sends
-`error.stack`. Python sends `traceback.format_exc()`. Rust sends a backtrace that the SDK captures
-after the handler returns the error. If the handler returns `Error::Remote`, Rust sends the
-`stacktrace` field of that error, which can be empty. For the error types, see the
-[Node](../reference/sdk-node), [Python](../reference/sdk-python), and [Rust](../reference/sdk-rust)
-SDK references.
+or return `Err` or an `error`. The caller gets an invocation error with the worker's stack trace.
+Node sends `error.stack`. Python sends `traceback.format_exc()`. Rust sends a backtrace that the SDK
+captures after the handler returns the error. If the handler returns `Error::Remote`, Rust sends the
+`stacktrace` field of that error, which can be empty. Go sends the `Stacktrace` of a returned
+`*iii.InvocationError`. Any other Go `error` arrives as its message, with the code
+`invocation_failed`. For the error types, see the [Node](../reference/sdk-node),
+[Python](../reference/sdk-python), [Rust](../reference/sdk-rust), and [Go](../reference/sdk-go) SDK
+references.
 
 ## Unregister a function
 
@@ -463,6 +543,28 @@ pending invocations error out.
     }));
 
     add.unregister();
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    add, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            A float64 `json:"a"`
+            B float64 `json:"b"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return map[string]float64{"c": payload.A + payload.B}, nil
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := add.Unregister(); err != nil {
+        log.Fatal(err)
+    }
     ```
 
   </Tab>

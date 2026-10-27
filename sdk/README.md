@@ -96,6 +96,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
@@ -103,7 +104,7 @@ import (
 func main() {
 	client := iii.RegisterWorker("ws://127.0.0.1:49134")
 
-	client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	greet, err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
 				Name string `json:"name"`
@@ -115,14 +116,29 @@ func main() {
 			"body":        map[string]string{"message": "Hello, " + req.Body.Name + "!"},
 		}, nil
 	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	client.RegisterTrigger("hello-http", "http", "hello::greet",
-		json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`), nil)
+	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+		Type:       "http",
+		FunctionID: greet.ID,
+		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
+	}); err != nil {
+		log.Fatal(err)
+	}
 
 	if err := client.Connect(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer func() {
+		// Graceful stop: buffered reports and telemetry get up to five seconds.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Shutdown(ctx); err != nil {
+			log.Printf("shutdown cut short: %v", err)
+		}
+	}()
 }
 ```
 
@@ -132,7 +148,7 @@ func main() {
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | `iii.RegisterWorker(url)`                   | Create an SDK instance and auto-connect                |
 | Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | `client.RegisterFunction(id, handler)`      | Register a function that can be invoked by name        |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | `client.RegisterTrigger(id, type, fn, cfg, meta)` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
+| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | `client.RegisterTrigger(iii.RegisterTriggerInput{Type, FunctionID, Config})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
 | Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | `client.Trigger(ctx, iii.TriggerRequest{...})` | Invoke a function and wait for the result              |
 | Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | `client.Trigger(ctx, iii.TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting |
 

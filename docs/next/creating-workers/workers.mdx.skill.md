@@ -7,14 +7,14 @@ disconnects, and shut the worker down.
 <Note>
   For the full SDK surface each Worker can use when interacting with iii, see the complete SDK
   reference by language: [Node](../reference/sdk-node), [Python](../reference/sdk-python),
-  [Rust](../reference/sdk-rust), or [Browser](../reference/sdk-browser).
+  [Rust](../reference/sdk-rust), [Go](../reference/sdk-go), or [Browser](../reference/sdk-browser).
 </Note>
 
 ## Create a new worker
 
 Create a TypeScript, JavaScript, Python, Rust, or Go project with the package tools of that
-language. Add the iii SDK for that language and an entrypoint such as `src/index.ts` or
-`src/main.py`. The Go SDK is the `github.com/iii-hq/iii/sdk/packages/go/iii` module. For what a
+language. Add the iii SDK for that language and an entrypoint such as `src/index.ts`, `src/main.py`,
+or `main.go`. The Go SDK is the `github.com/iii-hq/iii/sdk/packages/go/iii` module. For what a
 worker is, see [Worker](../understanding-iii#worker).
 
 Compose needs a start command for a local worker. Put it in `scripts.start` in an `iii.worker.yaml`
@@ -116,6 +116,16 @@ non-empty `III_WORKER_NAME` replaces the worker name that you set in code. See
             ..Default::default()
         },
     );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("my-worker"),
+        iii.WithDescription("One-line summary of what this worker does"),
+        iii.WithNamespace("orders"), // scopes this worker's registrations
+    )
     ```
 
   </Tab>
@@ -259,6 +269,48 @@ these functions and what each one returns, see
           .await?;
       ```
     </Tab>
+    <Tab title="Go">
+      ```go
+      // engine::workers::list, pass {"worker_id":"<uuid>"} to look up one worker
+      workers, err := client.Trigger(ctx, iii.TriggerRequest{
+          FunctionID: "engine::workers::list",
+          Payload:    json.RawMessage(`{}`),
+      })
+      if err != nil {
+          log.Fatal(err)
+      }
+
+      // engine::functions::list
+      functions, err := client.Trigger(ctx, iii.TriggerRequest{
+          FunctionID: "engine::functions::list",
+          Payload:    json.RawMessage(`{"include_internal":false}`),
+      })
+      if err != nil {
+          log.Fatal(err)
+      }
+
+      // engine::triggers::list
+      triggers, err := client.Trigger(ctx, iii.TriggerRequest{
+          FunctionID: "engine::triggers::list",
+          Payload:    json.RawMessage(`{"include_internal":false}`),
+      })
+      if err != nil {
+          log.Fatal(err)
+      }
+
+      // engine::registered-triggers::list
+      registeredTriggers, err := client.Trigger(ctx, iii.TriggerRequest{
+          FunctionID: "engine::registered-triggers::list",
+          Payload:    json.RawMessage(`{"include_internal":false}`),
+      })
+      if err != nil {
+          log.Fatal(err)
+      }
+
+      log.Printf("%s\n%s\n%s\n%s", workers, functions, triggers, registeredTriggers)
+      ```
+
+    </Tab>
 
   </Tabs>
 </Accordion>
@@ -335,6 +387,25 @@ reconnects.
           Ok(value) => { /* use value */ }
       }
       ```
+    </Tab>
+    <Tab title="Go">
+      ```go
+      result, err := client.Trigger(ctx, iii.TriggerRequest{
+          FunctionID: "math::add",
+          Payload:    json.RawMessage(`{"a":1,"b":2}`),
+      })
+      var ie *iii.InvocationError
+      if errors.As(err, &ie) && ie.Code == "invocation_stopped" {
+          // Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
+          // (see "Subscribe to changes" below) to know when to retry.
+          return nil
+      }
+      if err != nil {
+          return err
+      }
+      log.Printf("math::add returned %s", result)
+      ```
+
     </Tab>
 
   </Tabs>
@@ -463,6 +534,58 @@ it checks for changes every 5 seconds. For the `event` values, see
       ))?;
       ```
     </Tab>
+    <Tab title="Go">
+      ```go
+      client.RegisterFunction("discovery::on-workers", func(ctx context.Context, data json.RawMessage) (any, error) {
+          var event struct {
+              Event    string `json:"event"`
+              WorkerID string `json:"worker_id"`
+          }
+          if err := json.Unmarshal(data, &event); err != nil {
+              return nil, err
+          }
+          if event.Event == "worker_connected" {
+              // A Worker joined the registry; its Functions are callable now.
+              log.Printf("worker %s connected", event.WorkerID)
+          }
+          return nil, nil
+      })
+      if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+          Type:       "engine::workers-available",
+          FunctionID: "discovery::on-workers",
+          Config:     json.RawMessage(`{}`),
+      }); err != nil {
+          log.Fatal(err)
+      }
+
+      client.RegisterFunction("discovery::on-functions", func(ctx context.Context, data json.RawMessage) (any, error) {
+          var event struct {
+              Event     string `json:"event"`
+              Functions []struct {
+                  FunctionID string `json:"function_id"`
+              } `json:"functions"`
+          }
+          if err := json.Unmarshal(data, &event); err != nil {
+              return nil, err
+          }
+          // `functions` is the full snapshot after the change.
+          ids := make([]string, 0, len(event.Functions))
+          for _, f := range event.Functions {
+              ids = append(ids, f.FunctionID)
+          }
+          log.Printf("functions: %v", ids)
+          return nil, nil
+      })
+      if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+          Type:       "engine::functions-available",
+          FunctionID: "discovery::on-functions",
+          Config:     json.RawMessage(`{}`),
+      }); err != nil {
+          log.Fatal(err)
+      }
+      ```
+
+    </Tab>
 
   </Tabs>
 </Accordion>
@@ -516,9 +639,25 @@ dropped socket; graceful shutdown makes it deterministic and faster.
     worker.shutdown_async().await;
     ```
   </Tab>
+  <Tab title="Go">
+    ```go
+    // Block until SIGTERM, then shut the worker down gracefully.
+    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+    defer stop()
+    <-ctx.Done()
+
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    if err := client.Shutdown(shutdownCtx); err != nil {
+        log.Printf("shutdown cut short: %v", err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 <Note>
   Shutdown is useful for one-shot workers. Kubernetes Jobs, serverless containers, or scheduled
-  scripts can connect like any other Worker, do their work, and call `shutdown()`.
+  scripts can connect like any other Worker, do their work, and call `shutdown()`
+  (`shutdown_async().await` in Rust, `client.Shutdown(ctx)` in Go).
 </Note>

@@ -15,7 +15,7 @@ pub mod types;
 pub mod worker_metrics;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use opentelemetry::propagation::TextMapCompositePropagator;
 use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
@@ -50,8 +50,20 @@ static OTEL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// tears down the global state when this reaches zero.
 static OTEL_REF_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// The logger provider of `OTEL_STATE`, read by every `Logger` call. It lives
+/// apart from `OTEL_STATE` because a log line cannot wait for that lock and
+/// must not be dropped when it is taken: init, flush and shutdown hold it
+/// across awaits, and loggers on other threads take it too.
+static LOGGER_PROVIDER: RwLock<Option<SdkLoggerProvider>> = RwLock::new(None);
+
 fn get_otel_lock() -> &'static Mutex<Option<OtelState>> {
     OTEL_STATE.get_or_init(|| Mutex::new(None))
+}
+
+fn set_logger_provider(provider: Option<SdkLoggerProvider>) {
+    *LOGGER_PROVIDER
+        .write()
+        .unwrap_or_else(PoisonError::into_inner) = provider;
 }
 
 /// Normalize an engine WebSocket URL into the dedicated OTEL endpoint.
@@ -419,6 +431,7 @@ pub async fn init_otel(config: OtelConfig) -> bool {
     let shutdown_timeout =
         std::time::Duration::from_millis(config.shutdown_timeout_ms.unwrap_or(10_000));
 
+    set_logger_provider(logger_provider.clone());
     let otel_state = OtelState {
         tracer_provider,
         meter_provider,
@@ -461,6 +474,7 @@ pub async fn shutdown_otel() {
 
     if let Some(otel) = state.take() {
         OTEL_INITIALIZED.store(false, Ordering::Release);
+        set_logger_provider(None);
 
         let timeout_duration = otel.shutdown_timeout;
 
@@ -632,13 +646,10 @@ pub fn is_initialized() -> bool {
 /// This is used by the SDK logger to emit OTel LogRecords alongside the
 /// engine invoker calls.
 pub fn get_logger_provider() -> Option<SdkLoggerProvider> {
-    if !is_initialized() {
-        return None;
-    }
-    // Try to acquire the lock without blocking. If contended, skip emission.
-    let lock = get_otel_lock();
-    let state = lock.try_lock().ok()?;
-    state.as_ref()?.logger_provider.clone()
+    LOGGER_PROVIDER
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 #[cfg(test)]
@@ -765,5 +776,51 @@ mod tests {
             exc_event.is_none(),
             "successful span should not have an exception event"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn the_logger_provider_is_read_while_the_otel_state_is_locked() {
+        use opentelemetry_sdk::logs::SdkLoggerProvider;
+
+        super::set_logger_provider(Some(SdkLoggerProvider::builder().build()));
+        // init, flush and shutdown hold this lock across awaits
+        let held = super::get_otel_lock().try_lock().expect("unlocked");
+        assert!(super::get_logger_provider().is_some());
+        drop(held);
+
+        super::set_logger_provider(None);
+        assert!(super::get_logger_provider().is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn loggers_on_many_threads_emit_every_line() {
+        use opentelemetry_sdk::logs::{InMemoryLogExporter, SdkLoggerProvider};
+
+        let exporter = InMemoryLogExporter::default();
+        let provider = SdkLoggerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        super::set_logger_provider(Some(provider));
+
+        let threads: Vec<_> = (0..16)
+            .map(|t| {
+                std::thread::spawn(move || {
+                    let logger = crate::observability::Logger::new();
+                    for i in 0..200 {
+                        logger.info(&format!("thread {t} line {i}"), None);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        // Counted before the provider goes: its shutdown clears the exporter.
+        let emitted = exporter.get_emitted_logs().unwrap().len();
+        super::set_logger_provider(None);
+
+        assert_eq!(emitted, 16 * 200);
     }
 }

@@ -59,7 +59,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 	owner := observeWorker(t, "eq-owner", proxy)
 	watcher := observeWorker(t, "eq-watcher", nil)
 	price, checkout, target := fnID(t, "go-eq::price"), fnID(t, "go-eq::checkout"), fnID(t, "go-eq::on-price")
-	_ = owner.RegisterFunction(price, func(_ context.Context, data json.RawMessage) (any, error) {
+	_, _ = owner.RegisterFunction(price, func(_ context.Context, data json.RawMessage) (any, error) {
 		var in struct {
 			SKU  string `json:"sku"`
 			Qty  int    `json:"qty"`
@@ -71,7 +71,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 		}
 		return map[string]any{"total": in.Qty * 10, "sku": in.SKU}, nil
 	})
-	_ = owner.RegisterFunction(checkout, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, _ = owner.RegisterFunction(checkout, func(ctx context.Context, data json.RawMessage) (any, error) {
 		var in struct {
 			Dispatch iii.Dispatch `json:"dispatch"`
 			Fail     bool         `json:"fail"`
@@ -79,7 +79,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 		_ = json.Unmarshal(data, &in)
 		return owner.Trigger(ctx, iii.TriggerRequest{
 			FunctionID: price,
-			Data:       raw(map[string]any{"sku": "A-1", "qty": 3, "fail": in.Fail}),
+			Payload:    raw(map[string]any{"sku": "A-1", "qty": 3, "fail": in.Fail}),
 			Metadata:   raw(map[string]string{"channel": "web"}),
 			Dispatch:   in.Dispatch,
 		})
@@ -97,7 +97,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 		before := got.len()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_, _ = owner.Trigger(ctx, iii.TriggerRequest{FunctionID: checkout, Data: raw(map[string]any{"dispatch": dispatch, "fail": fail}), Dispatch: dispatch})
+		_, _ = owner.Trigger(ctx, iii.TriggerRequest{FunctionID: checkout, Payload: raw(map[string]any{"dispatch": dispatch, "fail": fail}), Dispatch: dispatch})
 		waitFor(t, fmt.Sprintf("the %s activation", dispatch), 10*time.Second, func() bool { return got.len() > before })
 		all := got.all()
 		return all[len(all)-1]
@@ -129,15 +129,19 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 // sdk.md §7 Zero-wire: 1M local calls of an unobserved function send zero frames
 // (localinvocationstats, the periodic counter, aside).
 func TestObserveZeroWire(t *testing.T) {
+	// It measures what reaches the wire, not telemetry: with telemetry on, its million
+	// local calls each run in a traced span, about 7s more for the whole loop. The
+	// telemetry socket is separate and its frames are not counted either way.
+	t.Setenv("OTEL_ENABLED", "false")
 	proxy := newFrameProxy(t)
 	owner := observeWorker(t, "zero-wire", proxy)
 	inc := fnID(t, "go-zw::inc")
-	_ = owner.RegisterFunction(inc, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
+	_, _ = owner.RegisterFunction(inc, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
 	localDispatchReady(t, owner, inc)
 	const calls = 1_000_000
 	mark := proxy.mark()
 	ctx := context.Background()
-	req := iii.TriggerRequest{FunctionID: inc, Data: json.RawMessage(`1`)}
+	req := iii.TriggerRequest{FunctionID: inc, Payload: json.RawMessage(`1`)}
 	start := time.Now()
 	for i := 0; i < calls; i++ {
 		if _, err := owner.Trigger(ctx, req); err != nil {
@@ -154,14 +158,14 @@ func TestObserveZeroWire(t *testing.T) {
 	// positive control: the same counter sees the frames of an observed function
 	watcher := observeWorker(t, "zero-wire-watcher", nil)
 	observed, target := fnID(t, "go-zw::observed"), fnID(t, "go-zw::target")
-	_ = owner.RegisterFunction(observed, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
+	_, _ = owner.RegisterFunction(observed, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
 	localDispatchReady(t, owner, observed)
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: observed, Capture: []iii.Capture{iii.CaptureInput}}, target)
 	ready(t, h)
 	mark = proxy.mark()
 	for i := 0; i < 10; i++ {
-		call(t, owner, iii.TriggerRequest{FunctionID: observed, Data: raw(i)})
+		call(t, owner, iii.TriggerRequest{FunctionID: observed, Payload: raw(i)})
 	}
 	exactly(t, got, 10, "the observed calls' activations", 10*time.Second)
 	if n := countOf(proxy.since(mark), "invocationsobserved"); n == 0 {
@@ -176,14 +180,14 @@ func TestObserveActivationRace(t *testing.T) {
 	owner := observeWorker(t, "race-owner", proxy)
 	watcher := observeWorker(t, "race-watcher", nil)
 	fn, target := fnID(t, "go-race::fn"), fnID(t, "go-race::target")
-	_ = owner.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
+	_, _ = owner.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
 	localDispatchReady(t, owner, fn)
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: fn, Capture: []iii.Capture{iii.CaptureInput}}, target, iii.ObserverOptions{MaxInFlight: n})
 	ready(t, h)
 	mark := proxy.mark()
 	for i := 0; i < n; i++ {
-		call(t, owner, iii.TriggerRequest{FunctionID: fn, Data: raw(i)})
+		call(t, owner, iii.TriggerRequest{FunctionID: fn, Payload: raw(i)})
 	}
 	acts := exactly(t, got, n, fmt.Sprintf("%d activations", n), 20*time.Second)
 	seen := map[float64]bool{}
@@ -218,7 +222,7 @@ func newCronOwner(t *testing.T) *cronOwner {
 	o := &cronOwner{fn: fnID(t, "go-cron::on-tick"), index: map[string][]*iii.Observer{}}
 	o.proxy = newFrameProxy(t)
 	o.client = observeWorker(t, "cron-owner", o.proxy)
-	err := o.client.RegisterFunction(o.fn, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, err := o.client.RegisterFunction(o.fn, func(ctx context.Context, data json.RawMessage) (any, error) {
 		var tick struct {
 			Expression string `json:"expression"`
 		}
@@ -298,7 +302,7 @@ func (o *cronOwner) wasRemoved(id string) bool {
 
 func (o *cronOwner) tick(t *testing.T, expr string, n int) {
 	t.Helper()
-	call(t, o.client, iii.TriggerRequest{FunctionID: o.fn, Data: raw(map[string]any{"expression": expr, "n": n})})
+	call(t, o.client, iii.TriggerRequest{FunctionID: o.fn, Payload: raw(map[string]any{"expression": expr, "n": n})})
 }
 
 // sdk.md §7 Args: obs.Args is what the observer sent; a missing required argument and
@@ -307,8 +311,8 @@ func TestObserveOwnerArgs(t *testing.T) {
 	cron := newCronOwner(t)
 	watcher := observeWorker(t, "args-watcher", nil)
 	target, auto := fnID(t, "go-args::target"), fnID(t, "go-args::auto")
-	_ = watcher.RegisterFunction(target, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
-	_ = watcher.RegisterFunction(auto, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	_, _ = watcher.RegisterFunction(target, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	_, _ = watcher.RegisterFunction(auto, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	ok, _ := watcher.Observe(iii.Source{FunctionID: cron.fn, Args: iii.Args{"expression": "*/5"}}, target)
 	ready(t, ok)
 	if args := cron.addedArgs(); len(args) != 1 || args[0]["expression"] != "*/5" {
@@ -361,7 +365,7 @@ func TestObserveOwnerHooks(t *testing.T) {
 	cron.mu.Unlock()
 	watcher := observeWorker(t, "hooks-watcher", nil)
 	target := fnID(t, "go-hooks::target")
-	_ = watcher.RegisterFunction(target, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	_, _ = watcher.RegisterFunction(target, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	start := time.Now()
 	ok, _ := watcher.Observe(iii.Source{FunctionID: cron.fn, Args: iii.Args{"expression": "*/5"}, Filters: iii.Filters{"input.n": iii.Op{"$gte": 2}}}, target)
 	ready(t, ok)
@@ -377,7 +381,7 @@ func TestObserveOwnerHooks(t *testing.T) {
 	if f, _ := json.Marshal(added[0].Filters); string(f) != `{"$and":[{"input.n":{"$gte":2}}]}` {
 		t.Errorf("filters as the owner sees them: %s", f)
 	}
-	got := call(t, watcher, iii.TriggerRequest{FunctionID: iii.FnGetObserver, Data: raw(map[string]string{"id": ok.ID()})})
+	got := call(t, watcher, iii.TriggerRequest{FunctionID: iii.FnGetObserver, Payload: raw(map[string]string{"id": ok.ID()})})
 	if !strings.Contains(string(got), `"input.n"`) {
 		t.Errorf("engine::observers::get: %s", got)
 	}
@@ -443,7 +447,7 @@ func TestObserveOwnerCall(t *testing.T) {
 	var mu sync.Mutex
 	routes := map[string]*iii.Observer{}
 	var autoObs *iii.Observer
-	_ = owner.RegisterFunction(onRequest, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, _ = owner.RegisterFunction(onRequest, func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Path string `json:"path"`
 		}
@@ -470,7 +474,7 @@ func TestObserveOwnerCall(t *testing.T) {
 			mu.Unlock()
 		},
 	}})
-	_ = owner.RegisterFunction(auto, func(context.Context, json.RawMessage) (any, error) { return nil, nil },
+	_, _ = owner.RegisterFunction(auto, func(context.Context, json.RawMessage) (any, error) { return nil, nil },
 		iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{OnObserverAdded: func(_ context.Context, obs *iii.Observer) error {
 			mu.Lock()
 			autoObs = obs
@@ -479,7 +483,7 @@ func TestObserveOwnerCall(t *testing.T) {
 		}}})
 	app := observeWorker(t, "http-app", nil)
 	var seen json.RawMessage
-	_ = app.RegisterFunction(getUser, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, _ = app.RegisterFunction(getUser, func(ctx context.Context, data json.RawMessage) (any, error) {
 		md, _ := iii.MetadataFromContext(ctx)
 		mu.Lock()
 		seen = md
@@ -497,7 +501,7 @@ func TestObserveOwnerCall(t *testing.T) {
 	ready(t, onAuto)
 	localDispatchReady(t, owner, onRequest)
 
-	out := call(t, owner, iii.TriggerRequest{FunctionID: onRequest, Data: raw(map[string]string{"path": "/users", "tenant": "acme"})})
+	out := call(t, owner, iii.TriggerRequest{FunctionID: onRequest, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})})
 	if string(out) != `{"body":{"path":"/users"},"status":200}` {
 		t.Errorf("response %s", out)
 	}
@@ -538,14 +542,14 @@ func TestObserveReconnect(t *testing.T) {
 	owner := observeWorker(t, "rc-owner", proxy)
 	watcher := observeWorker(t, "rc-watcher", nil)
 	fn, target, source := fnID(t, "go-rc::fn"), fnID(t, "go-rc::target"), fnID(t, "go-rc::source")
-	_ = owner.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) {
+	_, _ = owner.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) {
 		var n int
 		_ = json.Unmarshal(data, &n)
 		return n * 2, nil
 	})
 	var mu sync.Mutex
 	var added, removed []string
-	_ = owner.RegisterFunction(source, func(context.Context, json.RawMessage) (any, error) { return nil, nil },
+	_, _ = owner.RegisterFunction(source, func(context.Context, json.RawMessage) (any, error) { return nil, nil },
 		iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
 			OnObserverAdded: func(_ context.Context, obs *iii.Observer) error {
 				mu.Lock()
@@ -560,7 +564,7 @@ func TestObserveReconnect(t *testing.T) {
 			},
 		}})
 	got := collector(t, watcher, target)
-	_ = watcher.RegisterFunction(fnID(t, "go-rc::sink"), func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	_, _ = watcher.RegisterFunction(fnID(t, "go-rc::sink"), func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	kept, _ := watcher.Observe(iii.Source{FunctionID: fn, Capture: []iii.Capture{iii.CaptureInput}}, target)
 	staying, _ := watcher.Observe(iii.Source{FunctionID: source}, fnID(t, "go-rc::sink"))
 	leaving, _ := watcher.Observe(iii.Source{FunctionID: source}, fnID(t, "go-rc::sink"))
@@ -571,7 +575,7 @@ func TestObserveReconnect(t *testing.T) {
 
 	proxy.drop()
 	waitFor(t, "the disconnect", 5*time.Second, func() bool { return owner.State() != iii.StateConnected })
-	if out := call(t, owner, iii.TriggerRequest{FunctionID: fn, Data: raw(21)}); string(out) != "42" { // still local
+	if out := call(t, owner, iii.TriggerRequest{FunctionID: fn, Payload: raw(21)}); string(out) != "42" { // still local
 		t.Errorf("local call while disconnected: %s", out)
 	}
 	// an observer removed while the owner is away
@@ -600,7 +604,7 @@ func TestObserveConflictOnReplayDisablesLocalDispatch(t *testing.T) {
 	proxy := newFrameProxy(t)
 	first := observeWorker(t, "conflict-first", proxy)
 	fn := fnID(t, "go-conflict::fn")
-	_ = first.RegisterFunction(fn, func(context.Context, json.RawMessage) (any, error) { return "first", nil })
+	_, _ = first.RegisterFunction(fn, func(context.Context, json.RawMessage) (any, error) { return "first", nil })
 	localDispatchReady(t, first, fn)
 
 	proxy.hold()
@@ -611,7 +615,7 @@ func TestObserveConflictOnReplayDisablesLocalDispatch(t *testing.T) {
 	}
 	second := observeWorker(t, "conflict-second", nil)
 	waitFor(t, "the second worker to own the function", 10*time.Second, func() bool {
-		_ = second.RegisterFunction(fn, func(context.Context, json.RawMessage) (any, error) { return "second", nil })
+		_, _ = second.RegisterFunction(fn, func(context.Context, json.RawMessage) (any, error) { return "second", nil })
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		out, err := second.Trigger(ctx, iii.TriggerRequest{FunctionID: fn, Dispatch: iii.DispatchRemote})

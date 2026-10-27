@@ -1,6 +1,6 @@
 // This file is the wire protocol: the message envelope and every message variant,
 // ported from the engine's source of truth at engine/src/protocol.rs. The package
-// overview lives in doc.go. The Rust engine declares its Message enum as:
+// overview is in doc.go. The Rust engine declares its Message enum as:
 //
 //	#[serde(tag = "type", rename_all = "lowercase")]
 //
@@ -10,7 +10,7 @@
 // Marshal/Unmarshal below.
 //
 // Wire-fidelity rules that the engine's deserializer depends on (get these wrong and
-// you change semantics, not just formatting):
+// you change semantics, not only formatting):
 //
 //   - Absent is not null. The engine uses serde's skip_serializing_if = "Option::is_none",
 //     so optional fields must be OMITTED when empty, never sent as "field":null. The most
@@ -19,6 +19,10 @@
 //   - Trigger messages use the wire field "trigger_type", not "type" (see RegisterTrigger).
 //   - InvocationResult.invocation_id is REQUIRED (a result with no id has nowhere to route),
 //     while InvokeFunction.invocation_id is optional.
+//
+// This header is a file comment, not package documentation (doc.go has that), hence
+// the blank line before the package clause.
+
 package iii
 
 import (
@@ -28,8 +32,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// MessageType is the value of the envelope "type" field. Values are lowercase to
-// match the engine's serde rename_all = "lowercase" (engine/src/protocol.rs:41).
+// MessageType is the value of the envelope "type" field: the lowercase name of the
+// message variant, as the engine expects it.
 type MessageType string
 
 const (
@@ -49,8 +53,8 @@ const (
 	MsgRegistrationRejected      MessageType = "registrationrejected"
 	MsgUnregisterTriggerType     MessageType = "unregistertriggertype"
 
-	// observe (tech-specs/2026-10-13-observe/protocol.md §2). The engine pushes the
-	// engine -> worker variants only to connections that declared observe.v1.
+	// observe messages. The engine pushes the engine -> worker variants only to
+	// connections that declared observe.v1.
 	MsgObserve              MessageType = "observe"
 	MsgUnobserve            MessageType = "unobserve"
 	MsgObserveResult        MessageType = "observeresult"
@@ -63,9 +67,9 @@ const (
 	MsgLocalInvocationStats MessageType = "localinvocationstats"
 )
 
-// ErrorBody is the wire representation of a remote error
-// (engine/src/protocol.rs:174-180). It is intentionally minimal; the ergonomic,
-// errors.Is-able client error that wraps it lives in errors.go.
+// ErrorBody is the wire representation of a remote error: a code, a message and an
+// optional stack trace. It is intentionally minimal; a [Client.Trigger] caller
+// receives it as an [InvocationError] (read it with errors.As).
 type ErrorBody struct {
 	Code       string  `json:"code"`
 	Message    string  `json:"message"`
@@ -76,8 +80,8 @@ func (e *ErrorBody) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-// TriggerAction mirrors the engine's TriggerAction enum (engine/src/protocol.rs:33-38),
-// itself a "type"-tagged lowercase union: {"type":"void"} or {"type":"enqueue","queue":"..."}.
+// TriggerAction mirrors the engine's TriggerAction enum, a "type"-tagged lowercase
+// union: {"type":"void"} or {"type":"enqueue","queue":"..."}.
 // It rides on InvokeFunction.Action and selects the delivery semantics of a Trigger call.
 type TriggerAction struct {
 	// Type is "void" (fire-and-forget) or "enqueue" (route via a named queue).
@@ -87,7 +91,7 @@ type TriggerAction struct {
 }
 
 // VoidAction returns the fire-and-forget action. A trigger with this action carries
-// no invocation_id, so the engine sends no reply (see Trigger in client.go).
+// no invocation_id, so the engine sends no reply (see [Client.Trigger]).
 func VoidAction() *TriggerAction { return &TriggerAction{Type: "void"} }
 
 // EnqueueAction routes an invocation through a named queue; the engine acknowledges
@@ -96,21 +100,27 @@ func EnqueueAction(queue string) *TriggerAction {
 	return &TriggerAction{Type: "enqueue", Queue: queue}
 }
 
-// HTTPInvocationRef describes an externally-hosted function the engine can call
-// directly over HTTP (engine/src/protocol.rs:14-31). Workers that only register
-// in-process handlers never set this; it is here for wire completeness so
-// RegisterFunction round-trips byte-for-byte. Auth is left as raw JSON because the
-// engine's HttpAuthConfig is itself a tagged union the v1 SDK has no reason to model.
+// HTTPInvocationRef describes an externally-hosted function the engine calls directly
+// over HTTP: the Node SDK's HttpInvocationConfig.
+// Register one with [Client.RegisterHTTPFunction]; it travels as the registration's
+// "invocation" field. Auth is raw JSON because the engine's HttpAuthConfig is a tagged
+// union: build it with [HMACAuth], [BearerAuth] or [APIKeyAuth].
 type HTTPInvocationRef struct {
-	URL       string            `json:"url"`
-	Method    string            `json:"method,omitempty"`
-	TimeoutMs *uint64           `json:"timeout_ms,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Auth      json.RawMessage   `json:"auth,omitempty"`
+	// URL is the endpoint the engine calls. Required.
+	URL string `json:"url"`
+	// Method is the HTTP method (GET, POST, PUT, PATCH or DELETE).
+	// RegisterHTTPFunction sends POST when it is empty.
+	Method string `json:"method,omitempty"`
+	// TimeoutMs bounds each request, in milliseconds; nil uses the engine default.
+	TimeoutMs *uint64 `json:"timeout_ms,omitempty"`
+	// Headers are sent with every request.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Auth is how the engine authenticates its requests; nil sends none.
+	Auth json.RawMessage `json:"auth,omitempty"`
 }
 
 // ChannelDirection is the end of a streaming channel a StreamChannelRef refers to.
-// The engine serializes it lowercase (engine/src/protocol.rs:198-201).
+// On the wire it is lowercase: "read" or "write".
 type ChannelDirection string
 
 const (
@@ -118,11 +128,11 @@ const (
 	ChannelWrite ChannelDirection = "write"
 )
 
-// StreamChannelRef is a capability handle to one end of a streaming data channel
-// (engine/src/protocol.rs:203-211). The engine's engine::channels::create returns a
+// StreamChannelRef is a capability handle to one end of a streaming data channel.
+// The engine's engine::channels::create returns a
 // writer ref and a reader ref that share a channel_id and access_key; a ref travels as
 // plain JSON inside a trigger payload or result, and the holder opens its own WebSocket
-// to the channel with it (see channels.go).
+// to the channel with it ([Client.OpenReader], [Client.OpenWriter]).
 type StreamChannelRef struct {
 	ChannelID string           `json:"channel_id"`
 	AccessKey string           `json:"access_key"`
@@ -136,7 +146,7 @@ type StreamChannelRef struct {
 
 // RegisterTriggerType registers a trigger *template* (e.g. "http", "cron"). The two
 // *_format fields are optional JSON Schemas describing the trigger config and the
-// resulting function-call payload (engine/src/protocol.rs:43-50).
+// resulting function-call payload.
 type RegisterTriggerTypeMessage struct {
 	ID                   string          `json:"id"`
 	Description          string          `json:"description"`
@@ -145,9 +155,8 @@ type RegisterTriggerTypeMessage struct {
 }
 
 // RegisterTrigger registers a trigger *instance* that fires FunctionID when its
-// trigger type matches. Note the wire field "trigger_type" (engine/src/protocol.rs:53):
-// the engine names it that on the wire, so we do too — we do not inherit the Node SDK's
-// internal "type"/toWireFormat rename.
+// trigger type matches. The trigger type travels in the wire field "trigger_type", the
+// name the engine reads (the Node SDK's "type" option is renamed to it on the wire).
 type RegisterTriggerMessage struct {
 	ID          string          `json:"id"`
 	TriggerType string          `json:"trigger_type"`
@@ -157,10 +166,14 @@ type RegisterTriggerMessage struct {
 	// Namespace the trigger's target FunctionID resolves in. Absent means the
 	// engine's default namespace, independent of the connection's namespace.
 	Namespace string `json:"namespace,omitempty"`
+	// TriggerNamespace is the namespace to find the trigger type's provider in. Absent
+	// asks the engine to resolve it: the registering connection's namespace first, then
+	// the engine's own. A namespace named here is strict.
+	TriggerNamespace string `json:"trigger_namespace,omitempty"`
 }
 
 // TriggerRegistrationResult is the engine's ack for a RegisterTrigger; Error is set
-// only on failure (engine/src/protocol.rs:59-65).
+// only on failure.
 type TriggerRegistrationResultMessage struct {
 	ID          string     `json:"id"`
 	TriggerType string     `json:"trigger_type"`
@@ -168,8 +181,8 @@ type TriggerRegistrationResultMessage struct {
 	Error       *ErrorBody `json:"error,omitempty"`
 }
 
-// UnregisterTrigger removes a trigger instance. TriggerType is optional here
-// (engine/src/protocol.rs:66-70, serde default), so it is a pointer.
+// UnregisterTrigger removes a trigger instance. TriggerType is optional on the wire,
+// so it is a pointer.
 type UnregisterTriggerMessage struct {
 	ID          string  `json:"id"`
 	TriggerType *string `json:"trigger_type,omitempty"`
@@ -177,11 +190,11 @@ type UnregisterTriggerMessage struct {
 
 // RegisterFunction announces a function this worker can handle. RequestFormat and
 // ResponseFormat are optional JSON Schemas; Invocation is set only for externally
-// HTTP-hosted functions (engine/src/protocol.rs).
+// HTTP-hosted functions ([Client.RegisterHTTPFunction]).
 //
 // Optional fields are omitted when unset, as the engine writes them
 // (skip_serializing_if); the engine reads an absent format and a JSON null alike.
-// Observe is the function's observe descriptor (protocol.md §2.2): how its observers
+// Observe is the function's observe descriptor: how its observers
 // are delivered. Absent means delivery auto, observable, no args.
 type RegisterFunctionMessage struct {
 	ID             string             `json:"id"`
@@ -206,7 +219,7 @@ type ObserveDescriptor struct {
 	Allow *bool `json:"allow,omitempty"`
 }
 
-// UnregisterFunction removes a previously registered function (engine/src/protocol.rs:82-84).
+// UnregisterFunction removes a previously registered function.
 type UnregisterFunctionMessage struct {
 	ID string `json:"id"`
 }
@@ -214,7 +227,7 @@ type UnregisterFunctionMessage struct {
 // InvokeFunction is the engine->worker (and worker->engine, via Trigger) call.
 //
 // InvocationID is a POINTER and omitempty: when absent, the call is fire-and-forget
-// and no InvocationResult is expected (engine/src/protocol.rs:86). Traceparent/Baggage
+// and no InvocationResult is expected. Traceparent/Baggage
 // carry W3C trace context across the hop. Action selects void/enqueue semantics.
 //
 // Metadata is OPTIONAL per-invocation metadata (arbitrary JSON) that travels as its own
@@ -234,7 +247,7 @@ type InvokeFunctionMessage struct {
 	// Namespace routes this invocation to a specific namespace. Absent means the
 	// engine's default namespace, independent of the caller's own namespace.
 	Namespace string `json:"namespace,omitempty"`
-	// Caller is who made the call (protocol.md §2.4). Worker -> engine: the handler the
+	// Caller is who made the call. Worker -> engine: the handler the
 	// call was made from and its own caller; engine -> worker: also the calling worker,
 	// stamped by the engine. Sent and received only with observe.v1.
 	Caller *Caller `json:"caller,omitempty"`
@@ -333,8 +346,8 @@ func jsonString(raw json.RawMessage) (string, bool) {
 
 // RegistrationRejectedMessage is the engine's refusal of a registration.
 // A FUNCTION_NAMESPACE_CONFLICT costs one function and leaves the connection
-// open; a WORKER_NAMESPACE_CONFLICT is terminal — another live worker owns this
-// name in the namespace (engine/src/protocol.rs).
+// open; a WORKER_NAMESPACE_CONFLICT is terminal: another live worker owns this
+// name in the namespace.
 type RegistrationRejectedMessage struct {
 	Code          string `json:"code"`
 	Namespace     string `json:"namespace"`
@@ -345,8 +358,7 @@ type RegistrationRejectedMessage struct {
 
 // InvocationResult is the worker's reply to a non-fire-and-forget InvokeFunction.
 // InvocationID is REQUIRED (a value, not a pointer): a result with no id cannot be
-// routed back to its caller (engine/src/protocol.rs:99). Exactly one of Result/Error
-// is set.
+// routed back to its caller. Exactly one of Result/Error is set.
 type InvocationResultMessage struct {
 	InvocationID uuid.UUID       `json:"invocation_id"`
 	FunctionID   string          `json:"function_id"`
@@ -356,8 +368,7 @@ type InvocationResultMessage struct {
 	Baggage      *string         `json:"baggage,omitempty"`
 }
 
-// RegisterService groups functions under a service for the dashboard
-// (engine/src/protocol.rs:112-120).
+// RegisterService groups functions under a service for the dashboard.
 type RegisterServiceMessage struct {
 	ID              string  `json:"id"`
 	Name            string  `json:"name"`
@@ -365,8 +376,8 @@ type RegisterServiceMessage struct {
 	ParentServiceID *string `json:"parent_service_id,omitempty"`
 }
 
-// WorkerRegistered is sent engine->worker on connect to announce the worker's id
-// (engine/src/protocol.rs:123-125). The worker treats it as informational.
+// WorkerRegistered is sent engine->worker on connect to announce the worker's id.
+// The worker treats it as informational.
 type WorkerRegisteredMessage struct {
 	WorkerID string `json:"worker_id"`
 	// ReattachToken is the secret to present in a ReattachMessage on reconnect;
@@ -390,11 +401,11 @@ type ReattachMessage struct {
 }
 
 // PingMessage is the payloadless keepalive the engine sends; it serializes to
-// {"type":"ping"} (engine/src/protocol.rs:121-122). The client replies with a PongMessage.
+// {"type":"ping"}. The client replies with a PongMessage.
 type PingMessage struct{}
 
 // PongMessage is the payloadless reply to a PingMessage; it serializes to
-// {"type":"pong"} (engine/src/protocol.rs:121-122).
+// {"type":"pong"}.
 type PongMessage struct{}
 
 // UnregisterTriggerTypeMessage retires a trigger type this connection provides. The
@@ -542,7 +553,7 @@ type ObserverInfo struct {
 }
 
 // LegacyTrigger is the old trigger an observer was created from by the engine's legacy
-// shim (protocol.md §6): the owner reads Config as the observer's args.
+// shim: the owner reads Config as the observer's args.
 type LegacyTrigger struct {
 	TriggerType string          `json:"trigger_type"`
 	Config      json.RawMessage `json:"config"`
@@ -703,8 +714,8 @@ func MarshalMessage(msg any) ([]byte, error) {
 }
 
 // DecodedMessage is the result of UnmarshalMessage: the decoded "type" plus exactly
-// one populated variant pointer (the rest are nil). Callers switch on Type, or simply
-// check which pointer is non-nil.
+// one populated variant pointer (the rest are nil). Callers switch on Type, or check
+// which pointer is non-nil.
 type DecodedMessage struct {
 	Type MessageType
 
@@ -736,7 +747,7 @@ type DecodedMessage struct {
 }
 
 // UnmarshalMessage decodes a wire frame by peeking at "type" and then decoding into
-// the matching variant struct — the Go counterpart of serde's tag dispatch.
+// the matching variant struct. It is the Go counterpart of serde's tag dispatch.
 func UnmarshalMessage(data []byte) (*DecodedMessage, error) {
 	var envelope struct {
 		Type MessageType `json:"type"`

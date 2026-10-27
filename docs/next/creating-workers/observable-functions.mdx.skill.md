@@ -86,8 +86,8 @@ has `Args` (a map), `DecodeArgs(&v)`, `Legacy`, `Emit(ctx, event) (bool, error)`
 ## Know when you are observed
 
 An auto function can declare hooks too, for example to start expensive work only while someone
-observes it. `FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `client.IsObserved(id)`
-in Go) answers in one load, so a hot path can skip building events nobody receives.
+observes it. `FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `IsObserved()` in Go)
+answers in one load, so a hot path can skip building events nobody receives.
 
 ```typescript
 const prices = worker.registerFunction("prices::on-change", async (change: PriceChange) => change, {
@@ -401,7 +401,7 @@ It runs one timer per distinct interval, however many observers share it.
                 return
             case now := <-ticker.C:
                 data, _ := json.Marshal(tick{EveryMs: everyMs, FiredAtMs: now.UnixMilli()})
-                client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "timer::on-tick", Data: data})
+                client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "timer::on-tick", Payload: data})
             }
         }
     }
@@ -414,7 +414,7 @@ It runs one timer per distinct interval, however many observers share it.
         return args.EveryMs
     }
 
-    func registerTimer(client *iii.Client) error {
+    func registerTimer(client *iii.Client) (*iii.FunctionRef, error) {
         return client.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
             var t tick
             if err := json.Unmarshal(data, &t); err != nil {
@@ -661,7 +661,7 @@ An observer with args the schema refuses (`{ every_ms: 10 }`, or no `every_ms`) 
         return command
     }
 
-    func registerCommands(client *iii.Client) error {
+    func registerCommands(client *iii.Client) (*iii.FunctionRef, error) {
         return client.RegisterFunction("chat::on-command", func(ctx context.Context, data json.RawMessage) (any, error) {
             var req struct {
                 Command string `json:"command"`

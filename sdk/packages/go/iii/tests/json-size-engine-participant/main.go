@@ -54,7 +54,7 @@ func verifyPayload(encoded json.RawMessage, size int, marker byte) error {
 func main() {
 	client := iii.New(os.Getenv("JSON_SIZE_TEST_URL"), iii.WithName("json-size-go"))
 	register := func(id string, handler iii.Handler) {
-		if err := client.RegisterFunction(id, handler); err != nil {
+		if _, err := client.RegisterFunction(id, handler); err != nil {
 			panic(err)
 		}
 	}
@@ -82,7 +82,7 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		result, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: request.Target, Data: encoded, Timeout: 120 * time.Second})
+		result, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: request.Target, Payload: encoded, Timeout: 120 * time.Second})
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +97,7 @@ func main() {
 		if err != nil {
 			return nil, err
 		}
-		_, err = client.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust", Data: encoded})
+		_, err = client.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust", Payload: encoded})
 		var inv *iii.InvocationError
 		if !errors.As(err, &inv) || inv.Code != "payload_too_large" {
 			return nil, fmt.Errorf("expected payload_too_large, got %v", err)
@@ -110,7 +110,7 @@ func main() {
 		if parseErr != nil || reported <= messageLimitBytes {
 			return nil, fmt.Errorf("reported size %q not oversized", match[1])
 		}
-		small, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust", Data: json.RawMessage(`"after-go-limit"`)})
+		small, err := client.Trigger(ctx, iii.TriggerRequest{FunctionID: "size::rust", Payload: json.RawMessage(`"after-go-limit"`)})
 		if err != nil || string(small) != `"after-go-limit"` {
 			return nil, fmt.Errorf("call after local reject: %s %v", small, err)
 		}
