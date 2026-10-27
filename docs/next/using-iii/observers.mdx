@@ -1,23 +1,26 @@
 ---
 title: "Observers"
-description: "When one function runs, run another: iii.observe(source, target)."
+description: "Run a function each time another function has an event: iii.observe(source, target)."
 owner: "devrel"
 type: "how-to"
 ---
 
-Everything in iii is reactive. `observe` says **when this happens, do that**:
+`observe` runs a function (the target) each time another function (the source) has an event:
 
 ```text
 iii.observe(source, target)
 ```
 
-When the left side (`source`, a function) runs, the right side (`target`, another function) runs
-with what happened. Every function in iii can be a source, and any worker can observe any function
-it is allowed to invoke.
+By default, an event is a successful call of the source. Some sources make their own events, and
+their behavior may differ. In these cases, consult the documentation of the specific worker.
 
-- **`source`** is the function to watch, plus optional [filters](#filters) to narrow which of its
-  runs reach the observer.
-- **`target`** is the id of a function you registered. Register it first, like any other function.
+Any worker can observe any function, unless otherwise restricted by [RBAC](#authorization) or by the
+source itself (`allow: false`).
+
+- **`source`** is the function to observe, plus optional [filters](#filters) that select which
+  events reach the target.
+- **`target`** is the id of the function to run. It can be any function except the source itself.
+  The observer stays `pending` until the source and the target are registered.
 
 `iii.observe` replaces `registerTrigger` for sources that are functions. See
 [Upgrading from 0.24.x](../upgrading/from-0-24-x) to move existing triggers.
