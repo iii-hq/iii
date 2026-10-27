@@ -8,8 +8,6 @@ telemetry_emitter=""
 install_event_prefix=""
 from_version=""
 release_version=""
-init_install_failed=""
-worker_install_failed=""
 
 # curl wrapper that retries transient network failures (504/502/503/timeouts).
 # Uses only flags available since curl 7.12.3 (2005); avoids --retry-all-errors
@@ -163,61 +161,6 @@ check_rate_limit_or_continue() {
   if github_rate_limited "$_url"; then
     err "download" "GitHub API rate limit hit (unauthenticated: 60/hr). Retry later, or set \$GITHUB_TOKEN and pipe with: curl -H \"Authorization: Bearer \$GITHUB_TOKEN\" ..."
   fi
-}
-
-# ---------------------------------------------------------------------------
-# Resolve a companion binary's download URL from the release JSON.
-# Prints URL on stdout (empty if not found).
-# ---------------------------------------------------------------------------
-resolve_companion_url() {
-  _name="$1"; _target="$2"; _assets_json="$3"
-  _asset_name="${_name}-${_target}.tar.gz"
-  _url=$(printf '%s' "$_assets_json" \
-    | jq -r --arg n "$_asset_name" \
-      '.assets[] | select(.name == $n) | .browser_download_url' \
-    | head -n 1)
-  if [ -z "$_url" ] || [ "$_url" = "null" ]; then
-    printf ''
-  else
-    printf '%s' "$_url"
-  fi
-}
-
-# ---------------------------------------------------------------------------
-# Extract an already-downloaded companion tarball and install the binary.
-# Returns 0 on success, 1 on failure (caller warns).
-# ---------------------------------------------------------------------------
-install_companion_from_tarball() {
-  _name="$1"; _tarball="$2"; _bin_dir="$3"; _tmp="$4"
-  if [ ! -f "$_tarball" ]; then
-    warn "$_name: tarball missing ($_tarball)"
-    return 1
-  fi
-  if ! tar -xzf "$_tarball" -C "$_tmp"; then
-    warn "$_name: extract failed for $(basename "$_tarball")"
-    return 1
-  fi
-  _bin=$(find "$_tmp" -type f -name "$_name" 2>/dev/null | head -n 1)
-  if [ -z "$_bin" ] || [ ! -f "$_bin" ]; then
-    warn "$_name: binary not found in tarball"
-    return 1
-  fi
-  if ! install_bin "$_bin" "$_bin_dir/$_name"; then
-    warn "$_name: failed to install to $_bin_dir/$_name"
-    return 1
-  fi
-  info "installed $_name to $_bin_dir/$_name"
-  return 0
-}
-
-# Unlike the static engine, the worker needs the host libc for dlopen.
-# Keep this decision separate from TARGET / III_USE_GLIBC (engine overrides).
-worker_target_for_host() {
-  case "$1:$2:$3" in
-    Linux:x86_64:musl|Linux:aarch64:musl) printf '%s-unknown-linux-musl' "$2" ;;
-    Linux:x86_64:*|Linux:aarch64:*) printf '%s-unknown-linux-gnu' "$2" ;;
-    Darwin:aarch64:*) printf 'aarch64-apple-darwin' ;;
-  esac
 }
 
 # Removes the download directory. Defined out here, not beside the `mktemp`
@@ -622,55 +565,6 @@ trap cleanup EXIT INT TERM
 main_tarball="$tmpdir/$asset_name"
 
 # ---------------------------------------------------------------------------
-# VM companions: releases up to 0.25 ship iii-init and iii-worker, later ones
-# do not. Fetch each only when the resolved release lists it, silently
-# otherwise, so a pinned older release still installs what it needs.
-# ---------------------------------------------------------------------------
-
-# iii-init: Linux ELF that runs inside VMs; macOS hosts also need it for libkrun guests.
-init_target=""
-case "$uname_s" in
-  Linux)
-    case "$arch" in
-      x86_64)  init_target="x86_64-unknown-linux-musl" ;;
-      aarch64) init_target="aarch64-unknown-linux-gnu" ;;
-    esac
-    ;;
-  Darwin)
-    case "$arch" in
-      x86_64)  init_target="x86_64-apple-darwin" ;;
-      aarch64) init_target="aarch64-apple-darwin" ;;
-    esac
-    ;;
-esac
-
-# The engine's default x86_64 musl build is static and also runs on glibc.
-# The worker uses dynamic musl for firmware loading, so match the host loader.
-worker_libc=gnu
-if [ -e "/lib/ld-musl-${arch}.so.1" ]; then
-  worker_libc=musl
-fi
-worker_target=$(worker_target_for_host "$uname_s" "$arch" "$worker_libc")
-
-init_url=""
-init_tarball=""
-if [ -n "$init_target" ]; then
-  init_url=$(resolve_companion_url "iii-init" "$init_target" "$json")
-  if [ -n "$init_url" ]; then
-    init_tarball="$tmpdir/iii-init-${init_target}.tar.gz"
-  fi
-fi
-
-worker_url=""
-worker_tarball=""
-if [ -n "$worker_target" ]; then
-  worker_url=$(resolve_companion_url "iii-worker" "$worker_target" "$json")
-  if [ -n "$worker_url" ]; then
-    worker_tarball="$tmpdir/iii-worker-${worker_target}.tar.gz"
-  fi
-fi
-
-# ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
 
@@ -681,30 +575,6 @@ if [ -t 2 ]; then
 else
   curl_retry -fsSL "$asset_url" -o "$main_tarball" \
     || err "download" "failed to download $asset_url"
-fi
-
-# iii-init (best-effort)
-if [ -n "$init_url" ]; then
-  printf 'downloading %s...\n' "$(basename "$init_tarball")"
-  if [ -t 2 ]; then
-    curl_retry -fL --progress-bar "$init_url" -o "$init_tarball" \
-      || { warn "iii-init: download failed"; init_install_failed="1"; rm -f "$init_tarball"; init_tarball=""; }
-  else
-    curl_retry -fsSL "$init_url" -o "$init_tarball" \
-      || { warn "iii-init: download failed"; init_install_failed="1"; rm -f "$init_tarball"; init_tarball=""; }
-  fi
-fi
-
-# iii-worker (best-effort)
-if [ -n "$worker_url" ]; then
-  printf 'downloading %s...\n' "$(basename "$worker_tarball")"
-  if [ -t 2 ]; then
-    curl_retry -fL --progress-bar "$worker_url" -o "$worker_tarball" \
-      || { warn "iii-worker: download failed"; worker_install_failed="1"; rm -f "$worker_tarball"; worker_tarball=""; }
-  else
-    curl_retry -fsSL "$worker_url" -o "$worker_tarball" \
-      || { warn "iii-worker: download failed"; worker_install_failed="1"; rm -f "$worker_tarball"; worker_tarball=""; }
-  fi
 fi
 
 if [ ! -f "$main_tarball" ]; then
@@ -770,22 +640,6 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Install: VM companions (best-effort, from the tarballs downloaded above)
-# ---------------------------------------------------------------------------
-
-if [ -n "$init_tarball" ] && [ -f "$init_tarball" ]; then
-  if ! install_companion_from_tarball "iii-init" "$init_tarball" "$bin_dir" "$tmpdir"; then
-    init_install_failed="1"
-  fi
-fi
-
-if [ -n "$worker_tarball" ] && [ -f "$worker_tarball" ]; then
-  if ! install_companion_from_tarball "iii-worker" "$worker_tarball" "$bin_dir" "$tmpdir"; then
-    worker_install_failed="1"
-  fi
-fi
-
-# ---------------------------------------------------------------------------
 # Telemetry: success
 # ---------------------------------------------------------------------------
 
@@ -809,24 +663,6 @@ fi
 
 if [ -z "$installed_version" ]; then
   warn "$BIN_NAME installed but 'iii --version' produced no output — the binary may not run on this system (Gatekeeper? libc mismatch? try: $bin_dir/$BIN_NAME --version)"
-fi
-
-# ---------------------------------------------------------------------------
-# Post-install notes (platform-specific gotchas)
-# ---------------------------------------------------------------------------
-
-if [ -n "$init_install_failed" ]; then
-  echo ""
-  echo "note: iii-init failed to install. VM-based sandbox workers will be unavailable"
-  echo "      until you re-run install.sh or install iii-init manually from:"
-  echo "      https://github.com/$REPO/releases"
-fi
-
-if [ -n "$worker_install_failed" ]; then
-  echo ""
-  echo "note: iii-worker failed to install. VM isolation features will be unavailable"
-  echo "      until you re-run install.sh or install iii-worker manually from:"
-  echo "      https://github.com/$REPO/releases"
 fi
 fi
 
