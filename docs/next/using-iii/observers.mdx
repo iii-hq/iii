@@ -346,16 +346,26 @@ With the default `deliver: "envelope"`, the target's first argument is the `Obse
 envelope always has the ids, `status`, and the timings. It has `input`, `output`, `error`, `caller`,
 and `metadata` only when `capture` includes them. `output` is present only after a successful call.
 
-| Field                          | Meaning                                                                          |
-| ------------------------------ | -------------------------------------------------------------------------------- |
-| `observer_id`, `activation_id` | The observer, and this activation of it.                                         |
-| `function_id`, `namespace`     | The observed function.                                                           |
-| `invocation_id`                | The observed invocation. For an event that a source makes, the id of that event. |
-| `status`                       | `success` or `error`.                                                            |
-| `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message }` error.              |
-| `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).                 |
-| `metadata`                     | The metadata of the observed call.                                               |
-| `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.                       |
+| Field                          | Meaning                                                             |
+| ------------------------------ | ------------------------------------------------------------------- |
+| `observer_id`, `activation_id` | The observer, and this activation of it.                            |
+| `function_id`, `namespace`     | The observed function.                                              |
+| `invocation_id`                | The observed call. For an event that a source makes, see below.     |
+| `status`                       | `success` or `error`.                                               |
+| `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message }` error. |
+| `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).    |
+| `metadata`                     | The metadata of the observed call.                                  |
+| `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.          |
+
+When a source makes its own events, the `invocation_id` depends on where the source sends the event:
+
+- From the handler of the source function: the id of that call. Events sent during the same call
+  have the same `invocation_id`.
+- From other code: a new id for each event; for example when a source calls another function that
+  then performs the emit. The envelope's `caller` then has the `function_id` and `invocation_id` of
+  that function.
+
+Engine-hosted event sources give each event a new id.
 
 With `deliver: "input"` or `deliver: "output"`, the target's first argument is that value alone. If
 the value is absent (for example, `output` after a failed call), the argument is `null`.
@@ -368,28 +378,27 @@ iii discards the target's return value, unless the source documents otherwise.
 
 ## Source options
 
-The `source` is more than a function id. All of these are optional except `function_id`:
+All fields are optional except `function_id`:
 
-| Field         | Default                         | Meaning                                                                                                                       |
-| ------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `function_id` | required                        | The observed function. Every function is observable unless it opted out (`NOT_OBSERVABLE`).                                   |
-| `namespace`   | the worker's namespace          | The namespace of the observed function. `engine::*` and `configuration::*` resolve to `default`, as for a `trigger` call.     |
-| `filters`     | `{}` (every event)              | Which runs reach the target. See [Filters](#filters).                                                                         |
-| `on`          | `success`                       | React to runs that `success`, `error`, or `complete` (both).                                                                  |
-| `capture`     | `["input", "output", "caller"]` | What the envelope carries: any of `input`, `output`, `error`, `caller`, `metadata`. `[]` sends ids, status, and timings only. |
-| `deliver`     | `envelope`                      | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone.                               |
-| `args`        | none                            | Only for sources whose docs ask for it. See [Source `args`](#source-args).                                                    |
+| Field         | Default                                                                                           | Meaning                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `function_id` | required                                                                                          | The function to observe.                                                                                                                                     |
+| `namespace`   | `default` for `engine::*` and `configuration::*` functions; the worker's namespace for all others | The namespace of the function.                                                                                                                               |
+| `filters`     | `{}` (every event)                                                                                | Which events reach the target. See [Filters](#filters).                                                                                                      |
+| `on`          | `success`                                                                                         | Which calls run the target: `success`, `error`, or `complete` (both). See [Observe errors or all calls](#observe-errors-or-all-calls).                       |
+| `capture`     | `["input", "output", "caller"]`                                                                   | Which fields the envelope has: any of `input`, `output`, `error`, `caller`, `metadata`. With `[]`, the envelope has only the ids, `status`, and the timings. |
+| `deliver`     | `envelope`                                                                                        | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone.                                                              |
+| `args`        | none                                                                                              | Arguments for the source, only for sources that document them. See [Source `args`](#source-args).                                                            |
 
-A filter may read any field, whatever the observer captures: `capture` only decides what travels to
-the target.
+A filter can read any field, including those not defined in `capture`. `capture` sets only which
+fields the target function receives.
 
 ### Source `args`
 
-A few sources need to know what you want before they can fire: a file watcher needs a path, a
-schedule needs an interval. Their documentation lists the `args` they take, and you pass them in the
-source. For example, `files::watch`, the example source built in
-[Observable functions](../creating-workers/observable-functions#example-a-file-watcher-that-emits)
-(it is not built in), takes `{ path }`:
+Some sources take `args`, for example a path for a file watcher or an interval for a schedule. The
+documentation of the source lists its `args`. For example, `files::watch`, the example source in
+[Observable functions](../creating-workers/observable-functions#example-a-file-watcher-that-emits),
+takes `{ path }`. It is not part of iii:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -437,11 +446,13 @@ source. For example, `files::watch`, the example source built in
   </Tab>
 </Tabs>
 
-Args and filters do different jobs: `args` tell the source what to produce (changes to this one
-file), and filters choose among what it produced (say, only changes that leave the file non-empty,
-with `{ "input.size_bytes": { "$gt": 0 } }`). The engine validates `args` against the source's
-schema (`INVALID_ARGS` when they do not fit). A function that does not document `args` takes none,
-and passing them fails with `INVALID_ARGS`.
+`args` tell the source which events to make (the changes to one file). Filters select from those
+events, for example only changes that leave the file non-empty:
+`{ "input.size_bytes": { "$gt": 0 } }`.
+
+The engine checks `args` against the `args_format` of the source. The observer fails with
+`INVALID_ARGS` when the `args` do not match, or when the source has no `args_format` and the `args`
+are not empty.
 
 ## Filters
 

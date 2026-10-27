@@ -258,6 +258,12 @@ that invocation (its id and its caller); inside another handler, that handler is
 any handler, only your worker. That is why the examples below trigger their own function and emit
 from its handler.
 
+The event's `invocation_id` follows the same rule. Inside your function's own handler, the event has
+the id of that invocation, and all events emitted during the same invocation have the same id.
+Anywhere else, each event gets a new id. `emit` cannot set the id. To pass an id on, put it in the
+event, for example from `iii.currentInvocation()` (`current_invocation()` in Python and Rust,
+`InvocationFromContext(ctx)` in Go).
+
 ### Example: a file watcher that emits
 
 `files::watch` is the smallest complete owner-delivered source. Each observer names the file to
