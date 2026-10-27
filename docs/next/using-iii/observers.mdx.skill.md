@@ -175,10 +175,13 @@ the duration of the call (`duration_ms`).
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
     import type { Observed } from "iii-sdk";
 
+    const logger = new Logger();
+
     worker.registerFunction("alerts::big-order", async (event: Observed<Order>) => {
-      console.log(
+      logger.info(
         `order ${event.input?.id} totals ${event.input?.total}, placed by ${event.caller?.worker_name}`,
       );
       return null;
@@ -196,10 +199,14 @@ the duration of the call (`duration_ms`).
   </Tab>
   <Tab title="Python">
     ```python
+    from iii_helpers.observability import Logger
+
+    logger = Logger()
+
     def big_order(event: dict) -> None:
         order = event.get("input", {})
         caller = event.get("caller", {})
-        print(f"order {order.get('id')} totals {order.get('total')}, placed by {caller.get('worker_name')}")
+        logger.info(f"order {order.get('id')} totals {order.get('total')}, placed by {caller.get('worker_name')}")
 
     worker.register_function("alerts::big-order", big_order)
 
@@ -213,6 +220,7 @@ the duration of the call (`duration_ms`).
   </Tab>
   <Tab title="Rust">
     ```rust
+    use iii_helpers::observability::Logger;
     use iii_sdk::Observed;
     use serde_json::json;
 
@@ -220,7 +228,7 @@ the duration of the call (`duration_ms`).
         "alerts::big-order",
         RegisterFunction::new(|event: Observed<Order>| {
             if let Some(order) = &event.input {
-                println!("order {} totals {}", order.id, order.total);
+                Logger::new().info(&format!("order {} totals {}", order.id, order.total), None);
             }
             Ok::<_, Error>(())
         }),
@@ -239,12 +247,16 @@ the duration of the call (`duration_ms`).
   </Tab>
   <Tab title="Go">
     ```go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/observability"
+
+    var logger observability.Logger
+
     worker.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
         var event iii.Observed
         if err := json.Unmarshal(data, &event); err != nil {
             return nil, err
         }
-        log.Printf("big order: %s", event.Input)
+        logger.Info(ctx, "big order", event.Input)
         return nil, nil
     })
 
@@ -969,7 +981,7 @@ engine path:
     worker.RegisterFunction("reports::build", buildReport, iii.RegisterFunctionOptions{LocalDispatch: &off})
 
     // per call
-    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Data: payload, Dispatch: iii.DispatchRemote})
+    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Payload: payload, Dispatch: iii.DispatchRemote})
     ```
 
   </Tab>

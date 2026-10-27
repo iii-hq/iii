@@ -421,6 +421,9 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     **Before (0.24)**
 
     ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
+
+    const logger = new Logger();
     const bindings = new Map<string, ReturnType<typeof setInterval>>(); // trigger id → its timer
 
     worker.registerTriggerType<{ every_ms: number }>(
@@ -430,7 +433,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
           const handle = setInterval(() => {
             worker
               .trigger({ function_id, payload: { every_ms: config.every_ms, fired_at_ms: Date.now() } })
-              .catch((err) => console.error(err));
+              .catch((err) => logger.error("timer trigger failed", err));
           }, config.every_ms);
           bindings.set(id, handle);
         },

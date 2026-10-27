@@ -65,7 +65,7 @@ publish an event, register a function for it and call that function when the eve
 
     // whenever a file changes:
     change, _ := json.Marshal(map[string]string{"path": path, "event": "modified"})
-    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "files::on-change", Data: change})
+    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "files::on-change", Payload: change})
     ```
 
   </Tab>
@@ -93,9 +93,9 @@ descriptor, and a trigger becomes an observer. To move an existing trigger type,
 
 ## Know when a function is observed
 
-`FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `worker.IsObserved(id)` in Go)
-returns true when the function has at least 1 active observer. It is fast, so you can call it before
-you build an event, and skip the event when no observer gets it.
+`FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `IsObserved()` in Go) returns true
+when the function has at least 1 active observer. It is fast, so you can call it before you build an
+event, and skip the event when no observer gets it.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -135,13 +135,13 @@ you build an event, and skip the event when no observer gets it.
   </Tab>
   <Tab title="Go">
     ```go
-    worker.RegisterFunction("prices::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
+    prices, _ := worker.RegisterFunction("prices::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
         return data, nil
     })
 
     // in the price feed loop
-    if worker.IsObserved("prices::on-change") {
-        worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "prices::on-change", Data: change})
+    if prices.IsObserved() {
+        worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "prices::on-change", Payload: change})
     }
     ```
 
@@ -588,7 +588,7 @@ worker still polls that path only 1 time each second.
                 if !last.IsZero() && !info.ModTime().Equal(last) {
                     // 2. The poller calls the function.
                     data, _ := json.Marshal(fileChanged{Path: path, SizeBytes: info.Size()})
-                    worker.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "files::watch", Data: data})
+                    worker.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "files::watch", Payload: data})
                 }
                 last = info.ModTime()
             }
