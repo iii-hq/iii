@@ -114,10 +114,17 @@ sandbox support in 0.26. Windows has no VM: a bundle worker there still fails wi
 
 ## Upgrade the binary
 
-The first `iii update` from 0.25 still runs 0.25 code. It updates `iii`, then prints
-`Release asset not found for platform <target>: iii-init` (and the same for `iii-worker`) and exits
-1. That is expected: the 0.26 release has neither asset. Run `iii update` again. It now runs 0.26,
-finishes cleanly, and lists the leftover binaries. It deletes nothing, so remove them yourself:
+The first `iii update` from 0.25 still runs 0.25 code. It installs 0.26 to `~/.local/bin/iii`,
+then prints `Release asset not found for platform <target>: iii-init` (and the same for
+`iii-worker`) and exits 1. That is expected: the 0.26 release has neither asset.
+
+Check that your shell now runs 0.26 with `iii --version`. If it still prints 0.25, the `iii` on your
+`PATH` (`command -v iii`) is not `~/.local/bin/iii`, for example a Homebrew install in
+`/opt/homebrew/bin`. Running `iii update` from it only repeats the errors above. Upgrade that copy
+with `brew upgrade iii`, or remove it and put `~/.local/bin` on your `PATH`.
+
+Once `iii --version` prints 0.26, run `iii update` again. It finishes cleanly and lists the leftover
+binaries. It deletes nothing, so remove them yourself:
 
 ```bash
 rm ~/.local/bin/iii-worker ~/.local/bin/iii-init
