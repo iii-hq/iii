@@ -16,7 +16,7 @@ with what happened. Every function in iii can be a source, and any worker can ob
 it is allowed to invoke.
 
 - **`source`** is the function to watch, plus optional [filters](#filters) to narrow which of its
-  runs you care about.
+  runs reach the observer.
 - **`target`** is the id of a function you registered. Register it first, like any other function.
 
 `iii.observe` replaces `registerTrigger` for sources that are functions. See
@@ -169,8 +169,8 @@ Node.
 
 Only orders of 500 or more should page someone. A [filter](#filters) on the source narrows which
 calls reach the target. This target also leaves out `deliver`, so it receives the full
-[`Observed` envelope](#what-the-target-receives): the order as `input`, plus the result, who placed
-the call, and how long it took.
+[`Observed` envelope](#target-arguments): the order as `input`, plus the result, who placed the
+call, and how long it took.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -268,28 +268,7 @@ Both observers watch the same function, independently. The next examples add
 [failures and policy](#policy-and-metadata), [chains](#chain-reactions), and
 [engine events](#engine-hosted-event-sources).
 
-### Making a function you can observe
-
-To make something observable, register a function for it and call that function whenever the thing
-happens. Each call is an event for its observers:
-
-```typescript
-// Producer: call this whenever a file changes.
-worker.registerFunction("files::on-change", async (change: FileChanged) => change);
-
-// ...in your watcher loop
-await worker.trigger({ function_id: "files::on-change", payload: { path, event: "modified" } });
-
-// Consumer, in any worker: when a file changes, process it.
-worker.observe({ function_id: "files::on-change" }, "csv::process");
-```
-
-Some sources go further and take control of who gets which event, for example a file watcher that
-polls only the paths its observers ask for. Those are written with
-[Observable functions](../creating-workers/observable-functions). You observe them the same way,
-sometimes with [args](#sources-that-take-args).
-
-## What the target receives
+## Target arguments
 
 With the default `deliver: 'envelope'`, the target's first argument is the `Observed` envelope: what
 happened on the left side. Fields left out of `capture` are absent.
@@ -312,7 +291,7 @@ The observer's `metadata` option arrives as the activation's metadata sidecar, t
 argument (`metadata` in Python, `MetadataFromContext(ctx)` in Go) that trigger metadata used. The
 target's return value is discarded.
 
-## Shape the source
+## Source options
 
 The `source` is more than a function id. All of these are optional except `function_id`:
 
@@ -324,12 +303,12 @@ The `source` is more than a function id. All of these are optional except `funct
 | `on`          | `success`                       | React to runs that `success`, `error`, or `complete` (both).                                                                  |
 | `capture`     | `["input", "output", "caller"]` | What the envelope carries: any of `input`, `output`, `error`, `caller`, `metadata`. `[]` sends ids, status, and timings only. |
 | `deliver`     | `envelope`                      | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone.                               |
-| `args`        | none                            | Only for sources whose docs ask for it. See [Sources that take args](#sources-that-take-args).                                |
+| `args`        | none                            | Only for sources whose docs ask for it. See [Source `args`](#source-args).                                                    |
 
 A filter may read any field, whatever the observer captures: `capture` only decides what travels to
 the target.
 
-### Sources that take args
+### Source `args`
 
 A few sources need to know what you want before they can fire: a file watcher needs a path, a
 schedule needs an interval. Their documentation lists the `args` they take, and you pass them in the
@@ -408,90 +387,6 @@ The engine validates a filter when the observer is created (`INVALID_FILTER`) an
 engine and in every SDK, so a filter matches the same events wherever it runs. See the
 [filter language reference](../reference/filters) for the operators, the rules for absent and `null`
 values, and the limits.
-
-## Policy and metadata
-
-The examples so far react to calls that succeed. The next one reacts when `payments::charge`
-**fails** on a large amount (`on: "error"`), keeps only what the alert needs (`capture`), and runs
-at most four alerts at once. That last part is policy: a third argument that configures the observer
-itself.
-
-| Option          | Default                                | Meaning                                                                                                                                                                                                                                                          |
-| --------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`            | a random UUID                          | The observer id. Replays with the same id are idempotent; a different spec is `OBSERVER_ID_CONFLICT`.                                                                                                                                                            |
-| `max_fires`     | unlimited                              | The observer is disposed after this many activations (`MAX_FIRES`).                                                                                                                                                                                              |
-| `expires_in_ms` | never                                  | The observer is disposed after this long (`EXPIRED`).                                                                                                                                                                                                            |
-| `max_in_flight` | `observers.default_max_in_flight` (64) | Activations running at once. Further ones wait in a queue of `observers.max_queue_per_observer` (1024); beyond it, or once the queues of all observers hold 64 MiB of events, they are dropped (`OVERFLOW`). With `1`, activations run in the order they arrive. |
-| `metadata`      | none                                   | JSON delivered as the metadata sidecar of every activation.                                                                                                                                                                                                      |
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.observe(
-      {
-        function_id: "payments::charge",
-        on: "error",
-        filters: { "input.amount": { $gte: 500 } },
-        capture: ["input", "error", "caller"],
-      },
-      "alerts::payment-failed",
-      { max_in_flight: 4, metadata: { team: "billing" } },
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    worker.observe(
-        {
-            "function_id": "payments::charge",
-            "on": "error",
-            "filters": {"input.amount": {"$gte": 500}},
-            "capture": ["input", "error", "caller"],
-        },
-        "alerts::payment-failed",
-        {"max_in_flight": 4, "metadata": {"team": "billing"}},
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{Capture, ObserverOptions, On, Source};
-    use serde_json::json;
-
-    worker.observe_with(
-        Source::function("payments::charge")
-            .on(On::Error)
-            .filters(json!({ "input.amount": { "$gte": 500 } }))
-            .capture([Capture::Input, Capture::Error, Capture::Caller]),
-        "alerts::payment-failed",
-        ObserverOptions::default()
-            .max_in_flight(4)
-            .metadata(json!({ "team": "billing" })),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    client.Observe(iii.Source{
-        FunctionID: "payments::charge",
-        On:         iii.OnError,
-        Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
-        Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError, iii.CaptureCaller},
-    }, "alerts::payment-failed", iii.ObserverOptions{
-        MaxInFlight: 4,
-        Metadata:    json.RawMessage(`{"team":"billing"}`),
-    })
-    ```
-
-  </Tab>
-</Tabs>
-
-Delivery is at most once. An observer failure never affects the observed invocation, and every
-dropped event is counted per function and reason in the `iii.observer.dropped.total` metric. An
-event waiting in several observers' queues is held once, however many observers it matched.
 
 ## Chain reactions
 
@@ -665,6 +560,90 @@ engine's to emit.
   </Tab>
 </Tabs>
 
+## Policy and metadata
+
+The examples so far react to calls that succeed. The next one reacts when `payments::charge`
+**fails** on a large amount (`on: "error"`), keeps only what the alert needs (`capture`), and runs
+at most four alerts at once. That last part is policy: a third argument that configures the observer
+itself.
+
+| Option          | Default                                | Meaning                                                                                                                                                                                                                                                          |
+| --------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | a random UUID                          | The observer id. Replays with the same id are idempotent; a different spec is `OBSERVER_ID_CONFLICT`.                                                                                                                                                            |
+| `max_fires`     | unlimited                              | The observer is disposed after this many activations (`MAX_FIRES`).                                                                                                                                                                                              |
+| `expires_in_ms` | never                                  | The observer is disposed after this long (`EXPIRED`).                                                                                                                                                                                                            |
+| `max_in_flight` | `observers.default_max_in_flight` (64) | Activations running at once. Further ones wait in a queue of `observers.max_queue_per_observer` (1024); beyond it, or once the queues of all observers hold 64 MiB of events, they are dropped (`OVERFLOW`). With `1`, activations run in the order they arrive. |
+| `metadata`      | none                                   | JSON delivered as the metadata sidecar of every activation.                                                                                                                                                                                                      |
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.observe(
+      {
+        function_id: "payments::charge",
+        on: "error",
+        filters: { "input.amount": { $gte: 500 } },
+        capture: ["input", "error", "caller"],
+      },
+      "alerts::payment-failed",
+      { max_in_flight: 4, metadata: { team: "billing" } },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.observe(
+        {
+            "function_id": "payments::charge",
+            "on": "error",
+            "filters": {"input.amount": {"$gte": 500}},
+            "capture": ["input", "error", "caller"],
+        },
+        "alerts::payment-failed",
+        {"max_in_flight": 4, "metadata": {"team": "billing"}},
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Capture, ObserverOptions, On, Source};
+    use serde_json::json;
+
+    worker.observe_with(
+        Source::function("payments::charge")
+            .on(On::Error)
+            .filters(json!({ "input.amount": { "$gte": 500 } }))
+            .capture([Capture::Input, Capture::Error, Capture::Caller]),
+        "alerts::payment-failed",
+        ObserverOptions::default()
+            .max_in_flight(4)
+            .metadata(json!({ "team": "billing" })),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    client.Observe(iii.Source{
+        FunctionID: "payments::charge",
+        On:         iii.OnError,
+        Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
+        Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError, iii.CaptureCaller},
+    }, "alerts::payment-failed", iii.ObserverOptions{
+        MaxInFlight: 4,
+        Metadata:    json.RawMessage(`{"team":"billing"}`),
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+Delivery is at most once. An observer failure never affects the observed invocation, and every
+dropped event is counted per function and reason in the `iii.observer.dropped.total` metric. An
+event waiting in several observers' queues is held once, however many observers it matched.
+
 ## Observer states
 
 | State       | Meaning                                                                                                                                                                    |
@@ -690,6 +669,41 @@ engine's to emit.
   a returning worker's replay creates its observers again, as after an engine restart.
 - When the observed function's worker disconnects, its observers go back to `pending` and become
   `active` again when the function is registered again.
+
+## Inspect observers
+
+The engine lists observers through three built-in functions:
+
+| Function                     | Input                                   | Returns                                                                                                                                                                             |
+| ---------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::observers::list`    | `{ function_id?, namespace?, worker? }` | `{ observers: [...] }`: id, observed function, delivery, args, normalized filters, target, observing worker, state, reason, fires, drops and activation failures by reason, policy. |
+| `engine::observers::get`     | `{ id }`                                | One observer, or `OBSERVER_NOT_FOUND`.                                                                                                                                              |
+| `engine::observers::dispose` | `{ id }`                                | Disposes an observer. Only the observing worker, or a caller without RBAC restrictions, may do it.                                                                                  |
+
+The output never includes an observer's metadata. Under RBAC, a session sees only the observers of
+functions it may invoke.
+
+```bash
+iii trigger engine::observers::list function_id=orders::create
+```
+
+## Errors
+
+An observer that cannot be created turns `error`, and `ready()` rejects with one of these codes:
+
+| Code                   | When                                                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `UNSUPPORTED`          | The engine is older than 0.25 (raised by the SDK), or `on`, `capture`, or `deliver` has an unknown value. |
+| `INVALID_ARGS`         | `args` do not fit the source's schema, or the source takes no `args`.                                     |
+| `INVALID_FILTER`       | The filter is malformed, uses a literal instead of an operator object, or exceeds a limit.                |
+| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                      |
+| `NOT_OBSERVABLE`       | The function opted out of being observed.                                                                 |
+| `FORBIDDEN`            | RBAC: the session may not invoke the observed function or the target, or the registration hook denied it. |
+| `SELF_TARGET`          | The target is the observed function.                                                                      |
+| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` is reached.                                |
+| `OBSERVER_ID_CONFLICT` | An observer with the same id but a different spec exists.                                                 |
+| `OWNER_TIMEOUT`        | The source's worker did not acknowledge the observer in time (30 s by default).                           |
+| `OBSERVE_REJECTED`     | The source refused the observer. A source can also reject with its own code, documented by that source.   |
 
 ## Event size
 
@@ -854,40 +868,26 @@ engine path:
 To turn it off for the whole engine, set `observers.local_dispatch: false` in the
 [engine configuration](./configuration#observers).
 
-## Inspect observers
+## Create an observable function
 
-The engine lists observers through three built-in functions:
+To make something observable, register a function for it and call that function whenever the thing
+happens. Each call is an event for its observers:
 
-| Function                     | Input                                   | Returns                                                                                                                                                                             |
-| ---------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::observers::list`    | `{ function_id?, namespace?, worker? }` | `{ observers: [...] }`: id, observed function, delivery, args, normalized filters, target, observing worker, state, reason, fires, drops and activation failures by reason, policy. |
-| `engine::observers::get`     | `{ id }`                                | One observer, or `OBSERVER_NOT_FOUND`.                                                                                                                                              |
-| `engine::observers::dispose` | `{ id }`                                | Disposes an observer. Only the observing worker, or a caller without RBAC restrictions, may do it.                                                                                  |
+```typescript
+// Producer: call this whenever a file changes.
+worker.registerFunction("files::on-change", async (change: FileChanged) => change);
 
-The output never includes an observer's metadata. Under RBAC, a session sees only the observers of
-functions it may invoke.
+// ...in your watcher loop
+await worker.trigger({ function_id: "files::on-change", payload: { path, event: "modified" } });
 
-```bash
-iii trigger engine::observers::list function_id=orders::create
+// Consumer, in any worker: when a file changes, process it.
+worker.observe({ function_id: "files::on-change" }, "csv::process");
 ```
 
-## Errors
-
-An observer that cannot be created turns `error`, and `ready()` rejects with one of these codes:
-
-| Code                   | When                                                                                                      |
-| ---------------------- | --------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`          | The engine is older than 0.25 (raised by the SDK), or `on`, `capture`, or `deliver` has an unknown value. |
-| `INVALID_ARGS`         | `args` do not fit the source's schema, or the source takes no `args`.                                     |
-| `INVALID_FILTER`       | The filter is malformed, uses a literal instead of an operator object, or exceeds a limit.                |
-| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                      |
-| `NOT_OBSERVABLE`       | The function opted out of being observed.                                                                 |
-| `FORBIDDEN`            | RBAC: the session may not invoke the observed function or the target, or the registration hook denied it. |
-| `SELF_TARGET`          | The target is the observed function.                                                                      |
-| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` is reached.                                |
-| `OBSERVER_ID_CONFLICT` | An observer with the same id but a different spec exists.                                                 |
-| `OWNER_TIMEOUT`        | The source's worker did not acknowledge the observer in time (30 s by default).                           |
-| `OBSERVE_REJECTED`     | The source refused the observer. A source can also reject with its own code, documented by that source.   |
+Some sources go further and take control of who gets which event, for example a file watcher that
+polls only the paths its observers ask for. Those are written with
+[Observable functions](../creating-workers/observable-functions). You observe them the same way,
+sometimes with [args](#source-args).
 
 ## Authorization
 

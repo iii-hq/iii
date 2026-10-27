@@ -93,83 +93,6 @@ In 0.25 this replaces `registerTriggerType`: a trigger type becomes a function w
 descriptor, and a trigger becomes an observer. To move an existing trigger type, see
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
 
-## When to use owner delivery
-
-| You want                                                                                     | Use                                                                                      |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Observers to react to every call of your function (filters narrow it)                        | Auto delivery: call your function.                                                       |
-| To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when you are observed](#know-when-you-are-observed). |
-| Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                          |
-| An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                          |
-
-## The `observe` descriptor
-
-Pass `observe` when you register the function:
-
-| Field                 | Default | Meaning                                                                                                              |
-| --------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `delivery`            | `auto`  | `auto`: every invocation is an event, offered to every observer. `owner`: your code hands events to observers.       |
-| `args_format`         | none    | Owner delivery only: the JSON Schema of the observers' `args`. The engine rejects other args with `INVALID_ARGS`.    |
-| `legacy_trigger_type` | none    | Accept old `registerTrigger({ type })` calls for this trigger type. See [Accept old triggers](#accept-old-triggers). |
-| `allow`               | `true`  | `false` refuses every observer with `NOT_OBSERVABLE`.                                                                |
-| `onObserverAdded`     | none    | Runs once per added observer, before the engine marks it `active`. Throw to reject it.                               |
-| `onObserverRemoved`   | none    | Runs once per removed observer. It cannot fail; errors are logged.                                                   |
-
-Only the first four fields travel to the engine; the hooks stay in your process. The names follow
-each SDK's conventions:
-
-| SDK     | Where                                                                               | Hooks                                                               |
-| ------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Node    | `registerFunction(id, handler, { observe: { ... } })`                               | `onObserverAdded(obs)`, `onObserverRemoved(obs)`                    |
-| Browser | same as Node                                                                        | same as Node                                                        |
-| Python  | `register_function(id, handler, observe=ObserveHooks(...))` or a subclass           | `on_observer_added(obs)`, `on_observer_removed(obs)`, sync or async |
-| Rust    | `RegisterFunction::new(..).observe(Observe::owner().args_format::<T>().handler(h))` | `ObserveHandler::on_observer_added` / `on_observer_removed`         |
-| Go      | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}`                          | `OnObserverAdded(ctx, obs)`, `OnObserverRemoved(ctx, obs)`          |
-
-`args_format` with `delivery: 'auto'` fails at registration with `INVALID_OBSERVE_DESCRIPTOR`: an
-auto function's events are its invocations, offered to every observer, so there is nothing to route
-by.
-
-### Hook rules
-
-- `onObserverAdded` runs before the SDK acknowledges the observer to the engine. Whatever it adds to
-  your own index is in place before the observer turns `active`, so the first event after `ready()`
-  resolves reaches it.
-- Throwing rejects the observer: an `ObserveRejection(code, message)` sets the code the observer's
-  `ready()` fails with; any other error is `OBSERVE_REJECTED`.
-- The hooks of one function run one at a time, in the engine's order. Hooks of different functions
-  may run concurrently.
-- A hook still running after 30 seconds counts as failed (`OWNER_TIMEOUT`, the engine enforces the
-  same `observers.owner_ack_timeout_ms`), and the next hook may start.
-- `onObserverRemoved` runs on `dispose()`, policy exhaustion (`max_fires`, expiry), when the
-  observing worker does not come back within its grace period, and when a reconnect no longer lists
-  the observer.
-
-### The `Observer` object
-
-Hooks receive an `Observer`: the observer as its owner sees it. It never exposes the observer's
-metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime,
-so keep it in your own index.
-
-| Member                  | Meaning                                                                                                                                   |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`                    | The observer id.                                                                                                                          |
-| `function_id`           | Your function.                                                                                                                            |
-| `args`                  | The observer's args, already validated against `args_format` by the engine.                                                               |
-| `filters`               | The observer's filters in [normal form](../reference/filters#normal-form). The SDK applies them for you.                                  |
-| `target`                | The target function id.                                                                                                                   |
-| `capture`, `on`         | What the observer captures, and `on` (auto delivery only).                                                                                |
-| `legacy`                | `{ trigger_type, config }` when the engine made the observer from an old `registerTrigger`.                                               |
-| `matches(doc)`          | Evaluates the observer's filters on `{ input?, output?, error?, caller?, metadata? }`.                                                    |
-| `emit(event)`           | Owner delivery, fire-and-forget. Returns `false` and sends nothing when the filters reject the event or the observer is no longer active. |
-| `call(payload)`         | Owner delivery, request/response: invokes the target and returns its result.                                                              |
-| `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                          |
-
-Language specifics: Python has `call` (blocking) and `call_async`; Rust has `id()`, `args::<T>()`,
-`args_value()`, `legacy()`, `emit(&event) -> Result<bool, Error>` and `call::<R>(payload).await`; Go
-has `Args` (a map), `DecodeArgs(&v)`, `Legacy`, `Emit(ctx, event) (bool, error)` and
-`Call(ctx, payload) (json.RawMessage, error)`.
-
 ## Know when you are observed
 
 The next step up keeps auto delivery (every call still reaches every observer) and adds hooks, for
@@ -266,38 +189,46 @@ observer's filters match.
 
 ## Owner delivery
 
-With `delivery: 'owner'`, your code decides which observers each event is for, from their `args`,
-and hands it over.
+<Note>
+  Use owner delivery when each observer sets something up with its `args` (a path, an interval, a
+  table) and gets only its own events, or when the function needs the target's result back (an HTTP
+  response, a queue ack). See [When to use owner delivery](#when-to-use-owner-delivery).
+</Note>
 
-|                      | Auto (the default)                                         | Owner                                                                       |
-| -------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
-| An event is          | every invocation of the function                           | what your code hands to an observer with `obs.emit` or `obs.call`           |
-| Observer `args`      | not accepted (`INVALID_ARGS`)                              | validated against your `args_format`, then read by your hooks               |
-| Filters evaluated by | the engine (routed calls) or the hosting SDK (local calls) | your SDK, each time you hand an event to the observer                       |
-| When the target runs | after the observed invocation completes, per `on`          | when your code decides, usually inside the function's own handler           |
-| The target's result  | discarded                                                  | discarded for `obs.emit`; returned to you for `obs.call`                    |
-| Examples             | any regular function, the engine-hosted event sources      | sources that need setup per observer: a schedule, a route, a table to watch |
+With `delivery: 'owner'`, the function's code decides which observers each event is for, from their
+`args`, and hands it over. In this case, an observer receives an event only when the function's code
+calls `obs.emit()` or `obs.call()` on it. `obs.emit(event)` sends the event and does not wait for
+the target, and `obs.call(payload)` runs the target and returns its result to the function.
 
-Owner delivery has three pieces:
+|                      | Auto (the default)                                         | Owner                                                                            |
+| -------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| An event is          | every invocation of the function                           | what the function's code hands to an observer with `obs.emit` or `obs.call`      |
+| Observer `args`      | not accepted (`INVALID_ARGS`)                              | validated against the function's `args_format`, then read by the function's code |
+| Filters evaluated by | the engine (routed calls) or the hosting SDK (local calls) | the owner's SDK, each time the function's code hands an event to the observer    |
+| When the target runs | after the observed invocation completes, per `on`          | when the function's code decides, usually inside the function's own handler      |
+| The target's result  | discarded                                                  | discarded for `obs.emit`; returned to the function's code for `obs.call`         |
+| Examples             | any regular function, the engine-hosted event sources      | sources that need setup per observer: a schedule, a route, a table to watch      |
 
-1. **`onObserverAdded` keeps the `Observer`** in your own index, keyed by its `args`, and starts
-   whatever produces events (a timer, a watcher). It returns promptly: the observer turns `active`
-   once it returns, and the engine waits at most 30 seconds (`OWNER_TIMEOUT`).
-2. **Your producer calls your function** when something happens, as with auto delivery.
-3. **Your function's handler emits**: it looks up the observers the event belongs to and calls
-   `obs.emit(event)` (or `obs.call(payload)`) on each. This is the step that runs their targets.
+The examples below use this pattern:
 
-`onObserverRemoved` takes the observer out of the index and stops what step 1 started once nobody
-needs it.
+1. **`onObserverAdded` runs once for each new observer**, before the observer becomes `active`. In
+   the examples, it starts what produces events for the observer's `args` (a timer, a watcher). To
+   refuse the observer, it throws. After 30 seconds, the observer is rejected with `OWNER_TIMEOUT`.
+2. **The producer calls the function** when something happens.
+3. **The function's handler** gets the observers the event is for (from `observers()` or from its
+   own index) and calls `obs.emit(event)` or `obs.call(payload)` on each.
+
+`onObserverRemoved` runs once for each removed observer. In the examples, it stops the producer when
+no observer needs it.
 
 The two ways to hand over an event:
 
-|                 | `obs.emit(event)`                                                                                                                    | `obs.call(payload)`                                                     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| Use for         | events whose result you do not need: a tick, a row change                                                                            | requests that need an answer: an HTTP response, a queue acknowledgement |
-| The target gets | the [`Observed` envelope](../using-iii/observers#what-the-target-receives) with `input` (or the event alone with `deliver: 'input'`) | your `payload`                                                          |
-| Returns         | `true` when the event was handed over, `false` when the filters rejected it                                                          | the target's result                                                     |
-| Wire cost       | one batched report item, then one activation from the engine                                                                         | one invocation through the engine                                       |
+|                 | `obs.emit(event)`                                                                                                            | `obs.call(payload)`                                                     |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Use for         | events whose result you do not need: a tick, a row change                                                                    | requests that need an answer: an HTTP response, a queue acknowledgement |
+| The target gets | the [`Observed` envelope](../using-iii/observers#target-arguments) with `input` (or the event alone with `deliver: 'input'`) | your `payload`                                                          |
+| Returns         | `true` when the event was handed over, `false` when the filters rejected it                                                  | the target's result                                                     |
+| Wire cost       | one batched report item, then one activation from the engine                                                                 | one invocation through the engine                                       |
 
 Only your worker may invoke an owner-delivered function: the engine refuses a call to it from any
 other worker (or from the engine itself) with `FORBIDDEN`, so nobody can pass off an event as yours.
@@ -328,10 +259,10 @@ from its handler.
 
 ### Example: a file watcher that emits
 
-`files::watch` is the smallest complete owner-delivered source. Each observer names the file it
-cares about in its args (`{ path }`), and gets the changes to that file only. The numbered comments
-mark the three pieces above. The worker polls each file once a second, with one poller per watched
-path however many observers share it.
+`files::watch` is the smallest complete owner-delivered source. Each observer names the file to
+watch in its args (`{ path }`), and gets the changes to that file only. The numbered comments mark
+the steps above. The worker polls each file once a second, with one poller per watched path however
+many observers share it.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -942,6 +873,15 @@ await worker.trigger({
 | `function_not_found`                                          | The target is not registered.                                                                                                    |
 | `payload_too_large`                                           | The activation is larger than the target worker accepts in one message. See [Event size](../using-iii/observers#event-size).     |
 
+## When to use owner delivery
+
+| You want                                                                                     | Use                                                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Observers to react to every call of your function (filters narrow it)                        | Auto delivery: call your function.                                                       |
+| To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when you are observed](#know-when-you-are-observed). |
+| Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                          |
+| An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                          |
+
 ## Reject an observer later
 
 An observer you accepted can become invalid, for example after a configuration reload removed the
@@ -1037,6 +977,74 @@ trigger's `trigger_namespace` when it names one, otherwise in the registering wo
 then in `default`. Your worker must run a 0.25 SDK. A worker that still registers the trigger type
 the old way always wins for new registrations, so stop calling `registerTriggerType` for the type in
 the same release that adds the function.
+
+## The `observe` descriptor
+
+Pass `observe` when you register the function:
+
+| Field                 | Default | Meaning                                                                                                              |
+| --------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `delivery`            | `auto`  | `auto`: every invocation is an event, offered to every observer. `owner`: your code hands events to observers.       |
+| `args_format`         | none    | Owner delivery only: the JSON Schema of the observers' `args`. The engine rejects other args with `INVALID_ARGS`.    |
+| `legacy_trigger_type` | none    | Accept old `registerTrigger({ type })` calls for this trigger type. See [Accept old triggers](#accept-old-triggers). |
+| `allow`               | `true`  | `false` refuses every observer with `NOT_OBSERVABLE`.                                                                |
+| `onObserverAdded`     | none    | Runs once per added observer, before the engine marks it `active`. Throw to reject it.                               |
+| `onObserverRemoved`   | none    | Runs once per removed observer. It cannot fail; errors are logged.                                                   |
+
+Only the first four fields travel to the engine; the hooks stay in your process. The names follow
+each SDK's conventions:
+
+| SDK     | Where                                                                               | Hooks                                                               |
+| ------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Node    | `registerFunction(id, handler, { observe: { ... } })`                               | `onObserverAdded(obs)`, `onObserverRemoved(obs)`                    |
+| Browser | same as Node                                                                        | same as Node                                                        |
+| Python  | `register_function(id, handler, observe=ObserveHooks(...))` or a subclass           | `on_observer_added(obs)`, `on_observer_removed(obs)`, sync or async |
+| Rust    | `RegisterFunction::new(..).observe(Observe::owner().args_format::<T>().handler(h))` | `ObserveHandler::on_observer_added` / `on_observer_removed`         |
+| Go      | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}`                          | `OnObserverAdded(ctx, obs)`, `OnObserverRemoved(ctx, obs)`          |
+
+`args_format` with `delivery: 'auto'` fails at registration with `INVALID_OBSERVE_DESCRIPTOR`: an
+auto function's events are its invocations, offered to every observer, so there is nothing to route
+by.
+
+### Hook rules
+
+- `onObserverAdded` runs before the SDK acknowledges the observer to the engine. Whatever it adds to
+  your own index is in place before the observer turns `active`, so the first event after `ready()`
+  resolves reaches it.
+- Throwing rejects the observer: an `ObserveRejection(code, message)` sets the code the observer's
+  `ready()` fails with; any other error is `OBSERVE_REJECTED`.
+- The hooks of one function run one at a time, in the engine's order. Hooks of different functions
+  may run concurrently.
+- A hook still running after 30 seconds counts as failed (`OWNER_TIMEOUT`, the engine enforces the
+  same `observers.owner_ack_timeout_ms`), and the next hook may start.
+- `onObserverRemoved` runs on `dispose()`, policy exhaustion (`max_fires`, expiry), when the
+  observing worker does not come back within its grace period, and when a reconnect no longer lists
+  the observer.
+
+### The `Observer` object
+
+Hooks receive an `Observer`: the observer as its owner sees it. It never exposes the observer's
+metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime,
+so keep it in your own index.
+
+| Member                  | Meaning                                                                                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                    | The observer id.                                                                                                                          |
+| `function_id`           | Your function.                                                                                                                            |
+| `args`                  | The observer's args, already validated against `args_format` by the engine.                                                               |
+| `filters`               | The observer's filters in [normal form](../reference/filters#normal-form). The SDK applies them for you.                                  |
+| `target`                | The target function id.                                                                                                                   |
+| `capture`, `on`         | What the observer captures, and `on` (auto delivery only).                                                                                |
+| `legacy`                | `{ trigger_type, config }` when the engine made the observer from an old `registerTrigger`.                                               |
+| `matches(doc)`          | Evaluates the observer's filters on `{ input?, output?, error?, caller?, metadata? }`.                                                    |
+| `emit(event)`           | Owner delivery, fire-and-forget. Returns `false` and sends nothing when the filters reject the event or the observer is no longer active. |
+| `call(payload)`         | Owner delivery, request/response: invokes the target and returns its result.                                                              |
+| `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                          |
+
+Language specifics: Python has `call` (blocking) and `call_async`; Rust has `id()`, `args::<T>()`,
+`args_value()`, `legacy()`, `emit(&event) -> Result<bool, Error>` and `call::<R>(payload).await`; Go
+has `Args` (a map), `DecodeArgs(&v)`, `Legacy`, `Emit(ctx, event) (bool, error)` and
+`Call(ctx, payload) (json.RawMessage, error)`.
 
 ## Against an older engine
 
