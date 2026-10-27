@@ -160,11 +160,14 @@ impl LogSink {
         let sink = self.clone();
         tokio::spawn(async move {
             // The frame callback is sync, so it cannot wait for the writer:
-            // once the queue is full it drops every later record, and the
-            // stream is cut when the queue has drained.
+            // once the queue is full it drops every later record, the socket
+            // closes so the adapter stops sending them, and the capture ends
+            // when the queue has drained.
             let (sender, mut records) = tokio::sync::mpsc::channel(RECORD_QUEUE);
             let full = Arc::new(AtomicBool::new(false));
             let overflowed = full.clone();
+            let cut = Arc::new(tokio::sync::Notify::new());
+            let cutting = cut.clone();
             reader
                 .on_message(move |frame| {
                     if !full.load(Ordering::SeqCst)
@@ -172,12 +175,17 @@ impl LogSink {
                         && sender.try_send(record).is_err()
                     {
                         full.store(true, Ordering::SeqCst);
+                        cutting.notify_one();
                     }
                 })
                 .await;
             // The reader owns the callback, so its sender drops when it does.
-            let pump =
-                tokio::spawn(async move { while let Ok(Some(_)) = reader.next_binary().await {} });
+            let pump = tokio::spawn(async move {
+                tokio::select! {
+                    () = cut.notified() => {}
+                    () = async { while let Ok(Some(_)) = reader.next_binary().await {} } => {}
+                }
+            });
             let mut last = None;
             loop {
                 let record = match records.try_recv() {
@@ -1029,28 +1037,36 @@ pub(crate) mod tests {
     }
 
     /// A guest that outruns the log writer fills a bounded queue, not memory:
-    /// the stream is cut there and resolves to the last record written, with
-    /// no gap before it, for the next stream to resume from.
+    /// the stream is closed there, so the adapter stops sending what would be
+    /// dropped, and resolves to the last record written, with no gap before
+    /// it, for the next stream to resume from.
     #[tokio::test]
     async fn a_capture_the_writer_cannot_keep_up_with_stops_at_a_bounded_queue() {
         use futures::SinkExt;
         use tokio_tungstenite::tungstenite::Message;
 
-        const SENT: u64 = 6_000;
+        // Far more than the queue: a reader that kept going would take them all.
+        const CAP: u64 = 200_000;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (sent, all_sent) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-            for cursor in 1..=SENT {
+            let mut cursor = 0;
+            while cursor < CAP {
                 let frame = format!(
-                    r#"{{"stream":"stdout","line":"r{cursor}","ts_ms":1,"cursor":{cursor}}}"#
+                    r#"{{"stream":"stdout","line":"r{}","ts_ms":1,"cursor":{}}}"#,
+                    cursor + 1,
+                    cursor + 1
                 );
-                let _ = socket.send(Message::Text(frame.into())).await;
+                if socket.send(Message::Text(frame.into())).await.is_err() {
+                    break;
+                }
+                cursor += 1;
             }
             let _ = socket.close(None).await;
-            let _ = sent.send(());
+            let _ = sent.send(cursor);
         });
 
         let dir = tempfile::tempdir().unwrap();
@@ -1071,21 +1087,19 @@ pub(crate) mod tests {
             &iii_sdk::channel::StreamChannelRef::default(),
         );
         let capture = store.sink("web").capture_records(reader);
-        all_sent.await.unwrap();
-        // Time for the reader to pass every frame to the callback.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        let sent = all_sent.await.unwrap();
+        assert!(sent < CAP, "the stream was read past a full queue");
         release.send(()).unwrap();
         stall.join().unwrap();
 
         let last = capture.await.unwrap().expect("records were written");
-        assert!(last < SENT, "every record queued: {last}");
-        let mut tail = Vec::new();
-        for _ in 0..100 {
-            tail = store
+        assert!(last < sent, "every record queued: {last}");
+        let messages = || async {
+            store
                 .query(
                     vec!["web".into()],
                     BTreeMap::new(),
-                    1,
+                    MAX_TAIL_LINES,
                     None,
                     Duration::from_secs(1),
                 )
@@ -1093,19 +1107,21 @@ pub(crate) mod tests {
                 .unwrap()
                 .containers[0]
                 .entries
-                .clone();
-            if tail
-                .last()
-                .is_some_and(|entry| entry.message == format!("r{last}"))
-            {
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect::<Vec<_>>()
+        };
+        let mut tail = messages().await;
+        for _ in 0..100 {
+            if tail.last() == Some(&format!("r{last}")) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
+            tail = messages().await;
         }
-        assert_eq!(
-            tail.last().map(|entry| entry.message.clone()),
-            Some(format!("r{last}"))
-        );
+        let first = last + 1 - MAX_TAIL_LINES as u64;
+        let expected: Vec<String> = (first..=last).map(|cursor| format!("r{cursor}")).collect();
+        assert_eq!(tail, expected);
     }
 
     #[tokio::test]
