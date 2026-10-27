@@ -875,8 +875,8 @@ async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
     }
 }
 
-/// [`call`] for a step of `container`'s start, which an engine restart must not
-/// fail: 0.25 prepared without the bus. A call whose connection drops, or that
+/// [`call`] for a step of `container`'s start (or its destroy), which an engine
+/// restart must not fail: 0.25 prepared without the bus. A call whose connection drops, or that
 /// begins after a drop before the engine is back, is sent again once it is,
 /// unless the managed engine exited, all within `timeout`; an engine not back
 /// within [`RECONNECT_GRACE`] fails the step with the `NotConnected`, so the
@@ -946,33 +946,49 @@ fn reconnect_line(container: &str, function: &str, wait: Duration) -> String {
     )
 }
 
-/// `worker::destroy` for VM container `key`'s state. The adapter refuses it
-/// while the VM runs, so it goes after the stop.
-pub(crate) async fn destroy_vm(
-    engine: &EngineClient,
-    token: &str,
-    state_dir: &Path,
-    key: &str,
-    vm: &VmRecord,
-) -> Result<()> {
+/// `worker::destroy` for VM container `key`'s state, by its `state_key`. The
+/// adapter refuses it while the VM runs, so it goes after the stop. A failure
+/// only leaves the state behind, and says where.
+pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str, namespace: &str) {
+    let state_key = state_key(ctx.state_dir, key);
     let request = WorkerDestroyRequest {
-        auth: token.to_string(),
-        state_key: state_key(state_dir, key),
+        auth: ctx.sandbox_token.to_string(),
+        state_key: state_key.clone(),
     };
-    call::<WorkerDestroyResponse>(
-        engine.client(),
-        &vm.adapter,
-        &vm.namespace,
+    // Registering: an adapter started for this call may not list it yet.
+    let destroyed = start_call::<WorkerDestroyResponse>(
+        ctx.engine,
+        key,
+        adapter,
+        namespace,
         WORKER_DESTROY,
         &request,
         DESTROY_TIMEOUT,
+        true,
     )
-    .await
-    .map(drop)
-    .map_err(|error| ComposeError::EngineCallFailed {
-        function: adapter_function_id(&vm.adapter, WORKER_DESTROY),
-        message: spawn_failed_message(&error),
-    })
+    .await;
+    if let Err(error) = destroyed {
+        let error = ComposeError::EngineCallFailed {
+            function: adapter_function_id(adapter, WORKER_DESTROY),
+            message: spawn_failed_message(&error),
+        };
+        let vm_id = vm_id(&state_key);
+        crate::report::daemon_line(
+            &format!(
+                "{key}: could not destroy VM {vm_id} through {adapter}: {error}; its state \
+                 stays in ~/.iii/sandbox/workers/{vm_id}"
+            ),
+            true,
+        );
+    }
+}
+
+/// Whether `key` is a VM container. `file` must be lock-attached, as for
+/// [`needs`].
+pub(crate) fn is_vm(file: &ComposeFile, key: &str) -> bool {
+    vm_needs(file)
+        .iter()
+        .any(|need| matches!(need, Need::VmBundle(vm) | Need::VmLocal(vm) if vm == key))
 }
 
 /// What a reopened project does with a recorded VM. With its owner gone, the
@@ -2412,6 +2428,76 @@ pub(crate) mod tests {
         );
         assert!(started.is_none());
         assert_eq!(stops(), expected);
+    }
+
+    /// A removed VM container's state goes by its `state_key`, whatever its
+    /// record holds: none for a first boot that failed, no record at all in a
+    /// new daemon.
+    #[tokio::test]
+    async fn a_removed_vm_destroys_its_state_without_a_vm_record() {
+        use crate::state::{ChildRecord, ChildStatus};
+
+        let (url, mut called) = fake_engine_url(|function, _| match function {
+            "sandbox-libkrun::worker::destroy" => {
+                answered(serde_json::json!({ "destroyed": true }))
+            }
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = parse(dir.path(), "containers:\n  vm: {worker: path://./vm}\n");
+        let engine = EngineClient::connect(&url, "t", "t");
+        let (shutdown, post_runs, diagnostics) = Default::default();
+        let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+        let ctx = LifecycleCtx {
+            shutdown: &shutdown,
+            file: &file,
+            engine: &engine,
+            post_runs: &post_runs,
+            compose_namespace: "t",
+            project_namespace: "shop",
+            engine_url: &url,
+            package_cache: dir.path(),
+            logs: &logs,
+            state_dir: dir.path(),
+            sandbox_token: "t",
+            empty_env_diagnostics: &diagnostics,
+        };
+        let failed = ChildRecord {
+            pid: None,
+            birth: None,
+            vm: None,
+            status: ChildStatus::Failed,
+            started_at: 1,
+            last_error: Some("container 'vm' was not ready after 60s".into()),
+        };
+        for mut records in [
+            BTreeMap::from([("vm".to_string(), failed)]),
+            BTreeMap::new(),
+        ] {
+            let removed = crate::lifecycle::remove_one(
+                &ctx,
+                &mut crate::lifecycle::Children::new(),
+                &mut records,
+                "vm",
+                "rm".into(),
+            )
+            .await;
+            assert_eq!(removed.status, crate::lifecycle::OpStatus::Ok);
+            assert!(records.is_empty());
+            let mut destroyed = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                if function == "sandbox-libkrun::worker::destroy" {
+                    destroyed.push(payload["state_key"].clone());
+                }
+            }
+            assert_eq!(destroyed, [serde_json::json!(state_key(dir.path(), "vm"))]);
+        }
     }
 
     /// An engine that dies or restarts with a call in flight never answers it:
