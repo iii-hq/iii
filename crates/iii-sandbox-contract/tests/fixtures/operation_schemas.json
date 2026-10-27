@@ -1,0 +1,1224 @@
+{
+  "catalog::list": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "CatalogListRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CatalogEntry": {
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/CatalogEntryKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "oci_ref": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "CatalogEntryKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "preset"
+              ],
+              "type": "string"
+            },
+            {
+              "enum": [
+                "custom"
+              ],
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "properties": {
+        "images": {
+          "items": {
+            "$ref": "#/definitions/CatalogEntry"
+          },
+          "type": "array"
+        }
+      },
+      "title": "CatalogListResponse",
+      "type": "object"
+    }
+  },
+  "create": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "EnvShape": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "env": {
+            "NODE_ENV": "production"
+          },
+          "idle_timeout_secs": 600,
+          "image": "node",
+          "memory_mb": 512
+        }
+      ],
+      "properties": {
+        "cpus": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "env": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvShape"
+            }
+          ]
+        },
+        "idle_timeout_secs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "image": {
+          "type": "string"
+        },
+        "memory_mb": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "network": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "image"
+      ],
+      "title": "CreateRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "title": "CreateResponse",
+      "type": "object"
+    }
+  },
+  "exec": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "EnvShape": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "args": [
+            "/home/app/index.js"
+          ],
+          "cmd": "node",
+          "env": {
+            "NODE_ENV": "production"
+          },
+          "sandbox_id": "00000000-0000-0000-0000-000000000000",
+          "timeout_ms": 300000
+        }
+      ],
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "argv": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cmd": {
+          "default": "",
+          "type": "string"
+        },
+        "env": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvShape"
+            }
+          ]
+        },
+        "sandbox_id": {
+          "type": "string"
+        },
+        "stdin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workdir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "sandbox_id"
+      ],
+      "title": "ExecRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "exit_code": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "stderr_truncated": {
+          "type": "boolean"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stdout_truncated": {
+          "type": "boolean"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "timed_out": {
+          "type": "boolean"
+        }
+      },
+      "title": "ExecResponse",
+      "type": "object"
+    }
+  },
+  "fs::chmod": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "mode": "0755",
+          "path": "/home/app/script.sh",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "gid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "recursive": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sandbox_id": {
+          "type": "string"
+        },
+        "uid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "path",
+        "sandbox_id"
+      ],
+      "title": "ChmodRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "updated": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "title": "ChmodResponse",
+      "type": "object"
+    }
+  },
+  "fs::grep": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "include_glob": [
+            "**/*.js",
+            "**/*.ts"
+          ],
+          "path": "/home/app/src",
+          "pattern": "TODO|FIXME",
+          "recursive": true,
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "exclude_glob": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ignore_case": {
+          "default": false,
+          "type": "boolean"
+        },
+        "include_glob": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_line_bytes": {
+          "default": 4096,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_matches": {
+          "default": 10000,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "recursive": {
+          "default": true,
+          "type": "boolean"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "pattern",
+        "sandbox_id"
+      ],
+      "title": "GrepRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "FsMatch": {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "line": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "matches": {
+          "items": {
+            "$ref": "#/definitions/FsMatch"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "title": "GrepResponse",
+      "type": "object"
+    }
+  },
+  "fs::ls": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "path": "/home/app",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sandbox_id"
+      ],
+      "title": "LsRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "FsEntry": {
+          "properties": {
+            "is_dir": {
+              "type": "boolean"
+            },
+            "is_symlink": {
+              "type": "boolean"
+            },
+            "mode": {
+              "type": "string"
+            },
+            "mtime": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "size": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/FsEntry"
+          },
+          "type": "array"
+        }
+      },
+      "title": "LsResponse",
+      "type": "object"
+    }
+  },
+  "fs::mkdir": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "mode": "0755",
+          "parents": true,
+          "path": "/home/app/cache",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "mode": {
+          "default": "0755",
+          "type": "string"
+        },
+        "parents": {
+          "default": false,
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sandbox_id"
+      ],
+      "title": "MkdirRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "created": {
+          "type": "boolean"
+        }
+      },
+      "title": "MkdirResponse",
+      "type": "object"
+    }
+  },
+  "fs::mv": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "dst": "/home/app/new.js",
+          "overwrite": false,
+          "sandbox_id": "00000000-0000-0000-0000-000000000000",
+          "src": "/home/app/old.js"
+        }
+      ],
+      "properties": {
+        "dst": {
+          "type": "string"
+        },
+        "overwrite": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sandbox_id": {
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "dst",
+        "sandbox_id",
+        "src"
+      ],
+      "title": "MvRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "moved": {
+          "type": "boolean"
+        }
+      },
+      "title": "MvResponse",
+      "type": "object"
+    }
+  },
+  "fs::read": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "path": "/home/app/index.js",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sandbox_id"
+      ],
+      "title": "ReadRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ChannelDirection": {
+          "enum": [
+            "read",
+            "write"
+          ],
+          "type": "string"
+        },
+        "StreamChannelRef": {
+          "properties": {
+            "access_key": {
+              "type": "string"
+            },
+            "channel_id": {
+              "type": "string"
+            },
+            "direction": {
+              "$ref": "#/definitions/ChannelDirection"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StreamChannelRef"
+            }
+          ]
+        },
+        "mode": {
+          "type": "string"
+        },
+        "mtime": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "title": "ReadResponse",
+      "type": "object"
+    }
+  },
+  "fs::rm": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "path": "/home/app/temp",
+          "recursive": true,
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "recursive": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sandbox_id"
+      ],
+      "title": "RmRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "removed": {
+          "type": "boolean"
+        }
+      },
+      "title": "RmResponse",
+      "type": "object"
+    }
+  },
+  "fs::sed": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "path": "/home/app/src",
+          "pattern": "foo",
+          "recursive": true,
+          "replacement": "bar",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "exclude_glob": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "first_only": {
+          "default": false,
+          "type": "boolean"
+        },
+        "ignore_case": {
+          "default": false,
+          "type": "boolean"
+        },
+        "include_glob": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "recursive": {
+          "default": true,
+          "type": "boolean"
+        },
+        "regex": {
+          "default": true,
+          "type": "boolean"
+        },
+        "replacement": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern",
+        "replacement",
+        "sandbox_id"
+      ],
+      "title": "SedRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "FsSedFileResult": {
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "replacements": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "success": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "results": {
+          "items": {
+            "$ref": "#/definitions/FsSedFileResult"
+          },
+          "type": "array"
+        },
+        "total_replacements": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "title": "SedResponse",
+      "type": "object"
+    }
+  },
+  "fs::stat": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "examples": [
+        {
+          "path": "/home/app/index.js",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sandbox_id"
+      ],
+      "title": "StatRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "is_dir": {
+          "type": "boolean"
+        },
+        "is_symlink": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "mtime": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "title": "StatResponse",
+      "type": "object"
+    }
+  },
+  "fs::write": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ChannelDirection": {
+          "enum": [
+            "read",
+            "write"
+          ],
+          "type": "string"
+        },
+        "StreamChannelRef": {
+          "properties": {
+            "access_key": {
+              "type": "string"
+            },
+            "channel_id": {
+              "type": "string"
+            },
+            "direction": {
+              "$ref": "#/definitions/ChannelDirection"
+            }
+          },
+          "required": [
+            "access_key",
+            "channel_id",
+            "direction"
+          ],
+          "type": "object"
+        },
+        "WriteContent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/StreamChannelRef"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "examples": [
+        {
+          "content": "console.log('hello world')\n",
+          "mode": "0644",
+          "parents": true,
+          "path": "/home/app/index.js",
+          "sandbox_id": "00000000-0000-0000-0000-000000000000"
+        }
+      ],
+      "properties": {
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WriteContent"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_b64": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": "0644",
+          "type": "string"
+        },
+        "parents": {
+          "default": false,
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sandbox_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sandbox_id"
+      ],
+      "title": "WriteRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "bytes_written": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "title": "WriteResponse",
+      "type": "object"
+    }
+  },
+  "list": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "ListRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "SandboxSummary": {
+          "properties": {
+            "age_secs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "exec_in_flight": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "exec_in_progress": {
+              "type": "boolean"
+            },
+            "exec_slots_free": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "image": {
+              "type": "string"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sandbox_id": {
+              "type": "string"
+            },
+            "stopped": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "properties": {
+        "sandboxes": {
+          "items": {
+            "$ref": "#/definitions/SandboxSummary"
+          },
+          "type": "array"
+        }
+      },
+      "title": "ListResponse",
+      "type": "object"
+    }
+  },
+  "run": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "EnvShape": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          ]
+        },
+        "RunFile": {
+          "properties": {
+            "content": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "content",
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "examples": [
+        {
+          "code": "console.log('hello world')",
+          "image": "node",
+          "lang": "node",
+          "timeout_ms": 300000
+        }
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "env": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvShape"
+            }
+          ]
+        },
+        "files": {
+          "items": {
+            "$ref": "#/definitions/RunFile"
+          },
+          "type": "array"
+        },
+        "image": {
+          "type": "string"
+        },
+        "keep_sandbox": {
+          "default": false,
+          "type": "boolean"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "stdin": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "image",
+        "lang"
+      ],
+      "title": "RunRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "duration_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "exit_code": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sandbox_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "stderr_truncated": {
+          "type": "boolean"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stdout_truncated": {
+          "type": "boolean"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "timed_out": {
+          "type": "boolean"
+        }
+      },
+      "title": "RunResponse",
+      "type": "object"
+    }
+  },
+  "stop": {
+    "request": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "sandbox_id": {
+          "type": "string"
+        },
+        "wait": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sandbox_id"
+      ],
+      "title": "StopRequest",
+      "type": "object"
+    },
+    "response": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "sandbox_id": {
+          "type": "string"
+        },
+        "stopped": {
+          "type": "boolean"
+        }
+      },
+      "title": "StopResponse",
+      "type": "object"
+    }
+  }
+}
