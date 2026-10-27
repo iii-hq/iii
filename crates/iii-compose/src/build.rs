@@ -112,12 +112,14 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         registry::warn_alias(container, reference, Some(canonical), None).await;
     }
     // The daemon's mutation lock is in its own process: an edit made while
-    // this prepared must not be overwritten from the snapshot.
-    let current = std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
-        path: file.path.clone(),
-        source,
-    })?;
-    if current != text {
+    // this prepared must not be overwritten from the snapshot. A build that
+    // writes nothing (frozen, or already locked) overwrites nothing.
+    if (edited != text || prepared.changed())
+        && std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+            path: file.path.clone(),
+            source,
+        })? != text
+    {
         let error = ComposeError::BuildPlanStale {
             path: file.path.clone(),
         };
