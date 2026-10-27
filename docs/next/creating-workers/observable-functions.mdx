@@ -214,11 +214,15 @@ To run code when an observer is added or removed, give the function `onObserverA
   </Tab>
   <Tab title="Go">
     ```go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/observability"
+
+    var logger observability.Logger
+
     worker.RegisterFunction("prices::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
         return data, nil
     }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
         OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
-            log.Printf("%s now observes prices::on-change", obs.Target)
+            logger.Info(ctx, obs.Target+" now observes prices::on-change", nil)
             return nil
         },
     }})
