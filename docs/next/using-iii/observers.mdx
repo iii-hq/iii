@@ -457,8 +457,9 @@ are not empty.
 
 ## Filters
 
-Filters are declarative JSON objects over the event: `input`, `output`, `error`, `caller`, and
-`metadata`. Each path takes an operator object; there is no literal shorthand.
+A filter is a JSON object. Each key is a path in the event that starts with `input`, `output`,
+`error`, `caller`, or `metadata`. Each value is an operator object, for example `{ "$eq": "EUR" }`.
+A literal value such as `"EUR"` is not allowed.
 
 ```json
 {
@@ -468,10 +469,14 @@ Filters are declarative JSON objects over the event: `input`, `output`, `error`,
 }
 ```
 
-The engine validates a filter when the observer is created (`INVALID_FILTER`) and checks its
-`input.*` and `output.*` paths against the function's `request_format` and `response_format`
-(`INVALID_FILTER_PATH` for a path a closed schema does not have). The same evaluator runs in the
-engine and in every SDK, so a filter matches the same events wherever it runs. See the
+When the observer is created, the SDK and the engine check the filter. If it is not valid, the
+observer fails with `INVALID_FILTER`. The engine also checks the `input.*` and `output.*` paths
+against the `request_format` and `response_format` of the function. If a closed schema does not have
+a path, the observer fails with `INVALID_FILTER_PATH`. If the function is not registered yet, the
+engine does this check when the function registers.
+
+The engine and each SDK have their own filter implementation. All of them pass the same set of test
+cases, so a filter matches the same events in all of them. See the
 [filter language reference](../reference/filters) for the operators, the rules for absent and `null`
 values, and the limits.
 
