@@ -532,6 +532,11 @@ pub enum ComposeError {
     )]
     AddPlanStale { path: PathBuf, replans: u32 },
 
+    /// `build` runs outside the daemon's mutation lock, so a file edited while
+    /// it prepared is not overwritten from its stale snapshot.
+    #[error("{} changed while build was preparing it; nothing was written. Run the build again.", .path.display())]
+    BuildPlanStale { path: PathBuf },
+
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
     /// the caller is standing in, and never obvious from the caller's side.
@@ -669,6 +674,7 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
             Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
+            Self::BuildPlanStale { .. } => "BUILD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",

@@ -3788,6 +3788,48 @@ containers:
         daemon.shutdown().await;
     }
 
+    /// `build` runs outside the daemon's mutation lock: a file saved while it
+    /// prepared is refused, never overwritten from build's snapshot.
+    #[tokio::test]
+    async fn build_does_not_overwrite_an_edit_made_while_it_prepared() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        let saved = "containers:\n  vm:\n    worker: path://./vm\n    env: {SAVED: '1'}\n";
+        let (target, uri) = (path.clone(), server.uri());
+        let digest = hex::encode(sha2::Sha256::digest(&archive));
+        // The operator saves the file while build resolves the adapter.
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, saved).unwrap();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "sandbox-libkrun",
+                        "version": "1.2.3",
+                        "type": "binary",
+                        "binaries": { (crate::registry::host_targets()[0]): {
+                            "sha256": digest,
+                            "url": format!("{uri}/artifact"),
+                        }},
+                    }]
+                }))
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let error = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), crate::build::build(&path))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
         let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
