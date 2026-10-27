@@ -429,7 +429,7 @@ pub async fn self_update(
 
 /// Update all installed binaries (including iii itself).
 /// Silently skips binaries not supported on the current platform
-/// (e.g., iii-init on macOS/Windows).
+/// (e.g., iii-init on Windows).
 pub async fn update_all(
     client: &reqwest::Client,
     state: &mut AppState,

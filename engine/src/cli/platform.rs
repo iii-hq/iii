@@ -53,11 +53,19 @@ pub fn current_target() -> &'static str {
 
 /// The worker must match the host libc: unlike the static engine it uses
 /// dlopen for libkrunfw. In particular a musl-built engine can run on glibc.
+///
+/// `iii-init` is a Linux guest binary macOS hosts download and update; this
+/// mirrors install.sh's `init_target_for_host`.
 pub fn binary_target(binary_name: &str) -> &'static str {
     if binary_name == "iii-worker" && cfg!(target_os = "linux") {
         let arch = std::env::consts::ARCH;
         let has_musl_loader = std::path::Path::new(&format!("/lib/ld-musl-{arch}.so.1")).exists();
         return linux_worker_target(arch, has_musl_loader).unwrap_or_else(current_target);
+    }
+    if binary_name == "iii-init"
+        && let Some(target) = init_guest_target(std::env::consts::OS, std::env::consts::ARCH)
+    {
+        return target;
     }
     current_target()
 }
@@ -68,6 +76,14 @@ fn linux_worker_target(arch: &str, has_musl_loader: bool) -> Option<&'static str
         ("x86_64", false) => Some("x86_64-unknown-linux-gnu"),
         ("aarch64", true) => Some("aarch64-unknown-linux-musl"),
         ("aarch64", false) => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+fn init_guest_target(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux" | "macos", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux" | "macos", "aarch64") => Some("aarch64-unknown-linux-gnu"),
         _ => None,
     }
 }
@@ -275,10 +291,48 @@ mod tests {
         );
     }
 
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(
+            target_os = "macos",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    #[test]
+    fn init_asset_and_checksum_use_a_supported_linux_guest_target() {
+        let spec = super::super::registry::resolve_binary_for_update("iii-init").unwrap();
+        check_platform_support(spec).unwrap();
+        let target = binary_target(spec.name);
+        assert!(spec.supported_targets.contains(&target));
+        assert_eq!(
+            asset_name(spec.name),
+            format!("iii-init-{target}.{}", archive_extension())
+        );
+        assert_eq!(
+            checksum_asset_name(spec.name),
+            format!("iii-init-{target}.sha256")
+        );
+    }
+
+    #[test]
+    fn init_targets_on_both_macos_architectures_match_the_installer_mapping() {
+        for (os, arch, expected) in [
+            ("macos", "x86_64", "x86_64-unknown-linux-musl"),
+            ("macos", "aarch64", "aarch64-unknown-linux-gnu"),
+            ("linux", "x86_64", "x86_64-unknown-linux-musl"),
+            ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
+        ] {
+            assert_eq!(init_guest_target(os, arch), Some(expected));
+        }
+        assert_eq!(init_guest_target("windows", "x86_64"), None);
+    }
+
     #[test]
     fn other_binaries_keep_the_portable_engine_target() {
         assert_eq!(binary_target("iii"), current_target());
-        assert_eq!(binary_target("iii-init"), current_target());
         assert_eq!(binary_target("iii-cloud"), current_target());
     }
 
