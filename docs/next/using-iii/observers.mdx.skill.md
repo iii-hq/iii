@@ -36,8 +36,9 @@ function registered by another worker.
 
 ### React to every call
 
-When `orders::create` runs, run `emails::send-receipt` with the order. `deliver: "input"` hands the
-target the order itself, so the target takes an `Order` like any function that processes orders.
+After each successful call of `orders::create`, run `emails::send-receipt` with the order.
+`deliver: "input"` makes the target receive the input of `orders::create` (the order) as its
+argument.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -50,13 +51,13 @@ target the order itself, so the target takes an `Order` like any function that p
 
     type Order = { id: string; email: string; total: number };
 
-    // The right side: a registered function, like any other.
+    // The target: a regular function.
     worker.registerFunction("emails::send-receipt", async (order: Order) => {
       await sendReceipt(order.email, order);
       return null;
     });
 
-    // When orders::create runs, run emails::send-receipt with the order.
+    // After each successful call of orders::create, run emails::send-receipt with the order.
     const receipts = worker.observe(
       { function_id: "orders::create", deliver: "input" },
       "emails::send-receipt",
@@ -72,13 +73,13 @@ target the order itself, so the target takes an `Order` like any function that p
 
     worker = register_worker(os.environ.get("III_URL"), InitOptions(worker_name="emails"))
 
-    # The right side: a registered function, like any other.
+    # The target: a regular function.
     def send_receipt(order: dict) -> None:
         mailer.send_receipt(order["email"], order)
 
     worker.register_function("emails::send-receipt", send_receipt)
 
-    # When orders::create runs, run emails::send-receipt with the order.
+    # After each successful call of orders::create, run emails::send-receipt with the order.
     receipts = worker.observe(
         {"function_id": "orders::create", "deliver": "input"},
         "emails::send-receipt",
@@ -103,7 +104,7 @@ target the order itself, so the target takes an `Order` like any function that p
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    // The right side: a registered function, like any other.
+    // The target: a regular function.
     worker.register_function(
         "emails::send-receipt",
         RegisterFunction::new(|order: Order| {
@@ -112,7 +113,7 @@ target the order itself, so the target takes an `Order` like any function that p
         }),
     );
 
-    // When orders::create runs, run emails::send-receipt with the order.
+    // After each successful call of orders::create, run emails::send-receipt with the order.
     let receipts = worker.observe(
         Source::function("orders::create").deliver(Deliver::Input),
         "emails::send-receipt",
@@ -131,7 +132,7 @@ target the order itself, so the target takes an `Order` like any function that p
 
     client := iii.RegisterWorker(os.Getenv("III_URL"))
 
-    // The right side: a registered function, like any other.
+    // The target: a regular function.
     client.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
         var order Order
         if err := json.Unmarshal(data, &order); err != nil {
@@ -140,7 +141,7 @@ target the order itself, so the target takes an `Order` like any function that p
         return nil, sendReceipt(ctx, order.Email, order)
     })
 
-    // When orders::create runs, run emails::send-receipt with the order.
+    // After each successful call of orders::create, run emails::send-receipt with the order.
     receipts, err := client.Observe(iii.Source{
         FunctionID: "orders::create",
         Deliver:    iii.DeliverInput,
@@ -156,8 +157,8 @@ target the order itself, so the target takes an `Order` like any function that p
   </Tab>
 </Tabs>
 
-From now on, whoever calls `orders::create`, from whichever worker, `emails::send-receipt` runs
-after each call.
+From this point, `emails::send-receipt` runs after each successful call of `orders::create`, from
+any worker.
 
 `observe` returns a handle at once, also before the connection is up. The SDK sends the observer
 when it connects and replays it with the same id after every reconnect, so you call it once at
