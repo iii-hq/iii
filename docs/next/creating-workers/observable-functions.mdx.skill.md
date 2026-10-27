@@ -184,9 +184,10 @@ observer's filters match.
 ## Owner delivery
 
 <Note>
-  Use owner delivery when each observer sets something up with its `args` (a path, an interval, a
-  table) and gets only its own events, or when the function needs the target's result back (an HTTP
-  response, a queue ack). See [When to use owner delivery](#when-to-use-owner-delivery).
+  Use owner delivery when different observers of the function must get different events, and
+  [filters](../using-iii/observers#filters) cannot select those events. For example, each observer
+  of a file watcher gives a path in `args` and gets the changes to that path only. Also use owner
+  delivery when the function needs the return value of the observer's target (`obs.call`).
 </Note>
 
 With `delivery: 'owner'`, the function's code decides which observers each event is for, from their
