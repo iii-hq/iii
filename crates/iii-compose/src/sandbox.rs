@@ -822,7 +822,7 @@ pub(crate) async fn start_vm(
         false,
     )
     .await
-    .map_err(failed)?;
+    .map_err(|error| prepare_failed(ctx.file, key, &declared, start, &error))?;
 
     let started = match worker_start(
         engine,
@@ -856,6 +856,37 @@ pub(crate) async fn start_vm(
         ctx.sandbox_token.to_string(),
         Some(ctx.logs.sink(key)),
     ))
+}
+
+/// The failure of container `key`'s `worker::prepare`. The adapter reads its
+/// host roots when it starts (`layer_adapter_env`), so a local VM outside the
+/// compose file's directory, added since, is refused (S501) until it restarts.
+fn prepare_failed(
+    file: &ComposeFile,
+    key: &str,
+    adapter_key: &str,
+    start: &StartSpec,
+    error: &iii_sdk::Error,
+) -> ComposeError {
+    let mut message = spawn_failed_message(error);
+    if let StartSpec::Vm(VmSpec::Local { worker_dir, .. }) = start
+        && sandbox_code(error) == Some(SandboxErrorCode::S501)
+        && let (Ok(dir), Ok(compose_dir)) = (
+            worker_dir.canonicalize(),
+            file.path.parent().unwrap_or(Path::new(".")).canonicalize(),
+        )
+        && !dir.starts_with(compose_dir)
+    {
+        message.push_str(&format!(
+            ". If {} was added after the adapter started, restart the adapter, which \
+             stops every VM: iii trigger compose::restart worker={adapter_key}",
+            dir.display()
+        ));
+    }
+    ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message,
+    }
 }
 
 /// [`start_vm`] until `shutdown` fires, then `None`. Dropping the start does
@@ -1667,6 +1698,40 @@ pub(crate) mod tests {
             roots[2].canonicalize().unwrap(),
             dir.path().join("shared/vm").canonicalize().unwrap()
         );
+    }
+
+    /// A `path://../` VM added while the adapter runs is outside the roots it
+    /// read at its start: its S501 says how to get the directory admitted.
+    #[test]
+    fn a_refused_vm_outside_the_compose_directory_names_the_adapter_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        manifest(&project, "inner", "runtime: {base_image: python}\n");
+        manifest(
+            &dir.path().join("shared"),
+            "vm",
+            "runtime: {base_image: python}\n",
+        );
+        let file = parse(&project, "containers:\n  inner: {worker: path://./inner}\n");
+        let refused = remote(
+            "invocation_failed",
+            &wire_message(SandboxErrorCode::S501, "outside the host roots", None),
+        );
+        let message = |worker_dir: PathBuf| {
+            let start = StartSpec::Vm(VmSpec::Local {
+                worker_dir,
+                run_override: None,
+            });
+            prepare_failed(&file, "vm", "sb", &start, &refused).to_string()
+        };
+        let outside = message(project.join("../shared/vm"));
+        assert!(
+            outside.contains("restart the adapter")
+                && outside.ends_with("compose::restart worker=sb"),
+            "{outside}"
+        );
+        assert!(!message(project.join("inner")).contains("restart the adapter"));
     }
 
     fn remote(code: &str, message: &str) -> iii_sdk::Error {
