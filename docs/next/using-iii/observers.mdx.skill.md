@@ -456,6 +456,9 @@ A filter is a JSON object. Each key is a path in the event that starts with `inp
 `error`, `caller`, or `metadata`. Each value is an operator object, for example `{ "$eq": "EUR" }`.
 A literal value such as `"EUR"` is not allowed.
 
+The operators are `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`, `$prefix`,
+`$and`, `$or`, `$not`, and `$any`.
+
 ```json
 {
   "input.total": { "$gte": 500 },
