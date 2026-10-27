@@ -2180,6 +2180,11 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
     use std::io::Write;
 
+    // A symlinked compose file keeps its link: the rename replaces the target.
+    let path = &std::fs::canonicalize(path).map_err(|source| ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let permissions = std::fs::metadata(path)
         .map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
@@ -4030,6 +4035,21 @@ containers:
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("shared.yaml");
+        let link = dir.path().join("worker-compose.yaml");
+        std::fs::write(&target, "before\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_atomically(&link, "after\n").unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "after\n");
     }
 
     #[tokio::test]
