@@ -52,7 +52,7 @@ const shareImage = {
   url: '/opengraph-image.png',
   width: 1200,
   height: 630,
-  alt: 'iii: unreasonably simple software engineering',
+  alt: 'iii: More application. Less infrastructure.',
 }
 
 /**

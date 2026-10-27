@@ -105,8 +105,8 @@ export function Collapse({ className }: { className?: string }) {
           {/* The iii mark: three dots over three bars. */}
           {[0, 1, 2].map((k) => (
             <g key={k} className={styles.mark}>
-              <rect x={C.x - 33 + k * 9} y={C.y - 11} width={5} height={5} />
-              <rect x={C.x - 33 + k * 9} y={C.y - 3} width={5} height={14} />
+              <rect x={C.x - 33 + k * 7.5} y={C.y - 10} width={5} height={5} />
+              <rect x={C.x - 33 + k * 7.5} y={C.y - 2.5} width={5} height={12.5} />
             </g>
           ))}
           <text x={C.x + 2} y={C.y + 4} className={styles.engineLabel}>

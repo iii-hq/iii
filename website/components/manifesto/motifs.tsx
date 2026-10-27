@@ -97,12 +97,12 @@ const MOTIFS: { strokes: Stroke[]; dots?: [number, number][] }[] = [
   // 12 add a worker: the mark, three times
   {
     strokes: [
-      { rect: [26, 30, 8, 8] },
-      { rect: [26, 46, 8, 20] },
-      { rect: [44, 30, 8, 8] },
-      { rect: [44, 46, 8, 20] },
-      { rect: [62, 30, 8, 8] },
-      { rect: [62, 46, 8, 20] },
+      { rect: [30, 30, 9, 9] },
+      { rect: [30, 43.5, 9, 22.5] },
+      { rect: [43.5, 30, 9, 9] },
+      { rect: [43.5, 43.5, 9, 22.5] },
+      { rect: [57, 30, 9, 9] },
+      { rect: [57, 43.5, 9, 22.5] },
     ],
   },
 ]
