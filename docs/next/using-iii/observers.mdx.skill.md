@@ -4,7 +4,7 @@
 `observe` runs a function (the target) each time another function (the source) has an event:
 
 ```text
-iii.observe(source, target)
+worker.observe(source, target)
 ```
 
 By default, an event is a successful call of the source. Some sources make their own events, and
@@ -18,7 +18,7 @@ source itself (`allow: false`).
 - **`target`** is the id of the function to run. It can be any function except the source itself.
   The observer stays `pending` until the source and the target are registered.
 
-`iii.observe` replaces `registerTrigger` for sources that are functions. See
+`worker.observe` replaces `registerTrigger` for sources that are functions. See
 [Upgrading from 0.24.x](../upgrading/from-0-24-x) to move existing triggers.
 
 <Note>

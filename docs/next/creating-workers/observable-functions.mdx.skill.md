@@ -255,8 +255,7 @@ from its handler.
 The event's `invocation_id` follows the same rule. Inside your function's own handler, the event has
 the id of that invocation, and all events emitted during the same invocation have the same id.
 Anywhere else, each event gets a new id. `emit` cannot set the id. To pass an id on, put it in the
-event, for example from `iii.currentInvocation()` (`current_invocation()` in Python and Rust,
-`InvocationFromContext(ctx)` in Go).
+event.
 
 ### Example: a file watcher that emits
 
@@ -427,11 +426,11 @@ many observers share it.
     /// path → the observers of that path and the task that polls it
     #[derive(Clone)]
     struct Watched {
-        iii: IIIClient,
+        worker: IIIClient,
         by_path: Arc<Mutex<HashMap<String, (Vec<Observer>, tokio::task::JoinHandle<()>)>>>,
     }
 
-    async fn poll(iii: IIIClient, path: String) {
+    async fn poll(worker: IIIClient, path: String) {
         let mut last = None;
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         loop {
@@ -441,7 +440,7 @@ many observers share it.
             if last.is_some() && modified != last {
                 // 2. The poller calls the function.
                 let change = json!({ "path": path, "size_bytes": meta.len() });
-                let _ = iii.trigger(TriggerRequest::new("files::watch", change)).await;
+                let _ = worker.trigger(TriggerRequest::new("files::watch", change)).await;
             }
             last = modified;
         }
@@ -454,7 +453,7 @@ many observers share it.
             let WatchArgs { path } = obs.args()?; // validated by the engine
             let mut by_path = self.by_path.lock().unwrap();
             let (observers, _) = by_path.entry(path.clone()).or_insert_with(|| {
-                let task = tokio::spawn(poll(self.iii.clone(), path));
+                let task = tokio::spawn(poll(self.worker.clone(), path));
                 (Vec::new(), task)
             });
             observers.push(obs.clone());
@@ -472,7 +471,7 @@ many observers share it.
         }
     }
 
-    let watched = Watched { iii: worker.clone(), by_path: Default::default() };
+    let watched = Watched { worker: worker.clone(), by_path: Default::default() };
 
     worker.register_function(
         "files::watch",

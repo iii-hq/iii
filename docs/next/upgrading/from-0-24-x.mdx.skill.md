@@ -2,7 +2,7 @@
 
 
 0.25 makes every function observable. A trigger type becomes a function that knows who observes it,
-and a trigger becomes an observer created with `iii.observe(source, target, options?)`. The old
+and a trigger becomes an observer created with `worker.observe(source, target, options?)`. The old
 trigger APIs keep working in 0.25, so most projects upgrade without code changes. The exceptions are
 Rust builds that treat warnings as errors (`-D warnings`), which need `#[allow(deprecated)]` on the
 calls they keep, and code that calls `unregisterTriggerType`, which now takes effect. Read the
@@ -144,7 +144,7 @@ Its triggers then move to another provider of the type, are taken by a function 
 | Rust `TriggerHandler`, `RegisterTriggerType`, `RegisterTriggerInput`         | `ObserveHandler`, `RegisterFunction::observe(Observe::owner()..)`, `Source::function(..)`                                              |
 | `engine::registered-triggers::list` (trigger instances)                      | `engine::observers::list`                                                                                                              |
 
-## Move `registerTrigger` to `iii.observe`
+## Move `registerTrigger` to `worker.observe`
 
 Do this for triggers whose source is a function: any regular function, the
 [engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources), or a provider
@@ -580,7 +580,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
 
     #[derive(Clone)]
     struct TimerHandler {
-        iii: IIIClient,
+        worker: IIIClient,
         tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>, // trigger id → its task
     }
 
@@ -588,14 +588,14 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     impl TriggerHandler for TimerHandler {
         async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
             let every_ms = config.config["every_ms"].as_u64().unwrap_or(1_000);
-            let (iii, function_id) = (self.iii.clone(), config.function_id.clone());
+            let (worker, function_id) = (self.worker.clone(), config.function_id.clone());
             let task = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(every_ms));
                 loop {
                     interval.tick().await;
                     let fired_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
                     let tick = json!({ "every_ms": every_ms, "fired_at_ms": fired_at_ms });
-                    let _ = iii.trigger(TriggerRequest::new(function_id.clone(), tick)).await;
+                    let _ = worker.trigger(TriggerRequest::new(function_id.clone(), tick)).await;
                 }
             });
             self.tasks.lock().unwrap().insert(config.id, task);
@@ -613,7 +613,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     worker.register_trigger_type(RegisterTriggerType::new(
         "timer",
         "Fires every every_ms milliseconds",
-        TimerHandler { iii: worker.clone(), tasks: Default::default() },
+        TimerHandler { worker: worker.clone(), tasks: Default::default() },
     ));
     ```
 
@@ -845,7 +845,7 @@ source functions (such as `http::on-request`, `cron::on-tick`, or `database::on-
 - their documentation, including the config shapes at [workers.iii.dev](https://workers.iii.dev),
   stays valid;
 - once a provider ships its function with `legacy_trigger_type`, your existing `registerTrigger`
-  calls keep working through the engine, and you can move them to `iii.observe` at your own pace.
+  calls keep working through the engine, and you can move them to `worker.observe` at your own pace.
 
 What you can observe in 0.25: any regular function, the
 [engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources), and providers
@@ -859,7 +859,7 @@ that already moved to [observable functions](../creating-workers/observable-func
 - [ ] Remove `unregisterTriggerType` calls that expected the type to stay registered
 - [ ] Add `#[allow(deprecated)]` to Rust trigger calls you keep, if warnings are errors
 - [ ] Move triggers on engine events (`engine::functions-available`, `engine::workers-available`,
-      `configuration`, `log`, `trace`) to `iii.observe`
+      `configuration`, `log`, `trace`) to `worker.observe`
 - [ ] Move your own trigger types to observable functions with `legacy_trigger_type`
 - [ ] Keep `registerTrigger` for the http, cron, queue, state, stream, pubsub, and database workers
 
