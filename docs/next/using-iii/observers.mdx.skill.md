@@ -795,28 +795,29 @@ iii trigger engine::observers::list function_id=orders::create
 
 ## Errors
 
-An observer that cannot be created turns `error`, and `ready()` rejects with one of these codes:
+When the engine cannot create an observer, the observer becomes `error`, and `ready()` fails with
+one of these codes:
 
-| Code                   | When                                                                                                      |
-| ---------------------- | --------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`          | The engine is older than 0.25 (raised by the SDK), or `on`, `capture`, or `deliver` has an unknown value. |
-| `INVALID_ARGS`         | `args` do not fit the source's schema, or the source takes no `args`.                                     |
-| `INVALID_FILTER`       | The filter is malformed, uses a literal instead of an operator object, or exceeds a limit.                |
-| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                      |
-| `NOT_OBSERVABLE`       | The function opted out of being observed.                                                                 |
-| `FORBIDDEN`            | RBAC: the session may not invoke the observed function or the target, or the registration hook denied it. |
-| `SELF_TARGET`          | The target is the observed function.                                                                      |
-| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` is reached.                                |
-| `OBSERVER_ID_CONFLICT` | An observer with the same id but a different spec exists.                                                 |
-| `OWNER_TIMEOUT`        | The source's worker did not acknowledge the observer in time (30 s by default).                           |
-| `OBSERVE_REJECTED`     | The source refused the observer. A source can also reject with its own code, documented by that source.   |
+| Code                   | When                                                                                                                                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNSUPPORTED`          | The engine is older than 0.25 (the SDK gives this code), or `on`, `capture`, or `deliver` has a value that the engine does not know.                                                                                |
+| `INVALID_ARGS`         | `args` do not match the `args_format` of the source, or the source takes no `args`. Also: an empty or too-long observer id, an empty `function_id`, or `max_fires`, `expires_in_ms`, or `max_in_flight` set to `0`. |
+| `INVALID_FILTER`       | The filter is not valid, uses a literal value in place of an operator object, or is larger than a limit.                                                                                                            |
+| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                                                                                                                                |
+| `NOT_OBSERVABLE`       | The function refuses observers (`allow: false`).                                                                                                                                                                    |
+| `FORBIDDEN`            | RBAC does not allow the session to invoke the observed function or the target, the registration hook refused the observer, or the target is an owner-delivered function.                                            |
+| `SELF_TARGET`          | The target is the observed function.                                                                                                                                                                                |
+| `LIMIT_EXCEEDED`       | The worker has `observers.max_per_connection` observers (1024 by default), or the function has `observers.max_per_function` observers (4096 by default).                                                            |
+| `OBSERVER_ID_CONFLICT` | An observer with the same id and different options exists.                                                                                                                                                          |
+| `OWNER_TIMEOUT`        | The source's worker did not accept the observer in 30 seconds.                                                                                                                                                      |
+| `OBSERVE_REJECTED`     | The source refused the observer. A source can also reject with its own code, documented by that source.                                                                                                             |
 
 ## Event size
 
-The engine keeps one copy of an observed invocation for all observers of its function, with every
-field any of them captures or filters on. Capturing `input` and `output` counts both: a function
-that echoes a 40 MiB input makes an event of about 80 MiB. An event too large on its own is not
-delivered, however idle the engine is:
+The engine keeps one copy of each observed call for all observers of the function. The copy has each
+field that any of these observers captures or filters on. If observers capture `input` and `output`,
+both count: a function that returns its 40 MiB input makes an event of about 80 MiB. The engine does
+not deliver an event in these cases:
 
 - The fields the engine keeps come to more than 64 MiB (approximate in-memory size).
 - The activation is larger than the target worker accepts in one message: 64 MiB, or 16 MiB for
@@ -829,8 +830,8 @@ Each such event counts as a `TOO_LARGE` drop in the `iii.observer.dropped.total`
 first two cases it also counts in the observer's `dropped` counts
 ([`engine::observers::list`](#inspect-observers)), and the engine logs a warning naming the
 observer, the function, the size, and the limit, at most once a minute per observer. `OVERFLOW` is
-different: the queues were full when the event arrived, and an event of the same size can get
-through once they drain.
+different: the queues were full when the event arrived. An event of the same size can go through
+when the queues have space again.
 
 To keep events small, capture only what the target reads, for example `capture: ["input"]`. With
 `deliver: "input"` or `deliver: "output"`, set a matching `capture` too: captured fields are kept
