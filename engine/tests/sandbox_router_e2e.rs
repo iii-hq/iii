@@ -387,7 +387,7 @@ async fn idle_adapter_disconnect_answers_s301_and_clears_handshake() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    // The handshake is cached, so this reaches the forward, not adapter::info.
+    // `adapter::info` is gone, so the handshake answers S301 before any forward.
     let err = call(&engine, "sandbox::exec", json!({}), None)
         .await
         .unwrap_err();
@@ -433,4 +433,35 @@ async fn op_missing_on_connected_adapter_answers_s304_and_keeps_handshake() {
         1,
         "S304 must not reset the handshake"
     );
+}
+
+#[tokio::test]
+async fn adapter_swapped_while_idle_answers_s302() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let fake = fake_adapter(port, 1, &engine).await;
+
+    call(&engine, "sandbox::exec", json!({}), None)
+        .await
+        .expect("exec succeeds and caches the handshake");
+
+    // No call lands while the adapter is gone.
+    fake.task.abort();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while engine
+        .functions
+        .get("fake-ns", "fake::adapter::info")
+        .is_some()
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "fake::adapter::info was never removed from fake-ns"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let _fake = fake_adapter(port, 2, &engine).await;
+    let err = call(&engine, "sandbox::exec", json!({}), None)
+        .await
+        .unwrap_err();
+    assert_eq!(code_of(&err.message), Some(SandboxErrorCode::S302));
 }

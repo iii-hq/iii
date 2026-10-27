@@ -113,8 +113,8 @@ engine:
 - Adapter settings (`image_allowlist`, `custom_images`, `default_*`, `max_*`, `auto_install`, ...)
   are not engine config. They go under `containers.sandbox-libkrun.config_override` with the same
   keys they had under `engine.workers.iii-sandbox`.
-- Known limit: the router re-reads `adapter::info` only after an `S301` or `invocation_stopped`. An
-  adapter swapped for another major between calls is not caught until then.
+- The router reads `adapter::info` again whenever the adapter registers it anew (a restart or a
+  swap), so an adapter of another major gets `S302` on its first call.
 
 Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-libkrun`.
 

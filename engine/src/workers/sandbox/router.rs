@@ -10,10 +10,7 @@
 
 use std::{
     pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, PoisonError, Weak},
 };
 
 use futures::Future;
@@ -27,7 +24,7 @@ use uuid::Uuid;
 use super::config::SandboxRouterConfig;
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
-    function::{FunctionHandler, FunctionResult},
+    function::{FunctionHandler, FunctionResult, HandlerFn},
     protocol::ErrorBody,
     workers::traits::Worker,
 };
@@ -36,9 +33,9 @@ use crate::{
 pub struct SandboxRouter {
     engine: Arc<Engine>,
     binding: Option<SandboxRouterConfig>,
-    /// Set once the bound adapter's `adapter::info` reported our major; cleared
-    /// on S301 or `invocation_stopped`.
-    handshake_ok: Arc<AtomicBool>,
+    /// The `adapter::info` registration that last reported our major. A
+    /// restarted or swapped adapter registers a new one, which is checked again.
+    checked_info: Arc<Mutex<Option<Weak<HandlerFn>>>>,
 }
 
 fn sandbox_error(code: SandboxErrorCode, message: &str) -> ErrorBody {
@@ -87,23 +84,8 @@ impl SandboxRouter {
             ));
         };
 
-        if !self.handshake_ok.load(Ordering::Relaxed) {
-            let info = match self.adapter_info(b).await {
-                Ok(info) => info,
-                Err(e) => return FunctionResult::Failure(e),
-            };
-            if info.contract.major != CONTRACT_MAJOR {
-                return FunctionResult::Failure(sandbox_error(
-                    SandboxErrorCode::S302,
-                    &format!(
-                        "adapter {adapter} implements sandbox contract {}.{}, but this engine needs major {CONTRACT_MAJOR}; install a {adapter} release whose major version is {CONTRACT_MAJOR}",
-                        info.contract.major,
-                        info.contract.minor,
-                        adapter = b.adapter,
-                    ),
-                ));
-            }
-            self.handshake_ok.store(true, Ordering::Relaxed);
+        if let Err(e) = self.check_contract(b).await {
+            return FunctionResult::Failure(e);
         }
 
         let target = adapter_function_id(&b.adapter, &function_id);
@@ -126,16 +108,49 @@ impl SandboxRouter {
                         &format!("adapter {} does not implement {function_id}", b.adapter),
                     ));
                 }
-                self.handshake_ok.store(false, Ordering::Relaxed);
                 FunctionResult::Failure(not_connected(b))
             }
-            Err(e) => {
-                if e.code == "invocation_stopped" {
-                    self.handshake_ok.store(false, Ordering::Relaxed);
-                }
-                FunctionResult::Failure(e)
-            }
+            Err(e) => FunctionResult::Failure(e),
         }
+    }
+
+    async fn check_contract(&self, b: &SandboxRouterConfig) -> Result<(), ErrorBody> {
+        let registration = self
+            .engine
+            .functions
+            .get_handler(
+                &b.namespace,
+                &adapter_function_id(&b.adapter, ADAPTER_INFO_SUFFIX),
+            )
+            .ok_or_else(|| not_connected(b))?;
+        let checked = self
+            .checked_info
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|w| std::ptr::addr_eq(w.as_ptr(), Arc::as_ptr(&registration)));
+        if checked {
+            return Ok(());
+        }
+
+        let info = self.adapter_info(b).await?;
+        if info.contract.major != CONTRACT_MAJOR {
+            return Err(sandbox_error(
+                SandboxErrorCode::S302,
+                &format!(
+                    "adapter {adapter} implements sandbox contract {}.{}, but this engine needs major {CONTRACT_MAJOR}; install a {adapter} release whose major version is {CONTRACT_MAJOR}",
+                    info.contract.major,
+                    info.contract.minor,
+                    adapter = b.adapter,
+                ),
+            ));
+        }
+        // A `Weak` keeps a later registration from reusing this one's address.
+        *self
+            .checked_info
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&registration));
+        Ok(())
     }
 
     async fn adapter_info(&self, b: &SandboxRouterConfig) -> Result<AdapterInfo, ErrorBody> {
@@ -148,10 +163,7 @@ impl SandboxRouter {
                 None,
             )
             .await
-            .map_err(|_| {
-                self.handshake_ok.store(false, Ordering::Relaxed);
-                not_connected(b)
-            })?;
+            .map_err(|_| not_connected(b))?;
         serde_json::from_value(reply.unwrap_or(Value::Null)).map_err(|error| {
             sandbox_error(
                 SandboxErrorCode::S302,
@@ -189,7 +201,7 @@ impl Worker for SandboxRouter {
         Ok(Box::new(SandboxRouter {
             engine,
             binding,
-            handshake_ok: Arc::new(AtomicBool::new(false)),
+            checked_info: Arc::new(Mutex::new(None)),
         }))
     }
 
