@@ -999,24 +999,22 @@ await worker.trigger({ function_id: "files::on-change", payload: { path, event: 
 worker.observe({ function_id: "files::on-change" }, "csv::process");
 ```
 
-Some sources go further and take control of who gets which event, for example a file watcher that
-polls only the paths its observers ask for. Those are written with
-[Observable functions](../creating-workers/observable-functions). You observe them the same way,
+A function can also send different events to different observers. For example, a file watcher can
+watch only the paths that its observers give in `args`. To write this type of function, see
+[Observable functions](../creating-workers/observable-functions). You observe it in the same way,
 sometimes with [args](#source-args).
 
 ## Authorization
 
-To observe a function, a session must be allowed to invoke both the observed function and the target
-(RBAC `expose_functions`). The check is repeated when the target registers again on another
-connection. The RBAC block of a worker-manager listener accepts an
-`on_observer_registration_function_id` hook, with the same contract as
-`on_trigger_registration_function_id`: it may rewrite `function_id`, `target_function_id`, `args`,
-`filters`, and `metadata`, or deny the observer (`FORBIDDEN`). See
+If your worker connects with RBAC, it can observe a function only when it is allowed to call both
+the observed function and the target. Otherwise `observe` fails with `FORBIDDEN`. When the observed
+function or the target registers again later, the engine does the check again. To change or deny
+observers in the RBAC configuration, see
 [Worker manager](../creating-workers/worker-manager#intercept-calls-with-middleware).
 
 ## Compatibility
 
-- Against an engine older than 0.25, `observe` fails with `UNSUPPORTED` and nothing runs locally.
+- With an engine older than 0.25, `observe` fails with `UNSUPPORTED`.
 - Functions hosted by workers on older SDKs are still observable: their invocations are routed
   through the engine, which evaluates the filters.
 - Workers on older SDKs cannot observe. They keep using `registerTrigger`.
