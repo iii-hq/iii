@@ -1055,15 +1055,15 @@ Pass `observe` when you register the function:
 
 | Field                 | Default | Meaning                                                                                                              |
 | --------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `delivery`            | `auto`  | `auto`: every invocation is an event, offered to every observer. `owner`: your code hands events to observers.       |
+| `delivery`            | `auto`  | `auto`: each invocation is an event for each observer. `owner`: the function's code gives events to observers.       |
 | `args_format`         | none    | Owner delivery only: the JSON Schema of the observers' `args`. The engine rejects other args with `INVALID_ARGS`.    |
 | `legacy_trigger_type` | none    | Accept old `registerTrigger({ type })` calls for this trigger type. See [Accept old triggers](#accept-old-triggers). |
 | `allow`               | `true`  | `false` refuses every observer with `NOT_OBSERVABLE`.                                                                |
 | `onObserverAdded`     | none    | Runs once per added observer, before the engine marks it `active`. Throw to reject it.                               |
 | `onObserverRemoved`   | none    | Runs once per removed observer. It cannot fail; errors are logged.                                                   |
 
-Only the first four fields travel to the engine; the hooks stay in your process. The names follow
-each SDK's conventions:
+The SDK sends only the first 4 fields to the engine. The hooks stay in the worker's process. The
+names follow the conventions of each SDK:
 
 | SDK     | Where                                                                               | Hooks                                                               |
 | ------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
@@ -1073,35 +1073,35 @@ each SDK's conventions:
 | Rust    | `RegisterFunction::new(..).observe(Observe::owner().args_format::<T>().handler(h))` | `ObserveHandler::on_observer_added` / `on_observer_removed`         |
 | Go      | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}`                          | `OnObserverAdded(ctx, obs)`, `OnObserverRemoved(ctx, obs)`          |
 
-`args_format` with `delivery: 'auto'` fails at registration with `INVALID_OBSERVE_DESCRIPTOR`: an
-auto function's events are its invocations, offered to every observer, so there is nothing to route
-by.
+`args_format` with `delivery: 'auto'` fails at registration with `INVALID_OBSERVE_DESCRIPTOR`. An
+auto function sends each invocation to each observer, so it does not use observer args.
 
 ### Hook rules
 
-- `onObserverAdded` runs before the SDK acknowledges the observer to the engine. Whatever it adds to
-  your own index is in place before the observer turns `active`, so the first event after `ready()`
-  resolves reaches it.
+- `onObserverAdded` runs before the SDK acknowledges the observer to the engine. The observer
+  becomes `active` only after the hook returns. Thus, the hook's work is complete before the first
+  event.
 - Throwing rejects the observer: an `ObserveRejection(code, message)` sets the code the observer's
   `ready()` fails with; any other error is `OBSERVE_REJECTED`.
 - The hooks of one function run one at a time, in the engine's order. Hooks of different functions
   may run concurrently.
 - A hook still running after 30 seconds counts as failed (`OWNER_TIMEOUT`, the engine enforces the
   same `observers.owner_ack_timeout_ms`), and the next hook may start.
-- `onObserverRemoved` runs on `dispose()`, policy exhaustion (`max_fires`, expiry), when the
-  observing worker does not come back within its grace period, and when a reconnect no longer lists
+- `onObserverRemoved` runs when an accepted observer leaves the function: it is disposed, or it goes
+  to `error`. For example: `dispose()`, `max_fires` or expiry, an observing worker that does not
+  connect again within its grace period, a late `obs.reject`, or a reconnect that no longer lists
   the observer.
 
 ### The `Observer` object
 
-Hooks receive an `Observer`: the observer as its owner sees it. It never exposes the observer's
-metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime,
-so keep it in your own index.
+Hooks get an `Observer`: the observer as the owner sees it. It does not include the observer's
+metadata, policy, or observing worker. The object stays the same for the full life of the observer,
+so the function's code can keep it, for example in a map.
 
 | Member                  | Meaning                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `id`                    | The observer id.                                                                                                                          |
-| `function_id`           | Your function.                                                                                                                            |
+| `function_id`           | The observed function.                                                                                                                    |
 | `args`                  | The observer's args, already validated against `args_format` by the engine.                                                               |
 | `filters`               | The observer's filters in [normal form](../reference/filters#normal-form). The SDK applies them for you.                                  |
 | `target`                | The target function id.                                                                                                                   |
@@ -1119,6 +1119,6 @@ has `Args` (a map), `DecodeArgs(&v)`, `Legacy`, `Emit(ctx, event) (bool, error)`
 
 ## Against an older engine
 
-Against an engine older than 0.25, a function with an `observe` descriptor registers as a plain
-function: its hooks never run, and the SDK logs one warning. Local dispatch also stays off, and
-every call goes through the engine as before.
+With an engine older than 0.25, a function with an `observe` descriptor registers as a plain
+function. Its hooks do not run, and the SDK logs 1 warning for each function that has hooks or owner
+delivery. Local dispatch is off, and all calls go through the engine.
