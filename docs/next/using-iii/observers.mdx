@@ -752,25 +752,26 @@ metric, by function and reason.
 
 | State       | Meaning                                                                                                                                                                    |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | Waiting: no worker hosts the function yet (`OWNER_UNAVAILABLE`), the target is not registered yet (`TARGET_UNAVAILABLE`), or the source has not acknowledged the observer. |
-| `active`    | Delivering.                                                                                                                                                                |
-| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`), or the target went away after the observer was active (`TARGET_UNAVAILABLE`).                                 |
-| `error`     | Rejected. The reason carries the code (`INVALID_ARGS`, `FORBIDDEN`, a source's own code, ...).                                                                             |
-| `disposed`  | Gone for good: `dispose()`, `max_fires`, expiry, or the observing worker did not come back in time.                                                                        |
+| `pending`   | Waiting. No worker hosts the function yet (`OWNER_UNAVAILABLE`), the target is not registered yet (`TARGET_UNAVAILABLE`), or the source has not accepted the observer yet. |
+| `active`    | The target runs for each matching event.                                                                                                                                   |
+| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`), or the target was removed after the observer was `active` (`TARGET_UNAVAILABLE`).                             |
+| `error`     | Rejected. The reason has the code, for example `INVALID_ARGS`, `FORBIDDEN`, or a code from the source.                                                                     |
+| `disposed`  | Removed permanently, by `dispose()`, `max_fires`, `expires_in_ms`, or because the observing worker did not reconnect in time.                                              |
 
 - `ready()` resolves when the observer is `active` and rejects with the reason's code when it turns
   `error` or `disposed` first (`ObserveRejection` in Node, Python, and Rust;
   `*iii.ObserveRejectionError` in Go).
 - `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
-  every transition with its reason. Listeners never run on the connection's read path, so they may
-  call the worker.
+  each state change with its reason. Listeners run outside the connection's read path, so a listener
+  can call the worker.
 - `dispose()` removes the observer. A disposed observer is not replayed.
 - An observer belongs to the connection that created it. When that worker disconnects, its observers
-  are `suspended` for `observers.observer_grace_ms` (30 s by default); a worker that reconnects in
-  time keeps them, with their counters. After that they are `disposed`, and a worker that reconnects
-  later gets that answer when its SDK replays them, so `max_fires` and `expires_in_ms` still hold.
-  The engine keeps the answer for `observers.disposed_retention_ms` (1 hour by default). After that,
-  a returning worker's replay creates its observers again, as after an engine restart.
+  become `suspended` for `observers.observer_grace_ms` (30 s by default). If the worker reconnects
+  in this time, it keeps its observers and their counters. If not, the observers become `disposed`.
+- The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
+  default). If the worker reconnects in this time, the SDK replays the observer and gets `disposed`
+  back, so `max_fires` and `expires_in_ms` stay in effect. After this time, the replay creates the
+  observer again, as after an engine restart.
 - When the observed function's worker disconnects, its observers go back to `pending` and become
   `active` again when the function is registered again.
 
@@ -784,8 +785,8 @@ The engine lists observers through three built-in functions:
 | `engine::observers::get`     | `{ id }`                                | One observer, or `OBSERVER_NOT_FOUND`.                                                                                                                                              |
 | `engine::observers::dispose` | `{ id }`                                | Disposes an observer. Only the observing worker, or a caller without RBAC restrictions, may do it.                                                                                  |
 
-The output never includes an observer's metadata. Under RBAC, a session sees only the observers of
-functions it may invoke.
+The output does not include the observer's `metadata` option. With RBAC, a session sees only the
+observers of functions that it is allowed to invoke.
 
 ```bash
 iii trigger engine::observers::list function_id=orders::create
