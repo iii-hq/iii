@@ -166,10 +166,11 @@ Node.
 
 ### Narrow it with a filter
 
-Only orders of 500 or more should page someone. A [filter](#filters) on the source narrows which
-calls reach the target. This target also leaves out `deliver`, so it receives the full
-[`Observed` envelope](#target-arguments): the order as `input`, plus the result, who placed the
-call, and how long it took.
+This observer runs `alerts::big-order` only for orders with a total of 500 or more. A
+[filter](#filters) on the source selects which events reach the target. The source does not set
+`deliver`, so the target receives the [`Observed` envelope](#target-arguments). With the default
+`capture`, the envelope has the order (`input`), the result (`output`), the caller (`caller`), and
+the duration of the call (`duration_ms`).
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -183,7 +184,7 @@ call, and how long it took.
       return null;
     });
 
-    // When orders::create runs with total >= 500, run alerts::big-order.
+    // After each successful call of orders::create with total >= 500, run alerts::big-order.
     await worker
       .observe(
         { function_id: "orders::create", filters: { "input.total": { $gte: 500 } } },
@@ -202,7 +203,7 @@ call, and how long it took.
 
     worker.register_function("alerts::big-order", big_order)
 
-    # When orders::create runs with total >= 500, run alerts::big-order.
+    # After each successful call of orders::create with total >= 500, run alerts::big-order.
     worker.observe(
         {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
         "alerts::big-order",
@@ -225,7 +226,7 @@ call, and how long it took.
         }),
     );
 
-    // When orders::create runs with total >= 500, run alerts::big-order.
+    // After each successful call of orders::create with total >= 500, run alerts::big-order.
     worker
         .observe(
             Source::function("orders::create").filters(json!({ "input.total": { "$gte": 500 } })),
@@ -247,7 +248,7 @@ call, and how long it took.
         return nil, nil
     })
 
-    // When orders::create runs with total >= 500, run alerts::big-order.
+    // After each successful call of orders::create with total >= 500, run alerts::big-order.
     bigOrders, err := client.Observe(iii.Source{
         FunctionID: "orders::create",
         Filters:    iii.Filters{"input.total": iii.Op{"$gte": 500}},
