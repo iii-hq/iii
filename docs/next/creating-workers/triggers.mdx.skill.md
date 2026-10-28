@@ -65,7 +65,6 @@ returns it.
 
 A _publisher_ worker declares a trigger type. Functions that other workers register then fire on
 events the publisher observes (an HTTP request, a webhook hit, a file change, a database update).
-For how trigger types fit into iii, see [Trigger types](../understanding-iii#trigger-types).
 
 ### Register the trigger type
 

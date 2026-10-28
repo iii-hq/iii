@@ -94,6 +94,31 @@ each log line into the OpenTelemetry pipeline, so the line links to the trace it
   </Tab>
 </Tabs>
 
+### Where the lines go
+
+`Logger` does not write to your worker's own output. It sends each line to the engine, which:
+
+- prints it in the engine's output, labeled with the worker's OpenTelemetry service name (set it
+  with `OTEL_SERVICE_NAME`), unless the observability worker sets `logs_console_output: false`;
+- stores it: `iii trigger engine::logs::list` returns it, and the [console](../using-iii/console)
+  shows it next to the trace it was logged in.
+
+Under `iii compose --up`, the engine's output goes to `engine.log` in the compose state directory,
+`.iii/compose/<namespace>/` by default (see [Compose logs](../using-iii/compose#compose-logs)).
+
+Before the worker's OpenTelemetry export starts, or when it is off (`OTEL_ENABLED=false`), `Logger`
+falls back to the language's own logging, and the line stays in the worker's process:
+
+| SDK    | Fallback                       | Shown without setup                                                      |
+| ------ | ------------------------------ | ------------------------------------------------------------------------ |
+| Node   | `console.*`                    | yes                                                                      |
+| Python | `logging`, logger `iii.logger` | warnings and errors only, on stderr                                      |
+| Rust   | the `tracing` crate            | no: install a subscriber, for example `tracing_subscriber::fmt().init()` |
+| Go     | the standard `log` package     | yes, on stderr                                                           |
+
+For lines in your worker's own terminal, print them yourself (`console.log`, `print`, `println!`,
+`fmt.Println`).
+
 You can also query recorded logs and emit one-off log lines through the observability worker's
 functions, for example:
 

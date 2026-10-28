@@ -24,9 +24,7 @@
 </Note>
 
 Bind a trigger from a worker's trigger type (for example an `http` request, a `cron` schedule, or a
-`state` change) to a function. For the trigger concept, see
-[Understanding iii / Triggers](../understanding-iii/index#triggers). You can also
-[write your own](../creating-workers/triggers).
+`state` change) to a function. You can also [write your own](../creating-workers/triggers).
 
 You bind triggers to functions via the `function_id`. The trigger declares its `type`, its `config`
 (defined by each type), and the function to invoke.
