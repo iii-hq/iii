@@ -139,7 +139,7 @@ _MIGRATION_GUIDE = "https://iii.dev/docs/upgrading/from-0-24-x"
 _DEPRECATIONS = {
     "register_trigger": (
         "register_trigger is deprecated and will be removed in a future release. Use "
-        f"iii.observe(source, target) instead. Migration guide: {_MIGRATION_GUIDE}"
+        f"worker.observe(source, target) instead. Migration guide: {_MIGRATION_GUIDE}"
     ),
     "register_trigger_type": (
         "register_trigger_type is deprecated and will be removed in a future release. Register a function "

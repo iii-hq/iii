@@ -218,7 +218,7 @@ const MIGRATION_GUIDE = 'https://iii.dev/docs/upgrading/from-0-24-x'
 
 /** CONTRACT §5: one warning per page per deprecated API. */
 const DEPRECATIONS = {
-  registerTrigger: `registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source, target) instead. Migration guide: ${MIGRATION_GUIDE}`,
+  registerTrigger: `registerTrigger is deprecated and will be removed in a future release. Use worker.observe(source, target) instead. Migration guide: ${MIGRATION_GUIDE}`,
   registerTriggerType: `registerTriggerType is deprecated and will be removed in a future release. Register a function with an observe descriptor (registerFunction(id, handler, { observe: { ... } })) instead. Migration guide: ${MIGRATION_GUIDE}`,
 } as const
 
