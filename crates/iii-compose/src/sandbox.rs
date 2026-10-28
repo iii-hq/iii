@@ -362,21 +362,23 @@ pub(crate) async fn apply_adapter_change(
 }
 
 /// What only the adapter container gets, over its own environment: the worker
-/// token, the two host directories a guest may mount from (the compose file's
-/// and the package cache), and `III_DISABLE_TRACE_PAYLOADS` so iii-sdk records
+/// token, the host directories a guest may mount from (the compose file's, the
+/// package cache, and each `vm_dirs`), and `III_DISABLE_TRACE_PAYLOADS` so iii-sdk records
 /// no handler input (`auth`, the guest `env`, `channel.access_key`) as the
 /// `iii.invocation.input` span event.
 pub(crate) fn adapter_env(
     token: &str,
     compose_file: &Path,
     package_cache: &Path,
+    vm_dirs: &[&Path],
 ) -> BTreeMap<String, String> {
     let compose_dir = compose_file.parent().unwrap_or(Path::new(""));
     // A root that cannot be joined (a path separator in it) is dropped alone and
-    // loudly, so the other root survives; the adapter then refuses host_path
+    // loudly, so the others survive; the adapter then refuses host_path
     // mounts under the dropped one (S501).
     let roots: Vec<&Path> = [compose_dir, package_cache]
         .into_iter()
+        .chain(vm_dirs.iter().copied())
         .filter(|root| {
             let joinable = std::env::join_paths([root]).is_ok();
             if !joinable {
@@ -415,7 +417,17 @@ pub(crate) fn layer_adapter_env(
     user_env: &mut BTreeMap<String, String>,
 ) -> Result<()> {
     if adapter_key(file, adapter_name(file))?.as_deref() == Some(key) {
-        user_env.extend(adapter_env(token, &file.path, package_cache));
+        // `path://../w` puts a VM's own directory outside the compose file's.
+        // shortcut: read when the adapter starts, so such a VM added while it
+        // runs is refused (S501) until the adapter restarts.
+        let vm_dirs: Vec<&Path> = vm_needs(file)
+            .into_iter()
+            .filter_map(|need| match need {
+                Need::VmLocal(vm) => file.containers[&vm].worker_dir(),
+                Need::VmBundle(_) | Need::Explicit => None,
+            })
+            .collect();
+        user_env.extend(adapter_env(token, &file.path, package_cache, &vm_dirs));
     }
     Ok(())
 }
@@ -430,9 +442,19 @@ pub fn state_key(state_dir: &Path, key: &str) -> String {
     hex::encode(digest.finalize())
 }
 
+/// The `vm_id` the adapter gives `state_key`: the first 32 hex chars of its
+/// SHA-256. shortcut: the contract calls `vm_id` opaque and this is
+/// sandbox-libkrun's derivation, so another adapter answers S504 to it; add a
+/// call by `state_key` to the contract if one ships.
+fn vm_id(state_key: &str) -> String {
+    hex::encode(Sha256::digest(state_key))[..32].to_string()
+}
+
 /// How long [`RemoteVm::stop`] keeps asking an adapter that does not answer;
 /// short under test, so a test can wait the bound out.
 const STOP_RETRY: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 60 });
+/// How long after its first probe [`stop_unanswered_start`] asks again.
+const PROBE_AGAIN: Duration = Duration::from_millis(500);
 /// `worker::prepare`'s budget: room for an image pull (spec 5.4).
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// How long a registered adapter may take to register `adapter::info` (spec 7.4);
@@ -495,6 +517,16 @@ impl RemoteVm {
                     () = sender.closed() => return,
                     outcome = tick => {
                         let exited = matches!(outcome, Outcome::Exited(_));
+                        // A stream down at the exit (a dropped bus) would miss
+                        // the VM's last lines, which its next boot truncates:
+                        // they are read once more before the exit is published.
+                        if exited && let Some(sink) = &sink {
+                            follow_logs(&poller, &vm, &auth, sink, &mut capture, &mut cursor)
+                                .await;
+                            if let Some(draining) = capture.take() {
+                                let _ = tokio::time::timeout(CALL_SLACK, draining).await;
+                            }
+                        }
                         sender.send_replace(outcome);
                         if exited {
                             return;
@@ -597,9 +629,9 @@ impl RemoteVm {
 }
 
 /// Keeps one `worker::logs` stream open into `sink`. A stream that closed
-/// while the VM runs (an engine restart, a dropped bus) is asked for again
-/// from the cursor it reached, kept in memory only; a failed call is retried
-/// on the next poll.
+/// while the VM runs (an engine restart, a dropped bus, a full log queue) is
+/// asked for again from the cursor it reached, kept in memory only; a failed
+/// call is retried on the next poll.
 async fn follow_logs(
     client: &IIIClient,
     vm: &VmRecord,
@@ -790,9 +822,9 @@ pub(crate) async fn start_vm(
         false,
     )
     .await
-    .map_err(failed)?;
+    .map_err(|error| prepare_failed(ctx.file, key, &declared, start, &error))?;
 
-    let started = worker_start(
+    let started = match worker_start(
         engine,
         adapter,
         namespace,
@@ -801,7 +833,17 @@ pub(crate) async fn start_vm(
         ctx.file.stop_timeout,
     )
     .await
-    .map_err(failed)?;
+    {
+        Ok(started) => started,
+        Err(error) => {
+            // No answer from the adapter (out of time, or lost with the bus):
+            // it may still be booting the VM.
+            if sandbox_code(&error).is_none() {
+                stop_unanswered_start(ctx, key).await;
+            }
+            return Err(failed(error));
+        }
+    };
 
     Ok(RemoteVm::spawn(
         engine.client().clone(),
@@ -816,8 +858,89 @@ pub(crate) async fn start_vm(
     ))
 }
 
-/// [`call`] for a step of `container`'s start, which an engine restart must not
-/// fail: 0.25 prepared without the bus. A call whose connection drops, or that
+/// The failure of container `key`'s `worker::prepare`. The adapter reads its
+/// host roots when it starts (`layer_adapter_env`), so a local VM outside the
+/// compose file's directory, added since, is refused (S501) until it restarts.
+fn prepare_failed(
+    file: &ComposeFile,
+    key: &str,
+    adapter_key: &str,
+    start: &StartSpec,
+    error: &iii_sdk::Error,
+) -> ComposeError {
+    let mut message = spawn_failed_message(error);
+    if let StartSpec::Vm(VmSpec::Local { worker_dir, .. }) = start
+        && sandbox_code(error) == Some(SandboxErrorCode::S501)
+        && let (Ok(dir), Ok(compose_dir)) = (
+            worker_dir.canonicalize(),
+            file.path.parent().unwrap_or(Path::new(".")).canonicalize(),
+        )
+        && !dir.starts_with(compose_dir)
+    {
+        message.push_str(&format!(
+            ". If {} was added after the adapter started, restart the adapter, which \
+             stops every VM: iii trigger compose::restart worker={adapter_key}",
+            dir.display()
+        ));
+    }
+    ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message,
+    }
+}
+
+/// [`start_vm`] until `shutdown` fires, then `None`. Dropping the start does
+/// not reach the adapter, which goes on to boot the VM, so that boot is
+/// stopped first.
+pub(crate) async fn start_vm_until(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    start: &StartSpec,
+    env: BTreeMap<String, String>,
+    shutdown: Option<&crate::shutdown::ShutdownSignal>,
+) -> Option<Result<RemoteVm>> {
+    let Some(signal) = shutdown else {
+        return Some(start_vm(ctx, key, start, env).await);
+    };
+    let started = signal.run(start_vm(ctx, key, start, env)).await;
+    if started.is_none() {
+        stop_unanswered_start(ctx, key).await;
+    }
+    started
+}
+
+/// Stops the boot of VM container `key` that a `worker::start` left without an
+/// answer: a VM nobody holds would register as `key`. Asked for instance 0,
+/// which no boot is, the adapter names the live one (S503), and stopping that
+/// cancels a boot still preparing. Best effort, over a connection that is up.
+async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
+    if ctx.engine.has_exited() || !ctx.engine.is_connected() {
+        return;
+    }
+    let probe = VmRecord {
+        adapter: adapter_name(ctx.file).to_string(),
+        namespace: ctx.project_namespace.to_string(),
+        vm_id: vm_id(&state_key(ctx.state_dir, key)),
+        instance: 0,
+    };
+    let (client, grace) = (ctx.engine.client(), ctx.file.stop_timeout);
+    let stop_live = || async {
+        let reply = worker_stop(client, &probe, ctx.sandbox_token, grace).await;
+        if let Some(live) = superseded_by(&reply, &probe) {
+            let _ = worker_stop(client, &live, ctx.sandbox_token, grace).await;
+        }
+    };
+    stop_live().await;
+    // The adapter reserves the boot only after admitting its source, so a
+    // cancel right after the send can probe first (S504, or an older instance).
+    // shortcut: one more probe a moment later; a contract stop by state_key
+    // would close the window outright.
+    tokio::time::sleep(PROBE_AGAIN).await;
+    stop_live().await;
+}
+
+/// [`call`] for a step of `container`'s start (or its destroy), which an engine
+/// restart must not fail: 0.25 prepared without the bus. A call whose connection drops, or that
 /// begins after a drop before the engine is back, is sent again once it is,
 /// unless the managed engine exited, all within `timeout`; an engine not back
 /// within [`RECONNECT_GRACE`] fails the step with the `NotConnected`, so the
@@ -887,33 +1010,49 @@ fn reconnect_line(container: &str, function: &str, wait: Duration) -> String {
     )
 }
 
-/// `worker::destroy` for VM container `key`'s state. The adapter refuses it
-/// while the VM runs, so it goes after the stop.
-pub(crate) async fn destroy_vm(
-    engine: &EngineClient,
-    token: &str,
-    state_dir: &Path,
-    key: &str,
-    vm: &VmRecord,
-) -> Result<()> {
+/// `worker::destroy` for VM container `key`'s state, by its `state_key`. The
+/// adapter refuses it while the VM runs, so it goes after the stop. A failure
+/// only leaves the state behind, and says where.
+pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str, namespace: &str) {
+    let state_key = state_key(ctx.state_dir, key);
     let request = WorkerDestroyRequest {
-        auth: token.to_string(),
-        state_key: state_key(state_dir, key),
+        auth: ctx.sandbox_token.to_string(),
+        state_key: state_key.clone(),
     };
-    call::<WorkerDestroyResponse>(
-        engine.client(),
-        &vm.adapter,
-        &vm.namespace,
+    // Registering: an adapter started for this call may not list it yet.
+    let destroyed = start_call::<WorkerDestroyResponse>(
+        ctx.engine,
+        key,
+        adapter,
+        namespace,
         WORKER_DESTROY,
         &request,
         DESTROY_TIMEOUT,
+        true,
     )
-    .await
-    .map(drop)
-    .map_err(|error| ComposeError::EngineCallFailed {
-        function: adapter_function_id(&vm.adapter, WORKER_DESTROY),
-        message: spawn_failed_message(&error),
-    })
+    .await;
+    if let Err(error) = destroyed {
+        let error = ComposeError::EngineCallFailed {
+            function: adapter_function_id(adapter, WORKER_DESTROY),
+            message: spawn_failed_message(&error),
+        };
+        let vm_id = vm_id(&state_key);
+        crate::report::daemon_line(
+            &format!(
+                "{key}: could not destroy VM {vm_id} through {adapter}: {error}; its state \
+                 stays in ~/.iii/sandbox/workers/{vm_id}"
+            ),
+            true,
+        );
+    }
+}
+
+/// Whether `key` is a VM container. `file` must be lock-attached, as for
+/// [`needs`].
+pub(crate) fn is_vm(file: &ComposeFile, key: &str) -> bool {
+    vm_needs(file)
+        .iter()
+        .any(|need| matches!(need, Need::VmBundle(vm) | Need::VmLocal(vm) if vm == key))
 }
 
 /// What a reopened project does with a recorded VM. With its owner gone, the
@@ -1477,6 +1616,7 @@ pub(crate) mod tests {
             "t0k",
             Path::new("/srv/app/worker-compose.yaml"),
             Path::new("/home/u/.iii/compose/packages"),
+            &[],
         );
         assert_eq!(env["III_SANDBOX_WORKER_TOKEN"], "t0k");
         // Keeps auth, env and channel.access_key out of the trace store.
@@ -1498,6 +1638,7 @@ pub(crate) mod tests {
             "t0k",
             Path::new("/srv/a:b/worker-compose.yaml"),
             Path::new("/home/u/.iii/compose/packages"),
+            &[],
         );
         assert_eq!(
             std::env::split_paths(&env["III_SANDBOX_HOST_ROOTS"]).collect::<Vec<_>>(),
@@ -1530,6 +1671,67 @@ pub(crate) mod tests {
         assert!(!other.contains_key("III_SANDBOX_WORKER_TOKEN"));
         assert!(!other.contains_key("III_SANDBOX_HOST_ROOTS"));
         assert_eq!(other["III_DISABLE_TRACE_PAYLOADS"], "0");
+    }
+
+    /// `path://../shared/vm` is a supported spelling: the adapter must admit
+    /// that VM's directory, not only the compose file's.
+    #[test]
+    fn a_local_vm_outside_the_compose_directory_is_a_host_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        manifest(
+            &dir.path().join("shared"),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = parse(
+            &project,
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  vm: {worker: path://../shared/vm}\n",
+        );
+        let mut env = BTreeMap::new();
+        layer_adapter_env(&file, "sb", "t0k", Path::new("/pkg"), &mut env).unwrap();
+        let roots: Vec<PathBuf> = std::env::split_paths(&env["III_SANDBOX_HOST_ROOTS"]).collect();
+        assert_eq!(roots[..2], [project, PathBuf::from("/pkg")]);
+        assert_eq!(roots.len(), 3, "{roots:?}");
+        assert_eq!(
+            roots[2].canonicalize().unwrap(),
+            dir.path().join("shared/vm").canonicalize().unwrap()
+        );
+    }
+
+    /// A `path://../` VM added while the adapter runs is outside the roots it
+    /// read at its start: its S501 says how to get the directory admitted.
+    #[test]
+    fn a_refused_vm_outside_the_compose_directory_names_the_adapter_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        manifest(&project, "inner", "runtime: {base_image: python}\n");
+        manifest(
+            &dir.path().join("shared"),
+            "vm",
+            "runtime: {base_image: python}\n",
+        );
+        let file = parse(&project, "containers:\n  inner: {worker: path://./inner}\n");
+        let refused = remote(
+            "invocation_failed",
+            &wire_message(SandboxErrorCode::S501, "outside the host roots", None),
+        );
+        let message = |worker_dir: PathBuf| {
+            let start = StartSpec::Vm(VmSpec::Local {
+                worker_dir,
+                run_override: None,
+            });
+            prepare_failed(&file, "vm", "sb", &start, &refused).to_string()
+        };
+        let outside = message(project.join("../shared/vm"));
+        assert!(
+            outside.contains("restart the adapter")
+                && outside.ends_with("compose::restart worker=sb"),
+            "{outside}"
+        );
+        assert!(!message(project.join("inner")).contains("restart the adapter"));
     }
 
     fn remote(code: &str, message: &str) -> iii_sdk::Error {
@@ -1832,10 +2034,12 @@ pub(crate) mod tests {
 
     /// An engine stand-in on a local port. It answers `engine::channels::create`
     /// itself, and every other call with `answer`'s reply fields (`result` or
-    /// `error`); a `null` reply drops the connection instead, and `false` also
-    /// refuses every later connection, as an engine that stays dead. Each answered
-    /// call but the SDK's own registration goes to the receiver as (function
-    /// id, payload). A channel socket sends one line, then closes.
+    /// `error`); `true` never answers, a `null` reply drops the connection
+    /// instead, and `false` also refuses every later connection, as an engine
+    /// that stays dead. Each answered or unanswered call but the SDK's own
+    /// registration goes to the receiver as (function id, payload). A channel
+    /// socket sends one line at cursor 12, none when the `worker::logs` before
+    /// it asked from there, then closes.
     async fn fake_engine(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
@@ -1866,13 +2070,19 @@ pub(crate) mod tests {
         let answer = std::sync::Arc::new(answer);
         let (calls, called) = tokio::sync::mpsc::unbounded_channel();
         let dead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let asked_from = std::sync::Arc::new(std::sync::Mutex::new(None));
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 // Kept listening, so no other test's engine can take the port.
                 if dead.load(std::sync::atomic::Ordering::SeqCst) {
                     continue;
                 }
-                let (calls, answer, dead) = (calls.clone(), answer.clone(), dead.clone());
+                let (calls, answer, dead, asked_from) = (
+                    calls.clone(),
+                    answer.clone(),
+                    dead.clone(),
+                    asked_from.clone(),
+                );
                 tokio::spawn(async move {
                     let mut path = String::new();
                     // tungstenite fixes the callback's error type.
@@ -1887,7 +2097,10 @@ pub(crate) mod tests {
                     if path.starts_with("/ws/channels/") {
                         let line =
                             r#"{"stream":"stderr","line":"no /dev/kvm","ts_ms":1,"cursor":12}"#;
-                        socket.send(Message::Text(line.into())).await.unwrap();
+                        let cursor = *asked_from.lock().unwrap();
+                        if cursor.is_none_or(|cursor: u64| cursor < 12) {
+                            socket.send(Message::Text(line.into())).await.unwrap();
+                        }
                         socket.close(None).await.unwrap();
                         return;
                     }
@@ -1903,6 +2116,9 @@ pub(crate) mod tests {
                         {
                             continue;
                         }
+                        if function.ends_with("::worker::logs") {
+                            *asked_from.lock().unwrap() = message["data"]["cursor"].as_u64();
+                        }
                         let end = |direction| json!({"channel_id": "c", "access_key": "k", "direction": direction});
                         let mut reply = match function {
                             "engine::channels::create" => {
@@ -1916,6 +2132,10 @@ pub(crate) mod tests {
                         }
                         if reply.is_null() {
                             return;
+                        }
+                        if reply == json!(true) {
+                            let _ = calls.send((function.to_string(), message["data"].clone()));
+                            continue;
                         }
                         reply["type"] = json!("invocationresult");
                         reply["invocation_id"] = message["invocation_id"].clone();
@@ -1978,11 +2198,46 @@ pub(crate) mod tests {
         let vm = RemoteVm::spawn(client, vm_record(), "t".into(), Some(store.sink("web")));
         assert_eq!(vm.wait().await.code(), Some(1));
 
+        // Read once more from its cursor before the exit is published.
         let order: Vec<String> = drain(&mut called).into_iter().map(|(f, _)| f).collect();
         assert_eq!(
             order,
-            ["engine::channels::create", "worker::logs", "worker::status"]
+            [
+                "engine::channels::create",
+                "worker::logs",
+                "worker::status",
+                "engine::channels::create",
+                "worker::logs"
+            ]
         );
+        assert_eq!(
+            crate::logs::tests::entries(&store, "web", 1).await,
+            vec![crate::logs::LogEntry {
+                stream: crate::logs::LogStream::Stderr,
+                message: "no /dev/kvm".into()
+            }]
+        );
+    }
+
+    /// A VM that exits while its log stream is down (a dropped bus) keeps its
+    /// last lines: they are read before the exit is published.
+    #[tokio::test]
+    async fn a_vm_that_exits_while_its_stream_is_down_keeps_its_last_output() {
+        let streams = std::sync::atomic::AtomicUsize::new(0);
+        let (client, _called) = fake_engine(move |function, _| match function {
+            "sandbox-libkrun::worker::logs"
+                if streams.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 =>
+            {
+                not_found()
+            }
+            "sandbox-libkrun::worker::logs" => answered(serde_json::json!({})),
+            _ => answered(status(State::Exited, Some(1), None)),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::logs::LogStore::open(dir.path().to_path_buf()).unwrap();
+        let vm = RemoteVm::spawn(client, vm_record(), "t".into(), Some(store.sink("web")));
+        assert_eq!(vm.wait().await.code(), Some(1));
         assert_eq!(
             crate::logs::tests::entries(&store, "web", 1).await,
             vec![crate::logs::LogEntry {
@@ -2264,6 +2519,170 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(started.instance, 2);
         assert_eq!(*vms.lock().unwrap(), (2, Some(2)));
+    }
+
+    /// A `worker::start` that outlives its budget, or that a cancel drops, goes
+    /// on at the adapter: the boot it left, named by the S503 for instance 0, is
+    /// stopped, so no VM Compose does not hold registers as the container. The
+    /// first probe lands before the adapter reserved that boot (S504).
+    #[tokio::test]
+    async fn an_unanswered_start_stops_the_boot_it_left() {
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let (url, mut called) = fake_engine_url(move |function, payload| match function {
+            "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
+                adapter: "sandbox-libkrun".into(),
+                adapter_version: "1.0.0".into(),
+                contract: ContractVersion {
+                    major: CONTRACT_MAJOR,
+                    minor: 0,
+                },
+            }),
+            "sandbox-libkrun::worker::prepare" => answered(serde_json::json!({})),
+            // Still building the VM.
+            "sandbox-libkrun::worker::start" => serde_json::Value::Bool(true),
+            "sandbox-libkrun::worker::stop" => match payload["instance"].as_u64() {
+                Some(0)
+                    if probes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        .is_multiple_of(2) =>
+                {
+                    refused(SandboxErrorCode::S504, 0)
+                }
+                Some(0) => refused(SandboxErrorCode::S503, 1),
+                _ => answered(status(State::Stopped, None, None)),
+            },
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm, startup_timeout: 1s}\n",
+        );
+        let engine = EngineClient::connect(&url, "t", "t");
+        let (shutdown, post_runs, diagnostics) = Default::default();
+        let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+        let ctx = LifecycleCtx {
+            shutdown: &shutdown,
+            file: &file,
+            engine: &engine,
+            post_runs: &post_runs,
+            compose_namespace: "t",
+            project_namespace: "shop",
+            engine_url: &url,
+            package_cache: dir.path(),
+            logs: &logs,
+            state_dir: dir.path(),
+            sandbox_token: "t",
+            empty_env_diagnostics: &diagnostics,
+        };
+        let start = StartSpec::Vm(VmSpec::Local {
+            worker_dir: dir.path().join("vm"),
+            run_override: None,
+        });
+        let probe = vm_id(&state_key(dir.path(), "vm"));
+        let mut stops = || {
+            let mut stops = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                if function.ends_with("::worker::stop") {
+                    stops.push((payload["vm_id"].clone(), payload["instance"].as_u64()));
+                }
+            }
+            stops
+        };
+        let expected = [
+            (serde_json::json!(probe), Some(0)),
+            (serde_json::json!(probe), Some(0)),
+            (serde_json::json!("v"), Some(1)),
+        ];
+
+        let Err(error) = start_vm(&ctx, "vm", &start, BTreeMap::new()).await else {
+            panic!("nobody answered the start");
+        };
+        assert_eq!(error.code(), "SPAWN_FAILED");
+        assert_eq!(stops(), expected);
+
+        let signal = shutdown.signal();
+        let cancel = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            shutdown.cancel();
+        };
+        let (started, ()) = tokio::join!(
+            start_vm_until(&ctx, "vm", &start, BTreeMap::new(), Some(&signal)),
+            cancel
+        );
+        assert!(started.is_none());
+        assert_eq!(stops(), expected);
+    }
+
+    /// A removed VM container's state goes by its `state_key`, whatever its
+    /// record holds: none for a first boot that failed, no record at all in a
+    /// new daemon.
+    #[tokio::test]
+    async fn a_removed_vm_destroys_its_state_without_a_vm_record() {
+        use crate::state::{ChildRecord, ChildStatus};
+
+        let (url, mut called) = fake_engine_url(|function, _| match function {
+            "sandbox-libkrun::worker::destroy" => {
+                answered(serde_json::json!({ "destroyed": true }))
+            }
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = parse(dir.path(), "containers:\n  vm: {worker: path://./vm}\n");
+        let engine = EngineClient::connect(&url, "t", "t");
+        let (shutdown, post_runs, diagnostics) = Default::default();
+        let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+        let ctx = LifecycleCtx {
+            shutdown: &shutdown,
+            file: &file,
+            engine: &engine,
+            post_runs: &post_runs,
+            compose_namespace: "t",
+            project_namespace: "shop",
+            engine_url: &url,
+            package_cache: dir.path(),
+            logs: &logs,
+            state_dir: dir.path(),
+            sandbox_token: "t",
+            empty_env_diagnostics: &diagnostics,
+        };
+        let failed = ChildRecord {
+            pid: None,
+            birth: None,
+            vm: None,
+            status: ChildStatus::Failed,
+            started_at: 1,
+            last_error: Some("container 'vm' was not ready after 60s".into()),
+        };
+        for mut records in [
+            BTreeMap::from([("vm".to_string(), failed)]),
+            BTreeMap::new(),
+        ] {
+            let removed = crate::lifecycle::remove_one(
+                &ctx,
+                &mut crate::lifecycle::Children::new(),
+                &mut records,
+                "vm",
+                "rm".into(),
+            )
+            .await;
+            assert_eq!(removed.status, crate::lifecycle::OpStatus::Ok);
+            assert!(records.is_empty());
+            let mut destroyed = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                if function == "sandbox-libkrun::worker::destroy" {
+                    destroyed.push(payload["state_key"].clone());
+                }
+            }
+            assert_eq!(destroyed, [serde_json::json!(state_key(dir.path(), "vm"))]);
+        }
     }
 
     /// An engine that dies or restarts with a call in flight never answers it:

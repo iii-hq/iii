@@ -1646,12 +1646,7 @@ impl Daemon {
         // The generated adapter goes once this edit leaves no VM needing it.
         let allow_remove =
             !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
-        let mut removal_order = before
-            .start_order()?
-            .into_iter()
-            .rev()
-            .filter(|worker| requested.contains(worker.as_str()))
-            .collect::<Vec<_>>();
+        let mut removal_order = removal_order(&mut before, &requested)?;
         let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
@@ -2180,6 +2175,11 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
     use std::io::Write;
 
+    // A symlinked compose file keeps its link: the rename replaces the target.
+    let path = &std::fs::canonicalize(path).map_err(|source| ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let permissions = std::fs::metadata(path)
         .map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
@@ -2214,6 +2214,19 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
             source,
         }
     })
+}
+
+/// The `requested` workers of `file`, dependents first. `file` is wired to its
+/// adapter, so a VM goes before the adapter it boots through: removing the VM
+/// still finds the adapter running, never restarting one this removal took.
+fn removal_order(file: &mut crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
+    crate::sandbox::wire_adapter(file)?;
+    Ok(file
+        .start_order()?
+        .into_iter()
+        .rev()
+        .filter(|worker| requested.contains(worker.as_str()))
+        .collect())
 }
 
 /// Persists one compose mutation while keeping its YAML and lock consistent.
@@ -3788,6 +3801,108 @@ containers:
         daemon.shutdown().await;
     }
 
+    /// `build` runs outside the daemon's mutation lock: a file saved while it
+    /// prepared is refused, never overwritten from build's snapshot.
+    #[tokio::test]
+    async fn build_does_not_overwrite_an_edit_made_while_it_prepared() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        let saved = "containers:\n  vm:\n    worker: path://./vm\n    env: {SAVED: '1'}\n";
+        let (target, uri) = (path.clone(), server.uri());
+        let digest = hex::encode(sha2::Sha256::digest(&archive));
+        // The operator saves the file while build resolves the adapter.
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, saved).unwrap();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "sandbox-libkrun",
+                        "version": "1.2.3",
+                        "type": "binary",
+                        "binaries": { (crate::registry::host_targets()[0]): {
+                            "sha256": digest,
+                            "url": format!("{uri}/artifact"),
+                        }},
+                    }]
+                }))
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let error = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), crate::build::build(&path))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// A `--frozen` build writes nothing, so a file saved while it downloads
+    /// is kept and the build still succeeds.
+    #[tokio::test]
+    async fn a_frozen_build_keeps_an_edit_made_while_it_downloaded() {
+        use crate::state::TEST_PACKAGE_CACHE;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        // Two private caches: the frozen build starts cold, so it downloads.
+        let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        TEST_PACKAGE_CACHE
+            .scope(
+                warm.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
+            .await
+            .unwrap();
+        let saved = format!("{}# saved\n", std::fs::read_to_string(&path).unwrap());
+        let (target, edit) = (path.clone(), saved.clone());
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, &edit).unwrap();
+                ResponseTemplate::new(200).set_body_bytes(archive.clone())
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        TEST_PACKAGE_CACHE
+            .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// The generated adapter is appended after the VMs, with no edge in the
+    /// file: removed together, the VM still goes first, so its destroy never
+    /// restarts the adapter this same removal stopped.
+    #[test]
+    fn a_vm_is_removed_before_the_adapter_it_boots_through() {
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  vm:\n    worker: path://./vm\n",
+            &adapter,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let (_dir, path) = vm_project(&text);
+        let mut compose = ComposeFile::parse(&text, &path).unwrap();
+        let requested = BTreeSet::from(["vm", "sandbox-libkrun"]);
+        assert_eq!(
+            removal_order(&mut compose, &requested).unwrap(),
+            ["vm", "sandbox-libkrun"]
+        );
+    }
+
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
         let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
@@ -3988,6 +4103,21 @@ containers:
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("shared.yaml");
+        let link = dir.path().join("worker-compose.yaml");
+        std::fs::write(&target, "before\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_atomically(&link, "after\n").unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "after\n");
     }
 
     #[tokio::test]

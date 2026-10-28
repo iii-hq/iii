@@ -770,20 +770,34 @@ async fn remove_one_scoped(
     } else {
         report::unchanged(key, "not running");
     }
-    // A removed VM container takes its state with it; a failure only leaves
-    // the state behind, so the removal still succeeds.
-    if let Some(vm) = records.remove(key).and_then(|record| record.vm)
-        && let Err(error) =
-            crate::sandbox::destroy_vm(ctx.engine, ctx.sandbox_token, ctx.state_dir, key, &vm).await
-    {
-        let crate::state::VmRecord { adapter, vm_id, .. } = &vm;
-        report::daemon_line(
-            &format!(
-                "{key}: could not destroy VM {vm_id} through {adapter}: {error}; its state \
-                 stays in ~/.iii/sandbox/workers/{vm_id}"
-            ),
-            true,
+    // A removed VM container takes its state with it, whatever its record
+    // holds: a first boot that failed left no VM in it, a new daemon no record
+    // at all. A failure only leaves the state behind, so the removal succeeds.
+    let vm = records.remove(key).and_then(|record| record.vm);
+    if vm.is_some() || crate::sandbox::is_vm(ctx.file, key) {
+        let (adapter, namespace) = vm.map_or_else(
+            || {
+                let adapter = crate::sandbox::adapter_name(ctx.file);
+                (adapter.to_string(), ctx.project_namespace.to_string())
+            },
+            |vm| (vm.adapter, vm.namespace),
         );
+        // After a full `down` the declared adapter is stopped, and nothing
+        // would ever ask it again: it is started for the call.
+        if !ctx.engine.has_exited()
+            && crate::sandbox::adapter_gone(ctx.file, &adapter, children)
+            && let Ok(Some(adapter_key)) = crate::sandbox::adapter_key(ctx.file, &adapter)
+        {
+            up(
+                ctx,
+                children,
+                records,
+                Some(&adapter_key),
+                format!("{operation_id}-adapter"),
+            )
+            .await;
+        }
+        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace).await;
     }
     report::plan_done();
     report::summary_ok("remove", usize::from(changed), 1, began.elapsed());
@@ -1237,9 +1251,12 @@ async fn start_one_until_shutdown(
                     .emit(Some(key), "preparing", "preparing VM runtime")
                     .await;
             }
-            Child::Vm(wait_or_interrupt!(crate::sandbox::start_vm(
-                ctx, key, &start, plan.env
-            ))?)
+            let Some(started) =
+                crate::sandbox::start_vm_until(ctx, key, &start, plan.env, shutdown.as_ref()).await
+            else {
+                return Err(StartFailure::Interrupted);
+            };
+            Child::Vm(started?)
         }
     };
     report::starting(key, "waiting for engine registration");

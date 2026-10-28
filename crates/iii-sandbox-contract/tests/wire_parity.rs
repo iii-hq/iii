@@ -1,11 +1,11 @@
 use iii_sandbox_contract::{
     AdapterInfo, AdapterInfoRequest, CatalogListRequest, ChannelDirection, ContractVersion,
     DOCS_BASE, EnvShape, ExecRequest, ExecResponse, GrepRequest, ListRequest, LogRecord, LogStream,
-    MkdirRequest, ReadResponse, RouterInfo, RunResponse, SandboxErrorCode, SedRequest, State,
-    StopRequest, StreamChannelRef, WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest,
-    WorkerLogsResponse, WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource,
-    WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest,
-    WriteContent, WriteRequest, code_of, error_payload,
+    MkdirRequest, OPERATIONS, ReadResponse, RouterInfo, RunResponse, SandboxErrorCode, SedRequest,
+    State, StopRequest, StreamChannelRef, WorkerDestroyRequest, WorkerDestroyResponse,
+    WorkerLogsRequest, WorkerLogsResponse, WorkerPrepareRequest, WorkerPrepareResponse,
+    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStatusRequest,
+    WorkerStopRequest, WriteContent, WriteRequest, code_of, error_payload,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, from_value, json, to_value};
@@ -484,4 +484,75 @@ fn wire_examples_round_trip() {
             WorkerDestroyResponse,
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// ephemeral operations
+// ---------------------------------------------------------------------------
+
+/// Drops what may differ between the contract's types and an adapter's copies without changing
+/// how either side reads a payload: prose, the `[]`/`null` defaults schemars only emits for
+/// `Serialize` field types, and a response's `default` (only the adapter writes responses). A
+/// response keeps `required`: it lists the fields this crate cannot read a reply without, and the
+/// adapter's `tests/wire_examples.rs` checks its serialized replies against it instead of against
+/// its own schemas, which `skip_serializing_if` does not change.
+fn wire_shape(v: &mut Value, response: bool) {
+    match v {
+        Value::Array(a) => a.iter_mut().for_each(|v| wire_shape(v, response)),
+        Value::Object(m) => {
+            m.remove("description");
+            if response
+                || m.get("default")
+                    .is_some_and(|d| d.is_null() || d == &json!([]))
+            {
+                m.remove("default");
+            }
+            for (k, v) in m.iter_mut() {
+                // These two maps are keyed by field and type names, not schema keywords.
+                if k == "properties" || k == "definitions" {
+                    v.as_object_mut()
+                        .into_iter()
+                        .flat_map(|m| m.values_mut())
+                        .for_each(|v| wire_shape(v, response));
+                } else {
+                    wire_shape(v, response);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Pins the wire shape of every `sandbox::*` request and response, as the router publishes it,
+/// to `fixtures/operation_schemas.json`; the adapter compares its own copies to the same file.
+#[test]
+fn operation_schemas_match_fixture() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/operation_schemas.json"
+    );
+    let shapes = Value::Object(
+        OPERATIONS
+            .iter()
+            .map(|op| {
+                let (mut req, mut res) = ((op.request_schema)(), (op.response_schema)());
+                wire_shape(&mut req, false);
+                wire_shape(&mut res, true);
+                (
+                    op.suffix.to_string(),
+                    json!({"request": req, "response": res}),
+                )
+            })
+            .collect(),
+    );
+    if std::env::var_os("UPDATE_GOLDENS").is_some() {
+        std::fs::write(path, serde_json::to_string_pretty(&shapes).unwrap() + "\n").unwrap();
+    }
+    let fixture: Value =
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture readable")).unwrap();
+    assert_eq!(
+        fixture, shapes,
+        "run UPDATE_GOLDENS=1 cargo test -p iii-sandbox-contract, review the diff and copy the \
+         file to the adapter's tests/fixtures"
+    );
 }

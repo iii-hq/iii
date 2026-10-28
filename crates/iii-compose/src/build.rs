@@ -111,6 +111,22 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     for (container, reference, canonical) in prepared.aliases() {
         registry::warn_alias(container, reference, Some(canonical), None).await;
     }
+    // The daemon's mutation lock is in its own process: an edit made while
+    // this prepared must not be overwritten from the snapshot. A build that
+    // writes nothing (frozen, or already locked) overwrites nothing.
+    if (edited != text || prepared.changed())
+        && std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+            path: file.path.clone(),
+            source,
+        })? != text
+    {
+        let error = ComposeError::BuildPlanStale {
+            path: file.path.clone(),
+        };
+        report::plan_done();
+        report::summary_failed("build", error.code(), began.elapsed());
+        return Err(error);
+    }
     crate::daemon::persist_mutation(&file.path, &text, &edited, &prepared)?;
     if prepared.changed() {
         report::lock_changed(prepared.path(), !prepared.existed());

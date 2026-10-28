@@ -608,6 +608,7 @@ mod tests {
             "t0k",
             Path::new("/srv/app/worker-compose.yaml"),
             Path::new("/home/u/.iii/compose/packages"),
+            &[],
         );
         let plan = spawn_plan_with_env(&ctx(&start, None, &adapter), host);
         assert_eq!(plan.env["III_SANDBOX_WORKER_TOKEN"], "t0k");
