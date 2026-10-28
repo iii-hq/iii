@@ -150,9 +150,11 @@ async fn every_child_leads_its_own_process_group() {
 #[tokio::test]
 async fn a_recycled_pid_is_never_recognised() {
     let tmp = tempfile::tempdir().unwrap();
-    let child = spawn("exit 0", tmp.path());
+    // Alive while spawn reads its fingerprint: a child that exits first is a
+    // zombie by then, and macOS cannot read a zombie's start time.
+    let child = spawn("sleep 30", tmp.path());
     let recorded = child.birth.clone();
-    child.wait().await;
+    child.stop(Duration::from_secs(2)).await;
 
     // Same PID number, different process: the fingerprint must not match, so a
     // restarting daemon can never signal a stranger.
