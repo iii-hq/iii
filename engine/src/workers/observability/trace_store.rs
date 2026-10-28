@@ -4860,7 +4860,7 @@ mod tests {
                 .map(|index| test_span(&format!("f-{index:05}"), "s", "flush"))
                 .collect(),
         );
-        let flush = store.flush();
+        let flush = flush_settled(&store, &hot);
         eprintln!(
             "BACKLOG_EVIDENCE degraded_seen={degraded_seen} dirty_after_ticks={drained} flush={flush:?} archived={}",
             store.span_count().unwrap()
@@ -5292,7 +5292,7 @@ mod tests {
                 .map(|index| span_with(&trace, &realistic_span(index + 1), tiny_attributes(100)))
                 .collect(),
         );
-        let flush = store.flush();
+        let flush = flush_settled(&store, &hot);
         let after_flush = count_trace_prefix(directory.path(), &trace);
         thread::sleep(Duration::from_secs(3));
         let archived = count_trace_prefix(directory.path(), &trace) as u64;
@@ -5516,6 +5516,21 @@ mod tests {
         }
     }
 
+    /// `flush` is bounded by wall-clock (the writer's budget, the caller's
+    /// timeout), so on a loaded machine one call can end before the drain
+    /// does. Call it again only while a call used up that budget and the
+    /// dirty set shrank; any other answer is returned as is.
+    fn flush_settled(store: &TraceDiskStore, hot: &InMemorySpanStorage) -> Result<(), String> {
+        loop {
+            let dirty = hot.dirty_len();
+            let started = Instant::now();
+            let result = store.flush();
+            if result.is_ok() || started.elapsed() < FLUSH_TIME_BUDGET || hot.dirty_len() >= dirty {
+                return result;
+            }
+        }
+    }
+
     /// A live trace (600 spans of 200 tiny attributes) committed in the same
     /// batches as 60 payload traces (prefix `bbbb0003`), so its size is
     /// attributed from shared commits. Returns the live trace id.
@@ -5701,7 +5716,7 @@ mod tests {
                 .map(|index| span_with(&live, &hex_span(index + 10), tiny_attributes(100)))
                 .collect(),
         );
-        store.flush().unwrap();
+        flush_settled(&store, &hot).unwrap();
         let mut evidence = Vec::new();
         for (round, tag) in [0xbcde_0001_u64, 0xbcde_0002].into_iter().enumerate() {
             hot.add_spans(
@@ -5715,7 +5730,7 @@ mod tests {
                     })
                     .collect(),
             );
-            store.flush().unwrap();
+            flush_settled(&store, &hot).unwrap();
             let prefix = format!("{tag:08x}");
             let written = count_trace_prefix(directory.path(), &prefix);
             hot.add_spans(vec![span_with(
@@ -5723,7 +5738,7 @@ mod tests {
                 &hex_span(5_000 + round as u64),
                 wide_attributes(33, 64 * 1024),
             )]);
-            let flushed = store.flush();
+            let flushed = flush_settled(&store, &hot);
             let left = count_trace_prefix(directory.path(), &prefix);
             evidence.push(format!(
                 "round{round} history {written}->{left} flush={flushed:?}"
