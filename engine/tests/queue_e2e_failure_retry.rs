@@ -123,12 +123,12 @@ async fn retry_backoff_timing_is_exponential() {
     let ratio_1_2 = interval_2.as_millis() as f64 / interval_1.as_millis() as f64;
     let ratio_2_3 = interval_3.as_millis() as f64 / interval_2.as_millis() as f64;
     assert!(
-        ratio_1_2 >= 1.2 && ratio_1_2 <= 3.5,
+        (1.2..=3.5).contains(&ratio_1_2),
         "Interval ratio 2/1 should be ~2.0, got {:.2}",
         ratio_1_2
     );
     assert!(
-        ratio_2_3 >= 1.2 && ratio_2_3 <= 3.5,
+        (1.2..=3.5).contains(&ratio_2_3),
         "Interval ratio 3/2 should be ~2.0, got {:.2}",
         ratio_2_3
     );

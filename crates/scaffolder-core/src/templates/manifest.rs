@@ -44,9 +44,9 @@ impl LanguageFiles {
     /// Check if a filename matches any pattern in a list
     fn matches_any(filename: &str, patterns: &[String]) -> bool {
         patterns.iter().any(|pattern| {
-            if pattern.starts_with('*') {
+            if let Some(suffix) = pattern.strip_prefix('*') {
                 // Suffix match: *.ts matches foo.ts
-                filename.ends_with(&pattern[1..])
+                filename.ends_with(suffix)
             } else if pattern.ends_with('*') {
                 // Prefix match: requirements* matches requirements.txt
                 filename.starts_with(&pattern[..pattern.len() - 1])

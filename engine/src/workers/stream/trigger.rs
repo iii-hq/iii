@@ -169,12 +169,12 @@ impl TriggerRegistrator for StreamWorker {
                 let mut triggers_map = stream_triggers.write().await;
                 if let Some(removed_trigger) = triggers_map.remove(&trigger_id) {
                     // Remove from stream_name index
-                    if let Some(stream_name_key) = removed_trigger.config.stream_name {
-                        if let Some(trigger_ids) = by_name.get_mut(&stream_name_key) {
-                            trigger_ids.retain(|id| id != &trigger_id);
-                            if trigger_ids.is_empty() {
-                                by_name.remove(&stream_name_key);
-                            }
+                    if let Some(stream_name_key) = removed_trigger.config.stream_name
+                        && let Some(trigger_ids) = by_name.get_mut(&stream_name_key)
+                    {
+                        trigger_ids.retain(|id| id != &trigger_id);
+                        if trigger_ids.is_empty() {
+                            by_name.remove(&stream_name_key);
                         }
                     }
                 }

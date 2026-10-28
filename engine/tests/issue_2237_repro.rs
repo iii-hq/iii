@@ -249,7 +249,7 @@ mod teardown_race_repro {
         let tracked: Vec<&String> = ids
             .iter()
             .filter(|id| {
-                registry.triggers.contains_key(*id) || registry.pending_triggers.contains_key(*id)
+                registry.triggers.contains_key(id) || registry.pending_triggers.contains_key(*id)
             })
             .collect();
         let ghosts = home.live_ids();

@@ -797,6 +797,7 @@ impl HotCache {
     /// same trace, so neither index moves. `Err` hands the span back when no
     /// snapshot is tracked (never pending, or its slot already left the cache)
     /// and the caller appends it as a fresh span.
+    #[allow(clippy::result_large_err)]
     fn replace_pending(&mut self, bytes: u64, span: StoredSpan) -> Result<(), StoredSpan> {
         if self.pending.is_empty() {
             return Err(span);
@@ -6849,12 +6850,12 @@ mod tests {
             Ok(()) => {
                 // Either early-returned due to disabled config, or successfully ingested.
                 // If storage exists and config doesn't disable it, verify the log was stored.
-                if let Some(config) = get_otel_config() {
-                    if !config.enabled.unwrap_or(true) {
-                        // Config says disabled - verify nothing was stored
-                        if let Some(storage) = get_log_storage() {
-                            assert_eq!(storage.get_logs().len(), 0);
-                        }
+                if let Some(config) = get_otel_config()
+                    && !config.enabled.unwrap_or(true)
+                {
+                    // Config says disabled - verify nothing was stored
+                    if let Some(storage) = get_log_storage() {
+                        assert_eq!(storage.get_logs().len(), 0);
                     }
                 }
             }
@@ -7599,7 +7600,7 @@ mod tests {
         let storage = Arc::new(InMemorySpanStorage::new(100));
         let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = SdkTracerProvider::builder()
-            .with_span_processor(iii_helpers::observability::BaggageSpanProcessor::default())
+            .with_span_processor(iii_helpers::observability::BaggageSpanProcessor)
             .with_span_processor(LiveSpanProcessor::new(storage.clone(), "test-svc".into()))
             // Memory side (final replaces pending) + wire stand-in (OTLP path).
             .with_simple_exporter(InMemorySpanExporter::with_storage(
@@ -10120,9 +10121,7 @@ mod tests {
     #[test]
     fn extract_context_with_no_headers_returns_empty_context() {
         let cx = extract_context(None, None);
-        let span_ref = cx.span();
-        assert!(!span_ref.span_context().is_valid());
-        drop(span_ref);
+        assert!(!cx.span().span_context().is_valid());
         assert!(inject_traceparent_from_context(&cx).is_none());
         assert!(inject_baggage_from_context(&cx).is_none());
     }
@@ -10189,9 +10188,7 @@ mod tests {
     #[test]
     fn invalid_traceparent_extracts_to_invalid_context() {
         let cx = extract_context(Some("not-a-valid-traceparent"), None);
-        let span_ref = cx.span();
-        assert!(!span_ref.span_context().is_valid());
-        drop(span_ref);
+        assert!(!cx.span().span_context().is_valid());
         assert!(inject_traceparent_from_context(&cx).is_none());
     }
 

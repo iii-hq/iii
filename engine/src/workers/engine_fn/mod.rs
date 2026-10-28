@@ -4364,7 +4364,7 @@ mod tests {
     async fn triggers_list_returns_trigger_types_not_instances() {
         let (engine, module) = setup_engine_and_module();
         engine.trigger_registry.trigger_types.insert(
-            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"user-type".to_string()),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, "user-type"),
             crate::trigger::TriggerType::new(
                 "user-type",
                 "User type",
@@ -4373,10 +4373,7 @@ mod tests {
             ),
         );
         engine.trigger_registry.trigger_types.insert(
-            crate::trigger::type_key(
-                crate::protocol::DEFAULT_NAMESPACE,
-                &"engine::internal-type".to_string(),
-            ),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, "engine::internal-type"),
             crate::trigger::TriggerType::new(
                 "engine::internal-type",
                 "Internal",
@@ -4859,7 +4856,7 @@ mod tests {
                 assert_eq!(detail.functions.len(), 2);
                 assert_eq!(detail.registered_triggers.len(), 1);
                 assert_eq!(detail.registered_triggers[0].id, "trg-state");
-                assert!(detail.worker.internal == false);
+                assert!(!detail.worker.internal);
             }
             _ => panic!("expected success"),
         }

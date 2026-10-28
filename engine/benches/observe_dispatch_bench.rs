@@ -19,7 +19,6 @@
 //! `cargo bench -p iii --bench observe_dispatch_bench`
 
 #[path = "../tests/observe_support/mod.rs"]
-#[allow(dead_code)]
 mod observe_support;
 
 use std::sync::Arc;

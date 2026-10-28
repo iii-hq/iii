@@ -306,6 +306,49 @@ impl ConnectionTracker {
     }
 }
 
+fn write_proxy_data(socket: &mut tcp::Socket<'_>, conn: &mut Connection) {
+    if let Some((data, offset)) = &mut conn.write_buf {
+        if socket.can_send() {
+            match socket.send_slice(&data[*offset..]) {
+                Ok(written) => {
+                    *offset += written;
+                    if *offset >= data.len() {
+                        conn.write_buf = None;
+                    }
+                }
+                Err(_) => return,
+            }
+        } else {
+            return;
+        }
+    }
+
+    while conn.write_buf.is_none() {
+        match conn.from_proxy.try_recv() {
+            Ok(data) => {
+                if socket.can_send() {
+                    match socket.send_slice(&data) {
+                        Ok(written) if written < data.len() => {
+                            conn.write_buf = Some((data, written));
+                        }
+                        Err(_) => {
+                            conn.write_buf = Some((data, 0));
+                        }
+                        _ => {}
+                    }
+                } else {
+                    conn.write_buf = Some((data, 0));
+                }
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                conn.proxy_gone = true;
+                break;
+            }
+            Err(mpsc::error::TryRecvError::Empty) => break,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,48 +491,5 @@ mod tests {
         assert!(tracker.has_socket_for(&src2, &dst2));
         assert!(!tracker.has_socket_for(&src1, &dst2));
         assert_eq!(tracker.connections.len(), 2);
-    }
-}
-
-fn write_proxy_data(socket: &mut tcp::Socket<'_>, conn: &mut Connection) {
-    if let Some((data, offset)) = &mut conn.write_buf {
-        if socket.can_send() {
-            match socket.send_slice(&data[*offset..]) {
-                Ok(written) => {
-                    *offset += written;
-                    if *offset >= data.len() {
-                        conn.write_buf = None;
-                    }
-                }
-                Err(_) => return,
-            }
-        } else {
-            return;
-        }
-    }
-
-    while conn.write_buf.is_none() {
-        match conn.from_proxy.try_recv() {
-            Ok(data) => {
-                if socket.can_send() {
-                    match socket.send_slice(&data) {
-                        Ok(written) if written < data.len() => {
-                            conn.write_buf = Some((data, written));
-                        }
-                        Err(_) => {
-                            conn.write_buf = Some((data, 0));
-                        }
-                        _ => {}
-                    }
-                } else {
-                    conn.write_buf = Some((data, 0));
-                }
-            }
-            Err(mpsc::error::TryRecvError::Disconnected) => {
-                conn.proxy_gone = true;
-                break;
-            }
-            Err(mpsc::error::TryRecvError::Empty) => break,
-        }
     }
 }
