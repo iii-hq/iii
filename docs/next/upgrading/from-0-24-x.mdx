@@ -9,10 +9,15 @@ type: "how-to"
 
 0.25 makes every function observable. A trigger type becomes a function that knows who observes it,
 and a trigger becomes an observer created with `worker.observe(source, target, options?)`. The old
-trigger APIs keep working in 0.25, so most projects upgrade without code changes. The exceptions are
-Rust builds that treat warnings as errors (`-D warnings`), which need `#[allow(deprecated)]` on the
-calls they keep, and code that calls `unregisterTriggerType`, which now takes effect. Read the
-[behavior changes](#behavior-changes) first, then move to the new APIs at your own pace.
+trigger APIs keep working in 0.25, so most projects upgrade without code changes. The exceptions:
+
+- Rust builds that treat warnings as errors (`-D warnings`): put `#[allow(deprecated)]` on the calls
+  you keep.
+- Code that calls `unregisterTriggerType`: engines before 0.25 ignored this call. The 0.25 engine
+  removes the trigger type. If your code expects the type to stay, remove the call. See
+  [`unregisterTriggerType` now takes effect](#unregistertriggertype-now-takes-effect).
+
+Read the [behavior changes](#behavior-changes) first, then move to the new APIs at your own pace.
 
 <Note>
   The http, cron, queue, state, stream, pubsub, and database workers still publish trigger types in
@@ -33,7 +38,7 @@ calls they keep, and code that calls `unregisterTriggerType`, which now takes ef
   SDK names its own API):
 
   ```text
-  registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source,
+  registerTrigger is deprecated and will be removed in a future release. Use worker.observe(source,
   target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
   ```
 
@@ -55,12 +60,15 @@ calls they keep, and code that calls `unregisterTriggerType`, which now takes ef
 
 ### Local dispatch
 
-A worker that calls a function it registered itself now runs the handler in-process once the engine
-confirmed the registration, instead of sending the call through the engine. Results, error shapes,
-and timeouts are the same. The differences:
+A worker that calls a function it registered itself now runs the handler in-process after the engine
+confirms the registration. The call does not go through the engine. Results, error shapes, and
+timeouts are the same. The differences:
 
-- **No 16 MiB message limit** on that path, because nothing is serialized. A test that expects
-  `payload_too_large` on a call to a function in the same worker must force the remote path.
+- **No message size limit** on that path, because nothing is serialized. Through the engine, a
+  message can be at most 64 MiB (16 MiB for browsers and SDKs older than 0.25), and a larger one
+  fails with `payload_too_large`. A local call never fails with this error. If a test expects
+  `payload_too_large` on a call to a function in the same worker, send the call with
+  `dispatch: "remote"`.
 - **No engine-side span or call metrics** for the local call. The SDK still records its own
   `execute` span, and reports the number of local invocations every 10 seconds
   (`localinvocationstats`), which the engine adds to `iii.invocations.total` with
@@ -81,8 +89,8 @@ and timeouts are the same. The differences:
   while the connection is down.
 
 Local dispatch is off for a session with an RBAC `middleware_function_id`, or one that may not
-invoke the function, because a local call would bypass those checks. To keep the old behavior for a
-function, a call, or the whole engine:
+invoke the function, because a local call would bypass those checks. Enqueue calls always go through
+the engine. To keep the old behavior for a function, a call, or the whole engine:
 
 | Scope        | Node / browser                                                                                 | Python                 | Rust                                                          | Go                                             |
 | ------------ | ---------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------- | ---------------------------------------------- |
@@ -103,11 +111,12 @@ Its triggers then move to another provider of the type, are taken by a function 
 - **Legacy shim results.** For a `registerTrigger` that the
   [legacy shim](#keep-old-consumers-working) turns into an observer, the engine sends one
   `TriggerRegistrationResult`, also on success. The SDKs ignore the success result.
-- **`RegisterFunction` frames** omit `request_format` and `response_format` when absent instead of
-  sending `null`.
-- **Loop guard.** Every invocation carries an observe depth; activations deeper than
-  `observers.max_observe_depth` (8) are dropped. Workers on 0.24 SDKs do not forward the depth, so
-  through them the engine estimates it from their activations still in flight.
+- **`RegisterFunction` frames** omit `request_format` and `response_format` when they are absent.
+  Before, they sent `null`.
+- **Loop guard.** Every invocation carries an observe depth. When the depth of an event is more than
+  `observers.max_observe_depth` (8 by default), the engine drops it. Workers on 0.24 SDKs do not
+  send the depth. For their calls, the engine uses the largest depth of the invocations still in
+  flight on that worker.
 - **Observe hooks that hang.** An `onObserverAdded` hook still running after 30 seconds fails the
   observer with `OWNER_TIMEOUT`, and the next hook of the same function may start while it runs.
 - **Rust SDK:**
@@ -115,9 +124,9 @@ Its triggers then move to another provider of the type, are taken by a function 
     and exhaustive `match`es on `Message` need updating (prefer the constructors, such as
     `RegisterTriggerInput::new` and `TriggerRequest::new`);
   - the connection state turns `Reconnecting` as soon as the link drops;
-  - a panicking handler now returns an `invocation_failed` error to the caller instead of leaving it
-    to time out;
-  - an `invocation_id` of `None` is omitted from frames instead of sent as `null`.
+  - a handler that panics now returns an `invocation_failed` error to the caller. Before, the call
+    timed out;
+  - frames omit an `invocation_id` of `None`. Before, they sent `null`.
 - **Browser SDK:**
   - `trigger` now sends `metadata`, `traceparent`, and `baggage`, and handlers receive the metadata
     as their second argument;
