@@ -37,7 +37,8 @@ Find yours by its `target` and read its `state`:
 - `active` with `fires` and `dropped` at 0: no event has reached it. Check `delivery`:
   - `owner`: the observer gets an event only when the function's code calls `obs.emit` or `obs.call`
     on it. Inside `onObserverAdded`, the observer is not active yet, so these calls do not deliver.
-    See [Owner delivery](./creating-workers/observable-functions#owner-delivery).
+    See
+    [Advanced observation management](./creating-workers/observable-functions#advanced-observation-management).
   - `auto`: only invocations that start after the observer turned `active`, end with the outcome its
     `on` asks for (`success` by default), and pass its filters are events. A call already running
     when the observer turned `active` is not one, so call the function again.

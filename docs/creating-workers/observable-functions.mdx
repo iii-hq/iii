@@ -10,7 +10,7 @@ type: "how-to"
 Every function you register can be observed. By default, each successful call of the function is an
 event, and the engine runs the target of each [observer](../using-iii/observers) whose filters
 match. The function does not need an `observe` descriptor or any other change. This is **auto
-delivery**, the default. See [Example: auto delivery](#example-auto-delivery).
+delivery**, the default. See [Observing functions](#observing-functions).
 
 The rest of this page is for the worker that hosts a function (its owner). It shows how the owner
 can:
@@ -20,7 +20,7 @@ can:
 - check for observers, and run code when an observer is added or removed
   ([Know when a function is observed](#know-when-a-function-is-observed));
 - send different events to different observers, based on the `args` of each observer
-  ([Owner delivery](#owner-delivery));
+  ([Advanced observation management](#advanced-observation-management));
 - accept the old `registerTrigger` calls of a trigger type the function replaces
   ([Accept old triggers](#accept-old-triggers)).
 
@@ -34,7 +34,7 @@ In 0.25 this replaces `registerTriggerType`: a trigger type becomes a function w
 descriptor, and a trigger becomes an observer. To move an existing trigger type, see
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
 
-## Example: auto delivery
+## Observing functions
 
 In this example, `demo::double` is a regular function, so it uses auto delivery: each successful
 call of `demo::double` is an event. It has no `observe` descriptor and no hooks. The observer runs
@@ -372,7 +372,7 @@ To run code when an observer is added or removed, give the function `onObserverA
   </Tab>
 </Tabs>
 
-## Owner delivery
+## Advanced observation management
 
 <Note>
   Use owner delivery when different observers of the function must get different events, and
