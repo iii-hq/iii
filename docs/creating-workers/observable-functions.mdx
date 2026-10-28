@@ -91,6 +91,141 @@ In 0.25 this replaces `registerTriggerType`: a trigger type becomes a function w
 descriptor, and a trigger becomes an observer. To move an existing trigger type, see
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
 
+## Example: auto delivery
+
+In this example, `demo::double` is a regular function, so it uses auto delivery: each successful
+call of `demo::double` is an event. It has no `observe` descriptor and no hooks. The observer runs
+`demo::on-double` after each event, and `demo::on-double` gets the
+[`Observed` envelope](../using-iii/observers#target-arguments) of the call. Here the source, the
+target, and the observer are in one worker. They can also be in different workers.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
+    import type { Observed } from "iii-sdk";
+
+    const logger = new Logger();
+
+    // The source: a regular function. Auto delivery is the default.
+    worker.registerFunction("demo::double", async (input: { n: number }) => ({ n: input.n * 2 }));
+
+    // The target: it gets the Observed envelope of each successful call of demo::double.
+    worker.registerFunction("demo::on-double", async (event: Observed<{ n: number }, { n: number }>) => {
+      logger.info("demo::double was called", { input: event.input, output: event.output });
+      return null;
+    });
+
+    // Run demo::on-double after each successful call of demo::double.
+    await worker.observe({ function_id: "demo::double" }, "demo::on-double").ready();
+
+    await worker.trigger({ function_id: "demo::double", payload: { n: 21 } });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii_helpers.observability import Logger
+
+    logger = Logger()
+
+    # The source: a regular function. Auto delivery is the default.
+    worker.register_function("demo::double", lambda input: {"n": input["n"] * 2})
+
+    # The target: it gets the Observed envelope of each successful call of demo::double.
+    def on_double(event: dict) -> None:
+        logger.info("demo::double was called", {"input": event.get("input"), "output": event.get("output")})
+
+    worker.register_function("demo::on-double", on_double)
+
+    # Run demo::on-double after each successful call of demo::double.
+    worker.observe({"function_id": "demo::double"}, "demo::on-double").ready()
+
+    worker.trigger({"function_id": "demo::double", "payload": {"n": 21}})
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_helpers::observability::Logger;
+    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::{Error, Observed, RegisterFunction, Source};
+    use serde_json::{json, Value};
+
+    // The source: a regular function. Auto delivery is the default.
+    worker.register_function(
+        "demo::double",
+        RegisterFunction::new(|input: Value| {
+            Ok::<_, Error>(json!({ "n": input["n"].as_i64().unwrap_or(0) * 2 }))
+        }),
+    );
+
+    // The target: it gets the Observed envelope of each successful call of demo::double.
+    worker.register_function(
+        "demo::on-double",
+        RegisterFunction::new(|event: Observed| {
+            Logger::new().info(
+                "demo::double was called",
+                Some(json!({ "input": event.input, "output": event.output })),
+            );
+            Ok::<_, Error>(())
+        }),
+    );
+
+    // Run demo::on-double after each successful call of demo::double.
+    worker
+        .observe(Source::function("demo::double"), "demo::on-double")
+        .ready()
+        .await?;
+
+    worker
+        .trigger(TriggerRequest::new("demo::double", json!({ "n": 21 })))
+        .await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // The source: a regular function. Auto delivery is the default.
+    worker.RegisterFunction("demo::double", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var input struct {
+            N int `json:"n"`
+        }
+        if err := json.Unmarshal(data, &input); err != nil {
+            return nil, err
+        }
+        return map[string]int{"n": input.N * 2}, nil
+    })
+
+    // The target: it gets the Observed envelope of each successful call of demo::double.
+    worker.RegisterFunction("demo::on-double", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var event iii.Observed
+        if err := json.Unmarshal(data, &event); err != nil {
+            return nil, err
+        }
+        log.Printf("demo::double was called: input %s, output %s", event.Input, event.Output)
+        return nil, nil
+    })
+
+    // Run demo::on-double after each successful call of demo::double.
+    observer, err := worker.Observe(iii.Source{FunctionID: "demo::double"}, "demo::on-double")
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := observer.Ready(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    payload, _ := json.Marshal(map[string]int{"n": 21})
+    worker.Trigger(ctx, iii.TriggerRequest{FunctionID: "demo::double", Data: payload})
+    ```
+
+  </Tab>
+</Tabs>
+
+After the call, `demo::on-double` logs `demo::double was called` with the input `{ n: 21 }` and the
+output `{ n: 42 }`.
+
 ## Know when a function is observed
 
 `FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `worker.IsObserved(id)` in Go)
@@ -313,6 +448,12 @@ event.
 (`{ path }`) and gets the changes to that file only. The numbered comments show the steps above. The
 worker polls each watched file 1 time each second. When many observers watch the same path, the
 worker still polls that path only 1 time each second.
+
+This function uses owner delivery and the two hooks because its observers decide which files to
+watch. The worker cannot poll every file and then filter the changes. It must learn the path of each
+observer before it can produce events for that path, and it must stop when no observer wants that
+path, or its pollers use resources for nothing. The hooks are the only places where the function
+learns that an observer arrived or left.
 
 <Tabs>
   <Tab title="Node / TypeScript">
