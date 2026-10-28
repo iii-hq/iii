@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { describe, it } from "node:test"
+import { afterEach, describe, it } from "node:test"
 
 import {
   CONTRIBUTOR_REPOS,
@@ -9,6 +9,7 @@ import {
   mergeContributors,
   repoSlug,
 } from "../lib/contributors"
+import { fetchRepoContributors } from "./generate-contributors"
 
 const user = (id: number, login: string, contributions: number, type = "User"): GitHubContributor => ({
   id,
@@ -101,5 +102,30 @@ describe("merge", () => {
 
   it("is empty when nothing was read", () => {
     assert.deepEqual(mergeContributors([]), [])
+  })
+})
+
+describe("fetching", () => {
+  const realFetch = globalThis.fetch
+  const answer = (response: () => Response) => {
+    globalThis.fetch = async () => response()
+  }
+  afterEach(() => {
+    globalThis.fetch = realFetch
+  })
+
+  it("reads a repository with no commits (204 No Content) as nobody", async () => {
+    answer(() => new Response(null, { status: 204 }))
+    assert.deepEqual(await fetchRepoContributors("iii-hq/empty"), [])
+  })
+
+  it("falls back when a successful response is not JSON", async () => {
+    answer(() => new Response("<html>", { status: 200 }))
+    assert.equal(await fetchRepoContributors("iii-hq/iii"), null)
+  })
+
+  it("falls back when a successful response is not a list", async () => {
+    answer(() => Response.json({ message: "unexpected" }))
+    assert.equal(await fetchRepoContributors("iii-hq/iii"), null)
   })
 })

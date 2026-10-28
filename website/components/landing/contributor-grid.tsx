@@ -2,7 +2,7 @@
 
 import { ArrowUpRightIcon, PlusIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
-import { type CSSProperties, useState } from 'react'
+import { type CSSProperties, type FocusEvent, useState } from 'react'
 
 import { CanvasRevealEffect } from '@/components/ui/canvas-reveal-effect'
 import { useMotionPreference } from '@/hooks/use-motion-preference'
@@ -38,7 +38,7 @@ const canHover = () => window.matchMedia('(hover: hover)').matches
  * the footer's external links do. The whole cell is the link to the profile. The canvas mounts only while a cell
  * is hovered, so sixty cells cost at most one WebGL context; reduced motion gets a plain black fill.
  */
-function Tile({ contributor: c }: { contributor: Contributor }) {
+function Tile({ contributor: c, copy = false }: { contributor: Contributor; copy?: boolean }) {
   const [hovered, setHovered] = useState(false)
   const reduce = useMotionPreference()
   const commits = `${c.contributions.toLocaleString('en-US')} ${c.contributions === 1 ? 'commit' : 'commits'}`
@@ -49,6 +49,7 @@ function Tile({ contributor: c }: { contributor: Contributor }) {
         target="_blank"
         rel="noopener noreferrer"
         aria-label={`${c.login}, ${commits}, on GitHub`}
+        tabIndex={copy ? -1 : undefined}
         data-hovered={hovered}
         onMouseEnter={() => canHover() && setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -139,9 +140,20 @@ function JoinTile({ label, href }: { label: string; href: string }) {
 }
 
 /**
+ * Focus that has left the row puts the viewport back at its start, where the marquee's loop begins. Under reduced
+ * motion the row is the reader's to scroll, so it stays where they left it.
+ */
+function resetOnLeave(e: FocusEvent<HTMLDivElement>) {
+  if (e.currentTarget.contains(e.relatedTarget)) return
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  e.currentTarget.scrollLeft = 0
+}
+
+/**
  * One row that rotates through everyone: a marquee of cells sliding left (contributors.module.css), with the
  * "your name here" cell pinned at the right end so it is always in view. The track carries the list twice for a
- * seamless loop; the second copy is inert, so screen readers and the tab order meet each person once.
+ * seamless loop. The second copy stays clickable, since it is on screen for half of every loop, but is hidden from
+ * screen readers and out of the tab order, so both meet each person once.
  */
 export function ContributorGrid({
   contributors,
@@ -150,14 +162,19 @@ export function ContributorGrid({
   contributors: Contributor[]
   join: { label: string; href: string }
 }) {
-  const cells = contributors.map((c) => <Tile key={c.id} contributor={c} />)
   return (
     <div className="flex border-y border-l">
-      <div className={styles.viewport}>
+      <div className={styles.viewport} onBlur={resetOnLeave}>
         <div className={styles.track} style={{ '--cells': contributors.length } as CSSProperties}>
-          <ul className="flex">{cells}</ul>
-          <ul className="flex" aria-hidden inert>
-            {cells}
+          <ul className="flex">
+            {contributors.map((c) => (
+              <Tile key={c.id} contributor={c} />
+            ))}
+          </ul>
+          <ul className={cn('flex', styles.copy)} aria-hidden>
+            {contributors.map((c) => (
+              <Tile key={c.id} contributor={c} copy />
+            ))}
           </ul>
         </div>
       </div>

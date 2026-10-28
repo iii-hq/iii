@@ -51,8 +51,20 @@ export async function fetchRepoContributors(repo: string): Promise<GitHubContrib
       console.warn(`contributors: ${repo} page ${page} returned ${res.status}`)
       return null
     }
-    const batch = (await res.json()) as GitHubContributor[]
-    entries.push(...batch)
+    // 204 No Content: GitHub's answer for a repository with no commits yet.
+    if (res.status === 204) break
+    let batch: unknown
+    try {
+      batch = await res.json()
+    } catch (error) {
+      console.warn(`contributors: ${repo} page ${page} is not JSON (${(error as Error).message})`)
+      return null
+    }
+    if (!Array.isArray(batch)) {
+      console.warn(`contributors: ${repo} page ${page} is not a list`)
+      return null
+    }
+    entries.push(...(batch as GitHubContributor[]))
     if (batch.length < PER_PAGE) break
   }
   return entries
