@@ -895,11 +895,11 @@ of the example code. The SDK does not compare the args of different observers.
 A worker that handles `/weather` registers its handler and observes the router with its command:
 
 ```typescript
-weatherWorker.registerFunction("weather::reply", async (req: { text: string }) => ({
+worker.registerFunction("weather::reply", async (req: { text: string }) => ({
   reply: `Sunny in ${req.text}`,
 }));
 
-const weather = weatherWorker.observe(
+const weather = worker.observe(
   { function_id: "chat::on-command", args: { command: "weather" } },
   "weather::reply",
 );
