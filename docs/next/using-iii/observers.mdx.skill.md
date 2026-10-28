@@ -997,13 +997,16 @@ happens. Each call is an event for its observers:
 
 ```typescript
 // Producer: call this whenever a file changes.
-worker.registerFunction("files::on-change", async (change: FileChanged) => change);
+watcherWorker.registerFunction("files::on-change", async (change: FileChanged) => change);
 
 // ...in your watcher loop
-await worker.trigger({ function_id: "files::on-change", payload: { path, event: "modified" } });
+await watcherWorker.trigger({
+  function_id: "files::on-change",
+  payload: { path, event: "modified" },
+});
 
 // Consumer, in any worker: when a file changes, process it.
-worker.observe({ function_id: "files::on-change" }, "csv::process");
+csvWorker.observe({ function_id: "files::on-change" }, "csv::process");
 ```
 
 A function can also send different events to different observers. For example, a file watcher can
