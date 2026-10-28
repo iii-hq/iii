@@ -35,9 +35,9 @@ Find yours by its `target` and read its `state`:
   is not registered, or the args were refused (`INVALID_ARGS`). See
   [Observer states](./using-iii/observers#observer-states).
 - `active` with `fires` and `dropped` at 0: no event has reached it. Check `delivery`:
-  - `owner`: calling the function is not an event. Its owner must hand each event to the observer
-    with `obs.emit` or `obs.call`, and not from `onObserverAdded`, where the observer is not active
-    yet. See [Owner delivery](./creating-workers/observable-functions#owner-delivery).
+  - `owner`: the observer gets an event only when the function's code calls `obs.emit` or `obs.call`
+    on it. Inside `onObserverAdded`, the observer is not active yet, so these calls do not deliver.
+    See [Owner delivery](./creating-workers/observable-functions#owner-delivery).
   - `auto`: only invocations that start after the observer turned `active`, end with the outcome its
     `on` asks for (`success` by default), and pass its filters are events. A call already running
     when the observer turned `active` is not one, so call the function again.
@@ -46,8 +46,8 @@ Find yours by its `target` and read its `state`:
 
 ## `Logger` lines do not show up
 
-`Logger` sends its lines to the engine, not to your worker's output. Look in the engine's output
-(under `iii compose --up`, `.iii/compose/<namespace>/engine.log`), or run:
+`Logger` sends its lines to the engine. They do not appear in your worker's output. Look in the
+engine's output (under `iii compose --up`, `.iii/compose/<namespace>/engine.log`), or run:
 
 ```bash
 iii trigger engine::logs::list
