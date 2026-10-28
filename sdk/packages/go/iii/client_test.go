@@ -68,10 +68,10 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	m := newMockEngine(t)
 	c := New(m.url)
 	// Register before connecting so all replay on connect.
-	_ = c.RegisterFunction("hello::greet", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("hello::greet", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return map[string]string{"msg": "hi"}, nil
 	})
-	_ = c.RegisterTrigger("t1", "http", "hello::greet", json.RawMessage(`{"path":"/x"}`))
+	_, _ = c.RegisterTrigger(RegisterTriggerInput{ID: "t1", Type: "http", FunctionID: "hello::greet", Config: json.RawMessage(`{"path":"/x"}`)})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -122,7 +122,7 @@ func TestRegisterFunctionAcceptsLegacyHandler(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	if err := c.RegisterFunction("legacy::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("legacy::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
 		return json.RawMessage(data), nil
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
@@ -148,7 +148,7 @@ func TestRegisterFunctionOptionsCarryMetadata(t *testing.T) {
 	m := newMockEngine(t)
 	c := New(m.url)
 	metadata := json.RawMessage(`{"owner":"billing","priority":"high"}`)
-	if err := c.RegisterFunction("meta::registered", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("meta::registered", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	}, RegisterFunctionOptions{Metadata: metadata}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
@@ -178,7 +178,7 @@ func TestRegisterFunctionOptionsCarryMetadata(t *testing.T) {
 
 func TestRegisterFunctionRejectsMultipleOptions(t *testing.T) {
 	c := New(DefaultEngineURL)
-	err := c.RegisterFunction("meta::too-many-options", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, err := c.RegisterFunction("meta::too-many-options", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	}, RegisterFunctionOptions{}, RegisterFunctionOptions{})
 	if err == nil {
@@ -210,7 +210,7 @@ func TestInboundInvokeRoundtrip(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	_ = c.RegisterFunction("echo::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("echo::fn", func(ctx context.Context, data json.RawMessage) (any, error) {
 		return json.RawMessage(data), nil // echo the input back
 	})
 
@@ -255,7 +255,7 @@ func TestInboundInvokeDeliversMetadata(t *testing.T) {
 
 		metaCh := make(chan json.RawMessage, 1)
 		c := connectClient(t, m)
-		_ = c.RegisterFunction("meta::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		_, _ = c.RegisterFunction("meta::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 			metadata, _ := MetadataFromContext(ctx)
 			metaCh <- metadata
 			return map[string]bool{"ok": true}, nil
@@ -288,7 +288,7 @@ func TestInboundInvokeDeliversMetadata(t *testing.T) {
 
 		metaCh := make(chan json.RawMessage, 1)
 		c := connectClient(t, m)
-		_ = c.RegisterFunction("nometa::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		_, _ = c.RegisterFunction("nometa::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 			metadata, ok := MetadataFromContext(ctx)
 			if ok {
 				t.Error("MetadataFromContext reported ok for an invocation without metadata")
@@ -322,7 +322,7 @@ func TestInboundInvokeHandlerError(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	_ = c.RegisterFunction("boom::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("boom::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, errors.New("kaboom")
 	})
 
@@ -411,7 +411,7 @@ func TestTriggerAwaitResult(t *testing.T) {
 	c := connectClient(t, m)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: "svc::ping", Data: json.RawMessage(`{}`)})
+	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: "svc::ping", Payload: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("Trigger: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestTriggerVoidFireAndForget(t *testing.T) {
 	defer cancel()
 	res, err := c.Trigger(ctx, TriggerRequest{
 		FunctionID: LogInfo,
-		Data:       json.RawMessage(`{"msg":"hello"}`),
+		Payload:    json.RawMessage(`{"msg":"hello"}`),
 		Action:     VoidAction(),
 	})
 	if err != nil {
@@ -510,7 +510,7 @@ func TestTriggerCarriesMetadata(t *testing.T) {
 	defer cancel()
 	if _, err := c.Trigger(ctx, TriggerRequest{
 		FunctionID: "svc::work",
-		Data:       json.RawMessage(`{"x":1}`),
+		Payload:    json.RawMessage(`{"x":1}`),
 		Metadata:   json.RawMessage(`{"tenant":"acme"}`),
 		Action:     VoidAction(),
 	}); err != nil {
@@ -601,7 +601,7 @@ func TestReconnectResendsRegistrations(t *testing.T) {
 		JitterFactor:      0,
 		MaxRetries:        -1,
 	}))
-	_ = c.RegisterFunction("persist::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("persist::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -723,7 +723,7 @@ func TestInboundRegisterTrigger(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	if err := c.RegisterTriggerType("cron", "periodic", handler); err != nil {
+	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "cron", Description: "periodic"}, handler); err != nil {
 		t.Fatalf("RegisterTriggerType: %v", err)
 	}
 
@@ -769,7 +769,7 @@ func TestInboundUnregisterTrigger(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	if err := c.RegisterTriggerType("cron", "periodic", handler); err != nil {
+	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "cron", Description: "periodic"}, handler); err != nil {
 		t.Fatalf("RegisterTriggerType: %v", err)
 	}
 
@@ -828,7 +828,7 @@ func TestHandlerInvocationErrorPassthrough(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	_ = c.RegisterFunction("rbac::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("rbac::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, &InvocationError{Code: "FORBIDDEN", Message: "denied"}
 	})
 
@@ -851,8 +851,8 @@ func TestOptionsAndState(t *testing.T) {
 	if c.name != "worker-x" {
 		t.Errorf("WithName not applied: %q", c.name)
 	}
-	if c.State() != StateDisconnected {
-		t.Errorf("initial State = %q, want disconnected", c.State())
+	if c.ConnectionState() != StateDisconnected {
+		t.Errorf("initial State = %q, want disconnected", c.ConnectionState())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -860,8 +860,8 @@ func TestOptionsAndState(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if c.State() != StateConnected {
-		t.Errorf("State after Connect = %q, want connected", c.State())
+	if c.ConnectionState() != StateConnected {
+		t.Errorf("State after Connect = %q, want connected", c.ConnectionState())
 	}
 }
 

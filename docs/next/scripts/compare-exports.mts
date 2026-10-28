@@ -2,15 +2,18 @@
  * compare-exports.mts — cross-SDK export parity matrix.
  *
  * Extracts the public export surface of each SDK (Node `iii-sdk`, Python `iii`,
- * Rust `iii_sdk`, Browser `iii-browser-sdk`), matches symbols across them by a
- * casing/separator-insensitive key (so `registerWorker` ≍ `register_worker`),
- * and writes a CSV that flags mismatches. Compares the EXPORTS themselves only —
- * it does not care whether a symbol documents params/examples.
+ * Rust `iii_sdk`, Browser `iii-browser-sdk`, Go `iii`), matches symbols across
+ * them by a casing/separator-insensitive key (so `registerWorker` ≍
+ * `register_worker`), and writes a CSV that flags mismatches. Compares the
+ * EXPORTS themselves only — it does not care whether a symbol documents
+ * params/examples.
  *
  * Browser is treated as secondary: rows are driven by the union of the three
  * primary SDKs (Node/Python/Rust); browser only fills its column when it matches
  * a primary row, and browser-only exports are listed in a separate trailing
- * block so they don't punch holes through the main matrix.
+ * block so they don't punch holes through the main matrix. Go is secondary the
+ * same way: its column shows which primary exports the Go SDK has (a blank cell
+ * is a gap), and Go-only exports get their own trailing block.
  *
  * Usage:
  *   pnpm tsx docs/next/scripts/compare-exports.mts <out.csv> [flags]
@@ -20,11 +23,12 @@
  *
  * Extraction (skipped with --use-existing) shells out to the same tools the
  * docs pipeline uses: TypeDoc (Node/Browser), griffe (Python), nightly rustdoc
- * (Rust). Run from the repo root.
+ * (Rust), docs/next/scripts/godoc-json (Go). Run from the repo root.
  */
 import { execSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
+import { isGoHelpersPackage } from './parsers/parse-godoc.mjs'
 
 const ROOT = process.cwd()
 
@@ -41,7 +45,7 @@ if (positional.length !== 1 || flags.has('--help')) {
 const OUT = isAbsolute(positional[0]) ? positional[0] : resolve(ROOT, positional[0])
 
 // ── model ─────────────────────────────────────────────────────────────────
-type Sdk = 'node' | 'python' | 'rust' | 'browser'
+type Sdk = 'node' | 'python' | 'rust' | 'browser' | 'go'
 const PRIMARY: Sdk[] = ['node', 'python', 'rust']
 interface Export { name: string; subpath: string; kind: string }
 
@@ -206,6 +210,40 @@ function extractRustdoc(jsonPath: string): Export[] {
   return out
 }
 
+// ── go/doc JSON (Go) ───────────────────────────────────────────────────────────
+// Every exported const, var, func and type of the SDK packages (`iii`,
+// `iii/filter`, ...), helpers packages excluded as for the other SDKs. go/doc
+// files constructors and typed constants under their type; they are exports
+// all the same. Methods are not exports.
+function extractGodoc(jsonPath: string): Export[] {
+  const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
+  const out: Export[] = []
+  const skip = (doc: any) => !INCLUDE_DEPRECATED && !!doc?.deprecated
+  for (const pkg of raw.packages ?? []) {
+    if (isGoHelpersPackage(pkg.relPath)) continue
+    const subpath = pkg.relPath ? `iii/${pkg.relPath}` : 'iii'
+    const values = (groups: any[] = []) => {
+      for (const g of groups) {
+        if (skip(g.doc)) continue
+        for (const s of g.specs ?? []) if (!skip(s.doc)) out.push({ name: s.name, subpath, kind: 'const' })
+      }
+    }
+    const funcs = (list: any[] = []) => {
+      for (const f of list) if (!skip(f.doc)) out.push({ name: f.name, subpath, kind: 'function' })
+    }
+    values(pkg.consts)
+    values(pkg.vars)
+    funcs(pkg.funcs)
+    for (const t of pkg.types ?? []) {
+      if (!skip(t.doc)) out.push({ name: t.name, subpath, kind: 'type' })
+      values(t.consts)
+      values(t.vars)
+      funcs(t.funcs)
+    }
+  }
+  return out
+}
+
 // ── extraction (toolchain shell-outs) ──────────────────────────────────────
 interface Target {
   sdk: Sdk
@@ -233,6 +271,11 @@ const TARGETS: Target[] = [
     sdk: 'browser', json: resolve(ROOT, 'sdk/packages/node/iii-browser/api-docs.json'),
     extract: () => execSync('pnpm --filter iii-browser-sdk docs:json', { cwd: ROOT, stdio: 'pipe' }),
     parse: j => extractTypedoc(j, 'iii-browser-sdk'),
+  },
+  {
+    sdk: 'go', json: resolve(ROOT, 'sdk/packages/go/iii/api-docs.json'),
+    extract: () => execSync(`go run . -root "${resolve(ROOT, 'sdk/packages/go/iii')}" -out "${resolve(ROOT, 'sdk/packages/go/iii/api-docs.json')}"`, { cwd: resolve(ROOT, 'docs/next/scripts/godoc-json'), stdio: 'pipe' }),
+    parse: extractGodoc,
   },
 ]
 
@@ -289,6 +332,7 @@ interface Row {
   canonical: string; kind: string
   node: string; nodePath: string; python: string; pythonPath: string
   rust: string; rustPath: string; browser: string; browserPath: string
+  go: string; goPath: string
   status: string
 }
 const rows: Row[] = []
@@ -296,7 +340,7 @@ for (const k of primaryKeys) {
   const e = (sdk: Sdk) => get(sdk, k)
   const present = PRIMARY.filter(s => e(s))
   const missing = PRIMARY.filter(s => !e(s))
-  const kinds = (['node', 'python', 'rust', 'browser'] as Sdk[]).map(s => e(s)?.kind).filter(Boolean) as string[]
+  const kinds = (['node', 'python', 'rust', 'browser', 'go'] as Sdk[]).map(s => e(s)?.kind).filter(Boolean) as string[]
   const anyKind = kinds.find(x => x !== 'reference' && x !== 'other') ?? kinds[0] ?? ''
   // Path-aligned iff the present primary SDKs share at least one normalized path.
   let shared: Set<string> | null = null
@@ -317,6 +361,7 @@ for (const k of primaryKeys) {
     python: e('python')?.name ?? '', pythonPath: showPath('python'),
     rust: e('rust')?.name ?? '', rustPath: showPath('rust'),
     browser: e('browser')?.name ?? '', browserPath: showPath('browser'),
+    go: e('go')?.name ?? '', goPath: showPath('go'),
     status,
   })
 }
@@ -333,20 +378,34 @@ const browserOnly = [...(byKeyBySdk.get('browser')?.entries() ?? [])]
   .map(([, a]) => a)
   .sort((a, b) => a.name.localeCompare(b.name))
 
+// go-only exports: the same kind of trailing block.
+const goOnly = [...(byKeyBySdk.get('go')?.entries() ?? [])]
+  .filter(([k]) => !primaryKeys.has(k))
+  .map(([, a]) => a)
+  .sort((a, b) => a.name.localeCompare(b.name))
+
 // ── write CSV ────────────────────────────────────────────────────────────────
 const cell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
-const HEADER = ['canonical', 'kind', 'node', 'node_path', 'python', 'python_path', 'rust', 'rust_path', 'browser', 'browser_path', 'status']
+const HEADER = ['canonical', 'kind', 'node', 'node_path', 'python', 'python_path', 'rust', 'rust_path', 'browser', 'browser_path', 'go', 'go_path', 'status']
 const lines: string[] = []
 lines.push(HEADER.join(','))
 for (const r of rows) {
-  lines.push([r.canonical, r.kind, r.node, r.nodePath, r.python, r.pythonPath, r.rust, r.rustPath, r.browser, r.browserPath, r.status].map(cell).join(','))
+  lines.push([r.canonical, r.kind, r.node, r.nodePath, r.python, r.pythonPath, r.rust, r.rustPath, r.browser, r.browserPath, r.go, r.goPath, r.status].map(cell).join(','))
 }
 if (browserOnly.length) {
   lines.push('')
   lines.push(cell('# browser-only exports (no Node/Python/Rust equivalent)'))
   lines.push(HEADER.join(','))
   for (const a of browserOnly) {
-    lines.push([key(a.name), a.kind, '', '', '', '', '', '', a.name, bestSub(a), 'browser-only'].map(cell).join(','))
+    lines.push([key(a.name), a.kind, '', '', '', '', '', '', a.name, bestSub(a), '', '', 'browser-only'].map(cell).join(','))
+  }
+}
+if (goOnly.length) {
+  lines.push('')
+  lines.push(cell('# go-only exports (no Node/Python/Rust equivalent)'))
+  lines.push(HEADER.join(','))
+  for (const a of goOnly) {
+    lines.push([key(a.name), a.kind, '', '', '', '', '', '', '', '', a.name, bestSub(a), 'go-only'].map(cell).join(','))
   }
 }
 mkdirSync(dirname(OUT), { recursive: true })
@@ -355,7 +414,7 @@ writeFileSync(OUT, lines.join('\n') + '\n', 'utf-8')
 // ── summary ──────────────────────────────────────────────────────────────────
 const matched = rows.filter(r => r.status === 'all').length
 const mism = rows.length - matched
-const counts = (['node', 'python', 'rust', 'browser'] as Sdk[]).map(s => `${s}=${byKeyBySdk.get(s)?.size ?? 0}`).join('  ')
+const counts = (['node', 'python', 'rust', 'browser', 'go'] as Sdk[]).map(s => `${s}=${byKeyBySdk.get(s)?.size ?? 0}`).join('  ')
 console.log(`\n[compare-exports] surfaces: ${counts}`)
-console.log(`[compare-exports] primary rows: ${rows.length} (${matched} in all 3, ${mism} mismatched), browser-only: ${browserOnly.length}`)
+console.log(`[compare-exports] primary rows: ${rows.length} (${matched} in all 3, ${mism} mismatched), browser-only: ${browserOnly.length}, go-only: ${goOnly.length}`)
 console.log(`[compare-exports] wrote ${OUT}`)

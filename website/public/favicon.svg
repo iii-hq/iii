@@ -1,4 +1,4 @@
-<svg viewBox="0 0 933.61 1050.31" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1075.74 1075.74" xmlns="http://www.w3.org/2000/svg">
   <style>
     .bar { fill: #000000; }
     @media (prefers-color-scheme: dark) {
@@ -6,15 +6,15 @@
     }
   </style>
   <!-- First i - dot -->
-  <rect class="bar" width="233.4" height="233.4"/>
+  <rect class="bar" y="0.05" width="268.94" height="268.94"/>
   <!-- First i - stem -->
-  <rect class="bar" y="350.1" width="233.4" height="700.21"/>
+  <rect class="bar" y="403.45" width="268.94" height="672.24"/>
   <!-- Second i - dot -->
-  <rect class="bar" x="350.1" width="233.4" height="233.4"/>
+  <rect class="bar" x="403.4" y="0.05" width="268.94" height="268.94"/>
   <!-- Second i - stem -->
-  <rect class="bar" x="350.1" y="350.1" width="233.4" height="700.21"/>
+  <rect class="bar" x="403.4" y="403.45" width="268.94" height="672.24"/>
   <!-- Third i - dot -->
-  <rect class="bar" x="700.21" width="233.4" height="233.4"/>
+  <rect class="bar" x="806.81" y="0.05" width="268.94" height="268.94"/>
   <!-- Third i - stem -->
-  <rect class="bar" x="700.21" y="350.1" width="233.4" height="700.21"/>
+  <rect class="bar" x="806.81" y="403.45" width="268.94" height="672.24"/>
 </svg>

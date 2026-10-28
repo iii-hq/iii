@@ -35,7 +35,7 @@ type workerInfo struct {
 func TestWorkerRegistersWithGoRuntime(t *testing.T) {
 	workerName := "test-worker-meta-" + uniqueSuffix(t)
 	c := connectNamed(t, workerName)
-	if err := c.RegisterFunction("test::worker_meta::go::probe", func(_ context.Context, _ json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::worker_meta::go::probe", func(_ context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
@@ -44,7 +44,7 @@ func TestWorkerRegistersWithGoRuntime(t *testing.T) {
 
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: iii.FnListWorkers,
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("engine::workers::list: %v", err)

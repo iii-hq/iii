@@ -1,20 +1,22 @@
-import type { FunctionDoc, ModuleDoc, SdkDoc, TypeDoc } from '../types.mjs'
-import { renderParamsTable, renderReturnsTable, renderTypesIndex, codeBlock } from './components.mjs'
+import type { FunctionDoc, ModuleDoc, SdkDoc, TypeDoc, ValueGroupDoc } from '../types.mjs'
+import { renderParamsTable, renderReturnsTable, renderTypesIndex, renderValuesTable, codeBlock } from './components.mjs'
 
 const LANG_MAP: Record<string, string> = {
   node: 'typescript',
   python: 'python',
   rust: 'rust',
+  go: 'go',
 }
 
 // Canonical ordering for the core worker-handle methods in the generated docs.
 // Matched case-insensitively and ignoring underscores so one list covers both
-// camelCase (Node/Browser) and snake_case (Python/Rust). Methods not listed here
+// camelCase (Node/Browser) and snake_case (Python/Rust), and ignoring a
+// receiver prefix (Go headings read `Client.Trigger`). Methods not listed here
 // keep their existing alphabetical order and sort after these.
 const METHOD_ORDER = ['registertrigger', 'registerfunction', 'trigger', 'registertriggertype', 'unregistertriggertype']
 
 function methodRank(name: string): number {
-  const i = METHOD_ORDER.indexOf(name.toLowerCase().replace(/_/g, ''))
+  const i = METHOD_ORDER.indexOf(name.replace(/^.*\./, '').toLowerCase().replace(/_/g, ''))
   return i === -1 ? METHOD_ORDER.length : i
 }
 
@@ -193,6 +195,23 @@ function renderType(type: TypeDoc, codeLang: string, knownTypes: Set<string>, de
   return lines.join('\n')
 }
 
+/**
+ * Constant or variable declaration groups (Go): each group's doc comment, then
+ * its values as a table.
+ */
+function renderValueGroups(groups: ValueGroupDoc[]): string[] {
+  const lines: string[] = []
+  for (const group of groups) {
+    if (group.description) {
+      lines.push(escapeMdxText(group.description))
+      lines.push('')
+    }
+    lines.push(renderValuesTable(group.values))
+    lines.push('')
+  }
+  return lines
+}
+
 function renderFrontmatter(doc: SdkDoc): string[] {
   const lines = ['---', `title: "${doc.metadata.title}"`]
   // For the per-language helpers (library) pages the title is "Helpers (Lang)";
@@ -232,6 +251,11 @@ function renderLibraryMdx(doc: SdkDoc): string {
   lines.push(escapeMdxText(doc.metadata.description))
   lines.push('')
 
+  if (modules.length === 0 && doc.libraryEmptyNote) {
+    lines.push(escapeMdxText(doc.libraryEmptyNote))
+    lines.push('')
+  }
+
   for (const mod of modules) {
     lines.push(`## ${mod.name}`)
     lines.push('')
@@ -254,6 +278,13 @@ function renderLibraryMdx(doc: SdkDoc): string {
         }
         lines.push(renderMethod(fn, lang, knownTypes))
       })
+    }
+
+    for (const [title, groups] of [['Constants', mod.constants], ['Variables', mod.variables]] as const) {
+      if (!groups?.length) continue
+      lines.push(`### ${title}`)
+      lines.push('')
+      lines.push(...renderValueGroups(groups))
     }
 
     if (mod.types.length > 0) {
@@ -321,6 +352,22 @@ export function renderSdkMdx(doc: SdkDoc): string {
       }
       lines.push(renderMethod(fn, lang, knownTypes, typesByName))
     })
+  }
+
+  // Package-level constants and variables (Go), one subsection per package.
+  for (const [title, pick] of [
+    ['Constants', (p: NonNullable<SdkDoc['packageValues']>[number]) => p.constants],
+    ['Variables', (p: NonNullable<SdkDoc['packageValues']>[number]) => p.variables],
+  ] as const) {
+    const packages = (doc.packageValues ?? []).filter(p => pick(p).length > 0)
+    if (packages.length === 0) continue
+    lines.push(`## ${title}`)
+    lines.push('')
+    for (const p of packages) {
+      lines.push(`### ${p.subpath}`)
+      lines.push('')
+      lines.push(...renderValueGroups(pick(p)))
+    }
   }
 
   if (doc.subpathExports && doc.subpathExports.length > 0) {

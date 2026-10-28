@@ -186,6 +186,6 @@ iii 按如下方式授权：
 | `docs/`    | [Apache License 2.0](docs/LICENSE)    |
 | `website/` | [Apache License 2.0](docs/LICENSE) |
 
-引擎运行时采用 Elastic License 2.0（ELv2）授权。所有 SDK、CLI、console、文档以及官网均采用 Apache License 2.0 授权。
+引擎运行时和 CLI 采用 Elastic License 2.0（ELv2）授权。所有 SDK、console、文档以及官网均采用 Apache License 2.0 授权。
 
 更多细节见 [CONTRIBUTING.md](CONTRIBUTING.md)。

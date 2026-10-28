@@ -229,7 +229,7 @@ We designed iii so agents and application code can reuse registered Functions. P
 
 To test iii on your own workload, start with one task and a clear pass condition. Record the harness counters, check the output, and compare the estimate with your provider bill before scaling up.
 
-**Licensing.** The engine uses the Elastic License 2.0 which means you can freely use, modify, and redistribute but cannot provide iii to others as a managed service. The SDKs, CLI, console, and the Workers repository are Apache 2.0.
+**Licensing.** The engine and CLI use the Elastic License 2.0. You may use, modify, and redistribute them subject to ELv2’s restrictions, including restrictions on hosted or managed services that provide access to any substantial set of their features or functionality, bypassing or removing license-key functionality, and altering, removing, or obscuring licensing, copyright, or other notices. See `engine/LICENSE` for the complete terms. The SDKs, console, and the Workers repository are Apache 2.0.
 
 ## What else to know before you budget a task
 

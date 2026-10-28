@@ -1,0 +1,1220 @@
+---
+title: "Helpers (Go)"
+sidebarTitle: "Go"
+description: "API reference for the helper packages of the iii SDK for Go."
+owner: "engineering"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE. Do not edit. Regenerate with docs/next/scripts/generate-api-docs.mts. */}
+{/* AI: any skill-check (vale/AI) text fixes belong in the source doc-comments under sdk/packages/go/iii (prose) or docs/next/scripts/ (structure/formatting), then regenerate. Never edit this file directly. */}
+
+## Installation
+
+```bash
+go get github.com/iii-hq/iii/sdk/packages/go/iii@latest
+```
+
+API reference for the helper packages of the iii SDK for Go.
+
+## helpers/http
+
+Package http holds the HTTP helpers of the iii Go SDK: the Go counterpart of the Node @iii-dev/helpers/http module (plus the StreamRequest and StreamResponse types of the Node SDK) and of the Rust iii_helpers::http module.
+
+**Import**
+
+```go
+import iiihttp "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http"
+```
+
+### Functions
+
+### NewStreamResponse
+
+NewStreamResponse returns a StreamResponse writing to writer, the response channel of an http invocation opened with `iii.Client.OpenWriter`. ctx bounds the channel dial and every write. `Wrap` builds one for each invocation; call NewStreamResponse only when handling an `InternalRequest` by hand. With a nil writer every method returns `ErrMissingChannel`.
+
+**Signature**
+
+```go
+func NewStreamResponse(ctx context.Context, writer *iii.ChannelWriter) *StreamResponse
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="writer" type="*iii.ChannelWriter" required>
+</ParamField>
+
+
+---
+
+### Wrap
+
+Wrap adapts an HTTP-style handler into an `iii.Handler` for a function behind an http trigger; it is the Go counterpart of the Node http() helper. Register the result with `iii.Client.RegisterFunction`.
+
+For each invocation Wrap decodes the `InternalRequest`, opens the request body channel for reading and the response channel for writing with `iii.Client.OpenReader` and `iii.Client.OpenWriter` (so the dials use the client's engine address and send its `iii.WithHeaders`, plus III_TOKEN), and calls fn with the `StreamRequest` and `StreamResponse`. When fn returns, Wrap closes the request body reader and finishes the response like a net/http handler:
+
+- a streamed body, or a nil result without error, ends the response stream cleanly (no explicit Close needed);
+- a buffered result, or an error before any body, leaves the channel untouched so the http worker answers from the returned value or reports the error;
+- a failed Status, Headers or Write aborts the response, whatever fn returns;
+- an error after body bytes were written aborts the response too, so the truncated body is not taken for a complete one.
+
+fn must not use req or res after it returns. Wrap returns nil when fn is nil; it panics when client is nil.
+
+**Signature**
+
+```go
+func Wrap(client *iii.Client, fn HandlerFunc) iii.Handler
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="client" type="*iii.Client" required>
+</ParamField>
+
+<ParamField body="fn" type="HandlerFunc" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Examples">
+
+```go
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
+	func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
+		body, err := io.ReadAll(req)
+		if err != nil {
+			return nil, err
+		}
+		if err := res.Status(200); err != nil {
+			return nil, err
+		}
+		if err := res.Headers(map[string]string{"content-type": "text/plain"}); err != nil {
+			return nil, err
+		}
+		if _, err := fmt.Fprintf(res, "%s %s: %d bytes\n", req.Method, req.Path, len(body)); err != nil {
+			return nil, err
+		}
+		return nil, nil // the stream is closed when the handler returns
+	}))
+
+// Route POST /echo to the function through the http worker's request source.
+_, _ = client.Observe(iii.Source{
+	FunctionID: "http::on-request",
+	Args:       iii.Args{"method": "POST", "path": "/echo"},
+}, "api::echo")
+```
+
+```go
+client := iii.New(iii.DefaultEngineURL)
+defer client.Close()
+
+handler := iiihttp.Wrap(client,
+	func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
+		return iiihttp.Response[map[string]string]{
+			StatusCode: 200,
+			Body:       map[string]string{"hello": req.QueryParams["name"].First()},
+		}, nil
+	})
+
+result, err := handler(context.Background(), json.RawMessage(`{"method":"GET","query_params":{"name":"ada"}}`))
+if err != nil {
+	panic(err)
+}
+out, _ := json.Marshal(result)
+fmt.Println(string(out))
+```
+
+
+  </Tab>
+</Tabs>
+
+### Variables
+
+| Name | Value | Description |
+| --- | --- | --- |
+| `ErrMissingChannel` | `errors.New("iii/helpers/http: the invocation carries no channel for this stream")` | ErrMissingChannel is returned by `StreamRequest.Read` and the `StreamResponse` methods when the invocation carried no channel ref for that stream, which happens when the function was not invoked by the http worker. |
+| `ErrResponseClosed` | `errors.New("iii/helpers/http: the response is closed")` | ErrResponseClosed is returned by the `StreamResponse` write methods after `StreamResponse.Close`. |
+
+### Types
+
+[`HandlerFunc`](#handlerfunc) · [`InternalRequest`](#internalrequest) · [`InvocationConfig`](#invocationconfig) · [`Method`](#method) · [`MultiValue`](#multivalue) · [`Request`](#request) · [`Response`](#response) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
+
+### HandlerFunc
+
+HandlerFunc is an HTTP-style handler for a function behind an http trigger, the callback of the Node http() helper. Adapt it with `Wrap`.
+
+Write the response to res and return nil to stream it, or return a `Response` (any non-nil value with status_code, headers and body) to answer buffered without touching res. A returned error is reported as the invocation error, which the http worker answers with a 500; if body bytes were already streamed, `Wrap` aborts the response instead of ending it, so the truncated body is not taken for a complete one.
+
+```go
+type HandlerFunc func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error)
+```
+
+---
+
+### InternalRequest
+
+InternalRequest is the payload the http worker sends to a function behind an http trigger, Node InternalHttpRequest: the parsed request plus the two channel refs. The Node SDK resolves the refs into a reader and a writer before it calls the handler; in Go they stay refs, opened by `Wrap` or by hand with `iii.Client.OpenReader` and `iii.Client.OpenWriter`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `PathParams` | `map[string]string` | Yes | PathParams holds the path parameters extracted from the matched route. |
+| `QueryParams` | map[string][`MultiValue`](#multivalue) | Yes | QueryParams holds the query string parameters of the request URL. |
+| `Body` | `json.RawMessage` | Yes | Body is the parsed request body, as raw JSON. |
+| `Headers` | map[string][`MultiValue`](#multivalue) | Yes | Headers holds the request headers. |
+| `Path` | `string` | No | Path is the route template that matched. The Node type does not declare it; the http worker sends it. |
+| `Method` | `string` | Yes | Method is the HTTP method of the request. |
+| `Response` | `iii.StreamChannelRef` | Yes | Response is the write end of the response channel. |
+| `RequestBody` | `iii.StreamChannelRef` | Yes | RequestBody is the read end of the request body channel. |
+
+---
+
+### InvocationConfig
+
+InvocationConfig configures a function the engine invokes over HTTP (Lambda, Cloudflare Workers and similar), Node HttpInvocationConfig. It is the core `iii.HTTPInvocationRef`: URL, Method (POST when empty), TimeoutMs, Headers, and Auth, the JSON of a Node HttpAuthConfig: \{"type":"hmac","secret_key":...\}, \{"type":"bearer","token_key":...\} or \{"type":"api_key","header":...,"value_key":...\}.
+
+```go
+timeout := uint64(10_000)
+cfg := iiihttp.InvocationConfig{
+	URL:       "https://example.com/lambda/report",
+	Method:    iiihttp.MethodPost,
+	TimeoutMs: &timeout,
+	Auth:      json.RawMessage(`{"type":"hmac","secret_key":"REPORT_SECRET"}`),
+}
+out, _ := json.Marshal(cfg)
+fmt.Println(string(out))
+```
+
+```go
+type InvocationConfig = iii.HTTPInvocationRef
+```
+
+---
+
+### Method
+
+Method is an HTTP method accepted by `InvocationConfig` (Node HttpMethod). It is an alias of string so the constants assign directly to `iii.HTTPInvocationRef`.Method. It is distinct from the http trigger's http_method, which also accepts HEAD and OPTIONS.
+
+```go
+type Method = string
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MethodGet` | `"GET"` | Yes | MethodGet is the GET method. |
+| `MethodPost` | `"POST"` | Yes | MethodPost is the POST method, the default. |
+| `MethodPut` | `"PUT"` | Yes | MethodPut is the PUT method. |
+| `MethodPatch` | `"PATCH"` | Yes | MethodPatch is the PATCH method. |
+| `MethodDelete` | `"DELETE"` | Yes | MethodDelete is the DELETE method. |
+
+---
+
+### MultiValue
+
+MultiValue is a header or query parameter value, string | string[] in the Node types. It decodes from a JSON string (one element) or an array of strings; the http worker currently sends one string per key. A one-element MultiValue encodes back as a JSON string, nil as null and any other length as an array.
+
+```go
+type MultiValue []string
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `First` | `func() string` | Yes | First returns the first value, or "" when there is none. |
+| `MarshalJSON` | `func() ([]byte, error)` | Yes | MarshalJSON encodes a one-element value as a JSON string, nil as null and any other length as an array of strings. |
+| `UnmarshalJSON` | `func(data []byte) error` | Yes | UnmarshalJSON decodes a JSON string, an array of strings or null. |
+
+---
+
+### Request
+
+Request is the buffered HTTP request a function behind an http trigger receives, Node HttpRequest&lt;TBody&gt; and Rust HttpRequest&lt;T&gt;. T is the type of the parsed body; use json.RawMessage to keep it raw. Decode the handler payload into it, or register the function with `iii.RegisterFunctionTyped`.
+
+```go
+type order struct {
+	Item string `json:"item"`
+}
+payload := json.RawMessage(`{"method":"POST","path":"/orders/:id","path_params":{"id":"9"},` +
+	`"query_params":{"tag":["a","b"]},"headers":{"accept":"application/json"},"body":{"item":"book"}}`)
+
+var req iiihttp.Request[order]
+if err := json.Unmarshal(payload, &req); err != nil {
+	panic(err)
+}
+fmt.Println(req.Method, req.Path, req.PathParams["id"], req.Body.Item)
+fmt.Println(req.QueryParams["tag"], req.Headers["accept"].First())
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `PathParams` | `map[string]string` | Yes | PathParams holds the path parameters extracted from the matched route. |
+| `QueryParams` | map[string][`MultiValue`](#multivalue) | Yes | QueryParams holds the query string parameters of the request URL. |
+| `Body` | `T` | Yes | Body is the parsed request body. |
+| `Headers` | map[string][`MultiValue`](#multivalue) | Yes | Headers holds the request headers. |
+| `Path` | `string` | No | Path is the route template that matched (for example /users/:id), as in the Rust HttpRequest. The Node type does not declare it; the http worker sends it. |
+| `Method` | `string` | Yes | Method is the HTTP method of the request (for example GET or POST). |
+| `RequestBody` | `*iii.StreamChannelRef` | No | RequestBody is the channel carrying the raw request body; open it with `iii.Client.OpenReader`. nil when the invocation carried none. |
+
+---
+
+### Response
+
+Response is a buffered HTTP response returned from a function behind an http trigger, Node HttpResponse and Rust HttpResponse&lt;T&gt;. T is the type of the body: the http worker sends a string Body verbatim when Headers sets a content-type, and encodes anything else as JSON (a []byte encodes as a base64 string, so stream binary bodies through a `StreamResponse`). A `Wrap` handler returns a Response to answer without streaming.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `StatusCode` | `int` | Yes | StatusCode is the HTTP status code. |
+| `Headers` | `map[string]string` | No | Headers holds the response headers. |
+| `Body` | `T` | No | Body is the response body; an omitted body is answered as \{\}. |
+
+---
+
+### StreamRequest
+
+StreamRequest is the incoming request a `HandlerFunc` receives, Node StreamRequest: the parsed request plus the raw body as a stream. StreamRequest is an `io.Reader` over the raw request body.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `PathParams` | `map[string]string` | Yes | PathParams holds the path parameters extracted from the matched route. |
+| `QueryParams` | map[string][`MultiValue`](#multivalue) | Yes | QueryParams holds the query string parameters of the request URL. |
+| `Body` | `json.RawMessage` | Yes | Body is the request body as parsed by the http worker, as raw JSON. |
+| `Headers` | map[string][`MultiValue`](#multivalue) | Yes | Headers holds the request headers. |
+| `Path` | `string` | No | Path is the route template that matched. The Node type does not declare it; the http worker sends it. |
+| `Method` | `string` | Yes | Method is the HTTP method of the request. |
+| `RequestBody` | `*iii.ChannelReader` | No | RequestBody is the channel reader carrying the raw request body (Node request_body), nil when the invocation carried none. `StreamRequest.Read` reads from it; use it directly only for OnMessage, and do not mix the two. |
+| `Read` | `func(p []byte) (int, error)` | Yes | Read reads the raw request body from RequestBody and implements `io.Reader`. It returns io.EOF only once the http worker has sent the whole body and ended the channel cleanly. If the channel was aborted instead (its writer failed or went away before finishing, or the connection dropped), Read returns that error, never io.EOF: the body read so far is incomplete, and io.ReadAll returns it together with the error. An abort reported by the engine is a websocket close error with code 1011 and a reason (websocket.CloseStatus reads the code). Bytes received before the abort are returned first, and once Read failed every later call returns the same error. Read returns `ErrMissingChannel` when RequestBody is nil. Reads are bound to the invocation context; a StreamRequest is not safe for concurrent reads. |
+
+---
+
+### StreamResponse
+
+StreamResponse is the response a `HandlerFunc` writes, Node StreamResponse: Status and Headers send control messages, Write streams the body and Close ends it. StreamResponse is an `io.Writer`. Its methods are safe for concurrent use.
+
+A response whose writer failed is aborted, never reported complete. Once Status, Headers or Write returned an error, every later call returns that error, and Close (or `Wrap`, when the handler returns) ends the channel without a clean close: the http worker's reader gets an error instead of a truncated body that looks whole.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NewStreamResponse` | func(ctx context.Context, writer *iii.ChannelWriter) *[`StreamResponse`](#streamresponse) | Yes | NewStreamResponse returns a StreamResponse writing to writer, the response channel of an http invocation opened with `iii.Client.OpenWriter`. ctx bounds the channel dial and every write. `Wrap` builds one for each invocation; call NewStreamResponse only when handling an `InternalRequest` by hand. With a nil writer every method returns `ErrMissingChannel`. |
+| `Close` | `func() error` | Yes | Close ends the response: the http worker sends the status and headers set so far (200 by default) and finishes the body. After a failed Status, Headers or Write, Close aborts the response instead: the channel ends without a clean close, the http worker's reader gets an error, and Close returns nil (the failing call already returned the error). Close is idempotent; `Wrap` ends the response when the handler returns, so calling it is optional there. |
+| `Headers` | `func(headers map[string]string) error` | Yes | Headers sets response headers by sending \{"type":"set_headers","headers":\{...\}\}. Repeated calls merge, later values winning. Like Status, headers must be sent before the first body chunk. |
+| `Status` | `func(statusCode int) error` | Yes | Status sets the HTTP status code by sending \{"type":"set_status","status_code":N\}. The http worker applies it when it arrives before the first body chunk and ignores codes outside 100-599. |
+| `Write` | `func(p []byte) (int, error)` | Yes | Write streams p as response body (BINARY frames of at most 64 KiB) and implements `io.Writer`. The first body chunk commits the status and headers. A failed Write leaves the body incomplete, so the response can then only be aborted. |
+
+## helpers/queue
+
+Package queue holds the queue helper types of the iii Go SDK, the Go counterpart of the Node @iii-dev/helpers/queue module and the Rust iii_helpers::queue module.
+
+**Import**
+
+```go
+import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
+```
+
+### Types
+
+[`EnqueueResult`](#enqueueresult)
+
+### EnqueueResult
+
+EnqueueResult is the result returned when a function is invoked with iii.EnqueueAction (TriggerAction.Enqueue in the Node SDK). Decode the json.RawMessage returned by iii.Client.Trigger into it.
+
+```go
+raw := json.RawMessage(`{"messageReceiptId":"7d0c1f9e-receipt"}`)
+
+var receipt queue.EnqueueResult
+if err := json.Unmarshal(raw, &receipt); err != nil {
+	panic(err)
+}
+fmt.Println(receipt.MessageReceiptID)
+```
+
+```go
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+res, err := client.Trigger(context.Background(), iii.TriggerRequest{
+	FunctionID: "emails::send",
+	Payload:    json.RawMessage(`{"to":"ada@example.com"}`),
+	Action:     iii.EnqueueAction("emails"),
+})
+if err != nil {
+	log.Fatal(err)
+}
+var receipt queue.EnqueueResult
+if err := json.Unmarshal(res, &receipt); err != nil {
+	log.Fatal(err)
+}
+log.Printf("enqueued as %s", receipt.MessageReceiptID)
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MessageReceiptID` | `string` | Yes | MessageReceiptID is the unique receipt ID of the enqueued message. |
+
+## helpers/workerconnection
+
+Package workerconnection holds the RBAC hook types of the iii worker-manager, the Go counterpart of the Node @iii-dev/helpers/worker-connection-manager module and the Rust iii_helpers::worker_connection_manager module.
+
+**Import**
+
+```go
+import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/workerconnection"
+```
+
+### Types
+
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+
+### AuthInput
+
+AuthInput is the input passed to the RBAC auth function during the WebSocket upgrade. It carries the HTTP headers, query parameters and client IP of the connecting worker's upgrade request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Headers` | `map[string]string` | Yes | Headers holds the HTTP headers of the WebSocket upgrade request. |
+| `QueryParams` | `map[string][]string` | Yes | QueryParams holds the query parameters of the upgrade URL. Each key maps to all of its values, so repeated keys (?a=1&a=2) are preserved. |
+| `IPAddress` | `string` | Yes | IPAddress is the IP address of the connecting client. |
+
+---
+
+### AuthResult
+
+AuthResult is the value the RBAC auth function returns. It controls which functions the authenticated worker can invoke and what context is forwarded to the middleware.
+
+Every field is optional; the zero value of a field means "use the engine default": no namespace-scoped grants, no extra allowed or forbidden functions, every trigger type allowed, trigger type registration denied, function registration allowed, an empty context and no function ID prefix.
+
+```go
+res, err := authorize(context.Background(), workerconnection.AuthInput{
+	Headers:     map[string]string{"user-agent": "browser"},
+	QueryParams: map[string][]string{"token": {"dev-token"}},
+	IPAddress:   "127.0.0.1",
+})
+if err != nil {
+	panic(err)
+}
+out, _ := json.Marshal(res)
+fmt.Println(string(out))
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Namespaces` | `map[string][]string` | No | Namespaces grants functions scoped to one namespace each, for example \{"orders": ["svc::\*"]\}. A value is an exact function ID or a wildcard, in either the bare (svc::\*) or the match("svc::\*") spelling.<br /><br />The keys are also the namespaces the session may declare on engine::workers::register. Leave it nil to add no namespace-scoped grants: the session may then declare any namespace, and only AllowedFunctions and the expose_functions config apply. |
+| `AllowedFunctions` | `[]string` | No | AllowedFunctions lists additional function IDs to allow beyond the expose_functions config, in the default namespace only. Put per-namespace grants in Namespaces. Empty means none. |
+| `ForbiddenFunctions` | `[]string` | No | ForbiddenFunctions lists function IDs to deny even if they match expose_functions. It takes precedence over the allowed lists. Empty means none. |
+| `AllowedTriggerTypes` | `[]string` | Yes | AllowedTriggerTypes lists the trigger type IDs the worker may register triggers for. nil (sent as null) allows every trigger type; a non-nil empty slice (sent as []) allows none. |
+| `AllowTriggerTypeRegistration` | `bool` | No | AllowTriggerTypeRegistration reports whether the worker may register new trigger types. The default is false. |
+| `AllowFunctionRegistration` | `*bool` | No | AllowFunctionRegistration reports whether the worker may register new functions. nil means the engine default, true; set it to new(bool) to deny function registration. |
+| `Context` | `json.RawMessage` | No | Context is arbitrary JSON forwarded to the middleware function on every invocation (iii.MiddlewareFunctionInput.Context). nil means an empty object. |
+| `FunctionRegistrationPrefix` | `string` | No | FunctionRegistrationPrefix is an optional prefix applied to every function ID this worker registers (the engine registers prefix::id). Empty means no prefix. |
+
+---
+
+### OnFunctionRegistrationInput
+
+OnFunctionRegistrationInput is the input passed to the on_function_registration_function_id hook when a worker attempts to register a function through the RBAC port. Return an `OnFunctionRegistrationResult` with the (possibly mapped) fields, or an error to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FunctionID` | `string` | Yes | FunctionID is the ID of the function being registered. |
+| `Description` | `string` | No | Description is the human-readable description of the function, if any. |
+| `Metadata` | `json.RawMessage` | No | Metadata is the arbitrary metadata attached to the function, if any (the engine sends null when there is none). |
+| `Namespace` | `string` | No | Namespace is the namespace the function registers in. The same ID can exist in several namespaces, so the hook needs it to authorize per namespace. Empty means "default". |
+| `Context` | `json.RawMessage` | Yes | Context is the auth context from `AuthResult`.Context for this session. |
+
+---
+
+### OnFunctionRegistrationResult
+
+OnFunctionRegistrationResult is the result returned from the on_function_registration_function_id hook. Every field is optional; an omitted field keeps the original value from the registration request.
+
+```go
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+_, _ = iii.RegisterFunctionTyped(client, "auth::browser", authorize)
+_, _ = iii.RegisterFunctionTyped(client, "auth::on-function-registration",
+	func(_ context.Context, in workerconnection.OnFunctionRegistrationInput) (workerconnection.OnFunctionRegistrationResult, error) {
+		if strings.HasPrefix(in.FunctionID, "engine::") {
+			return workerconnection.OnFunctionRegistrationResult{}, errors.New("reserved prefix")
+		}
+		return workerconnection.OnFunctionRegistrationResult{FunctionID: "browser::" + in.FunctionID}, nil
+	})
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FunctionID` | `string` | No | FunctionID is the mapped function ID. Empty keeps the original. |
+| `Description` | `*string` | No | Description is the mapped description. nil keeps the original; a pointer to "" clears it. |
+| `Metadata` | `json.RawMessage` | No | Metadata is the mapped metadata. nil keeps the original; any value that is set, including the JSON literal null, replaces it. |
+
+---
+
+### OnTriggerRegistrationInput
+
+OnTriggerRegistrationInput is the input passed to the on_trigger_registration_function_id hook when a worker attempts to register a trigger through the RBAC port. Return an `OnTriggerRegistrationResult` with the (possibly mapped) fields, or an error to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `TriggerID` | `string` | Yes | TriggerID is the ID of the trigger being registered. |
+| `TriggerType` | `string` | Yes | TriggerType is the trigger type identifier. |
+| `FunctionID` | `string` | Yes | FunctionID is the ID of the function this trigger is bound to. |
+| `Config` | `json.RawMessage` | Yes | Config is the trigger-specific configuration. |
+| `Metadata` | `json.RawMessage` | No | Metadata is the arbitrary metadata attached to the trigger, if any (the engine sends null when there is none). |
+| `Namespace` | `string` | No | Namespace is the namespace the trigger's target resolves in (explicit, or "default" when the registration names none). The same function ID can exist in several namespaces, so the hook needs it to authorize per target namespace. Empty means "default". |
+| `Context` | `json.RawMessage` | Yes | Context is the auth context from `AuthResult`.Context for this session. |
+
+---
+
+### OnTriggerRegistrationResult
+
+OnTriggerRegistrationResult is the result returned from the on_trigger_registration_function_id hook. Every field is optional; an omitted field keeps the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `TriggerID` | `string` | No | TriggerID is the mapped trigger ID. Empty keeps the original. |
+| `TriggerType` | `string` | No | TriggerType is the mapped trigger type. Empty keeps the original. |
+| `FunctionID` | `string` | No | FunctionID is the mapped function ID. Empty keeps the original. |
+| `Config` | `json.RawMessage` | No | Config is the mapped trigger configuration. nil keeps the original. |
+
+---
+
+### OnTriggerTypeRegistrationInput
+
+OnTriggerTypeRegistrationInput is the input passed to the on_trigger_type_registration_function_id hook when a worker attempts to register a new trigger type through the RBAC port. Return an `OnTriggerTypeRegistrationResult` with the (possibly mapped) fields, or an error to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `TriggerTypeID` | `string` | Yes | TriggerTypeID is the ID of the trigger type being registered. |
+| `Description` | `string` | Yes | Description is the human-readable description of the trigger type. |
+| `Context` | `json.RawMessage` | Yes | Context is the auth context from `AuthResult`.Context for this session. |
+
+---
+
+### OnTriggerTypeRegistrationResult
+
+OnTriggerTypeRegistrationResult is the result returned from the on_trigger_type_registration_function_id hook. Every field is optional; an omitted field keeps the original value from the registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `TriggerTypeID` | `string` | No | TriggerTypeID is the mapped trigger type ID. Empty keeps the original. |
+| `Description` | `*string` | No | Description is the mapped description. nil keeps the original; a pointer to "" clears it. |
+
+## observability
+
+Package observability holds the OpenTelemetry helpers of the iii Go SDK, the counterpart of the Node SDK's @iii-dev/helpers/observability: a structured Logger that correlates log records with traces, a traced HTTP client (NewTransport, NewHTTPClient), W3C trace context and baggage helpers, span helpers (WithSpan, RecordSpanEvent, ...), payload redaction, and the worker resource metrics.
+
+**Import**
+
+```go
+import "github.com/iii-hq/iii/sdk/packages/go/iii/observability"
+```
+
+### Functions
+
+### CurrentSpanID
+
+CurrentSpanID returns the span id of the span in ctx as 16 lowercase hex digits, or "" when ctx has none (Node currentSpanId).
+
+**Signature**
+
+```go
+func CurrentSpanID(ctx context.Context) string
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### CurrentSpanIsRecording
+
+CurrentSpanIsRecording reports whether ctx holds a span that records; false when there is none or the sampler dropped it (Node currentSpanIsRecording).
+
+**Signature**
+
+```go
+func CurrentSpanIsRecording(ctx context.Context) bool
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### CurrentTraceID
+
+CurrentTraceID returns the trace id of the span in ctx as 32 lowercase hex digits, or "" when ctx has none (Node currentTraceId).
+
+**Signature**
+
+```go
+func CurrentTraceID(ctx context.Context) string
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### ExtractBaggage
+
+ExtractBaggage returns ctx with the members of a W3C baggage header; an invalid header leaves ctx unchanged (Node extractBaggage).
+
+**Signature**
+
+```go
+func ExtractBaggage(ctx context.Context, baggage string) context.Context
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="baggage" type="string" required>
+</ParamField>
+
+
+---
+
+### ExtractContext
+
+ExtractContext returns ctx with both a traceparent and a baggage header applied; either may be empty (Node extractContext).
+
+**Signature**
+
+```go
+func ExtractContext(ctx context.Context, traceparent, baggage string) context.Context
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="traceparent" type="string" required>
+</ParamField>
+
+<ParamField body="baggage" type="string" required>
+</ParamField>
+
+
+---
+
+### ExtractTraceparent
+
+ExtractTraceparent returns ctx with the remote span context of a W3C traceparent header as its parent; an invalid header leaves ctx unchanged (Node extractTraceparent).
+
+**Signature**
+
+```go
+func ExtractTraceparent(ctx context.Context, traceparent string) context.Context
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="traceparent" type="string" required>
+</ParamField>
+
+
+---
+
+### Flush
+
+Flush exports the spans, metrics and log records buffered by the running client telemetry without stopping it (Node flushOtel); nil when none is running. Use it before a short-lived process exits without closing its client.
+
+**Signature**
+
+```go
+func Flush(ctx context.Context) error
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### GetAllBaggage
+
+GetAllBaggage returns every baggage member in ctx as a key/value map (Node getAllBaggage).
+
+**Signature**
+
+```go
+func GetAllBaggage(ctx context.Context) map[string]string
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### GetBaggageEntry
+
+GetBaggageEntry returns the value of the baggage member key in ctx and whether it is present (Node getBaggageEntry).
+
+**Signature**
+
+```go
+func GetBaggageEntry(ctx context.Context, key string) (string, bool)
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="key" type="string" required>
+</ParamField>
+
+
+---
+
+### GetLogger
+
+GetLogger returns the OpenTelemetry logger of the running client telemetry, or nil when there is none (Node getLogger). Most code should use `Logger` instead.
+
+**Signature**
+
+```go
+func GetLogger() OtelLogger
+```
+
+---
+
+### InjectBaggage
+
+InjectBaggage returns the W3C baggage header for the baggage in ctx, or "" when ctx has none (Node injectBaggage).
+
+**Signature**
+
+```go
+func InjectBaggage(ctx context.Context) string
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### InjectTraceparent
+
+InjectTraceparent returns the W3C traceparent header for the span in ctx, or "" when ctx has none (Node injectTraceparent).
+
+**Signature**
+
+```go
+func InjectTraceparent(ctx context.Context) string
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+
+---
+
+### NewHTTPClient
+
+NewHTTPClient returns a copy of base (a zero http.Client when nil) whose transport is wrapped with `NewTransport`. base itself is not modified.
+
+**Signature**
+
+```go
+func NewHTTPClient(base *http.Client) *http.Client
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="base" type="*http.Client" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+client := observability.NewHTTPClient(nil)
+req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.com/api", nil)
+resp, err := client.Do(req)
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### NewTransport
+
+NewTransport wraps base (http.DefaultTransport when nil) so every request runs inside an OpenTelemetry CLIENT span, the Go counterpart of the Node SDK's executeTracedRequest and patchGlobalFetch. The span is named "METHOD /path" and carries the HTTP semantic convention attributes (http.request.method, url.full, server.address, server.port, url.scheme, url.path, url.query, http.response.status_code, the content-type and accept headers and the body sizes); the W3C traceparent and baggage of the span are injected into the request; a network error or a status &gt;= 400 sets an ERROR status and error.type. url.full and url.query carry no credentials, as the OpenTelemetry HTTP semantic conventions require: userinfo becomes REDACTED:REDACTED and the values of the AWSAccessKeyId, Signature, sig and X-Goog-Signature query parameters become REDACTED. The request itself is sent unchanged.
+
+The parent span comes from the request's context (http.NewRequestWithContext with a handler's ctx). URLs containing one of the comma-separated substrings of OTEL_FETCH_IGNORE_URLS, or every request when the running client's OtelConfig.FetchInstrumentationEnabled is false, pass through untraced.
+
+**Signature**
+
+```go
+func NewTransport(base http.RoundTripper) http.RoundTripper
+```
+
+#### Parameters
+
+<ParamField body="base" type="http.RoundTripper" required>
+</ParamField>
+
+
+---
+
+### NewWorkerMetricsCollector
+
+NewWorkerMetricsCollector starts a collector. The first Collect reports CPU usage and scheduling latency since this call; each later one since the previous Collect.
+
+**Signature**
+
+```go
+func NewWorkerMetricsCollector() *WorkerMetricsCollector
+```
+
+---
+
+### RecordSpanEvent
+
+RecordSpanEvent adds an event with optional attributes to the span in ctx; a no-op when it does not record (Node recordSpanEvent). Attribute values convert as in `SetCurrentSpanAttribute`.
+
+**Signature**
+
+```go
+func RecordSpanEvent(ctx context.Context, name string, attrs map[string]any)
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="name" type="string" required>
+</ParamField>
+
+<ParamField body="attrs" type="map[string]any" required>
+</ParamField>
+
+
+---
+
+### Redact
+
+Redact returns v with the value of every sensitive key, at any depth, replaced by `RedactedPlaceholder` (Node redact). A key is sensitive when it contains api_key, apikey, api-key, password, secret, credential, authorization, auth_token, access_token, refresh_token, bearer, private_key or client_secret (any case), or is "token" or ends with "_token" or "-token". A map[string]any or []any is copied recursively and nil and scalars are returned as they are; any other value (a struct, a typed map, json.RawMessage) is serialized and returned as a redacted json.RawMessage.
+
+**Signature**
+
+```go
+func Redact(v any) any
+```
+
+#### Parameters
+
+<ParamField body="v" type="any" required>
+</ParamField>
+
+
+---
+
+### RedactAndTruncate
+
+RedactAndTruncate redacts v, serializes it to JSON and caps the result at maxBytes bytes, ending a cut payload with a truncation marker and never splitting a UTF-8 sequence; maxBytes &lt;= 0 means no cap (Node redactAndTruncate). It reports whether the payload was cut. A value that cannot be serialized becomes "null".
+
+**Signature**
+
+```go
+func RedactAndTruncate(v any, maxBytes int) (json string, truncated bool)
+```
+
+#### Parameters
+
+<ParamField body="v" type="any" required>
+</ParamField>
+
+<ParamField body="maxBytes" type="int" required>
+</ParamField>
+
+
+---
+
+### RegisterWorkerGauges
+
+RegisterWorkerGauges registers the worker resource gauges on meter (Node registerWorkerGauges): iii.worker.memory.heap_used, iii.worker.memory.heap_total, iii.worker.memory.rss, iii.worker.memory.external, iii.worker.cpu.percent, iii.worker.cpu.user_micros, iii.worker.cpu.system_micros, iii.worker.event_loop.lag_ms and iii.worker.uptime_seconds, each observed once per collection with the worker.id and worker.name attributes (values the platform cannot measure are skipped). A client does this itself when iii.WithMetricsReporting is on; call it for a meter of your own.
+
+**Signature**
+
+```go
+func RegisterWorkerGauges(meter Meter, opts WorkerGaugesOptions) (*WorkerGauges, error)
+```
+
+#### Parameters
+
+<ParamField body="meter" type="Meter" required>
+</ParamField>
+
+<ParamField body="opts" type="WorkerGaugesOptions" required>
+</ParamField>
+
+
+---
+
+### RemoveBaggageEntry
+
+RemoveBaggageEntry returns ctx without the baggage member key (Node removeBaggageEntry).
+
+**Signature**
+
+```go
+func RemoveBaggageEntry(ctx context.Context, key string) context.Context
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="key" type="string" required>
+</ParamField>
+
+
+---
+
+### ResolveMaxBytesFromEnv
+
+ResolveMaxBytesFromEnv returns the recorded-payload cap set by III_TRACE_PAYLOAD_MAX_BYTES, or 0 (no cap) when it is unset, blank, "unlimited", not a plain positive integer (Node resolveMaxBytesFromEnv, whose null is 0 here).
+
+**Signature**
+
+```go
+func ResolveMaxBytesFromEnv() int
+```
+
+---
+
+### SafeStringify
+
+SafeStringify serializes v to JSON, or returns "[unserializable]" when it cannot be serialized (Node safeStringify; a cyclic value is reported as unserializable).
+
+**Signature**
+
+```go
+func SafeStringify(v any) string
+```
+
+#### Parameters
+
+<ParamField body="v" type="any" required>
+</ParamField>
+
+
+---
+
+### SetBaggageEntry
+
+SetBaggageEntry returns ctx with the baggage member key set to value (Node setBaggageEntry). The baggage travels with every Trigger made with the returned ctx and is copied onto the spans started under it. An invalid key is an error.
+
+**Signature**
+
+```go
+func SetBaggageEntry(ctx context.Context, key, value string) (context.Context, error)
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="key" type="string" required>
+</ParamField>
+
+<ParamField body="value" type="string" required>
+</ParamField>
+
+
+---
+
+### SetCurrentSpanAttribute
+
+SetCurrentSpanAttribute sets an attribute on the span in ctx; a no-op when it does not record (Node setCurrentSpanAttribute). Strings, booleans, integers, floats and slices of them keep their type; other values are recorded as text.
+
+**Signature**
+
+```go
+func SetCurrentSpanAttribute(ctx context.Context, key string, value any)
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="key" type="string" required>
+</ParamField>
+
+<ParamField body="value" type="any" required>
+</ParamField>
+
+
+---
+
+### SetCurrentSpanError
+
+SetCurrentSpanError sets an ERROR status with message on the span in ctx; a no-op when there is none (Node setCurrentSpanError).
+
+**Signature**
+
+```go
+func SetCurrentSpanError(ctx context.Context, message string)
+```
+
+#### Parameters
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="message" type="string" required>
+</ParamField>
+
+
+---
+
+### WithSpan
+
+WithSpan runs fn inside a new span named name and returns fn's result (Node withSpan). The span is a child of opts.Traceparent when set, else of the span in ctx; fn receives the span and a ctx carrying it, to pass on to Trigger, the Logger or nested spans. The span ends with an OK status when fn returns a nil error, and with an ERROR status and an exception event when fn returns an error or panics (the panic is re-raised). Without running telemetry the global tracer provider is used.
+
+**Signature**
+
+```go
+func WithSpan[T any](ctx context.Context, name string, opts SpanOptions, fn func(ctx context.Context, span Span) (T, error)) (T, error)
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="name" type="string" required>
+</ParamField>
+
+<ParamField body="opts" type="SpanOptions" required>
+</ParamField>
+
+<ParamField body="fn" type="func(ctx context.Context, span Span) (T, error)" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+total, err := observability.WithSpan(ctx, "compute-total", observability.SpanOptions{},
+    func(ctx context.Context, span observability.Span) (float64, error) {
+        return sum(order.Items), nil
+    })
+```
+
+
+  </Tab>
+</Tabs>
+
+### Constants
+
+| Name | Value | Description |
+| --- | --- | --- |
+| `RedactedPlaceholder` | `telemetry.RedactedPlaceholder` | RedactedPlaceholder replaces the value of a sensitive key in recorded payloads (Node REDACTED_PLACEHOLDER). |
+
+### Types
+
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`Meter`](#meter) · [`OtelLogEvent`](#otellogevent) · [`OtelLogger`](#otellogger) · [`Span`](#span) · [`SpanOptions`](#spanoptions) · [`WorkerGauges`](#workergauges) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetrics`](#workermetrics) · [`WorkerMetricsCollector`](#workermetricscollector)
+
+### BaggageSpanProcessor
+
+BaggageSpanProcessor is an OpenTelemetry span processor that copies every baggage member of a span's parent context onto the span as a string attribute when it starts (Node BaggageSpanProcessor). The client's tracer provider already runs it; add it to a tracer provider of your own with sdktrace.WithSpanProcessor, before the exporting processor.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ForceFlush` | `func(context.Context) error` | Yes | ForceFlush does nothing. |
+| `OnEnd` | `func(sdktrace.ReadOnlySpan)` | Yes | OnEnd does nothing. |
+| `OnStart` | `func(parent context.Context, s sdktrace.ReadWriteSpan)` | Yes | OnStart copies the baggage of parent onto s. |
+| `Shutdown` | `func(context.Context) error` | Yes | Shutdown does nothing. |
+
+---
+
+### Logger
+
+Logger is a structured logger that emits OpenTelemetry log records (Node Logger).
+
+Every call captures the trace and span of ctx, so log lines correlate with the distributed trace without manual wiring; TraceID and SpanID override them when set. Pass structured data (a map or struct) instead of formatting it into the message, so it can be filtered and aggregated: it is attached as the log.data attribute. When no client's telemetry is running, Logger falls back to the standard log package.
+
+The zero value is ready to use.
+
+```go
+var logger observability.Logger
+
+func handler(ctx context.Context, data json.RawMessage) (any, error) {
+    logger.Info(ctx, "Order processed", map[string]any{"orderId": "ord_123", "amount": 49.99})
+    ...
+}
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `TraceID` | `string` | No | TraceID, when set, is reported as the trace_id attribute instead of the trace of the call's ctx. |
+| `ServiceName` | `string` | No | ServiceName, when set, is reported as the service.name attribute. |
+| `SpanID` | `string` | No | SpanID, when set, is reported as the span_id attribute instead of the span of the call's ctx. |
+| `Debug` | `func(ctx context.Context, message string, data any)` | Yes | Debug logs a debug-level message with optional structured data (nil for none). |
+| `Error` | `func(ctx context.Context, message string, data any)` | Yes | Error logs an error-level message with optional structured data (nil for none). |
+| `Info` | `func(ctx context.Context, message string, data any)` | Yes | Info logs an info-level message with optional structured data (nil for none). |
+| `Warn` | `func(ctx context.Context, message string, data any)` | Yes | Warn logs a warning-level message with optional structured data (nil for none). |
+
+---
+
+### Meter
+
+Meter is an OpenTelemetry meter, as taken by `RegisterWorkerGauges`.
+
+```go
+type Meter = metric.Meter
+```
+
+---
+
+### OtelLogEvent
+
+OtelLogEvent is a log record as the engine reports it (Node OtelLogEvent), for functions that consume the engine's log stream.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `TimestampUnixNano` | `uint64` | Yes | TimestampUnixNano is the record time in Unix nanoseconds. |
+| `ObservedTimestampUnixNano` | `uint64` | Yes | ObservedTimestampUnixNano is the time the record was observed, in Unix nanoseconds. |
+| `SeverityNumber` | `int` | Yes | SeverityNumber is the OpenTelemetry severity (1-24): TRACE 1-4, DEBUG 5-8, INFO 9-12, WARN 13-16, ERROR 17-20, FATAL 21-24. |
+| `SeverityText` | `string` | Yes | SeverityText is the severity name (e.g. "INFO", "WARN", "ERROR"). |
+| `Body` | `string` | Yes | Body is the log message. |
+| `Attributes` | `map[string]any` | Yes | Attributes are the record's structured attributes. |
+| `TraceID` | `string` | No | TraceID correlates the record with a trace, when known. |
+| `SpanID` | `string` | No | SpanID correlates the record with a span, when known. |
+| `Resource` | `map[string]string` | Yes | Resource holds the resource attributes of the emitting service. |
+| `ServiceName` | `string` | Yes | ServiceName is the service that emitted the record. |
+| `InstrumentationScopeName` | `string` | No | InstrumentationScopeName is the instrumentation scope name, when known. |
+| `InstrumentationScopeVersion` | `string` | No | InstrumentationScopeVersion is the instrumentation scope version, when known. |
+
+---
+
+### OtelLogger
+
+OtelLogger is an OpenTelemetry logger, as returned by `GetLogger`.
+
+```go
+type OtelLogger = otellog.Logger
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `GetLogger` | func() [`OtelLogger`](#otellogger) | Yes | GetLogger returns the OpenTelemetry logger of the running client telemetry, or nil when there is none (Node getLogger). Most code should use `Logger` instead. |
+
+---
+
+### Span
+
+Span is an OpenTelemetry span (Node exports the Span type the same way).
+
+```go
+type Span = trace.Span
+```
+
+---
+
+### SpanOptions
+
+SpanOptions are the options of `WithSpan` (Node withSpan options).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Kind` | `trace.SpanKind` | No | Kind is the span kind; the zero value means trace.SpanKindInternal. |
+| `Traceparent` | `string` | Yes | Traceparent, when set, is a W3C traceparent header used as the parent instead of the span in ctx. |
+
+---
+
+### WorkerGauges
+
+WorkerGauges is a registration of the worker resource gauges, returned by `RegisterWorkerGauges`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `RegisterWorkerGauges` | func(meter [`Meter`](#meter), opts [`WorkerGaugesOptions`](#workergaugesoptions)) (*[`WorkerGauges`](#workergauges), error) | Yes | RegisterWorkerGauges registers the worker resource gauges on meter (Node registerWorkerGauges): iii.worker.memory.heap_used, iii.worker.memory.heap_total, iii.worker.memory.rss, iii.worker.memory.external, iii.worker.cpu.percent, iii.worker.cpu.user_micros, iii.worker.cpu.system_micros, iii.worker.event_loop.lag_ms and iii.worker.uptime_seconds, each observed once per collection with the worker.id and worker.name attributes (values the platform cannot measure are skipped). A client does this itself when iii.WithMetricsReporting is on; call it for a meter of your own. |
+| `Stop` | `func() error` | Yes | Stop unregisters the gauges (Node stopWorkerGauges). It is idempotent. |
+
+---
+
+### WorkerGaugesOptions
+
+WorkerGaugesOptions identifies the worker the gauges report for (Node WorkerGaugesOptions).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `WorkerID` | `string` | Yes | WorkerID is the stable identifier of the worker, reported as worker.id. |
+| `WorkerName` | `string` | Yes | WorkerName is the human-readable name of the worker, reported as worker.name when set. |
+
+---
+
+### WorkerMetrics
+
+WorkerMetrics is one snapshot of the worker's resource usage (Node WorkerMetrics). A field the platform cannot measure is nil.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MemoryHeapUsed` | `*float64` | No | MemoryHeapUsed is the Go heap in use, in bytes (runtime.MemStats.HeapAlloc). |
+| `MemoryHeapTotal` | `*float64` | No | MemoryHeapTotal is the heap memory obtained from the OS, in bytes (runtime.MemStats.HeapSys). |
+| `MemoryRSS` | `*float64` | No | MemoryRSS is the resident set size in bytes (Linux). |
+| `MemoryExternal` | `*float64` | No | MemoryExternal is Node's memory held outside the JavaScript heap; Go has no equivalent and leaves it nil. |
+| `CPUUserMicros` | `*float64` | No | CPUUserMicros is the cumulative user CPU time in microseconds (Unix). |
+| `CPUSystemMicros` | `*float64` | No | CPUSystemMicros is the cumulative system CPU time in microseconds (Unix). |
+| `CPUPercent` | `*float64` | No | CPUPercent is the CPU usage since the previous collection, capped at 100 (Unix). |
+| `EventLoopLagMs` | `*float64` | No | EventLoopLagMs is the mean goroutine scheduling latency since the previous collection, in milliseconds: the Go counterpart of Node's event loop lag. |
+| `UptimeSeconds` | `*float64` | No | UptimeSeconds is the collector's age in whole seconds. |
+| `TimestampMs` | `int64` | Yes | TimestampMs is the collection time in Unix milliseconds. |
+| `Runtime` | `string` | Yes | Runtime is "go". |
+
+---
+
+### WorkerMetricsCollector
+
+WorkerMetricsCollector collects `WorkerMetrics` (Node WorkerMetricsCollector).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `NewWorkerMetricsCollector` | func() *[`WorkerMetricsCollector`](#workermetricscollector) | Yes | NewWorkerMetricsCollector starts a collector. The first Collect reports CPU usage and scheduling latency since this call; each later one since the previous Collect. |
+| `Collect` | func() [`WorkerMetrics`](#workermetrics) | Yes | Collect returns the current snapshot. |
+| `StopMonitoring` | `func()` | Yes | StopMonitoring releases the collector (Node stopMonitoring). The Go collector holds no background resources; the call resets its scheduling latency baseline. |

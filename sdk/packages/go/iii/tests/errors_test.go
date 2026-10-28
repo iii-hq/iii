@@ -18,7 +18,7 @@ import (
 
 func TestHandlerErrorSurfacesAsInvocationError(t *testing.T) {
 	c := connect(t)
-	if err := c.RegisterFunction("test::errors::go::boom", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::errors::go::boom", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, errors.New("kaboom")
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
@@ -27,7 +27,7 @@ func TestHandlerErrorSurfacesAsInvocationError(t *testing.T) {
 
 	_, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: "test::errors::go::boom",
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	if err == nil {
 		t.Fatal("expected an error from a failing handler")
@@ -44,7 +44,7 @@ func TestHandlerErrorSurfacesAsInvocationError(t *testing.T) {
 
 func TestTypedInvocationErrorPropagates(t *testing.T) {
 	c := connect(t)
-	if err := c.RegisterFunction("test::errors::go::forbidden", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::errors::go::forbidden", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, &iii.InvocationError{Code: "FORBIDDEN", Message: "nope"}
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
@@ -53,7 +53,7 @@ func TestTypedInvocationErrorPropagates(t *testing.T) {
 
 	_, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: "test::errors::go::forbidden",
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	var ie *iii.InvocationError
 	if !errors.As(err, &ie) {
@@ -68,7 +68,7 @@ func TestInvokeUnknownFunctionErrors(t *testing.T) {
 	c := connect(t)
 	_, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: "test::errors::go::does-not-exist",
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 		Timeout:    3 * time.Second,
 	})
 	if err == nil {

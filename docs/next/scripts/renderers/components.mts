@@ -1,4 +1,4 @@
-import type { ParamDoc, TypeDoc } from '../types.mjs'
+import type { ParamDoc, TypeDoc, ValueDoc } from '../types.mjs'
 
 function escapeTableCell(value: string): string {
   return value
@@ -113,6 +113,17 @@ export function renderReturnsTable(returns: { type: string; description: string 
     '| --- | --- |',
     `| ${renderTypeCell(returns.type || 'void', knownTypes)} | ${escapeTableCell(returns.description || '-')} |`,
   ].join('\n')
+}
+
+/** A table of package-level constants or variables (Go): name, source value, doc. */
+export function renderValuesTable(values: ValueDoc[]): string {
+  if (values.length === 0) return ''
+  const lines = ['| Name | Value | Description |', '| --- | --- | --- |']
+  for (const v of values) {
+    const value = v.value ? `\`${escapeCodeInTableCell(v.value)}\`` : '-'
+    lines.push(`| \`${escapeTableCell(v.name)}\` | ${value} | ${escapeTableCell(v.description || '-')} |`)
+  }
+  return lines.join('\n')
 }
 
 export function renderTypesIndex(types: TypeDoc[]): string {

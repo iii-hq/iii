@@ -3,6 +3,7 @@ package iii
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,7 +20,7 @@ import (
 // need from the connection.
 
 // Features this SDK declares in its engine::workers::register payload. The engine
-// advertises the first two in WorkerRegistered (CONTRACT D2). FeatureLargeMessagesV1 is
+// advertises the first two in WorkerRegistered. FeatureLargeMessagesV1 is
 // declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it
 // messages of that size whatever version it reports.
 const (
@@ -30,7 +31,7 @@ const (
 
 var sdkFeatures = []string{FeatureObserveV1, FeatureLocalDispatchV1, FeatureLargeMessagesV1}
 
-// Engine functions of the observer registry (protocol.md §3.6).
+// Engine functions of the observer registry.
 const (
 	FnListObservers   = "engine::observers::list"
 	FnGetObserver     = "engine::observers::get"
@@ -618,16 +619,16 @@ func (c *Client) reportStatus(functionID string, epoch uint64) reportStatus {
 	return f.reportStatus(epoch)
 }
 
-// closeFlushTimeout bounds the final flush in Close.
+// closeFlushTimeout bounds the final observe flush in Close (Shutdown uses its ctx).
 const closeFlushTimeout = 250 * time.Millisecond
 
-// flushObserveOnClose gives buffered reports and counters a last chance to reach the
-// engine, waiting briefly for the writer to drain them. Close bounds it.
-func (c *Client) flushObserveOnClose() {
+// flushObserve gives buffered reports and counters a last chance to reach the engine,
+// waiting until the writer drained them or ctx is done (Close: closeFlushTimeout;
+// Shutdown: the caller's ctx).
+func (c *Client) flushObserve(ctx context.Context) {
 	c.reporter.flush()
 	c.reporter.sendStats(time.Now())
-	deadline := time.Now().Add(closeFlushTimeout)
-	for time.Now().Before(deadline) {
+	for ctx.Err() == nil {
 		c.replyMu.Lock()
 		pending := 0
 		if c.reply != nil {

@@ -380,6 +380,9 @@ provider from the next section.
         Args:       iii.Args{"every_ms": 60000},
         Deliver:    iii.DeliverInput,
     }, "reports::refresh", iii.ObserverOptions{Metadata: json.RawMessage(`{"team":"reports"}`)})
+    if err != nil {
+        log.Fatal(err)
+    }
     // later
     observer.Dispose(ctx)
     ```

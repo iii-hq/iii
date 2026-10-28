@@ -61,7 +61,7 @@ func main() {
 	// value, which the SDK marshals into the invocation result. Because this function is
 	// exposed over HTTP, it speaks the engine's HTTP envelope: read the request from
 	// req.Body and return an ApiResponse { status_code, body }.
-	if err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req httpRequest
 		if err := json.Unmarshal(data, &req); err != nil {
 			return nil, err
@@ -79,13 +79,12 @@ func main() {
 	}
 
 	// Bind an HTTP trigger so the engine exposes the function at POST /greet.
-	if err := client.RegisterTrigger(
-		"hello-http",
-		"http",
-		"hello::greet",
-		json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
-		nil,
-	); err != nil {
+	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+		ID:         "hello-http",
+		Type:       "http",
+		FunctionID: "hello::greet",
+		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
+	}); err != nil {
 		log.Fatalf("register trigger: %v", err)
 	}
 
@@ -105,7 +104,7 @@ func main() {
 	defer cancel()
 	result, err := client.Trigger(callCtx, iii.TriggerRequest{
 		FunctionID: "hello::greet",
-		Data:       json.RawMessage(`{"body":{"name":"world"}}`),
+		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
 	})
 	if err != nil {
 		log.Printf("trigger hello::greet: %v", err)
@@ -119,4 +118,10 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 	log.Print("shutting down")
+	// Graceful: buffered reports and telemetry get up to five seconds to reach the engine.
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelShutdown()
+	if err := client.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown cut short: %v", err)
+	}
 }

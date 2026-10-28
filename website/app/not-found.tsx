@@ -1,10 +1,13 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 
+import { icons } from '@/lib/seo'
+
 /* The app-wide share image (app/opengraph-image.png) resolves against this origin. */
 export const metadata: Metadata = {
   metadataBase: new URL('https://iii.dev'),
   title: 'Page not found | iii',
+  icons,
   robots: { index: false, follow: true },
 }
 
