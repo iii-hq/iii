@@ -2,13 +2,14 @@
 
 import { ArrowUpRightIcon, PlusIcon } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
-import { useState } from 'react'
+import { type CSSProperties, useState } from 'react'
 
 import { CanvasRevealEffect } from '@/components/ui/canvas-reveal-effect'
 import { useMotionPreference } from '@/hooks/use-motion-preference'
 import type { Contributor } from '@/lib/contributors'
 import { duration, easeOut } from '@/lib/motion'
 import { cn } from '@/lib/utils'
+import styles from './contributors.module.css'
 
 /** Avatar size drawn, and the 2x GitHub renders for it (`s=` is GitHub's avatar size parameter). */
 const AVATAR_PX = 40
@@ -17,9 +18,9 @@ const AVATAR_SRC_PX = AVATAR_PX * 2
 /** The reveal's dots at a fraction of the stock brightness: a texture behind the name, not a competitor to it. */
 const DOT_OPACITIES = [0.08, 0.08, 0.08, 0.14, 0.14, 0.14, 0.22, 0.22, 0.22, 0.6]
 
-/** Every cell is the same fixed height, so the grid's shape never depends on a name's length. */
+/** Every cell is the same fixed size, so the row's rhythm never depends on a name's length. */
 const cell =
-  'group relative flex h-[108px] w-full flex-col items-center justify-center overflow-hidden px-2 outline-none focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-foreground focus-visible:-outline-offset-2'
+  'group relative flex h-[108px] w-[124px] flex-col sm:w-[140px] items-center justify-center overflow-hidden px-2 outline-none focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-foreground focus-visible:-outline-offset-2'
 
 const avatar =
   'relative z-10 size-10 shrink-0 overflow-hidden rounded-full bg-muted shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--foreground)_12%,transparent)]'
@@ -31,7 +32,7 @@ const name =
 const canHover = () => window.matchMedia('(hover: hover)').matches
 
 /**
- * One cell per person on a hairline grid, like a table, the avatar in grayscale with the login beneath it. Hover
+ * One cell per person on a hairline row, like a table, the avatar in grayscale with the login beneath it. Hover
  * (or keyboard focus) is where the colour is: the white dot-matrix reveal animates in on black, the avatar turns
  * to colour, the name turns white, the commit count fades in under it and an arrow slides into the corner the way
  * the footer's external links do. The whole cell is the link to the profile. The canvas mounts only while a cell
@@ -42,7 +43,7 @@ function Tile({ contributor: c }: { contributor: Contributor }) {
   const reduce = useMotionPreference()
   const commits = `${c.contributions.toLocaleString('en-US')} ${c.contributions === 1 ? 'commit' : 'commits'}`
   return (
-    <li className="min-w-0 border-r border-b">
+    <li className="shrink-0 border-r">
       <a
         href={c.url}
         target="_blank"
@@ -119,10 +120,10 @@ function Tile({ contributor: c }: { contributor: Contributor }) {
   )
 }
 
-/** The last cell: where the reader's own name would go. A dashed ring with a plus, pointing at the contributing guide. */
+/** The pinned last cell: where the reader's own name would go. A dashed ring with a plus, pointing at the contributing guide. */
 function JoinTile({ label, href }: { label: string; href: string }) {
   return (
-    <li className="min-w-0 border-r border-b">
+    <li className="shrink-0 border-l">
       <a href={href} target="_blank" rel="noopener noreferrer" className={cn(cell, 'hover:bg-faint')}>
         <span
           aria-hidden
@@ -137,6 +138,11 @@ function JoinTile({ label, href }: { label: string; href: string }) {
   )
 }
 
+/**
+ * One row that rotates through everyone: a marquee of cells sliding left (contributors.module.css), with the
+ * "your name here" cell pinned at the right end so it is always in view. The track carries the list twice for a
+ * seamless loop; the second copy is inert, so screen readers and the tab order meet each person once.
+ */
 export function ContributorGrid({
   contributors,
   join,
@@ -144,12 +150,20 @@ export function ContributorGrid({
   contributors: Contributor[]
   join: { label: string; href: string }
 }) {
+  const cells = contributors.map((c) => <Tile key={c.id} contributor={c} />)
   return (
-    <ul className="grid grid-cols-3 border-t border-l sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10">
-      {contributors.map((c) => (
-        <Tile key={c.id} contributor={c} />
-      ))}
-      <JoinTile {...join} />
-    </ul>
+    <div className="flex border-y border-l">
+      <div className={styles.viewport}>
+        <div className={styles.track} style={{ '--cells': contributors.length } as CSSProperties}>
+          <ul className="flex">{cells}</ul>
+          <ul className="flex" aria-hidden inert>
+            {cells}
+          </ul>
+        </div>
+      </div>
+      <ul className="flex shrink-0">
+        <JoinTile {...join} />
+      </ul>
+    </div>
   )
 }

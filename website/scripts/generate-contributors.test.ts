@@ -1,7 +1,14 @@
 import assert from "node:assert/strict"
 import { describe, it } from "node:test"
 
-import { CONTRIBUTOR_REPOS, type GitHubContributor, isBot, mergeContributors, repoSlug } from "../lib/contributors"
+import {
+  CONTRIBUTOR_REPOS,
+  type GitHubContributor,
+  isBot,
+  isExcluded,
+  mergeContributors,
+  repoSlug,
+} from "../lib/contributors"
 
 const user = (id: number, login: string, contributions: number, type = "User"): GitHubContributor => ({
   id,
@@ -34,6 +41,13 @@ describe("bots", () => {
     assert.ok(isBot({ login: "web-flow", type: "User" }))
     assert.ok(!isBot({ login: "kebot", type: "User" }))
     assert.ok(!isBot({ login: "ytallo", type: "User" }))
+  })
+
+  it("leaves out the organisation's own account, which is not a person", () => {
+    assert.ok(isExcluded({ login: "iii-headquarters", type: "User" }))
+    assert.ok(isExcluded({ login: "github-actions[bot]", type: "Bot" }))
+    assert.ok(!isBot({ login: "iii-headquarters", type: "User" }))
+    assert.ok(!isExcluded({ login: "ytallo", type: "User" }))
   })
 })
 
@@ -72,6 +86,7 @@ describe("merge", () => {
         entries: [
           user(9, "github-actions[bot]", 500, "Bot"),
           user(8, "actions-user", 400),
+          user(7, "iii-headquarters", 300),
           user(1, "zed", 2),
           user(2, "Amy", 2),
           user(3, "max", 7),

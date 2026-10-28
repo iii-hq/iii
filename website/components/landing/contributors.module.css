@@ -1,0 +1,35 @@
+/*
+ * The contributors row: a marquee. The track holds two copies of the list and slides left by exactly one copy,
+ * so the loop is seamless. It pauses while the pointer or keyboard focus is inside, which is also what lets the
+ * hover reveal on a cell be read. Reduced motion: no movement, the first copy stands still.
+ */
+.viewport {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent, black 40px, black calc(100% - 40px), transparent);
+}
+
+.track {
+  display: flex;
+  width: max-content;
+  animation: marquee calc(var(--cells) * 2.4s) linear infinite;
+  will-change: transform;
+}
+
+.viewport:hover .track,
+.viewport:focus-within .track {
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .track {
+    animation: none;
+  }
+}

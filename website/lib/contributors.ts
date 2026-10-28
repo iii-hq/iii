@@ -53,21 +53,29 @@ export const CONTRIBUTOR_REPOS: readonly string[] = [links.github, links.workers
  */
 const AUTOMATION_LOGINS = new Set(['actions-user', 'web-flow'])
 
+/** Accounts that are not a person: the organisation's own account, which commits on its behalf. */
+const ORG_LOGINS = new Set(['iii-headquarters'])
+
 /** True for GitHub Apps (type "Bot" or a `[bot]` suffix) and the automation accounts above. */
 export function isBot(entry: Pick<GitHubContributor, 'login' | 'type'>): boolean {
   const login = entry.login.toLowerCase()
   return entry.type === 'Bot' || login.endsWith('[bot]') || AUTOMATION_LOGINS.has(login)
 }
 
+/** True for anything the list leaves out: bots, and accounts that are not a person. */
+export function isExcluded(entry: Pick<GitHubContributor, 'login' | 'type'>): boolean {
+  return isBot(entry) || ORG_LOGINS.has(entry.login.toLowerCase())
+}
+
 /**
  * Merges the contributor lists of several repositories into one: one row per person (by GitHub user id),
- * commits summed, bots dropped, most commits first with the login as the tiebreak so the order is stable.
+ * commits summed, bots and the organisation's account dropped, most commits first with the login as the tiebreak so the order is stable.
  */
 export function mergeContributors(lists: { repo: string; entries: GitHubContributor[] }[]): Contributor[] {
   const byId = new Map<number, Contributor>()
   for (const { repo, entries } of lists) {
     for (const entry of entries) {
-      if (isBot(entry)) continue
+      if (isExcluded(entry)) continue
       const seen = byId.get(entry.id)
       if (seen) {
         seen.contributions += entry.contributions

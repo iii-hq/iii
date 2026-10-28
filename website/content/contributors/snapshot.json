@@ -1,6 +1,6 @@
 {
   "repos": ["iii-hq/iii", "iii-hq/workers"],
-  "fetchedAt": "2026-10-28T15:31:26.106Z",
+  "fetchedAt": "2026-10-28T17:06:57.986Z",
   "contributors": [
     {
       "id": 5348335,
@@ -161,14 +161,6 @@
       "url": "https://github.com/chrisayl",
       "contributions": 2,
       "repos": ["iii-hq/iii", "iii-hq/workers"]
-    },
-    {
-      "id": 274615420,
-      "login": "iii-headquarters",
-      "avatarUrl": "https://avatars.githubusercontent.com/u/274615420?v=4",
-      "url": "https://github.com/iii-headquarters",
-      "contributions": 2,
-      "repos": ["iii-hq/workers"]
     },
     {
       "id": 59867217,

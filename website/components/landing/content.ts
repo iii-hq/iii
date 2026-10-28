@@ -352,11 +352,11 @@ export const contributors = {
   eyebrow: 'Contributors',
   title: 'Built in the open.',
   /* Follows the count and repository links: "61 people have landed commits in … ." */
-  copy: 'The next name on the grid could be yours.',
+  copy: 'The next name could be yours.',
   /* Two ways in, as buttons: the quick one (a star, with the live count) and the real one (a pull request). */
   star: { label: 'Star on GitHub', href: 'https://github.com/iii-hq/iii' },
   pr: { label: 'Open a pull request', href: 'https://github.com/iii-hq/iii/blob/main/CONTRIBUTING.md' },
-  /* The grid's last cell: where the reader's own name would go. Same destination as the pull request button. */
+  /* The row's pinned last cell: where the reader's own name would go. Same destination as the pull request button. */
   you: 'Your name here',
 }
 
