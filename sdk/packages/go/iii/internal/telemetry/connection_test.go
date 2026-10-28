@@ -309,49 +309,49 @@ func TestConnectionShutdownClosesSocket(t *testing.T) {
 // The connection reconnects after the engine drops it.
 func TestConnectionReconnects(t *testing.T) {
 	silence(t)
-	var mu sync.Mutex
-	var conns []*websocket.Conn
+	accepted := make(chan *websocket.Conn, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
 		}
-		mu.Lock()
-		conns = append(conns, conn)
-		mu.Unlock()
+		accepted <- conn
 		_, _, _ = conn.Read(context.Background())
 	}))
 	defer srv.Close()
 	c := NewConnection("ws"+strings.TrimPrefix(srv.URL, "http"), nil, fastReconnect(-1))
 	defer func() { _ = c.Shutdown(context.Background()) }()
-	connected := 0
+	connected := make(chan struct{}, 1)
 	c.OnConnected(func() {
-		mu.Lock()
-		connected++
-		mu.Unlock()
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
 	})
-	waitState(t, c, StateConnected)
-	mu.Lock()
-	_ = conns[0].CloseNow()
-	mu.Unlock()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		mu.Lock()
-		n := len(conns)
-		mu.Unlock()
-		if n == 2 && c.State() == StateConnected {
-			break
+
+	waitConnected := func() *websocket.Conn {
+		t.Helper()
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		var conn *websocket.Conn
+		// Client-side StateConnected does not mean the server handler has
+		// published its socket yet. Synchronize with both sides explicitly.
+		select {
+		case conn = <-accepted:
+		case <-timer.C:
+			t.Fatal("timed out waiting for the server to accept a connection")
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no reconnection: %d connections, state %v", n, c.State())
+		select {
+		case <-connected:
+		case <-timer.C:
+			t.Fatal("timed out waiting for OnConnected")
 		}
-		time.Sleep(time.Millisecond)
+		return conn
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if connected < 1 {
-		t.Errorf("OnConnected ran %d times", connected)
-	}
+
+	first := waitConnected()
+	_ = first.CloseNow()
+	_ = waitConnected()
 }
 
 // engineRefusal is the text frame the engine's /otel handler sends before closing a
