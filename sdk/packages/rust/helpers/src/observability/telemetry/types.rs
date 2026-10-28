@@ -58,7 +58,8 @@ impl ReconnectionConfig {
 pub struct OtelConfig {
     /// Whether OpenTelemetry export is enabled. Defaults to true. Set to false or `OTEL_ENABLED=false/0/no/off` to disable.
     pub enabled: Option<bool>,
-    /// The service name to report. Defaults to the `OTEL_SERVICE_NAME` env var.
+    /// The service name to report. Defaults to the `OTEL_SERVICE_NAME` env var,
+    /// then the program's file name, then `iii-rust-sdk`.
     pub service_name: Option<String>,
     /// The service version to report. Defaults to the `SERVICE_VERSION` env var or "unknown".
     pub service_version: Option<String>,
