@@ -2,17 +2,22 @@
 title: "Upgrading from 0.24.x to 0.25.x"
 description:
   "Nothing breaks: triggers keep working. Review the behavior changes, then move registerTrigger to
-  iii.observe and registerTriggerType to observable functions where the source allows it."
+  worker.observe and registerTriggerType to observable functions where the source allows it."
 owner: "devrel"
 type: "how-to"
 ---
 
 0.25 makes every function observable. A trigger type becomes a function that knows who observes it,
-and a trigger becomes an observer created with `iii.observe(source, target, options?)`. The old
-trigger APIs keep working in 0.25, so most projects upgrade without code changes. The exceptions are
-Rust builds that treat warnings as errors (`-D warnings`), which need `#[allow(deprecated)]` on the
-calls they keep, and code that calls `unregisterTriggerType`, which now takes effect. Read the
-[behavior changes](#behavior-changes) first, then move to the new APIs at your own pace.
+and a trigger becomes an observer created with `worker.observe(source, target, options?)`. The old
+trigger APIs keep working in 0.25, so most projects upgrade without code changes. The exceptions:
+
+- Rust builds that treat warnings as errors (`-D warnings`): put `#[allow(deprecated)]` on the calls
+  you keep.
+- Code that calls `unregisterTriggerType`: engines before 0.25 ignored this call. The 0.25 engine
+  removes the trigger type. If your code expects the type to stay, remove the call. See
+  [`unregisterTriggerType` now takes effect](#unregistertriggertype-now-takes-effect).
+
+Read the [behavior changes](#behavior-changes) first, then move to the new APIs at your own pace.
 
 <Note>
   The http, cron, queue, state, stream, pubsub, and database workers still publish trigger types in
@@ -33,7 +38,7 @@ calls they keep, and code that calls `unregisterTriggerType`, which now takes ef
   SDK names its own API):
 
   ```text
-  registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source,
+  registerTrigger is deprecated and will be removed in a future release. Use worker.observe(source,
   target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
   ```
 
@@ -55,12 +60,15 @@ calls they keep, and code that calls `unregisterTriggerType`, which now takes ef
 
 ### Local dispatch
 
-A worker that calls a function it registered itself now runs the handler in-process once the engine
-confirmed the registration, instead of sending the call through the engine. Results, error shapes,
-and timeouts are the same. The differences:
+A worker that calls a function it registered itself now runs the handler in-process after the engine
+confirms the registration. The call does not go through the engine. Results, error shapes, and
+timeouts are the same. The differences:
 
-- **No 16 MiB message limit** on that path, because nothing is serialized. A test that expects
-  `payload_too_large` on a call to a function in the same worker must force the remote path.
+- **No message size limit** on that path, because nothing is serialized. Through the engine, a
+  message can be at most 64 MiB (16 MiB for browsers and SDKs older than 0.25), and a larger one
+  fails with `payload_too_large`. A local call never fails with this error. If a test expects
+  `payload_too_large` on a call to a function in the same worker, send the call with
+  `dispatch: "remote"`.
 - **No engine-side span or call metrics** for the local call. The SDK still records its own
   `execute` span, and reports the number of local invocations every 10 seconds
   (`localinvocationstats`), which the engine adds to `iii.invocations.total` with
@@ -81,8 +89,8 @@ and timeouts are the same. The differences:
   while the connection is down.
 
 Local dispatch is off for a session with an RBAC `middleware_function_id`, or one that may not
-invoke the function, because a local call would bypass those checks. To keep the old behavior for a
-function, a call, or the whole engine:
+invoke the function, because a local call would bypass those checks. Enqueue calls always go through
+the engine. To keep the old behavior for a function, a call, or the whole engine:
 
 | Scope        | Node / browser                                                                                 | Python                 | Rust                                                          | Go                                             |
 | ------------ | ---------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------- | ---------------------------------------------- |
@@ -103,11 +111,12 @@ Its triggers then move to another provider of the type, are taken by a function 
 - **Legacy shim results.** For a `registerTrigger` that the
   [legacy shim](#keep-old-consumers-working) turns into an observer, the engine sends one
   `TriggerRegistrationResult`, also on success. The SDKs ignore the success result.
-- **`RegisterFunction` frames** omit `request_format` and `response_format` when absent instead of
-  sending `null`.
-- **Loop guard.** Every invocation carries an observe depth; activations deeper than
-  `observers.max_observe_depth` (8) are dropped. Workers on 0.24 SDKs do not forward the depth, so
-  through them the engine estimates it from their activations still in flight.
+- **`RegisterFunction` frames** omit `request_format` and `response_format` when they are absent.
+  Before, they sent `null`.
+- **Loop guard.** Every invocation carries an observe depth. When the depth of an event is more than
+  `observers.max_observe_depth` (8 by default), the engine drops it. Workers on 0.24 SDKs do not
+  send the depth. For their calls, the engine uses the largest depth of the invocations still in
+  flight on that worker.
 - **Observe hooks that hang.** An `onObserverAdded` hook still running after 30 seconds fails the
   observer with `OWNER_TIMEOUT`, and the next hook of the same function may start while it runs.
 - **Rust SDK:**
@@ -115,9 +124,9 @@ Its triggers then move to another provider of the type, are taken by a function 
     and exhaustive `match`es on `Message` need updating (prefer the constructors, such as
     `RegisterTriggerInput::new` and `TriggerRequest::new`);
   - the connection state turns `Reconnecting` as soon as the link drops;
-  - a panicking handler now returns an `invocation_failed` error to the caller instead of leaving it
-    to time out;
-  - an `invocation_id` of `None` is omitted from frames instead of sent as `null`.
+  - a handler that panics now returns an `invocation_failed` error to the caller. Before, the call
+    timed out;
+  - frames omit an `invocation_id` of `None`. Before, they sent `null`.
 - **Browser SDK:**
   - `trigger` now sends `metadata`, `traceparent`, and `baggage`, and handlers receive the metadata
     as their second argument;
@@ -150,13 +159,16 @@ Its triggers then move to another provider of the type, are taken by a function 
 | Rust `TriggerHandler`, `RegisterTriggerType`, `RegisterTriggerInput`         | `ObserveHandler`, `RegisterFunction::observe(Observe::owner()..)`, `Source::function(..)`                                              |
 | `engine::registered-triggers::list` (trigger instances)                      | `engine::observers::list`                                                                                                              |
 
-## Move `registerTrigger` to `iii.observe`
+## Move `registerTrigger` to `worker.observe`
 
 Do this for triggers whose source is a function: any regular function, the
 [engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources), or a provider
-that moved to an observable function. Register the target first, then observe. With
-`deliver: "input"` the target receives the same payload its trigger handler received, so the handler
-stays as it is.
+that moved to an observable function. With `deliver: "input"` the target receives the same payload
+its trigger handler received, so the handler stays as it is.
+
+Register the target before you observe it. This is the best practice in most cases, but it is not
+required. If the target is not registered yet, the observer stays `pending` (`TARGET_UNAVAILABLE`)
+until the target registers, and events that occur in that time do not reach it.
 
 ### Engine triggers
 
@@ -167,7 +179,7 @@ The engine's own trigger types have source functions in 0.25:
 | `engine::functions-available` | `engine::on-functions-changed`                                           |
 | `engine::workers-available`   | `engine::on-workers-changed`                                             |
 | `configuration`               | `configuration::on-updated`, filter on `input.id` and `input.event_type` |
-| `log`                         | `observability::on-log`, filter on `input.severity_text`                 |
+| `log`                         | `observability::on-log`, filter on `input.severity_number`               |
 | `trace`                       | `observability::on-span`                                                 |
 
 <Tabs>
@@ -246,13 +258,13 @@ The engine's own trigger types have source functions in 0.25:
     **Before (0.24)**
 
     ```go
-    client.RegisterTrigger("catalog-refresh", "engine::functions-available", "catalog::refresh", nil)
+    worker.RegisterTrigger("catalog-refresh", "engine::functions-available", "catalog::refresh", nil)
     ```
 
     **After (0.25)**
 
     ```go
-    refresh, err := client.Observe(iii.Source{
+    refresh, err := worker.Observe(iii.Source{
         FunctionID: "engine::on-functions-changed",
         Deliver:    iii.DeliverInput,
     }, "catalog::refresh")
@@ -362,14 +374,14 @@ provider from the next section.
     **Before (0.24)**
 
     ```go
-    client.RegisterTrigger("reports-refresh", "timer", "reports::refresh",
+    worker.RegisterTrigger("reports-refresh", "timer", "reports::refresh",
         json.RawMessage(`{"every_ms":60000}`), json.RawMessage(`{"team":"reports"}`))
     ```
 
     **After (0.25)**
 
     ```go
-    observer, err := client.Observe(iii.Source{
+    observer, err := worker.Observe(iii.Source{
         FunctionID: "timer::on-tick",
         Args:       iii.Args{"every_ms": 60000},
         Deliver:    iii.DeliverInput,
@@ -408,7 +420,7 @@ worker reconnects.
    `trigger_request_format` to `observe.args_format` and `call_request_format` to the function's
    `request_format`.
 3. Move `registerTrigger(config)` to `onObserverAdded(obs)` and `unregisterTrigger(config)` to
-   `onObserverRemoved(obs)`. Read `obs.args` instead of `config.config`.
+   `onObserverRemoved(obs)`. Read the config from `obs.args`. Before, it was `config.config`.
 4. Replace `trigger({ function_id: binding.function_id, payload })` with `obs.emit(event)`, or with
    `obs.call(payload)` when the result matters (an HTTP response, a queue acknowledgement).
 5. Declare `legacy_trigger_type` with the old type id, and stop registering the trigger type, so old
@@ -421,6 +433,9 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     **Before (0.24)**
 
     ```typescript
+    import { Logger } from "@iii-dev/helpers/observability";
+
+    const logger = new Logger();
     const bindings = new Map<string, ReturnType<typeof setInterval>>(); // trigger id → its timer
 
     worker.registerTriggerType<{ every_ms: number }>(
@@ -430,7 +445,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
           const handle = setInterval(() => {
             worker
               .trigger({ function_id, payload: { every_ms: config.every_ms, fired_at_ms: Date.now() } })
-              .catch((err) => console.error(err));
+              .catch((err) => logger.error("timer trigger failed", err));
           }, config.every_ms);
           bindings.set(id, handle);
         },
@@ -586,7 +601,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
 
     #[derive(Clone)]
     struct TimerHandler {
-        iii: IIIClient,
+        worker: IIIClient,
         tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>, // trigger id → its task
     }
 
@@ -594,14 +609,14 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     impl TriggerHandler for TimerHandler {
         async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
             let every_ms = config.config["every_ms"].as_u64().unwrap_or(1_000);
-            let (iii, function_id) = (self.iii.clone(), config.function_id.clone());
+            let (worker, function_id) = (self.worker.clone(), config.function_id.clone());
             let task = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(every_ms));
                 loop {
                     interval.tick().await;
                     let fired_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
                     let tick = json!({ "every_ms": every_ms, "fired_at_ms": fired_at_ms });
-                    let _ = iii.trigger(TriggerRequest::new(function_id.clone(), tick)).await;
+                    let _ = worker.trigger(TriggerRequest::new(function_id.clone(), tick)).await;
                 }
             });
             self.tasks.lock().unwrap().insert(config.id, task);
@@ -619,7 +634,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     worker.register_trigger_type(RegisterTriggerType::new(
         "timer",
         "Fires every every_ms milliseconds",
-        TimerHandler { iii: worker.clone(), tasks: Default::default() },
+        TimerHandler { worker: worker.clone(), tasks: Default::default() },
     ));
     ```
 
@@ -631,7 +646,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use iii_sdk::{Error, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
-    use schemars::JsonSchema;
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
@@ -698,7 +713,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
 
     ```go
     type timerHandler struct {
-        client *iii.Client
+        worker *iii.Client
         mu     sync.Mutex
         stops  map[string]chan struct{} // trigger id → stop
     }
@@ -723,7 +738,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
                     return
                 case now := <-ticker.C:
                     data, _ := json.Marshal(map[string]int64{"every_ms": config.EveryMs, "fired_at_ms": now.UnixMilli()})
-                    h.client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: cfg.FunctionID, Data: data, Namespace: cfg.Namespace})
+                    h.worker.Trigger(context.Background(), iii.TriggerRequest{FunctionID: cfg.FunctionID, Data: data, Namespace: cfg.Namespace})
                 }
             }
         }()
@@ -740,8 +755,8 @@ The example moves a `timer` trigger type, which fires each binding every `every_
         return nil
     }
 
-    client.RegisterTriggerType("timer", "Fires every every_ms milliseconds",
-        &timerHandler{client: client, stops: map[string]chan struct{}{}})
+    worker.RegisterTriggerType("timer", "Fires every every_ms milliseconds",
+        &timerHandler{worker: worker, stops: map[string]chan struct{}{}})
     ```
 
     **After (0.25)**
@@ -769,8 +784,8 @@ The example moves a `timer` trigger type, which fires each binding every `every_
         return args.EveryMs, err
     }
 
-    func registerTimer(client *iii.Client) error {
-        return client.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
+    func registerTimer(worker *iii.Client) error {
+        return worker.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
             return data, nil
         }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
             Delivery:          iii.DeliveryOwner,
@@ -835,23 +850,34 @@ keep working with no change, as long as no worker registers the `timer` trigger 
 - `unregisterTrigger` disposes the observer.
 - A worker that registers the trigger type the old way always wins for new registrations. Remove the
   `registerTriggerType` call in the same release that adds the function.
-- Only workers on a 0.25 SDK can stand in for a trigger type.
 
 See [Accept old triggers](../creating-workers/observable-functions#accept-old-triggers) for the
 lookup rules.
 
 ## Providers not migrated yet
 
-The http, cron, queue (`durable:subscriber`), state, stream, pubsub (`subscribe`), and database
-workers live in the workers repository and still register trigger types in 0.25. Until they ship
-source functions (such as `http::on-request`, `cron::on-tick`, or `database::on-row-changed`):
+In their latest releases, the http, cron, queue (`durable:subscriber`), state, pubsub (`subscribe`),
+and database workers still register trigger types. The stream worker, which ships with the engine,
+does too. Some of these workers also ship a source function:
+
+| Worker   | Source function            |
+| -------- | -------------------------- |
+| http     | `http::on-request`         |
+| cron     | `cron::on-tick`            |
+| queue    | `queue::on-message`        |
+| state    | `state::on-changed`        |
+| database | `database::on-row-changed` |
+
+None of them declares `legacy_trigger_type` yet. This list can become out of date: check the current
+release of each worker at [workers.iii.dev](https://workers.iii.dev). Until a worker declares
+`legacy_trigger_type`:
 
 - keep using `registerTrigger` to bind functions to them; the deprecation warning is informational,
   and Rust code needs `#[allow(deprecated)]` on those calls;
 - their documentation, including the config shapes at [workers.iii.dev](https://workers.iii.dev),
   stays valid;
 - once a provider ships its function with `legacy_trigger_type`, your existing `registerTrigger`
-  calls keep working through the engine, and you can move them to `iii.observe` at your own pace.
+  calls keep working through the engine, and you can move them to `worker.observe` at your own pace.
 
 What you can observe in 0.25: any regular function, the
 [engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources), and providers
@@ -865,7 +891,7 @@ that already moved to [observable functions](../creating-workers/observable-func
 - [ ] Remove `unregisterTriggerType` calls that expected the type to stay registered
 - [ ] Add `#[allow(deprecated)]` to Rust trigger calls you keep, if warnings are errors
 - [ ] Move triggers on engine events (`engine::functions-available`, `engine::workers-available`,
-      `configuration`, `log`, `trace`) to `iii.observe`
+      `configuration`, `log`, `trace`) to `worker.observe`
 - [ ] Move your own trigger types to observable functions with `legacy_trigger_type`
 - [ ] Keep `registerTrigger` for the http, cron, queue, state, stream, pubsub, and database workers
 

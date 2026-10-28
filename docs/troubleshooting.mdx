@@ -22,3 +22,39 @@ Then restart your session so the new group membership applies. On WSL2, run `wsl
 Windows terminal and reopen your distribution.
 
 <Info>For why workers run in microVMs, see [Engine](./understanding-iii/engine).</Info>
+
+## An observer's target never runs
+
+List the observers of the observed function:
+
+```bash
+iii trigger engine::observers::list function_id=orders::create
+```
+
+Find yours by its `target` and read its `state`:
+
+- `pending` or `error`: `reason` says why, for example the owner has not acknowledged it, the target
+  is not registered, or the args were refused (`INVALID_ARGS`). See
+  [Observer states](./using-iii/observers#observer-states).
+- `active` with `fires` and `dropped` at 0: no event has reached it. Check `delivery`:
+  - `owner`: the observer gets an event only when the function's code calls `obs.emit` or `obs.call`
+    on it. Inside `onObserverAdded`, the observer is not active yet, so these calls do not deliver.
+    See [Owner delivery](./creating-workers/observable-functions#owner-delivery).
+  - `auto`: only invocations that start after the observer turned `active`, end with the outcome its
+    `on` asks for (`success` by default), and pass its filters are events. A call already running
+    when the observer turned `active` is not one, so call the function again.
+- `dropped` or `activation_failures` above 0: events reached it and were dropped or failed, counted
+  by reason (`OVERFLOW`, `LOOP_GUARD`, ...).
+
+## `Logger` lines do not show up
+
+`Logger` sends its lines to the engine. They do not appear in your worker's output. Look in the
+engine's output (under `iii compose --up`, `.iii/compose/<namespace>/engine.log`), or run:
+
+```bash
+iii trigger engine::logs::list
+```
+
+If they are not there either, the worker's OpenTelemetry export may be off (`OTEL_ENABLED=false`).
+`Logger` then falls back to the language's own logging, which the Rust SDK prints only with a
+`tracing` subscriber. See [Where the lines go](./creating-workers/observability#where-the-lines-go).
