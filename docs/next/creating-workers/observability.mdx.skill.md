@@ -39,6 +39,7 @@ than to raw stdout.
     logger.warn("retrying upstream", { attempt });
     logger.error("failed to persist", { slug, err });
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
@@ -52,6 +53,7 @@ than to raw stdout.
     logger.warn("retrying upstream", {"attempt": attempt})
     logger.error("failed to persist", {"slug": slug, "err": str(err)})
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
@@ -74,8 +76,8 @@ than to raw stdout.
 
 `Logger` does not write to your worker's own output. It sends each line to the engine, which:
 
-- prints it in the engine's output, labeled with the worker's OpenTelemetry service name (set it with
-  `OTEL_SERVICE_NAME`), unless the observability worker sets `logs_console_output: false`;
+- prints it in the engine's output, labeled with the worker's OpenTelemetry service name (set it
+  with `OTEL_SERVICE_NAME`), unless the observability worker sets `logs_console_output: false`;
 - stores it: `iii trigger engine::logs::list` returns it, and the [console](../using-iii/console)
   shows it next to the trace it was logged in.
 
@@ -90,8 +92,10 @@ falls back to the language's own logging, and the line stays in the worker's pro
 | Node   | `console.*`                    | yes                                                                      |
 | Python | `logging`, logger `iii.logger` | warnings and errors only, on stderr                                      |
 | Rust   | the `tracing` crate            | no: install a subscriber, for example `tracing_subscriber::fmt().init()` |
+| Go     | the standard `log` package     | yes, on stderr                                                           |
 
-For lines in your worker's own terminal, print them yourself (`console.log`, `print`, `println!`).
+For lines in your worker's own terminal, print them yourself (`console.log`, `print`, `println!`,
+`fmt.Println`).
 
 You can also query recorded logs and emit one-off log lines through the observability worker's
 triggers, for example:
@@ -171,8 +175,8 @@ events take that depth, so a target that logs or makes calls on every event stop
 
 Observers have their own metrics (`iii.observer.activations.total`, `iii.observer.dropped.total`,
 `iii.observers`, and more), and calls a worker makes to its own functions are counted in
-`iii.invocations.total` with `dispatch="local"`. See [Engine-collected
-metrics](../reference/engine-protocol#engine-collected-metrics).
+`iii.invocations.total` with `dispatch="local"`. See
+[Engine-collected metrics](../reference/engine-protocol#engine-collected-metrics).
 
 ## Health and clearing
 
@@ -202,5 +206,6 @@ iii trigger engine::traces::list | jq '.total'
 
 ## Seeing it in the console
 
-The [console](../using-iii/console) renders this observability data visually, traces, logs, and metrics for a running
-system, so you usually do not query the functions above by hand during development.
+The [console](../using-iii/console) renders this observability data visually, traces, logs, and
+metrics for a running system, so you usually do not query the functions above by hand during
+development.
