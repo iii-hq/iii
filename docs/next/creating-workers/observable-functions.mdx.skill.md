@@ -30,7 +30,7 @@ publish an event, register a function for it and call that function when the eve
     ```rust
     use iii_sdk::protocol::TriggerRequest;
     use iii_sdk::{Error, RegisterFunction};
-    use schemars::JsonSchema;
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
@@ -458,7 +458,7 @@ worker still polls that path only 1 time each second.
     use iii_sdk::{
         Error, IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
     };
-    use schemars::JsonSchema;
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
@@ -769,7 +769,7 @@ of the example code. The SDK does not compare the args of different observers.
     use std::sync::{Arc, Mutex};
 
     use iii_sdk::{Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
-    use schemars::JsonSchema;
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, JsonSchema)]

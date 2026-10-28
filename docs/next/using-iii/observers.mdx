@@ -96,7 +96,7 @@ argument.
   <Tab title="Rust">
     ```rust
     use iii_sdk::{Deliver, Error, InitOptions, RegisterFunction, Source, register_worker};
-    use schemars::JsonSchema;
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

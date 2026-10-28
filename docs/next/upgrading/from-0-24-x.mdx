@@ -634,7 +634,7 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use iii_sdk::{Error, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction};
-    use schemars::JsonSchema;
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 
