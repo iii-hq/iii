@@ -169,6 +169,8 @@ when it connects and replays it with the same id after every reconnect, so you c
 startup, like `registerFunction`. The browser SDK (`iii-browser-sdk`) has the same `observe` API as
 Node.
 
+<Info>The observer can miss events that occur before `ready()` resolves.</Info>
+
 ### Narrow it with a filter
 
 This observer runs `alerts::big-order` only for orders with a total of 500 or more. A
