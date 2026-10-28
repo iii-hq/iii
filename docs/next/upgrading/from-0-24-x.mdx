@@ -163,9 +163,12 @@ Its triggers then move to another provider of the type, are taken by a function 
 
 Do this for triggers whose source is a function: any regular function, the
 [engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources), or a provider
-that moved to an observable function. Register the target first, then observe. With
-`deliver: "input"` the target receives the same payload its trigger handler received, so the handler
-stays as it is.
+that moved to an observable function. With `deliver: "input"` the target receives the same payload
+its trigger handler received, so the handler stays as it is.
+
+Register the target before you observe it. This is the best practice in most cases, but it is not
+required. If the target is not registered yet, the observer stays `pending` (`TARGET_UNAVAILABLE`)
+until the target registers, and events that occur in that time do not reach it.
 
 ### Engine triggers
 
@@ -176,7 +179,7 @@ The engine's own trigger types have source functions in 0.25:
 | `engine::functions-available` | `engine::on-functions-changed`                                           |
 | `engine::workers-available`   | `engine::on-workers-changed`                                             |
 | `configuration`               | `configuration::on-updated`, filter on `input.id` and `input.event_type` |
-| `log`                         | `observability::on-log`, filter on `input.severity_text`                 |
+| `log`                         | `observability::on-log`, filter on `input.severity_number`               |
 | `trace`                       | `observability::on-span`                                                 |
 
 <Tabs>
@@ -417,7 +420,7 @@ worker reconnects.
    `trigger_request_format` to `observe.args_format` and `call_request_format` to the function's
    `request_format`.
 3. Move `registerTrigger(config)` to `onObserverAdded(obs)` and `unregisterTrigger(config)` to
-   `onObserverRemoved(obs)`. Read `obs.args` instead of `config.config`.
+   `onObserverRemoved(obs)`. Read the config from `obs.args`. Before, it was `config.config`.
 4. Replace `trigger({ function_id: binding.function_id, payload })` with `obs.emit(event)`, or with
    `obs.call(payload)` when the result matters (an HTTP response, a queue acknowledgement).
 5. Declare `legacy_trigger_type` with the old type id, and stop registering the trigger type, so old
@@ -847,16 +850,27 @@ keep working with no change, as long as no worker registers the `timer` trigger 
 - `unregisterTrigger` disposes the observer.
 - A worker that registers the trigger type the old way always wins for new registrations. Remove the
   `registerTriggerType` call in the same release that adds the function.
-- Only workers on a 0.25 SDK can stand in for a trigger type.
 
 See [Accept old triggers](../creating-workers/observable-functions#accept-old-triggers) for the
 lookup rules.
 
 ## Providers not migrated yet
 
-The http, cron, queue (`durable:subscriber`), state, stream, pubsub (`subscribe`), and database
-workers live in the workers repository and still register trigger types in 0.25. Until they ship
-source functions (such as `http::on-request`, `cron::on-tick`, or `database::on-row-changed`):
+In their latest releases, the http, cron, queue (`durable:subscriber`), state, pubsub (`subscribe`),
+and database workers still register trigger types. The stream worker, which ships with the engine,
+does too. Some of these workers also ship a source function:
+
+| Worker   | Source function            |
+| -------- | -------------------------- |
+| http     | `http::on-request`         |
+| cron     | `cron::on-tick`            |
+| queue    | `queue::on-message`        |
+| state    | `state::on-changed`        |
+| database | `database::on-row-changed` |
+
+None of them declares `legacy_trigger_type` yet. This list can become out of date: check the current
+release of each worker at [workers.iii.dev](https://workers.iii.dev). Until a worker declares
+`legacy_trigger_type`:
 
 - keep using `registerTrigger` to bind functions to them; the deprecation warning is informational,
   and Rust code needs `#[allow(deprecated)]` on those calls;
