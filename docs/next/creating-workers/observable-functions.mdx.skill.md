@@ -14,7 +14,7 @@ can:
 - check for observers, and run code when an observer is added or removed
   ([Know when a function is observed](#know-when-a-function-is-observed));
 - send different events to different observers, based on the `args` of each observer
-  ([Advanced function observation](#advanced-function-observation));
+  ([Advanced function observation with owner delivery](#advanced-function-observation-with-owner-delivery));
 - accept the old `registerTrigger` calls of a trigger type the function replaces
   ([Accept old triggers](#accept-old-triggers)).
 
@@ -374,7 +374,16 @@ To run code when an observer is added or removed, give the function `onObserverA
   </Tab>
 </Tabs>
 
-## Advanced function observation
+## When to use owner delivery
+
+| You want                                                                                     | Use                                                                                                  |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Observers to react to every call of the function (filters select calls)                      | Auto delivery: call the function.                                                                    |
+| To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when a function is observed](#know-when-a-function-is-observed). |
+| Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                                      |
+| An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                                      |
+
+## Advanced function observation with owner delivery
 
 <Note>
   Use owner delivery when different observers of the function must get different events, and
@@ -1086,15 +1095,6 @@ await worker.trigger({
 | `TIMEOUT`                                                     | The target did not answer within `observers.activation_timeout_ms` (30 s by default).                                              |
 | `function_not_found`                                          | The target is not registered.                                                                                                      |
 | `payload_too_large`                                           | The activation is larger than the target worker accepts in one message. See [Event size](../using-iii/observers#event-size).       |
-
-## When to use owner delivery
-
-| You want                                                                                     | Use                                                                                                  |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Observers to react to every call of the function (filters select calls)                      | Auto delivery: call the function.                                                                    |
-| To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when a function is observed](#know-when-a-function-is-observed). |
-| Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                                      |
-| An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                                      |
 
 ## Reject an observer later
 
