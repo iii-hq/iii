@@ -1,5 +1,6 @@
 // Writes content/contributors/data.json, the people the landing page's Contributors section draws, before every
-// build and dev server (see package.json). The list is read from GitHub's contributors API for every repository
+// build and dev server (see package.json), and the same list to public/data/contributors.json, which the site
+// serves at /data/contributors.json for the section to read in the browser. The list is read from GitHub's contributors API for every repository
 // the site showcases (lib/contributors.ts CONTRIBUTOR_REPOS), merged into one list with bots removed.
 //
 // When any repository cannot be read, the whole list comes from the snapshot committed next to this data
@@ -8,6 +9,10 @@
 // unauthenticated rate limit of 60 requests an hour.
 //
 // Refreshing the snapshot: tsx scripts/generate-contributors.ts --snapshot
+//
+// --require-live is for the daily refresh (.github/workflows/refresh-contributors.yml), which uploads only
+// /data/contributors.json: it exits non-zero instead of falling back to the snapshot or writing an empty list, so a
+// bad read never replaces the live file.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -22,6 +27,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url))
 export const DATA = resolve(here, "../content/contributors/data.json")
 export const SNAPSHOT = resolve(here, "../content/contributors/snapshot.json")
+export const PUBLIC = resolve(here, "../public/data/contributors.json")
 const PER_PAGE = 100
 /** A repository with more pages than this is not one of ours; it also bounds the requests a build makes. */
 const MAX_PAGES = 10
@@ -91,14 +97,20 @@ function readSnapshot(): ContributorsData {
 
 async function main() {
   const snapshot = process.argv.includes("--snapshot")
+  const requireLive = process.argv.includes("--require-live")
   const offline = process.env.CONTRIBUTORS_OFFLINE === "1"
   const live = offline ? null : await fetchAll()
+  if (requireLive && (!live || live.contributors.length === 0)) {
+    throw new Error("contributors: --require-live, but GitHub could not be read or returned nobody")
+  }
   const data = live ?? readSnapshot()
   const source = live ? "github" : offline ? "snapshot (offline)" : "snapshot (GitHub unreachable)"
 
-  mkdirSync(dirname(DATA), { recursive: true })
   const json = `${JSON.stringify(data, null, 2)}\n`
-  writeFileSync(DATA, json)
+  for (const file of [DATA, PUBLIC]) {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, json)
+  }
   if (snapshot && live) writeFileSync(SNAPSHOT, json)
   console.log(`contributors: ${data.contributors.length} people from ${data.repos.join(", ")} (${source})`)
 }

@@ -6,7 +6,7 @@ import data from '@/content/contributors/data.json'
 import type { ContributorsData } from '@/lib/contributors'
 import { cn } from '@/lib/utils'
 import { contributors as copy } from './content'
-import { ContributorGrid } from './contributor-grid'
+import { ContributorCount, ContributorGrid } from './contributor-grid'
 import { Section } from './section'
 import { StarButton } from './star-button'
 
@@ -18,17 +18,18 @@ const button = 'group h-10 w-full gap-2 rounded-[10px] px-4 text-[14px] sm:w-aut
 
 /**
  * Contributors: everyone who has landed a commit in a repository the site showcases, read from GitHub at build
- * time (scripts/generate-contributors.ts) with bots removed and people deduplicated across repositories. Sits
- * between the FAQ and the closing CTA: the last thing before "get started" is the people already building it.
+ * time (scripts/generate-contributors.ts) with bots removed and people deduplicated across repositories, then
+ * refreshed daily in /data/contributors.json without a rebuild. Sits between the FAQ and the closing CTA: the last
+ * thing before "get started" is the people already building it.
  *
  * The two actions sit directly under the lede, in reading order, a size under the close's buttons: star the
  * engine (StarButton: the live count sits in the button, the same figure the site header shows) or open a pull
  * request.
  */
 export function Contributors({ stars }: { stars: number | null }) {
-  const { contributors, repos } = data as ContributorsData
+  const built = data as ContributorsData
+  const { contributors, repos } = built
   if (contributors.length === 0) return null
-  const count = contributors.length.toLocaleString('en-US')
   return (
     // biome-ignore lint/correctness/useUniqueElementIds: One stable anchor per section on this page.
     <Section
@@ -38,7 +39,7 @@ export function Contributors({ stars }: { stars: number | null }) {
       lede={
         <>
           <p>
-            {count} people have landed commits in{' '}
+            <ContributorCount data={built} /> people have landed commits in{' '}
             {repos.map((repo, i) => (
               <span key={repo}>
                 {i > 0 ? (i === repos.length - 1 ? ' and ' : ', ') : ''}
@@ -73,7 +74,7 @@ export function Contributors({ stars }: { stars: number | null }) {
       }
     >
       <Reveal delay={0.1} className="mt-10 lg:mt-12">
-        <ContributorGrid contributors={contributors} join={{ label: copy.you, href: copy.pr.href }} />
+        <ContributorGrid data={built} join={{ label: copy.you, href: copy.pr.href }} />
       </Reveal>
     </Section>
   )

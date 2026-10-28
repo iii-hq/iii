@@ -52,3 +52,4 @@ next-env.d.ts
 
 # generated before every build/dev by scripts/generate-contributors.ts
 /content/contributors/data.json
+/public/data/contributors.json

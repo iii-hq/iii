@@ -5,6 +5,7 @@ import {
   CONTRIBUTOR_REPOS,
   type GitHubContributor,
   isBot,
+  isContributorsData,
   isExcluded,
   mergeContributors,
   repoSlug,
@@ -127,5 +128,27 @@ describe("fetching", () => {
   it("falls back when a successful response is not a list", async () => {
     answer(() => Response.json({ message: "unexpected" }))
     assert.equal(await fetchRepoContributors("iii-hq/iii"), null)
+  })
+})
+
+describe("the published list", () => {
+  const person = {
+    id: 1,
+    login: "ada",
+    avatarUrl: "https://a/u/1?v=4",
+    url: "https://github.com/ada",
+    contributions: 3,
+    repos: ["iii-hq/iii"],
+  }
+
+  it("accepts what generate-contributors writes", () => {
+    assert.ok(isContributorsData({ repos: ["iii-hq/iii"], fetchedAt: "2026-10-29T03:00:00Z", contributors: [person] }))
+  })
+
+  it("rejects an empty list, a missing field and anything that is not an object", () => {
+    assert.equal(isContributorsData({ repos: [], fetchedAt: "", contributors: [] }), false)
+    assert.equal(isContributorsData({ repos: [], contributors: [{ ...person, login: undefined }] }), false)
+    assert.equal(isContributorsData(null), false)
+    assert.equal(isContributorsData("[]"), false)
   })
 })

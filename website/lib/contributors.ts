@@ -96,3 +96,25 @@ export function mergeContributors(lists: { repo: string; entries: GitHubContribu
     (a, b) => b.contributions - a.contributions || a.login.localeCompare(b.login, 'en', { sensitivity: 'base' }),
   )
 }
+
+/** URL the site serves the list at (public/data/contributors.json), refreshed daily without rebuilding the site. */
+export const CONTRIBUTORS_URL = '/data/contributors.json'
+
+/** True for a list worth drawing: the shape generate-contributors writes, with at least one person in it. */
+export function isContributorsData(value: unknown): value is ContributorsData {
+  if (typeof value !== 'object' || value === null) return false
+  const { repos, contributors } = value as Partial<ContributorsData>
+  return (
+    Array.isArray(repos) &&
+    Array.isArray(contributors) &&
+    contributors.length > 0 &&
+    contributors.every(
+      (c) =>
+        typeof c?.id === 'number' &&
+        typeof c.login === 'string' &&
+        typeof c.avatarUrl === 'string' &&
+        typeof c.url === 'string' &&
+        typeof c.contributions === 'number',
+    )
+  )
+}

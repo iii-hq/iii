@@ -8,11 +8,6 @@ on:
       - 'tech-specs/**'
       - 'infra/terraform/website/**'
       - '.github/workflows/deploy-website.yml'
-  # Daily rebuild: the site is a static export, so the landing page's
-  # contributors list and GitHub/Discord counts are read at build time and
-  # only change when the site is rebuilt.
-  schedule:
-    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       ref:

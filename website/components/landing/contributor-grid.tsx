@@ -5,8 +5,9 @@ import { AnimatePresence, motion } from 'motion/react'
 import { type CSSProperties, type FocusEvent, useState } from 'react'
 
 import { CanvasRevealEffect } from '@/components/ui/canvas-reveal-effect'
+import { useLiveContributors } from '@/hooks/use-live-contributors'
 import { useMotionPreference } from '@/hooks/use-motion-preference'
-import type { Contributor } from '@/lib/contributors'
+import type { Contributor, ContributorsData } from '@/lib/contributors'
 import { duration, easeOut } from '@/lib/motion'
 import { cn } from '@/lib/utils'
 import styles from './contributors.module.css'
@@ -153,15 +154,11 @@ function resetOnLeave(e: FocusEvent<HTMLDivElement>) {
  * One row that rotates through everyone: a marquee of cells sliding left (contributors.module.css), with the
  * "your name here" cell pinned at the right end so it is always in view. The track carries the list twice for a
  * seamless loop. The second copy stays clickable, since it is on screen for half of every loop, but is hidden from
- * screen readers and out of the tab order, so both meet each person once.
+ * screen readers and out of the tab order, so both meet each person once. `data` is the build-time list; the row
+ * switches to /data/contributors.json once it loads (useLiveContributors).
  */
-export function ContributorGrid({
-  contributors,
-  join,
-}: {
-  contributors: Contributor[]
-  join: { label: string; href: string }
-}) {
+export function ContributorGrid({ data, join }: { data: ContributorsData; join: { label: string; href: string } }) {
+  const { contributors } = useLiveContributors(data)
   return (
     <div className="flex border-y border-l">
       <div className={styles.viewport} onBlur={resetOnLeave}>
@@ -183,4 +180,9 @@ export function ContributorGrid({
       </ul>
     </div>
   )
+}
+
+/** How many people are in the row: the build-time count first, then the one in /data/contributors.json. */
+export function ContributorCount({ data }: { data: ContributorsData }) {
+  return useLiveContributors(data).contributors.length.toLocaleString('en-US')
 }
