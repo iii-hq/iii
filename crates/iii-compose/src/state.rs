@@ -261,6 +261,12 @@ pub fn reconcile(record: &ChildRecord) -> Reconciliation {
     }
 }
 
+// A test's own package cache, so it never reads or deletes the real one.
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_PACKAGE_CACHE: PathBuf;
+}
+
 /// Owner-only directory holding one daemon's durable state.
 #[derive(Debug, Clone)]
 pub struct StateStore {
@@ -283,6 +289,10 @@ impl StateStore {
     /// Registry packages are shared by every Compose daemon and project on
     /// this machine.
     pub fn package_cache() -> Result<PathBuf> {
+        #[cfg(test)]
+        if let Ok(cache) = TEST_PACKAGE_CACHE.try_with(Clone::clone) {
+            return Ok(cache);
+        }
         Ok(Self::root()?.join("packages"))
     }
 

@@ -3739,15 +3739,11 @@ containers:
 
     /// A `sandbox-libkrun` release whose binary exits at once.
     fn adapter_archive() -> Vec<u8> {
-        adapter_archive_running(b"#!/bin/sh\nexit 0\n")
-    }
-
-    /// A `sandbox-libkrun` release whose binary is `script`.
-    fn adapter_archive_running(script: &[u8]) -> Vec<u8> {
         let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
             Vec::new(),
             flate2::Compression::default(),
         ));
+        let script = b"#!/bin/sh\nexit 0\n";
         let mut header = tar::Header::new_gnu();
         header.set_size(script.len() as u64);
         header.set_mode(0o755);
@@ -3756,7 +3752,7 @@ containers:
             .append_data(
                 &mut header,
                 format!("sandbox-libkrun{}", std::env::consts::EXE_SUFFIX),
-                script,
+                &script[..],
             )
             .unwrap();
         archive.into_inner().unwrap().finish().unwrap()
@@ -3851,25 +3847,21 @@ containers:
     /// is kept and the build still succeeds.
     #[tokio::test]
     async fn a_frozen_build_keeps_an_edit_made_while_it_downloaded() {
-        use sha2::Digest;
+        use crate::state::TEST_PACKAGE_CACHE;
         use wiremock::{Mock, ResponseTemplate, matchers};
 
-        // Its own release: dropping it from the shared cache races no other test.
-        let archive = adapter_archive_running(b"#!/bin/sh\nexit 3\n");
+        let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
         let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
-        crate::registry::TEST_REGISTRY
-            .scope(server.uri(), crate::build::build(&path))
+        // Two private caches: the frozen build starts cold, so it downloads.
+        let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        TEST_PACKAGE_CACHE
+            .scope(
+                warm.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
             .await
             .unwrap();
-        let digest = hex::encode(sha2::Sha256::digest(&archive));
-        let cache = crate::state::StateStore::package_cache().unwrap();
-        for entry in std::fs::read_dir(cache).unwrap() {
-            let entry = entry.unwrap().path();
-            if entry.to_string_lossy().contains(&digest) {
-                let _ = std::fs::remove_dir_all(&entry).or_else(|_| std::fs::remove_file(&entry));
-            }
-        }
         let saved = format!("{}# saved\n", std::fs::read_to_string(&path).unwrap());
         let (target, edit) = (path.clone(), saved.clone());
         Mock::given(matchers::method("GET"))
@@ -3882,7 +3874,10 @@ containers:
             .mount(&server)
             .await;
 
-        crate::build::build_frozen(&path).await.unwrap();
+        TEST_PACKAGE_CACHE
+            .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
+            .await
+            .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
     }
 
