@@ -1,5 +1,5 @@
 import { Readable, Writable } from 'node:stream'
-import { WebSocket } from 'ws'
+import { type ClientOptions, WebSocket } from 'ws'
 import { WS_HANDSHAKE_TIMEOUT_MS } from './iii-constants'
 import type { StreamChannelRef } from './iii-types'
 import { resolveHeaders } from './utils'
@@ -56,6 +56,9 @@ export const ChannelItem = {
  */
 export class ChannelWriter {
   private static readonly FRAME_SIZE = 64 * 1024
+  // A stalled reader stops the engine reading this socket; ws's 30 s default would then drop the queued clean
+  // close, which the engine reads as an abort. Same bound as the engine's channel TTL.
+  private static readonly CLOSE_TIMEOUT_MS = 5 * 60 * 1000
   private ws: WebSocket | null = null
   private wsReady = false
   private readonly pendingMessages: {
@@ -97,7 +100,8 @@ export class ChannelWriter {
         }
       },
       destroy: (err, callback) => {
-        if (this.ws) this.ws.terminate()
+        // autoDestroy runs right after end()'s close(1000): terminating then would drop a queued close frame.
+        if (this.ws && (err || this.ws.readyState !== WebSocket.CLOSING)) this.ws.terminate()
         callback(err)
       },
     })
@@ -116,7 +120,13 @@ export class ChannelWriter {
       return
     }
     this.wsReady = false
-    this.ws = new WebSocket(this.url, { handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS, headers: this.headers })
+    // @types/ws 8.18 does not declare ws 8.21's `closeTimeout` client option yet.
+    const options: ClientOptions & { closeTimeout: number } = {
+      handshakeTimeout: WS_HANDSHAKE_TIMEOUT_MS,
+      closeTimeout: ChannelWriter.CLOSE_TIMEOUT_MS,
+      headers: this.headers,
+    }
+    this.ws = new WebSocket(this.url, options)
 
     this.ws.on('open', () => {
       this.wsReady = true
@@ -220,6 +230,8 @@ export class ChannelWriter {
 export class ChannelReader {
   private ws: WebSocket | null = null
   private connected = false
+  private closedLocally = false
+  private abortError: Error | null = null
   private readonly messageCallbacks: Array<(msg: string) => void> = []
   /** Node.js Readable stream for binary data. */
   public readonly stream: Readable
@@ -233,6 +245,10 @@ export class ChannelReader {
     const self = this
     this.stream = new Readable({
       read() {
+        if (self.abortError) {
+          self.abort(self.abortError)
+          return
+        }
         self.ensureConnected()
         if (self.ws) self.ws.resume()
       },
@@ -268,14 +284,30 @@ export class ChannelReader {
       }
     })
 
-    this.ws.on('close', () => {
+    this.ws.on('close', (code: number, reason: Buffer) => {
       this.ws = null
-      if (!this.stream.destroyed) this.stream.push(null)
+      if (this.stream.destroyed || this.abortError) return
+      // 1005 is a close frame with no code, which is how the engine ends a clean stream.
+      if (code === 1000 || code === 1005 || this.closedLocally) {
+        this.stream.push(null)
+      } else {
+        this.abort(new Error(`channel aborted (close ${code}${reason.length ? `: ${reason}` : ''})`))
+      }
     })
 
     this.ws.on('error', (err) => {
-      this.stream.destroy(err)
+      // ws emits this when close() cuts a handshake short; the reader's own close is not an error.
+      if (!this.closedLocally) this.abort(err)
     })
+  }
+
+  // Data the engine queued before the abort is delivered first: the error waits until the buffer drains.
+  // shortcut: a read(n) consumer whose last block is shorter than n never sees the abort; upgrade if one appears.
+  private abort(err: Error): void {
+    this.abortError ??= err
+    if (this.stream.readableLength === 0) this.stream.destroy(this.abortError)
+    // An empty push ends the pending read, so the stream calls read() again once the consumer drains it.
+    else this.stream.push(Buffer.alloc(0))
   }
 
   /** Register a callback to receive text messages from the channel. */
@@ -296,6 +328,7 @@ export class ChannelReader {
 
   close(): void {
     if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      this.closedLocally = true
       this.ws.close(1000, 'channel_close')
     }
   }

@@ -1437,6 +1437,9 @@ type PendingInvocation = oneshot::Sender<Result<Value, Error>>;
 // WebSocket transmitter type alias
 type WsTx = futures_util::stream::SplitSink<WsStream, WsMessage>;
 
+/// How long a stopping worker waits to send its close frame.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// An `invokefunction` received from the engine.
 struct InboundInvocation {
     invocation_id: Option<Uuid>,
@@ -3275,6 +3278,7 @@ impl IIIClient {
                     if shutdown {
                         self.inner.running.store(false, Ordering::SeqCst);
                         self.abandon_reports(&mut queue, &mut reports, &mut rx);
+                        Self::close_ws(&mut ws_tx).await;
                         return;
                     }
                     self.hold_observe_frames(&mut queue, &mut reports);
@@ -3319,11 +3323,13 @@ impl IIIClient {
                                     Some(Outbound::Shutdown) => {
                                         self.inner.running.store(false, Ordering::SeqCst);
                                         self.abandon_reports(&mut queue, &mut reports, &mut rx);
+                                        Self::close_ws(&mut ws_tx).await;
                                         return;
                                     }
                                     None => {
                                         self.inner.running.store(false, Ordering::SeqCst);
                                         self.abandon_reports(&mut queue, &mut reports, &mut rx);
+                                        Self::close_ws(&mut ws_tx).await;
                                         return;
                                     }
                                 }
@@ -3620,6 +3626,13 @@ impl IIIClient {
             self.send_ws_frame(ws_tx, frame, timeout).await?;
         }
         Ok(())
+    }
+
+    /// Ends the connection of a worker that is stopping with a close frame,
+    /// so the engine sees it leave instead of a connection reset. Bounded:
+    /// a dead link must not hold up shutdown.
+    async fn close_ws(ws_tx: &mut WsTx) {
+        let _ = tokio::time::timeout(CLOSE_TIMEOUT, ws_tx.close()).await;
     }
 
     async fn send_ws_frame(
@@ -4577,6 +4590,54 @@ mod tests {
         let n = handshakes.load(Ordering::SeqCst);
         iii.shutdown_async().await;
         assert_eq!(n, 1, "healthy pinged connection must not be torn down");
+    }
+
+    /// WS server that reports how each connection ended: `true` for a close
+    /// frame, `false` for a socket that went away without one.
+    async fn spawn_close_recorder() -> (std::net::SocketAddr, mpsc::UnboundedReceiver<bool>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(sock).await else {
+                        return;
+                    };
+                    let closed = loop {
+                        match ws.next().await {
+                            Some(Ok(WsMessage::Close(_))) => break true,
+                            Some(Ok(_)) => {}
+                            Some(Err(_)) | None => break false,
+                        }
+                    };
+                    let _ = tx.send(closed);
+                });
+            }
+        });
+        (addr, rx)
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_the_connection_with_a_close_frame() {
+        let (addr, mut ends) = spawn_close_recorder().await;
+        let iii = client_with_timings(addr, ConnTimings::default());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while iii.get_connection_state() != IIIConnectionState::Connected {
+            assert!(Instant::now() < deadline, "never connected");
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        iii.shutdown_async().await;
+
+        // Without one the engine logs a reset ("Connection reset without
+        // closing handshake") for every worker that stops.
+        let closed = tokio::time::timeout(Duration::from_secs(5), ends.recv())
+            .await
+            .expect("the connection never ended")
+            .unwrap();
+        assert!(closed, "a stopping worker must send a close frame");
     }
 
     type Handshake = (String, tokio_tungstenite::tungstenite::http::HeaderMap);

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { WebSocket } from 'ws'
 import type { ChannelReader } from '../../src/channels'
 import { createChannel } from '../../src/helpers'
-import { iii, sleep } from './utils'
+import { engineWsUrl, iii, sleep } from './utils'
 
 describe('Data Channels', () => {
   it('should create a channel and send text messages between functions', async () => {
@@ -157,6 +158,27 @@ describe('Data Channels', () => {
       sender.unregister()
       processor.unregister()
     }
+  })
+
+  it('should reject readAll when the writer connection drops without a close frame', async () => {
+    const channel = await createChannel(iii)
+    const readPromise = channel.reader.readAll()
+    // Avoid an unhandled rejection before the assertion below awaits it.
+    readPromise.catch(() => {})
+
+    const { channel_id, access_key } = channel.writerRef
+    const writer = new WebSocket(
+      `${engineWsUrl}/ws/channels/${channel_id}?key=${encodeURIComponent(access_key)}&dir=write`,
+    )
+    await new Promise((resolve, reject) => {
+      writer.once('open', resolve)
+      writer.once('error', reject)
+    })
+    writer.send(new TextEncoder().encode('partial'))
+    await sleep(100)
+    writer.terminate()
+
+    await expect(readPromise).rejects.toMatchObject({ code: 1011 })
   })
 
   it('should send progress messages through a channel writer', async () => {

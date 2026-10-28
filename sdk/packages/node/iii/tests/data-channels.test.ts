@@ -215,4 +215,15 @@ describe('Data Channels', () => {
       worker.unregister()
     }
   })
+
+  it('rejects the reader when the writer is destroyed mid stream', async () => {
+    const channel = await createChannel(iii)
+    const all = channel.reader.readAll()
+    all.catch(() => {})
+    channel.writer.stream.on('error', () => {})
+    await new Promise((r) => channel.writer.stream.write(Buffer.from('partial'), r))
+    channel.writer.stream.destroy(new Error('boom'))
+
+    await expect(all).rejects.toThrow(/close 1011/)
+  })
 })

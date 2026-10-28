@@ -4,8 +4,10 @@ import asyncio
 import json
 import time
 
+import pytest
+
 from iii.channels import ChannelReader, ChannelWriter
-from iii.helpers import create_channel_async
+from iii.helpers import create_channel, create_channel_async
 from iii.iii import III
 
 
@@ -204,3 +206,57 @@ def test_bidirectional_streaming(iii_client: III):
     finally:
         coord_ref.unregister()
         worker_ref.unregister()
+
+
+def test_sync_writer_end_reads_as_a_clean_end(iii_client: III):
+    """Sync code with no running loop writes on the SDK's channel loop, and end() sends the clean close."""
+    channel = create_channel(iii_client)
+    channel.writer.stream.write(b"hello ")
+    channel.writer.stream.end(b"world")
+
+    assert asyncio.run(channel.reader.read_all()) == b"hello world"
+
+
+def test_sync_end_right_after_the_first_write_in_async_code_reads_as_a_clean_end(iii_client: III):
+    """The end() queued while the first write still connects waits for it, then sends the clean close."""
+
+    async def run() -> bytes:
+        channel = await create_channel_async(iii_client)
+        channel.writer.stream.write(b"payload")
+        channel.writer.stream.end()
+        return await asyncio.wait_for(channel.reader.read_all(), 5)
+
+    assert asyncio.run(run()) == b"payload"
+
+
+def test_sync_write_queued_before_an_awaited_close_is_read_in_full(iii_client: III):
+    """The awaited close_async() goes out after the sync write queued before it, on the same socket."""
+
+    async def run() -> bytes:
+        channel = await create_channel_async(iii_client)
+        await channel.writer.write(b"a")
+        channel.writer.stream.write(b"b")
+        await channel.writer.close_async()
+        return await asyncio.wait_for(channel.reader.read_all(), 5)
+
+    assert asyncio.run(run()) == b"ab"
+
+
+def test_writer_dropped_without_close_reads_as_an_abort(iii_client: III):
+    """A writer whose socket ends with no close frame reaches the reader as an error, after its data."""
+
+    async def run() -> tuple[list[bytes], ConnectionError]:
+        channel = await create_channel_async(iii_client)
+        await channel.writer.write(b"partial")
+        assert channel.writer._ws is not None
+        channel.writer._ws.transport.abort()
+
+        chunks: list[bytes] = []
+        with pytest.raises(ConnectionError) as error:
+            async for chunk in channel.reader:
+                chunks.append(chunk)
+        return chunks, error.value
+
+    chunks, error = asyncio.run(run())
+    assert chunks == [b"partial"]
+    assert "close 1011" in str(error)

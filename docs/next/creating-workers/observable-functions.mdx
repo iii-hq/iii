@@ -930,7 +930,7 @@ await worker.trigger({
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `FILTERS_NOT_MATCHED`                                         | The observer's filters reject the payload. Nothing was sent.                                                                       |
 | `NOT_OWNER_DELIVERED`                                         | The function is auto-delivered.                                                                                                    |
-| `OBSERVER_NOT_ACTIVE`                                         | The observer was removed or rejected before the call.                                                                              |
+| `OBSERVER_NOT_ACTIVE`                                         | The observer is not active yet (for example, inside `onObserverAdded`), or it was removed or rejected before the call.             |
 | `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`, `TARGET_MISMATCH` | The engine does not know the observer, or this worker does not host the observed function.                                         |
 | `LOOP_GUARD`                                                  | The call is deeper than `observers.max_observe_depth`.                                                                             |
 | `OVERFLOW`                                                    | The observer has `max_in_flight` calls running. An owner call does not go into a queue, because the function waits for its result. |
@@ -1084,7 +1084,7 @@ auto function sends each invocation to each observer, so it does not use observe
 
 - `onObserverAdded` runs before the SDK acknowledges the observer to the engine. The observer
   becomes `active` only after the hook returns. Thus, the hook's work is complete before the first
-  event.
+  event. Inside the hook, `emit` returns `false` and `call` fails with `OBSERVER_NOT_ACTIVE`.
 - Throwing rejects the observer: an `ObserveRejection(code, message)` sets the code the observer's
   `ready()` fails with; any other error is `OBSERVE_REJECTED`.
 - The hooks of one function run one at a time, in the engine's order. Hooks of different functions
