@@ -7,19 +7,100 @@ owner: "devrel"
 type: "how-to"
 ---
 
-Every function is observable without any code on your side: other workers call
-[`iii.observe`](../using-iii/observers) on it, and each of its invocations is offered to every
-observer. This page is for the worker that **hosts** the function (its owner) and wants a say in how
-it is observed:
+Every function you register can be observed. Each time it runs, iii runs the target of every
+[observer](../using-iii/observers) watching it. To publish an event, register a function for it and
+call that function whenever the event happens:
 
-- run code when an observer is added or removed (start a schedule, open a route, watch a table);
-- read each observer's `args` and hand each event only to the observers it belongs to (**owner
-  delivery**);
-- accept the old `registerTrigger` calls of a trigger type the function replaces.
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    type FileChanged = { path: string; event: "created" | "modified" | "deleted" };
+
+    worker.registerFunction("files::on-change", async (change: FileChanged) => change);
+
+    // whenever a file changes:
+    await worker.trigger({ function_id: "files::on-change", payload: change });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.register_function("files::on-change", lambda change: change)
+
+    # whenever a file changes:
+    worker.trigger({"function_id": "files::on-change", "payload": {"path": path, "event": "modified"}})
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::{Error, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct FileChanged {
+        path: String,
+        event: String,
+    }
+
+    worker.register_function(
+        "files::on-change",
+        RegisterFunction::new(|change: FileChanged| Ok::<_, Error>(change)),
+    );
+
+    // whenever a file changes:
+    let change = json!({ "path": path, "event": "modified" });
+    worker.trigger(TriggerRequest::new("files::on-change", change)).await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("files::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
+        return data, nil
+    })
+
+    // whenever a file changes:
+    change, _ := json.Marshal(map[string]string{"path": path, "event": "modified"})
+    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "files::on-change", Data: change})
+    ```
+
+  </Tab>
+</Tabs>
+
+Each call to `files::on-change` reaches every observer whose filters match it.
+
+This is **auto delivery**, the default. The rest of this page is for the worker that hosts a
+function (its owner) when it takes control of how the function is observed:
+
+- run code when an observer is added or removed, for example to start expensive work only while
+  someone is watching ([Know when you are observed](#know-when-you-are-observed));
+- take control of which observer gets which event, from what each observer asked for in its `args`
+  ([Owner delivery](#owner-delivery));
+- accept the old `registerTrigger` calls of a trigger type the function replaces
+  ([Accept old triggers](#accept-old-triggers)).
+
+<Warning>
+  With owner delivery, your code delivers each event: an observer's target runs when your code calls
+  `obs.emit` or `obs.call` for that observer. For every call to reach every observer, use auto
+  delivery.
+</Warning>
 
 In 0.25 this replaces `registerTriggerType`: a trigger type becomes a function with an `observe`
 descriptor, and a trigger becomes an observer. To move an existing trigger type, see
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#move-a-trigger-type-to-an-observable-function).
+
+## When to use owner delivery
+
+| You want                                                                                     | Use                                                                                      |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Observers to react to every call of your function (filters narrow it)                        | Auto delivery: call your function.                                                       |
+| To start or stop work while anyone observes, but still deliver every call                    | Auto delivery with hooks. See [Know when you are observed](#know-when-you-are-observed). |
+| Each observer to set something up and get only its own events (an interval, a path, a table) | Owner delivery.                                                                          |
+| An answer back from the observer's target (an HTTP response, a queue ack)                    | Owner delivery with `obs.call`.                                                          |
 
 ## The `observe` descriptor
 
@@ -67,8 +148,8 @@ by.
 ### The `Observer` object
 
 Hooks receive an `Observer`: the observer as its owner sees it. It never exposes the observer's
-metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime, so keep
-it in your own index.
+metadata, policy, or observing worker. The object stays the same for the observer's whole lifetime,
+so keep it in your own index.
 
 | Member                  | Meaning                                                                                                                                   |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -91,24 +172,93 @@ has `Args` (a map), `DecodeArgs(&v)`, `Legacy`, `Emit(ctx, event) (bool, error)`
 
 ## Know when you are observed
 
-An auto function can declare hooks too, for example to start expensive work only while someone
-observes it. `FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `client.IsObserved(id)`
-in Go) answers in one load, so a hot path can skip building events nobody receives.
+The next step up keeps auto delivery (every call still reaches every observer) and adds hooks, for
+example to log who subscribes or to start expensive work only while someone observes.
+`FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `client.IsObserved(id)` in Go)
+answers in one load, so a hot path can skip building events nobody receives.
 
-```typescript
-const prices = worker.registerFunction("prices::on-change", async (change: PriceChange) => change, {
-  observe: {
-    onObserverAdded(obs) {
-      console.log(`${obs.target} now observes prices::on-change`);
-    },
-  },
-});
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const prices = worker.registerFunction("prices::on-change", async (change: PriceChange) => change, {
+      observe: {
+        onObserverAdded(obs) {
+          console.log(`${obs.target} now observes prices::on-change`);
+        },
+      },
+    });
 
-// in the price feed loop
-if (prices.isObserved()) {
-  await worker.trigger({ function_id: "prices::on-change", payload: change });
-}
-```
+    // in the price feed loop
+    if (prices.isObserved()) {
+      await worker.trigger({ function_id: "prices::on-change", payload: change });
+    }
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import ObserveHooks
+
+    prices = worker.register_function(
+        "prices::on-change",
+        lambda change: change,
+        observe=ObserveHooks(
+            on_observer_added=lambda obs: print(f"{obs.target} now observes prices::on-change"),
+        ),
+    )
+
+    # in the price feed loop
+    if prices.is_observed():
+        worker.trigger({"function_id": "prices::on-change", "payload": change})
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Observe, ObserveHandler, ObserveRejection, Observer};
+
+    struct LogObservers;
+
+    #[async_trait::async_trait]
+    impl ObserveHandler for LogObservers {
+        async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+            println!("{} now observes prices::on-change", obs.target());
+            Ok(())
+        }
+    }
+
+    let prices = worker.register_function(
+        "prices::on-change",
+        RegisterFunction::new(|change: PriceChange| Ok::<_, Error>(change))
+            .observe(Observe::auto().handler(LogObservers)),
+    );
+
+    // in the price feed loop
+    if prices.is_observed() {
+        worker.trigger(TriggerRequest::new("prices::on-change", json!(change))).await?;
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("prices::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
+        return data, nil
+    }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
+        OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
+            log.Printf("%s now observes prices::on-change", obs.Target)
+            return nil
+        },
+    }})
+
+    // in the price feed loop
+    if client.IsObserved("prices::on-change") {
+        client.Trigger(ctx, iii.TriggerRequest{FunctionID: "prices::on-change", Data: change})
+    }
+    ```
+
+  </Tab>
+</Tabs>
 
 Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
@@ -116,8 +266,31 @@ observer's filters match.
 
 ## Owner delivery
 
-With `delivery: 'owner'`, invocations of your function are no longer offered to every observer. Your
-code decides which observers each event is for, from their `args`, and hands it over:
+With `delivery: 'owner'`, your code decides which observers each event is for, from their `args`,
+and hands it over.
+
+|                      | Auto (the default)                                         | Owner                                                                       |
+| -------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
+| An event is          | every invocation of the function                           | what your code hands to an observer with `obs.emit` or `obs.call`           |
+| Observer `args`      | not accepted (`INVALID_ARGS`)                              | validated against your `args_format`, then read by your hooks               |
+| Filters evaluated by | the engine (routed calls) or the hosting SDK (local calls) | your SDK, each time you hand an event to the observer                       |
+| When the target runs | after the observed invocation completes, per `on`          | when your code decides, usually inside the function's own handler           |
+| The target's result  | discarded                                                  | discarded for `obs.emit`; returned to you for `obs.call`                    |
+| Examples             | any regular function, the engine-hosted event sources      | sources that need setup per observer: a schedule, a route, a table to watch |
+
+Owner delivery has three pieces:
+
+1. **`onObserverAdded` keeps the `Observer`** in your own index, keyed by its `args`, and starts
+   whatever produces events (a timer, a watcher). It returns promptly: the observer turns `active`
+   once it returns, and the engine waits at most 30 seconds (`OWNER_TIMEOUT`).
+2. **Your producer calls your function** when something happens, as with auto delivery.
+3. **Your function's handler emits**: it looks up the observers the event belongs to and calls
+   `obs.emit(event)` (or `obs.call(payload)`) on each. This is the step that runs their targets.
+
+`onObserverRemoved` takes the observer out of the index and stops what step 1 started once nobody
+needs it.
+
+The two ways to hand over an event:
 
 |                 | `obs.emit(event)`                                                                                                                    | `obs.call(payload)`                                                     |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
@@ -140,78 +313,78 @@ engine stops reading your worker's connection until they have room again, for at
 Meanwhile the SDK keeps what it can in its bounded report buffer and drops the rest, counted as
 `BUFFER_FULL`, and everything else your worker sends (its calls, its answers to calls) waits behind
 its reports. After each hold the engine reads your worker's connection for at least a quarter as
-long before it holds it again, and drops what overflows meanwhile as `OVERFLOW`: your worker is
-held at most four fifths of the time.
+long before it holds it again, and drops what overflows meanwhile as `OVERFLOW`: your worker is held
+at most four fifths of the time.
+
+An emitted event travels in the SDK's report, like a
+[local call](../using-iii/observers#local-dispatch): values JSON cannot hold arrive as `null` (or
+U+FFFD for a lone surrogate), an event larger than the 8 MiB report buffer is dropped as
+`TOO_LARGE`, and a report lost with a dropped connection is not sent again.
 
 The event's `caller` follows where you call `emit`: inside your function's own handler, the event is
 that invocation (its id and its caller); inside another handler, that handler is the caller; outside
 any handler, only your worker. That is why the examples below trigger their own function and emit
 from its handler.
 
-### Example: a timer that emits
+### Example: a file watcher that emits
 
-`timer::on-tick` fires every `every_ms` milliseconds for the observers that asked for that interval.
-It runs one timer per distinct interval, however many observers share it.
+`files::watch` is the smallest complete owner-delivered source. Each observer names the file it
+cares about in its args (`{ path }`), and gets the changes to that file only. The numbered comments
+mark the three pieces above. The worker polls each file once a second, with one poller per watched
+path however many observers share it.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { type Stats, unwatchFile, watchFile } from "node:fs";
     import type { Observer } from "iii-sdk";
 
-    type Tick = { every_ms: number; fired_at_ms: number };
-    type Timer = { observers: Map<string, Observer>; handle: ReturnType<typeof setInterval> };
+    type FileChanged = { path: string; size_bytes: number };
 
-    const timers = new Map<number, Timer>(); // every_ms → observers and their timer
+    const watched = new Map<string, Map<string, Observer>>(); // path → its observers
 
     worker.registerFunction(
-      "timer::on-tick",
-      async (tick: Tick) => {
-        // One call per tick: hand it to the observers of that interval.
-        for (const obs of timers.get(tick.every_ms)?.observers.values() ?? []) {
-          obs.emit(tick); // false when the observer's filters reject the tick
+      "files::watch",
+      async (change: FileChanged) => {
+        // 3. Hand the change to the observers of that path.
+        for (const obs of watched.get(change.path)?.values() ?? []) {
+          obs.emit(change);
         }
         return null;
       },
       {
-        description: "Fires every `every_ms` milliseconds. Observe it with args { every_ms }.",
-        request_format: {
-          type: "object",
-          additionalProperties: false,
-          required: ["every_ms", "fired_at_ms"],
-          properties: { every_ms: { type: "integer" }, fired_at_ms: { type: "integer" } },
-        },
+        description: "Fires when a watched file changes. Observe it with args { path }.",
         observe: {
           delivery: "owner",
           args_format: {
             type: "object",
             additionalProperties: false,
-            required: ["every_ms"],
-            properties: { every_ms: { type: "integer", minimum: 100 } },
+            required: ["path"],
+            properties: { path: { type: "string" } },
           },
           onObserverAdded(obs) {
-            const every_ms = obs.args.every_ms as number;
-            let timer = timers.get(every_ms);
-            if (!timer) {
-              // First observer of this interval: start one timer for all of them.
-              const handle = setInterval(() => {
+            // 1. Keep the observer, and start polling its path if nobody else watches it.
+            const path = obs.args.path as string;
+            let observers = watched.get(path);
+            if (!observers) {
+              observers = new Map();
+              watched.set(path, observers);
+              watchFile(path, { interval: 1000 }, (curr: Stats) => {
+                // 2. The poller calls the function.
                 worker
-                  .trigger({ function_id: "timer::on-tick", payload: { every_ms, fired_at_ms: Date.now() } })
-                  .catch((err) => console.error("tick failed", err));
-              }, every_ms);
-              timer = { observers: new Map(), handle };
-              timers.set(every_ms, timer);
+                  .trigger({ function_id: "files::watch", payload: { path, size_bytes: curr.size } })
+                  .catch((err) => console.error("file change failed", err));
+              });
             }
-            timer.observers.set(obs.id, obs);
+            observers.set(obs.id, obs);
           },
           onObserverRemoved(obs) {
-            const every_ms = obs.args.every_ms as number;
-            const timer = timers.get(every_ms);
-            if (!timer) return;
-            timer.observers.delete(obs.id);
-            if (timer.observers.size === 0) {
-              // Last observer of this interval: stop its timer.
-              clearInterval(timer.handle);
-              timers.delete(every_ms);
+            const path = obs.args.path as string;
+            const observers = watched.get(path);
+            observers?.delete(obs.id);
+            if (observers?.size === 0) {
+              unwatchFile(path); // last observer of this path: stop polling it
+              watched.delete(path);
             }
           },
         },
@@ -222,65 +395,73 @@ It runs one timer per distinct interval, however many observers share it.
   </Tab>
   <Tab title="Python">
     ```python
+    import os
     import threading
-    import time
 
     from iii import ObserveHooks
 
-    timers: dict[int, dict] = {}  # every_ms → {"observers": {id: Observer}, "stop": Event}
+    watched: dict[str, dict] = {}  # path → {"observers": {id: Observer}, "stop": Event}
     lock = threading.Lock()
 
-    def run_timer(every_ms: int, stop: threading.Event) -> None:
-        while not stop.wait(every_ms / 1000):
-            worker.trigger({
-                "function_id": "timer::on-tick",
-                "payload": {"every_ms": every_ms, "fired_at_ms": int(time.time() * 1000)},
-            })
+    def poll(path: str, stop: threading.Event) -> None:
+        last = None
+        while not stop.wait(1.0):
+            try:
+                st = os.stat(path)
+            except FileNotFoundError:
+                continue
+            if last is not None and st.st_mtime_ns != last:
+                # 2. The poller calls the function.
+                worker.trigger({
+                    "function_id": "files::watch",
+                    "payload": {"path": path, "size_bytes": st.st_size},
+                })
+            last = st.st_mtime_ns
 
-    class TimerHooks(ObserveHooks):
+    class WatchHooks(ObserveHooks):
         delivery = "owner"
         args_format = {
             "type": "object",
             "additionalProperties": False,
-            "required": ["every_ms"],
-            "properties": {"every_ms": {"type": "integer", "minimum": 100}},
+            "required": ["path"],
+            "properties": {"path": {"type": "string"}},
         }
 
         def on_observer_added(self, obs):
-            every_ms = obs.args["every_ms"]
+            # 1. Keep the observer, and start polling its path if nobody else watches it.
+            path = obs.args["path"]
             with lock:
-                timer = timers.get(every_ms)
-                if timer is None:
-                    # First observer of this interval: start one timer for all of them.
+                entry = watched.get(path)
+                if entry is None:
                     stop = threading.Event()
-                    threading.Thread(target=run_timer, args=(every_ms, stop), daemon=True).start()
-                    timer = timers[every_ms] = {"observers": {}, "stop": stop}
-                timer["observers"][obs.id] = obs
+                    threading.Thread(target=poll, args=(path, stop), daemon=True).start()
+                    entry = watched[path] = {"observers": {}, "stop": stop}
+                entry["observers"][obs.id] = obs
 
         def on_observer_removed(self, obs):
-            every_ms = obs.args["every_ms"]
+            path = obs.args["path"]
             with lock:
-                timer = timers.get(every_ms)
-                if timer is None:
+                entry = watched.get(path)
+                if entry is None:
                     return
-                timer["observers"].pop(obs.id, None)
-                if not timer["observers"]:
-                    # Last observer of this interval: stop its timer.
-                    timer["stop"].set()
-                    del timers[every_ms]
+                entry["observers"].pop(obs.id, None)
+                if not entry["observers"]:
+                    entry["stop"].set()  # last observer of this path: stop polling it
+                    del watched[path]
 
-    def on_tick(tick: dict) -> None:
+    def on_change(change: dict) -> None:
+        # 3. Hand the change to the observers of that path.
         with lock:
-            timer = timers.get(tick["every_ms"])
-            observers = list(timer["observers"].values()) if timer else []
+            entry = watched.get(change["path"])
+            observers = list(entry["observers"].values()) if entry else []
         for obs in observers:
-            obs.emit(tick)  # False when the observer's filters reject the tick
+            obs.emit(change)
 
     worker.register_function(
-        "timer::on-tick",
-        on_tick,
-        description="Fires every `every_ms` milliseconds. Observe it with args { every_ms }.",
-        observe=TimerHooks(),
+        "files::watch",
+        on_change,
+        description="Fires when a watched file changes. Observe it with args { path }.",
+        observe=WatchHooks(),
     )
     ```
 
@@ -289,7 +470,7 @@ It runs one timer per distinct interval, however many observers share it.
     ```rust
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use iii_sdk::protocol::TriggerRequest;
     use iii_sdk::{
@@ -301,43 +482,47 @@ It runs one timer per distinct interval, however many observers share it.
 
     #[derive(Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
-    struct TimerArgs {
-        every_ms: u64,
+    struct WatchArgs {
+        path: String,
     }
 
     #[derive(Serialize, Deserialize, JsonSchema)]
-    struct Tick {
-        every_ms: u64,
-        fired_at_ms: u64,
+    struct FileChanged {
+        path: String,
+        size_bytes: u64,
     }
 
-    /// every_ms → the observers of that interval and the task that fires it
+    /// path → the observers of that path and the task that polls it
     #[derive(Clone)]
-    struct Timers {
+    struct Watched {
         iii: IIIClient,
-        by_interval: Arc<Mutex<HashMap<u64, (Vec<Observer>, tokio::task::JoinHandle<()>)>>>,
+        by_path: Arc<Mutex<HashMap<String, (Vec<Observer>, tokio::task::JoinHandle<()>)>>>,
+    }
+
+    async fn poll(iii: IIIClient, path: String) {
+        let mut last = None;
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            let Ok(meta) = tokio::fs::metadata(&path).await else { continue };
+            let modified = meta.modified().ok();
+            if last.is_some() && modified != last {
+                // 2. The poller calls the function.
+                let change = json!({ "path": path, "size_bytes": meta.len() });
+                let _ = iii.trigger(TriggerRequest::new("files::watch", change)).await;
+            }
+            last = modified;
+        }
     }
 
     #[async_trait::async_trait]
-    impl ObserveHandler for Timers {
+    impl ObserveHandler for Watched {
         async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-            let TimerArgs { every_ms } = obs.args()?; // validated by the engine
-            let mut timers = self.by_interval.lock().unwrap();
-            let (observers, _) = timers.entry(every_ms).or_insert_with(|| {
-                // First observer of this interval: start one task for all of them.
-                let iii = self.iii.clone();
-                let task = tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_millis(every_ms));
-                    loop {
-                        interval.tick().await;
-                        let fired_at_ms = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default();
-                        let tick = json!({ "every_ms": every_ms, "fired_at_ms": fired_at_ms });
-                        let _ = iii.trigger(TriggerRequest::new("timer::on-tick", tick)).await;
-                    }
-                });
+            // 1. Keep the observer, and start polling its path if nobody else watches it.
+            let WatchArgs { path } = obs.args()?; // validated by the engine
+            let mut by_path = self.by_path.lock().unwrap();
+            let (observers, _) = by_path.entry(path.clone()).or_insert_with(|| {
+                let task = tokio::spawn(poll(self.iii.clone(), path));
                 (Vec::new(), task)
             });
             observers.push(obs.clone());
@@ -345,126 +530,136 @@ It runs one timer per distinct interval, however many observers share it.
         }
 
         async fn on_observer_removed(&self, obs: &Observer) {
-            self.by_interval.lock().unwrap().retain(|_, (observers, task)| {
+            self.by_path.lock().unwrap().retain(|_, (observers, task)| {
                 observers.retain(|o| o.id() != obs.id());
                 if observers.is_empty() {
-                    task.abort(); // last observer of this interval: stop its task
+                    task.abort(); // last observer of this path: stop polling it
                 }
                 !observers.is_empty()
             });
         }
     }
 
-    let timers = Timers { iii: worker.clone(), by_interval: Default::default() };
+    let watched = Watched { iii: worker.clone(), by_path: Default::default() };
 
     worker.register_function(
-        "timer::on-tick",
+        "files::watch",
         RegisterFunction::new({
-            let timers = timers.clone();
-            move |tick: Tick| {
-                let observers = timers
-                    .by_interval
+            let watched = watched.clone();
+            move |change: FileChanged| {
+                // 3. Hand the change to the observers of that path.
+                let observers = watched
+                    .by_path
                     .lock()
                     .unwrap()
-                    .get(&tick.every_ms)
+                    .get(&change.path)
                     .map(|(observers, _)| observers.clone())
                     .unwrap_or_default();
                 for obs in observers {
-                    obs.emit(&tick)?; // Ok(false) when the observer's filters reject the tick
+                    obs.emit(&change)?;
                 }
                 Ok::<_, Error>(())
             }
         })
-        .description("Fires every `every_ms` milliseconds. Observe it with args { every_ms }.")
-        .observe(Observe::owner().args_format::<TimerArgs>().handler(timers.clone())),
+        .description("Fires when a watched file changes. Observe it with args { path }.")
+        .observe(Observe::owner().args_format::<WatchArgs>().handler(watched.clone())),
     );
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    type tick struct {
-        EveryMs   int64 `json:"every_ms"`
-        FiredAtMs int64 `json:"fired_at_ms"`
+    type fileChanged struct {
+        Path      string `json:"path"`
+        SizeBytes int64  `json:"size_bytes"`
     }
 
-    type timer struct {
+    type watch struct {
         observers map[string]*iii.Observer
         stop      chan struct{}
     }
 
     var (
-        mu     sync.Mutex
-        timers = map[int64]*timer{} // every_ms → observers and their timer
+        watchMu sync.Mutex
+        watched = map[string]*watch{} // path → its observers and their poller
     )
 
-    func runTimer(client *iii.Client, everyMs int64, stop chan struct{}) {
-        ticker := time.NewTicker(time.Duration(everyMs) * time.Millisecond)
+    func poll(client *iii.Client, path string, stop chan struct{}) {
+        ticker := time.NewTicker(time.Second)
         defer ticker.Stop()
+        var last time.Time
         for {
             select {
             case <-stop:
                 return
-            case now := <-ticker.C:
-                data, _ := json.Marshal(tick{EveryMs: everyMs, FiredAtMs: now.UnixMilli()})
-                client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "timer::on-tick", Data: data})
+            case <-ticker.C:
+                info, err := os.Stat(path)
+                if err != nil {
+                    continue
+                }
+                if !last.IsZero() && !info.ModTime().Equal(last) {
+                    // 2. The poller calls the function.
+                    data, _ := json.Marshal(fileChanged{Path: path, SizeBytes: info.Size()})
+                    client.Trigger(context.Background(), iii.TriggerRequest{FunctionID: "files::watch", Data: data})
+                }
+                last = info.ModTime()
             }
         }
     }
 
-    func everyMs(obs *iii.Observer) int64 {
+    func watchedPath(obs *iii.Observer) string {
         var args struct {
-            EveryMs int64 `json:"every_ms"`
+            Path string `json:"path"`
         }
         _ = obs.DecodeArgs(&args) // validated by the engine
-        return args.EveryMs
+        return args.Path
     }
 
-    func registerTimer(client *iii.Client) error {
-        return client.RegisterFunction("timer::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
-            var t tick
-            if err := json.Unmarshal(data, &t); err != nil {
+    func registerWatch(client *iii.Client) error {
+        return client.RegisterFunction("files::watch", func(ctx context.Context, data json.RawMessage) (any, error) {
+            var change fileChanged
+            if err := json.Unmarshal(data, &change); err != nil {
                 return nil, err
             }
-            mu.Lock()
+            // 3. Hand the change to the observers of that path.
+            watchMu.Lock()
             var observers []*iii.Observer
-            if tm := timers[t.EveryMs]; tm != nil {
-                for _, obs := range tm.observers {
+            if w := watched[change.Path]; w != nil {
+                for _, obs := range w.observers {
                     observers = append(observers, obs)
                 }
             }
-            mu.Unlock()
+            watchMu.Unlock()
             for _, obs := range observers {
-                obs.Emit(ctx, t) // false when the observer's filters reject the tick
+                obs.Emit(ctx, change)
             }
             return nil, nil
         }, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
             Delivery:   iii.DeliveryOwner,
-            ArgsFormat: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["every_ms"],"properties":{"every_ms":{"type":"integer","minimum":100}}}`),
+            ArgsFormat: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string"}}}`),
             OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
-                every := everyMs(obs)
-                mu.Lock()
-                defer mu.Unlock()
-                tm := timers[every]
-                if tm == nil {
-                    // First observer of this interval: start one timer for all of them.
-                    tm = &timer{observers: map[string]*iii.Observer{}, stop: make(chan struct{})}
-                    timers[every] = tm
-                    go runTimer(client, every, tm.stop)
+                // 1. Keep the observer, and start polling its path if nobody else watches it.
+                path := watchedPath(obs)
+                watchMu.Lock()
+                defer watchMu.Unlock()
+                w := watched[path]
+                if w == nil {
+                    w = &watch{observers: map[string]*iii.Observer{}, stop: make(chan struct{})}
+                    watched[path] = w
+                    go poll(client, path, w.stop)
                 }
-                tm.observers[obs.ID] = obs
+                w.observers[obs.ID] = obs
                 return nil
             },
             OnObserverRemoved: func(ctx context.Context, obs *iii.Observer) {
-                every := everyMs(obs)
-                mu.Lock()
-                defer mu.Unlock()
-                if tm := timers[every]; tm != nil {
-                    delete(tm.observers, obs.ID)
-                    if len(tm.observers) == 0 {
-                        // Last observer of this interval: stop its timer.
-                        close(tm.stop)
-                        delete(timers, every)
+                path := watchedPath(obs)
+                watchMu.Lock()
+                defer watchMu.Unlock()
+                if w := watched[path]; w != nil {
+                    delete(w.observers, obs.ID)
+                    if len(w.observers) == 0 {
+                        close(w.stop) // last observer of this path: stop polling it
+                        delete(watched, path)
                     }
                 }
             },
@@ -475,27 +670,28 @@ It runs one timer per distinct interval, however many observers share it.
   </Tab>
 </Tabs>
 
-Another worker observes it with args and, optionally, filters:
+A consumer observes it like any other function, with the path as args:
 
 ```typescript
-worker.registerFunction(
-  "reports::refresh",
-  async ({ input }: Observed<{ fired_at_ms: number }>) => {
-    await refreshReports(input?.fired_at_ms);
-    return null;
-  },
+worker.observe(
+  { function_id: "files::watch", args: { path: "/data/orders.csv" }, deliver: "input" },
+  "csv::process",
 );
-
-worker.observe({ function_id: "timer::on-tick", args: { every_ms: 60_000 } }, "reports::refresh");
 ```
 
-An observer with args the schema refuses (`{ every_ms: 10 }`, or no `every_ms`) fails with
+Compare it with `files::on-change` at the top of this page. There, every observer gets every change
+and narrows them with filters. Here, each observer asks for one path, and the source does work only
+for paths someone asked for.
+
+An observer with args the schema refuses (no `path`, or a field the schema does not list) fails with
 `INVALID_ARGS` before `onObserverAdded` runs.
 
 ### Example: a command router that calls
 
-`chat::on-command` answers chat commands. Each observer registers one command with args
-`{ command }`; the router calls that observer's target and returns its result as its own.
+The examples so far fire and forget. This one needs an answer back, so it uses `obs.call` instead of
+`obs.emit`, and it rejects observers whose args clash. `chat::on-command` answers chat commands.
+Each observer registers one command with args `{ command }`; the router calls that observer's target
+and returns its result as its own.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -744,6 +940,7 @@ await worker.trigger({
 | `OVERFLOW`                                                    | The observer has `max_in_flight` calls running. An owner call fails instead of queueing, because you are waiting for its result. |
 | `TIMEOUT`                                                     | The target did not answer within `observers.activation_timeout_ms` (30 s by default).                                            |
 | `function_not_found`                                          | The target is not registered.                                                                                                    |
+| `payload_too_large`                                           | The activation is larger than the target worker accepts in one message. See [Event size](../using-iii/observers#event-size).     |
 
 ## Reject an observer later
 
@@ -774,8 +971,9 @@ observed function and the target.
 
 A function that replaces a trigger type can keep serving workers that still call
 `registerTrigger({ type, function_id, config })`. Declare the type in `legacy_trigger_type`. The
-excerpt below changes the [timer example](#example-a-timer-that-emits): its handler and index stay
-as they were.
+excerpt below turns the old `timer` trigger type into `timer::on-tick`, a source shaped like the
+[file watcher](#example-a-file-watcher-that-emits) with one timer per interval instead of one poller
+per path. Only the parts that differ for old triggers are shown.
 
 ```typescript
 import { ObserveRejection, type Observer } from "iii-sdk";
@@ -790,7 +988,7 @@ const argsOf = (obs: Observer): TimerArgs =>
 worker.registerFunction(
   "timer::on-tick",
   async (tick: Tick) => {
-    // ... hand the tick to the observers of tick.every_ms, as before
+    // ... hand the tick to the observers of tick.every_ms, as files::watch does per path
     return null;
   },
   {
@@ -812,10 +1010,10 @@ worker.registerFunction(
             "every_ms must be an integer of at least 100",
           );
         }
-        // ... index the observer as before
+        // ... index the observer by every_ms, as files::watch does by path
       },
       onObserverRemoved(obs) {
-        // ... use argsOf(obs) here too
+        // ... use argsOf(obs) here too, then drop the observer from the index
       },
     },
   },

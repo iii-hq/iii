@@ -1,29 +1,26 @@
 ---
 title: "Observers"
-description:
-  "Observe any function and invoke another function when its invocations, or the events its owner
-  hands out, match your filters."
+description: "When one function runs, run another: iii.observe(source, target)."
 owner: "devrel"
 type: "how-to"
 ---
 
-Every function in iii is observable. An **observer** watches a function (the source) and invokes
-another function (the target) for each invocation or event that passes its filters. Any worker can
-observe any function it is allowed to invoke, and the function's worker needs no code for it.
+Everything in iii is reactive. `observe` says **when this happens, do that**:
 
 ```text
-iii.observe(source, target, options?)
+iii.observe(source, target)
 ```
 
-- **`source`** is what is observed: the `function_id`, its `args` (only for functions whose owner
-  routes events, see [Auto and owner delivery](#auto-and-owner-delivery)), declarative `filters`,
-  and what to capture.
-- **`target`** is the id of a registered function. There is no inline handler: register the target
-  first.
-- **`options`** holds the observer's id, its delivery policy, and metadata.
+When the left side (`source`, a function) runs, the right side (`target`, another function) runs
+with what happened. Every function in iii can be a source, and any worker can observe any function
+it is allowed to invoke.
+
+- **`source`** is the function to watch, plus optional [filters](#filters) to narrow which of its
+  runs you care about.
+- **`target`** is the id of a function you registered. Register it first, like any other function.
 
 `iii.observe` replaces `registerTrigger` for sources that are functions. See
-[Upgrading from 0.24.x](../upgrading/from-0-24-x) to move existing triggers and trigger types.
+[Upgrading from 0.24.x](../upgrading/from-0-24-x) to move existing triggers.
 
 <Note>
   The http, cron, queue, state, stream, pubsub, and database workers still publish trigger types in
@@ -35,32 +32,37 @@ iii.observe(source, target, options?)
 
 ## Observe a function
 
-The example below sends large orders to an alert function. `orders::create` is a regular function
-registered by another worker; it needs no changes to be observed. The target receives one
-[`Observed` envelope](#what-the-target-receives) per matching invocation.
+The examples on this page build on each other. They all react to `orders::create`, a regular
+function registered by another worker.
+
+### React to every call
+
+When `orders::create` runs, run `emails::send-receipt` with the order. `deliver: "input"` hands the
+target the order itself, so the target takes an `Order` like any function that processes orders.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { registerWorker, type Observed } from "iii-sdk";
+    import { registerWorker } from "iii-sdk";
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
     const worker = registerWorker(url);
 
-    type Order = { id: string; total: number };
+    type Order = { id: string; email: string; total: number };
 
-    // The target: a registered function, like any other.
-    worker.registerFunction("alerts::big-order", async (event: Observed<Order>) => {
-      console.log(`order ${event.input?.id} totals ${event.input?.total}`);
+    // The right side: a registered function, like any other.
+    worker.registerFunction("emails::send-receipt", async (order: Order) => {
+      await sendReceipt(order.email, order);
       return null;
     });
 
-    const bigOrders = worker.observe(
-      { function_id: "orders::create", filters: { "input.total": { $gte: 500 } } },
-      "alerts::big-order",
+    // When orders::create runs, run emails::send-receipt with the order.
+    const receipts = worker.observe(
+      { function_id: "orders::create", deliver: "input" },
+      "emails::send-receipt",
     );
-    await bigOrders.ready(); // resolves once the observer is active
+    await receipts.ready(); // resolves once the observer is active
     ```
 
   </Tab>
@@ -69,40 +71,151 @@ registered by another worker; it needs no changes to be observed. The target rec
     import os
     from iii import InitOptions, register_worker
 
-    worker = register_worker(os.environ.get("III_URL"), InitOptions(worker_name="alerts"))
+    worker = register_worker(os.environ.get("III_URL"), InitOptions(worker_name="emails"))
 
-    # The target: a registered function, like any other.
-    def big_order(event: dict) -> None:
-        order = event.get("input", {})
-        print(f"order {order.get('id')} totals {order.get('total')}")
+    # The right side: a registered function, like any other.
+    def send_receipt(order: dict) -> None:
+        mailer.send_receipt(order["email"], order)
 
-    worker.register_function("alerts::big-order", big_order)
+    worker.register_function("emails::send-receipt", send_receipt)
 
-    big_orders = worker.observe(
-        {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
-        "alerts::big-order",
+    # When orders::create runs, run emails::send-receipt with the order.
+    receipts = worker.observe(
+        {"function_id": "orders::create", "deliver": "input"},
+        "emails::send-receipt",
     )
-    big_orders.ready()  # blocks until active; use `await big_orders.ready_async()` in asyncio code
+    receipts.ready()  # blocks until active; use `await receipts.ready_async()` in asyncio code
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Error, InitOptions, Observed, RegisterFunction, Source, register_worker};
+    use iii_sdk::{Deliver, Error, InitOptions, RegisterFunction, Source, register_worker};
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
-    use serde_json::json;
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
     struct Order {
         id: String,
+        email: String,
         total: f64,
     }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    // The target: a registered function, like any other.
+    // The right side: a registered function, like any other.
+    worker.register_function(
+        "emails::send-receipt",
+        RegisterFunction::new(|order: Order| {
+            send_receipt(&order.email, &order);
+            Ok::<_, Error>(())
+        }),
+    );
+
+    // When orders::create runs, run emails::send-receipt with the order.
+    let receipts = worker.observe(
+        Source::function("orders::create").deliver(Deliver::Input),
+        "emails::send-receipt",
+    );
+    receipts.ready().await?; // resolves once the observer is active
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type Order struct {
+        ID    string  `json:"id"`
+        Email string  `json:"email"`
+        Total float64 `json:"total"`
+    }
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"))
+
+    // The right side: a registered function, like any other.
+    client.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var order Order
+        if err := json.Unmarshal(data, &order); err != nil {
+            return nil, err
+        }
+        return nil, sendReceipt(ctx, order.Email, order)
+    })
+
+    // When orders::create runs, run emails::send-receipt with the order.
+    receipts, err := client.Observe(iii.Source{
+        FunctionID: "orders::create",
+        Deliver:    iii.DeliverInput,
+    }, "emails::send-receipt")
+    if err != nil {
+        log.Fatal(err) // the request could not be built (missing ids, args that are not JSON)
+    }
+    if err := receipts.Ready(ctx); err != nil {
+        log.Fatal(err) // an *iii.ObserveRejectionError carries the engine's code
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+From now on, whoever calls `orders::create`, from whichever worker, `emails::send-receipt` runs
+after each call.
+
+`observe` returns a handle at once, also before the connection is up. The SDK sends the observer
+when it connects and replays it with the same id after every reconnect, so you call it once at
+startup, like `registerFunction`. The browser SDK (`iii-browser-sdk`) has the same `observe` API as
+Node.
+
+### Narrow it with a filter
+
+Only orders of 500 or more should page someone. A [filter](#filters) on the source narrows which
+calls reach the target. This target also leaves out `deliver`, so it receives the full
+[`Observed` envelope](#what-the-target-receives): the order as `input`, plus the result, who placed
+the call, and how long it took.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { Observed } from "iii-sdk";
+
+    worker.registerFunction("alerts::big-order", async (event: Observed<Order>) => {
+      console.log(
+        `order ${event.input?.id} totals ${event.input?.total}, placed by ${event.caller?.worker_name}`,
+      );
+      return null;
+    });
+
+    // When orders::create runs with total >= 500, run alerts::big-order.
+    await worker
+      .observe(
+        { function_id: "orders::create", filters: { "input.total": { $gte: 500 } } },
+        "alerts::big-order",
+      )
+      .ready();
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def big_order(event: dict) -> None:
+        order = event.get("input", {})
+        caller = event.get("caller", {})
+        print(f"order {order.get('id')} totals {order.get('total')}, placed by {caller.get('worker_name')}")
+
+    worker.register_function("alerts::big-order", big_order)
+
+    # When orders::create runs with total >= 500, run alerts::big-order.
+    worker.observe(
+        {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
+        "alerts::big-order",
+    ).ready()
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Observed;
+    use serde_json::json;
+
     worker.register_function(
         "alerts::big-order",
         RegisterFunction::new(|event: Observed<Order>| {
@@ -113,19 +226,19 @@ registered by another worker; it needs no changes to be observed. The target rec
         }),
     );
 
-    let big_orders = worker.observe(
-        Source::function("orders::create").filters(json!({ "input.total": { "$gte": 500 } })),
-        "alerts::big-order",
-    );
-    big_orders.ready().await?; // resolves once the observer is active
+    // When orders::create runs with total >= 500, run alerts::big-order.
+    worker
+        .observe(
+            Source::function("orders::create").filters(json!({ "input.total": { "$gte": 500 } })),
+            "alerts::big-order",
+        )
+        .ready()
+        .await?;
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    client := iii.RegisterWorker(os.Getenv("III_URL"))
-
-    // The target: a registered function, like any other.
     client.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
         var event iii.Observed
         if err := json.Unmarshal(data, &event); err != nil {
@@ -135,76 +248,57 @@ registered by another worker; it needs no changes to be observed. The target rec
         return nil, nil
     })
 
+    // When orders::create runs with total >= 500, run alerts::big-order.
     bigOrders, err := client.Observe(iii.Source{
         FunctionID: "orders::create",
         Filters:    iii.Filters{"input.total": iii.Op{"$gte": 500}},
     }, "alerts::big-order")
     if err != nil {
-        log.Fatal(err) // the request could not be built (missing ids, args that are not JSON)
+        log.Fatal(err)
     }
     if err := bigOrders.Ready(ctx); err != nil {
-        log.Fatal(err) // an *iii.ObserveRejectionError carries the engine's code
+        log.Fatal(err)
     }
     ```
 
   </Tab>
 </Tabs>
 
-`observe` returns a handle at once, also before the connection is up. The SDK sends the observer
-when it connects and replays it with the same id after every reconnect, so you call it once at
-startup, like `registerFunction`. The browser SDK (`iii-browser-sdk`) has the same `observe` API as
-Node.
+Both observers watch the same function, independently. The next examples add
+[failures and policy](#policy-and-metadata), [chains](#chain-reactions), and
+[engine events](#engine-hosted-event-sources).
 
-## The source
+### Making a function you can observe
 
-| Field         | Default                         | Meaning                                                                                                                       |
-| ------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `function_id` | required                        | The observed function. Every function is observable unless it opted out (`NOT_OBSERVABLE`).                                   |
-| `namespace`   | the worker's namespace          | The namespace of the observed function. `engine::*` and `configuration::*` resolve to `default`, as for a `trigger` call.     |
-| `args`        | none                            | Owner-delivered functions only: what the function's owner should set up for this observer. Validated by the engine.           |
-| `filters`     | `{}` (every event)              | Which events reach the target. See [Filters](#filters).                                                                       |
-| `on`          | `success`                       | Auto delivery only: `success`, `error`, or `complete` (both).                                                                 |
-| `capture`     | `["input", "output", "caller"]` | What the envelope carries: any of `input`, `output`, `error`, `caller`, `metadata`. `[]` sends ids, status, and timings only. |
-| `deliver`     | `envelope`                      | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone.                               |
-
-A filter may read any field, whatever the observer captures: `capture` only decides what travels to
-the target.
-
-### Auto and owner delivery
-
-How events reach observers depends on the observed function. Its owner chooses when it registers the
-function; observers use the same `observe` call in both cases.
-
-|                      | Auto (the default)                                         | Owner                                                                       |
-| -------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
-| An event is          | every invocation of the function                           | what the function's owner hands to an observer                              |
-| `args`               | not accepted (`INVALID_ARGS`)                              | validated against the function's `args_format`, then read by the owner      |
-| Filters evaluated by | the engine (routed calls) or the hosting SDK (local calls) | the owner's SDK, each time it hands an event to the observer                |
-| When the target runs | after the observed invocation completes, per `on`          | when the owner decides, usually inside the function's own handler           |
-| The target's result  | discarded                                                  | discarded for `obs.emit`; returned to the owner for `obs.call`              |
-| Examples             | any regular function, the engine-hosted event sources      | sources that need setup per observer: a schedule, a route, a table to watch |
-
-Owner-delivered functions document their `args`. For example, `timer::on-tick`, the example function
-you write in [Observable functions](../creating-workers/observable-functions) (it is not built in),
-takes `{ every_ms }`:
+To make something observable, register a function for it and call that function whenever the thing
+happens. Each call is an event for its observers:
 
 ```typescript
-worker.observe({ function_id: "timer::on-tick", args: { every_ms: 60_000 } }, "reports::refresh");
+// Producer: call this whenever a file changes.
+worker.registerFunction("files::on-change", async (change: FileChanged) => change);
+
+// ...in your watcher loop
+await worker.trigger({ function_id: "files::on-change", payload: { path, event: "modified" } });
+
+// Consumer, in any worker: when a file changes, process it.
+worker.observe({ function_id: "files::on-change" }, "csv::process");
 ```
 
-To write such a function yourself, see
-[Creating Workers / Observable functions](../creating-workers/observable-functions).
+Some sources go further and take control of who gets which event, for example a file watcher that
+polls only the paths its observers ask for. Those are written with
+[Observable functions](../creating-workers/observable-functions). You observe them the same way,
+sometimes with [args](#sources-that-take-args).
 
-### What the target receives
+## What the target receives
 
-With the default `deliver: 'envelope'`, the target's first argument is the `Observed` envelope.
-Fields left out of `capture` are absent.
+With the default `deliver: 'envelope'`, the target's first argument is the `Observed` envelope: what
+happened on the left side. Fields left out of `capture` are absent.
 
 | Field                          | Meaning                                                             |
 | ------------------------------ | ------------------------------------------------------------------- |
 | `observer_id`, `activation_id` | The observer, and this activation of it.                            |
 | `function_id`, `namespace`     | The observed function.                                              |
-| `invocation_id`                | The observed invocation (or the emitted event).                     |
+| `invocation_id`                | The observed invocation (or the event the source handed out).       |
 | `status`                       | `success` or `error`.                                               |
 | `input`, `output`, `error`     | The observed payload, its result, or its `{ code, message }` error. |
 | `caller`                       | Who made the observed call. See [Caller](#caller-and-causality).    |
@@ -212,46 +306,88 @@ Fields left out of `capture` are absent.
 | `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.          |
 
 With `deliver: 'input'` or `deliver: 'output'`, the target receives that value alone, which suits a
-target written as a regular function of the observed payload. An observer of an owner-delivered
-function that the owner reaches with `obs.call` receives the owner's payload instead (for example an
-HTTP request), and its return value goes back to the owner.
+target written as a regular function of the observed payload.
 
 The observer's `metadata` option arrives as the activation's metadata sidecar, the same second
 argument (`metadata` in Python, `MetadataFromContext(ctx)` in Go) that trigger metadata used. The
-target's return value is discarded for auto delivery and `obs.emit`.
+target's return value is discarded.
 
-<Note>
-  For local calls and `obs.emit`, the hosting SDK reports the observed values to the engine. Values
-  JSON cannot hold, such as a number no double can represent, arrive as `null`, and a lone surrogate
-  in a string or key arrives as U+FFFD. Filters read the values the same way. Reports are at most
-  once: a report lost with a dropped connection is not sent again.
-</Note>
+## Shape the source
 
-### Event size
+The `source` is more than a function id. All of these are optional except `function_id`:
 
-The engine keeps one copy of an observed invocation for all observers of its function, with every
-field any of them captures or filters on. Capturing `input` and `output` counts both: a function
-that echoes a 40 MiB input makes an event of about 80 MiB. An event too large on its own is not
-delivered, however idle the engine is:
+| Field         | Default                         | Meaning                                                                                                                       |
+| ------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `function_id` | required                        | The observed function. Every function is observable unless it opted out (`NOT_OBSERVABLE`).                                   |
+| `namespace`   | the worker's namespace          | The namespace of the observed function. `engine::*` and `configuration::*` resolve to `default`, as for a `trigger` call.     |
+| `filters`     | `{}` (every event)              | Which runs reach the target. See [Filters](#filters).                                                                         |
+| `on`          | `success`                       | React to runs that `success`, `error`, or `complete` (both).                                                                  |
+| `capture`     | `["input", "output", "caller"]` | What the envelope carries: any of `input`, `output`, `error`, `caller`, `metadata`. `[]` sends ids, status, and timings only. |
+| `deliver`     | `envelope`                      | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone.                               |
+| `args`        | none                            | Only for sources whose docs ask for it. See [Sources that take args](#sources-that-take-args).                                |
 
-- The fields the engine keeps come to more than 64 MiB (approximate in-memory size).
-- The activation is larger than the target worker accepts in one message: 64 MiB, or 16 MiB for
-  browser workers and some older SDKs. See [Payload size](../creating-workers/channels#payload-size).
-- For local calls and `obs.emit`, the hosting SDK's report of the event is larger than its 8 MiB
-  report buffer.
+A filter may read any field, whatever the observer captures: `capture` only decides what travels to
+the target.
 
-Each such event counts as a `TOO_LARGE` drop in the `iii.observer.dropped.total` metric. In the
-first two cases it also counts in the observer's `dropped` counts
-([`engine::observers::list`](#inspect-observers)), and the engine logs a warning naming the
-observer, the function, the size, and the limit, at most once a minute per observer. An owner's
-`obs.call` whose activation the target cannot receive fails with `payload_too_large`. `OVERFLOW` is
-different: the queues were full when the event arrived, and an event of the same size can get
-through once they drain.
+### Sources that take args
 
-To keep events small, capture only what the target reads, for example `capture: ["input"]`. With
-`deliver: "input"` or `deliver: "output"`, set a matching `capture` too: captured fields are kept
-even when the target receives one value. For payloads larger than these limits, pass a
-[channel](../creating-workers/channels) reference instead of the data.
+A few sources need to know what you want before they can fire: a file watcher needs a path, a
+schedule needs an interval. Their documentation lists the `args` they take, and you pass them in the
+source. For example, `files::watch`, the example source built in
+[Observable functions](../creating-workers/observable-functions#example-a-file-watcher-that-emits)
+(it is not built in), takes `{ path }`:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // When /data/orders.csv changes, run csv::process.
+    worker.observe(
+      { function_id: "files::watch", args: { path: "/data/orders.csv" }, deliver: "input" },
+      "csv::process",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # When /data/orders.csv changes, run csv::process.
+    worker.observe(
+        {"function_id": "files::watch", "args": {"path": "/data/orders.csv"}, "deliver": "input"},
+        "csv::process",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // When /data/orders.csv changes, run csv::process.
+    worker.observe(
+        Source::function("files::watch")
+            .args(json!({ "path": "/data/orders.csv" }))
+            .deliver(Deliver::Input),
+        "csv::process",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // When /data/orders.csv changes, run csv::process.
+    client.Observe(iii.Source{
+        FunctionID: "files::watch",
+        Args:       iii.Args{"path": "/data/orders.csv"},
+        Deliver:    iii.DeliverInput,
+    }, "csv::process")
+    ```
+
+  </Tab>
+</Tabs>
+
+Args and filters do different jobs: `args` tell the source what to produce (changes to this one
+file), and filters choose among what it produced (say, only changes that leave the file non-empty,
+with `{ "input.size_bytes": { "$gt": 0 } }`). The engine validates `args` against the source's
+schema (`INVALID_ARGS` when they do not fit). A function that does not document `args` takes none,
+and passing them fails with `INVALID_ARGS`.
 
 ## Filters
 
@@ -275,7 +411,10 @@ values, and the limits.
 
 ## Policy and metadata
 
-The third argument configures the observer itself:
+The examples so far react to calls that succeed. The next one reacts when `payments::charge`
+**fails** on a large amount (`on: "error"`), keeps only what the alert needs (`capture`), and runs
+at most four alerts at once. That last part is policy: a third argument that configures the observer
+itself.
 
 | Option          | Default                                | Meaning                                                                                                                                                                                                                                                          |
 | --------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -354,168 +493,85 @@ Delivery is at most once. An observer failure never affects the observed invocat
 dropped event is counted per function and reason in the `iii.observer.dropped.total` metric. An
 event waiting in several observers' queues is held once, however many observers it matched.
 
-## Observer states
+## Chain reactions
 
-| State       | Meaning                                                                                                                                                                   |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | Waiting: no worker hosts the function yet (`OWNER_UNAVAILABLE`), the target is not registered yet (`TARGET_UNAVAILABLE`), or the owner has not acknowledged the observer. |
-| `active`    | Delivering.                                                                                                                                                               |
-| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`), or the target went away after the observer was active (`TARGET_UNAVAILABLE`).                                |
-| `error`     | Rejected. The reason carries the code (`INVALID_ARGS`, `FORBIDDEN`, an owner's own code, ...).                                                                            |
-| `disposed`  | Gone for good: `dispose()`, `max_fires`, expiry, or the observing worker did not come back in time.                                                                       |
-
-- `ready()` resolves when the observer is `active` and rejects with the reason's code when it turns
-  `error` or `disposed` first (`ObserveRejection` in Node, Python, and Rust;
-  `*iii.ObserveRejectionError` in Go).
-- `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
-  every transition with its reason. Listeners never run on the connection's read path, so they may
-  call the client.
-- `dispose()` removes the observer. A disposed observer is not replayed.
-- An observer belongs to the connection that created it. When that worker disconnects, its observers
-  are `suspended` for `observers.observer_grace_ms` (30 s by default); a worker that reconnects in
-  time keeps them, with their counters. After that they are `disposed`, and a worker that reconnects
-  later gets that answer when its SDK replays them, so `max_fires` and `expires_in_ms` still hold.
-  The engine keeps the answer for `observers.disposed_retention_ms` (1 hour by default). After that,
-  a returning worker's replay creates its observers again, as after an engine restart.
-- When the observed function's worker disconnects, its observers go back to `pending` and become
-  `active` again when the function is registered again.
-
-## Caller and causality
-
-Every invocation carries a `caller`: the worker that made the call and, when the call was made from
-inside a handler, the function and invocation it was made from.
-
-```json
-{
-  "worker_id": "3f1c...",
-  "worker_name": "billing",
-  "function_id": "billing::close-invoice",
-  "invocation_id": "c3f...",
-  "parent": { "worker_name": "api", "function_id": "api::checkout", "invocation_id": "77..." }
-}
-```
-
-`worker_id` and `worker_name` are stamped by the engine from the calling connection and cannot be
-forged. `function_id`, `invocation_id`, and `parent` (the caller of that handler, one level only)
-come from the calling SDK, so use them for routing and filtering, not for authorization. A filter
-such as `{ "caller.parent.worker_name": { "$ne": "search-indexer" } }` stops an indexer from
-reacting to its own writes.
-
-When the engine activates a target (auto delivery and `obs.emit`), the target's caller is the engine
-(`worker_name: "iii-engine"`, no `worker_id`), with the observed function and invocation as
-`function_id` and `invocation_id`. For `obs.call`, the caller is the owner's worker and handler. In
-both cases the current invocation's `activation` holds the `observer_id` and `activation_id`.
-
-The SDKs propagate the caller automatically from the handler you are in. Each SDK also exposes the
-current invocation (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`):
-
-| SDK     | Current invocation               | Notes                                                                                                            |
-| ------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Node    | `worker.currentInvocation()`     | Carried across `await` with `AsyncLocalStorage`.                                                                 |
-| Browser | `worker.currentInvocation()`     | Known until the handler's first `await`. Read it first and wrap later calls in `worker.withInvocation(inv, fn)`. |
-| Python  | `worker.current_invocation()`    | A `contextvars` context, carried into sync handlers' threads.                                                    |
-| Rust    | `iii_sdk::current_invocation()`  | A task-local. Work moved to `tokio::spawn` loses it; wrap the future in `iii_sdk::scope(ctx, fut)`.              |
-| Go      | `iii.InvocationFromContext(ctx)` | Pass the handler's `ctx` to `client.Trigger` so outgoing calls carry the caller.                                 |
-
-In the browser, calls made after an `await` outside `withInvocation` carry the depth of the deepest
-invocation running on the page, so with several invocations running the depth is over-counted: an
-observer chain may stop early at the loop guard, and some concurrent local calls go through the
-engine (with the same results). While the page is offline, functions it hosts still run locally, up
-to 256 nested local calls; past that a call fails at once with `LOCAL_DEPTH_EXCEEDED`.
-
-## Loop guard
-
-An observer whose target calls the observed function again (directly or through other observers)
-would loop forever. Every invocation carries an `observe_depth`, which grows by one on each
-activation. Activations deeper than `observers.max_observe_depth` (8 by default) are dropped and
-counted as `LOOP_GUARD`, and an observer whose target is the observed function itself is rejected at
-creation with `SELF_TARGET`.
-
-Workers on SDKs older than 0.25 do not propagate the depth; through them the engine estimates it
-from their activations still in flight.
-
-## Local dispatch
-
-A worker that calls a function it registered itself runs the handler in-process, without a round
-trip through the engine. When nobody observes the function, such a call puts nothing on the wire.
-When observers match, the SDK evaluates their filters itself and reports the matching invocations to
-the engine in batches, so observers see local and routed calls alike.
-
-A call runs locally when all of these hold:
-
-1. The function was registered by this worker with a handler (not an HTTP-invoked function), and
-   local dispatch was not turned off for it.
-2. The engine confirmed the registration for local dispatch (a 0.25 engine,
-   `observers.local_dispatch` on, and a session without RBAC `middleware_function_id` that may
-   invoke the function).
-3. The call resolves to the namespace the function is registered in.
-4. The action is not `Enqueue` (a `Void` call runs locally, fire-and-forget).
-5. The call does not ask for the remote path.
-
-A local call returns the same result, error shape, and timeout as a remote one. The differences are
-in [Upgrading from 0.24.x](../upgrading/from-0-24-x#local-dispatch). To keep a function on the
-engine path:
+A target is a function like any other, so it can be a source too. Chaining observers builds a
+pipeline in which each step observes the one before it. Here an order reserves stock, and reserved
+stock schedules a shipment, with each worker registering its own step.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    // per function
-    worker.registerFunction("reports::build", buildReport, { localDispatch: false });
+    // Inventory worker: when an order is created, reserve its items.
+    inventory.registerFunction("inventory::reserve", async (order: Order) => reserveItems(order));
+    inventory.observe({ function_id: "orders::create", deliver: "input" }, "inventory::reserve");
 
-    // per call
-    await worker.trigger({ function_id: "reports::build", payload, dispatch: "remote" });
+    // Shipping worker: when items are reserved, schedule the shipment.
+    shipping.registerFunction("shipping::schedule", async (reservation: Reservation) =>
+      scheduleShipment(reservation),
+    );
+    shipping.observe(
+      { function_id: "inventory::reserve", deliver: "output" },
+      "shipping::schedule",
+    );
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    # per function
-    worker.register_function("reports::build", build_report, local_dispatch=False)
+    # Inventory worker: when an order is created, reserve its items.
+    inventory.register_function("inventory::reserve", reserve_items)
+    inventory.observe({"function_id": "orders::create", "deliver": "input"}, "inventory::reserve")
 
-    # per call
-    worker.trigger({"function_id": "reports::build", "payload": payload, "dispatch": "remote"})
+    # Shipping worker: when items are reserved, schedule the shipment.
+    shipping.register_function("shipping::schedule", schedule_shipment)
+    shipping.observe({"function_id": "inventory::reserve", "deliver": "output"}, "shipping::schedule")
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::protocol::TriggerRequest;
-    use iii_sdk::{Dispatch, RegisterFunction};
-
-    // per function
-    worker.register_function(
-        "reports::build",
-        RegisterFunction::new_async(build_report).local_dispatch(false),
+    // Inventory worker: when an order is created, reserve its items.
+    inventory.register_function("inventory::reserve", RegisterFunction::new(reserve_items));
+    inventory.observe(
+        Source::function("orders::create").deliver(Deliver::Input),
+        "inventory::reserve",
     );
 
-    // per call
-    worker
-        .trigger(TriggerRequest::new("reports::build", payload).dispatch(Dispatch::Remote))
-        .await?;
+    // Shipping worker: when items are reserved, schedule the shipment.
+    shipping.register_function("shipping::schedule", RegisterFunction::new(schedule_shipment));
+    shipping.observe(
+        Source::function("inventory::reserve").deliver(Deliver::Output),
+        "shipping::schedule",
+    );
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    // per function
-    off := false
-    client.RegisterFunction("reports::build", buildReport, iii.RegisterFunctionOptions{LocalDispatch: &off})
+    // Inventory worker: when an order is created, reserve its items.
+    inventory.RegisterFunction("inventory::reserve", reserveItems)
+    inventory.Observe(iii.Source{FunctionID: "orders::create", Deliver: iii.DeliverInput}, "inventory::reserve")
 
-    // per call
-    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Data: payload, Dispatch: iii.DispatchRemote})
+    // Shipping worker: when items are reserved, schedule the shipment.
+    shipping.RegisterFunction("shipping::schedule", scheduleShipment)
+    shipping.Observe(iii.Source{FunctionID: "inventory::reserve", Deliver: iii.DeliverOutput}, "shipping::schedule")
     ```
 
   </Tab>
 </Tabs>
 
-To turn it off for the whole engine, set `observers.local_dispatch: false` in the
-[engine configuration](./configuration#observers).
+`inventory::reserve` returns the reservation, and `deliver: "output"` hands that result to
+`shipping::schedule`: the second observer reads it as the output of `inventory::reserve`. To add a
+step, observe the last function in the chain; to branch, observe the same function twice. Each
+activation in a chain counts toward the [loop guard](#loop-guard), so chains are limited to
+`observers.max_observe_depth` steps (8 by default).
 
 ## Engine-hosted event sources
 
-The engine hosts event sources as auto-delivered functions in the `default` namespace. Observe them
-like any function, with filters on the event. They replace the engine's own trigger types, which
-keep firing in 0.25.
+The engine hosts event sources as functions in the `default` namespace. Observe them like any
+function, with filters on the event. They replace the engine's own trigger types, which keep firing
+in 0.25.
 
 | Function                       | Replaces the trigger type     | Event (`input`)                                                                                                                                                                                           |
 | ------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -609,6 +665,195 @@ engine's to emit.
   </Tab>
 </Tabs>
 
+## Observer states
+
+| State       | Meaning                                                                                                                                                                    |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`   | Waiting: no worker hosts the function yet (`OWNER_UNAVAILABLE`), the target is not registered yet (`TARGET_UNAVAILABLE`), or the source has not acknowledged the observer. |
+| `active`    | Delivering.                                                                                                                                                                |
+| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`), or the target went away after the observer was active (`TARGET_UNAVAILABLE`).                                 |
+| `error`     | Rejected. The reason carries the code (`INVALID_ARGS`, `FORBIDDEN`, a source's own code, ...).                                                                             |
+| `disposed`  | Gone for good: `dispose()`, `max_fires`, expiry, or the observing worker did not come back in time.                                                                        |
+
+- `ready()` resolves when the observer is `active` and rejects with the reason's code when it turns
+  `error` or `disposed` first (`ObserveRejection` in Node, Python, and Rust;
+  `*iii.ObserveRejectionError` in Go).
+- `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
+  every transition with its reason. Listeners never run on the connection's read path, so they may
+  call the client.
+- `dispose()` removes the observer. A disposed observer is not replayed.
+- An observer belongs to the connection that created it. When that worker disconnects, its observers
+  are `suspended` for `observers.observer_grace_ms` (30 s by default); a worker that reconnects in
+  time keeps them, with their counters. After that they are `disposed`, and a worker that reconnects
+  later gets that answer when its SDK replays them, so `max_fires` and `expires_in_ms` still hold.
+  The engine keeps the answer for `observers.disposed_retention_ms` (1 hour by default). After that,
+  a returning worker's replay creates its observers again, as after an engine restart.
+- When the observed function's worker disconnects, its observers go back to `pending` and become
+  `active` again when the function is registered again.
+
+## Event size
+
+The engine keeps one copy of an observed invocation for all observers of its function, with every
+field any of them captures or filters on. Capturing `input` and `output` counts both: a function
+that echoes a 40 MiB input makes an event of about 80 MiB. An event too large on its own is not
+delivered, however idle the engine is:
+
+- The fields the engine keeps come to more than 64 MiB (approximate in-memory size).
+- The activation is larger than the target worker accepts in one message: 64 MiB, or 16 MiB for
+  browser workers and some older SDKs. See
+  [Payload size](../creating-workers/channels#payload-size).
+- For calls that run in the source's own worker ([local dispatch](#local-dispatch)), the hosting
+  SDK's report of the event is larger than its 8 MiB report buffer.
+
+Each such event counts as a `TOO_LARGE` drop in the `iii.observer.dropped.total` metric. In the
+first two cases it also counts in the observer's `dropped` counts
+([`engine::observers::list`](#inspect-observers)), and the engine logs a warning naming the
+observer, the function, the size, and the limit, at most once a minute per observer. `OVERFLOW` is
+different: the queues were full when the event arrived, and an event of the same size can get
+through once they drain.
+
+To keep events small, capture only what the target reads, for example `capture: ["input"]`. With
+`deliver: "input"` or `deliver: "output"`, set a matching `capture` too: captured fields are kept
+even when the target receives one value. For payloads larger than these limits, pass a
+[channel](../creating-workers/channels) reference instead of the data.
+
+## Caller and causality
+
+Every invocation carries a `caller`: the worker that made the call and, when the call was made from
+inside a handler, the function and invocation it was made from.
+
+```json
+{
+  "worker_id": "3f1c...",
+  "worker_name": "billing",
+  "function_id": "billing::close-invoice",
+  "invocation_id": "c3f...",
+  "parent": { "worker_name": "api", "function_id": "api::checkout", "invocation_id": "77..." }
+}
+```
+
+`worker_id` and `worker_name` are stamped by the engine from the calling connection and cannot be
+forged. `function_id`, `invocation_id`, and `parent` (the caller of that handler, one level only)
+come from the calling SDK, so use them for routing and filtering, not for authorization. A filter
+such as `{ "caller.parent.worker_name": { "$ne": "search-indexer" } }` stops an indexer from
+reacting to its own writes.
+
+When the engine activates a target, the target's caller is the engine (`worker_name: "iii-engine"`,
+no `worker_id`), with the observed function and invocation as `function_id` and `invocation_id`. The
+current invocation's `activation` holds the `observer_id` and `activation_id`.
+
+The SDKs propagate the caller automatically from the handler you are in. Each SDK also exposes the
+current invocation (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`):
+
+| SDK     | Current invocation               | Notes                                                                                                            |
+| ------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Node    | `worker.currentInvocation()`     | Carried across `await` with `AsyncLocalStorage`.                                                                 |
+| Browser | `worker.currentInvocation()`     | Known until the handler's first `await`. Read it first and wrap later calls in `worker.withInvocation(inv, fn)`. |
+| Python  | `worker.current_invocation()`    | A `contextvars` context, carried into sync handlers' threads.                                                    |
+| Rust    | `iii_sdk::current_invocation()`  | A task-local. Work moved to `tokio::spawn` loses it; wrap the future in `iii_sdk::scope(ctx, fut)`.              |
+| Go      | `iii.InvocationFromContext(ctx)` | Pass the handler's `ctx` to `client.Trigger` so outgoing calls carry the caller.                                 |
+
+In the browser, calls made after an `await` outside `withInvocation` carry the depth of the deepest
+invocation running on the page, so with several invocations running the depth is over-counted: an
+observer chain may stop early at the loop guard, and some concurrent local calls go through the
+engine (with the same results). While the page is offline, functions it hosts still run locally, up
+to 256 nested local calls; past that a call fails at once with `LOCAL_DEPTH_EXCEEDED`.
+
+## Loop guard
+
+An observer whose target calls the observed function again (directly or through other observers)
+would loop forever. Every invocation carries an `observe_depth`, which grows by one on each
+activation. Activations deeper than `observers.max_observe_depth` (8 by default) are dropped and
+counted as `LOOP_GUARD`, and an observer whose target is the observed function itself is rejected at
+creation with `SELF_TARGET`.
+
+Workers on SDKs older than 0.25 do not propagate the depth; through them the engine estimates it
+from their activations still in flight.
+
+## Local dispatch
+
+A worker that calls a function it registered itself runs the handler in-process, without a round
+trip through the engine. When nobody observes the function, such a call puts nothing on the wire.
+When observers match, the SDK evaluates their filters itself and reports the matching invocations to
+the engine in batches, so observers see local and routed calls alike.
+
+<Note>
+  The hosting SDK reports the observed values of local calls to the engine. Values JSON cannot hold,
+  such as a number no double can represent, arrive as `null`, and a lone surrogate in a string or
+  key arrives as U+FFFD. Filters read the values the same way. Reports are at most once: a report
+  lost with a dropped connection is not sent again.
+</Note>
+
+A call runs locally when all of these hold:
+
+1. The function was registered by this worker with a handler (not an HTTP-invoked function), and
+   local dispatch was not turned off for it.
+2. The engine confirmed the registration for local dispatch (a 0.25 engine,
+   `observers.local_dispatch` on, and a session without RBAC `middleware_function_id` that may
+   invoke the function).
+3. The call resolves to the namespace the function is registered in.
+4. The action is not `Enqueue` (a `Void` call runs locally, fire-and-forget).
+5. The call does not ask for the remote path.
+
+A local call returns the same result, error shape, and timeout as a remote one. The differences are
+in [Upgrading from 0.24.x](../upgrading/from-0-24-x#local-dispatch). To keep a function on the
+engine path:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // per function
+    worker.registerFunction("reports::build", buildReport, { localDispatch: false });
+
+    // per call
+    await worker.trigger({ function_id: "reports::build", payload, dispatch: "remote" });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # per function
+    worker.register_function("reports::build", build_report, local_dispatch=False)
+
+    # per call
+    worker.trigger({"function_id": "reports::build", "payload": payload, "dispatch": "remote"})
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::{Dispatch, RegisterFunction};
+
+    // per function
+    worker.register_function(
+        "reports::build",
+        RegisterFunction::new_async(build_report).local_dispatch(false),
+    );
+
+    // per call
+    worker
+        .trigger(TriggerRequest::new("reports::build", payload).dispatch(Dispatch::Remote))
+        .await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // per function
+    off := false
+    client.RegisterFunction("reports::build", buildReport, iii.RegisterFunctionOptions{LocalDispatch: &off})
+
+    // per call
+    client.Trigger(ctx, iii.TriggerRequest{FunctionID: "reports::build", Data: payload, Dispatch: iii.DispatchRemote})
+    ```
+
+  </Tab>
+</Tabs>
+
+To turn it off for the whole engine, set `observers.local_dispatch: false` in the
+[engine configuration](./configuration#observers).
+
 ## Inspect observers
 
 The engine lists observers through three built-in functions:
@@ -633,16 +878,16 @@ An observer that cannot be created turns `error`, and `ready()` rejects with one
 | Code                   | When                                                                                                      |
 | ---------------------- | --------------------------------------------------------------------------------------------------------- |
 | `UNSUPPORTED`          | The engine is older than 0.25 (raised by the SDK), or `on`, `capture`, or `deliver` has an unknown value. |
-| `INVALID_ARGS`         | `args` fail the function's `args_format`, or the function takes none (every auto function).               |
+| `INVALID_ARGS`         | `args` do not fit the source's schema, or the source takes no `args`.                                     |
 | `INVALID_FILTER`       | The filter is malformed, uses a literal instead of an operator object, or exceeds a limit.                |
 | `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                      |
-| `NOT_OBSERVABLE`       | The function opted out (`observe.allow: false`).                                                          |
+| `NOT_OBSERVABLE`       | The function opted out of being observed.                                                                 |
 | `FORBIDDEN`            | RBAC: the session may not invoke the observed function or the target, or the registration hook denied it. |
 | `SELF_TARGET`          | The target is the observed function.                                                                      |
 | `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` is reached.                                |
 | `OBSERVER_ID_CONFLICT` | An observer with the same id but a different spec exists.                                                 |
-| `OWNER_TIMEOUT`        | The function's owner did not acknowledge the observer in time (30 s by default).                          |
-| `OBSERVE_REJECTED`     | The owner's `onObserverAdded` hook threw a plain error. An owner can also reject with its own code.       |
+| `OWNER_TIMEOUT`        | The source's worker did not acknowledge the observer in time (30 s by default).                           |
+| `OBSERVE_REJECTED`     | The source refused the observer. A source can also reject with its own code, documented by that source.   |
 
 ## Authorization
 
