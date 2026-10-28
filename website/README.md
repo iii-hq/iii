@@ -109,7 +109,7 @@ pnpm tsx scripts/generate-benchmarks.ts --snapshot --summary ../target/loadtest/
 
 The landing page's Contributors section lists everyone who has landed a commit in a repository the site showcases: `iii-hq/iii` and `iii-hq/workers`, the two GitHub links in `lib/site.ts` (`CONTRIBUTOR_REPOS` in `lib/contributors.ts`). `scripts/generate-contributors.ts` runs before `dev` and `build`. It reads GitHub's contributors API for each repository, merges the lists into one (one row per GitHub user id, commits summed, GitHub Apps and automation accounts such as `actions-user` removed) and writes `content/contributors/data.json`, which is gitignored and is what the section imports.
 
-When any repository cannot be read, the list comes from `content/contributors/snapshot.json`, which is committed, so a build never fails or ships an empty section. `CONTRIBUTORS_OFFLINE=1` skips the network, and `GITHUB_TOKEN`, when set, lifts the unauthenticated rate limit (60 requests an hour per address). To refresh the snapshot:
+When any repository cannot be read, the list comes from `content/contributors/snapshot.json`, which is committed, so a build never fails or ships an empty section. `CONTRIBUTORS_OFFLINE=1` skips the network, and `GITHUB_TOKEN`, when set, lifts the unauthenticated rate limit (60 requests an hour per address). The `Deploy Website` workflow (`.github/workflows/deploy-website.yml`) rebuilds and deploys the site every day at 03:00 UTC, so the live list is never more than a day old; it passes the workflow's `GITHUB_TOKEN` to the build. To refresh the snapshot:
 
 ```bash
 pnpm tsx scripts/generate-contributors.ts --snapshot
