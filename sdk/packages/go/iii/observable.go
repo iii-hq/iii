@@ -33,8 +33,8 @@ var errObserverRemoved = errors.New("iii: observer removed before it was accepte
 
 // errAcceptedInAddedHook is what Accepted returns when it is called with the ctx of the
 // observer's own added hook, which the ack waits for.
-var errAcceptedInAddedHook = errors.New("iii: Accepted called from the observer's own OnObserverAdded, " +
-	"which the ack waits for; wait on it from a goroutine the hook starts")
+var errAcceptedInAddedHook = errors.New("iii: Accepted called with the ctx of the observer's own OnObserverAdded, " +
+	"which the ack waits for; wait from a goroutine the hook starts, with a ctx of its own")
 
 // addingKey marks the ctx of an added hook with the observer it runs for.
 type addingKey struct{}
@@ -793,8 +793,8 @@ func (o *Observer) Matches(call *Call) bool {
 //		return nil
 //	})
 //
-// Called with the ctx of the observer's own added hook (or one derived from it), it
-// returns an error at once.
+// Called with the ctx of the observer's own added hook (or one derived from it), which
+// ends when the hook returns, it returns an error at once.
 func (o *Observer) Accepted(ctx context.Context) error {
 	if o.settled == nil {
 		return errors.New("iii: Accepted on an observer not handed out by the client")
