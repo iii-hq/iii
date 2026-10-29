@@ -17,7 +17,7 @@ import (
 )
 
 // Observable functions against the real engine: local dispatch, the reporter, the
-// observer hooks, Keyed delivery and calls through an observer.
+// observer hooks, matching by keys and calls through an observer.
 
 // stable drops what differs between two runs of the same invocation: ids and timings.
 func stable(env map[string]any) map[string]any {
@@ -203,8 +203,8 @@ func TestObserveActivationRace(t *testing.T) {
 
 // cronSource is an event source like the cron worker's: a private function that
 // returns the tick it is called with, observed with args { expression }. Its hooks are
-// set by id before it is registered; Keyed delivers each tick to the observers of its
-// expression.
+// set by id before it is registered, and its match hook gives each tick to the
+// observers of its expression, by keys.
 type cronSource struct {
 	fn     string
 	client *iii.Client
@@ -242,7 +242,7 @@ func newCronSource(t *testing.T) *cronSource {
 		o.removed = append(o.removed, obs.ID)
 		o.mu.Unlock()
 	})
-	o.client.OnObserverDeliverFor(o.fn, iii.Keyed(
+	o.client.OnObserverMatchFor(o.fn, iii.MatchKeys(
 		func(obs *iii.Observer) []string { return []string{expression(obs)} },
 		func(call *iii.Call) []string {
 			var tick struct {
@@ -315,7 +315,7 @@ func TestObserveSourceArgs(t *testing.T) {
 	}
 }
 
-// Keyed delivery: two observers with different args only receive the ticks of their
+// Matching by keys: two observers with different args only receive the ticks of their
 // own expression; a tick nobody is filed for reaches nobody.
 func TestObserveSourceRouting(t *testing.T) {
 	cron := newCronSource(t)
@@ -443,7 +443,7 @@ func TestObserveCallThroughAnObserver(t *testing.T) {
 		delete(routes, pathOf(obs))
 		mu.Unlock()
 	})
-	host.OnObserverDeliverFor(onRequest, func(ctx context.Context, call *iii.Call, observers []*iii.Observer, next iii.Next) (any, error) {
+	host.OnObserverDeliverFor(onRequest, func(ctx context.Context, call *iii.Call, _ []*iii.Observer) (any, error) {
 		var req struct {
 			Path string `json:"path"`
 		}

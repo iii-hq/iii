@@ -84,10 +84,7 @@ func keyIndexOf(c *Client, fn string) *keyIndex {
 	if f == nil {
 		return nil
 	}
-	if m := f.state.Load().match; m.byKeys() {
-		return m.index
-	}
-	return nil
+	return f.state.Load().index
 }
 
 // A predicate match hook narrows iii's delivery to the observers it accepts, on local
@@ -165,7 +162,7 @@ func TestKeyIndexUnderAddAndRemove(t *testing.T) {
 	addObserver(t, fe, "database::on-row-changed", observerInfo("users", "x::y", `{"db":"primary","table":"users"}`, ""))
 
 	idx := keyIndexOf(c, "database::on-row-changed")
-	if idx == nil || idx.size() != 3 {
+	if idx == nil || idx.filed != 3 {
 		t.Fatalf("index %v: want the three observers filed", idx)
 	}
 	observed := func(table, op string) bool { return ref.IsObservedFor(&Call{Input: rowChange(table, op)}) }
@@ -185,7 +182,7 @@ func TestKeyIndexUnderAddAndRemove(t *testing.T) {
 
 	fe.remove("database::on-row-changed", "all")
 	waitUntil(t, "all unfiled", func() bool { return !observed("products", "delete") })
-	if !observed("users", "delete") || !observed("orders", "insert") || idx.size() != 2 {
+	if !observed("users", "delete") || !observed("orders", "insert") || keyIndexOf(c, "database::on-row-changed").filed != 2 {
 		t.Error("removing one observer unfiled another")
 	}
 	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "database::on-row-changed", Data: rowChange("users", "update")}))
@@ -197,7 +194,7 @@ func TestKeyIndexUnderAddAndRemove(t *testing.T) {
 			obs.Reject("UNKNOWN_TABLE", "orders was dropped")
 		}
 	}
-	if observed("orders", "insert") || idx.size() != 1 {
+	if observed("orders", "insert") || keyIndexOf(c, "database::on-row-changed").filed != 1 {
 		t.Error("a rejected observer is still filed")
 	}
 	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "database::on-row-changed", Payload: rowChange("orders", "insert")}); err != nil {
@@ -233,7 +230,7 @@ func TestMatchHookSetWithActiveObserversRebuildsTheIndex(t *testing.T) {
 	if ref.OnObserverMatch(rowKeys()) != ref {
 		t.Fatal("OnObserverMatch returns the handle")
 	}
-	waitUntil(t, "the index built", func() bool { idx := keyIndexOf(c, "db::late"); return idx != nil && idx.size() == 2 })
+	waitUntil(t, "the index built", func() bool { idx := keyIndexOf(c, "db::late"); return idx != nil && idx.filed == 2 })
 	matched(rowChange("orders", "update"), "orders")
 	if ref.IsObservedFor(&Call{Input: rowChange("products", "update")}) {
 		t.Error("IsObservedFor true for a table nobody observes")
@@ -285,7 +282,7 @@ func TestKeysThatPanic(t *testing.T) {
 	}
 	waitUntil(t, "the removed hook of the resolved level", func() bool { _, r := l.snapshot(); return slices.Equal(r, []string{"no-table"}) })
 	addObserver(t, fe, "db::keys", observerInfo("orders", "x::y", `{"table":"orders"}`, ""))
-	if idx := keyIndexOf(c, "db::keys"); idx == nil || idx.size() != 1 || len(c.Observers("db::keys")) != 1 {
+	if idx := keyIndexOf(c, "db::keys"); idx == nil || idx.filed != 1 || len(c.Observers("db::keys")) != 1 {
 		t.Fatal("the rejected observer is active or filed")
 	}
 
@@ -317,7 +314,7 @@ func TestKeysThatPanic(t *testing.T) {
 	if late.ID != "bare" || late.Error.Code != "OBSERVE_REJECTED" {
 		t.Errorf("late rejection %+v", late)
 	}
-	waitUntil(t, "the index rebuilt", func() bool { idx := keyIndexOf(c, "db::rebuild"); return idx != nil && idx.size() == 1 })
+	waitUntil(t, "the index rebuilt", func() bool { idx := keyIndexOf(c, "db::rebuild"); return idx != nil && idx.filed == 1 })
 	if obs := c.Observers("db::rebuild"); len(obs) != 1 || obs[0].ID != "keyed" {
 		t.Errorf("active %v, want [keyed]", obs)
 	}
@@ -364,6 +361,87 @@ func TestDeliverHookReceivesTheMatchedObservers(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if n := len(fe.frames(MsgInvocationsObserved)); n != 0 {
 		t.Errorf("%d report frames for a function that delivers its calls itself", n)
+	}
+}
+
+// The observers a call is delivered to are those matched in the call state it started
+// with: an observer filed under the call's key while the handler runs is not given to
+// the deliver hook, and one removed meanwhile still is.
+func TestDeliverHookGetsTheObserversOfTheCallStart(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	got := make(chan []string, 1)
+	c.OnObserverMatchFor("db::snap", rowKeys())
+	c.OnObserverDeliverFor("db::snap", func(_ context.Context, call *Call, observers []*Observer) (any, error) {
+		var ids []string
+		for _, obs := range observers {
+			ids = append(ids, obs.ID)
+		}
+		got <- ids
+		return call.Output, nil
+	})
+	registerHost(t, c, "db::snap", func(_ context.Context, data json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return data, nil
+	})
+	orders := `{"db":"primary","table":"orders"}`
+	addObserver(t, fe, "db::snap", observerInfo("staying", "x::y", orders, ""))
+	addObserver(t, fe, "db::snap", observerInfo("leaving", "x::y", orders, ""))
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Call(context.Background(), CallRequest{FunctionID: "db::snap", Payload: rowChange("orders", "insert")})
+		done <- err
+	}()
+	<-entered
+	addObserver(t, fe, "db::snap", observerInfo("joining", "x::y", orders, ""))
+	fe.remove("db::snap", "leaving")
+	waitUntil(t, "leaving removed", func() bool { return len(c.Observers("db::snap")) == 2 })
+	close(release)
+	if ids := <-got; !slices.Equal(ids, []string{"staying", "leaving"}) {
+		t.Errorf("the hook got %v, want [staying leaving]", ids)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Filing and unfiling make a new key index and leave the one a call holds as it was.
+func TestKeyIndexIsCopyOnWrite(t *testing.T) {
+	a, b := &Observer{ID: "a"}, &Observer{ID: "b"}
+	ids := func(list []*Observer) []string {
+		var out []string
+		for _, obs := range list {
+			out = append(out, obs.ID)
+		}
+		return out
+	}
+	empty := &keyIndex{}
+	one := empty.with(a, []string{"orders|insert", "orders|*"})
+	two := one.with(b, []string{"orders|*", "users|*"})
+	back := two.without(a, []string{"orders|insert", "orders|*"})
+	for _, tc := range []struct {
+		name  string
+		index *keyIndex
+		keys  []string
+		want  []string
+		filed int
+	}{
+		{"empty", empty, []string{"orders|*"}, nil, 0},
+		{"one", one, []string{"orders|insert", "orders|*", "users|*"}, []string{"a"}, 1},
+		{"two", two, []string{"users|*", "orders|insert", "orders|*"}, []string{"b", "a"}, 2},
+		{"back", back, []string{"orders|insert", "orders|*", "users|*"}, []string{"b"}, 1},
+	} {
+		if got := ids(tc.index.lookup(tc.keys)); !slices.Equal(got, tc.want) || tc.index.filed != tc.filed {
+			t.Errorf("%s: lookup %v (want %v), %d filed (want %d)", tc.name, got, tc.want, tc.index.filed, tc.filed)
+		}
+	}
+	if back.has([]string{"orders|insert"}) || !back.has([]string{"nothing", "users|*"}) {
+		t.Error("has")
+	}
+	if back.without(a, []string{"orders|insert"}) != back || back.with(a, nil) != back {
+		t.Error("unfiling an observer that is not filed, or filing one without keys, changed the index")
 	}
 }
 
@@ -487,8 +565,8 @@ func TestRoutedErrorAnswerCarriesObserved(t *testing.T) {
 	}
 }
 
-// A routed call of a function with a deliver hook is answered with the hook's value and
-// no observed (invocationresult-hook-result.json), and nothing else is sent for it.
+// A routed call of a function with a deliver hook is answered with the hook's value, its
+// trace context echoed and no observed, and nothing else is sent for it.
 func TestRoutedDeliverHookAnswer(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -505,18 +583,18 @@ func TestRoutedDeliverHookAnswer(t *testing.T) {
 		return json.RawMessage(`{"order_id":"ord_1004","sku":"A-1","qty":2,"total":1250,"warehouse":"ams-2"}`), nil
 	})
 	addObserver(t, fe, "orders::submit", observerInfo("c6ccda45-4a35-461a-a9c4-a318eec7c36a", "x::y", "", ""))
-	var answer InvocationResultMessage
-	_ = json.Unmarshal(observeFixture(t, "invocationresult-hook-result.json"), &answer)
+	tp := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	mark := fe.mark()
-	fe.invoke(InvokeFunctionMessage{
-		InvocationID: &answer.InvocationID,
-		FunctionID:   "orders::submit",
-		Data:         json.RawMessage(`{"sku":"A-1","qty":2,"_caller_worker_id":"2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f"}`),
-		Traceparent:  answer.Traceparent,
-		Caller:       &Caller{WorkerID: "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f", WorkerName: "checkout", FunctionID: "checkout::confirm", InvocationID: "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"},
-	})
-	got, _ := MarshalMessage(fe.waitResult(answer.InvocationID))
-	assertJSONEqual(t, "invocationresult-hook-result.json", got, observeFixture(t, "invocationresult-hook-result.json"))
+	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{
+		FunctionID:  "orders::submit",
+		Data:        json.RawMessage(`{"sku":"A-1","qty":2,"_caller_worker_id":"2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f"}`),
+		Traceparent: &tp,
+		Caller:      &Caller{WorkerID: "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f", WorkerName: "checkout", FunctionID: "checkout::confirm", InvocationID: "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"},
+	}))
+	if string(res.Result) != `{"order_id":"ord_1004","status":"accepted"}` || res.Error != nil || res.Observed != nil ||
+		res.Traceparent == nil || *res.Traceparent != tp {
+		t.Errorf("answer %+v", res)
+	}
 	time.Sleep(20 * time.Millisecond)
 	if n := fe.countFrames(mark, MsgInvocationResult); n != 0 {
 		t.Errorf("%d frames besides the answer", n)

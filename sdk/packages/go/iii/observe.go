@@ -197,7 +197,7 @@ func (c *Client) Observers(functionID string) []*Observer {
 // RegisterFunctionOptions.LocalDispatch did not opt out.
 func (c *Client) LocalDispatchActive(functionID string) bool {
 	f := c.functionObservers(functionID)
-	return f != nil && f.dispatch.Load().enabled
+	return f != nil && f.state.Load().local
 }
 
 func (c *Client) functionObservers(functionID string) *functionObservers {
@@ -366,7 +366,9 @@ func (c *Client) queueUnobserveLocked(id string, epoch uint64) {
 
 // onWorkerRegistered: the engine said what it supports on this connection. With
 // observe.v2 the functions that need it, held until WorkerRegistered, are registered;
-// without it they stay unregistered (UNSUPPORTED, logged once each). With observe.v1
+// without it they stay unregistered (UNSUPPORTED, logged once each) and are released:
+// no local dispatch, their observers removed through the removed hooks, their buffered
+// reports dropped (INACTIVE). With observe.v1
 // the observers are replayed (after the functions) and held reports flushed; without
 // it Observe fails with UNSUPPORTED. Hook ids this worker has not registered are
 // reported once each, after a grace period (checkHookIDsLater), which catches a
@@ -392,22 +394,26 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 	unobserve := c.pendingUnobserve
 	c.pendingUnobserve = nil
 	var held []*RegisterFunctionMessage
-	var unsupported []string
+	var unsupported []registeredFunction
+	var warn []string
 	for id, fn := range c.functions {
 		if !c.needsV2Locked(fn) {
 			continue
 		}
 		if v2 {
 			held = append(held, fn.message)
-		} else if c.markUnsupportedLocked(fn) {
-			unsupported = append(unsupported, id)
+			continue
+		}
+		unsupported = append(unsupported, fn)
+		if c.markUnsupportedLocked(fn) {
+			warn = append(warn, id)
 		}
 	}
 	c.checkHookIDsLater(epoch)
 	c.mu.Unlock()
 	slices.SortFunc(handles, func(a, b *ObserverHandle) int { return cmp.Compare(a.seq, b.seq) })
 	slices.SortFunc(held, func(a, b *RegisterFunctionMessage) int { return cmp.Compare(a.ID, b.ID) })
-	slices.Sort(unsupported)
+	slices.Sort(warn)
 
 	// The held registrations go through the observe pump, on this connection only and
 	// ahead of the observers that may name them as targets.
@@ -416,8 +422,12 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 			c.queueObserveFrameLocked(observeFrame{data: frame, epoch: epoch})
 		}
 	}
-	for _, id := range unsupported {
+	for _, id := range warn {
 		logUnsupported(id)
+	}
+	for _, fn := range unsupported {
+		fn.observe.release()
+		c.reporter.discardFunction(fn.message.ID)
 	}
 	if supported {
 		for _, id := range unobserve {

@@ -17,11 +17,19 @@ import (
 // local call in one report item, a routed call in its answer's observed list.
 
 // callState is what a call of a function reads when it starts, swapped as one pointer:
-// the active observers and the hooks that deliver to them.
+// whether Call runs the function in-process, the active observers and the hooks that
+// deliver to them. A call loads it once.
 type callState struct {
+	// local: Call may run the function in-process (the engine confirmed it with
+	// local_dispatch, and RegisterFunctionOptions.LocalDispatch allows it), in
+	// namespace, the one the engine registered it in.
+	local     bool
+	namespace string
 	observers []*Observer
 	deliver   DeliverHook
-	match     *matchState
+	match     *MatchHook
+	// index is the active observers by key, for a match hook by keys; nil otherwise.
+	index *keyIndex
 }
 
 // delivering reports whether a call is delivered at all: it has observers, or a deliver

@@ -533,6 +533,134 @@ func TestUnregisteredHookIDIsReportedOnce(t *testing.T) {
 	}
 }
 
+// The hook-id check runs a grace period after the connection is registered, and after a
+// hook is set for an id this worker has not registered: an id registered within it is
+// not reported (hooks set by id, then RegisterFunction while the worker connects in the
+// background), and an id first set after WorkerRegistered and never registered is
+// reported once.
+func TestHookIDCheckWaitsForTheRegistration(t *testing.T) {
+	logs := captureLog(t)
+	fe := newFakeEngine(t)
+	c := fe.newClient()
+	c.hookIDDelay = 100 * time.Millisecond
+	c.OnObserverAddedFor("late::fn", func(context.Context, *Observer) error { return nil })
+	fe.connect(c)
+	if _, err := c.RegisterFunction("late::fn", echoHandler); err != nil {
+		t.Fatal(err)
+	}
+	c.OnObserverRemovedFor("never::fn", func(context.Context, *Observer) {})
+	const never = `observer hooks are set for "never::fn", which this worker has not registered`
+	waitUntil(t, "the warning for never::fn", func() bool { return logs.count(never) == 1 })
+	time.Sleep(150 * time.Millisecond)
+	if logs.count(never) != 1 || logs.count(`"late::fn", which`) != 0 {
+		t.Errorf("logs:\n%s", logs.String())
+	}
+}
+
+// The hooks of one function id run one at a time across its registrations: the removed
+// hook of a registration that Unregister released finishes before the added hook of
+// the id's next registration starts.
+func TestHooksOfAnIDRunOneAtATimeAcrossRegistrations(t *testing.T) {
+	fe := newFakeEngine(t)
+	fe.setObservers("feed::fn", 1, observerInfo("o1", "x::y", `{"table":"orders"}`, ""))
+	c := fe.client()
+	var running, most atomic.Int32
+	var l hookLog
+	run := func(event string, d time.Duration) {
+		n := running.Add(1)
+		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
+		}
+		time.Sleep(d)
+		l.event(event)
+		running.Add(-1)
+	}
+	c.OnObserverAddedFor("feed::fn", func(_ context.Context, obs *Observer) error {
+		run("watch:"+obs.ID, 150*time.Millisecond)
+		return nil
+	})
+	c.OnObserverRemovedFor("feed::fn", func(_ context.Context, obs *Observer) { run("unwatch:"+obs.ID, 400*time.Millisecond) })
+	ref := registerHost(t, c, "feed::fn", echoHandler)
+	fe.waitAck("feed::fn", "o1", 1)
+	if err := ref.Unregister(); err != nil {
+		t.Fatal(err)
+	}
+	registerHost(t, c, "feed::fn", echoHandler)
+	waitUntil(t, "watched again", func() bool { return len(l.eventList()) == 3 })
+	if got, want := l.eventList(), []string{"watch:o1", "unwatch:o1", "watch:o1"}; !slices.Equal(got, want) || most.Load() != 1 {
+		t.Errorf("hooks %v (want %v), %d of them ran at once", got, want, most.Load())
+	}
+}
+
+// On a reconnect to an engine without observe.v2, a function that needs it stays
+// unregistered and is released: no local dispatch, its observers removed through the
+// removed hooks, no report held for it. Back on an engine with observe.v2 it registers
+// again and its observers are added again.
+func TestUnsupportedOnReconnectReleasesTheFunction(t *testing.T) {
+	fe := newFakeEngine(t)
+	fe.setObservers("src::fn", 1, observerInfo("o1", "x::y", "", ""))
+	c := fe.client()
+	var l hookLog
+	recordHooks(c, "src::fn", &l)
+	registerHost(t, c, "src::fn", Identity, RegisterFunctionOptions{Private: true})
+	fe.waitAck("src::fn", "o1", 1)
+	if !c.LocalDispatchActive("src::fn") || !c.IsObserved("src::fn") {
+		t.Fatal("not confirmed on the observe.v2 engine")
+	}
+
+	fe.v1Engine()
+	fe.reconnect(c)
+	waitUntil(t, "the removed hook", func() bool { _, r := l.snapshot(); return len(r) == 1 })
+	if c.LocalDispatchActive("src::fn") || c.IsObserved("src::fn") || len(c.Observers("src::fn")) != 0 {
+		t.Error("the function kept the previous connection's state")
+	}
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "src::fn", Action: VoidAction()}); err != nil {
+		t.Fatal(err)
+	}
+	fe.waitFrames(MsgInvokeFunction, 1, func(d *DecodedMessage) bool { return d.InvokeFunction.FunctionID == "src::fn" })
+	if n := c.reporter.size(); n != 0 {
+		t.Errorf("%d report items held for an unregistered function", n)
+	}
+
+	fe.setFeatures(FeatureObserveV1, FeatureObserveV2, FeatureLocalDispatchV1)
+	fe.reconnect(c)
+	waitUntil(t, "added again", func() bool { a, _ := l.snapshot(); return len(a) == 2 })
+	waitUntil(t, "local dispatch again", func() bool { return c.LocalDispatchActive("src::fn") })
+	if a, r := l.snapshot(); !slices.Equal(a, []string{"o1", "o1"}) || !slices.Equal(r, []string{"o1"}) {
+		t.Errorf("added %v removed %v", a, r)
+	}
+}
+
+// Accepted called with the ctx of the observer's own added hook, which the ack waits
+// for, returns an error at once; a goroutine the hook starts waits on it and then calls
+// through the observer.
+func TestAcceptedInsideTheAddedHook(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	inHook := make(chan error, 2)
+	accepted := make(chan error, 1)
+	c.OnObserverAddedFor("prices::on-change", func(ctx context.Context, obs *Observer) error {
+		inHook <- obs.Accepted(ctx)
+		derived, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		inHook <- obs.Accepted(derived)
+		go func() { accepted <- obs.Accepted(context.Background()) }()
+		return nil
+	})
+	registerHost(t, c, "prices::on-change", Identity, RegisterFunctionOptions{Private: true})
+	rev := fe.add("prices::on-change", observerInfo("o1", "ui::price", "", ""))
+	for range 2 {
+		if err := <-inHook; !errors.Is(err, errAcceptedInAddedHook) {
+			t.Errorf("Accepted with the hook's ctx: %v", err)
+		}
+	}
+	if err := <-accepted; err != nil {
+		t.Errorf("Accepted from the hook's goroutine: %v", err)
+	}
+	if a := fe.waitAck("prices::on-change", "o1", rev); a.Error != nil {
+		t.Errorf("ack %+v", a.Error)
+	}
+}
+
 // Accepted resolves once the SDK acked the observer, and a call through the observer
 // made after it goes out behind the ack. It fails with the rejection for a rejected
 // observer, and waits while the added hooks run.

@@ -242,7 +242,7 @@ func TestFunctionRefUnregisterClearsObserveState(t *testing.T) {
 	if st := c.reportStatus("obs::fn", c.currentEpoch()); st != reportGone {
 		t.Errorf("report status = %v, want reportGone (buffered reports dropped)", st)
 	}
-	if _, ok := c.localTarget("obs::fn", ""); ok {
+	if _, _, ok := c.localTarget("obs::fn", ""); ok {
 		t.Error("unregistered function is still a local dispatch target")
 	}
 	c.mu.Lock()

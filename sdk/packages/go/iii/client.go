@@ -113,6 +113,10 @@ type Client struct {
 	hookGen       uint64
 	// hookIDWarned: the hook ids already reported as not registered by this worker.
 	hookIDWarned map[string]bool
+	// hookQueues are the observer hooks waiting to run, by function id
+	// (enqueueHook). Guarded by hookQueueMu.
+	hookQueueMu sync.Mutex
+	hookQueues  map[string]*hookQueue
 
 	// pending maps an outstanding await-style invocation_id to the channel its result
 	// will be delivered on. Guarded by mu.
@@ -213,7 +217,7 @@ type Handler func(ctx context.Context, data json.RawMessage) (any, error)
 // ArgsFormat, Private and Observable false need an engine with observe.v2: against an
 // older one the function stays unregistered, and the SDK logs UNSUPPORTED once. What
 // the worker does when the function is observed is set with hooks
-// ([FunctionRef.OnObserverAdded] and its siblings), not options.
+// ([FunctionRef.OnObserverAdded] and its siblings).
 type RegisterFunctionOptions struct {
 	// Metadata is arbitrary JSON attached to the function registration. It is stored
 	// with the function and is distinct from the per-invocation metadata passed to
@@ -381,6 +385,7 @@ func New(url string, opts ...Option) *Client {
 		functions:         map[string]registeredFunction{},
 		functionHooks:     map[string]*observerHooks{},
 		hookIDWarned:      map[string]bool{},
+		hookQueues:        map[string]*hookQueue{},
 		pending:           map[uuid.UUID]chan invocationOutcome{},
 		shutdown:          make(chan struct{}),
 		connected:         make(chan struct{}),
@@ -820,8 +825,8 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, er
 	namespace := invocationNamespace(req.FunctionID, req.Namespace, c.namespace)
 	if req.Dispatch != DispatchRemote && (req.Action == nil || req.Action.Type != "enqueue") {
 		if parent := invocationFrom(ctx); parent == nil || parent.localDepth < maxLocalDepth {
-			if fn, ok := c.localTarget(req.FunctionID, namespace); ok {
-				return c.invokeLocal(ctx, fn, req)
+			if fn, st, ok := c.localTarget(req.FunctionID, namespace); ok {
+				return c.invokeLocal(ctx, fn, st, req)
 			}
 		}
 	}
@@ -1737,7 +1742,7 @@ func outcomeOf(value any, err error, copyRaw bool) outcome {
 
 // runInvocation runs handler h and then deliver, with the handler's outcome, inside the
 // invocation's span; deliver's outcome is the call's. A handler panic is recovered into
-// an error, so a caller gets an InvocationResult.error, not a timeout. copyRaw copies a
+// an error, which the caller gets as the InvocationResult's error. copyRaw copies a
 // json.RawMessage the handler returns (any other value is marshaled into a buffer of its
 // own).
 func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, copyRaw bool, deliver func(ctx context.Context, handler outcome) outcome) outcome {

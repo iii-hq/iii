@@ -15,29 +15,31 @@ import (
 // here as a routed call is. Nobody observing it means zero frames; matched observers
 // mean one report item.
 
-// localTarget returns the function Call may run in-process: registered here, the
-// engine confirmed it with local_dispatch, the local-dispatch option is on, and the
-// resolved namespace is the one the engine registered it in (empty: this worker's).
-func (c *Client) localTarget(functionID, namespace string) (registeredFunction, bool) {
+// localTarget returns the function Call may run in-process, with the call state it
+// starts with: registered here, the engine confirmed it with local_dispatch, the
+// local-dispatch option is on, and the resolved namespace is the one the engine
+// registered it in (empty: this worker's).
+func (c *Client) localTarget(functionID, namespace string) (registeredFunction, *callState, bool) {
 	c.mu.Lock()
 	fn, ok := c.functions[functionID]
 	c.mu.Unlock()
 	if !ok || fn.observe == nil {
-		return registeredFunction{}, false
+		return registeredFunction{}, nil, false
 	}
-	st := fn.observe.dispatch.Load()
-	if !st.enabled || (namespace != "" && namespace != st.namespace) {
-		return registeredFunction{}, false
+	st := fn.observe.state.Load()
+	if !st.local || (namespace != "" && namespace != st.namespace) {
+		return registeredFunction{}, nil, false
 	}
-	return fn, true
+	return fn, st, true
 }
 
 // invokeLocal runs the handler in-process, inside a new invocation context, then
-// delivers the call. The handler gets a copy of the payload and the caller its own
-// encoding of the result (value semantics, as over the wire), except for a private
-// function, whose payload and result pass by reference. Timeouts and errors have the
-// remote path's shape: ErrTimeout, and an *InvocationError carrying the error body.
-func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req CallRequest) (json.RawMessage, error) {
+// delivers the call with st, the call state it started with. The handler gets a copy of
+// the payload and the caller its own encoding of the result (value semantics, as over
+// the wire), except for a private function, whose payload and result pass by
+// reference. Timeouts and errors have the remote path's shape: ErrTimeout, and an
+// *InvocationError carrying the error body.
+func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest) (json.RawMessage, error) {
 	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -79,7 +81,6 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Cal
 	// Delivered to the observers active when the call started, by the hooks set then:
 	// an unobserved call without a deliver hook is never reported, and its input is not
 	// copied for it.
-	st := f.state.Load()
 	delivering := st.delivering()
 	input := copyOf(data)
 	// what observers see is the payload as the caller passed it
