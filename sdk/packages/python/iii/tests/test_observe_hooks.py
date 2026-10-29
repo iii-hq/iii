@@ -1,12 +1,14 @@
 """Observer hooks (``on_observer_added`` / ``on_observer_removed``, worker-wide
-and per function) and the observer lifecycle in the worker that hosts the
-function, against a fake engine."""
+and per function; how ``on_observer_match`` and ``on_observer_deliver`` are
+set) and the observer lifecycle in the worker that hosts the function, against
+a fake engine."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import threading
+import time
 from typing import Any
 
 import pytest
@@ -22,7 +24,7 @@ from observe_fake_engine import (
     wait_until,
 )
 
-from iii import Observer, ObserveRejection
+from iii import MatchKeys, Observer, ObserveRejection
 from iii.function_ref import FunctionRef
 
 
@@ -44,31 +46,67 @@ def test_hook_methods_work_as_decorators_and_plain_calls_and_return_the_hook(eng
 
     def fn_removed(obs: Observer) -> None: ...
 
-    def deliver(call: Any, observers: Any, next: Any) -> Any:
-        return next(call, observers)
+    def deliver(call: Any, observers: Any) -> Any:
+        return call.output
+
+    @client.on_observer_match("fn::a")
+    def wants(obs: Observer, call: Any) -> bool:
+        return True
+
+    def by_key(obs: Observer) -> str:
+        return obs.id
+
+    def call_key(call: Any) -> str:
+        return str(call.input)
 
     assert client.on_observer_removed("fn::a", fn_removed) is fn_removed
     assert client.on_observer_removed(fn_removed) is fn_removed
     assert client.on_observer_deliver("fn::a", deliver) is deliver
     assert client.on_observer_deliver("fn::b")(deliver) is deliver
+    keys = client.on_observer_match("fn::b", observer=by_key, call=call_key)
+    assert keys == MatchKeys(observer=by_key, call=call_key)
+    assert client.on_observer_match("fn::c", keys) is keys
     # the decorated names are the hooks, not anything else
-    assert callable(worker_added) and asyncio.iscoroutinefunction(fn_added)
+    assert callable(worker_added) and asyncio.iscoroutinefunction(fn_added) and callable(wants)
     assert client._worker_added is worker_added and client._added_hooks == {"fn::a": fn_added}
     assert client._removed_hooks == {"fn::a": fn_removed} and client._worker_removed is fn_removed
     assert client._deliver_hooks == {"fn::a": deliver, "fn::b": deliver}
+    assert client._match_hooks == {"fn::a": wants, "fn::b": keys, "fn::c": keys}
 
     # None removes
     assert client.on_observer_added(None) is None
     assert client.on_observer_added("fn::a", None) is None
     assert client.on_observer_removed("fn::a", None) is None
     assert client.on_observer_deliver("fn::b", None) is None
+    assert client.on_observer_match("fn::b", None) is None
     assert (client._worker_added, client._added_hooks, client._removed_hooks) == (None, {}, {})
     assert client._deliver_hooks == {"fn::a": deliver}
+    assert client._match_hooks == {"fn::a": wants, "fn::c": keys}
 
     with pytest.raises(TypeError):
         client.on_observer_added("fn::a", "not callable")
     with pytest.raises(TypeError):
         client.on_observer_added(worker_added, worker_added)
+
+
+def test_on_observer_match_takes_a_sync_predicate_or_both_key_functions(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+
+    async def async_predicate(obs: Observer, call: Any) -> bool:
+        return True
+
+    for bad in (
+        lambda: client.on_observer_match("fn::a", async_predicate),
+        lambda: client.on_observer_match("fn::a", "not callable"),
+        lambda: client.on_observer_match("fn::a", observer=lambda obs: "k"),
+        lambda: client.on_observer_match("fn::a", call=lambda call: "k"),
+        lambda: client.on_observer_match("fn::a", lambda obs, call: True, observer=lambda obs: "k", call=str),
+        lambda: client.on_observer_match("fn::a", observer=lambda obs: "k", call=async_predicate),
+        lambda: client.on_observer_match("fn::a", MatchKeys(observer="k", call=str)),  # type: ignore[arg-type]
+    ):
+        with pytest.raises(TypeError):
+            bad()
+    assert client._match_hooks == {}
 
 
 def test_a_function_ref_sets_the_hooks_of_its_id(engine: FakeEngine, connect: Any) -> None:
@@ -82,12 +120,22 @@ def test_a_function_ref_sets_the_hooks_of_its_id(engine: FakeEngine, connect: An
     @ref.on_observer_removed
     def removed(obs: Observer) -> None: ...
 
-    def deliver(call: Any, observers: Any, next: Any) -> Any:
-        return next(call, observers)
+    @ref.on_observer_match
+    def wants(obs: Observer, call: Any) -> bool:
+        return True
+
+    def deliver(call: Any, observers: Any) -> Any:
+        return call.output
 
     assert ref.on_observer_deliver(deliver) is deliver
     assert (client._added_hooks["ref::fn"], client._removed_hooks["ref::fn"]) == (added, removed)
     assert client._deliver_hooks["ref::fn"] is deliver
+    assert client._match_hooks["ref::fn"] is wants
+    keys = ref.on_observer_match(observer=lambda obs: obs.id, call=lambda call: "k")
+    assert isinstance(keys, MatchKeys) and client._match_hooks["ref::fn"] is keys
+    with pytest.raises(TypeError):
+        ref.on_observer_match(wants, observer=lambda obs: obs.id, call=lambda call: "k")
+    assert ref.on_observer_match(None) is None and "ref::fn" not in client._match_hooks
     assert ref.on_observer_added(None) is None and "ref::fn" not in client._added_hooks
     assert ref.observers() == [] and ref.is_observed() is False
 
@@ -115,6 +163,31 @@ def test_hooks_by_id_stay_across_unregister_and_a_later_registration(engine: Fak
     engine.deliver(function_registered("again::fn", [observer_info("o", "t")]))
     engine.wait_for(lambda: acks(engine), what="the ack")
     assert added == ["o"]
+
+
+def test_hooks_of_one_id_run_one_at_a_time_across_unregister_and_a_later_registration(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    log: list[str] = []
+
+    async def on_removed(obs: Observer) -> None:
+        log.append(f"remove start {obs.id}")
+        await asyncio.sleep(0.2)
+        log.append(f"remove end {obs.id}")
+
+    client.on_observer_added("route::fn", lambda obs: log.append(f"add {obs.id}"))
+    client.on_observer_removed("route::fn", on_removed)
+    ref = client.register_function("route::fn", lambda d: d)
+    engine.deliver(function_registered("route::fn", [observer_info("o", "t")], revision=1))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    ref.unregister()
+    client.register_function("route::fn", lambda d: d)
+    wait_until(lambda: "remove start o" in log, what="the removal")
+    engine.deliver(function_registered("route::fn", [observer_info("o", "t")], revision=1))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="the second ack")
+    # the new registration's add waits for the old registration's removal of the same observer
+    assert log == ["add o", "remove start o", "remove end o", "add o"]
 
 
 # ── accepted: hook order, then the ack ─────────────────────────────────────
@@ -496,20 +569,41 @@ def test_a_workers_hook_set_late_catches_up_every_function(engine: FakeEngine, c
     assert sorted(retained) == ["x1", "y1", "y2"]
 
 
-def test_unregistered_hook_ids_are_warned_once_the_connection_is_registered(
+def _unregistered_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "has not registered" in r.getMessage()]
+
+
+def test_hook_ids_still_unregistered_after_the_grace_period_are_warned_once(
     engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     client = connect(engine)
-    client.on_observer_added("typo::fn", lambda obs: None)
-    client.on_observer_deliver("orders::create", lambda call, observers, next: next(call, observers))
-    client.register_function("orders::create", lambda d: d)
+    client._hook_id_check_delay_s = 0.05
     with caplog.at_level(logging.WARNING, logger="iii.iii"):
+        # set after the connection is registered: checked once the grace period passes
+        client.on_observer_added("typo::fn", lambda obs: None)
+        client.on_observer_match("typo::match", lambda obs, call: True)
+        client.on_observer_deliver("orders::create", lambda call, observers: call.output)
+        client.register_function("orders::create", lambda d: d)
+        wait_until(lambda: len(_unregistered_warnings(caplog)) == 2, what="the warnings")
         engine.drop()
         wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
-        engine.drop()
-        wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the reconnect")
-    warned = [r.getMessage() for r in caplog.records if "has not registered" in r.getMessage()]
-    assert len(warned) == 1 and "typo::fn" in warned[0]
+        time.sleep(0.15)  # past the next check
+    warned = sorted(_unregistered_warnings(caplog))
+    assert len(warned) == 2 and "typo::fn" in warned[0] and "typo::match" in warned[1]
+
+
+def test_a_hook_set_by_id_before_its_registration_is_not_warned_when_workerregistered_lands_between(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = connect(engine)
+    client._hook_id_check_delay_s = 0.2
+    with caplog.at_level(logging.WARNING, logger="iii.iii"):
+        client.on_observer_added("later::fn", lambda obs: None)
+        engine.deliver({"type": "workerregistered", "worker_id": engine.worker_id, "features": engine.features})
+        settle(client, engine)
+        client.register_function("later::fn", lambda d: d)
+        time.sleep(0.4)  # past the check
+    assert _unregistered_warnings(caplog) == []
 
 
 # ── the engine's set: diff, revisions ──────────────────────────────────────

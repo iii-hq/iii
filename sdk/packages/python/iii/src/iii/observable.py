@@ -1,14 +1,15 @@
 """The host side of observe: per-function observer state, the observer hooks
 (``on_observer_added`` / ``on_observer_removed`` at both levels), the
-:class:`Observer` handed to them, and each call's delivery (``next``,
-``on_observer_deliver``, keyed delivery).
+:class:`Observer` handed to them, matching (``on_observer_match``, the key
+index) and each call's delivery (iii's, or ``on_observer_deliver``).
 
 Threading: the engine's messages are handled on the SDK loop, and the hooks
-of one function run there one at a time, in the order the engine announced
+of one function id run there one at a time, in the order the engine announced
 the observers (sync hooks on a thread of their own). ``Observer.matches`` /
 ``reject`` / ``accepted``, ``observers()`` and ``is_observed()`` may be called
-from any thread: the active set is an immutable tuple swapped under a lock,
-and so is the keyed index.
+from any thread: the active observers, the match hook and the key index are
+one immutable :class:`ActiveSet`, swapped under a lock, and a call reads it
+once, when it starts.
 """
 
 from __future__ import annotations
@@ -18,16 +19,15 @@ import inspect
 import json
 import logging
 import threading
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Union
+from typing import Any, Literal, Protocol, Union, cast
 
-from .errors import InvocationError, ObserveRejection
+from .errors import ObserveRejection
 from .filter import CompiledFilter, compile_filter
 from .iii_types import ObserverInfoWire
 from .invocation_context import run_in_thread
-from .keyed import Keyed
-from .observe_types import AddedHook, Call, DeliverHook, RemovedHook
+from .observe_types import AddedHook, Call, DeliverHook, MatchHook, MatchKeys, MatchPredicate, RemovedHook
 from .observe_wire import report_caller
 from .reporter import Reporter, ReportInit
 
@@ -67,6 +67,13 @@ class ObserveHost(Protocol):
 
     def removed_hook(self, function_id: str, level: Level) -> RemovedHook | None:
         """The ``on_observer_removed`` set at ``level`` for ``function_id``."""
+
+    def match_hook(self, function_id: str) -> MatchHook | None:
+        """The ``on_observer_match`` set for ``function_id``."""
+
+    def hook_queue(self, function_id: str) -> HookQueue:
+        """The queue the observer hooks of ``function_id`` run in, shared by
+        every registration of the id."""
 
     def invoke_hook(self, hook: AddedHook | RemovedHook, obs: Observer) -> Awaitable[None]:
         """Runs a sync or async hook on the SDK loop (a sync one on its own thread)."""
@@ -122,6 +129,20 @@ def _rejection_of(error: BaseException) -> tuple[str, str]:
     return "OBSERVE_REJECTED", str(error) or type(error).__name__
 
 
+def match_keys(keys: Any, what: str) -> tuple[str, ...]:
+    """What a key function of ``on_observer_match`` returned, as distinct
+    keys in order. Raises ``TypeError`` for anything but a string or strings."""
+    if isinstance(keys, str):
+        return (keys,)
+    if isinstance(keys, (bytes, bytearray, Mapping)) or not isinstance(keys, Iterable):
+        raise TypeError(f"on_observer_match: the {what} key function must return a string or strings")
+    out = tuple(dict.fromkeys(keys))
+    for key in out:
+        if not isinstance(key, str):
+            raise TypeError(f"on_observer_match: the {what} key function returned a {type(key).__name__} key")
+    return out
+
+
 def call_doc(call: CallLike) -> dict[str, Any]:
     """What filters read of a call: ``{input, output | error, caller?, metadata?}``.
     A partial call carries the parts it has."""
@@ -169,7 +190,7 @@ class Observer:
         id: The observer's id.
         function_id: The observed function (one this worker hosts).
         args: The observer's args, validated against ``args_format`` by the engine.
-        filters: The observer's filters, normalized; ``next`` and
+        filters: The observer's filters, normalized; iii's delivery and
             :meth:`matches` apply them.
         target: The target function id.
         capture: What travels to the target when iii delivers.
@@ -194,7 +215,7 @@ class Observer:
         self._accepted = False
         #: The levels whose ``on_observer_added`` resolved for it.
         self._setup: set[str] = set()
-        #: The keys it is filed under on a keyed function.
+        #: The keys it is filed under on a function matched by keys.
         self._keys: tuple[str, ...] = ()
         #: A rejection (late, or while its hooks ran), re-acked until the engine removes the observer.
         self._rejection: dict[str, str] | None = None
@@ -215,7 +236,7 @@ class Observer:
 
     def matches(self, call: CallLike) -> bool:
         """Whether ``call`` passes this observer's ``on`` and filters: what
-        ``next`` checks, for a deliver hook that calls targets itself.
+        iii's delivery checks, for a deliver hook that calls targets itself.
 
         ``call`` is a :class:`Call` or a partial one (``{"input": ...}``);
         ``on`` is checked when it has a ``status``.
@@ -316,6 +337,72 @@ class Observer:
         return f"Observer(id={self.id!r}, function_id={self.function_id!r}, target={self.target!r}, args={self.args!r})"
 
 
+@dataclass(frozen=True, eq=False)
+class ActiveSet:
+    """A function's active observers and how a call is matched to them, as
+    one immutable snapshot: a call reads it once, when it starts, and every
+    change swaps in a new one (copy-on-write)."""
+
+    observers: tuple[Observer, ...] = ()
+    #: The ``on_observer_match`` this snapshot matches with.
+    match: MatchHook | None = None
+    #: Matching by keys: key → the observers filed under it.
+    index: Mapping[str, tuple[Observer, ...]] | None = None
+
+    def adding(self, obs: Observer) -> ActiveSet:
+        """This set with ``obs``, filed under its keys."""
+        index = self.index
+        if index is not None and obs._keys:
+            filed = dict(index)
+            for key in obs._keys:
+                filed[key] = (*filed.get(key, ()), obs)
+            index = filed
+        return ActiveSet((*self.observers, obs), self.match, index)
+
+    def removing(self, obs: Observer) -> ActiveSet:
+        """This set without ``obs``, unfiled from its keys."""
+        index = self.index
+        if index is not None and obs._keys:
+            filed = dict(index)
+            for key in obs._keys:
+                rest = tuple(o for o in filed.get(key, ()) if o is not obs)
+                if rest:
+                    filed[key] = rest
+                else:
+                    filed.pop(key, None)
+            index = filed
+        return ActiveSet(tuple(o for o in self.observers if o is not obs), self.match, index)
+
+
+class HookQueue:
+    """The observer hooks of one function id, run one at a time in the order
+    they were queued, on the SDK loop. Every registration of the id shares it,
+    so the hooks of a new registration run after the removals of the one
+    before."""
+
+    def __init__(self, function_id: str) -> None:
+        self.function_id = function_id
+        #: The last task queued.
+        self.tail: asyncio.Task[None] | None = None
+
+    def enqueue(self, task: Callable[[], Awaitable[None]]) -> None:
+        """Queues ``task`` behind the last one (SDK loop)."""
+        previous = self.tail
+
+        async def run() -> None:
+            if previous is not None:
+                try:
+                    await previous
+                except BaseException:
+                    pass
+            try:
+                await task()
+            except Exception:
+                log.exception("Observer hook failed for %s", self.function_id)
+
+        self.tail = asyncio.get_running_loop().create_task(run())
+
+
 class FunctionObservers:
     """One registered function's observers, as the engine pushed them
     (``functionregistered``, ``observeradded``, ``observerremoved``). Hooks
@@ -329,7 +416,6 @@ class FunctionObservers:
         host: ObserveHost,
         *,
         private: bool = False,
-        deliver: DeliverHook | None = None,
     ) -> None:
         self.function_id = function_id
         self.host = host
@@ -356,77 +442,118 @@ class FunctionObservers:
         #: ``functionregistered`` clears it.
         self.released_epoch: int | None = None
         self._known: dict[str, Observer] = {}
-        #: The active observers: one immutable tuple, swapped on change.
-        self.compiled: tuple[Observer, ...] = ()
-        #: The ``on_observer_deliver`` hook; ``None`` is iii's delivery.
-        self.deliver: DeliverHook | None = None
-        #: ``(keyed, index)`` when ``deliver`` is a :class:`Keyed`: key → observers.
-        self._keyed: tuple[Keyed, dict[str, tuple[Observer, ...]]] | None = None
+        match = host.match_hook(function_id)
+        #: The active observers, the match hook and the key index: swapped whole under ``_lock``.
+        self.active = ActiveSet(match=match, index={} if isinstance(match, MatchKeys) else None)
         self._lock = threading.Lock()
-        self._tail: asyncio.Task[None] | None = None
+        self._queue = host.hook_queue(function_id)
         self._disposed = False
         #: Bumped when the function is released (rejection, unregister): an
         #: add whose hook returns after it is undone.
         self._releases = 0
-        self.set_deliver(deliver)
+        #: A match hook raised: logged once per function.
+        self._match_failure_logged = False
 
     def is_observed(self, call: CallLike | None = None) -> bool:
-        """Any active observer; with a call on a keyed function, any observer
-        filed under one of the call's keys."""
-        if not self.compiled:
+        """Any active observer; with a call on a function matched by keys,
+        any observer filed under one of the call's keys."""
+        active = self.active
+        if not active.observers:
             return False
-        keyed = self._keyed
-        if call is None or keyed is None:
+        if call is None or active.index is None:
             return True
-        hook, index = keyed
-        return any(key in index for key in hook.call_keys(as_call(self.function_id, call)))
+        index = active.index
+        keys = self._call_keys(cast(MatchKeys, active.match), as_call(self.function_id, call))
+        return any(key in index for key in keys)
 
     def observers(self) -> list[Observer]:
-        return list(self.compiled)
+        return list(self.active.observers)
 
-    # ── the deliver hook and the keyed index (any thread) ──────────────────
+    # ── matching (any thread) ──────────────────────────────────────────────
 
-    def set_deliver(self, hook: DeliverHook | None) -> None:
-        """Takes a new ``on_observer_deliver``. A :class:`Keyed` one files the
-        active observers now; an observer whose key function raises is
-        rejected."""
-        failed: list[tuple[Observer, BaseException]] = []
-        with self._lock:
-            self.deliver = hook
-            keyed = hook if isinstance(hook, Keyed) else None
-            if keyed is (self._keyed[0] if self._keyed is not None else None):
-                return
-            if keyed is None:
-                self._keyed = None
-                return
-            index: dict[str, tuple[Observer, ...]] = {}
-            for obs in self.compiled:
-                try:
-                    obs._keys = keyed.observer_keys(obs)
-                except Exception as error:
-                    obs._keys = ()
-                    failed.append((obs, error))
-                    continue
-                for key in obs._keys:
-                    index[key] = (*index.get(key, ()), obs)
-            self._keyed = (keyed, index)
-        for obs, failure in failed:
-            obs.reject(*_rejection_of(failure))
-
-    def keyed_select(self, call: Call[Any, Any]) -> list[Observer]:
-        """The observers filed under any of ``call``'s keys, each once."""
-        keyed = self._keyed
-        if keyed is None:
-            return list(self.compiled)
-        hook, index = keyed
-        seen: set[str] = set()
+    def matching(self, active: ActiveSet, call: Call[Any, Any]) -> tuple[Observer, ...]:
+        """The observers of ``active`` that want ``call``: all of them
+        without ``on_observer_match``, those the predicate accepts, or those
+        filed under one of the call's keys, each once. A match hook that
+        raises matches nothing, and is logged once per function."""
+        match = active.match
+        if match is None or not active.observers:
+            return active.observers
+        if active.index is not None:
+            index = active.index
+            found: dict[str, Observer] = {}
+            for key in self._call_keys(cast(MatchKeys, match), call):
+                for obs in index.get(key, ()):
+                    found.setdefault(obs.id, obs)
+            return tuple(found.values())
+        predicate = cast(MatchPredicate, match)
         chosen: list[Observer] = []
-        for key in hook.call_keys(call):
-            for obs in index.get(key, ()):
-                if obs.id not in seen:
-                    seen.add(obs.id)
+        for obs in active.observers:
+            try:
+                if predicate(obs, call):
                     chosen.append(obs)
-        return chosen
+            except Exception as error:
+                self._match_failed(error)
+        return tuple(chosen)
+
+    def _call_keys(self, match: MatchKeys, call: Call[Any, Any]) -> tuple[str, ...]:
+        """The keys of a call; a key function that raises gives none."""
+        try:
+            return match_keys(match.call(call), "call")
+        except Exception as error:
+            self._match_failed(error)
+            return ()
+
+    def _match_failed(self, error: BaseException) -> None:
+        if self._match_failure_logged:
+            return
+        self._match_failure_logged = True
+        log.error("on_observer_match of %s raised; the call matches no observer", self.function_id, exc_info=error)
+
+    def _keys_failure(self, obs: Observer, error: BaseException) -> str:
+        return f"the keys of observer {obs.id} of {self.function_id} could not be computed: {error}"
+
+    def match_changed(self) -> None:
+        """The function's ``on_observer_match`` was set or removed (any
+        thread): the active set takes it on the SDK loop."""
+        self.host.call_soon(self._rebuild)
+
+    def _rebuild(self) -> None:
+        """Takes the function's current ``on_observer_match`` (SDK loop).
+        Matching by keys files the active observers anew; their keys are
+        computed outside the lock, and an observer whose keys raise is
+        rejected (``OBSERVE_REJECTED``)."""
+        match = self.host.match_hook(self.function_id)
+        if self._disposed or match is self.active.match:
+            return
+        computed: list[tuple[Observer, tuple[str, ...]]] = []
+        failed: list[tuple[Observer, BaseException]] = []
+        if isinstance(match, MatchKeys):
+            for obs in self.active.observers:
+                try:
+                    computed.append((obs, match_keys(match.observer(obs), "observer")))
+                except Exception as error:
+                    failed.append((obs, error))
+        with self._lock:
+            # Observers are only added on the SDK loop, so none was added
+            # meanwhile; a `reject()` from another thread may have removed some.
+            observers = self.active.observers
+            still = {id(obs) for obs in observers}
+            for obs in observers:
+                obs._keys = ()
+            index: dict[str, tuple[Observer, ...]] | None = None
+            if isinstance(match, MatchKeys):
+                filed: dict[str, list[Observer]] = {}
+                for obs, keys in computed:
+                    if id(obs) not in still:
+                        continue
+                    obs._keys = keys
+                    for key in keys:
+                        filed.setdefault(key, []).append(obs)
+                index = {key: tuple(found) for key, found in filed.items()}
+            self.active = ActiveSet(observers, match, index)
+        for obs, failure in failed:
+            obs.reject("OBSERVE_REJECTED", self._keys_failure(obs, failure))
 
     # ── engine messages (SDK loop) ─────────────────────────────────────────
 
@@ -504,11 +631,10 @@ class FunctionObservers:
         undone when the hook returns)."""
         self._releases += 1
         with self._lock:
-            for obs in self.compiled:
+            active = self.active
+            for obs in active.observers:
                 obs._active = False
-            self.compiled = ()
-            if self._keyed is not None:
-                self._keyed = (self._keyed[0], {})
+            self.active = ActiveSet(match=active.match, index=None if active.index is None else {})
 
         async def remove_all() -> None:
             for observer_id in list(self._known):
@@ -517,61 +643,48 @@ class FunctionObservers:
         self._enqueue(remove_all)
 
     def _enqueue(self, task: Callable[[], Awaitable[None]]) -> None:
-        previous = self._tail
-
-        async def run() -> None:
-            if previous is not None:
-                try:
-                    await previous
-                except BaseException:
-                    pass
-            try:
-                await task()
-            except Exception:
-                log.exception("Observer hook failed for %s", self.function_id)
-
-        self._tail = asyncio.get_running_loop().create_task(run())
+        self._queue.enqueue(task)
 
     # ── the active set ─────────────────────────────────────────────────────
 
     def _activate(self, obs: Observer) -> bool:
-        """Puts the observer in the active set (and the keyed index), unless
-        it was rejected (``reject`` takes the same lock, so it cannot slip in
-        between) or its keys cannot be computed (it is rejected then)."""
-        with self._lock:
-            if obs._rejection is not None:
-                return False
+        """Puts the observer in the active set, filed under its keys when the
+        function is matched by keys, unless it was rejected (``reject`` takes
+        the same lock, so it cannot slip in between). Its keys are computed
+        outside the lock, since a key function may call ``obs.reject()``; an
+        observer whose keys raise is rejected (``OBSERVE_REJECTED``)."""
+        while True:
             if obs._active:
                 return True
-            if self._keyed is not None:
-                keyed, index = self._keyed
+            match = self.active.match
+            keys: tuple[str, ...] = ()
+            if isinstance(match, MatchKeys):
                 try:
-                    obs._keys = keyed.observer_keys(obs)
+                    keys = match_keys(match.observer(obs), "observer")
                 except Exception as error:
-                    code, message = _rejection_of(error)
-                    obs._rejection = {"code": code, "message": message}
+                    with self._lock:
+                        if obs._rejection is None:
+                            obs._rejection = {"code": "OBSERVE_REJECTED", "message": self._keys_failure(obs, error)}
                     return False
-                for key in obs._keys:
-                    index[key] = (*index.get(key, ()), obs)
-            obs._active = True
-            obs._accepted = True
-            self.compiled = (*self.compiled, obs)
-            return True
+            with self._lock:
+                if obs._rejection is not None:
+                    return False
+                if obs._active:
+                    return True
+                if self.active.match is not match:
+                    continue  # the match hook changed while the keys were computed
+                obs._keys = keys
+                obs._active = True
+                obs._accepted = True
+                self.active = self.active.adding(obs)
+                return True
 
     def _deactivate(self, obs: Observer) -> None:
         with self._lock:
             if not obs._active:
                 return
             obs._active = False
-            self.compiled = tuple(o for o in self.compiled if o is not obs)
-            if self._keyed is not None:
-                index = self._keyed[1]
-                for key in obs._keys:
-                    rest = tuple(o for o in index.get(key, ()) if o is not obs)
-                    if rest:
-                        index[key] = rest
-                    else:
-                        index.pop(key, None)
+            self.active = self.active.removing(obs)
 
     def _ack(
         self,
@@ -742,7 +855,7 @@ class FunctionObservers:
         hook = self.host.added_hook(self.function_id, level)
         if hook is None:
             return
-        behind = [obs for obs in self.compiled if level not in obs._setup]
+        behind = [obs for obs in self.active.observers if level not in obs._setup]
         if not behind:
             return
         log.warning(
@@ -794,22 +907,18 @@ class FunctionObservers:
 
 
 class Delivery:
-    """One call's delivery: the ``next`` calls its handler's call goes
-    through (iii's own, keyed, or a deliver hook's), and what they matched.
-
-    Each observer is delivered at most once per call. The ``next`` calls given
-    the handler's call unchanged pool what they deliver; each ``next`` call
-    given a changed call reports its own item. A local call pushes its items
-    to the reporter; a routed one collects them (:attr:`items`) for the host
-    to send ahead of the answer, and its pooled ids ride the answer's
-    ``observed`` when the answer is the handler's own outcome.
-    """
+    """One call's delivery: the observers that want it (``on_observer_match``,
+    from the active set when the call started), then the function's
+    ``on_observer_deliver``, which delivers the call itself, or iii's delivery
+    to the matched observers whose ``on`` and filters match the call: a local
+    call in one report item, a routed call in its answer's ``observed``."""
 
     def __init__(
         self,
         owner: FunctionObservers,
         call: Call[Any, Any],
         handler_error: BaseException | None,
+        active: ActiveSet,
         *,
         routed: bool,
         started_at_ms: float,
@@ -821,109 +930,25 @@ class Delivery:
         self.call = call
         #: What the handler raised (``call.error`` is its wire form).
         self.handler_error = handler_error
+        self._active = active
         self._routed = routed
-        self._v2 = owner.host.delivers_v2()
         self._started_at_ms = started_at_ms
         self._duration_ms = duration_ms
         self._observe_depth = observe_depth
-        self._lock = threading.Lock()
-        self._delivered: set[str] = set()
-        self._pooled: list[Observer] = []
-        self._pooled_trace: tuple[str | None, str | None] = (None, None)
-        self._settled = False
-        #: A routed call's items, sent ahead of its answer.
-        self.items: list[tuple[ReportInit, set[str]]] = []
+        #: A routed call's ``observed``: what iii's delivery selected.
+        self.observed: list[str] | None = None
 
-    def _unchanged(self, call: Call[Any, Any]) -> bool:
-        own = self.call
-        return call is own or (
-            call.input is own.input
-            and call.status == own.status
-            and call.output is own.output
-            and call.error is own.error
-            and call.caller is own.caller
-            and call.metadata is own.metadata
-        )
-
-    def deliver(self, call: Call[Any, Any], observers: Sequence[Observer]) -> None:
-        """iii's delivery of ``call`` to the observers passed whose ``on`` and
-        filters match it, less those this call already delivered to."""
-        with self._lock:
-            if self._settled and self._routed:
-                self.owner.host.reporter.drop(self.owner.function_id, "LATE_DELIVERY")
-                return
-            doc: dict[str, Any] | None = None
-            ok = call.status == "success"
-            matched: list[Observer] = []
-            for obs in observers:
-                if obs.id in self._delivered or not _on_accepts(obs.on, ok):
-                    continue
-                if doc is None:
-                    doc = call_doc(call)
-                if obs._filter.matches(doc):
-                    self._delivered.add(obs.id)
-                    matched.append(obs)
-            if not matched:
-                return
-            if not self._settled and self._unchanged(call):
-                if not self._pooled:
-                    self._pooled_trace = self.owner.host.trace_headers()
-                self._pooled.extend(matched)
-                return
-            item = self._item(call, matched, self.owner.host.trace_headers())
-            if self._routed:
-                self.items.append(item)
-                return
-        self.owner.host.reporter.push(*item)
-
-    def outcome(self, call: Call[Any, Any]) -> Any:
-        """What ``next`` gives back: the call's output, or its error raised
-        (the handler's own exception for the handler's call)."""
-        if call.status != "error":
-            return call.output
-        if self.handler_error is not None and self._unchanged(call):
-            raise self.handler_error
-        body = call.error or {}
-        raise InvocationError(
-            code=str(body.get("code", "invocation_failed")),
-            message=str(body.get("message", "")),
-            function_id=self.owner.function_id,
-            stacktrace=body.get("stacktrace") if isinstance(body.get("stacktrace"), str) else None,
-            invocation_id=self.call.invocation_id,
-        )
-
-    def next_sync(self, call: Call[Any, Any], observers: Sequence[Observer]) -> Any:
-        """``next`` for a sync deliver hook."""
-        self.deliver(call, observers)
-        return self.outcome(call)
-
-    async def next_async(self, call: Call[Any, Any], observers: Sequence[Observer]) -> Any:
-        """``next`` for an async deliver hook."""
-        self.deliver(call, observers)
-        return self.outcome(call)
-
-    def _own(self) -> tuple[bool, Any]:
-        if self.call.status == "error":
-            return False, self.handler_error
-        return True, self.call.output
-
-    def is_own_outcome(self, ok: bool, value: Any) -> bool:
-        """The answer is the handler's: its output, or the error it raised."""
-        if self.call.status == "success":
-            return ok and value is self.call.output
-        return not ok and value is self.handler_error
-
-    async def run_async(self, hook: DeliverHook | None, observers: Sequence[Observer]) -> tuple[bool, Any]:
-        """Delivers the handler's call and returns ``(ok, value)``: what the
-        caller gets back, or the error it gets. A sync hook runs on a thread of
-        its own."""
-        if hook is None or isinstance(hook, Keyed):
-            return self._deliver_builtin(hook, observers)
+    async def run_async(self, hook: DeliverHook | None) -> tuple[bool, Any]:
+        """Delivers the call and returns ``(ok, value)``: what the caller gets
+        back, or the error it gets. A sync hook runs on a thread of its own."""
+        matched = self.owner.matching(self._active, self.call)
+        if hook is None:
+            return self._deliver(matched)
         try:
             if is_async_callable(hook):
-                result = await hook(self.call, observers, self.next_async)
+                result = await hook(self.call, matched)
             else:
-                result = await run_in_thread(hook, self.call, observers, self.next_sync)
+                result = await run_in_thread(hook, self.call, matched)
             if inspect.isawaitable(result):
                 result = await result
             return True, result
@@ -936,55 +961,50 @@ class Delivery:
     def run_sync(
         self,
         hook: DeliverHook | None,
-        observers: Sequence[Observer],
         run_coroutine: Callable[[Coroutine[Any, Any, Any]], Any],
     ) -> tuple[bool, Any]:
         """:meth:`run_async` on the calling thread: a sync hook runs here, an
         async one through ``run_coroutine`` (on the SDK loop)."""
-        if hook is None or isinstance(hook, Keyed):
-            return self._deliver_builtin(hook, observers)
+        matched = self.owner.matching(self._active, self.call)
+        if hook is None:
+            return self._deliver(matched)
         try:
             if is_async_callable(hook):
-                result = run_coroutine(hook(self.call, observers, self.next_async))
+                result = run_coroutine(hook(self.call, matched))
             else:
-                result = hook(self.call, observers, self.next_sync)
+                result = hook(self.call, matched)
                 if inspect.iscoroutine(result):
                     result = run_coroutine(result)
             return True, result
         except BaseException as error:
             return False, error
 
-    def _deliver_builtin(self, keyed: Keyed | None, observers: Sequence[Observer]) -> tuple[bool, Any]:
-        if keyed is not None:
-            try:
-                observers = self.owner.keyed_select(self.call)
-            except Exception as error:
-                return False, error
-        self.deliver(self.call, observers)
-        return self._own()
-
-    def settle(self, own_outcome: bool) -> list[str] | None:
-        """The hook settled. Returns the ids for a routed answer's
-        ``observed`` (the pooled ids, when the answer is the handler's own
-        outcome); otherwise the pooled ids become one item that carries the
-        handler's call."""
-        with self._lock:
-            self._settled = True
-            pooled, self._pooled = self._pooled, []
-            if not pooled:
-                return None
-            if self._routed and own_outcome:
-                return [obs.id for obs in pooled]
-            item = self._item(self.call, pooled, self._pooled_trace)
+    def _deliver(self, matched: Sequence[Observer]) -> tuple[bool, Any]:
+        """iii's delivery to the matched observers whose ``on`` and filters
+        match the call. Returns the handler's outcome."""
+        call = self.call
+        ok = call.status == "success"
+        doc: dict[str, Any] | None = None
+        selected: list[Observer] = []
+        for obs in matched:
+            if not _on_accepts(obs.on, ok):
+                continue
+            if doc is None:
+                doc = call_doc(call)
+            if obs._filter.matches(doc):
+                selected.append(obs)
+        if selected:
             if self._routed:
-                self.items.append(item)
-                return None
-        self.owner.host.reporter.push(*item)
-        return None
+                self.observed = [obs.id for obs in selected]
+            else:
+                self.owner.host.reporter.push(*self._item(selected))
+        if ok:
+            return True, call.output
+        return False, self.handler_error
 
-    def _item(
-        self, call: Call[Any, Any], matched: list[Observer], trace: tuple[str | None, str | None]
-    ) -> tuple[ReportInit, set[str]]:
+    def _item(self, selected: list[Observer]) -> tuple[ReportInit, set[str]]:
+        """The report item of a local call delivered to ``selected``."""
+        call = self.call
         values: dict[str, Any] = {"input": call.input}
         if call.status == "success":
             values["output"] = call.output
@@ -996,21 +1016,22 @@ class Delivery:
         if call.metadata is not None:
             values["metadata"] = call.metadata
         captures: set[str] = set()
-        for obs in matched:
+        for obs in selected:
             captures.update(obs.capture)
+        traceparent, baggage = self.owner.host.trace_headers()
         init = ReportInit(
             function_id=self.owner.function_id,
             namespace=self.owner.namespace,
-            invocation_id=self.call.invocation_id,
-            matched=[obs.id for obs in matched],
+            invocation_id=call.invocation_id,
+            matched=[obs.id for obs in selected],
             status="success" if call.status == "success" else "error",
             values=values,
             started_at_ms=self._started_at_ms,
             duration_ms=self._duration_ms,
             observe_depth=self._observe_depth,
-            traceparent=trace[0],
-            baggage=trace[1],
-            output_is_input=self._v2 and call.status == "success" and call.output is call.input,
+            traceparent=traceparent,
+            baggage=baggage,
+            output_is_input=(self.owner.host.delivers_v2() and call.status == "success" and call.output is call.input),
         )
         return init, captures
 

@@ -37,7 +37,7 @@ def _confirm(
     state = client._functions[function_id].observe
     wait_until(lambda: state.confirmed, what=f"functionregistered for {function_id}")
     if observers:
-        wait_until(lambda: len(state.compiled) == len(observers), what="the observers")
+        wait_until(lambda: len(state.active.observers) == len(observers), what="the observers")
         # The acks go out after the filters compile; wait for them so a test that clears the frames next does not
         # see them arrive late.
         ids = {o["id"] for o in observers}
@@ -553,7 +553,7 @@ def test_on_error_sees_only_failures_with_the_error_and_the_caller(engine: FakeE
     assert "caller" not in item
 
 
-def test_the_reported_input_is_the_callers_payload_not_what_the_handler_made_of_it(
+def test_the_reported_input_is_the_handlers_and_the_callers_payload_is_untouched(
     engine: FakeEngine, connect: Any
 ) -> None:
     client = connect(engine)
@@ -563,9 +563,12 @@ def test_the_reported_input_is_the_callers_payload_not_what_the_handler_made_of_
 
     client.register_function("local::mutate", mutate)
     _confirm(client, engine, "local::mutate", [observer_info("o", "t", capture=["input"])])
-    client.call({"function_id": "local::mutate", "payload": {"n": 1}})
+    payload = {"n": 1}
+    client.call({"function_id": "local::mutate", "payload": payload})
     engine.wait_for(lambda: reported_items(engine), what="the report")
-    assert reported_items(engine)[0]["input"] == {"n": 1}
+    # the input the handler ran with, as on the routed path; the caller keeps its own value
+    assert reported_items(engine)[0]["input"] == {"n": 1, "touched": True}
+    assert payload == {"n": 1}
 
 
 def test_reports_nothing_for_a_call_no_filter_matches_and_nothing_for_an_unobserved_function(

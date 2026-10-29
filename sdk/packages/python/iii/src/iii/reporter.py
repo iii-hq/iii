@@ -1,7 +1,6 @@
 """The reporter: one bounded buffer for what the local calls of this worker's
-functions delivered, flushed as ``invocationsobserved`` batches; the items of a
-routed call, sent ahead of its answer; and the periodic
-``localinvocationstats``.
+functions delivered, flushed as ``invocationsobserved`` batches, and the
+periodic ``localinvocationstats``.
 
 It never blocks a call: when the buffer is full the newest item is dropped
 and counted (``BUFFER_FULL``), and an item too large on its own is dropped and
@@ -84,7 +83,7 @@ class ReporterHost(Protocol):
 
 @dataclass
 class ReportInit:
-    """What one ``next`` call delivered, before encoding."""
+    """What one local call delivered, before encoding."""
 
     function_id: str
     invocation_id: str
@@ -264,36 +263,12 @@ class Reporter:
     # ── items ──────────────────────────────────────────────────────────────
 
     def push(self, init: ReportInit, captures: Iterable[str]) -> bool:
-        """What a ``next`` call of a local call delivered. The item is encoded
-        here, so the values it carries are serialized when the call matches."""
+        """What a local call delivered. The item is encoded here, so the
+        values it carries are serialized when the call matches."""
         item = _ReportItem(init)
         if not self._build(item, captures):
             return False
         return self._enqueue(item)
-
-    def frames(self, items: Iterable[tuple[ReportInit, Iterable[str]]]) -> list[tuple[str, int]]:
-        """The ``invocationsobserved`` frames of a routed call's items, each
-        under the frame limit and with its item count, for the client to send
-        ahead of the call's answer. An item too large on its own is dropped
-        and counted (``TOO_LARGE``)."""
-        frames: list[tuple[str, int]] = []
-        batch: list[str] = []
-        batch_bytes = _FRAME_OVERHEAD
-        for init, captures in items:
-            item = _ReportItem(init)
-            if not self._build(item, captures):
-                continue
-            if item.bytes + _FRAME_OVERHEAD > self.limits.max_frame_bytes:
-                self.drop(init.function_id, "TOO_LARGE")
-                continue
-            if batch and batch_bytes + 1 + item.bytes > self.limits.max_frame_bytes:
-                frames.append((f"{_FRAME_HEAD}{','.join(batch)}{_FRAME_TAIL}", len(batch)))
-                batch, batch_bytes = [], _FRAME_OVERHEAD
-            batch_bytes += (1 if batch else 0) + item.bytes
-            batch.append(item.json)
-        if batch:
-            frames.append((f"{_FRAME_HEAD}{','.join(batch)}{_FRAME_TAIL}", len(batch)))
-        return frames
 
     def _build(self, item: _ReportItem, captures: Iterable[str]) -> bool:
         try:
@@ -350,7 +325,7 @@ class Reporter:
 
     def drop(self, function_id: str, reason: str, count: int = 1) -> None:
         """Counts a report the SDK dropped (``BUFFER_FULL``, ``TOO_LARGE``,
-        ``LATE_DELIVERY``, ``DISCONNECTED``)."""
+        ``INACTIVE``, ``DISCONNECTED``)."""
         with self._lock:
             self._drop_locked(function_id, reason, count)
 

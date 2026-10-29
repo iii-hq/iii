@@ -20,7 +20,6 @@ from .iii_types import (
     TriggerActionVoid,
 )
 from .invocation_context import InvocationContext, current_invocation
-from .keyed import Keyed, keyed
 from .observable import Observer
 from .observe_types import (
     AddedHook,
@@ -29,7 +28,10 @@ from .observe_types import (
     Capture,
     DeliverHook,
     Filter,
-    Next,
+    Key,
+    MatchHook,
+    MatchKeys,
+    MatchPredicate,
     Observed,
     ObserverOptions,
     ObserverState,
@@ -84,9 +86,10 @@ __all__ = [
     "DeliverHook",
     "Filter",
     "InvocationContext",
-    "Keyed",
-    "keyed",
-    "Next",
+    "Key",
+    "MatchHook",
+    "MatchKeys",
+    "MatchPredicate",
     "Observed",
     "Observer",
     "ObserverHandle",

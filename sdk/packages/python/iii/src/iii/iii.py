@@ -86,9 +86,11 @@ from .invocation_context import (
 )
 from .observable import (
     OBSERVE_HOOK_TIMEOUT_S,
+    ActiveSet,
     CallLike,
     Delivery,
     FunctionObservers,
+    HookQueue,
     Level,
     Observer,
     is_async_callable,
@@ -97,6 +99,10 @@ from .observe_types import (
     AddedHook,
     Call,
     DeliverHook,
+    Key,
+    MatchHook,
+    MatchKeys,
+    MatchPredicate,
     ObserveReason,
     ObserverOptions,
     ObserveSource,
@@ -116,7 +122,7 @@ from .observe_wire import (
 )
 from .observer_handle import ObserverHandle, to_observer_state
 from .process_marker import announce_process
-from .reporter import FunctionStatus, Reporter, ReportInit
+from .reporter import FunctionStatus, Reporter
 from .stream import IStream
 from .types import Channel, RemoteFunctionData, is_channel_ref
 
@@ -124,6 +130,7 @@ RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
 TResult = TypeVar("TResult")
 AddedT = TypeVar("AddedT", bound=AddedHook)
 RemovedT = TypeVar("RemovedT", bound=RemovedHook)
+MatchT = TypeVar("MatchT", bound=MatchPredicate)
 DeliverT = TypeVar("DeliverT", bound=DeliverHook)
 
 log = logging.getLogger("iii.iii")
@@ -238,19 +245,16 @@ class _Request:
 
 @dataclass
 class _LocalInvocation:
-    """What a local call works on: its context, the values its handler and
-    its delivery see, and the observers and deliver hook it started with."""
+    """What a local call works on: its context, the input and metadata its
+    handler and its delivery see, and the active set and deliver hook it
+    started with."""
 
     ctx: ActiveInvocation
     state: FunctionObservers
-    observers: tuple[Observer, ...]
+    active: ActiveSet
     hook: DeliverHook | None
     input: Any = None
     metadata: Any = None
-    #: The call's input and metadata as observers see them: the caller's at
-    #: the start (copies, or the values themselves for a private function).
-    call_input: Any = None
-    call_metadata: Any = None
     started_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
     t0: float = field(default_factory=time.perf_counter)
 
@@ -439,6 +443,16 @@ class _ObserveHost:
         client = self._client
         return client._worker_removed if level == "worker" else client._removed_hooks.get(function_id)
 
+    def match_hook(self, function_id: str) -> MatchHook | None:
+        return self._client._match_hooks.get(function_id)
+
+    def hook_queue(self, function_id: str) -> HookQueue:
+        queues = self._client._hook_queues
+        queue = queues.get(function_id)
+        if queue is None:
+            queue = queues[function_id] = HookQueue(function_id)
+        return queue
+
     async def invoke_hook(self, hook: AddedHook | RemovedHook, obs: Observer) -> None:
         if is_async_callable(hook):
             await cast(Awaitable[None], hook(obs))
@@ -589,10 +603,19 @@ class III:
         self._worker_removed: RemovedHook | None = None
         self._added_hooks: dict[str, AddedHook] = {}
         self._removed_hooks: dict[str, RemovedHook] = {}
+        self._match_hooks: dict[str, MatchHook] = {}
         self._deliver_hooks: dict[str, DeliverHook] = {}
+        # The hooks of each function id run one at a time, across
+        # unregister() and a later registration of the id (SDK loop).
+        self._hook_queues: dict[str, HookQueue] = {}
         # Logged once each: a hook id no function of this worker has, and a
         # function an engine without observe.v2 cannot host.
         self._hook_ids_warned: set[str] = set()
+        # The check for those ids runs this long after the connection is
+        # registered, or after a hook is set by id, so the registrations of
+        # the worker's setup code are in place by then.
+        self._hook_id_check_delay_s = 1.0
+        self._hook_id_check: asyncio.TimerHandle | None = None
         self._unsupported_warned: set[str] = set()
         # standby: functions waiting for their id to be free, and the retry period.
         self._standing_by: set[str] = set()
@@ -1267,7 +1290,7 @@ class III:
         self._registered_on_connection = True
         for function_id in list(self._functions):
             self._sync_registration(function_id)
-        self._warn_unregistered_hook_ids()
+        self._schedule_hook_id_check()
         held, self._held_observe_frames = self._held_observe_frames, []
         if FEATURE_OBSERVE_V1 in self._engine_features:
             for frame in held:
@@ -1289,6 +1312,7 @@ class III:
             or self._worker_removed is not None
             or function_id in self._added_hooks
             or function_id in self._removed_hooks
+            or function_id in self._match_hooks
         )
 
     def _warn_hooks_inactive(self, function_id: str) -> None:
@@ -1301,9 +1325,28 @@ class III:
             function_id,
         )
 
+    def _schedule_hook_id_check(self) -> None:
+        """SDK loop: names the hook ids this worker has not registered
+        ``_hook_id_check_delay_s`` from now, once the connection is registered.
+        A later call pushes the check back, so it runs after the setup code
+        that sets hooks and registers functions."""
+        if not self._registered_on_connection:
+            return  # this connection's WorkerRegistered schedules it
+        if self._hook_id_check is not None:
+            self._hook_id_check.cancel()
+        self._hook_id_check = self._loop.call_later(self._hook_id_check_delay_s, self._warn_unregistered_hook_ids)
+
+    def _hook_set_by_id(self) -> None:
+        """A hook was set by function id (any thread): the unregistered-id check runs after it."""
+        try:
+            self._loop.call_soon_threadsafe(self._schedule_hook_id_check)
+        except RuntimeError:
+            pass  # shut down
+
     def _warn_unregistered_hook_ids(self) -> None:
         """Once per id: observer hooks set by id for a function this worker has not registered."""
-        ids = set(self._added_hooks) | set(self._removed_hooks) | set(self._deliver_hooks)
+        self._hook_id_check = None
+        ids = set(self._added_hooks) | set(self._removed_hooks) | set(self._match_hooks) | set(self._deliver_hooks)
         for function_id in sorted(ids - set(self._functions) - self._hook_ids_warned):
             self._hook_ids_warned.add(function_id)
             log.warning(
@@ -1746,15 +1789,17 @@ class III:
             return
 
         # The host delivers a routed call when the engine advertised observe.v2;
-        # otherwise the engine evaluates it.
-        state = cast(FunctionObservers, func.observe)
-        hook = state.deliver if self._delivers_v2() else None
-        observers = state.compiled if self._delivers_v2() else ()
-        if hook is not None or observers:
-            await self._invoke_routed_and_deliver(
-                invocation_id, path, func, state, hook, observers, resolved_data, traceparent, baggage, metadata
-            )
-            return
+        # otherwise the engine evaluates it. The call is matched against the
+        # observers active when it starts.
+        if self._delivers_v2():
+            state = cast(FunctionObservers, func.observe)
+            active = state.active
+            hook = self._deliver_hooks.get(path)
+            if hook is not None or active.observers:
+                await self._invoke_routed_and_deliver(
+                    invocation_id, path, func, state, active, hook, resolved_data, traceparent, baggage, metadata
+                )
+                return
 
         try:
             result, response_traceparent = await self._invoke_with_otel_context(
@@ -1808,8 +1853,8 @@ class III:
         path: str,
         func: RemoteFunctionData,
         state: FunctionObservers,
+        active: ActiveSet,
         hook: DeliverHook | None,
-        observers: tuple[Observer, ...],
         data: Any,
         traceparent: str | None,
         baggage: str | None,
@@ -1817,15 +1862,13 @@ class III:
     ) -> None:
         """A routed call of an observed function (or one with a deliver hook)
         on an ``observe.v2`` engine: the handler, then its delivery, then the
-        items its ``next`` calls report and the answer, in that order. The
-        ids delivered for the handler's own outcome ride the answer's
-        ``observed``."""
+        answer. The ids iii's delivery selected ride the answer's
+        ``observed``; a function with a deliver hook lists none."""
         handler = cast(Callable[..., Awaitable[Any]], func.handler)
         ctx = cast(ActiveInvocation, current_context())
         started_at_ms = time.time() * 1000.0
         t0 = time.perf_counter()
         delivery: Delivery | None = None
-        observed: list[str] | None = None
         answer: InvocationResultMessage
         try:
             with self._execute_span(path, data, traceparent, baggage) as outcome:
@@ -1851,13 +1894,13 @@ class III:
                         metadata=metadata,
                     ),
                     handler_error,
+                    active,
                     routed=True,
                     started_at_ms=started_at_ms,
                     duration_ms=(time.perf_counter() - t0) * 1000.0,
                     observe_depth=ctx.observe_depth,
                 )
-                ok, value = await delivery.run_async(hook, observers)
-                observed = delivery.settle(delivery.is_own_outcome(ok, value))
+                ok, value = await delivery.run_async(hook)
                 if not ok:
                     raise guard_exit(value)
                 outcome.result = value
@@ -1866,7 +1909,7 @@ class III:
                 function_id=path,
                 result=value,
                 traceparent=outcome.traceparent,
-                observed=observed,
+                observed=delivery.observed,
             )
         except _TraceContextError as te:
             failure = original_error(cast(BaseException, te.__cause__))
@@ -1878,26 +1921,9 @@ class III:
                 function_id=path,
                 error=cast(Delivery, delivery).call.error if own else _answer_error_body(failure),
                 traceparent=te.traceparent,
-                observed=observed,
+                observed=delivery.observed if delivery is not None else None,
             )
-        if delivery is not None and delivery.items:
-            await self._send_report_items(path, delivery.items)
         await self._send(answer)
-
-    async def _send_report_items(self, function_id: str, items: list[tuple[ReportInit, set[str]]]) -> None:
-        """A routed call's items, written ahead of its answer on this
-        connection; those a closed connection loses count as ``DISCONNECTED``."""
-        frames = self._reporter.frames(items)
-        for index, (frame, count) in enumerate(frames):
-            ws = self._ws
-            if ws is None or ws.state.name != "OPEN":
-                self._reporter.drop(function_id, "DISCONNECTED", sum(c for _, c in frames[index:]))
-                return
-            try:
-                await self._send_json(ws, frame)
-            except Exception:
-                self._reporter.drop(function_id, "DISCONNECTED", sum(c for _, c in frames[index:]))
-                return
 
     # Connection state management
 
@@ -2018,8 +2044,8 @@ class III:
         An event source's handler returns the event it is called with. What
         this worker does when the function is observed is set with the hook
         methods (``on_observer_added``, ``on_observer_removed``,
-        ``on_observer_deliver``) on the returned ``FunctionRef`` or on the
-        client by id.
+        ``on_observer_match``, ``on_observer_deliver``) on the returned
+        ``FunctionRef`` or on the client by id.
 
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when omitted or passed as ``None``
@@ -2184,14 +2210,7 @@ class III:
                     # (the `execute` span) follow the handler.
                     return await run_in_thread(_call_handler, input_data, metadata)
 
-            observe_state = FunctionObservers(
-                function_id,
-                local_dispatch,
-                True,
-                self._observe_host,
-                private=private,
-                deliver=self._deliver_hooks.get(function_id),
-            )
+            observe_state = FunctionObservers(function_id, local_dispatch, True, self._observe_host, private=private)
             data = RemoteFunctionData(
                 message=msg,
                 handler=wrapped,
@@ -2253,9 +2272,9 @@ class III:
         function is registered (which makes them run for every observer) and
         stay in place across ``unregister()``. A hook set while the function
         already has active observers runs for each of them at once (a raise
-        rejects that observer) and logs one warning. Once the connection is
-        registered, a warning names each hook id this worker has not
-        registered.
+        rejects that observer) and logs one warning. A second after the
+        connection is registered, and after the last hook set by id, a
+        warning names each hook id this worker has not registered.
 
         Examples:
             >>> @iii.on_observer_added            # every function this worker hosts
@@ -2324,39 +2343,106 @@ class III:
         return function_id_or_hook
 
     @overload
+    def on_observer_match(self, function_id: str) -> Callable[[MatchT], MatchT]: ...
+    @overload
+    def on_observer_match(self, function_id: str, hook: MatchT) -> MatchT: ...
+    @overload
+    def on_observer_match(self, function_id: str, hook: MatchKeys) -> MatchKeys: ...
+    @overload
+    def on_observer_match(self, function_id: str, hook: None) -> None: ...
+    @overload
+    def on_observer_match(
+        self, function_id: str, *, observer: Callable[[Observer], Key], call: Callable[[Call[Any, Any]], Key]
+    ) -> MatchKeys: ...
+    def on_observer_match(
+        self, function_id: str, hook: Any = _MISSING, *, observer: Any = None, call: Any = None
+    ) -> Any:
+        """Sets which observers want each call of one function. By default
+        every observer wants every call; iii's delivery then applies their
+        ``on`` and filters, and an ``on_observer_deliver`` receives only the
+        observers that matched.
+
+        As a predicate, ``hook(obs, call) -> bool`` is asked once per active
+        observer per call, before filters; a predicate that raises counts as
+        no match. As keys, ``observer=`` and ``call=`` key functions each
+        return a string or strings, and an observer wants a call when they
+        share a key: the SDK computes an observer's keys once, when it is
+        accepted, and files it under each, so a call costs one lookup per key
+        whatever the number of observers. An observer whose key function
+        raises is rejected (``OBSERVE_REJECTED``); a call whose key function
+        raises matches no observer. A match hook that raises is logged once
+        per function. Wildcards are keys too: file an observer of every table
+        under ``"primary|*|insert"`` and give a change the keys
+        ``"primary|orders|insert"``, ``"primary|orders|*"``,
+        ``"primary|*|insert"`` and ``"primary|*|*"``.
+
+        Works as a decorator for a predicate
+        (``@iii.on_observer_match("fn::id")``) and returns the hook (a
+        :class:`MatchKeys` for the keys form); ``None`` removes it. A match
+        hook set while the function has active observers is applied to them
+        on the SDK loop, which rebuilds the index from them. Predicates and
+        key functions are sync: they run on every call.
+
+        Examples:
+            >>> iii.on_observer_match(
+            ...     "cron::on-tick", lambda obs, call: obs.args["expression"] == call.input["expression"]
+            ... )
+            >>> iii.on_observer_match(
+            ...     "database::on-row-changed",
+            ...     observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",
+            ...     call=lambda call: f"{call.input['table']}|{call.input['op']}",
+            ... )
+        """
+        if not isinstance(function_id, str):
+            raise TypeError("on_observer_match takes a function id, and a predicate or observer= and call=")
+        if observer is not None or call is not None:
+            if hook is not _MISSING:
+                raise TypeError("on_observer_match takes a predicate or observer= and call= key functions, not both")
+            if observer is None or call is None:
+                raise TypeError("on_observer_match: keys take both observer= and call=")
+            keys = MatchKeys(observer=observer, call=call)
+            self._set_match_hook(function_id, keys)
+            return keys
+        if hook is _MISSING:
+
+            def decorator(fn: MatchT) -> MatchT:
+                self._set_match_hook(function_id, fn)
+                return fn
+
+            return decorator
+        self._set_match_hook(function_id, hook)
+        return hook
+
+    @overload
     def on_observer_deliver(self, function_id: str) -> Callable[[DeliverT], DeliverT]: ...
     @overload
     def on_observer_deliver(self, function_id: str, hook: DeliverT) -> DeliverT: ...
     @overload
     def on_observer_deliver(self, function_id: str, hook: None) -> None: ...
     def on_observer_deliver(self, function_id: str, hook: Any = _MISSING) -> Any:
-        """Sets what happens after each call of one function:
-        ``hook(call, observers, next)`` receives the :class:`Call`, the
-        function's active observers when the call started, and ``next``,
-        iii's delivery of a call to the observers passed. What it returns (or
-        raises) is what the caller gets back. Works as a decorator
-        (``@iii.on_observer_deliver("fn::id")``) and returns the hook;
-        ``None`` restores iii's delivery.
+        """Delivers each call of one function itself: ``hook(call,
+        observers)`` receives the :class:`Call` and the observers that matched
+        it (``on_observer_match``, or all of them), as a snapshot taken when
+        the call started, and what it returns (or raises) is what the caller
+        gets back. iii delivers nothing for that function: the hook calls
+        through observers (``iii.call({"observer": obs, ...})``) and applies
+        their ``on`` and filters with ``obs.matches(call)``. Works as a
+        decorator (``@iii.on_observer_deliver("fn::id")``) and returns the
+        hook; ``None`` restores iii's delivery.
 
-        ``next(call, observers)`` delivers to the observers whose ``on`` and
-        filters match, each at most once per call, and returns the call's
-        output (or raises its error); it is awaitable in an async hook and
-        returns directly in a sync one. A hook that calls targets itself
-        (``iii.call({"observer": obs, ...})``) applies filters with
-        ``obs.matches(call)``. The hook runs inside the function's invocation,
-        so the calls it makes have that invocation as their caller. A sync
-        hook runs on a thread of its own. :func:`keyed` builds one from key
-        functions.
+        The hook runs inside the function's invocation, so the calls it makes
+        have that invocation as their caller. A sync hook runs on a thread of
+        its own. A function with a deliver hook needs an engine with
+        ``observe.v2``.
 
         Examples:
-            >>> @iii.on_observer_deliver("cron::on-tick")
-            ... def by_expression(call, observers, next):
-            ...     return next(call, [o for o in observers if o.args["expression"] == call.input["expression"]])
             >>> @iii.on_observer_deliver("http::on-request")
-            ... async def route(call, observers, next):
+            ... async def route(call, observers):
             ...     obs = routes.match(call.input)
-            ...     if obs is None or not obs.matches(call):
+            ...     if obs is None:
             ...         return {"status_code": 404}
+            ...     if not obs.matches(call):
+            ...         return {"status_code": 422}
             ...     return await iii.call_async({"observer": obs, "payload": call.input})
         """
         if not isinstance(function_id, str):
@@ -2382,6 +2468,7 @@ class III:
                 self._added_hooks.pop(function_id, None)
             else:
                 self._added_hooks[function_id] = hook
+                self._hook_set_by_id()
             state = self._observe_state(function_id)
             targets = [state] if state is not None else []
         if hook is not None:
@@ -2398,6 +2485,30 @@ class III:
             self._removed_hooks.pop(function_id, None)
         else:
             self._removed_hooks[function_id] = hook
+            self._hook_set_by_id()
+
+    def _set_match_hook(self, function_id: str, hook: MatchHook | None) -> None:
+        if hook is None:
+            self._match_hooks.pop(function_id, None)
+        else:
+            if isinstance(hook, MatchKeys):
+                functions: tuple[Any, ...] = (hook.observer, hook.call)
+            elif callable(hook):
+                functions = (hook,)
+            else:
+                raise TypeError(
+                    f"on_observer_match: the hook must be a predicate, MatchKeys or None, got {type(hook).__name__}"
+                )
+            for fn in functions:
+                if not callable(fn):
+                    raise TypeError(f"on_observer_match: a key function must be callable, got {type(fn).__name__}")
+                if is_async_callable(fn):
+                    raise TypeError("on_observer_match: predicates and key functions are sync; they run on every call")
+            self._match_hooks[function_id] = hook
+            self._hook_set_by_id()
+        state = self._observe_state(function_id)
+        if state is not None:
+            state.match_changed()
 
     def _set_deliver_hook(self, function_id: str, hook: DeliverHook | None) -> None:
         if hook is not None and not callable(hook):
@@ -2406,9 +2517,8 @@ class III:
             self._deliver_hooks.pop(function_id, None)
         else:
             self._deliver_hooks[function_id] = hook
-        state = self._observe_state(function_id)
-        if state is not None:
-            state.set_deliver(hook)
+            self._hook_set_by_id()
+        if self._observe_state(function_id) is not None:
             # It decides whether the function needs observe.v2.
             self._schedule_registration(function_id)
 
@@ -2428,9 +2538,9 @@ class III:
 
         Without ``call``: whether the function has any active observer (one
         load). With ``call`` (a :class:`Call` or a partial one,
-        ``{"input": ...}``) on a function delivered by :func:`keyed`: whether
-        an observer is filed under one of the call's keys. On any other
-        function the call is ignored.
+        ``{"input": ...}``) on a function matched by keys
+        (``on_observer_match``): whether an observer is filed under one of
+        the call's keys. On any other function the call is ignored.
 
         Examples:
             >>> if iii.is_observed("database::on-row-changed", {"input": change}):
@@ -2730,9 +2840,11 @@ class III:
 
     def _local_invocation(self, call: _Request) -> _LocalInvocation:
         """The new invocation context, the values a local call works on, and
-        the observers and deliver hook it starts with. A private function's
+        the active set and deliver hook it starts with. A private function's
         input and metadata pass by reference; any other function's handler
-        gets copies. Raises what copying the payload raises."""
+        gets copies. Its delivery sees the handler's input and metadata, so a
+        handler that returns its input reports it once (``output_is_input``).
+        Raises what copying the payload raises."""
         state = cast(FunctionObservers, call.state)
         parent = current_context()
         caller: dict[str, Any] = dict(self._observe_host.identity())
@@ -2752,18 +2864,11 @@ class III:
             metadata=metadata,
             local_depth=(parent.local_depth if parent is not None else 0) + 1,
         )
-        # Delivered against the observers active when the call starts.
-        local = _LocalInvocation(ctx=ctx, state=state, observers=state.compiled, hook=state.deliver)
-        if state.private:
-            local.input = self._resolve_channels(call.payload)
-            local.call_input, local.call_metadata = local.input, metadata
-        else:
-            if local.observers or local.hook is not None:
-                # What observers see is what the caller passed at the start
-                # (input and metadata), not what anyone made of them by the end.
-                local.call_input = _clone_value(call.payload)
-                local.call_metadata = _clone_value(call.metadata)
-            local.input = self._resolve_channels(_clone_value(call.payload))
+        # Matched against the observers active when the call starts.
+        local = _LocalInvocation(
+            ctx=ctx, state=state, active=state.active, hook=self._deliver_hooks.get(call.function_id)
+        )
+        local.input = self._resolve_channels(call.payload if state.private else _clone_value(call.payload))
         local.metadata = metadata
         return local
 
@@ -2772,7 +2877,7 @@ class III:
     ) -> Delivery | None:
         """The delivery of a finished local call, or ``None`` when nothing
         observes it and it has no deliver hook."""
-        if local.hook is None and not local.observers:
+        if local.hook is None and not local.active.observers:
             return None
         return Delivery(
             local.state,
@@ -2780,13 +2885,14 @@ class III:
                 function_id=call.function_id,
                 invocation_id=local.ctx.invocation_id,
                 status="success" if handler_error is None else "error",
-                input=local.call_input,
+                input=local.input,
                 output=output,
                 error=_handler_error_body(handler_error) if handler_error is not None else None,
                 caller=local.ctx.caller,
-                metadata=local.call_metadata,
+                metadata=local.metadata,
             ),
             handler_error,
+            local.active,
             routed=False,
             started_at_ms=local.started_at_ms,
             duration_ms=(time.perf_counter() - local.t0) * 1000.0,
@@ -2860,8 +2966,7 @@ class III:
                 if delivery is None:
                     ok, value = handler_error is None, output if handler_error is None else handler_error
                 else:
-                    ok, value = await delivery.run_async(local.hook, local.observers)
-                    delivery.settle(False)
+                    ok, value = await delivery.run_async(local.hook)
                 self._count_local(call, local, ok)
                 if not ok:
                     raise guard_exit(value)
@@ -2955,8 +3060,7 @@ class III:
                     if delivery is None:
                         ok, value = handler_error is None, output if handler_error is None else handler_error
                     else:
-                        ok, value = delivery.run_sync(local.hook, local.observers, on_sdk_loop)
-                        delivery.settle(False)
+                        ok, value = delivery.run_sync(local.hook, on_sdk_loop)
                     self._count_local(call, local, ok)
                     if not ok:
                         raise guard_exit(value)

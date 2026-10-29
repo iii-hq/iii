@@ -346,7 +346,7 @@ class LocalInvocationCount(_WireModel):
 
 class DroppedReportCount(_WireModel):
     function_id: str
-    #: ``BUFFER_FULL``, ``TOO_LARGE``, ``LATE_DELIVERY``, ``DISCONNECTED`` or ``INACTIVE``.
+    #: ``BUFFER_FULL``, ``TOO_LARGE``, ``DISCONNECTED`` or ``INACTIVE``.
     reason: str
     count: int = 0
 

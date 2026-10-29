@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeVar, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 if TYPE_CHECKING:
     from .iii import III
     from .observable import CallLike, Observer
-    from .observe_types import AddedHook, DeliverHook, RemovedHook
+    from .observe_types import AddedHook, Call, DeliverHook, Key, MatchKeys, MatchPredicate, RemovedHook
 
 AddedT = TypeVar("AddedT", bound="AddedHook")
 RemovedT = TypeVar("RemovedT", bound="RemovedHook")
+MatchT = TypeVar("MatchT", bound="MatchPredicate")
 DeliverT = TypeVar("DeliverT", bound="DeliverHook")
+
+#: The hook of ``on_observer_match`` that was not passed (the keys form).
+_MISSING: Any = object()
 
 
 class FunctionRef:
@@ -32,7 +36,7 @@ class FunctionRef:
         >>> @on_tick.on_observer_added
         ... def start(obs):
         ...     scheduler.retain(obs.args["expression"])
-        >>> on_tick.on_observer_deliver(keyed(observer=..., call=...))
+        >>> on_tick.on_observer_match(lambda obs, call: obs.args["expression"] == call.input["expression"])
     """
 
     def __init__(self, client: III, function_id: str, unregister: Callable[[], None]) -> None:
@@ -55,6 +59,26 @@ class FunctionRef:
     def on_observer_removed(self, hook: RemovedHook | None) -> RemovedHook | None:
         """This function's ``on_observer_removed`` (see ``III.on_observer_removed``)."""
         return self._client.on_observer_removed(self.id, hook)
+
+    @overload
+    def on_observer_match(self, hook: MatchT) -> MatchT: ...
+    @overload
+    def on_observer_match(self, hook: MatchKeys) -> MatchKeys: ...
+    @overload
+    def on_observer_match(self, hook: None) -> None: ...
+    @overload
+    def on_observer_match(
+        self, *, observer: Callable[[Observer], Key], call: Callable[[Call[Any, Any]], Key]
+    ) -> MatchKeys: ...
+    def on_observer_match(self, hook: Any = _MISSING, *, observer: Any = None, call: Any = None) -> Any:
+        """This function's ``on_observer_match``: a predicate ``(obs, call) ->
+        bool``, or ``observer=`` and ``call=`` key functions (see
+        ``III.on_observer_match``)."""
+        if hook is _MISSING:
+            return self._client.on_observer_match(self.id, observer=observer, call=call)
+        if observer is not None or call is not None:
+            raise TypeError("on_observer_match takes a predicate or observer= and call= key functions, not both")
+        return self._client.on_observer_match(self.id, hook)
 
     @overload
     def on_observer_deliver(self, hook: DeliverT) -> DeliverT: ...

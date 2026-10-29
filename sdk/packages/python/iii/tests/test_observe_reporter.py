@@ -318,20 +318,6 @@ def test_output_is_input_carries_the_value_once_when_the_item_captures_both() ->
     assert plain["input"] == plain["output"] == event and "output_is_input" not in plain
 
 
-def test_frames_for_a_routed_call_split_under_the_frame_limit_and_count_items() -> None:
-    host = FakeHost()
-    reporter = Reporter(host, ReporterLimits(max_frame_bytes=520))
-    items = [(init(n=n, output="x" * 60), ["input", "output"]) for n in range(4)]
-    items.append((init(n=9, output="y" * 1000), ["input", "output"]))  # too large on its own
-    frames = reporter.frames(items)
-    assert [count for _, count in frames] == [2, 2]
-    assert [i["input"] for frame, _ in frames for i in json.loads(frame)["items"]] == [0, 1, 2, 3]
-    assert all(len(frame.encode()) <= 520 for frame, _ in frames)
-    assert host.frames == []  # the client sends them, ahead of the answer
-    reporter.send_stats()
-    assert json.loads(host.frames[-1])["dropped_reports"] == [{"function_id": "f", "reason": "TOO_LARGE", "count": 1}]
-
-
 def test_a_frame_the_closed_socket_refuses_stays_buffered_in_order() -> None:
     class Closing(FakeHost):
         def __init__(self) -> None:

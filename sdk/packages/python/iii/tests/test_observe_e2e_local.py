@@ -1,5 +1,5 @@
 """Observable functions against the real engine: local dispatch, the reporter,
-the observer hooks, keyed delivery, deliver hooks that call through an
+the observer hooks, matching by keys, deliver hooks that call through an
 observer, event sources and private functions."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from observe_e2e_utils import (
     wait_for,
 )
 
-from iii import Call, InvocationError, Observer, ObserveRejection, keyed
+from iii import Call, InvocationError, Observer, ObserveRejection
 from iii.iii import III
 
 ALL = ["input", "output", "error", "caller", "metadata"]
@@ -148,8 +148,8 @@ def test_activation_race_after_ready_every_local_invocation_is_reported(worker: 
 
 
 class Cron:
-    """A cron-like source: its handler returns the tick, its hooks keep one index entry per expression, and keyed
-    delivery hands each tick to that expression's observers."""
+    """A cron-like source: its handler returns the tick, its hooks keep one index entry per expression, and its
+    match keys give each tick to that expression's observers."""
 
     def __init__(self, client: III) -> None:
         self.client = client
@@ -181,8 +181,8 @@ class Cron:
             if obs in self.index.get(obs.args["expression"], []):
                 self.index[obs.args["expression"]].remove(obs)
 
-        client.on_observer_deliver(
-            self.fn, keyed(observer=lambda obs: obs.args["expression"], call=lambda call: call.input["expression"])
+        client.on_observer_match(
+            self.fn, observer=lambda obs: obs.args["expression"], call=lambda call: call.input["expression"]
         )
         self.ref = client.register_function(
             self.fn,
@@ -218,9 +218,7 @@ def test_args_are_what_the_observer_sent_and_bad_args_are_invalid_args_before_an
     assert len(cron.added) == 1
 
 
-def test_keyed_observers_only_receive_their_keys_calls_even_right_after_ready(
-    worker: Any, fid: Any
-) -> None:
+def test_observers_matched_by_keys_only_receive_their_keys_calls_even_right_after_ready(worker: Any, fid: Any) -> None:
     cron = Cron(worker("cron-owner"))
     watcher = worker("routing-watcher")
     five = collector(watcher, fid("py-routing::five"))
@@ -317,7 +315,7 @@ def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_dispo
     owner.on_observer_removed(on_request_id, lambda obs: routes.pop(obs.args["path"], None))
 
     @owner.on_observer_deliver(on_request_id)
-    def route(call: Call[Any, Any], observers: Any, next: Any) -> Any:
+    def route(call: Call[Any, Any], observers: Any) -> Any:
         obs = routes.get(call.input["path"])
         if obs is None:
             return {"status": 404}

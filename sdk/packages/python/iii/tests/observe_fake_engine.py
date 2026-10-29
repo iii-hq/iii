@@ -182,9 +182,9 @@ def settle(client: III, engine: FakeEngine) -> None:
     async def drain() -> None:
         while True:  # hook queues may queue more work (removals)
             tails = [
-                fn.observe._tail
-                for fn in list(client._functions.values())
-                if fn.observe is not None and fn.observe._tail is not None and not fn.observe._tail.done()
+                queue.tail
+                for queue in list(client._hook_queues.values())
+                if queue.tail is not None and not queue.tail.done()
             ]
             if not tails:
                 break

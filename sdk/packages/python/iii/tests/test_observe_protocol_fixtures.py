@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -384,15 +383,19 @@ def test_invocationsobserved_event_source_json_a_private_source_called_in_a_rout
 
 
 def test_localinvocationstats_json() -> None:
+    expected = fixture("localinvocationstats.json")
+    drops: dict[str, dict[str, int]] = {}
+    for drop in expected["dropped_reports"]:
+        drops.setdefault(drop["function_id"], {})[drop["reason"]] = drop["count"]
     message = build_local_invocation_stats(
         10000,
         {
             "database::on-row-changed": function_stats(48211, 0, 190.2),
             "database::query": function_stats(37, 2, 15.5),
         },
-        {"database::on-row-changed": {"BUFFER_FULL": 12}, "database::execute": {"LATE_DELIVERY": 1}},
+        drops,
     )
-    assert wire(message) == fixture("localinvocationstats.json")
+    assert wire(message) == expected
 
 
 def test_invokefunction_workers_register_json_features_in_the_payload(engine: FakeEngine, connect: Any) -> None:
@@ -440,76 +443,34 @@ def test_invocationresult_observed_json_routed_call_matches_ride_the_answer(engi
     assert reported_items(engine) == []  # no extra frame
 
 
-def test_invocationsobserved_routed_and_invocationresult_hook_result_json(engine: FakeEngine, connect: Any) -> None:
-    [item] = fixture("invocationsobserved-routed.json")["items"]
-    expected_answer = fixture("invocationresult-hook-result.json")
+def test_invocationresult_hook_result_json_a_deliver_hook_answers_with_its_value_and_reports_nothing(
+    engine: FakeEngine, connect: Any
+) -> None:
+    expected = fixture("invocationresult-hook-result.json")
+    output = {"order_id": "ord_1004", "sku": "A-1", "qty": 2, "total": 1250, "warehouse": "ams-2"}
     client = connect(engine)
-    client.register_function("orders::submit", lambda order: item["output"])
+    client.register_function("orders::submit", lambda order: output)
 
     @client.on_observer_deliver("orders::submit")
-    async def accept(call: Any, observers: Any, next: Any) -> dict[str, Any]:
-        order = await next(call, observers)
-        return {"order_id": order["order_id"], "status": "accepted"}
+    def accept(call: Any, observers: Any) -> dict[str, Any]:
+        return {"order_id": call.output["order_id"], "status": "accepted"}
 
-    _confirm(client, engine, "orders::submit", [observer_info(o, "t") for o in item["matched"]])
+    _confirm(client, engine, "orders::submit", [observer_info("c6ccda45-4a35-461a-a9c4-a318eec7c36a", "t")])
+    engine.clear()
     engine.deliver(
         invoke(
             "orders::submit",
-            item["input"],
-            item["invocation_id"],
-            traceparent=item["traceparent"],
-            caller={"worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f", "worker_name": "checkout", **item["caller"]},
+            {"sku": "A-1", "qty": 2},
+            expected["invocation_id"],
+            traceparent=expected["traceparent"],
+            caller={"worker_id": "w-1", "worker_name": "checkout"},
         )
     )
-    [answer] = engine.wait_for(lambda: answers(engine, item["invocation_id"]), what="the answer")
-    assert same_trace(answer, expected_answer) == expected_answer  # the hook's value, no `observed`
-    frames = engine.frames()
-    report_at = next(i for i, f in enumerate(frames) if f["type"] == "invocationsobserved")
-    assert report_at < frames.index(answer)  # the items go ahead of the answer
-    [sent] = frames[report_at]["items"]
-    sent["started_at_ms"], sent["duration_ms"] = item["started_at_ms"], item["duration_ms"]
-    assert same_trace(sent, item) == item
-
-
-def test_invocationsobserved_routed_items_json_next_with_changed_calls(engine: FakeEngine, connect: Any) -> None:
-    expected = fixture("invocationsobserved-routed-items.json")
-    first, second = expected["items"]
-    invocation_id = first["invocation_id"]
-    client = connect(engine)
-    batch = {"orders": [first["input"], second["input"]]}
-    client.register_function("orders::import", lambda data: first["output"])
-
-    @client.on_observer_deliver("orders::import")
-    def per_order(call: Any, observers: Any, next: Any) -> Any:
-        output = next(call, observers)
-        for order in call.input["orders"]:
-            next(replace(call, input=order), observers)
-        return output
-
-    by_warehouse = [
-        observer_info(
-            item["matched"][0], "t", filters={"$and": [{"input.warehouse": {"$eq": item["input"]["warehouse"]}}]}
-        )
-        for item in (first, second)
-    ]
-    _confirm(client, engine, "orders::import", [*by_warehouse, observer_info("batch-observer", "t")])
-    engine.deliver(
-        invoke(
-            "orders::import",
-            batch,
-            invocation_id,
-            traceparent=first["traceparent"],
-            caller={"worker_id": "w-erp", "worker_name": "erp", **first["caller"]},
-        )
-    )
-    [answer] = engine.wait_for(lambda: answers(engine, invocation_id), what="the answer")
-    assert answer["observed"] == ["batch-observer"]  # the unchanged call's match rides the answer
-    assert answer["result"] == first["output"]
-    [report] = engine.frames_of("invocationsobserved")
-    assert engine.frames().index(report) < engine.frames().index(answer)
-    for sent, item in zip(report["items"], expected["items"]):
-        sent["started_at_ms"], sent["duration_ms"] = item["started_at_ms"], item["duration_ms"]
-        assert same_trace(sent, item) == item
+    [answer] = engine.wait_for(lambda: answers(engine, expected["invocation_id"]), what="the answer")
+    assert same_trace(answer, expected) == expected  # the hook's value, no `observed`
+    settle(client, engine)
+    # a routed call is reported only through its answer, and a function with a deliver hook lists nothing
+    assert engine.frames_of("invocationsobserved") == []
 
 
 def test_invocationresult_observed_error_json_shape_an_error_answer_keeps_observed(
@@ -550,7 +511,7 @@ def _http_host(client: III, engine: FakeEngine, target_result: dict[str, Any]) -
     client.register_function("http::on-request", lambda request: request, private=True)
 
     @client.on_observer_deliver("http::on-request")
-    async def route(call: Any, observers: Any, next: Any) -> Any:
+    async def route(call: Any, observers: Any) -> Any:
         [obs] = [o for o in observers if o.args["path"] == "/users/:id"]
         return await client.call_async({"observer": obs, "payload": forwarded["data"]})
 

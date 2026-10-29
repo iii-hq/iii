@@ -1,7 +1,8 @@
-"""Delivery in the worker that hosts a function: iii's own (``next``), an
-``on_observer_deliver`` hook, keyed delivery, ``is_observed``, calls through
-an observer, ``private`` and ``output_is_input``, older engines and
-``standby``. Against a fake engine."""
+"""Delivery in the worker that hosts a function: matching
+(``on_observer_match``, by predicate and by keys), iii's delivery, an
+``on_observer_deliver`` hook, ``is_observed``, calls through an observer,
+``private`` and ``output_is_input``, older engines and ``standby``. Against a
+fake engine."""
 
 from __future__ import annotations
 
@@ -29,7 +30,7 @@ from observe_fake_engine import (
     wait_until,
 )
 
-from iii import Call, CallAction, InvocationError, Observer, ObserveRejection, keyed
+from iii import Call, CallAction, InvocationError, Observer, ObserveRejection
 from iii.iii import III
 
 
@@ -47,7 +48,7 @@ def _items(engine: FakeEngine, function_id: str) -> list[dict[str, Any]]:
     return [i for i in reported_items(engine) if i["function_id"] == function_id]
 
 
-# ── iii's delivery: next ───────────────────────────────────────────────────
+# ── iii's delivery ─────────────────────────────────────────────────────────
 
 
 def test_iii_delivers_the_observers_whose_on_and_filters_match(engine: FakeEngine, connect: Any) -> None:
@@ -79,106 +80,361 @@ def test_iii_delivers_the_observers_whose_on_and_filters_match(engine: FakeEngin
     ]
 
 
-def test_a_deliver_hook_picks_observers_by_their_args_and_next_returns_the_output(
+def test_a_routed_call_lists_what_iii_delivered_on_its_answer_and_reports_nothing(
     engine: FakeEngine, connect: Any
 ) -> None:
     client = connect(engine)
-    seen: list[tuple[Any, list[str]]] = []
 
-    @client.on_observer_deliver("cron::on-tick")
-    def by_expression(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-        seen.append((call.input, [o.id for o in observers]))
-        return next(call, [o for o in observers if o.args["expression"] == call.input["expression"]])
+    def charge(data: dict[str, Any]) -> dict[str, Any]:
+        if data["amount"] < 0:
+            raise ValueError("refused")
+        return {"charged": data["amount"]}
 
-    client.register_function("cron::on-tick", lambda tick: tick, private=True)
+    client.register_function("payments::charge", charge)
+    _confirm(
+        client,
+        engine,
+        "payments::charge",
+        observer_info("big", "t", filters={"$and": [{"input.amount": {"$gte": 100}}]}),
+        observer_info("errors", "t", on="error"),
+    )
+    engine.deliver(invoke("payments::charge", {"amount": 500}, "r-ok"))
+    engine.deliver(invoke("payments::charge", {"amount": -1}, "r-error"))
+    engine.deliver(invoke("payments::charge", {"amount": 5}, "r-none"))
+    [ok] = engine.wait_for(lambda: answers(engine, "r-ok"), what="the answer")
+    [failed] = engine.wait_for(lambda: answers(engine, "r-error"), what="the error answer")
+    [none] = engine.wait_for(lambda: answers(engine, "r-none"), what="the unmatched answer")
+    assert (ok["result"], ok["observed"]) == ({"charged": 500}, ["big"])
+    # the handler's error rides the answer, with the observers delivered for it
+    assert (failed["error"]["message"], failed["observed"]) == ("refused", ["errors"])
+    assert "observed" not in none
+    settle(client, engine)
+    assert reported_items(engine) == []
+
+
+# ── on_observer_match: a predicate ─────────────────────────────────────────
+
+
+def _cron(client: III, engine: FakeEngine) -> list[tuple[str, Any]]:
+    """``cron::on-tick``: an observer of an expression gets that expression's ticks. Returns each predicate call."""
+    asked: list[tuple[str, Any]] = []
+
+    def wants(obs: Observer, call: Call[Any, Any]) -> bool:
+        asked.append((obs.id, call.input["n"]))
+        return bool(obs.args["expression"] == call.input["expression"])
+
+    client.register_function("cron::on-tick", lambda tick: tick, private=True).on_observer_match(wants)
     _confirm(
         client,
         engine,
         "cron::on-tick",
         observer_info("five", "t", args={"expression": "*/5"}),
         observer_info("ten", "t", args={"expression": "*/10"}),
+        observer_info("ten-even", "t", args={"expression": "*/10"}, filters={"$and": [{"input.n": {"$eq": 2}}]}),
     )
+    return asked
+
+
+def test_a_predicate_runs_once_per_active_observer_per_call_before_filters(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    asked = _cron(client, engine)
     tick = {"expression": "*/10", "n": 1}
     assert client.call({"function_id": "cron::on-tick", "payload": tick}) is tick  # private: by reference
+    client.call({"function_id": "cron::on-tick", "payload": {"expression": "*/10", "n": 2}})
+    engine.deliver(invoke("cron::on-tick", {"expression": "*/5", "n": 3}, "r-tick"))
+    [answer] = engine.wait_for(lambda: answers(engine, "r-tick"), what="the answer")
     settle(client, engine)
-    assert seen == [(tick, ["five", "ten"])]
-    assert [i["matched"] for i in _items(engine, "cron::on-tick")] == [["ten"]]
+    # every active observer, filters or not, once per call
+    assert sorted(asked) == sorted((o, n) for o in ("five", "ten", "ten-even") for n in (1, 2, 3))
+    # then iii's delivery applies the filters of the observers that want the call
+    assert [sorted(i["matched"]) for i in _items(engine, "cron::on-tick")] == [["ten"], ["ten", "ten-even"]]
+    assert answer["observed"] == ["five"]
+
+
+def test_a_predicate_that_raises_is_no_match_and_is_logged_once_per_function(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = connect(engine)
+
+    @client.on_observer_match("flaky::fn")
+    def wants(obs: Observer, call: Call[Any, Any]) -> bool:
+        if obs.id == "broken":
+            raise KeyError("expression")
+        return True
+
+    client.register_function("flaky::fn", lambda d: d)
+    _confirm(client, engine, "flaky::fn", observer_info("broken", "t"), observer_info("fine", "t"))
+    with caplog.at_level(logging.ERROR, logger="iii.observe"):
+        assert client.call({"function_id": "flaky::fn", "payload": 1}) == 1
+        assert client.call({"function_id": "flaky::fn", "payload": 2}) == 2
+        settle(client, engine)
+    assert [i["matched"] for i in _items(engine, "flaky::fn")] == [["fine"], ["fine"]]
+    logged = [r for r in caplog.records if "on_observer_match of flaky::fn" in r.getMessage()]
+    assert len(logged) == 1
+
+
+# ── on_observer_match: keys ────────────────────────────────────────────────
+
+
+def _row_key(db: str, table: str, op: str) -> str:
+    return f"{db}|{table}|{op}"
+
+
+def _row_changed(client: III, engine: FakeEngine) -> tuple[list[str], list[Any]]:
+    """The database worker's source: observers filed under ``db|table|op`` with wildcards. Returns the ids the
+    observer key function was called for, and the inputs the call key function was called for."""
+    observer_calls: list[str] = []
+    call_calls: list[Any] = []
+
+    def observer_keys(obs: Observer) -> list[str]:
+        observer_calls.append(obs.id)
+        args = obs.args
+        return [_row_key(args["db"], args.get("table", "*"), op) for op in args.get("ops", ["*"])]
+
+    def call_keys(call: Call[Any, Any]) -> list[str]:
+        change = call.input
+        call_calls.append(change)
+        return [_row_key(change["db"], t, op) for t in (change["table"], "*") for op in (change["op"], "*")]
+
+    client.register_function("database::on-row-changed", lambda change: change, private=True)
+    client.on_observer_match("database::on-row-changed", observer=observer_keys, call=call_keys)
+    _confirm(
+        client,
+        engine,
+        "database::on-row-changed",
+        observer_info("orders-insert", "t", args={"db": "primary", "table": "orders", "ops": ["insert"]}),
+        observer_info("orders-any", "t", args={"db": "primary", "table": "orders"}),
+        observer_info("every-insert", "t", args={"db": "primary", "ops": ["insert", "update"]}),
+        observer_info("other-db", "t", args={"db": "replica"}),
+    )
+    return observer_calls, call_calls
+
+
+def test_keys_match_the_observers_filed_under_the_calls_keys(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    observer_calls, call_calls = _row_changed(client, engine)
+    assert sorted(observer_calls) == ["every-insert", "orders-any", "orders-insert", "other-db"]  # once each
+    changes = [
+        {"db": "primary", "table": "orders", "op": "insert"},
+        {"db": "primary", "table": "orders", "op": "delete"},
+        {"db": "primary", "table": "users", "op": "update"},
+        {"db": "primary", "table": "users", "op": "delete"},
+    ]
+    for change in changes:
+        client.call({"function_id": "database::on-row-changed", "payload": change})
+    engine.deliver(invoke("database::on-row-changed", {"db": "replica", "table": "x", "op": "delete"}, "r-row"))
+    [answer] = engine.wait_for(lambda: answers(engine, "r-row"), what="the answer")
+    settle(client, engine)
+    assert [sorted(i["matched"]) for i in _items(engine, "database::on-row-changed")] == [
+        ["every-insert", "orders-any", "orders-insert"],
+        ["orders-any"],
+        ["every-insert"],
+    ]
+    assert answer["observed"] == ["other-db"]
+    assert sorted(observer_calls) == ["every-insert", "orders-any", "orders-insert", "other-db"]  # computed once
+    assert len(call_calls) == len(changes) + 1  # once per call
+
+
+def test_keys_is_observed_and_the_index_under_add_and_remove(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    _row_changed(client, engine)
+    fid = "database::on-row-changed"
+    users_delete = {"input": {"db": "primary", "table": "users", "op": "delete"}}
+    assert client.is_observed(fid, {"input": {"db": "replica", "table": "x", "op": "delete"}}) is True
+    assert client.is_observed(fid, users_delete) is False
+    assert client.is_observed(fid) is True  # without a call: any observer
+    engine.deliver(observer_added(fid, 1, observer_info("users", "t", args={"db": "primary", "table": "users"})))
+    engine.wait_for(lambda: "users" in {a["id"] for a in acks(engine)}, what="the ack")
+    assert client.is_observed(fid, users_delete) is True
+    client.call({"function_id": fid, "payload": users_delete["input"]})
+    engine.deliver(observer_removed(fid, 2, "users"))
+    wait_until(lambda: not client.is_observed(fid, users_delete), what="it to be unfiled")
+    client.call({"function_id": fid, "payload": users_delete["input"]})
+    engine.deliver(observer_removed(fid, 3, "orders-any"))
+    orders_delete = {"input": {"db": "primary", "table": "orders", "op": "delete"}}
+    wait_until(lambda: not client.is_observed(fid, orders_delete), what="orders-any to be unfiled")
+    orders_insert = {"db": "primary", "table": "orders", "op": "insert"}
+    client.call({"function_id": fid, "payload": orders_insert})
+    settle(client, engine)
+    assert [sorted(i["matched"]) for i in _items(engine, fid)] == [["users"], ["every-insert", "orders-insert"]]
+
+
+def test_a_call_is_matched_against_the_active_set_it_started_with(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    _row_changed(client, engine)
+    fid = "database::on-row-changed"
+    state = client._functions[fid].observe
+    started = state.active
+    call = Call(
+        function_id=fid, invocation_id="i", status="success", input={"db": "replica", "table": "x", "op": "delete"}
+    )
+    engine.deliver(observer_removed(fid, 1, "other-db"))
+    wait_until(lambda: state.active is not started, what="the removal")
+    assert [o.id for o in state.matching(started, call)] == ["other-db"]  # the snapshot is never changed
+    assert state.matching(state.active, call) == ()
+    assert [o.id for o in started.observers] == ["orders-insert", "orders-any", "every-insert", "other-db"]
+
+
+def test_keys_set_while_observers_are_active_file_them_and_a_failing_key_rejects(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    ref = client.register_function("cron::on-tick", lambda tick: tick, private=True)
+    _confirm(
+        client,
+        engine,
+        "cron::on-tick",
+        observer_info("ok", "t", args={"expression": "*/5"}),
+        observer_info("bad", "t", args={}),
+    )
+    engine.clear()
+    keys = ref.on_observer_match(observer=lambda o: o.args["expression"], call=lambda c: c.input["expression"])
+    assert client._match_hooks["cron::on-tick"] is keys
+    [ack] = engine.wait_for(lambda: acks(engine), what="the rejection")
+    assert (ack["id"], ack["error"]["code"]) == ("bad", "OBSERVE_REJECTED")
+    assert "could not be computed" in ack["error"]["message"]
+    assert ref.is_observed({"input": {"expression": "*/5"}}) is True
+    assert ref.is_observed({"input": {"expression": "*/7"}}) is False
+    # an observer added later whose key raises is rejected before it is accepted
+    engine.deliver(observer_added("cron::on-tick", 1, observer_info("later", "t", args={"expr": "typo"})))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="its rejection")
+    assert acks(engine)[1]["error"]["code"] == "OBSERVE_REJECTED"
+    # without a match hook every active observer wants every call
+    ref.on_observer_match(None)
+    wait_until(lambda: client._functions["cron::on-tick"].observe.active.index is None, what="the rebuild")
+    assert ref.is_observed({"input": {"expression": "*/7"}}) is True
+    assert [o.id for o in ref.observers()] == ["ok"]
+
+
+def test_a_key_function_that_rejects_its_observer_does_not_block_the_sdk(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+
+    def observer_keys(obs: Observer) -> str:
+        if obs.args.get("refuse"):
+            obs.reject("REFUSED", "not this one")
+        return str(obs.args["topic"])
+
+    client.on_observer_match("topics::fn", observer=observer_keys, call=lambda call: call.input["topic"])
+    ref = client.register_function("topics::fn", lambda d: d)
+    _confirm(
+        client,
+        engine,
+        "topics::fn",
+        observer_info("kept", "t", args={"topic": "a"}),
+        observer_info("refused", "t", args={"topic": "a", "refuse": True}),
+    )
+    assert [o.id for o in ref.observers()] == ["kept"]
+    assert {(a["id"], (a.get("error") or {}).get("code")) for a in acks(engine)} == {
+        ("kept", None),
+        ("refused", "REFUSED"),
+    }
+    # the same while the index is rebuilt for observers already active
+    engine.clear()
+    rejecting = {"on": False}
+
+    def reject_on_rebuild(obs: Observer) -> str:
+        if rejecting["on"]:
+            obs.reject("REBUILT", "refused on rebuild")
+        return str(obs.args["topic"])
+
+    rejecting["on"] = True
+    ref.on_observer_match(observer=reject_on_rebuild, call=lambda call: call.input["topic"])
+    [ack] = engine.wait_for(lambda: acks(engine), what="the late rejection")
+    assert (ack["id"], ack["error"]["code"]) == ("kept", "REBUILT")
+    assert ref.observers() == [] and ref.is_observed({"input": {"topic": "a"}}) is False
+
+
+def test_a_call_key_function_that_raises_matches_nothing_and_is_logged_once(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = connect(engine)
+    ref = client.register_function("strict::fn", lambda d: d)
+    ref.on_observer_match(observer=lambda obs: "k", call=lambda call: call.input["key"])
+    _confirm(client, engine, "strict::fn", observer_info("o", "t"))
+    with caplog.at_level(logging.ERROR, logger="iii.observe"):
+        assert ref.is_observed({"input": {}}) is False
+        client.call({"function_id": "strict::fn", "payload": {}})
+        client.call({"function_id": "strict::fn", "payload": {"key": "k"}})
+        settle(client, engine)
+    assert [i["matched"] for i in _items(engine, "strict::fn")] == [["o"]]
+    assert len([r for r in caplog.records if "on_observer_match of strict::fn" in r.getMessage()]) == 1
+
+
+def test_keys_must_be_strings(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    ref = client.register_function("typed::fn", lambda d: d)
+    ref.on_observer_match(observer=lambda obs: 7, call=lambda call: "k")  # type: ignore[arg-type,return-value]
+    engine.deliver(function_registered("typed::fn", [observer_info("o", "t")]))
+    [ack] = engine.wait_for(lambda: acks(engine), what="the rejection")
+    assert ack["error"]["code"] == "OBSERVE_REJECTED" and "string" in ack["error"]["message"]
+
+
+# ── on_observer_deliver ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("hook_kind", ["sync", "async"])
-def test_what_the_hook_returns_is_what_the_caller_gets(engine: FakeEngine, connect: Any, hook_kind: str) -> None:
+def test_a_deliver_hook_gets_the_call_and_the_observers_and_its_value_is_what_the_caller_gets(
+    engine: FakeEngine, connect: Any, hook_kind: str
+) -> None:
     client = connect(engine)
+    seen: list[tuple[Any, Any, list[str]]] = []
 
     if hook_kind == "async":
 
-        async def answer(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-            output = await next(call, observers)
-            return {"wrapped": output}
+        async def answer(call: Call[Any, Any], observers: Any) -> Any:
+            seen.append((call.input, call.output, [o.id for o in observers]))
+            return {"wrapped": call.output}
 
     else:
 
-        def answer(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-            return {"wrapped": next(call, observers)}
+        def answer(call: Call[Any, Any], observers: Any) -> Any:
+            seen.append((call.input, call.output, [o.id for o in observers]))
+            return {"wrapped": call.output}
 
     client.on_observer_deliver("wrap::fn", answer)
     client.register_function("wrap::fn", lambda data: data["n"] * 2)
-    _confirm(client, engine, "wrap::fn", observer_info("o", "t", capture=["input", "output"]))
+    _confirm(client, engine, "wrap::fn", observer_info("a", "t"), observer_info("b", "t", on="error"))
     assert client.call({"function_id": "wrap::fn", "payload": {"n": 2}}) == {"wrapped": 4}
 
     async def from_a_loop() -> Any:
         return await client.call_async({"function_id": "wrap::fn", "payload": {"n": 3}})
 
     assert asyncio.run(from_a_loop()) == {"wrapped": 6}
-    # routed
     engine.deliver(invoke("wrap::fn", {"n": 5}, "r-1"))
     [answer_frame] = engine.wait_for(lambda: answers(engine, "r-1"), what="the answer")
     assert answer_frame["result"] == {"wrapped": 10}
-    settle(client, engine)
-    # the routed call's match is reported in an item: the answer is not the handler's output
+    # the hook delivers: iii delivers nothing for the function, local or routed
     assert "observed" not in answer_frame
-    outputs = sorted(i["output"] for i in _items(engine, "wrap::fn"))
-    assert outputs == [4, 6, 10]
-
-
-def test_each_observer_is_delivered_at_most_once_per_call_and_changed_calls_report_items(
-    engine: FakeEngine, connect: Any
-) -> None:
-    client = connect(engine)
-
-    @client.on_observer_deliver("batch::fn")
-    def per_item(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-        next(call, observers)
-        next(call, observers)  # again: nobody twice
-        for item in call.input["items"]:
-            next(replace(call, input=item), observers)
-        return call.output
-
-    client.register_function("batch::fn", lambda batch: len(batch["items"]))
-    _confirm(
-        client,
-        engine,
-        "batch::fn",
-        observer_info("any", "t", capture=["input"]),
-        observer_info("red", "t", filters={"$and": [{"input.color": {"$eq": "red"}}]}, capture=["input"]),
-        observer_info("blue", "t", filters={"$and": [{"input.color": {"$eq": "blue"}}]}, capture=["input"]),
-    )
-    batch = {"items": [{"color": "red"}, {"color": "blue"}, {"color": "red"}]}
-    assert client.call({"function_id": "batch::fn", "payload": batch}) == 3
     settle(client, engine)
-    items = _items(engine, "batch::fn")
-    assert [(i["matched"], i["input"]) for i in items] == [
-        (["red"], {"color": "red"}),
-        (["blue"], {"color": "blue"}),
-        (["any"], batch),  # the unchanged call's pooled ids, in one item with the handler's call
-    ]
-    assert len({i["invocation_id"] for i in items}) == 1
+    assert reported_items(engine) == [] and engine.frames_of("invocationsobserved") == []
+    # every observer, `on` and filters unapplied: the hook applies them with obs.matches
+    assert seen == [({"n": n}, n * 2, ["a", "b"]) for n in (2, 3, 5)]
+
+
+def test_a_deliver_hook_receives_only_the_observers_that_matched(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    seen: list[list[str]] = []
+    client.on_observer_match("queue::on-message", observer=lambda obs: obs.id, call=lambda c: c.metadata["subscriber"])
+
+    @client.on_observer_deliver("queue::on-message")
+    def ack(call: Call[Any, Any], observers: Any) -> Any:
+        seen.append([o.id for o in observers])
+        return None if observers else "unrouted"
+
+    client.register_function("queue::on-message", lambda message: message, private=True)
+    _confirm(client, engine, "queue::on-message", observer_info("sub-1", "t"), observer_info("sub-2", "t"))
+    client.call({"function_id": "queue::on-message", "payload": {}, "metadata": {"subscriber": "sub-2"}})
+    engine.deliver(invoke("queue::on-message", {}, "r-gone", metadata={"subscriber": "gone"}))
+    [answer] = engine.wait_for(lambda: answers(engine, "r-gone"), what="the answer")
+    assert answer["result"] == "unrouted" and "observed" not in answer
+    assert seen == [["sub-2"], []]
 
 
 def test_a_hook_rejection_or_call_error_keeps_its_code(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
 
     @client.on_observer_deliver("queue::on-message")
-    async def ack(call: Call[Any, Any], observers: Any, next: Any) -> Any:
+    async def ack(call: Call[Any, Any], observers: Any) -> Any:
         if call.metadata and call.metadata.get("subscriber") == "gone":
             raise ObserveRejection("OBSERVER_NOT_ACTIVE", "subscriber removed")
         raise RuntimeError("plain hook failure")
@@ -197,72 +453,24 @@ def test_a_hook_rejection_or_call_error_keeps_its_code(engine: FakeEngine, conne
     assert answer["error"] == {"code": "OBSERVER_NOT_ACTIVE", "message": "subscriber removed"}
 
 
-def test_a_handler_error_rethrown_by_the_hook_is_the_handlers_own_outcome(engine: FakeEngine, connect: Any) -> None:
+def test_a_handler_error_reaches_the_hook_as_an_error_call(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
 
     def fail(data: Any) -> None:
         raise ValueError("out of stock")
 
     @client.on_observer_deliver("fail::fn")
-    async def passthrough(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-        assert call.status == "error" and call.error is not None and call.error["message"] == "out of stock"
-        return await next(call, observers)
+    def recover(call: Call[Any, Any], observers: Any) -> Any:
+        assert call.status == "error" and call.output is None
+        assert call.error is not None and call.error["message"] == "out of stock"
+        return {"recovered": [o.id for o in observers if o.matches(call)]}
 
     client.register_function("fail::fn", fail)
-    _confirm(client, engine, "fail::fn", observer_info("e", "t", on="error", capture=["error"]))
-    with pytest.raises(InvocationError) as raised:
-        client.call({"function_id": "fail::fn", "payload": {}})
-    assert raised.value.code == "invocation_failed" and isinstance(raised.value.__cause__, ValueError)
+    _confirm(client, engine, "fail::fn", observer_info("e", "t", on="error"), observer_info("ok", "t"))
+    assert client.call({"function_id": "fail::fn", "payload": {}}) == {"recovered": ["e"]}
     engine.deliver(invoke("fail::fn", {}, "r-fail"))
     [answer] = engine.wait_for(lambda: answers(engine, "r-fail"), what="the answer")
-    assert answer["observed"] == ["e"]  # the error rides the answer, with its observer
-    assert answer["error"]["message"] == "out of stock"
-
-
-def test_a_hook_that_turns_a_handler_error_into_a_result_reports_an_item(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-
-    def fail(data: Any) -> None:
-        raise ValueError("boom")
-
-    @client.on_observer_deliver("recover::fn")
-    def recover(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-        try:
-            return next(call, observers)
-        except ValueError:
-            return {"recovered": True}
-
-    client.register_function("recover::fn", fail)
-    _confirm(client, engine, "recover::fn", observer_info("e", "t", on="error", capture=["error"]))
-    engine.deliver(invoke("recover::fn", {}, "r-recover"))
-    [answer] = engine.wait_for(lambda: answers(engine, "r-recover"), what="the answer")
-    assert answer["result"] == {"recovered": True} and "observed" not in answer
-    [item] = engine.frames_of("invocationsobserved")[0]["items"]
-    assert (item["invocation_id"], item["status"], item["matched"]) == ("r-recover", "error", ["e"])
-    assert engine.frames().index(engine.frames_of("invocationsobserved")[0]) < engine.frames().index(answer)
-
-
-def test_a_next_call_after_a_routed_hook_settled_delivers_nothing_and_counts_late_delivery(
-    engine: FakeEngine, connect: Any
-) -> None:
-    client = connect(engine)
-    kept: list[Any] = []
-
-    @client.on_observer_deliver("late::fn")
-    def keep(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-        kept.append((call, observers, next))
-        return call.output
-
-    client.register_function("late::fn", lambda d: d)
-    _confirm(client, engine, "late::fn", observer_info("o", "t"))
-    engine.deliver(invoke("late::fn", 1, "r-late"))
-    [answer] = engine.wait_for(lambda: answers(engine, "r-late"), what="the answer")
-    assert "observed" not in answer
-    call, observers, next = kept[0]
-    assert next(call, observers) == 1
-    settle(client, engine)
-    assert reported_items(engine) == []
-    assert client._reporter._counters.drops == {"late::fn": {"LATE_DELIVERY": 1}}
+    assert answer["result"] == {"recovered": ["e"]} and "observed" not in answer and "error" not in answer
 
 
 def test_the_deliver_hook_runs_in_the_functions_invocation(engine: FakeEngine, connect: Any) -> None:
@@ -270,10 +478,10 @@ def test_the_deliver_hook_runs_in_the_functions_invocation(engine: FakeEngine, c
     seen: list[Any] = []
 
     @client.on_observer_deliver("ctx::fn")
-    def inside(call: Call[Any, Any], observers: Any, next: Any) -> Any:
+    def inside(call: Call[Any, Any], observers: Any) -> Any:
         seen.append(client.current_invocation())
         client.call({"function_id": "elsewhere::fn", "payload": {}, "action": CallAction.Void()})
-        return next(call, observers)
+        return call.output
 
     client.register_function("ctx::fn", lambda d: d)
     _confirm(client, engine, "ctx::fn")
@@ -291,6 +499,16 @@ def test_the_deliver_hook_runs_in_the_functions_invocation(engine: FakeEngine, c
     }
 
 
+def test_a_deliver_hook_must_take_the_call_and_the_observers(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    client.on_observer_deliver("arity::fn", lambda call, observers, extra: call.output)  # type: ignore[arg-type,misc]
+    client.register_function("arity::fn", lambda d: d)
+    _confirm(client, engine, "arity::fn")
+    with pytest.raises(InvocationError) as raised:
+        client.call({"function_id": "arity::fn", "payload": 1})
+    assert raised.value.code == "invocation_failed" and isinstance(raised.value.__cause__, TypeError)
+
+
 def test_a_routed_call_with_no_observers_and_no_hook_sends_only_its_answer(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     client.register_function("quiet::fn", lambda d: d)
@@ -300,130 +518,6 @@ def test_a_routed_call_with_no_observers_and_no_hook_sends_only_its_answer(engin
     [answer] = engine.wait_for(lambda: answers(engine, "r-quiet"), what="the answer")
     settle(client, engine)
     assert engine.frames() == [answer] and "observed" not in answer
-
-
-# ── keyed ──────────────────────────────────────────────────────────────────
-
-
-def _row_key(db: str, table: str, op: str) -> str:
-    return f"{db}|{table}|{op}"
-
-
-def _row_changed(client: III, engine: FakeEngine) -> list[str]:
-    """The database worker's source: observers filed under ``db|table|op`` with wildcards. Returns the ids
-    the observer key function was called for."""
-    key_calls: list[str] = []
-
-    def observer_keys(obs: Observer) -> list[str]:
-        key_calls.append(obs.id)
-        args = obs.args
-        return [_row_key(args["db"], args.get("table", "*"), op) for op in args.get("ops", ["*"])]
-
-    def call_keys(call: Call[Any, Any]) -> list[str]:
-        change = call.input
-        return [_row_key(change["db"], t, op) for t in (change["table"], "*") for op in (change["op"], "*")]
-
-    client.register_function("database::on-row-changed", lambda change: change, private=True)
-    client.on_observer_deliver("database::on-row-changed", keyed(observer=observer_keys, call=call_keys))
-    _confirm(
-        client,
-        engine,
-        "database::on-row-changed",
-        observer_info("orders-insert", "t", args={"db": "primary", "table": "orders", "ops": ["insert"]}),
-        observer_info("orders-any", "t", args={"db": "primary", "table": "orders"}),
-        observer_info("every-insert", "t", args={"db": "primary", "ops": ["insert", "update"]}),
-        observer_info("other-db", "t", args={"db": "replica"}),
-    )
-    return key_calls
-
-
-def test_keyed_delivers_to_the_observers_filed_under_the_calls_keys(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-    key_calls = _row_changed(client, engine)
-    assert sorted(key_calls) == ["every-insert", "orders-any", "orders-insert", "other-db"]  # once each
-    for change in (
-        {"db": "primary", "table": "orders", "op": "insert"},
-        {"db": "primary", "table": "orders", "op": "delete"},
-        {"db": "primary", "table": "users", "op": "update"},
-        {"db": "primary", "table": "users", "op": "delete"},
-    ):
-        client.call({"function_id": "database::on-row-changed", "payload": change})
-    settle(client, engine)
-    assert [sorted(i["matched"]) for i in _items(engine, "database::on-row-changed")] == [
-        ["every-insert", "orders-any", "orders-insert"],
-        ["orders-any"],
-        ["every-insert"],
-    ]
-    assert sorted(key_calls) == ["every-insert", "orders-any", "orders-insert", "other-db"]  # computed once
-
-
-def test_keyed_is_observed_and_the_index_under_add_and_remove(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-    _row_changed(client, engine)
-    fid = "database::on-row-changed"
-    users_delete = {"input": {"db": "primary", "table": "users", "op": "delete"}}
-    assert client.is_observed(fid, {"input": {"db": "replica", "table": "x", "op": "delete"}}) is True
-    assert client.is_observed(fid, users_delete) is False
-    assert client.is_observed(fid) is True  # without a call: any observer
-    engine.deliver(observer_added(fid, 1, observer_info("users", "t", args={"db": "primary", "table": "users"})))
-    engine.wait_for(lambda: "users" in {a["id"] for a in acks(engine)}, what="the ack")
-    assert client.is_observed(fid, users_delete) is True
-    client.call({"function_id": fid, "payload": users_delete["input"]})
-    engine.deliver(observer_removed(fid, 2, "users"))
-    wait_until(lambda: not client.is_observed(fid, users_delete), what="it to be unfiled")
-    client.call({"function_id": fid, "payload": users_delete["input"]})
-    settle(client, engine)
-    assert [i["matched"] for i in _items(engine, fid)] == [["users"]]
-
-
-def test_keyed_set_once_observers_are_active_files_them_and_a_failing_key_rejects(
-    engine: FakeEngine, connect: Any
-) -> None:
-    client = connect(engine)
-    ref = client.register_function("cron::on-tick", lambda tick: tick, private=True)
-    _confirm(
-        client,
-        engine,
-        "cron::on-tick",
-        observer_info("ok", "t", args={"expression": "*/5"}),
-        observer_info("bad", "t", args={}),
-    )
-    engine.clear()
-    ref.on_observer_deliver(keyed(observer=lambda o: o.args["expression"], call=lambda c: c.input["expression"]))
-    [ack] = engine.wait_for(lambda: acks(engine), what="the rejection")
-    assert (ack["id"], ack["error"]["code"]) == ("bad", "OBSERVE_REJECTED")
-    assert ref.is_observed({"input": {"expression": "*/5"}}) is True
-    assert ref.is_observed({"input": {"expression": "*/7"}}) is False
-    # an observer added later whose key fails is rejected before it is accepted
-    engine.deliver(observer_added("cron::on-tick", 1, observer_info("later", "t", args={"expr": "typo"})))
-    engine.wait_for(lambda: len(acks(engine)) == 2, what="its rejection")
-    assert acks(engine)[1]["error"]["code"] == "OBSERVE_REJECTED"
-    # back to iii's delivery: every active observer
-    ref.on_observer_deliver(None)
-    assert ref.is_observed({"input": {"expression": "*/7"}}) is True
-
-
-def test_keyed_called_directly_picks_from_the_observers_it_is_given(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-    by_expression = keyed(observer=lambda o: o.args["expression"], call=lambda c: c.input["expression"])
-
-    @client.on_observer_deliver("composed::fn")
-    def composed(call: Call[Any, Any], observers: Any, next: Any) -> Any:
-        return by_expression(call, observers, next)
-
-    client.register_function("composed::fn", lambda tick: tick)
-    _confirm(
-        client,
-        engine,
-        "composed::fn",
-        observer_info("a", "t", args={"expression": "x"}),
-        observer_info("b", "t", args={"expression": "y"}),
-    )
-    client.call({"function_id": "composed::fn", "payload": {"expression": "y"}})
-    settle(client, engine)
-    assert [i["matched"] for i in _items(engine, "composed::fn")] == [["b"]]
-    with pytest.raises(TypeError):
-        keyed(observer=lambda o: 1, call=lambda c: "k").observer_keys(client.observers("composed::fn")[0])  # type: ignore[arg-type,return-value]
 
 
 # ── Observer.matches, is_observed, observers ───────────────────────────────
@@ -483,7 +577,7 @@ def _router(client: III, engine: FakeEngine) -> None:
     client.on_observer_removed("http::on-request", lambda obs: routes.pop(obs.args["path"], None))
 
     @client.on_observer_deliver("http::on-request")
-    async def route(call: Call[Any, Any], observers: Any, next: Any) -> Any:
+    async def route(call: Call[Any, Any], observers: Any) -> Any:
         obs = routes.get(call.input["path"])
         if obs is None:
             return {"status_code": 404}
@@ -642,17 +736,26 @@ def test_a_private_function_passes_input_and_result_by_reference(engine: FakeEng
     assert copied == event and copied is not event and seen[-1] is not event
 
 
-def test_an_event_source_reports_the_event_once_with_output_is_input(engine: FakeEngine, connect: Any) -> None:
+@pytest.mark.parametrize("private", [True, False])
+def test_an_event_source_reports_the_event_once_with_output_is_input(
+    engine: FakeEngine, connect: Any, private: bool
+) -> None:
     client = connect(engine)
-    client.register_function("events::on-thing", lambda event: event, private=True)
-    client.register_function("events::other", lambda event: dict(event), private=True)
+    client.register_function("events::on-thing", lambda event: event, private=private)
+    client.register_function("events::other", lambda event: dict(event), private=private)
     _confirm(client, engine, "events::on-thing", observer_info("o", "t"))
     _confirm(client, engine, "events::other", observer_info("p", "t"))
     client.call({"function_id": "events::on-thing", "payload": {"n": 1}})
     client.call({"function_id": "events::other", "payload": {"n": 2}})
+
+    async def from_a_loop() -> None:
+        await client.call_async({"function_id": "events::on-thing", "payload": {"n": 3}})
+
+    asyncio.run(from_a_loop())
     settle(client, engine)
-    [source] = _items(engine, "events::on-thing")
-    assert source["input"] == {"n": 1} and source["output_is_input"] is True and "output" not in source
+    sources = _items(engine, "events::on-thing")
+    assert [s["input"] for s in sources] == [{"n": 1}, {"n": 3}]
+    assert all(s["output_is_input"] is True and "output" not in s for s in sources)
     [other] = _items(engine, "events::other")
     assert other["output"] == {"n": 2} and "output_is_input" not in other
 
@@ -681,7 +784,7 @@ def test_functions_that_need_observe_v2_wait_for_it_and_stay_out_of_a_v1_engine(
         client.register_function("args::fn", lambda d: d, args_format={"type": "object"})
         client.register_function("private::fn", lambda d: d, private=True)
         client.register_function("sealed::fn", lambda d: d, observable=False)
-        client.on_observer_deliver("hooked::fn", lambda call, observers, next: next(call, observers))
+        client.on_observer_deliver("hooked::fn", lambda call, observers: call.output)
         client.register_function("hooked::fn", lambda d: d)
         settle(client, engine)
         engine.drop()
@@ -723,7 +826,7 @@ def test_a_deliver_hook_set_after_registering_on_a_v1_engine_unregisters_the_fun
     client = connect(engine)
     ref = client.register_function("late-hook::fn", lambda d: d)
     engine.wait_for(lambda: engine.frames_of("registerfunction"), what="the plain registration")
-    ref.on_observer_deliver(lambda call, observers, next: next(call, observers))
+    ref.on_observer_deliver(lambda call, observers: call.output)
     [frame] = engine.wait_for(lambda: engine.frames_of("unregisterfunction"), what="the unregistration")
     assert frame["id"] == "late-hook::fn"
 

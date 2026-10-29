@@ -40,7 +40,8 @@ def client():
     sdk._held_observe_frames = []
     sdk._observe_host = _ObserveHost(sdk)
     sdk._worker_added = sdk._worker_removed = None
-    sdk._added_hooks, sdk._removed_hooks, sdk._deliver_hooks = {}, {}, {}
+    sdk._added_hooks, sdk._removed_hooks, sdk._match_hooks, sdk._deliver_hooks = {}, {}, {}, {}
+    sdk._hook_queues = {}
     sdk._standing_by = set()
     # A loop that never runs: registrations go out with the replay on connect.
     sdk._loop = SimpleNamespace(call_soon_threadsafe=lambda *args: None)
