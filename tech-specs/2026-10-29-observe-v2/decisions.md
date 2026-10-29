@@ -29,7 +29,9 @@ differ, this file wins, and the spec is updated to match.
    `invocationresult` always carries the result, which the engine already uses
    as `output`. SDK detection: Node, browser and Python compare by identity
    (`output === input`, `output is input`); Rust and Go compare the serialized
-   bytes, and only when building a report item that captures both.
+   bytes, and only when building a report item that captures both. An SDK sets
+   it only when the engine advertised `observe.v2`; to an older engine the item
+   carries `output`.
 5. **Removed trigger frames** (`registertriggertype`, `unregistertriggertype`,
    `registertrigger`, `unregistertrigger`, `triggerregistrationresult`): the
    engine logs one `warn` per connection and message type naming the
@@ -77,11 +79,30 @@ differ, this file wins, and the spec is updated to match.
     to the observer's stored target and echoes the frame's `function_id` on the
     result. No SDK-side pre-check: the engine is authoritative
     (`NOT_FUNCTION_OWNER`, `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, policy).
+    A call over `max_in_flight` fails with `OVERFLOW`. A fire-and-forget call
+    (no `invocation_id`) that the engine refuses is dropped and counted under
+    its code as the drop reason, with a `debug` log.
 14. **`TriggerAction` is `CallAction`** in `engine/src/protocol.rs` and every
     SDK; the wire field `action` is unchanged.
 15. **Trigger formats.** `engine/src/trigger_formats.rs` becomes
     `event_formats.rs` with only the event payload types engine-hosted sources
     use.
+
+36. **What routed observers observe.** The engine takes a routed call's
+    `output` from `invocationresult.result`. A host lists ids in `observed`
+    only when that result is the handler's output and `next` was given the
+    call unchanged (identity in Node, browser and Python; serialized bytes in
+    Rust and Go). Otherwise it reports those matches in an
+    `invocationsobserved` item for the same `invocation_id`, carrying the call
+    `next` was given. The engine strips `observed` before forwarding a result,
+    and activates the `observed` ids on every routed answer from an
+    `observe.v2` host, including a target's answer to an activation.
+37. **0.25 `observe` object.** Decoded from any connection:
+    `{ delivery?, args_format?, legacy_trigger_type?, allow? }`. `delivery:
+    auto` and an absent `delivery` are accepted; `args_format` and
+    `legacy_trigger_type` are ignored; `allow: false` means `observable:
+    false`; `delivery: owner` or an unknown value is refused with
+    `UNSUPPORTED`.
 
 ## SDKs (all five)
 
@@ -101,9 +122,11 @@ differ, this file wins, and the spec is updated to match.
     `SPAN`, `CONFIGURATION_UPDATED`, `STREAM_CHANGED`, `STREAM_JOIN`,
     `STREAM_LEAVE`).
 18. **Older engines.** Against an engine without `observe.v2`, functions that
-    declare `args_format` or `private`, or set `onObserverDeliver`, stay
-    unregistered and the SDK logs `UNSUPPORTED` once per function; everything
-    else works.
+    declare `args_format`, `private` or `observable: false`, or set
+    `onObserverDeliver`, stay unregistered and the SDK logs `UNSUPPORTED` once
+    per function. Everything else works, with the engine evaluating routed
+    calls: the SDK delivers local calls only, sends no `observed` and no
+    `output_is_input`.
 19. **`Observer.accepted()`** resolves after the SDK has acked the observer.
     Calls through the observer sent after it resolves reach an active observer
     (frames are processed in order). Providers send initial state this way

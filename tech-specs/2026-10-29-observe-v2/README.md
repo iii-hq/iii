@@ -550,7 +550,9 @@ The worker that hosts a function delivers its calls:
   every routed call has an `invocationresult`. The SDK runs the handler and
   delivers, and lists the observers `next` was given and matched on that
   result. The engine already holds the input and the result, so a match costs
-  no extra frame:
+  no extra frame. The host lists ids only when the result is the handler's
+  return value and `next` was given the call unchanged; otherwise it reports
+  the matches in an `invocationsobserved` item for the same invocation:
 
 ```jsonc
 { "type": "invocationresult", "invocation_id": "c3f…", "result": { … },
@@ -580,10 +582,10 @@ and for engine-hosted sources.
 ```jsonc
 { "type": "registerfunction", "id": "database::on-row-changed",
   "request_format": { … }, "response_format": { … }, "args_format": { … },
-  "private": true,
-  "observable": true }
+  "private": true }
 ```
 
+`private: false` and `observable: true` are the defaults and are omitted.
 Hooks and `standby` stay in the SDK. The 0.25 `observe` object is decoded from
 `observe.v1` connections.
 
@@ -610,7 +612,7 @@ All other codes are the 0.25 ones.
 |---|---|
 | Advertise `observe.v2`; record it per connection | `engine/src/engine/mod.rs` |
 | For routed calls to `observe.v2` hosts, skip evaluation and activate the ids in `invocationresult.observed` | `engine/src/invocation/mod.rs`, `engine/src/observer/` |
-| `output_is_input` on report items and `invocationresult` | `engine/src/protocol.rs`, `engine/src/observer/` |
+| `output_is_input` on `invocationsobserved` items | `engine/src/protocol.rs`, `engine/src/observer/` |
 | Top-level `args_format`, `private`, `observable` on `RegisterFunction`; `args_format` on any function | `engine/src/protocol.rs`, `engine/src/observer/registry.rs` |
 | `private`: accept invocations only from the host; refuse it as a target | invoke path in `engine/src/engine/mod.rs`; `observe` validation |
 | Activations: check observer, host and state, then policy | `engine/src/observer/` |
@@ -781,7 +783,7 @@ connection and message type, naming the replacement, and drops the frame.
 | | 0.25 engine | v2 engine |
 |---|---|---|
 | **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. |
-| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, or `onObserverDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work. | full |
+| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, or `onObserverDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
 
 Migrating:
 
