@@ -282,13 +282,7 @@ export type DeleteResult = {
  * @see {@link UpdateSet}, {@link UpdateIncrement}, {@link UpdateDecrement},
  *      {@link UpdateAppend}, {@link UpdateRemove}, {@link UpdateMerge}
  */
-export type UpdateOp =
-  | UpdateSet
-  | UpdateIncrement
-  | UpdateDecrement
-  | UpdateAppend
-  | UpdateRemove
-  | UpdateMerge
+export type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
 
 /**
  * Input for atomically updating a stream item.

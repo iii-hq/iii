@@ -7,11 +7,9 @@ export {
   RegistrationRejectedError,
   type RegistrationRejectedInit,
 } from './errors'
-
-export { EngineFunctions, EngineSources } from './iii-constants'
-export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
-
 export { CallAction, type InitOptions, registerWorker, TriggerAction } from './iii'
+export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
+export { EngineFunctions, EngineSources } from './iii-constants'
 
 export type {
   AuthInput,
@@ -21,8 +19,8 @@ export type {
   MessageType,
   MiddlewareFunctionInput,
   OnFunctionRegistrationInput,
-  OpenEnum,
   OnFunctionRegistrationResult,
+  OpenEnum,
   RegisterFunctionFormat,
   RegisterFunctionMessage,
   StreamChannelRef,

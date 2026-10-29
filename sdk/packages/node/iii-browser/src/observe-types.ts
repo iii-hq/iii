@@ -258,7 +258,7 @@ export interface InvocationContext {
   activation?: { observer_id: string; activation_id?: string }
   observe_depth: number
   /**
-   * The W3C `traceparent` the invocation arrived with (or was triggered with,
+   * The W3C `traceparent` the invocation arrived with (or was called with,
    * for a local call). Calls made inside the handler forward it. Browser SDK
    * only: there is no OpenTelemetry context to carry it.
    */

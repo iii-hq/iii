@@ -105,10 +105,7 @@ function payloadTooLargeMessage(size: number): string {
   return `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for larger payloads: ${PAYLOAD_SIZE_DOCS}`
 }
 
-function createPayloadTooLargeError(
-  size: number,
-  functionId?: string,
-): InvocationError {
+function createPayloadTooLargeError(size: number, functionId?: string): InvocationError {
   return new InvocationError({
     code: 'payload_too_large',
     message: payloadTooLargeMessage(size),
@@ -207,11 +204,7 @@ function randomId(): string {
  * ever confused by accident -- `??` forwards the empty string, Python's `or`
  * coerced it and Go dropped it, so one mistake produced three behaviours.
  */
-function callNamespace(
-  explicit: string | undefined,
-  worker: string | undefined,
-  source: string,
-): string | undefined {
+function callNamespace(explicit: string | undefined, worker: string | undefined, source: string): string | undefined {
   if (explicit !== undefined && explicit.trim() === '') {
     throw new Error(
       `namespace is empty: ${source} was set to ${JSON.stringify(explicit)}. ` +
@@ -344,7 +337,7 @@ class Sdk implements ISdk {
 
   constructor(
     private readonly address: string,
-    private readonly options?: InitOptions,
+    options?: InitOptions,
   ) {
     this.workerName = options?.workerName ?? `browser:${randomId()}`
     // No env fallback: the browser has no `process.env`, so the option is the
@@ -1950,7 +1943,9 @@ class Sdk implements ISdk {
         `Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}. Not reconnecting.`,
       )
     } else {
-      this.logError(`Registration rejected by engine with unknown code "${init.code}"; treating as fatal. Not reconnecting.`)
+      this.logError(
+        `Registration rejected by engine with unknown code "${init.code}"; treating as fatal. Not reconnecting.`,
+      )
     }
     // Terminal: suppress reconnect so neither onSocketClose nor scheduleReconnect
     // revives a connection the engine would only reject again.
