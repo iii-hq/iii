@@ -1,0 +1,45 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "d93a1fa9-09e3-4384-8d1c-d2b8c00b26c8",
+  "function_id": "console::observers::refresh",
+  "data": {
+    "observer_id": "0ad9be10-9c1b-425e-9cdd-74160cb9fe09",
+    "activation_id": "6c796915-9a68-4c37-9f40-618816372d58",
+    "function_id": "engine::on-observers-changed",
+    "namespace": "default",
+    "invocation_id": "bd9925ec-0335-4c1c-b9b2-6072c91b361b",
+    "status": "success",
+    "input": {
+      "observer_id": "4f2a9b1c-7d3e-4f6a-8b5c-2e1d0f9a8b7c",
+      "function_id": "http::on-request",
+      "target": "users::get-by-uid",
+      "state": "error",
+      "reason": {
+        "code": "HTTP_ROUTE_CONFLICT",
+        "message": "Route 'GET /users/:uid' conflicts with 'GET /users/:id'"
+      }
+    },
+    "output": {
+      "observer_id": "4f2a9b1c-7d3e-4f6a-8b5c-2e1d0f9a8b7c",
+      "function_id": "http::on-request",
+      "target": "users::get-by-uid",
+      "state": "error",
+      "reason": {
+        "code": "HTTP_ROUTE_CONFLICT",
+        "message": "Route 'GET /users/:uid' conflicts with 'GET /users/:id'"
+      }
+    },
+    "started_at_ms": 1760350000412,
+    "duration_ms": 0.018
+  },
+  "caller": {
+    "worker_name": "iii-engine",
+    "function_id": "engine::on-observers-changed",
+    "invocation_id": "bd9925ec-0335-4c1c-b9b2-6072c91b361b"
+  },
+  "observe_depth": 1,
+  "activation": {
+    "observer_id": "0ad9be10-9c1b-425e-9cdd-74160cb9fe09",
+    "activation_id": "6c796915-9a68-4c37-9f40-618816372d58"
+  }
+}

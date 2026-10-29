@@ -1,0 +1,10 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "b414a098-c011-4e9e-8e65-e45bbe4e645a",
+  "function_id": "orders::submit",
+  "result": {
+    "order_id": "ord_1004",
+    "status": "accepted"
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-5c2e8a1f9d3b7e40-01"
+}

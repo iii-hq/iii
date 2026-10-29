@@ -24,9 +24,6 @@
         "function_id": "checkout::confirm",
         "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
       },
-      "metadata": {
-        "session_id": "s_41"
-      },
       "started_at_ms": 1760350000123,
       "duration_ms": 12.75,
       "observe_depth": 0,
@@ -74,6 +71,9 @@
         "function_id": "checkout::confirm",
         "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
       },
+      "metadata": {
+        "session_id": "s_41"
+      },
       "started_at_ms": 1760350000150,
       "duration_ms": 3.25,
       "observe_depth": 0,
@@ -108,7 +108,7 @@
       "caller": {
         "worker_name": "database",
         "function_id": "database::execute",
-        "invocation_id": "a1b3c5d7-e9f1-4a3b-8c5d-7e9f1a3b5c7d",
+        "invocation_id": "4a6c8e0b-2d4f-4a6c-9e1b-3d5f7a9c1e3b",
         "parent": {
           "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
           "worker_name": "billing",
@@ -118,7 +118,7 @@
       },
       "started_at_ms": 1760350000201,
       "duration_ms": 0.004,
-      "observe_depth": 0,
+      "observe_depth": 2,
       "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
       "baggage": "iii.function.id=database::execute"
     }

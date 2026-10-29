@@ -1,0 +1,35 @@
+{
+  "type": "invocationsobserved",
+  "items": [
+    {
+      "function_id": "orders::submit",
+      "namespace": "default",
+      "invocation_id": "b414a098-c011-4e9e-8e65-e45bbe4e645a",
+      "matched": [
+        "c6ccda45-4a35-461a-a9c4-a318eec7c36a"
+      ],
+      "status": "success",
+      "input": {
+        "sku": "A-1",
+        "qty": 2
+      },
+      "output": {
+        "order_id": "ord_1004",
+        "sku": "A-1",
+        "qty": 2,
+        "total": 1250,
+        "warehouse": "ams-2"
+      },
+      "caller": {
+        "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
+        "worker_name": "checkout",
+        "function_id": "checkout::confirm",
+        "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
+      },
+      "started_at_ms": 1760350000240,
+      "duration_ms": 4.5,
+      "observe_depth": 0,
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-5c2e8a1f9d3b7e40-01"
+    }
+  ]
+}
