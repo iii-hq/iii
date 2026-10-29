@@ -91,10 +91,12 @@ pub struct ObserverRegistry {
     by_connection: DashMap<Uuid, HashSet<String>>,
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
     by_target: DashMap<FnKey, HashSet<String>>,
-    /// The routed hook's view: functions with active observers. Read with one
-    /// atomic load per invocation, replaced (copy-on-write) on change.
-    observed: ArcSwap<HashMap<FnKey, Arc<ActiveSet>>>,
-    /// Serializes rebuilds of `observed`.
+    /// The routed hook's view (see [`ObserverRegistry::route`]): functions
+    /// with active observers and private functions a connection hosts. Read
+    /// with one atomic load per invocation, replaced (copy-on-write) on
+    /// change.
+    routed: ArcSwap<HashMap<FnKey, Arc<owner::Routed>>>,
+    /// Serializes rebuilds of `routed`.
     rebuild: Mutex<()>,
     notifiers: DashMap<Uuid, lifecycle::Notifier>,
     departed: DashMap<Uuid, Departed>,
@@ -127,10 +129,6 @@ pub struct ObserverRegistry {
     expired: DashMap<Uuid, lifecycle::Expired>,
     /// `expired` by expiry, oldest first.
     expired_order: Mutex<lifecycle::ExpiredOrder>,
-    /// Private functions: only their host invokes them (see
-    /// [`ObserverRegistry::may_invoke`]). Read on every invocation with one
-    /// atomic load; replaced (copy-on-write) on change.
-    private: ArcSwap<HashSet<FnKey>>,
     /// Engine-owned observers kept in every namespace that registers their
     /// function (see [`ObserverRegistry::observe_everywhere`]).
     standing: Mutex<Vec<StandingObserver>>,
@@ -168,7 +166,7 @@ impl ObserverRegistry {
             by_connection: DashMap::new(),
             by_function: DashMap::new(),
             by_target: DashMap::new(),
-            observed: ArcSwap::from_pointee(HashMap::new()),
+            routed: ArcSwap::from_pointee(HashMap::new()),
             rebuild: Mutex::new(()),
             notifiers: DashMap::new(),
             departed: DashMap::new(),
@@ -186,7 +184,6 @@ impl ObserverRegistry {
             tombstone_order: Mutex::new(std::collections::VecDeque::new()),
             expired: DashMap::new(),
             expired_order: Mutex::new(lifecycle::ExpiredOrder::default()),
-            private: ArcSwap::from_pointee(HashSet::new()),
             standing: Mutex::new(Vec::new()),
             standing_count: AtomicUsize::new(0),
             announcements: AtomicU64::new(0),

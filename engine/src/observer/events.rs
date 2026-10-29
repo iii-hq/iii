@@ -23,8 +23,11 @@
 //! (`{ worker_name: "iii-engine" }`), and evaluates its observers itself.
 //! Nothing is built while nothing observes the function. Its `request_format`
 //! and `response_format` describe the event (closed at the top level), so an
-//! observer's `input.*` and `output.*` filter paths are checked. A call from
-//! anyone else, the engine included, is refused with `FORBIDDEN`.
+//! observer's `input.*` and `output.*` filter paths are checked. Any other
+//! call, the engine's included, is refused with `FORBIDDEN`: by its handler,
+//! and by the routed hook while the source is observed, so a refused call is
+//! never one of its events. Unobserved, a source is not in the routed hook's
+//! view and costs other calls nothing.
 
 use std::sync::Arc;
 
@@ -33,6 +36,7 @@ use serde_json::{Value, json};
 
 use super::{
     Emission, FunctionOptions, ObserverRegistry, dispatch::Evaluation, lifecycle::Observer,
+    owner::private_refusal,
 };
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
@@ -127,11 +131,14 @@ pub(crate) fn payloads_built() -> usize {
 }
 
 /// Registers the engine-hosted source `function_id` in `default`: a private
-/// function whose handler returns its input, described by `format`.
+/// function whose calls are the events [`ObserverRegistry::emit`] makes, each
+/// its own input and output, described by `format`. Its handler refuses every
+/// call.
 pub fn register_event_source(engine: &Engine, function_id: &str, description: &str, format: Value) {
     engine
         .observers
         .set_options(DEFAULT_NAMESPACE, function_id, FunctionOptions::private());
+    let refused_id = function_id.to_string();
     engine.register_function_handler(
         RegisterFunctionRequest {
             function_id: function_id.to_string(),
@@ -140,7 +147,10 @@ pub fn register_event_source(engine: &Engine, function_id: &str, description: &s
             response_format: Some(format),
             metadata: Some(json!({ "source": "builtin", "observe": "event" })),
         },
-        Handler::new(|event: Value| async move { FunctionResult::Success(Some(event)) }),
+        Handler::new(move |_: Value| {
+            let refused = private_refusal(&refused_id);
+            async move { FunctionResult::Failure(refused) }
+        }),
     );
 }
 
@@ -491,8 +501,8 @@ mod tests {
         );
     }
 
-    /// A source's handler returns its event: observers see it as `input` and
-    /// as `output`, with the engine as the caller.
+    /// A source's event is its call's input and output: observers see it as
+    /// `input` and as `output`, with the engine as the caller.
     #[tokio::test]
     async fn an_event_is_the_input_and_the_output_and_the_engine_calls() {
         let engine = std::sync::Arc::new(Engine::new());

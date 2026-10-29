@@ -6,9 +6,9 @@
 
 //! The events of the engine-hosted sources (`configuration::on-updated`,
 //! `observability::on-log`, `observability::on-span`, `stream::on-changed`,
-//! `stream::on-join`, `stream::on-leave`). Each source's handler returns its
-//! event, so a type here is both the source's `request_format` and its
-//! `response_format`, generated from `JsonSchema`.
+//! `stream::on-join`, `stream::on-leave`). Each of a source's calls has its
+//! event as its input and as its output, so a type here is both the source's
+//! `request_format` and its `response_format`, generated from `JsonSchema`.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

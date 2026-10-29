@@ -4040,7 +4040,7 @@ mod tests {
         assert!(
             engine
                 .observers
-                .may_invoke(DEFAULT_NAMESPACE, "ext::hook", None)
+                .route(DEFAULT_NAMESPACE, "ext::hook", None)
                 .is_ok()
         );
     }
@@ -8706,7 +8706,7 @@ mod tests {
         assert!(
             engine
                 .observers
-                .may_invoke(DEFAULT_NAMESPACE, "cron::on-tick", Some(worker.id))
+                .route(DEFAULT_NAMESPACE, "cron::on-tick", Some(worker.id))
                 .is_ok()
         );
         assert_eq!(

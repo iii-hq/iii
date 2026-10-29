@@ -21,7 +21,7 @@
 //! its own `observeradded`, never both and never neither.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -166,6 +166,38 @@ impl FunctionEntry {
     }
 }
 
+/// What the routed hook knows of one function (see
+/// [`ObserverRegistry::route`]): its active observers, and who may call it.
+pub(crate) struct Routed {
+    pub(crate) active: Option<Arc<ActiveSet>>,
+    pub(crate) callers: Callers,
+}
+
+/// Who may invoke a function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Callers {
+    /// Anyone: the function is not private.
+    Anyone,
+    /// Only this connection, which hosts the private function.
+    Host(Uuid),
+    /// Nobody: a private function the engine hosts (an engine-hosted
+    /// source), whose calls are the engine's emissions. Its handler refuses
+    /// every call; while it is observed, the routed hook refuses them before
+    /// they are observed.
+    Nobody,
+}
+
+/// `FORBIDDEN`: a call of the private `function_id` from anyone but its host.
+pub(crate) fn private_refusal(function_id: &str) -> ErrorBody {
+    ErrorBody::new(
+        observe_codes::FORBIDDEN,
+        format!(
+            "`{function_id}` is private: only the worker that hosts it calls it; observe it \
+             instead"
+        ),
+    )
+}
+
 /// The active observers of one function, as the routed hook sees them, with
 /// the parts of an invocation any of them needs.
 pub struct ActiveSet {
@@ -279,10 +311,11 @@ pub fn validate_args_format(schema: &Value) -> Result<(), String> {
 impl ObserverRegistry {
     /// Records the options of the registration about to happen. Called before
     /// the function lands in the registry, so the change it causes already
-    /// sees them.
+    /// sees them, and after the registration claimed the function, so a
+    /// private function's host is known.
     pub fn set_options(&self, namespace: &str, function_id: &str, options: FunctionOptions) {
         let key = (namespace.to_string(), function_id.to_string());
-        self.mark_private(&key, options.private);
+        let private = options.private;
         if options.is_default() {
             if let Some(entry) = self.by_function.get(&key) {
                 *lock(&entry.options) = None;
@@ -293,6 +326,7 @@ impl ObserverRegistry {
                 *lock(&entry.options) = Some(options);
             });
         }
+        self.set_callers(&key, private);
     }
 
     /// The options `(namespace, function_id)` is registered with now.
@@ -303,59 +337,95 @@ impl ObserverRegistry {
             .unwrap_or_default()
     }
 
-    fn mark_private(&self, key: &FnKey, private: bool) {
-        let current = self.private.load();
-        if current.contains(key) == private {
+    /// Records who may invoke `key` under its registration: anyone, or, when
+    /// it is private, the connection that claimed it, or nobody when no
+    /// connection did (the engine hosts it). A connection's private function
+    /// stays in the routed hook's view while it is registered, observed or
+    /// not.
+    fn set_callers(&self, key: &FnKey, private: bool) {
+        let callers = if private {
+            match self
+                .deps
+                .get()
+                .and_then(|deps| deps.function_owners.get(key).map(|owner| owner.0))
+            {
+                Some(host) => Callers::Host(host),
+                None => Callers::Nobody,
+            }
+        } else {
+            Callers::Anyone
+        };
+        let _serialized = lock(&self.rebuild);
+        let current = self.routed.load();
+        if current.get(key).map(|routed| routed.callers) == Some(callers) {
             return;
         }
-        let _serialized = lock(&self.rebuild);
-        let current = self.private.load();
-        let mut next: HashSet<FnKey> = HashSet::clone(&current);
-        if private {
-            next.insert(key.clone());
+        let active = current.get(key).and_then(|routed| routed.active.clone());
+        self.store_routed(&current, key, active, callers);
+    }
+
+    /// Stores `key`'s view for the routed hook: kept while the function has
+    /// active observers or a host only it may be called by, dropped
+    /// otherwise. Called under `rebuild`.
+    fn store_routed(
+        &self,
+        current: &HashMap<FnKey, Arc<Routed>>,
+        key: &FnKey,
+        active: Option<Arc<ActiveSet>>,
+        callers: Callers,
+    ) {
+        let kept = active.is_some() || matches!(callers, Callers::Host(_));
+        if !kept && !current.contains_key(key) {
+            return;
+        }
+        let mut next: HashMap<FnKey, Arc<Routed>> = HashMap::clone(current);
+        if kept {
+            next.insert(key.clone(), Arc::new(Routed { active, callers }));
         } else {
             next.remove(key);
         }
-        self.private.store(Arc::new(next));
+        self.routed.store(Arc::new(next));
     }
 
-    /// Whether `caller` (the calling connection, `None` for the engine
-    /// itself) may invoke `(namespace, function_id)`. A private function only
-    /// by the connection that hosts it: its calls are what its observers
-    /// observe, so a call from anyone else, the engine included, would be one
-    /// it never made (v2 §6). Every other function: no restriction here. One
-    /// atomic load when no function is private.
+    /// The routed hook's one read (protocol.md §3.2; v2 §6): the active
+    /// observers of `(namespace, function_id)` when it has any, or
+    /// `FORBIDDEN` when it is private and `caller` (the calling connection,
+    /// `None` for the engine itself) does not host it. A private function's
+    /// calls are what its observers observe, so a call from anyone else, the
+    /// engine included, would be one it never made. One atomic load while no
+    /// function is observed or hosted privately by a connection; otherwise
+    /// one hash lookup more, whatever the function.
     #[inline]
-    pub fn may_invoke(
+    pub fn route(
         &self,
         namespace: &str,
         function_id: &str,
         caller: Option<Uuid>,
-    ) -> Result<(), ErrorBody> {
-        let private = self.private.load();
-        if private.is_empty()
-            || !private.contains(&(namespace, function_id) as &dyn crate::function::FunctionKey)
-        {
-            return Ok(());
+    ) -> Result<Option<Arc<ActiveSet>>, ErrorBody> {
+        let view = self.routed.load();
+        if view.is_empty() {
+            return Ok(None);
         }
-        let key: FnKey = (namespace.to_string(), function_id.to_string());
-        let host = self.owner_of(&key).map(|owner| owner.connection);
-        if host.is_some() && host == caller {
-            return Ok(());
+        let Some(routed) = view.get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+        else {
+            return Ok(None);
+        };
+        match routed.callers {
+            Callers::Anyone => {}
+            Callers::Host(host) if Some(host) == caller => {}
+            Callers::Host(_) | Callers::Nobody => return Err(private_refusal(function_id)),
         }
-        Err(ErrorBody::new(
-            observe_codes::FORBIDDEN,
-            format!(
-                "`{function_id}` is private: only the worker that hosts it calls it; observe it \
-                 instead"
-            ),
-        ))
+        Ok(routed.active.clone())
     }
 
     /// `FORBIDDEN` when `target` is private: only its host invokes it, so
     /// every activation would be refused.
     pub(crate) fn check_target_invocable(&self, target: &FnKey) -> Result<(), ErrorBody> {
-        if self.private.load().contains(target) {
+        let private = self
+            .function_entry(target)
+            .and_then(|entry| entry.options())
+            .is_some_and(|options| options.private);
+        if private {
             return Err(ErrorBody::new(
                 observe_codes::FORBIDDEN,
                 format!(
@@ -508,12 +578,13 @@ impl ObserverRegistry {
         self.refresh_active(&observer.function);
     }
 
-    /// Rebuilds the routed hook's view of `key`: its active observers, when it
-    /// has any. Copy-on-write, so the hot path reads a consistent snapshot
-    /// with one atomic load.
+    /// Rebuilds the routed hook's view of `key` from its active observers,
+    /// keeping who may call it. Copy-on-write, so the hot path reads a
+    /// consistent snapshot with one atomic load.
     pub(crate) fn refresh_active(&self, key: &FnKey) {
         let _serialized = lock(&self.rebuild);
-        let active: Vec<Arc<Observer>> = match self.function_entry(key) {
+        let entry = self.function_entry(key);
+        let active: Vec<Arc<Observer>> = match &entry {
             Some(entry) => entry
                 .observers()
                 .into_iter()
@@ -521,17 +592,23 @@ impl ObserverRegistry {
                 .collect(),
             None => Vec::new(),
         };
-        let current = self.observed.load();
+        let current = self.routed.load();
         if active.is_empty() && !current.contains_key(key) {
             return;
         }
-        let mut next: HashMap<FnKey, Arc<ActiveSet>> = HashMap::clone(&current);
-        if active.is_empty() {
-            next.remove(key);
-        } else {
-            next.insert(key.clone(), Arc::new(ActiveSet::new(key, active)));
-        }
-        self.observed.store(Arc::new(next));
+        let callers = match current.get(key) {
+            Some(routed) => routed.callers,
+            // Not in the view, so no connection hosts it privately.
+            None if entry
+                .and_then(|entry| entry.options())
+                .is_some_and(|options| options.private) =>
+            {
+                Callers::Nobody
+            }
+            None => Callers::Anyone,
+        };
+        let active = (!active.is_empty()).then(|| Arc::new(ActiveSet::new(key, active)));
+        self.store_routed(&current, key, active, callers);
     }
 
     /// A function was registered or removed, in any namespace and by any path
@@ -550,7 +627,7 @@ impl ObserverRegistry {
             if !registered {
                 // The options belong to the registration that just ended.
                 *lock(&entry.options) = None;
-                self.mark_private(&key, false);
+                self.set_callers(&key, false);
             }
             // Only a registration reads `function_owners`: a release calls
             // this while holding the function's shard.
@@ -1063,19 +1140,19 @@ mod tests {
             owners,
         );
         let (namespace, function_id) = key();
-        assert!(registry.may_invoke(&namespace, &function_id, None).is_ok());
+        assert!(registry.route(&namespace, &function_id, None).is_ok());
 
         registry.set_options(&namespace, &function_id, FunctionOptions::private());
         assert!(registry.options(&namespace, &function_id).private);
-        assert!(
-            registry
-                .may_invoke(&namespace, &function_id, Some(host))
-                .is_ok()
-        );
+        assert!(matches!(
+            registry.route(&namespace, &function_id, Some(host)),
+            Ok(None)
+        ));
         for caller in [None, Some(Uuid::new_v4())] {
             let refused = registry
-                .may_invoke(&namespace, &function_id, caller)
-                .unwrap_err();
+                .route(&namespace, &function_id, caller)
+                .err()
+                .expect("refused");
             assert_eq!(refused.code, observe_codes::FORBIDDEN);
         }
         assert_eq!(
@@ -1084,11 +1161,50 @@ mod tests {
         );
 
         registry.on_function_change(FunctionChange::Unregistered, &namespace, &function_id);
-        assert!(registry.may_invoke(&namespace, &function_id, None).is_ok());
+        assert!(registry.route(&namespace, &function_id, None).is_ok());
+        assert!(registry.routed.load().is_empty(), "out of the routed view");
         assert_eq!(
             registry.options(&namespace, &function_id),
             FunctionOptions::default()
         );
+    }
+
+    /// A private function no connection hosts (an engine-hosted source)
+    /// stays out of the routed hook's view while unobserved: with every
+    /// source an engine boots registered, a call of any other function
+    /// costs one atomic load. Observed, the hook refuses every call of it.
+    #[tokio::test]
+    async fn an_unobserved_engine_hosted_source_costs_other_calls_nothing() {
+        use super::super::events::{
+            ON_WORKERS_CHANGED, register_configuration_event_source, register_engine_event_sources,
+            register_observability_event_sources, register_stream_event_sources, test_support,
+        };
+        use crate::protocol::DEFAULT_NAMESPACE;
+
+        let engine = Arc::new(Engine::new());
+        register_engine_event_sources(&engine);
+        register_configuration_event_source(&engine);
+        register_observability_event_sources(&engine);
+        register_stream_event_sources(&engine);
+        assert!(engine.observers.routed.load().is_empty());
+        assert!(matches!(
+            engine
+                .observers
+                .route(DEFAULT_NAMESPACE, "orders::create", None),
+            Ok(None)
+        ));
+
+        let _sink = test_support::capture(&engine, "test::sink");
+        let _socket =
+            test_support::observe(&engine, "obs", ON_WORKERS_CHANGED, "test::sink", None).await;
+        for caller in [None, Some(Uuid::new_v4())] {
+            let refused = engine
+                .observers
+                .route(DEFAULT_NAMESPACE, ON_WORKERS_CHANGED, caller)
+                .err()
+                .expect("refused");
+            assert_eq!(refused.code, observe_codes::FORBIDDEN);
+        }
     }
 
     /// An ack timeout fires for the announcement it was armed for only: a

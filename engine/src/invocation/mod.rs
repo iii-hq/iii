@@ -216,19 +216,20 @@ impl InvocationHandler {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // The routed observer hook (protocol.md §3.2). Unobserved — the usual
         // case — it costs one atomic load and copies nothing; observed, it
-        // keeps only what the active observers need.
+        // keeps only what the active observers need. A private function is
+        // invoked by its host only.
         let observers = self.observers.get();
-        // A private function is invoked by its host only.
-        if let Some(registry) = observers
-            && let Err(refused) = registry.may_invoke(namespace, &function_id, worker_id)
-        {
-            return Ok(Err(refused));
-        }
-        let observed = observers.and_then(|registry| {
+        let observed = match observers.map(|registry| {
             registry
-                .watch(namespace, &function_id)
-                .map(|set| registry.begin(set, &body, &metadata, &traceparent, &baggage))
-        });
+                .route(namespace, &function_id, worker_id)
+                .map(|set| (registry, set))
+        }) {
+            Some(Err(refused)) => return Ok(Err(refused)),
+            Some(Ok((registry, Some(set)))) => {
+                Some(registry.begin(set, &body, &metadata, &traceparent, &baggage))
+            }
+            Some(Ok((_, None))) | None => None,
+        };
         // The context goes in scope around the handler (and is kept for the
         // hook) unless there is nothing in it: engine orchestration at depth 0,
         // with no context around it already, is the same as none.
