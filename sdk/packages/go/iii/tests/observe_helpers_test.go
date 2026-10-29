@@ -158,7 +158,7 @@ func call(t *testing.T, c *iii.Client, req iii.CallRequest) json.RawMessage {
 	defer cancel()
 	out, err := c.Call(ctx, req)
 	if err != nil {
-		t.Fatalf("Trigger(%s): %v", req.FunctionID, err)
+		t.Fatalf("Call(%s): %v", req.FunctionID, err)
 	}
 	return out
 }

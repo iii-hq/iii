@@ -16,8 +16,8 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Observable functions against the real engine (README §7 phase 2): local dispatch,
-// the reporter, the owner hooks and owner delivery (sdk.md §7).
+// Observable functions against the real engine: local dispatch, the reporter, the
+// observer hooks, Keyed delivery and calls through an observer.
 
 // stable drops what differs between two runs of the same invocation: ids and timings.
 func stable(env map[string]any) map[string]any {
@@ -201,77 +201,61 @@ func TestObserveActivationRace(t *testing.T) {
 	}
 }
 
-// cronOwner is an owner-delivered function that indexes its observers by the
-// "expression" arg and emits each tick to that expression's observers.
-type cronOwner struct {
+// cronSource is an event source like the cron worker's: a private function that
+// returns the tick it is called with, observed with args { expression }. Its hooks are
+// set by id before it is registered; Keyed delivers each tick to the observers of its
+// expression.
+type cronSource struct {
 	fn     string
 	client *iii.Client
 	proxy  *frameProxy
 
 	mu       sync.Mutex
-	index    map[string][]*iii.Observer
 	added    []*iii.Observer
 	removed  []string
-	emitted  []bool
 	reject   string
 	addDelay time.Duration
 }
 
-func newCronOwner(t *testing.T) *cronOwner {
+func newCronSource(t *testing.T) *cronSource {
 	t.Helper()
-	o := &cronOwner{fn: fnID(t, "go-cron::on-tick"), index: map[string][]*iii.Observer{}}
+	o := &cronSource{fn: fnID(t, "go-cron::on-tick")}
 	o.proxy = newFrameProxy(t)
-	o.client = observeWorker(t, "cron-owner", o.proxy)
-	_, err := o.client.RegisterFunction(o.fn, func(ctx context.Context, data json.RawMessage) (any, error) {
-		var tick struct {
-			Expression string `json:"expression"`
-		}
-		_ = json.Unmarshal(data, &tick)
+	o.client = observeWorker(t, "cron-source", o.proxy)
+	expression := func(obs *iii.Observer) string {
+		expr, _ := obs.Args["expression"].(string)
+		return expr
+	}
+	o.client.OnObserverAddedFor(o.fn, func(ctx context.Context, obs *iii.Observer) error {
 		o.mu.Lock()
-		observers := append([]*iii.Observer(nil), o.index[tick.Expression]...)
+		o.added = append(o.added, obs)
+		delay, reject := o.addDelay, o.reject
 		o.mu.Unlock()
-		for _, obs := range observers {
-			ok, err := obs.Emit(ctx, json.RawMessage(data))
-			if err != nil {
-				return nil, err
-			}
-			o.mu.Lock()
-			o.emitted = append(o.emitted, ok)
-			o.mu.Unlock()
+		time.Sleep(delay)
+		if reject != "" && expression(obs) == reject {
+			return iii.ObserveRejection("INVALID_CRON_EXPRESSION", "bad expression "+reject)
 		}
-		return nil, nil
-	}, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
-		Delivery:   iii.DeliveryOwner,
+		return nil
+	})
+	o.client.OnObserverRemovedFor(o.fn, func(_ context.Context, obs *iii.Observer) {
+		o.mu.Lock()
+		o.removed = append(o.removed, obs.ID)
+		o.mu.Unlock()
+	})
+	o.client.OnObserverDeliverFor(o.fn, iii.Keyed(
+		func(obs *iii.Observer) []string { return []string{expression(obs)} },
+		func(call *iii.Call) []string {
+			var tick struct {
+				Expression string `json:"expression"`
+			}
+			_ = json.Unmarshal(call.Input, &tick)
+			return []string{tick.Expression}
+		},
+	))
+	_, err := o.client.RegisterFunction(o.fn, iii.Identity, iii.FunctionOptions{
 		ArgsFormat: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["expression"],"properties":{"expression":{"type":"string"}}}`),
-		OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
-			o.mu.Lock()
-			o.added = append(o.added, obs)
-			delay, reject := o.addDelay, o.reject
-			o.mu.Unlock()
-			time.Sleep(delay)
-			expr, _ := obs.Args["expression"].(string)
-			if reject != "" && expr == reject {
-				return iii.ObserveRejection("INVALID_CRON_EXPRESSION", "bad expression "+expr)
-			}
-			o.mu.Lock()
-			o.index[expr] = append(o.index[expr], obs)
-			o.mu.Unlock()
-			return nil
-		},
-		OnObserverRemoved: func(_ context.Context, obs *iii.Observer) {
-			expr, _ := obs.Args["expression"].(string)
-			o.mu.Lock()
-			defer o.mu.Unlock()
-			o.removed = append(o.removed, obs.ID)
-			list := o.index[expr]
-			for i, x := range list {
-				if x == obs {
-					o.index[expr] = append(list[:i:i], list[i+1:]...)
-					break
-				}
-			}
-		},
-	}})
+		Private:    true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +263,7 @@ func newCronOwner(t *testing.T) *cronOwner {
 	return o
 }
 
-func (o *cronOwner) addedArgs() []map[string]any {
+func (o *cronSource) addedArgs() []map[string]any {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	var out []map[string]any
@@ -289,7 +273,7 @@ func (o *cronOwner) addedArgs() []map[string]any {
 	return out
 }
 
-func (o *cronOwner) wasRemoved(id string) bool {
+func (o *cronSource) wasRemoved(id string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, r := range o.removed {
@@ -300,19 +284,19 @@ func (o *cronOwner) wasRemoved(id string) bool {
 	return false
 }
 
-func (o *cronOwner) tick(t *testing.T, expr string, n int) {
+func (o *cronSource) tick(t *testing.T, expr string, n int) {
 	t.Helper()
 	call(t, o.client, iii.CallRequest{FunctionID: o.fn, Payload: raw(map[string]any{"expression": expr, "n": n})})
 }
 
-// sdk.md §7 Args: obs.Args is what the observer sent; a missing required argument and
-// args on an auto function are INVALID_ARGS before any hook runs.
-func TestObserveOwnerArgs(t *testing.T) {
-	cron := newCronOwner(t)
+// Args: obs.Args is what the observer sent; a missing required argument, and args on
+// a function without args_format, are INVALID_ARGS before any hook runs.
+func TestObserveSourceArgs(t *testing.T) {
+	cron := newCronSource(t)
 	watcher := observeWorker(t, "args-watcher", nil)
-	target, auto := fnID(t, "go-args::target"), fnID(t, "go-args::auto")
+	target, plain := fnID(t, "go-args::target"), fnID(t, "go-args::plain")
 	_, _ = watcher.RegisterFunction(target, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
-	_, _ = watcher.RegisterFunction(auto, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	_, _ = watcher.RegisterFunction(plain, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	ok, _ := watcher.Observe(iii.Source{FunctionID: cron.fn, Args: iii.Args{"expression": "*/5"}}, target)
 	ready(t, ok)
 	if args := cron.addedArgs(); len(args) != 1 || args[0]["expression"] != "*/5" {
@@ -322,19 +306,19 @@ func TestObserveOwnerArgs(t *testing.T) {
 	if rej := readyFails(t, missing); rej.Code != "INVALID_ARGS" {
 		t.Errorf("missing arg: %s", rej.Code)
 	}
-	onAuto, _ := watcher.Observe(iii.Source{FunctionID: auto, Args: iii.Args{"expression": "*/5"}}, target)
-	if rej := readyFails(t, onAuto); rej.Code != "INVALID_ARGS" {
-		t.Errorf("args on auto: %s", rej.Code)
+	onPlain, _ := watcher.Observe(iii.Source{FunctionID: plain, Args: iii.Args{"expression": "*/5"}}, target)
+	if rej := readyFails(t, onPlain); rej.Code != "INVALID_ARGS" {
+		t.Errorf("args on a function without args_format: %s", rej.Code)
 	}
 	if n := len(cron.addedArgs()); n != 1 {
 		t.Errorf("the hook ran %d times", n)
 	}
 }
 
-// sdk.md §7 Routing: two observers with different args only receive what the owner
-// emits to them; an emit right after Ready() is delivered.
-func TestObserveOwnerRouting(t *testing.T) {
-	cron := newCronOwner(t)
+// Keyed delivery: two observers with different args only receive the ticks of their
+// own expression; a tick nobody is filed for reaches nobody.
+func TestObserveSourceRouting(t *testing.T) {
+	cron := newCronSource(t)
 	watcher := observeWorker(t, "routing-watcher", nil)
 	five := collector(t, watcher, fnID(t, "go-routing::five"))
 	ten := collector(t, watcher, fnID(t, "go-routing::ten"))
@@ -342,6 +326,9 @@ func TestObserveOwnerRouting(t *testing.T) {
 	b, _ := watcher.Observe(iii.Source{FunctionID: cron.fn, Args: iii.Args{"expression": "*/10"}}, fnID(t, "go-routing::ten"))
 	ready(t, a)
 	ready(t, b)
+	if cron.client.IsObservedFor(cron.fn, &iii.Call{Input: raw(map[string]string{"expression": "* * *"})}) {
+		t.Error("IsObservedFor true for an expression nobody observes")
+	}
 	cron.tick(t, "*/10", 1)
 	cron.tick(t, "*/5", 2)
 	cron.tick(t, "* * *", 3)
@@ -355,11 +342,10 @@ func TestObserveOwnerRouting(t *testing.T) {
 	}
 }
 
-// sdk.md §7 Hooks: once per add and before the ack; an error rejects Ready with its
-// code; engine::observers::get shows the filters unchanged; OnObserverRemoved on
-// dispose.
-func TestObserveOwnerHooks(t *testing.T) {
-	cron := newCronOwner(t)
+// Hooks: once per add and before the ack; an error rejects Ready with its code;
+// engine::observers::get shows the filters unchanged; the removed hook on dispose.
+func TestObserveSourceHooks(t *testing.T) {
+	cron := newCronSource(t)
 	cron.mu.Lock()
 	cron.reject, cron.addDelay = "bad", 300*time.Millisecond
 	cron.mu.Unlock()
@@ -379,7 +365,7 @@ func TestObserveOwnerHooks(t *testing.T) {
 		t.Fatalf("hook calls %v", added)
 	}
 	if f, _ := json.Marshal(added[0].Filters); string(f) != `{"$and":[{"input.n":{"$gte":2}}]}` {
-		t.Errorf("filters as the owner sees them: %s", f)
+		t.Errorf("filters as the host sees them: %s", f)
 	}
 	got := call(t, watcher, iii.CallRequest{FunctionID: iii.FnGetObserver, Payload: raw(map[string]string{"id": ok.ID()})})
 	if !strings.Contains(string(got), `"input.n"`) {
@@ -392,7 +378,7 @@ func TestObserveOwnerHooks(t *testing.T) {
 	if err := ok.Dispose(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "OnObserverRemoved after dispose", 10*time.Second, func() bool { return cron.wasRemoved(ok.ID()) })
+	waitFor(t, "the removed hook after dispose", 10*time.Second, func() bool { return cron.wasRemoved(ok.ID()) })
 	for _, o := range cron.client.Observers(cron.fn) {
 		if o.ID == ok.ID() {
 			t.Error("still in Observers()")
@@ -400,12 +386,13 @@ func TestObserveOwnerHooks(t *testing.T) {
 	}
 }
 
-// sdk.md §7 Owner delivery: obs.Emit is false with no frame when the filters reject
-// the event; the target sees the envelope and the observer's metadata sidecar.
-func TestObserveOwnerEmit(t *testing.T) {
-	cron := newCronOwner(t)
-	watcher := observeWorker(t, "emit-watcher", nil)
-	target := fnID(t, "go-emit::target")
+// Delivery of a source's calls: a tick the filters reject sends no frame; the target
+// sees the envelope, the source's worker as the caller, and the observer's metadata
+// sidecar.
+func TestObserveSourceDelivery(t *testing.T) {
+	cron := newCronSource(t)
+	watcher := observeWorker(t, "delivery-watcher", nil)
+	target := fnID(t, "go-delivery::target")
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{
 		FunctionID: cron.fn, Args: iii.Args{"expression": "*/5"},
@@ -415,21 +402,15 @@ func TestObserveOwnerEmit(t *testing.T) {
 	mark := cron.proxy.mark()
 	cron.tick(t, "*/5", 1)
 	time.Sleep(100 * time.Millisecond)
-	cron.mu.Lock()
-	emitted := append([]bool(nil), cron.emitted...)
-	cron.mu.Unlock()
-	if len(emitted) != 1 || emitted[0] {
-		t.Errorf("emitted %v, want [false]", emitted)
-	}
 	if sent := without(cron.proxy.since(mark), "localinvocationstats"); len(sent) != 0 {
-		t.Errorf("frames %v for a rejected event", sent)
+		t.Errorf("frames %v for a tick the filters reject", sent)
 	}
 	cron.tick(t, "*/5", 11)
-	a := exactly(t, got, 1, "the emitted activation", 10*time.Second)[0]
+	a := exactly(t, got, 1, "the delivered activation", 10*time.Second)[0]
 	if a.Data["observer_id"] != h.ID() || a.Data["status"] != "success" || field(a.Data, "input.n") != float64(11) {
 		t.Errorf("envelope %v", a.Data)
 	}
-	if name, _ := field(a.Data, "caller.worker_name").(string); !strings.Contains(name, "cron-owner") {
+	if name, _ := field(a.Data, "caller.worker_name").(string); !strings.Contains(name, "cron-source") {
 		t.Errorf("caller %v", a.Data["caller"])
 	}
 	if string(a.Metadata) != `{"__binding":"digest"}` {
@@ -437,50 +418,51 @@ func TestObserveOwnerEmit(t *testing.T) {
 	}
 }
 
-// sdk.md §7 Owner delivery: obs.Call returns the target's result; FILTERS_NOT_MATCHED
-// sends nothing; OBSERVER_NOT_ACTIVE after dispose; NOT_OWNER_DELIVERED on an auto
-// function; the target sees the observer's metadata sidecar.
-func TestObserveOwnerCall(t *testing.T) {
+// A call through an observer returns the target's result: the deliver hook routes a
+// request to the observer of its path and answers with its target's result; a request
+// the observer's filters reject is answered without a frame; after dispose the engine
+// refuses the call; the target sees the observer's metadata sidecar.
+func TestObserveCallThroughAnObserver(t *testing.T) {
 	proxy := newFrameProxy(t)
-	owner := observeWorker(t, "http-owner", proxy)
-	onRequest, auto, getUser := fnID(t, "go-http::on-request"), fnID(t, "go-http::auto"), fnID(t, "go-users::get")
+	host := observeWorker(t, "http-host", proxy)
+	onRequest, getUser := fnID(t, "go-http::on-request"), fnID(t, "go-users::get")
 	var mu sync.Mutex
 	routes := map[string]*iii.Observer{}
-	var autoObs *iii.Observer
-	_, _ = owner.RegisterFunction(onRequest, func(ctx context.Context, data json.RawMessage) (any, error) {
+	pathOf := func(obs *iii.Observer) string {
+		path, _ := obs.Args["path"].(string)
+		return path
+	}
+	host.OnObserverAddedFor(onRequest, func(_ context.Context, obs *iii.Observer) error {
+		mu.Lock()
+		routes[pathOf(obs)] = obs
+		mu.Unlock()
+		return nil
+	})
+	host.OnObserverRemovedFor(onRequest, func(_ context.Context, obs *iii.Observer) {
+		mu.Lock()
+		delete(routes, pathOf(obs))
+		mu.Unlock()
+	})
+	host.OnObserverDeliverFor(onRequest, func(ctx context.Context, call *iii.Call, observers []*iii.Observer, next iii.Next) (any, error) {
 		var req struct {
 			Path string `json:"path"`
 		}
-		_ = json.Unmarshal(data, &req)
+		_ = json.Unmarshal(call.Input, &req)
 		mu.Lock()
 		obs := routes[req.Path]
 		mu.Unlock()
 		if obs == nil {
 			return map[string]int{"status": 404}, nil
 		}
-		return obs.Call(ctx, data)
-	}, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
-		Delivery:   iii.DeliveryOwner,
+		if !obs.Matches(call) {
+			return map[string]int{"status": 422}, nil
+		}
+		return host.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+	})
+	_, _ = host.RegisterFunction(onRequest, iii.Identity, iii.FunctionOptions{
 		ArgsFormat: json.RawMessage(`{"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}`),
-		OnObserverAdded: func(_ context.Context, obs *iii.Observer) error {
-			mu.Lock()
-			routes[obs.Args["path"].(string)] = obs
-			mu.Unlock()
-			return nil
-		},
-		OnObserverRemoved: func(_ context.Context, obs *iii.Observer) {
-			mu.Lock()
-			delete(routes, obs.Args["path"].(string))
-			mu.Unlock()
-		},
-	}})
-	_, _ = owner.RegisterFunction(auto, func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-		iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{OnObserverAdded: func(_ context.Context, obs *iii.Observer) error {
-			mu.Lock()
-			autoObs = obs
-			mu.Unlock()
-			return nil
-		}}})
+		Private:    true,
+	})
 	app := observeWorker(t, "http-app", nil)
 	var seen json.RawMessage
 	_, _ = app.RegisterFunction(getUser, func(ctx context.Context, data json.RawMessage) (any, error) {
@@ -496,12 +478,10 @@ func TestObserveOwnerCall(t *testing.T) {
 	})
 	route, _ := app.Observe(iii.Source{FunctionID: onRequest, Args: iii.Args{"path": "/users"}, Filters: iii.Filters{"input.tenant": iii.Op{"$eq": "acme"}}},
 		getUser, iii.ObserverOptions{Metadata: raw(map[string]string{"route": "users"})})
-	onAuto, _ := app.Observe(iii.Source{FunctionID: auto}, getUser)
 	ready(t, route)
-	ready(t, onAuto)
-	localDispatchReady(t, owner, onRequest)
+	localDispatchReady(t, host, onRequest)
 
-	out := call(t, owner, iii.CallRequest{FunctionID: onRequest, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})})
+	out := call(t, host, iii.CallRequest{FunctionID: onRequest, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})})
 	if string(out) != `{"body":{"path":"/users"},"status":200}` {
 		t.Errorf("response %s", out)
 	}
@@ -509,28 +489,23 @@ func TestObserveOwnerCall(t *testing.T) {
 	if string(seen) != `{"route":"users"}` {
 		t.Errorf("the target's metadata %s", seen)
 	}
-	obs, aobs := routes["/users"], autoObs
+	obs := routes["/users"]
 	mu.Unlock()
 
-	var ie *iii.InvocationError
 	mark := proxy.mark()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := obs.Call(ctx, map[string]string{"path": "/users", "tenant": "other"}); !errors.As(err, &ie) || ie.Code != "FILTERS_NOT_MATCHED" {
-		t.Errorf("filters: %v", err)
+	if out := call(t, host, iii.CallRequest{FunctionID: onRequest, Payload: raw(map[string]string{"path": "/users", "tenant": "other"})}); string(out) != `{"status":422}` {
+		t.Errorf("a request the filters reject: %s", out)
 	}
 	if sent := without(proxy.since(mark), "localinvocationstats"); len(sent) != 0 {
-		t.Errorf("frames %v for a rejected payload", sent)
+		t.Errorf("frames %v for a rejected request", sent)
 	}
-	if _, err := aobs.Emit(ctx, 1); !errors.As(err, &ie) || ie.Code != "NOT_OWNER_DELIVERED" {
-		t.Errorf("Emit on auto: %v", err)
-	}
-	if _, err := aobs.Call(ctx, 1); !errors.As(err, &ie) || ie.Code != "NOT_OWNER_DELIVERED" {
-		t.Errorf("Call on auto: %v", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	_ = route.Dispose(ctx)
-	waitFor(t, "OnObserverRemoved", 10*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return routes["/users"] == nil })
-	if _, err := obs.Call(ctx, map[string]string{"path": "/users", "tenant": "acme"}); !errors.As(err, &ie) || ie.Code != "OBSERVER_NOT_ACTIVE" {
+	waitFor(t, "the removed hook", 10*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return routes["/users"] == nil })
+	var ie *iii.InvocationError
+	if _, err := host.Call(ctx, iii.CallRequest{Observer: obs, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})}); !errors.As(err, &ie) ||
+		(ie.Code != "OBSERVER_NOT_FOUND" && ie.Code != "OBSERVER_NOT_ACTIVE") {
 		t.Errorf("after dispose: %v", err)
 	}
 }
@@ -549,20 +524,18 @@ func TestObserveReconnect(t *testing.T) {
 	})
 	var mu sync.Mutex
 	var added, removed []string
-	_, _ = owner.RegisterFunction(source, func(context.Context, json.RawMessage) (any, error) { return nil, nil },
-		iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
-			OnObserverAdded: func(_ context.Context, obs *iii.Observer) error {
-				mu.Lock()
-				added = append(added, obs.ID)
-				mu.Unlock()
-				return nil
-			},
-			OnObserverRemoved: func(_ context.Context, obs *iii.Observer) {
-				mu.Lock()
-				removed = append(removed, obs.ID)
-				mu.Unlock()
-			},
-		}})
+	owner.OnObserverAddedFor(source, func(_ context.Context, obs *iii.Observer) error {
+		mu.Lock()
+		added = append(added, obs.ID)
+		mu.Unlock()
+		return nil
+	})
+	owner.OnObserverRemovedFor(source, func(_ context.Context, obs *iii.Observer) {
+		mu.Lock()
+		removed = append(removed, obs.ID)
+		mu.Unlock()
+	})
+	_, _ = owner.RegisterFunction(source, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	got := collector(t, watcher, target)
 	_, _ = watcher.RegisterFunction(fnID(t, "go-rc::sink"), func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 	kept, _ := watcher.Observe(iii.Source{FunctionID: fn, Capture: []iii.Capture{iii.CaptureInput}}, target)

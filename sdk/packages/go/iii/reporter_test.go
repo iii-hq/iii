@@ -310,3 +310,70 @@ func (h *failingReportHost) sendReport(epoch uint64, frame []byte) bool {
 	}
 	return h.fakeReportHost.sendReport(epoch, frame)
 }
+
+// The items of a routed call go out at once, in frames under the frame limit: one too
+// large for a frame is TOO_LARGE, and those whose connection is gone DISCONNECTED. An
+// item rendered for observe.v2 is rendered again for an engine without it.
+func TestReporterSendsTheItemsOfARoutedCall(t *testing.T) {
+	host := &fakeReportHost{online: true, status: reportReady}
+	r := newReporter(host, defaultReporterLimits)
+	same := testItem("f", 1)
+	same.values.output = same.values.input
+	items := []*reportItem{r.build(same, []Capture{CaptureInput, CaptureOutput}), r.build(testItem("f", 2), []Capture{CaptureInput})}
+	if !items[0].wire.OutputIsInput || items[0].wire.Output != nil {
+		t.Fatalf("built %s", items[0].json)
+	}
+	r.sendItems(1, true, items)
+	frames := host.sentFrames()
+	if len(frames) != 1 || len(decodeBatch(t, frames[0])) != 2 || !decodeBatch(t, frames[0])[0].OutputIsInput {
+		t.Fatalf("frames %q", frames)
+	}
+
+	r.sendItems(1, false, items[:1])
+	if got := decodeBatch(t, host.sentFrames()[1])[0]; got.OutputIsInput || string(got.Output) != `{"i":1}` {
+		t.Errorf("without observe.v2: %+v", got)
+	}
+
+	limits := defaultReporterLimits
+	limits.maxFrameBytes = len(items[1].json) + reportFrameOverhead + 4
+	small := newReporter(host, limits)
+	big := testItem("f", 3)
+	big.values.input = json.RawMessage(`{"blob":"` + strings.Repeat("x", 64) + `"}`)
+	small.sendItems(1, true, []*reportItem{items[1], small.build(big, []Capture{CaptureInput}), items[1]})
+	if n := len(host.sentFrames()); n != 4 {
+		t.Errorf("%d frames, want one per item that fits", n)
+	}
+	small.mu.Lock()
+	tooLarge := small.drops[dropKey{"f", dropTooLarge}]
+	small.mu.Unlock()
+	if tooLarge != 1 {
+		t.Errorf("TOO_LARGE %d, want 1", tooLarge)
+	}
+
+	gone := &closedReportHost{}
+	lost := newReporter(gone, defaultReporterLimits)
+	lost.sendItems(1, true, items)
+	lost.mu.Lock()
+	defer lost.mu.Unlock()
+	if n := lost.drops[dropKey{"f", dropDisconnected}]; n != 2 {
+		t.Errorf("DISCONNECTED %d, want 2", n)
+	}
+}
+
+// closedReportHost is a connection that is gone.
+type closedReportHost struct{ fakeReportHost }
+
+func (h *closedReportHost) sendReport(uint64, []byte) bool { return false }
+
+// A buffered item flushed to an engine without observe.v2 carries its output.
+func TestReporterFlushRendersForTheEngine(t *testing.T) {
+	host := &fakeReportHost{online: true, status: reportReady, v1: true}
+	r := newReporter(host, defaultReporterLimits)
+	same := testItem("f", 1)
+	same.values.output = same.values.input
+	r.push(same, []Capture{CaptureInput, CaptureOutput})
+	r.flush()
+	if got := decodeBatch(t, host.sentFrames()[0])[0]; got.OutputIsInput || string(got.Output) != `{"i":1}` {
+		t.Errorf("item %+v", got)
+	}
+}

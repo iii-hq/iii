@@ -751,6 +751,34 @@ func TestWorkerNameUsesExplicitNameWhenEnvIsEmpty(t *testing.T) {
 	}
 }
 
+// Trigger, TriggerRequest and TriggerAction are Call, CallRequest and CallAction under
+// their 0.25 names: the same frame goes out.
+func TestTriggerIsCall(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m)
+	var action *TriggerAction = VoidAction()
+	req := TriggerRequest{FunctionID: "audit::log", Payload: json.RawMessage(`{"via":"trigger"}`), Action: action}
+	if _, err := c.Trigger(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var call CallRequest = req
+	call.Payload = json.RawMessage(`{"via":"call"}`)
+	if _, err := c.Call(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, string(MsgInvokeFunction)) >= 3 }, 2*time.Second)
+	var frames []map[string]json.RawMessage
+	for _, msg := range got {
+		if stringField(msg, "function_id") == "audit::log" {
+			frames = append(frames, msg)
+		}
+	}
+	if len(frames) != 2 || string(frames[0]["action"]) != `{"type":"void"}` || string(frames[1]["action"]) != `{"type":"void"}` ||
+		sortedJSON(t, frames[0]["data"]) != `{"via":"trigger"}` || sortedJSON(t, frames[1]["data"]) != `{"via":"call"}` {
+		t.Errorf("frames %v", frames)
+	}
+}
+
 // --- small test helpers ---
 
 func mustUUID(t *testing.T, s string) uuid.UUID {

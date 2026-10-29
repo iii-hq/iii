@@ -191,6 +191,62 @@ func TestLocalValueSemantics(t *testing.T) {
 	}
 }
 
+// A call this worker makes to its own private function passes the input and the result
+// by reference: the handler gets the caller's payload, and the caller the handler's
+// json.RawMessage, with no copy of either.
+func TestPrivateLocalCallsPassByReference(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	var got json.RawMessage
+	registerLocal(t, c, "private::echo", func(_ context.Context, data json.RawMessage) (any, error) {
+		got = data
+		return data, nil
+	}, RegisterFunctionOptions{Private: true})
+	registerLocal(t, c, "public::echo", Identity)
+	in := json.RawMessage(`{"tick":1}`)
+	out := call(t, c, CallRequest{FunctionID: "private::echo", Payload: in})
+	if &got[0] != &in[0] || &out[0] != &in[0] {
+		t.Error("a private function's input or result was copied")
+	}
+	out = call(t, c, CallRequest{FunctionID: "public::echo", Payload: in})
+	if &out[0] == &in[0] || string(out) != string(in) {
+		t.Error("a function that is not private shares the caller's payload")
+	}
+}
+
+// A handler that returns its input: to an engine with observe.v2 the report item
+// carries the value once with output_is_input; to one without, it carries the output.
+// A handler that returns another value is reported with its output.
+func TestOutputIsInputFollowsTheEngine(t *testing.T) {
+	for _, v2 := range []bool{true, false} {
+		fe := newFakeEngine(t)
+		if !v2 {
+			fe.v1Engine()
+		}
+		c := fe.client()
+		registerLocal(t, c, "src::fn", Identity)
+		registerLocal(t, c, "other::fn", func(context.Context, json.RawMessage) (any, error) { return map[string]int{"n": 2}, nil })
+		addObserver(t, fe, "src::fn", observerInfo("o1", "x::y", "", ""))
+		addObserver(t, fe, "other::fn", observerInfo("o2", "x::y", "", ""))
+		call(t, c, CallRequest{FunctionID: "src::fn", Payload: json.RawMessage(`{"n":1}`)})
+		call(t, c, CallRequest{FunctionID: "other::fn", Payload: json.RawMessage(`{"n":1}`)})
+		byFn := map[string]ObservedItem{}
+		for _, it := range fe.waitItems(2) {
+			byFn[it.FunctionID] = it
+		}
+		src, other := byFn["src::fn"], byFn["other::fn"]
+		if v2 && (!src.OutputIsInput || src.Output != nil || string(src.Input) != `{"n":1}`) {
+			t.Errorf("observe.v2: %+v", src)
+		}
+		if !v2 && (src.OutputIsInput || string(src.Output) != `{"n":1}`) {
+			t.Errorf("observe.v1: %+v", src)
+		}
+		if other.OutputIsInput || string(other.Output) != `{"n":2}` {
+			t.Errorf("another value: %+v", other)
+		}
+	}
+}
+
 // Errors and timeouts on the local path look as on the remote path.
 func TestLocalErrorsAndTimeoutsMatchTheRemotePath(t *testing.T) {
 	fe := newFakeEngine(t)

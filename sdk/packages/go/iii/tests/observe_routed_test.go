@@ -13,9 +13,10 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Client.Observe against the real engine, on the routed path (README §7 phase 1):
-// the observed function lives on another worker, every call goes through the engine,
-// and the engine evaluates the filters.
+// Client.Observe against the real engine, on the routed path: the observed function
+// lives on another worker and every call goes through the engine. The worker that
+// hosts the function (observe.v2) evaluates the filters and lists the observers it
+// delivered to on its answer.
 
 var allCaptures = []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureError, iii.CaptureCaller, iii.CaptureMetadata}
 
@@ -303,5 +304,37 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 	waitFor(t, "max_fires reached across the reattach", 10*time.Second, func() bool { return h.State() == iii.ObserverDisposed })
 	if got.len() != 3 || h.Reason() == nil || h.Reason().Code != "MAX_FIRES" {
 		t.Errorf("%d activations, reason %+v: fires must survive the reattach", got.len(), h.Reason())
+	}
+}
+
+// A routed call is delivered by its host: the matches ride the invocationresult, so an
+// observed routed call costs no frame of its own.
+func TestObserveRoutedMatchesRideTheAnswer(t *testing.T) {
+	proxy := newFrameProxy(t)
+	host := observeWorker(t, "routed-host", proxy)
+	caller := observeWorker(t, "routed-caller", nil)
+	fn, target := fnID(t, "go-host::double"), fnID(t, "go-host::on-double")
+	_, _ = host.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) {
+		var n int
+		_ = json.Unmarshal(data, &n)
+		return n * 2, nil
+	})
+	got := collector(t, caller, target)
+	h, err := caller.Observe(iii.Source{FunctionID: fn, Filters: iii.Filters{"output": iii.Op{"$gte": 10}}}, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, h)
+	mark := proxy.mark()
+	if out := call(t, caller, iii.CallRequest{FunctionID: fn, Payload: raw(21)}); string(out) != "42" {
+		t.Errorf("result %s", out)
+	}
+	call(t, caller, iii.CallRequest{FunctionID: fn, Payload: raw(1)}) // filtered out by output
+	a := exactly(t, got, 1, "the routed activation", 10*time.Second)[0]
+	if a.Data["input"] != float64(21) || a.Data["output"] != float64(42) {
+		t.Errorf("envelope %v", a.Data)
+	}
+	if sent := without(proxy.since(mark), "localinvocationstats"); countOf(sent, "invocationsobserved") != 0 || countOf(sent, "invocationresult") != 2 {
+		t.Errorf("host frames %v: the matches ride the answer", sent)
 	}
 }
