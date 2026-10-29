@@ -1,4 +1,6 @@
-"""The owner's observe hooks (sdk.md §1, §4.1, §4.2) against a fake engine."""
+"""Observer hooks (``on_observer_added`` / ``on_observer_removed``, worker-wide
+and per function) and the observer lifecycle in the worker that hosts the
+function, against a fake engine."""
 
 from __future__ import annotations
 
@@ -15,15 +17,107 @@ from observe_fake_engine import (
     observer_added,
     observer_info,
     observer_removed,
+    rejected,
     settle,
     wait_until,
 )
 
-from iii import InvocationError, ObserveHooks, Observer, ObserveRejection
+from iii import Observer, ObserveRejection
+from iii.function_ref import FunctionRef
 
 
 def _ack_ids(engine: FakeEngine) -> list[tuple[str, int, str | None]]:
     return [(a["id"], a["revision"], (a.get("error") or {}).get("code")) for a in acks(engine)]
+
+
+# ── setting hooks ──────────────────────────────────────────────────────────
+
+
+def test_hook_methods_work_as_decorators_and_plain_calls_and_return_the_hook(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+
+    @client.on_observer_added
+    def worker_added(obs: Observer) -> None: ...
+
+    @client.on_observer_added("fn::a")
+    async def fn_added(obs: Observer) -> None: ...
+
+    def fn_removed(obs: Observer) -> None: ...
+
+    def deliver(call: Any, observers: Any, next: Any) -> Any:
+        return next(call, observers)
+
+    assert client.on_observer_removed("fn::a", fn_removed) is fn_removed
+    assert client.on_observer_removed(fn_removed) is fn_removed
+    assert client.on_observer_deliver("fn::a", deliver) is deliver
+    assert client.on_observer_deliver("fn::b")(deliver) is deliver
+    # the decorated names are the hooks, not anything else
+    assert callable(worker_added) and asyncio.iscoroutinefunction(fn_added)
+    assert client._worker_added is worker_added and client._added_hooks == {"fn::a": fn_added}
+    assert client._removed_hooks == {"fn::a": fn_removed} and client._worker_removed is fn_removed
+    assert client._deliver_hooks == {"fn::a": deliver, "fn::b": deliver}
+
+    # None removes
+    assert client.on_observer_added(None) is None
+    assert client.on_observer_added("fn::a", None) is None
+    assert client.on_observer_removed("fn::a", None) is None
+    assert client.on_observer_deliver("fn::b", None) is None
+    assert (client._worker_added, client._added_hooks, client._removed_hooks) == (None, {}, {})
+    assert client._deliver_hooks == {"fn::a": deliver}
+
+    with pytest.raises(TypeError):
+        client.on_observer_added("fn::a", "not callable")
+    with pytest.raises(TypeError):
+        client.on_observer_added(worker_added, worker_added)
+
+
+def test_a_function_ref_sets_the_hooks_of_its_id(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    ref = client.register_function("ref::fn", lambda d: d)
+    assert isinstance(ref, FunctionRef) and ref.id == "ref::fn"
+
+    @ref.on_observer_added
+    def added(obs: Observer) -> None: ...
+
+    @ref.on_observer_removed
+    def removed(obs: Observer) -> None: ...
+
+    def deliver(call: Any, observers: Any, next: Any) -> Any:
+        return next(call, observers)
+
+    assert ref.on_observer_deliver(deliver) is deliver
+    assert (client._added_hooks["ref::fn"], client._removed_hooks["ref::fn"]) == (added, removed)
+    assert client._deliver_hooks["ref::fn"] is deliver
+    assert ref.on_observer_added(None) is None and "ref::fn" not in client._added_hooks
+    assert ref.observers() == [] and ref.is_observed() is False
+
+
+def test_the_three_forms_set_the_same_hook(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    seen: list[str] = []
+    client.on_observer_added("by-id::fn", lambda obs: seen.append(f"by id {obs.id}"))
+    client.register_function("by-id::fn", lambda d: d)
+    client.register_function("chained::fn", lambda d: d).on_observer_added(lambda obs: seen.append(f"chained {obs.id}"))
+    ref = client.register_function("ref::fn", lambda d: d)
+    ref.on_observer_added(lambda obs: seen.append(f"ref {obs.id}"))
+    for fn, observer_id in (("by-id::fn", "a"), ("chained::fn", "b"), ("ref::fn", "c")):
+        engine.deliver(function_registered(fn, [observer_info(observer_id, "t")]))
+    engine.wait_for(lambda: len(acks(engine)) == 3, what="three acks")
+    assert sorted(seen) == ["by id a", "chained b", "ref c"]
+
+
+def test_hooks_by_id_stay_across_unregister_and_a_later_registration(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    added: list[str] = []
+    client.on_observer_added("again::fn", lambda obs: added.append(obs.id))
+    client.register_function("again::fn", lambda d: d).unregister()
+    client.register_function("again::fn", lambda d: d)
+    engine.deliver(function_registered("again::fn", [observer_info("o", "t")]))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    assert added == ["o"]
+
+
+# ── accepted: hook order, then the ack ─────────────────────────────────────
 
 
 def test_on_observer_added_runs_once_per_add_and_the_observer_is_active_before_the_ack(
@@ -31,20 +125,13 @@ def test_on_observer_added_runs_once_per_add_and_the_observer_is_active_before_t
 ) -> None:
     client = connect(engine)
     seen: list[tuple[str, bool]] = []
-    ref_box: list[Any] = []
 
+    @client.on_observer_added("orders::create")
     async def on_added(obs: Observer) -> None:
         # inside the hook: not acked yet, not active yet
-        seen.append((obs.id, ref_box[0].is_observed()))
+        seen.append((obs.id, client.is_observed("orders::create")))
 
-    ref = client.register_function(
-        "orders::create", lambda data: data, observe=ObserveHooks(on_observer_added=on_added)
-    )
-    ref_box.append(ref)
-    engine.wait_for(lambda: engine.frames_of("registerfunction"), what="registerfunction")
-    frame = engine.frames_of("registerfunction")[0]
-    assert "observe" not in frame  # the hooks never travel
-
+    ref = client.register_function("orders::create", lambda data: data)
     engine.deliver(function_registered("orders::create", [observer_info("o1", "t::a")], revision=3))
     engine.wait_for(lambda: acks(engine), what="the ack")
     assert _ack_ids(engine) == [("o1", 3, None)]
@@ -65,22 +152,48 @@ def test_on_observer_added_runs_once_per_add_and_the_observer_is_active_before_t
     )
     engine.wait_for(lambda: len(acks(engine)) == 2, what="the second ack")
     assert _ack_ids(engine)[1] == ("o2", 4, None)
-    assert [o.id for o in ref.observers()] == ["o1", "o2"]
+    assert [o.id for o in client.observers("orders::create")] == ["o1", "o2"]
     assert ref.observers()[1].filters == {"$and": [{"input.a": {"$eq": 1}}]}
     assert seen == [("o1", False), ("o2", True)]
+
+
+def test_the_workers_hook_runs_before_the_functions_and_removal_runs_in_reverse(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    log: list[str] = []
+    client.on_observer_added(lambda obs: log.append(f"worker added {obs.function_id}"))
+    client.on_observer_removed(lambda obs: log.append(f"worker removed {obs.function_id}"))
+    client.on_observer_added("both::fn", lambda obs: log.append("function added"))
+    client.on_observer_removed("both::fn", lambda obs: log.append("function removed"))
+    client.register_function("both::fn", lambda d: d)
+    client.register_function("worker-only::fn", lambda d: d)
+    engine.deliver(function_registered("both::fn", [observer_info("o", "t")], revision=1))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    assert log == ["worker added both::fn", "function added"]
+    engine.deliver(observer_removed("both::fn", 2, "o"))
+    wait_until(lambda: len(log) == 4, what="the removal")
+    assert log[2:] == ["function removed", "worker removed both::fn"]
+
+    log.clear()
+    engine.deliver(function_registered("worker-only::fn", [observer_info("w", "t")], revision=1))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="the ack")
+    engine.deliver(observer_removed("worker-only::fn", 2, "w"))
+    wait_until(lambda: len(log) == 2, what="the removal")
+    assert log == ["worker added worker-only::fn", "worker removed worker-only::fn"]
 
 
 def test_a_sync_hook_runs_on_a_thread_of_its_own(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     threads: list[str] = []
-
-    def on_added(obs: Observer) -> None:
-        threads.append(threading.current_thread().name)
-
-    client.register_function("sync::hooked", lambda d: d, observe={"on_observer_added": on_added})
+    client.on_observer_added("sync::hooked", lambda obs: threads.append(threading.current_thread().name))
+    client.register_function("sync::hooked", lambda d: d)
     engine.deliver(function_registered("sync::hooked", [observer_info("o1", "t")]))
     engine.wait_for(lambda: acks(engine), what="the ack")
     assert threads and threads[0] != client._thread.name
+
+
+# ── rejected: the code, and unwinding ──────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -95,17 +208,59 @@ def test_a_raising_hook_rejects_with_its_code(
 ) -> None:
     client = connect(engine)
 
+    @client.on_observer_added("cron::on-tick")
     def on_added(obs: Observer) -> None:
         raise error
 
-    ref = client.register_function(
-        "cron::on-tick", lambda d: None, observe=ObserveHooks(delivery="owner", on_observer_added=on_added)
-    )
+    ref = client.register_function("cron::on-tick", lambda d: d, private=True)
     engine.deliver(function_registered("cron::on-tick"))
     engine.deliver(observer_added("cron::on-tick", 1, observer_info("o1", "t")))
     engine.wait_for(lambda: acks(engine), what="the rejection")
     assert acks(engine)[0]["error"] == {"code": code, "message": message}
     assert ref.is_observed() is False
+
+
+def test_a_function_hook_that_raises_unwinds_the_workers_hook(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    log: list[str] = []
+    client.on_observer_added(lambda obs: log.append("worker added"))
+    client.on_observer_removed(lambda obs: log.append("worker removed"))
+
+    def refuse(obs: Observer) -> None:
+        log.append("function added")
+        raise ObserveRejection("UNKNOWN_DB", "no database 'x'")
+
+    client.on_observer_added("unwind::fn", refuse)
+    client.on_observer_removed("unwind::fn", lambda obs: log.append("function removed"))
+    client.register_function("unwind::fn", lambda d: d)
+    engine.deliver(function_registered("unwind::fn", [observer_info("o", "t")]))
+    engine.wait_for(lambda: acks(engine), what="the rejection")
+    wait_until(lambda: len(log) == 3, what="the unwinding")
+    # the worker's setup is released; the function's removal never runs for an observer it did not set up
+    assert log == ["worker added", "function added", "worker removed"]
+    assert acks(engine)[0]["error"]["code"] == "UNKNOWN_DB"
+    settle(client, engine)
+    assert log == ["worker added", "function added", "worker removed"]
+
+
+def test_a_workers_hook_that_raises_runs_no_other_hook(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    log: list[str] = []
+
+    def refuse(obs: Observer) -> None:
+        log.append("worker added")
+        raise RuntimeError("not now")
+
+    client.on_observer_added(refuse)
+    client.on_observer_removed(lambda obs: log.append("worker removed"))
+    client.on_observer_added("first::fn", lambda obs: log.append("function added"))
+    client.on_observer_removed("first::fn", lambda obs: log.append("function removed"))
+    client.register_function("first::fn", lambda d: d)
+    engine.deliver(function_registered("first::fn", [observer_info("o", "t")]))
+    engine.wait_for(lambda: acks(engine), what="the rejection")
+    settle(client, engine)
+    assert log == ["worker added"]
+    assert acks(engine)[0]["error"] == {"code": "OBSERVE_REJECTED", "message": "not now"}
 
 
 def test_a_hook_still_running_after_the_timeout_is_owner_timeout_and_a_late_success_is_undone(
@@ -118,11 +273,9 @@ def test_a_hook_still_running_after_the_timeout_is_owner_timeout_and_a_late_succ
     async def slow_add(obs: Observer) -> None:
         await asyncio.sleep(0.3)
 
-    ref = client.register_function(
-        "slow::fn",
-        lambda d: None,
-        observe=ObserveHooks(on_observer_added=slow_add, on_observer_removed=lambda obs: removed.append(obs.id)),
-    )
+    client.on_observer_added("slow::fn", slow_add)
+    client.on_observer_removed("slow::fn", lambda obs: removed.append(obs.id))
+    ref = client.register_function("slow::fn", lambda d: d)
     engine.deliver(function_registered("slow::fn", [observer_info("o1", "t")]))
     engine.wait_for(lambda: acks(engine), what="the timeout")
     assert acks(engine)[0]["error"]["code"] == "OWNER_TIMEOUT"
@@ -130,9 +283,120 @@ def test_a_hook_still_running_after_the_timeout_is_owner_timeout_and_a_late_succ
     assert ref.is_observed() is False
 
 
-def test_hooks_of_one_function_run_one_at_a_time_in_revision_order(engine: FakeEngine, connect: Any) -> None:
+def test_a_rejection_made_while_on_observer_added_runs_wins(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     log: list[str] = []
+
+    @client.on_observer_added("reject::fn")
+    def on_added(obs: Observer) -> None:
+        obs.reject("ROUTE_CONFLICT", "found a conflict while indexing")
+
+    client.on_observer_removed("reject::fn", lambda obs: log.append(f"removed {obs.id}"))
+    ref = client.register_function("reject::fn", lambda d: d)
+    engine.deliver(function_registered("reject::fn", [observer_info("o", "t")], revision=2))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    assert acks(engine)[0]["error"] == {"code": "ROUTE_CONFLICT", "message": "found a conflict while indexing"}
+    assert acks(engine)[0]["revision"] == 2
+    wait_until(lambda: log == ["removed o"], what="its setup to be released")
+    assert ref.is_observed() is False
+    # the engine removes it later: its removal hook already ran
+    engine.deliver(observer_removed("reject::fn", 3, "o"))
+    settle(client, engine)
+    assert log == ["removed o"]
+
+
+# ── removed: once per accepted observer ────────────────────────────────────
+
+
+def test_on_observer_removed_runs_once_per_accepted_observer_whatever_removes_it(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    removed: list[str] = []
+    client.on_observer_removed("once::fn", lambda obs: removed.append(obs.id))
+
+    @client.on_observer_added("once::fn")
+    def refuse_some(obs: Observer) -> None:
+        if obs.args.get("refuse"):
+            raise ObserveRejection("NO", "refused")
+
+    ref = client.register_function("once::fn", lambda d: d)
+    engine.deliver(
+        function_registered(
+            "once::fn",
+            [
+                observer_info("unobserved", "t"),
+                observer_info("late", "t"),
+                observer_info("refused", "t", args={"refuse": True}),
+                observer_info("unregistered", "t"),
+            ],
+            revision=1,
+        )
+    )
+    engine.wait_for(lambda: len(acks(engine)) == 4, what="four acks")
+    # unobserve
+    engine.deliver(observer_removed("once::fn", 2, "unobserved"))
+    # late rejection, then the engine's removal
+    [late] = [o for o in ref.observers() if o.id == "late"]
+    late.reject("GONE", "config reload")
+    engine.deliver(observer_removed("once::fn", 3, "late"))
+    engine.deliver(observer_removed("once::fn", 4, "refused"))
+    wait_until(lambda: len(removed) == 2, what="two removals")
+    # disposal
+    ref.unregister()
+    wait_until(lambda: len(removed) == 3, what="the disposal")
+    settle(client, engine)
+    assert sorted(removed) == ["late", "unobserved", "unregistered"]  # never "refused"
+
+
+def test_unregister_removes_the_observers_through_on_observer_removed(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    removed: list[str] = []
+    client.on_observer_removed("gone::fn", lambda obs: removed.append(obs.id))
+    ref = client.register_function("gone::fn", lambda d: d)
+    engine.deliver(function_registered("gone::fn", [observer_info("a", "t"), observer_info("b", "t")]))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="two acks")
+    ref.unregister()
+    wait_until(lambda: sorted(removed) == ["a", "b"], what="on_observer_removed for both")
+    assert ref.is_observed() is False
+    engine.wait_for(lambda: engine.frames_of("unregisterfunction"), what="unregisterfunction")
+
+
+def test_an_on_observer_removed_error_is_logged_and_the_rest_goes_on(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = connect(engine)
+    removed: list[str] = []
+
+    def on_removed(obs: Observer) -> None:
+        removed.append(obs.id)
+        if obs.id == "a":
+            raise RuntimeError("cannot release")
+
+    client.on_observer_removed("err::fn", on_removed)
+    client.on_observer_removed(lambda obs: removed.append(f"worker {obs.id}"))
+    ref = client.register_function("err::fn", lambda d: d)
+    engine.deliver(function_registered("err::fn", [observer_info("a", "t"), observer_info("b", "t")]))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="two acks")
+    with caplog.at_level(logging.ERROR, logger="iii.observe"):
+        engine.deliver(observer_removed("err::fn", 1, "a"))
+        engine.deliver(observer_removed("err::fn", 2, "b"))
+        wait_until(lambda: len(removed) == 4, what="both removals")
+    assert "cannot release" in caplog.text
+    assert removed == ["a", "worker a", "b", "worker b"]  # the worker's still runs
+    assert ref.is_observed() is False
+
+
+# ── one at a time per function ─────────────────────────────────────────────
+
+
+def test_hooks_of_one_function_run_one_at_a_time_in_announcement_order(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    log: list[str] = []
+
+    async def worker_added(obs: Observer) -> None:
+        log.append(f"worker {obs.id}")
+        await asyncio.sleep(0.02)
 
     async def on_added(obs: Observer) -> None:
         log.append(f"start {obs.id}")
@@ -142,16 +406,17 @@ def test_hooks_of_one_function_run_one_at_a_time_in_revision_order(engine: FakeE
     async def on_removed(obs: Observer) -> None:
         log.append(f"removed {obs.id}")
 
-    client.register_function(
-        "serial::fn", lambda d: None, observe=ObserveHooks(on_observer_added=on_added, on_observer_removed=on_removed)
-    )
+    client.on_observer_added(worker_added)
+    client.on_observer_added("serial::fn", on_added)
+    client.on_observer_removed("serial::fn", on_removed)
+    client.register_function("serial::fn", lambda d: d)
     engine.deliver(function_registered("serial::fn"))
     engine.deliver(observer_added("serial::fn", 1, observer_info("a", "t")))
     engine.deliver(observer_added("serial::fn", 2, observer_info("b", "t")))
     engine.deliver(observer_removed("serial::fn", 3, "a"))
     engine.wait_for(lambda: len(acks(engine)) == 2, what="two acks")
-    wait_until(lambda: len(log) == 5, what="the hooks")
-    assert log == ["start a", "end a", "start b", "end b", "removed a"]
+    wait_until(lambda: len(log) == 7, what="the hooks")
+    assert log == ["worker a", "start a", "end a", "worker b", "start b", "end b", "removed a"]
     assert [a["revision"] for a in acks(engine)] == [1, 2]
 
 
@@ -169,20 +434,92 @@ def test_hooks_of_different_functions_run_concurrently(engine: FakeEngine, conne
         log.append("free ran")
         gate.set()
 
-    client.register_function("one::fn", lambda d: None, observe=ObserveHooks(on_observer_added=blocked))
-    client.register_function("two::fn", lambda d: None, observe=ObserveHooks(on_observer_added=free))
+    client.on_observer_added("one::fn", blocked)
+    client.on_observer_added("two::fn", free)
+    client.register_function("one::fn", lambda d: d)
+    client.register_function("two::fn", lambda d: d)
     engine.deliver(function_registered("one::fn", [observer_info("a", "t")]))
     engine.deliver(function_registered("two::fn", [observer_info("b", "t")]))
     engine.wait_for(lambda: len(acks(engine)) == 2, what="both acks")
     assert log == ["blocked started", "free ran"]
 
 
+# ── catch-up and warnings ──────────────────────────────────────────────────
+
+
+def test_a_hook_set_once_observers_are_active_is_caught_up_with_one_warning(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = connect(engine)
+    ref = client.register_function("late::fn", lambda d: d)
+    engine.deliver(
+        function_registered(
+            "late::fn", [observer_info("a", "t"), observer_info("b", "t", args={"bad": True})], revision=1
+        )
+    )
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="two acks")
+    engine.clear()
+    started: list[str] = []
+
+    with caplog.at_level(logging.WARNING, logger="iii.observe"):
+
+        @ref.on_observer_added
+        def start(obs: Observer) -> None:
+            started.append(obs.id)
+            if obs.args.get("bad"):
+                raise ObserveRejection("BAD_ARGS", "cannot start")
+
+        engine.wait_for(lambda: acks(engine), what="the late rejection")
+    assert started == ["a", "b"]
+    warnings = [r.getMessage() for r in caplog.records if "on_observer_added was set for" in r.getMessage()]
+    assert len(warnings) == 1 and "late::fn" in warnings[0] and " 2 " in warnings[0]
+    assert _ack_ids(engine) == [("b", 1, "BAD_ARGS")]  # a throw late-rejects that observer
+    assert [o.id for o in ref.observers()] == ["a"]
+    # set again: nothing is behind, nothing runs, nothing is logged
+    caplog.clear()
+    ref.on_observer_added(start)
+    settle(client, engine)
+    assert started == ["a", "b"]
+    assert not [r for r in caplog.records if "on_observer_added was set for" in r.getMessage()]
+
+
+def test_a_workers_hook_set_late_catches_up_every_function(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    client.register_function("x::fn", lambda d: d)
+    client.register_function("y::fn", lambda d: d)
+    engine.deliver(function_registered("x::fn", [observer_info("x1", "t")]))
+    engine.deliver(function_registered("y::fn", [observer_info("y1", "t"), observer_info("y2", "t")]))
+    engine.wait_for(lambda: len(acks(engine)) == 3, what="three acks")
+    retained: list[str] = []
+    client.on_observer_added(lambda obs: retained.append(obs.id))
+    wait_until(lambda: len(retained) == 3, what="the catch-up")
+    assert sorted(retained) == ["x1", "y1", "y2"]
+
+
+def test_unregistered_hook_ids_are_warned_once_the_connection_is_registered(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = connect(engine)
+    client.on_observer_added("typo::fn", lambda obs: None)
+    client.on_observer_deliver("orders::create", lambda call, observers, next: next(call, observers))
+    client.register_function("orders::create", lambda d: d)
+    with caplog.at_level(logging.WARNING, logger="iii.iii"):
+        engine.drop()
+        wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+        engine.drop()
+        wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the reconnect")
+    warned = [r.getMessage() for r in caplog.records if "has not registered" in r.getMessage()]
+    assert len(warned) == 1 and "typo::fn" in warned[0]
+
+
+# ── the engine's set: diff, revisions ──────────────────────────────────────
+
+
 def test_added_and_removed_messages_with_a_stale_revision_are_ignored(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     added: list[str] = []
-    client.register_function(
-        "rev::fn", lambda d: None, observe=ObserveHooks(on_observer_added=lambda obs: added.append(obs.id))
-    )
+    client.on_observer_added("rev::fn", lambda obs: added.append(obs.id))
+    client.register_function("rev::fn", lambda d: d)
     engine.deliver(function_registered("rev::fn", revision=5))
     engine.deliver(observer_added("rev::fn", 5, observer_info("stale", "t")))
     engine.deliver(observer_added("rev::fn", 6, observer_info("fresh", "t")))
@@ -197,14 +534,9 @@ def test_a_fresh_functionregistered_is_diffed_removed_added_kept(engine: FakeEng
     client = connect(engine)
     added: list[str] = []
     removed: list[str] = []
-    ref = client.register_function(
-        "diff::fn",
-        lambda d: None,
-        observe=ObserveHooks(
-            on_observer_added=lambda obs: added.append(obs.id),
-            on_observer_removed=lambda obs: removed.append(obs.id),
-        ),
-    )
+    client.on_observer_added("diff::fn", lambda obs: added.append(obs.id))
+    client.on_observer_removed("diff::fn", lambda obs: removed.append(obs.id))
+    ref = client.register_function("diff::fn", lambda d: d)
     engine.deliver(
         function_registered("diff::fn", [observer_info("keep", "t"), observer_info("gone", "t")], revision=2)
     )
@@ -233,15 +565,9 @@ def test_a_fresh_functionregistered_is_diffed_removed_added_kept(engine: FakeEng
 def test_changed_args_are_a_different_observer(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     log: list[str] = []
-    client.register_function(
-        "args::fn",
-        lambda d: None,
-        observe=ObserveHooks(
-            delivery="owner",
-            on_observer_added=lambda obs: log.append(f"added {obs.args}"),
-            on_observer_removed=lambda obs: log.append(f"removed {obs.args}"),
-        ),
-    )
+    client.on_observer_added("args::fn", lambda obs: log.append(f"added {obs.args}"))
+    client.on_observer_removed("args::fn", lambda obs: log.append(f"removed {obs.args}"))
+    client.register_function("args::fn", lambda d: d, args_format={"type": "object"})
     engine.deliver(function_registered("args::fn", [observer_info("o", "t", args={"x": 1})]))
     engine.wait_for(lambda: acks(engine), what="the ack")
     engine.deliver(function_registered("args::fn", [observer_info("o", "t", args={"x": 2})], revision=1))
@@ -251,14 +577,53 @@ def test_changed_args_are_a_different_observer(engine: FakeEngine, connect: Any)
 
 def test_a_malformed_filter_from_the_engine_is_refused(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
-    client.register_function("bad::fn", lambda d: None)
+    client.register_function("bad::fn", lambda d: d)
     bad = observer_info("o", "t")
     bad["filters"] = ["not", "an", "object"]
     engine.deliver(function_registered("bad::fn", [bad, {**observer_info("ok", "t"), "filters": None}]))
     engine.wait_for(lambda: len(acks(engine)) == 2, what="both acks")
     by_id = {a["id"]: a for a in acks(engine)}
     assert by_id["o"]["error"]["code"] == "INVALID_FILTER"
-    assert "error" not in by_id["ok"]  # null is "absent": every event
+    assert "error" not in by_id["ok"]  # null is "absent": every call
+
+
+def test_a_late_rejection_is_re_acked_with_the_announced_revision_until_a_fresh_add(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    ref = client.register_function("late-reject::fn", lambda d: d)
+    engine.deliver(function_registered("late-reject::fn", [observer_info("o", "t")], revision=4))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    obs = ref.observers()[0]
+    engine.clear()
+    obs.reject("UNKNOWN_DB", "the database was removed by a config reload")
+    engine.wait_for(lambda: acks(engine), what="the late rejection")
+    assert acks(engine)[0] == {
+        "type": "observerack",
+        "function_id": "late-reject::fn",
+        "namespace": "default",
+        "id": "o",
+        "revision": 4,
+        "error": {"code": "UNKNOWN_DB", "message": "the database was removed by a config reload"},
+    }
+    assert ref.is_observed() is False
+
+    # a later functionregistered still listing it: re-acked with the rejection, not reactivated
+    engine.clear()
+    engine.deliver(function_registered("late-reject::fn", [observer_info("o", "t")], revision=9))
+    engine.wait_for(lambda: acks(engine), what="the re-ack")
+    assert (acks(engine)[0]["revision"], acks(engine)[0]["error"]["code"]) == (9, "UNKNOWN_DB")
+    assert ref.is_observed() is False
+
+    # a fresh observeradded starts it over
+    engine.clear()
+    engine.deliver(observer_added("late-reject::fn", 10, observer_info("o", "t")))
+    engine.wait_for(lambda: acks(engine), what="the fresh ack")
+    assert "error" not in acks(engine)[0]
+    assert ref.is_observed() is True
+
+
+# ── releases: namespace conflict, unregister ───────────────────────────────
 
 
 def test_function_namespace_conflict_clears_local_dispatch_and_the_observer_set(
@@ -266,141 +631,16 @@ def test_function_namespace_conflict_clears_local_dispatch_and_the_observer_set(
 ) -> None:
     client = connect(engine)
     removed: list[str] = []
-    ref = client.register_function(
-        "dup::fn", lambda d: d, observe=ObserveHooks(on_observer_removed=lambda obs: removed.append(obs.id))
-    )
+    client.on_observer_removed("dup::fn", lambda obs: removed.append(obs.id))
+    ref = client.register_function("dup::fn", lambda d: d)
     engine.deliver(function_registered("dup::fn", [observer_info("o1", "t")]))
     engine.wait_for(lambda: acks(engine), what="the ack")
     assert client._functions["dup::fn"].observe.local_dispatch is True
-    engine.deliver(
-        {
-            "type": "registrationrejected",
-            "code": "FUNCTION_NAMESPACE_CONFLICT",
-            "namespace": "default",
-            "function_id": "dup::fn",
-            "owner_worker_id": "other",
-        }
-    )
+    engine.deliver(rejected("dup::fn"))
     wait_until(lambda: removed == ["o1"], what="on_observer_removed")
     assert ref.is_observed() is False
     assert client._functions["dup::fn"].observe.local_dispatch is False
     assert client.get_connection_state() == "connected"
-
-
-def test_unregister_removes_the_observers_through_on_observer_removed(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-    removed: list[str] = []
-    ref = client.register_function(
-        "gone::fn", lambda d: d, observe=ObserveHooks(on_observer_removed=lambda obs: removed.append(obs.id))
-    )
-    engine.deliver(function_registered("gone::fn", [observer_info("a", "t"), observer_info("b", "t")]))
-    engine.wait_for(lambda: len(acks(engine)) == 2, what="two acks")
-    ref.unregister()
-    wait_until(lambda: sorted(removed) == ["a", "b"], what="on_observer_removed for both")
-    assert ref.is_observed() is False
-    engine.wait_for(lambda: engine.frames_of("unregisterfunction"), what="unregisterfunction")
-
-
-def test_an_on_observer_removed_error_is_logged_and_the_rest_goes_on(
-    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
-) -> None:
-    client = connect(engine)
-    removed: list[str] = []
-
-    def on_removed(obs: Observer) -> None:
-        removed.append(obs.id)
-        if obs.id == "a":
-            raise RuntimeError("cannot release")
-
-    ref = client.register_function("err::fn", lambda d: d, observe=ObserveHooks(on_observer_removed=on_removed))
-    engine.deliver(function_registered("err::fn", [observer_info("a", "t"), observer_info("b", "t")]))
-    engine.wait_for(lambda: len(acks(engine)) == 2, what="two acks")
-    with caplog.at_level(logging.ERROR, logger="iii.observe"):
-        engine.deliver(observer_removed("err::fn", 1, "a"))
-        engine.deliver(observer_removed("err::fn", 2, "b"))
-        wait_until(lambda: removed == ["a", "b"], what="both removals")
-    assert "cannot release" in caplog.text
-    assert ref.is_observed() is False
-
-
-def test_a_shim_observer_carries_the_legacy_trigger_config(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-    got: list[Observer] = []
-    client.register_function(
-        "http::on-request",
-        lambda d: None,
-        observe=ObserveHooks(delivery="owner", legacy_trigger_type="http", on_observer_added=got.append),
-    )
-    frame = engine.wait_for(lambda: engine.frames_of("registerfunction"), what="registerfunction")[0]
-    assert frame["observe"] == {"delivery": "owner", "legacy_trigger_type": "http"}
-    engine.deliver(function_registered("http::on-request"))
-    info = observer_info("legacy-1", "users::get")
-    info["legacy"] = {"trigger_type": "http", "config": {"api_path": "/users/:id", "http_method": "GET"}}
-    engine.deliver(observer_added("http::on-request", 1, info))
-    engine.wait_for(lambda: acks(engine), what="the ack")
-    assert got[0].legacy == {"trigger_type": "http", "config": {"api_path": "/users/:id", "http_method": "GET"}}
-    assert got[0].args == {}
-    assert got[0].to_dict()["legacy"]["trigger_type"] == "http"
-
-
-def test_a_subclass_declares_the_hooks_as_methods(engine: FakeEngine, connect: Any) -> None:
-    index: dict[str, set[str]] = {}
-
-    class CronHooks(ObserveHooks):
-        delivery = "owner"
-        args_format = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["expression"],
-            "properties": {"expression": {"type": "string"}},
-        }
-
-        async def on_observer_added(self, obs: Observer) -> None:  # type: ignore[override]
-            index.setdefault(obs.args["expression"], set()).add(obs.id)
-
-        async def on_observer_removed(self, obs: Observer) -> None:  # type: ignore[override]
-            index[obs.args["expression"]].discard(obs.id)
-
-    client = connect(engine)
-    client.register_function("cron::on-tick", lambda tick: None, observe=CronHooks())
-    frame = engine.wait_for(lambda: engine.frames_of("registerfunction"), what="registerfunction")[0]
-    assert frame["observe"] == {"delivery": "owner", "args_format": CronHooks.args_format}
-    engine.deliver(function_registered("cron::on-tick", [observer_info("o", "t", args={"expression": "*/5"})]))
-    engine.wait_for(lambda: acks(engine), what="the ack")
-    assert index == {"*/5": {"o"}}
-    engine.deliver(observer_removed("cron::on-tick", 1, "o"))
-    wait_until(lambda: index == {"*/5": set()}, what="the removal")
-
-
-def test_args_format_on_an_auto_function_is_invalid_observe_descriptor(engine: FakeEngine, connect: Any) -> None:
-    client = connect(engine)
-    with pytest.raises(InvocationError) as raised:
-        client.register_function("auto::fn", lambda d: d, observe=ObserveHooks(args_format={"type": "object"}))
-    assert raised.value.code == "INVALID_OBSERVE_DESCRIPTOR"
-    with pytest.raises(InvocationError) as raised:
-        client.register_function("auto::fn", lambda d: d, observe={"delivery": "push"})
-    assert raised.value.code == "INVALID_OBSERVE_DESCRIPTOR"
-    assert "auto::fn" not in client._functions
-
-
-def test_against_an_engine_without_observe_hooks_are_inactive_and_logged_once(
-    engine_factory: Any, connect: Any, caplog: pytest.LogCaptureFixture
-) -> None:
-    legacy = engine_factory("legacy")
-    with caplog.at_level(logging.WARNING, logger="iii.iii"):
-        client = connect(legacy)
-        client.register_function("owner::fn", lambda d: None, observe=ObserveHooks(delivery="owner"))
-        client.register_function("plain::fn", lambda d: d)
-        frame = legacy.wait_for(
-            lambda: [f for f in legacy.frames_of("registerfunction") if f["id"] == "owner::fn"], what="registration"
-        )[0]
-        assert frame["observe"] == {"delivery": "owner"}  # registered; the engine ignores what it does not know
-        legacy.drop()
-        wait_until(lambda: len(legacy.connections) == 2 and client._registered_on_connection, what="the reconnect")
-    inactive = [r for r in caplog.records if "hooks are inactive" in r.getMessage()]
-    assert len(inactive) == 1
-    assert "owner::fn" in inactive[0].getMessage()
-    assert client._functions["plain::fn"].observe.local_dispatch is False  # no functionregistered: no local dispatch
 
 
 def test_reports_held_for_a_conflicted_function_are_released_as_inactive(engine: FakeEngine, connect: Any) -> None:
@@ -411,17 +651,9 @@ def test_reports_held_for_a_conflicted_function_are_released_as_inactive(engine:
     state = client._functions["held::fn"].observe
     # a report waiting for the function to be confirmed on the current connection
     state.confirmed_epoch = -1
-    client.trigger({"function_id": "held::fn", "payload": 1})
+    client.call({"function_id": "held::fn", "payload": 1})
     wait_until(lambda: client._reporter.size == 1, what="the held report")
-    engine.deliver(
-        {
-            "type": "registrationrejected",
-            "code": "FUNCTION_NAMESPACE_CONFLICT",
-            "namespace": "default",
-            "function_id": "held::fn",
-            "owner_worker_id": "other",
-        }
-    )
+    engine.deliver(rejected("held::fn"))
     wait_until(lambda: client._reporter.size == 0, what="the release")
 
     async def stats() -> bool:
@@ -446,26 +678,14 @@ def test_a_namespace_conflict_while_a_hook_runs_undoes_that_add(engine: FakeEngi
             release.wait(5)
             log.append("slow hook returned")
 
-    ref = client.register_function(
-        "conflict::fn",
-        lambda d: d,
-        observe=ObserveHooks(
-            on_observer_added=on_added, on_observer_removed=lambda obs: log.append(f"removed {obs.id}")
-        ),
-    )
+    client.on_observer_added("conflict::fn", on_added)
+    client.on_observer_removed("conflict::fn", lambda obs: log.append(f"removed {obs.id}"))
+    ref = client.register_function("conflict::fn", lambda d: d)
     engine.deliver(function_registered("conflict::fn", [observer_info("fast", "t")]))
     engine.wait_for(lambda: acks(engine), what="the first ack")
     engine.deliver(observer_added("conflict::fn", 1, observer_info("slow", "t")))
     assert entered.wait(5)
-    engine.deliver(
-        {
-            "type": "registrationrejected",
-            "code": "FUNCTION_NAMESPACE_CONFLICT",
-            "namespace": "default",
-            "function_id": "conflict::fn",
-            "owner_worker_id": "other",
-        }
-    )
+    engine.deliver(rejected("conflict::fn"))
     wait_until(lambda: not client._functions["conflict::fn"].observe.local_dispatch, what="the release")
     release.set()
     wait_until(lambda: len(log) == 5, what="the hooks")
@@ -491,26 +711,14 @@ def test_an_add_queued_behind_a_running_hook_never_runs_after_a_namespace_confli
             release.wait(5)
             log.append("slow hook returned")
 
-    ref = client.register_function(
-        "queued::fn",
-        lambda d: d,
-        observe=ObserveHooks(
-            on_observer_added=on_added, on_observer_removed=lambda obs: log.append(f"removed {obs.id}")
-        ),
-    )
+    client.on_observer_added("queued::fn", on_added)
+    client.on_observer_removed("queued::fn", lambda obs: log.append(f"removed {obs.id}"))
+    ref = client.register_function("queued::fn", lambda d: d)
     engine.deliver(function_registered("queued::fn"))
     engine.deliver(observer_added("queued::fn", 1, observer_info("slow", "t")))
     assert entered.wait(5)
     engine.deliver(observer_added("queued::fn", 2, observer_info("queued", "t")))  # waits behind "slow"
-    engine.deliver(
-        {
-            "type": "registrationrejected",
-            "code": "FUNCTION_NAMESPACE_CONFLICT",
-            "namespace": "default",
-            "function_id": "queued::fn",
-            "owner_worker_id": "other",
-        }
-    )
+    engine.deliver(rejected("queued::fn"))
     wait_until(lambda: not client._functions["queued::fn"].observe.local_dispatch, what="the release")
     release.set()
     settle(client, engine)
@@ -521,12 +729,13 @@ def test_an_add_queued_behind_a_running_hook_never_runs_after_a_namespace_confli
 
 def test_a_reject_from_another_thread_right_before_activation_wins(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
-    ref = client.register_function("race::fn", lambda d: d, observe=ObserveHooks(on_observer_added=lambda obs: None))
+    client.on_observer_added("race::fn", lambda obs: None)
+    ref = client.register_function("race::fn", lambda d: d)
     state = client._functions["race::fn"].observe
     activate = state._activate
 
     def reject_first(obs: Observer) -> bool:
-        # the owner rejects it from another thread in the window before activation
+        # the worker rejects it from another thread in the window before activation
         other = threading.Thread(target=obs.reject, args=("RACE", "rejected right before activation"))
         other.start()
         other.join()
@@ -555,15 +764,9 @@ def test_a_fresh_re_add_after_a_late_rejection_does_not_run_once_the_function_wa
         removing.set()
         release.wait(5)
 
-    ref = client.register_function(
-        "readd::fn",
-        lambda d: None,
-        observe=ObserveHooks(
-            delivery="owner",
-            on_observer_added=lambda obs: log.append(f"added {obs.id}"),
-            on_observer_removed=on_removed,
-        ),
-    )
+    client.on_observer_added("readd::fn", lambda obs: log.append(f"added {obs.id}"))
+    client.on_observer_removed("readd::fn", on_removed)
+    ref = client.register_function("readd::fn", lambda d: d, private=True)
     engine.deliver(function_registered("readd::fn", [observer_info("o", "t")], revision=1))
     engine.wait_for(lambda: acks(engine), what="the ack")
     ref.observers()[0].reject("GONE", "rejected late")
@@ -572,18 +775,33 @@ def test_a_fresh_re_add_after_a_late_rejection_does_not_run_once_the_function_wa
     engine.deliver(observer_added("readd::fn", 2, observer_info("o", "t")))
     assert removing.wait(5)
     # ... and the function is released meanwhile
-    engine.deliver(
-        {
-            "type": "registrationrejected",
-            "code": "FUNCTION_NAMESPACE_CONFLICT",
-            "namespace": "default",
-            "function_id": "readd::fn",
-            "owner_worker_id": "other",
-        }
-    )
+    engine.deliver(rejected("readd::fn"))
     wait_until(lambda: not client._functions["readd::fn"].observe.local_dispatch, what="the release")
     release.set()
     settle(client, engine)
     assert log == ["added o", "removed o"]  # the re-add never ran its hook
     assert len(acks(engine)) == 2  # no success ack after the release
     assert ref.is_observed() is False
+
+
+# ── engines without observe ────────────────────────────────────────────────
+
+
+def test_against_an_engine_without_observe_hooks_are_inactive_and_logged_once(
+    engine_factory: Any, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    legacy = engine_factory("legacy")
+    with caplog.at_level(logging.WARNING, logger="iii.iii"):
+        client = connect(legacy)
+        client.on_observer_added("hooked::fn", lambda obs: None)
+        client.register_function("hooked::fn", lambda d: d)
+        client.register_function("plain::fn", lambda d: d)
+        legacy.wait_for(
+            lambda: [f for f in legacy.frames_of("registerfunction") if f["id"] == "hooked::fn"], what="registration"
+        )
+        legacy.drop()
+        wait_until(lambda: len(legacy.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    inactive = [r for r in caplog.records if "hooks are inactive" in r.getMessage()]
+    assert len(inactive) == 1
+    assert "hooked::fn" in inactive[0].getMessage()
+    assert client._functions["plain::fn"].observe.local_dispatch is False  # no functionregistered: no local dispatch

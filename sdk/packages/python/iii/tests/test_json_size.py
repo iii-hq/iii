@@ -20,7 +20,6 @@ from iii.iii import (
     _json_fragments,
     _ObserveHost,
 )
-from iii.triggers import TriggerHandler
 
 
 def compact(value):
@@ -40,6 +39,11 @@ def client():
     sdk._connection_epoch = 0
     sdk._held_observe_frames = []
     sdk._observe_host = _ObserveHost(sdk)
+    sdk._worker_added = sdk._worker_removed = None
+    sdk._added_hooks, sdk._removed_hooks, sdk._deliver_hooks = {}, {}, {}
+    sdk._standing_by = set()
+    # A loop that never runs: registrations go out with the replay on connect.
+    sdk._loop = SimpleNamespace(call_soon_threadsafe=lambda *args: None)
     return sdk
 
 
@@ -461,13 +465,13 @@ async def test_cancelled_sdk_invocation_waiting_for_fragmented_send_preserves_ac
         await asyncio.sleep(0.1)
         server.gate.clear()
         first = {"function_id": "A", "payload": "x" * (40 * 1024 * 1024), "action": {"type": "void"}}
-        first_task = asyncio.run_coroutine_threadsafe(sdk.trigger_async(first), sdk._loop)
+        first_task = asyncio.run_coroutine_threadsafe(sdk.call_async(first), sdk._loop)
         await asyncio.sleep(0.4)
         assert sdk._ws is not None and sdk._ws.send_in_progress is not None
 
         second = {"function_id": "B", "payload": "y" * (20 * 1024 * 1024), "action": {"type": "void"}}
         second_task = asyncio.run_coroutine_threadsafe(
-            asyncio.wait_for(sdk.trigger_async(second), timeout=0.1), sdk._loop
+            asyncio.wait_for(sdk.call_async(second), timeout=0.1), sdk._loop
         )
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.wrap_future(second_task), timeout=10)
@@ -512,7 +516,7 @@ async def test_cancelled_sdk_invocation_aborts_and_reconnects_under_backpressure
             "action": {"type": "void"},
         }
         timed_out = asyncio.run_coroutine_threadsafe(
-            asyncio.wait_for(sdk.trigger_async(invocation), timeout=0.1), sdk._loop
+            asyncio.wait_for(sdk.call_async(invocation), timeout=0.1), sdk._loop
         )
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(asyncio.wrap_future(timed_out), timeout=10)
@@ -526,7 +530,7 @@ async def test_cancelled_sdk_invocation_aborts_and_reconnects_under_backpressure
             await asyncio.sleep(0.05)
         assert sdk._ws is not None and sdk._ws.state.name == "OPEN"
         small = {"function_id": "small", "payload": {}, "action": {"type": "void"}}
-        small_send = asyncio.run_coroutine_threadsafe(sdk.trigger_async(small), sdk._loop)
+        small_send = asyncio.run_coroutine_threadsafe(sdk.call_async(small), sdk._loop)
         await asyncio.wait_for(asyncio.wrap_future(small_send), timeout=20)
         messages = await asyncio.wait_for(server.messages_future, timeout=20)
         assert messages == ["small"]
@@ -612,7 +616,7 @@ async def test_oversized_invocation_keeps_pending_cleanup_guarantee():
     sdk._inject_traceparent = lambda: None
     sdk._inject_baggage = lambda: None
     with pytest.raises(InvocationError, match="payload_too_large"):
-        await sdk.trigger_async({"function_id": "f", "payload": "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)})
+        await sdk.call_async({"function_id": "f", "payload": "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)})
     assert sdk._pending == {}
     sdk._ws.send.assert_not_called()
 
@@ -664,7 +668,7 @@ async def test_local_argument_rejection_removes_pending():
     sdk._inject_traceparent = lambda: None
     sdk._inject_baggage = lambda: None
     with pytest.raises(InvocationError, match="payload_too_large") as raised:
-        await sdk.trigger_async({"function_id": "f", "payload": "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)})
+        await sdk.call_async({"function_id": "f", "payload": "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)})
     assert raised.value.function_id == "f"
     assert isinstance(raised.value.invocation_id, str)
     assert raised.value.invocation_id
@@ -677,9 +681,7 @@ async def test_local_argument_rejection_removes_pending():
 async def test_flush_skips_permanent_rejection_and_sends_following_message(invocation_id):
     sdk = client()
     sdk._worker_id = None
-    sdk._trigger_types = {}
     sdk._functions = {}
-    sdk._triggers = {}
     sdk._pending = {}
     sdk._reconnect_attempt = 0
     sdk._set_connection_state = lambda state: None
@@ -736,9 +738,7 @@ async def test_connect_sets_explicit_protocol_message_receive_limit(monkeypatch)
 async def test_replay_transport_failure_does_not_requeue_or_reset_backoff():
     sdk = client()
     sdk._worker_id = None
-    sdk._trigger_types = {}
     sdk._functions = {}
-    sdk._triggers = {}
     sdk._pending = {}
     sdk._reconnect_attempt = 1
     sdk._set_connection_state = lambda state: None
@@ -773,35 +773,24 @@ def test_local_size_error_correlates_only_valid_invocation_ids(invocation_id):
     assert raised.value.function_id == ("size::echo" if isinstance(invocation_id, str) else None)
 
 
-class TestTriggerHandler(TriggerHandler):
-    async def register_trigger(self, config):
-        pass
-
-    async def unregister_trigger(self, config):
-        pass
-
-
 def registration_client():
     sdk = client()
     sdk._ws.state.name = "CLOSING"
     sdk._options = SimpleNamespace(namespace=None)
-    sdk._trigger_types = {}
     sdk._functions = {}
-    sdk._triggers = {}
     return sdk
 
 
 @pytest.mark.asyncio
-async def test_trigger_snapshot_survives_caller_mutation_and_replays_following_work():
+async def test_registration_snapshot_survives_caller_mutation_and_replays_following_work():
     sdk = registration_client()
-    config = {"nested": {"value": "accepted"}}
+    schema = {"type": "object", "properties": {"nested": {"type": "string"}}}
     metadata = {"tags": ["original"], "nullable": None}
-    sdk.register_trigger({"type": "custom", "function_id": "size::echo", "config": config, "metadata": metadata})
-    retained = next(iter(sdk._triggers.values()))
-    assert retained.config is not config
-    assert retained.config["nested"] is not config["nested"]
+    sdk.register_function("size::echo", lambda value: value, metadata=metadata, request_format=schema)
+    retained = sdk._functions["size::echo"].message
+    assert retained.request_format is not schema
     assert retained.metadata is not metadata
-    config["nested"]["value"] = "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)
+    schema["properties"]["nested"]["type"] = "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)
     metadata["tags"].append("mutated")
     sdk._worker_id = None
     sdk._pending = {}
@@ -816,7 +805,7 @@ async def test_trigger_snapshot_survives_caller_mutation_and_replays_following_w
     await sdk._receiver_task
 
     frames = [json.loads(call.args[0]) for call in sdk._ws.send.call_args_list]
-    assert frames[0]["config"] == {"nested": {"value": "accepted"}}
+    assert frames[0]["request_format"] == {"type": "object", "properties": {"nested": {"type": "string"}}}
     assert frames[0]["metadata"] == {"tags": ["original"], "nullable": None}
     assert frames[1]["invocation_id"] == "next"
     assert frames[1]["result"] == 1
@@ -835,14 +824,11 @@ def test_related_registration_snapshots_preserve_schemas_metadata_and_http_confi
     def handler(value):
         return value
 
-    sdk.register_function("size::handler", handler, request_format=schema, response_format=schema, metadata=metadata)
+    sdk.register_function(
+        "size::handler", handler, request_format=schema, response_format=schema, metadata=metadata, args_format=schema
+    )
     invocation = HttpInvocationConfig(url="https://example.invalid/handler", headers={"X-Test": "original"})
     sdk.register_function("size::http", invocation, request_format=schema, metadata=metadata)
-    type_handler = TestTriggerHandler()
-    sdk.register_trigger_type(
-        {"id": "custom", "description": "accepted", "trigger_request_format": schema, "call_request_format": schema},
-        type_handler,
-    )
     schema["properties"]["value"]["type"] = "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)
     metadata["nested"]["value"] = "mutated"
     invocation.headers["X-Test"] = "mutated"
@@ -852,20 +838,13 @@ def test_related_registration_snapshots_preserve_schemas_metadata_and_http_confi
         assert registration.message.metadata == {"nested": {"value": "original"}}
         sdk._prepare_json(registration.message)
     assert sdk._functions["size::handler"].message.response_format == expected
+    assert sdk._functions["size::handler"].message.args_format == expected
     assert sdk._functions["size::http"].message.invocation.headers == {"X-Test": "original"}
-    assert sdk._trigger_types["custom"].message.trigger_request_format == expected
-    assert sdk._trigger_types["custom"].message.call_request_format == expected
-    assert sdk._trigger_types["custom"].handler is type_handler
-    sdk._prepare_json(sdk._trigger_types["custom"].message)
 
 
-def test_rejected_trigger_type_replacement_preserves_accepted_handler_and_message():
+def test_a_registration_too_large_to_send_is_refused_and_not_kept():
     sdk = registration_client()
-    original_handler = TestTriggerHandler()
-    sdk.register_trigger_type({"id": "custom", "description": "accepted"}, original_handler)
-    retained = sdk._trigger_types["custom"]
     with pytest.raises(InvocationError, match="payload_too_large"):
-        sdk.register_trigger_type({"id": "custom", "description": "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)}, object())
-    assert sdk._trigger_types["custom"] is retained
-    assert retained.handler is original_handler
+        sdk.register_function("size::huge", lambda value: value, description="x" * (_MAX_JSON_OUTBOUND_BYTES + 1))
+    assert "size::huge" not in sdk._functions
     assert sdk._queue == []

@@ -1,4 +1,4 @@
-"""The reporter (sdk.md §4.4, CONTRACT D12) with a fake host and manual timers."""
+"""The reporter with a fake host and manual timers."""
 
 from __future__ import annotations
 
@@ -216,40 +216,6 @@ def test_sends_stats_on_its_10s_timer() -> None:
     assert host.timers == []
 
 
-def test_coalesces_one_event_emitted_to_n_observers_from_one_context_with_the_union_of_captures() -> None:
-    host = FakeHost()
-    reporter = Reporter(host)
-    event = {"op": "update"}
-    context = object()
-
-    def emit(observer_id: str, captures: list[str], ev: Any = event, ctx: Any = context) -> None:
-        reporter.push_emit(
-            ReportInit(
-                function_id="db::on-row-changed",
-                invocation_id="inv",
-                matched=[],
-                status="success",
-                values={"input": ev, "caller": {"worker_name": "db"}},
-                started_at_ms=0,
-                duration_ms=0,
-            ),
-            observer_id,
-            ev,
-            ctx,
-            captures,
-        )
-
-    emit("a", ["input"])
-    emit("b", ["input", "caller"])
-    emit("c", ["input"], ev={"op": "update"})  # an equal but different event value
-    emit("d", ["input"], ctx=object())  # another invocation context
-    host.fire_timers()
-    items = host.items()
-    assert [i["matched"] for i in items] == [["a", "b"], ["c"], ["d"]]
-    assert items[0]["caller"] == {"worker_name": "db"}
-    assert "caller" not in items[1]
-
-
 def test_never_raises_on_a_value_json_cannot_encode() -> None:
     from decimal import Decimal
 
@@ -266,61 +232,6 @@ def test_never_raises_on_a_value_json_cannot_encode() -> None:
     assert reporter.push(nan, ["input", "output"]) is True
     host.fire_timers()
     assert host.items()[-1]["output"] is None
-
-
-def _emit(
-    reporter: Reporter, observer_id: str, event: Any, context: Any, values: dict[str, Any], captures: list[str]
-) -> bool:
-    return reporter.push_emit(
-        ReportInit(
-            function_id="f",
-            invocation_id="inv",
-            matched=[],
-            status="success",
-            values=values,
-            started_at_ms=0,
-            duration_ms=0,
-        ),
-        observer_id,
-        event,
-        context,
-        captures,
-    )
-
-
-def test_a_coalesced_emit_is_held_to_the_bounds_and_restored_on_a_violation() -> None:
-    host = FakeHost()
-    host.is_online = False
-    reporter = Reporter(host, ReporterLimits(max_bytes=600))
-    event = {"op": "update"}
-    values = {"input": event, "metadata": {"blob": "x" * 700}}
-    assert _emit(reporter, "a", event, None, values, ["input"]) is True
-    before = reporter._bytes
-    # the second observer captures metadata: the merged item would exceed the buffer
-    assert _emit(reporter, "b", event, None, values, ["input", "metadata"]) is False
-    assert reporter._bytes == before
-    host.is_online = True
-    reporter.send_stats()
-    assert json.loads(host.frames[-1])["dropped_reports"] == [{"function_id": "f", "reason": "TOO_LARGE", "count": 1}]
-    reporter.flush()
-    [item] = host.items()
-    assert item["matched"] == ["a"]
-    assert "metadata" not in item
-
-
-def test_a_coalesced_emit_that_cannot_be_encoded_is_dropped_and_the_item_kept() -> None:
-    host = FakeHost()
-    reporter = Reporter(host)
-    event = {"op": "update"}
-    deep: Any = 1
-    for _ in range(100_000):
-        deep = [deep]
-    values = {"input": event, "caller": deep}
-    assert _emit(reporter, "a", event, None, values, ["input"]) is True
-    assert _emit(reporter, "b", event, None, values, ["input", "caller"]) is False  # no RecursionError escapes
-    host.fire_timers()
-    [item] = host.items()
-    assert item["matched"] == ["a"]
 
 
 def test_numbers_no_double_can_hold_are_reported_as_null() -> None:
@@ -363,7 +274,7 @@ def test_lone_surrogates_are_replaced_so_the_whole_frame_still_decodes() -> None
     assert second["output"] == "fine"
 
 
-def test_a_frame_whose_write_fails_counts_its_items() -> None:
+def test_a_frame_whose_write_fails_counts_its_items_as_disconnected() -> None:
     host = FakeHost()
     reporter = Reporter(host)
     host.failing = True
@@ -375,9 +286,50 @@ def test_a_frame_whose_write_fails_counts_its_items() -> None:
     reporter.send_stats()
     drops = json.loads(host.frames[-1])["dropped_reports"]
     assert drops == [
-        {"function_id": "a", "reason": "BUFFER_FULL", "count": 2},
-        {"function_id": "b", "reason": "BUFFER_FULL", "count": 1},
+        {"function_id": "a", "reason": "DISCONNECTED", "count": 2},
+        {"function_id": "b", "reason": "DISCONNECTED", "count": 1},
     ]
+
+
+def test_output_is_input_carries_the_value_once_when_the_item_captures_both() -> None:
+    host = FakeHost()
+    reporter = Reporter(host)
+    event = {"op": "insert"}
+
+    def source(n: int, **flags: Any) -> ReportInit:
+        return ReportInit(
+            function_id="src",
+            invocation_id=f"inv-{n}",
+            matched=["o"],
+            status="success",
+            values={"input": event, "output": event},
+            started_at_ms=0,
+            duration_ms=0,
+            **flags,
+        )
+
+    reporter.push(source(1, output_is_input=True), ["input", "output"])
+    reporter.push(source(2, output_is_input=True), ["output"])  # output alone travels as output
+    reporter.push(source(3), ["input", "output"])
+    host.fire_timers()
+    both, alone, plain = host.items()
+    assert both["input"] == event and both["output_is_input"] is True and "output" not in both
+    assert alone["output"] == event and "input" not in alone and "output_is_input" not in alone
+    assert plain["input"] == plain["output"] == event and "output_is_input" not in plain
+
+
+def test_frames_for_a_routed_call_split_under_the_frame_limit_and_count_items() -> None:
+    host = FakeHost()
+    reporter = Reporter(host, ReporterLimits(max_frame_bytes=520))
+    items = [(init(n=n, output="x" * 60), ["input", "output"]) for n in range(4)]
+    items.append((init(n=9, output="y" * 1000), ["input", "output"]))  # too large on its own
+    frames = reporter.frames(items)
+    assert [count for _, count in frames] == [2, 2]
+    assert [i["input"] for frame, _ in frames for i in json.loads(frame)["items"]] == [0, 1, 2, 3]
+    assert all(len(frame.encode()) <= 520 for frame, _ in frames)
+    assert host.frames == []  # the client sends them, ahead of the answer
+    reporter.send_stats()
+    assert json.loads(host.frames[-1])["dropped_reports"] == [{"function_id": "f", "reason": "TOO_LARGE", "count": 1}]
 
 
 def test_a_frame_the_closed_socket_refuses_stays_buffered_in_order() -> None:

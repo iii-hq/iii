@@ -364,7 +364,7 @@ async def test_writer_built_on_another_loop_runs_on_the_callers_loop() -> None:
 
 @pytest.mark.asyncio
 async def test_sync_handler_does_not_wait_on_the_loop_that_built_the_writer() -> None:
-    # Local sync trigger() from a coroutine: the writer is built on the caller's loop, which then blocks on the handler.
+    # Local sync call() from a coroutine: the writer is built on the caller's loop, which then blocks on the handler.
     sink = _Sink()
     async with _serve(sink) as url:
 

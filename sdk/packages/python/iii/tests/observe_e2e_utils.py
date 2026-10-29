@@ -56,8 +56,8 @@ def worker() -> Iterator[Callable[..., III]]:
 def flush_client(client: III) -> None:
     """Client barrier: buffered reports are flushed, and the frames the
     observe machinery handed to the socket (reports, acks, observe frames:
-    ``_send_frame``) have been written. Calls made with ``trigger`` are
-    written before ``trigger`` returns (or by their own task, for ``Void``)."""
+    ``_send_frame``) have been written. Calls made with ``call`` are
+    written before ``call`` returns (or by their own task, for ``Void``)."""
 
     async def drain() -> None:
         client._reporter.flush()
@@ -79,13 +79,13 @@ def settle_engine(rounds: int = 2) -> None:
             if client.get_connection_state() != "connected":
                 continue
             flush_client(client)
-            client.trigger({"function_id": "engine::functions::list", "payload": {}, "dispatch": "remote"})
+            client.call({"function_id": "engine::functions::list", "payload": {}, "dispatch": "remote"})
             probe = getattr(client, "_e2e_probe", None)
             if probe is None:
                 probe = f"py-probe-{uuid.uuid4().hex[:8]}::settle"
                 client.register_function(probe, lambda data: None)
                 client._e2e_probe = probe  # type: ignore[attr-defined]
-            client.trigger({"function_id": probe, "payload": {}, "dispatch": "remote"})
+            client.call({"function_id": probe, "payload": {}, "dispatch": "remote"})
 
 
 @pytest.fixture

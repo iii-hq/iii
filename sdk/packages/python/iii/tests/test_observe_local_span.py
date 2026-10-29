@@ -1,7 +1,7 @@
-"""Tracing on the local path and on sync handler threads (sdk.md §4.3): a local
-call gets the ``execute <fn>`` span a remote one gets, and a sync handler's
-thread starts in a copy of the context, so the OpenTelemetry context (and the
-current invocation) follow it."""
+"""Tracing on the local path and on sync handler threads: a local call gets
+the ``execute <fn>`` span a remote one gets, its deliver hook runs inside it,
+and a sync handler's thread starts in a copy of the context, so the
+OpenTelemetry context (and the current invocation) follow it."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from observe_fake_engine import FakeEngine, function_registered, wait_until
+from observe_fake_engine import FakeEngine, answers, function_registered, invoke, wait_until
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -41,7 +41,7 @@ def test_creates_the_execute_span_for_a_local_call_as_for_a_remote_one(
     wait_until(lambda: client._functions["span::fn"].observe.local_dispatch, what="local dispatch")
     tracer = trace.get_tracer("test")
     with tracer.start_as_current_span("caller") as parent:
-        assert client.trigger({"function_id": "span::fn", "payload": {}}) == "ok"
+        assert client.call({"function_id": "span::fn", "payload": {}}) == "ok"
     [execute] = [s for s in spans.get_finished_spans() if s.name == "execute span::fn"]
     assert execute.parent is not None and execute.parent.span_id == parent.get_span_context().span_id
     assert execute.kind == trace.SpanKind.INTERNAL
@@ -75,3 +75,27 @@ def test_a_sync_handler_of_a_remote_invocation_runs_in_the_inbound_trace_and_inv
     [execute] = [s for s in spans.get_finished_spans() if s.name == "execute span::remote"]
     assert seen["span"].span_id == execute.context.span_id
     assert seen["inv"].invocation_id == "inv-1"
+
+
+@pytest.mark.parametrize("routed", [False, True])
+def test_the_deliver_hook_runs_inside_the_functions_execute_span(
+    engine: FakeEngine, connect: Any, spans: InMemorySpanExporter, routed: bool
+) -> None:
+    client = connect(engine)
+    seen: list[Any] = []
+
+    @client.on_observer_deliver("span::hooked")
+    def hook(call: Any, observers: Any, next: Any) -> Any:
+        seen.append(trace.get_current_span().get_span_context())
+        return next(call, observers)
+
+    client.register_function("span::hooked", lambda data: "ok")
+    engine.deliver(function_registered("span::hooked"))
+    wait_until(lambda: client._functions["span::hooked"].observe.local_dispatch, what="local dispatch")
+    if routed:
+        engine.deliver(invoke("span::hooked", {}, "inv-hooked"))
+        engine.wait_for(lambda: answers(engine, "inv-hooked"), what="the answer")
+    else:
+        assert client.call({"function_id": "span::hooked", "payload": {}}) == "ok"
+    [execute] = [s for s in spans.get_finished_spans() if s.name == "execute span::hooked"]
+    assert seen[0].span_id == execute.context.span_id
