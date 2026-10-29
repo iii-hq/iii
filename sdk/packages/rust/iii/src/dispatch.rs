@@ -714,7 +714,7 @@ impl IIIClient {
             |function_id| match self.function_entry(function_id) {
                 None => Gate::Drop,
                 Some(entry) if entry.confirmed_on(epoch) => Gate::Send,
-                // Another worker hosts it now: nothing of it will be accepted.
+                // Released: the engine accepts nothing of it.
                 Some(entry) if entry.is_revoked() => Gate::Drop,
                 Some(_) => Gate::Hold,
             },

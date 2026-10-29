@@ -2288,9 +2288,10 @@ impl IIIClient {
 
     /// A deliver hook was just set on a registered function, or removed: a
     /// function that needs `observe.v2` and whose registration went to an
-    /// engine without it is unregistered there, and an unregistered one that
-    /// does not need it is registered. Until this connection's engine said
-    /// what it supports, its `workerregistered` decides.
+    /// engine without it is withdrawn there and released here, and an
+    /// unregistered one that does not need it is registered. Until this
+    /// connection's engine said what it supports, its `workerregistered`
+    /// decides.
     pub(crate) fn reconcile_registration(&self, entry: &Arc<FunctionEntry>) {
         let features = self.inner.engine_features.load(Ordering::SeqCst);
         if features == ENGINE_FEATURES_UNKNOWN {
@@ -2298,10 +2299,7 @@ impl IIIClient {
         }
         if entry.sent_on(self.connection_epoch()) {
             if entry.needs_v2() && features != ENGINE_WITH_OBSERVE_V2 {
-                entry.unmark_sent();
-                let _ = self.send_message(Message::UnregisterFunction {
-                    id: entry.id.clone(),
-                });
+                self.withdraw_registration(entry);
                 self.warn_unsupported(vec![entry.id.clone()]);
             }
             return;
@@ -3409,6 +3407,11 @@ impl IIIClient {
                 local_dispatch,
                 observers,
             } => match self.function_entry(&id) {
+                // The answer to a registration this connection withdrew: the
+                // function stays unregistered.
+                Some(entry) if !entry.sent_on(self.connection_epoch()) => {
+                    tracing::debug!(function_id = %id, "functionregistered for a withdrawn registration ignored")
+                }
                 Some(entry) => entry.enqueue(
                     self,
                     HookOp::Registered {
@@ -3499,12 +3502,13 @@ impl IIIClient {
 
     /// Dispatch a `RegistrationRejected` message by its `code`.
     ///
-    /// The two rejection codes carry different semantics. A worker-name
-    /// conflict is fatal — the engine has closed the connection and the SDK
-    /// must not reconnect into the same collision. A function-id conflict costs
-    /// the worker only that one function: the connection stays open and every
-    /// other export keeps serving, so it must not be treated as fatal. Any
-    /// unrecognised code is treated as fatal, the safe default.
+    /// A worker-name conflict is fatal: the engine has closed the connection
+    /// and the SDK must not reconnect into the same collision. A rejection
+    /// that names a function (`FUNCTION_NAMESPACE_CONFLICT`,
+    /// `INVALID_ARGS_FORMAT`, `UNSUPPORTED`, or a code this SDK does not know)
+    /// refuses that one registration: the connection stays open and every
+    /// other export keeps serving. A rejection of an unknown code that names
+    /// no function is fatal, the safe default.
     fn handle_registration_rejected(
         &self,
         code: String,
@@ -3513,32 +3517,8 @@ impl IIIClient {
         function_id: Option<String>,
         owner_worker_id: String,
     ) {
-        match code.as_str() {
-            FUNCTION_NAMESPACE_CONFLICT => {
-                tracing::warn!(
-                    code = %code,
-                    namespace = %namespace,
-                    function_id = %function_id.as_deref().unwrap_or("<unknown>"),
-                    owner_worker_id = %owner_worker_id,
-                    "function registration rejected: another worker in this namespace already \
-                     hosts this function id; the worker keeps serving its other functions"
-                );
-                // Another worker hosts it now: calls go through the engine to
-                // that host, and this worker's observer set is void. A
-                // standby registers it again until it takes over.
-                if let Some(entry) = function_id
-                    .as_deref()
-                    .and_then(|id| self.function_entry(id))
-                {
-                    entry.release();
-                    self.inner.reporter.discard(&entry.id);
-                    entry.enqueue(self, HookOp::Reset { last: false });
-                    if entry.standby {
-                        self.retry_standby(entry);
-                    }
-                }
-            }
-            WORKER_NAMESPACE_CONFLICT => {
+        match (code.as_str(), function_id.as_deref()) {
+            (WORKER_NAMESPACE_CONFLICT, _) => {
                 self.fail_registration_fatal(
                     code,
                     namespace,
@@ -3547,10 +3527,61 @@ impl IIIClient {
                     owner_worker_id,
                 );
             }
-            _ => {
+            (FUNCTION_NAMESPACE_CONFLICT, _) => {
+                let entry = function_id
+                    .as_deref()
+                    .and_then(|id| self.function_entry(id));
+                let function_id = function_id.as_deref().unwrap_or("<unknown>");
+                // Another worker hosts it: calls go through the engine to
+                // that host, and this worker's observer set is void. A
+                // standby registers it again until it takes over, and warns
+                // once per wait.
+                match entry.as_ref().filter(|entry| entry.standby) {
+                    Some(standby) if !standby.first_conflict() => tracing::debug!(
+                        function_id = %function_id,
+                        owner_worker_id = %owner_worker_id,
+                        "standby: another worker still hosts this function id"
+                    ),
+                    Some(_) => tracing::warn!(
+                        code = %code,
+                        namespace = %namespace,
+                        function_id = %function_id,
+                        owner_worker_id = %owner_worker_id,
+                        "another worker in this namespace hosts this function id; the standby \
+                         registers it again until it takes over"
+                    ),
+                    None => tracing::warn!(
+                        code = %code,
+                        namespace = %namespace,
+                        function_id = %function_id,
+                        owner_worker_id = %owner_worker_id,
+                        "function registration rejected: another worker in this namespace already \
+                         hosts this function id; the worker keeps serving its other functions"
+                    ),
+                }
+                if let Some(entry) = entry {
+                    self.release_function(&entry);
+                    if entry.standby {
+                        self.retry_standby(entry);
+                    }
+                }
+            }
+            (_, Some(id)) => {
                 tracing::error!(
                     code = %code,
-                    "registration rejected with an unknown code; treating as fatal"
+                    namespace = %namespace,
+                    function_id = %id,
+                    "function registration rejected ({code}): {id} is not registered; the \
+                     worker keeps serving its other functions"
+                );
+                if let Some(entry) = self.function_entry(id) {
+                    self.release_function(&entry);
+                }
+            }
+            (_, None) => {
+                tracing::error!(
+                    code = %code,
+                    "registration rejected with a code that names no function; treating as fatal"
                 );
                 self.fail_registration_fatal(
                     code,
@@ -3561,6 +3592,16 @@ impl IIIClient {
                 );
             }
         }
+    }
+
+    /// The engine does not host `entry` for this worker: another worker
+    /// hosts it, or the engine refused or withdrew its registration. Local
+    /// dispatch turns off, its reports are dropped, and the removed hooks run
+    /// for the observers it held. A later `functionregistered` starts over.
+    fn release_function(&self, entry: &Arc<FunctionEntry>) {
+        entry.release();
+        self.inner.reporter.discard(&entry.id);
+        entry.enqueue(self, HookOp::Reset { last: false });
     }
 
     /// Registers a standby function again in about a second (±20 %), unless
@@ -3899,14 +3940,22 @@ impl IIIClient {
         let mut unsupported = Vec::with_capacity(pending.len());
         for (entry, _) in pending {
             if entry.sent_on(epoch) {
-                entry.unmark_sent();
-                let _ = self.send_message(Message::UnregisterFunction {
-                    id: entry.id.clone(),
-                });
+                self.withdraw_registration(&entry);
             }
             unsupported.push(entry.id.clone());
         }
         self.warn_unsupported(unsupported);
+    }
+
+    /// Unregisters a function sent on this connection to an engine that
+    /// lacks `observe.v2`, which the function needs: it stays unregistered,
+    /// with local dispatch off and its observers removed here.
+    fn withdraw_registration(&self, entry: &Arc<FunctionEntry>) {
+        entry.unmark_sent();
+        let _ = self.send_message(Message::UnregisterFunction {
+            id: entry.id.clone(),
+        });
+        self.release_function(entry);
     }
 
     /// Warns, once per function, that the engine lacks `observe.v2`, which
@@ -5450,6 +5499,63 @@ mod tests {
             iii.fatal_error().is_none(),
             "a function-id conflict must not be fatal"
         );
+    }
+
+    /// A rejection that names a function refuses that one registration,
+    /// whatever its code, logged at error with the code: the worker keeps
+    /// running.
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_rejection_naming_a_function_is_not_fatal() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner.running.store(true, Ordering::SeqCst);
+        iii.set_connection_state(IIIConnectionState::Connected);
+        let fixture = |name: &str| -> serde_json::Value {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../fixtures/protocol/observe")
+                .join(name);
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        for rejection in [
+            fixture("registrationrejected-invalid-args-format.json"),
+            fixture("registrationrejected-unsupported.json"),
+            json!({ "type": "registrationrejected", "code": "FROM_THE_FUTURE",
+                    "namespace": "default", "function_id": "future::f",
+                    "owner_worker_id": "" }),
+        ] {
+            iii.handle_message(&rejection.to_string()).unwrap();
+            assert!(iii.inner.running.load(Ordering::SeqCst), "{rejection}");
+            assert_eq!(iii.get_connection_state(), IIIConnectionState::Connected);
+            assert!(iii.fatal_error().is_none(), "{rejection}");
+        }
+        logs_assert(|lines: &[&str]| {
+            for code in ["INVALID_ARGS_FORMAT", "UNSUPPORTED", "FROM_THE_FUTURE"] {
+                if !lines.iter().any(|l| {
+                    l.contains("ERROR") && l.contains(code) && l.contains("is not registered")
+                }) {
+                    return Err(format!("no error line for {code}"));
+                }
+            }
+            Ok(())
+        });
+    }
+
+    /// A rejection that names no function, with a code this SDK does not
+    /// know, is fatal.
+    #[test]
+    fn a_rejection_naming_no_function_is_fatal() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner.running.store(true, Ordering::SeqCst);
+        let payload = json!({ "type": "registrationrejected", "code": "FROM_THE_FUTURE",
+                              "namespace": "orders", "owner_worker_id": "" })
+        .to_string();
+        iii.handle_message(&payload).unwrap();
+        assert!(!iii.inner.running.load(Ordering::SeqCst));
+        assert_eq!(iii.get_connection_state(), IIIConnectionState::Failed);
+        assert!(matches!(
+            iii.fatal_error(),
+            Some(Error::RegistrationRejected { code, .. }) if code == "FROM_THE_FUTURE"
+        ));
     }
 
     #[test]

@@ -536,12 +536,16 @@ pub(crate) struct FunctionEntry {
     local_dispatch: AtomicBool,
     /// The connection on which `functionregistered` last arrived; 0 = never.
     confirmed_epoch: AtomicU64,
-    /// Bumped by a `FUNCTION_NAMESPACE_CONFLICT`: a `functionregistered`
+    /// Bumped by each [`release`](Self::release): a `functionregistered`
     /// queued before it must not turn local dispatch back on.
     revocation: AtomicU64,
-    /// Another worker hosts the function since a conflict, until the engine
+    /// The engine does not host the function for this worker since a
+    /// release (a conflict, a refused or withdrawn registration), until it
     /// confirms it again.
     revoked: AtomicBool,
+    /// A conflict was logged since the engine last confirmed the function:
+    /// a standby's later ones are logged at debug.
+    conflicted: AtomicBool,
     compiled: ArcSwap<CompiledSet>,
     /// The number of active observers, shifted left by one, with the low bit
     /// set while a deliver hook is: what a call reads first, in one atomic
@@ -588,6 +592,7 @@ impl FunctionEntry {
             confirmed_epoch: AtomicU64::new(0),
             revocation: AtomicU64::new(0),
             revoked: AtomicBool::new(false),
+            conflicted: AtomicBool::new(false),
             compiled: ArcSwap::from_pointee(CompiledSet::default()),
             delivery: AtomicUsize::new(delivery),
             deliver: ArcSwapOption::new(deliver.map(Arc::new)),
@@ -698,17 +703,18 @@ impl FunctionEntry {
         self.namespace.load_full()
     }
 
-    /// Turns local dispatch off and forgets the confirmation: a
-    /// `FUNCTION_NAMESPACE_CONFLICT`, or the function was unregistered.
+    /// Turns local dispatch off and forgets the confirmation: the function
+    /// was released or unregistered.
     pub(crate) fn revoke(&self) {
         self.local_dispatch.store(false, Ordering::Release);
         self.confirmed_epoch.store(0, Ordering::Release);
     }
 
     /// The function is not this worker's any more: another worker hosts it
-    /// (`FUNCTION_NAMESPACE_CONFLICT`) or it was unregistered. Ordered
-    /// against `functionregistered` messages already queued, and against
-    /// added hooks still running.
+    /// (`FUNCTION_NAMESPACE_CONFLICT`), the engine refused or withdrew its
+    /// registration, or it was unregistered. Ordered against
+    /// `functionregistered` messages already queued, and against added hooks
+    /// still running.
     pub(crate) fn release(&self) {
         self.revocation.fetch_add(1, Ordering::AcqRel);
         self.revoked.store(true, Ordering::Release);
@@ -721,6 +727,12 @@ impl FunctionEntry {
 
     pub(crate) fn is_revoked(&self) -> bool {
         self.revoked.load(Ordering::Acquire)
+    }
+
+    /// Records a `FUNCTION_NAMESPACE_CONFLICT`: `true` for the first since
+    /// the engine last confirmed the function.
+    pub(crate) fn first_conflict(&self) -> bool {
+        !self.conflicted.swap(true, Ordering::AcqRel)
     }
 
     pub(crate) fn confirmed_on(&self, epoch: u64) -> bool {
@@ -836,8 +848,8 @@ pub(crate) enum HookOp {
     },
     /// An observer was rejected late: rebuild the compiled set.
     Republish,
-    /// Drop the whole set: a `FUNCTION_NAMESPACE_CONFLICT`, or the function
-    /// was unregistered (`last`).
+    /// Drop the whole set: the function was released (a conflict, a refused
+    /// or withdrawn registration), or unregistered (`last`).
     Reset {
         last: bool,
     },
@@ -900,6 +912,7 @@ async fn run_hooks(
                     continue;
                 }
                 entry.revoked.store(false, Ordering::Release);
+                entry.conflicted.store(false, Ordering::Release);
                 entry.namespace.store(Some(Arc::new(namespace.clone())));
                 entry
                     .local_dispatch
@@ -1918,15 +1931,57 @@ mod tests {
         assert_eq!(sorted(observed), vec!["both", "star"]);
     }
 
+    /// A standby warns once per wait for the host to leave: its later
+    /// conflicts are logged at debug until the engine confirms it.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn a_standby_warns_once_per_wait() {
+        let (iii, _rx) = client();
+        let function = iii.register_function("sb::f", echo().standby());
+        let conflict = json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
+                               "namespace": "default", "function_id": "sb::f",
+                               "owner_worker_id": "w2" });
+        for _ in 0..3 {
+            feed(&iii, conflict.clone());
+        }
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "sb::f", "revision": 1,
+                    "local_dispatch": true, "observers": [] }),
+        );
+        while !function.local_dispatch_active() {
+            tokio::task::yield_now().await;
+        }
+        feed(&iii, conflict);
+        logs_assert(|lines: &[&str]| {
+            let count = |level: &str, text: &str| {
+                lines
+                    .iter()
+                    .filter(|l| l.contains(level) && l.contains(text))
+                    .count()
+            };
+            match (
+                count("WARN", "the standby registers it again until it takes over"),
+                count(
+                    "DEBUG",
+                    "standby: another worker still hosts this function id",
+                ),
+            ) {
+                (2, 2) => Ok(()),
+                other => Err(format!("expected (warn, debug) = (2, 2), got {other:?}")),
+            }
+        });
+    }
+
     /// A peer that stops reading: flushed frames wait in the outbound channel,
     /// and their bytes keep counting against the 8 MiB bound.
     #[tokio::test]
     async fn frames_a_peer_does_not_read_stay_within_the_bound() {
         let (iii, _unread) = client();
-        let function =
-            iii.register_function("b::f", RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
         iii.set_connection_state(IIIConnectionState::Connected);
         iii.inner.connection_epoch.store(1, Ordering::SeqCst);
+        let function =
+            iii.register_function("b::f", RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
         feed(
             &iii,
             json!({ "type": "functionregistered", "id": "b::f", "revision": 1, "local_dispatch": true,

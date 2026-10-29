@@ -2989,6 +2989,214 @@ async fn a_private_source_registers_with_the_fixture_shape() {
     iii.shutdown_async().await;
 }
 
+/// A rejection that names a function refuses that one registration
+/// (`registrationrejected-invalid-args-format.json`,
+/// `registrationrejected-unsupported.json`): the connection stays open, a
+/// call in flight completes, the worker's other functions keep serving, and
+/// the refused function runs nowhere here.
+#[tokio::test]
+async fn a_refused_registration_costs_only_that_function() {
+    for name in [
+        "registrationrejected-invalid-args-format.json",
+        "registrationrejected-unsupported.json",
+    ] {
+        let rejection = fixture(name);
+        let refused_id = rejection["function_id"].as_str().unwrap().to_string();
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "sources");
+        connected(&mock, &iii, true).await;
+        let kept = hosted(&mock, &iii, "kept::f", echo(), json!([])).await;
+        let ran = Arc::new(AtomicUsize::new(0));
+        let refused = iii.register_function(
+            refused_id.as_str(),
+            RegisterFunction::new({
+                let ran = ran.clone();
+                move |input: Value| {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, Error>(input)
+                }
+            })
+            .args_format_value(json!({ "type": "object" })),
+        );
+        frame(&mock, |m| {
+            message_type(m) == Some("registerfunction") && m["id"] == refused_id.as_str()
+        })
+        .await;
+        let in_flight = tokio::spawn({
+            let iii = iii.clone();
+            async move {
+                iii.call(CallRequest::new("remote::f", json!({ "n": 1 })))
+                    .await
+            }
+        });
+        let call = frame(&mock, |m| {
+            m["type"] == "invokefunction" && m["function_id"] == "remote::f"
+        })
+        .await;
+
+        mock.send_to_client(rejection.clone());
+        mock.send_to_client(json!({
+            "type": "invocationresult", "invocation_id": call["invocation_id"],
+            "function_id": "remote::f", "result": { "ok": true }
+        }));
+        let answer = tokio::time::timeout(WAIT, in_flight)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(answer.unwrap(), json!({ "ok": true }), "{name}");
+        assert!(iii.fatal_error().is_none(), "{name}");
+        assert_eq!(
+            iii.get_connection_state(),
+            iii_sdk::runtime::IIIConnectionState::Connected
+        );
+
+        // the other function keeps serving, locally and routed
+        assert!(kept.local_dispatch_active());
+        let local = iii
+            .call(CallRequest::new("kept::f", json!({ "n": 2 })))
+            .await
+            .unwrap();
+        assert_eq!(local, json!({ "n": 2 }));
+        route_call(
+            &mock,
+            "kept::f",
+            "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+            json!({ "n": 3 }),
+        );
+        let routed = answer_to(&mock, "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+        assert_eq!(routed["result"]["n"], 3, "{routed:#}");
+
+        // the refused function: its calls go to the engine
+        assert!(!refused.local_dispatch_active());
+        mock.clear();
+        iii.call(CallRequest {
+            function_id: refused_id.clone(),
+            payload: json!({}),
+            action: Some(CallAction::Void),
+            timeout_ms: None,
+        })
+        .await
+        .unwrap();
+        frame(&mock, |m| {
+            m["type"] == "invokefunction" && m["function_id"] == refused_id.as_str()
+        })
+        .await;
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "{name}");
+        iii.shutdown_async().await;
+    }
+}
+
+/// On a 0.25 engine, a deliver hook set on a confirmed function withdraws
+/// its registration: local dispatch turns off, its observers' removed hooks
+/// run once, and the engine's answer to the withdrawn registration leaves it
+/// unregistered. Removing the hook registers it again.
+#[tokio::test]
+async fn a_withdrawn_registration_is_released() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "database");
+    frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+    hello_with(
+        &mock,
+        fixture("workerregistered-v1.json")["features"].clone(),
+    );
+    until("the hello", || iii.engine_supports_observe() == Some(true)).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "wd::f", &recorder);
+    let ran = Arc::new(AtomicUsize::new(0));
+    let function = hosted(
+        &mock,
+        &iii,
+        "wd::f",
+        RegisterFunction::new({
+            let ran = ran.clone();
+            move |input: Value| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Error>(input)
+            }
+        }),
+        json!([view("o", json!({}), json!(["input"]), "success")]),
+    )
+    .await;
+    acked(&mock, &[("o", 1)]).await;
+    until("observed", || function.is_observed()).await;
+
+    function.on_observer_deliver(|_call: Call, _observers: Vec<Observer>| async move {
+        Ok(json!("from the deliver hook"))
+    });
+    frame(&mock, |m| {
+        m["type"] == "unregisterfunction" && m["id"] == "wd::f"
+    })
+    .await;
+    assert!(!function.local_dispatch_active());
+    until("released", || !function.is_observed()).await;
+    until("removed", || {
+        recorder
+            .events
+            .lock()
+            .unwrap()
+            .contains(&"remove o".to_string())
+    })
+    .await;
+
+    // the engine's answer to the withdrawn registration changes nothing;
+    // the answer to a later call shows it was read
+    mock.clear();
+    confirm(
+        &mock,
+        "wd::f",
+        2,
+        true,
+        json!([view("o2", json!({}), json!(["input"]), "success")]),
+    );
+    let in_flight = tokio::spawn({
+        let iii = iii.clone();
+        async move { iii.call(CallRequest::new("remote::f", json!({}))).await }
+    });
+    let call = frame(&mock, |m| {
+        m["type"] == "invokefunction" && m["function_id"] == "remote::f"
+    })
+    .await;
+    mock.send_to_client(json!({
+        "type": "invocationresult", "invocation_id": call["invocation_id"],
+        "function_id": "remote::f", "result": true
+    }));
+    tokio::time::timeout(WAIT, in_flight)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    iii.call(CallRequest {
+        function_id: "wd::f".into(),
+        payload: json!({}),
+        action: Some(CallAction::Void),
+        timeout_ms: None,
+    })
+    .await
+    .unwrap();
+    frame(&mock, |m| {
+        m["type"] == "invokefunction" && m["function_id"] == "wd::f"
+    })
+    .await;
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "no call runs here");
+    assert!(!function.local_dispatch_active());
+    assert!(!function.is_observed());
+    assert!(acks(&mock).is_empty(), "o2 is not acked");
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec!["add o", "remove o"],
+        "removed once"
+    );
+
+    // without the deliver hook it registers again, and the engine's answer
+    // turns local dispatch back on
+    function.clear_observer_deliver();
+    frame(&mock, registered("wd::f")).await;
+    confirm(&mock, "wd::f", 3, true, json!([]));
+    until("local dispatch", || function.local_dispatch_active()).await;
+    iii.shutdown_async().await;
+}
+
 /// A standby registers again about every second while another host holds
 /// the id, and runs its hooks once the engine confirms it.
 #[tokio::test]

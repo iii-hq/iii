@@ -372,11 +372,12 @@ pub enum Message {
         )]
         features: Vec<String>,
     },
-    /// Pushed by the engine when a registration collides with a live worker in
-    /// the same namespace. The `code` distinguishes the two cases:
+    /// Pushed by the engine when it refuses a registration.
     /// [`WORKER_NAMESPACE_CONFLICT`] is fatal (the engine closes the connection;
-    /// the SDK stops and does not reconnect), while [`FUNCTION_NAMESPACE_CONFLICT`]
-    /// refuses a single function id and keeps the connection open.
+    /// the SDK stops and does not reconnect). A rejection that names a
+    /// `function_id` ([`FUNCTION_NAMESPACE_CONFLICT`],
+    /// [`observe_codes::INVALID_ARGS_FORMAT`], [`observe_codes::UNSUPPORTED`])
+    /// refuses that one function and keeps the connection open.
     RegistrationRejected {
         code: String,
         namespace: String,
