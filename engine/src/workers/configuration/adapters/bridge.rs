@@ -378,14 +378,20 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 
     /// Dispose the relay observer and close the remote client without deleting configuration entries.
+    /// The client is closed whether or not the remote engine took the disposal.
     async fn destroy(&self) -> anyhow::Result<()> {
         let observer = self
             .relay_observer
             .lock()
             .expect("relay observer lock")
             .take();
-        if let Some(observer) = observer {
-            observer.dispose().await?;
+        if let Some(observer) = observer
+            && let Err(error) = observer.dispose().await
+        {
+            tracing::warn!(
+                error = %error,
+                "Configuration bridge: disposing the relay observer failed"
+            );
         }
         self.bridge.shutdown_async().await;
         Ok(())
