@@ -407,6 +407,33 @@ func TestDeliverHookGetsTheObserversOfTheCallStart(t *testing.T) {
 	}
 }
 
+// Matched by keys, a call matches only the observers active when it started: one
+// accepted while the handler runs is not delivered the call (decision 20).
+func TestKeyMatchingUsesTheObserversOfTheCallStart(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	c.OnObserverMatchFor("db::start", rowKeys())
+	registerHost(t, c, "db::start", func(_ context.Context, data json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return data, nil
+	})
+	orders := `{"db":"primary","table":"orders"}`
+	addObserver(t, fe, "db::start", observerInfo("before", "x::y", orders, ""))
+	id := fe.invoke(InvokeFunctionMessage{FunctionID: "db::start", Data: rowChange("orders", "insert")})
+	<-entered
+	addObserver(t, fe, "db::start", observerInfo("during", "x::y", orders, ""))
+	close(release)
+	if got := fe.waitResult(id).Observed; !slices.Equal(got, []string{"before"}) {
+		t.Errorf("observed %v, want [before]", got)
+	}
+	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "db::start", Data: rowChange("orders", "insert")}))
+	if !slices.Equal(res.Observed, []string{"before", "during"}) {
+		t.Errorf("the next call observed %v, want [before during]", res.Observed)
+	}
+}
+
 // Filing and unfiling make a new key index and leave the one a call holds as it was.
 func TestKeyIndexIsCopyOnWrite(t *testing.T) {
 	a, b := &Observer{ID: "a"}, &Observer{ID: "b"}

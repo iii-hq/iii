@@ -214,10 +214,10 @@ type Handler func(ctx context.Context, data json.RawMessage) (any, error)
 // RegisterFunctionOptions configures a function registration. The zero value preserves
 // the default registration shape. [FunctionOptions] is the same type.
 //
-// ArgsFormat, Private and Observable false need an engine with observe.v2: against an
-// older one the function stays unregistered, and the SDK logs UNSUPPORTED once. What
-// the worker does when the function is observed is set with hooks
-// ([FunctionRef.OnObserverAdded] and its siblings).
+// ArgsFormat, Private and Observable false need an engine with observe.v2, as a match or
+// deliver hook does: against an older one the function stays unregistered, and the SDK
+// logs UNSUPPORTED once. What the worker does when the function is observed is set with
+// hooks ([FunctionRef.OnObserverAdded] and its siblings).
 type RegisterFunctionOptions struct {
 	// Metadata is arbitrary JSON attached to the function registration. It is stored
 	// with the function and is distinct from the per-invocation metadata passed to
@@ -605,12 +605,15 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 }
 
 // needsV2Locked: the function declares args_format, private or observable false, or
-// has a deliver hook, so it is registered only with an engine that advertised
-// observe.v2. The caller holds mu.
+// has a match or deliver hook (decision 18), so it is registered only with an engine
+// that advertised observe.v2. The caller holds mu.
 func (c *Client) needsV2Locked(fn registeredFunction) bool {
 	msg := fn.message
-	return len(msg.ArgsFormat) > 0 || msg.Private || (msg.Observable != nil && !*msg.Observable) ||
-		c.deliverHookLocked(msg.ID) != nil
+	if len(msg.ArgsFormat) > 0 || msg.Private || (msg.Observable != nil && !*msg.Observable) {
+		return true
+	}
+	h := c.functionHooks[msg.ID]
+	return h != nil && (h.match != nil || h.deliver != nil)
 }
 
 // sendFunction sends a registration on the live connection, or leaves it to the next
@@ -653,12 +656,12 @@ func (c *Client) markUnsupportedLocked(fn registeredFunction) bool {
 }
 
 func logUnsupported(functionID string) {
-	log.Printf("iii: UNSUPPORTED: function %q declares args_format, private or observable: false, or has a deliver hook, "+
+	log.Printf("iii: UNSUPPORTED: function %q declares args_format, private or observable: false, or has a match or deliver hook, "+
 		"which need an engine with observe.v2; it stays unregistered until the worker connects to one", functionID)
 }
 
-// reconsiderRegistration follows a deliver hook set or removed for functionID on a
-// connection to an engine without observe.v2: setting one on a registered function
+// reconsiderRegistration follows a match or deliver hook set or removed for functionID
+// on a connection to an engine without observe.v2: setting one on a registered function
 // unregisters it (UNSUPPORTED), and removing the one that kept a function unregistered
 // registers it.
 func (c *Client) reconsiderRegistration(functionID string) {
