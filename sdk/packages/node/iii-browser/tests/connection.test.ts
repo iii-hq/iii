@@ -126,6 +126,30 @@ describe('RegistrationRejected handling', () => {
     expect(engine.sockets.length).toBe(1)
   })
 
+  it('an unknown rejection code is fatal, like WORKER_NAMESPACE_CONFLICT', async () => {
+    const states: IIIConnectionState[] = []
+    sdk.addConnectionStateListener((s) => states.push(s))
+    await engine.waitForOpen()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    engine.socket.simulateMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'SOMETHING_NEW',
+        namespace: 'default',
+        owner_worker_id: '',
+      }),
+    )
+    engine.socket.simulateClose()
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(states[states.length - 1]).toBe('failed')
+    expect(sdk.getFatalError()).toMatchObject({ code: 'SOMETHING_NEW' })
+    expect(errors.mock.calls.some((c) => String(c[0]).includes('unknown code "SOMETHING_NEW"'))).toBe(true)
+    expect(engine.sockets.length).toBe(1)
+    errors.mockRestore()
+  })
+
   it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: stays connected', async () => {
     const states: IIIConnectionState[] = []
     sdk.addConnectionStateListener((s) => states.push(s))
