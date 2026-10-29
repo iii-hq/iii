@@ -510,16 +510,28 @@ class Sdk implements ISdk {
   /**
    * Whether the function's `registerfunction` may go out on the current
    * connection now. One that needs `observe.v2` waits for this connection's
-   * `WorkerRegistered`, and stays unregistered (logged once, `UNSUPPORTED`)
-   * when the engine does not advertise it (decision 41).
+   * `WorkerRegistered`, and stays unregistered (`holdUnsupported`) when the
+   * engine does not advertise it (decision 41).
    */
   private mayRegister(functionId: string, fn: RemoteFunctionData): boolean {
     if (!this.isOpen()) return false
     if (!this.needsObserveV2(functionId, fn)) return true
     if (!this.registeredOnConnection) return false
     if (this.engineFeatures.has(FEATURE_OBSERVE_V2)) return true
-    this.warnUnsupported(functionId)
+    this.holdUnsupported(functionId, fn)
     return false
+  }
+
+  /**
+   * A function that needs `observe.v2` on a connection whose engine does not
+   * advertise it: the engine does not hold it here, so what it kept from an
+   * earlier connection is released once per connection (local dispatch, its
+   * observers through `onObserverRemoved`, held reports), and `UNSUPPORTED`
+   * is logged once per function.
+   */
+  private holdUnsupported(functionId: string, fn: RemoteFunctionData): void {
+    if (fn.observe.releasedEpoch !== this.connectionEpoch) fn.observe.onRegistrationRejected(this.connectionEpoch)
+    this.warnUnsupported(functionId)
   }
 
   /** Sends the registrations that may go out now and have not on this connection. */
@@ -532,9 +544,11 @@ class Sdk implements ISdk {
   }
 
   /**
-   * A deliver hook changed whether the function needs `observe.v2`: against
-   * an engine without it, a registered function is unregistered (and one
-   * held back is registered once it no longer needs it).
+   * Decides the registration again once a deliver hook may have changed
+   * whether the function needs `observe.v2` (set or removed, or set before
+   * `WorkerRegistered`): against an engine without it, a registered function
+   * is unregistered (and one held back is registered once it no longer needs
+   * it).
    */
   private reconcileRegistration(functionId: string): void {
     const fn = this.functions.get(functionId)
@@ -544,8 +558,7 @@ class Sdk implements ISdk {
     if (sent && !allowed) {
       this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
       fn.sentEpoch = undefined
-      fn.observe.onRegistrationRejected(this.connectionEpoch)
-      this.warnUnsupported(functionId)
+      this.holdUnsupported(functionId, fn)
     } else if (!sent && allowed) {
       this.replayRegistration(MessageType.RegisterFunction, fn.message)
       fn.sentEpoch = this.connectionEpoch
@@ -1821,7 +1834,9 @@ class Sdk implements ISdk {
     } else if (msgType === MessageType.FunctionRegistered) {
       const msg = decodeFunctionRegistered(message)
       const fn = this.functions.get(msg.id)
-      if (fn) {
+      // Only a registration sent on this connection is confirmed: not one
+      // unregistered since (a deliver hook against an engine without observe.v2).
+      if (fn && fn.sentEpoch === this.connectionEpoch) {
         // A standby function took over the id: its hooks run for every observer in the set.
         this.stopStandby(msg.id)
         fn.standingBy = false
@@ -1856,14 +1871,18 @@ class Sdk implements ISdk {
   /**
    * `WorkerRegistered` told this connection what the engine supports. The
    * functions that need `observe.v2` go out now, or stay unregistered without
-   * it. With `observe.v1` the observers are replayed (after the functions) and
-   * held reports flushed; without it `observe()` fails with `UNSUPPORTED` and
-   * observer hooks are inactive.
+   * it; without it, one sent earlier on this connection that has gained a
+   * deliver hook since is unregistered. With `observe.v1` the observers are
+   * replayed (after the functions) and held reports flushed; without it
+   * `observe()` fails with `UNSUPPORTED` and observer hooks are inactive.
    */
   private onEngineFeatures(features: string[]): void {
     this.engineFeatures = new Set(features)
     this.registeredOnConnection = true
     this.sendRegistrations()
+    for (const [functionId, fn] of this.functions) {
+      if (fn.sentEpoch === this.connectionEpoch) this.reconcileRegistration(functionId)
+    }
     this.warnUnregisteredHookIds()
     const queued = this.observeQueue
     this.observeQueue = []

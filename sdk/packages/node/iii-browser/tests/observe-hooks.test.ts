@@ -818,6 +818,63 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     ])
   })
 
+  it('a deliver hook chained before WorkerRegistered: against an engine without it, the function sent is unregistered', async () => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    socket.open(null)
+    const ref = sdk.registerFunction('a::plain', async () => 'here').onObserverDeliver((call) => call.output)
+    socket.deliver({ type: 'workerregistered', worker_id: 'w-1', features: fake.ENGINE_FEATURES_V1 })
+    expect(
+      socket
+        .frames()
+        .filter((f) => f.type === 'registerfunction' || f.type === 'unregisterfunction')
+        .map((f) => [f.type, f.id]),
+    ).toEqual([
+      ['registerfunction', 'a::plain'],
+      ['unregisterfunction', 'a::plain'],
+    ])
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('[iii] UNSUPPORTED'))).toHaveLength(1)
+    // the engine's answer to the registration it then dropped confirms nothing
+    socket.deliver(functionRegistered('a::plain', [observerInfo('o', 't::a')]))
+    await settle()
+    expect(ref.isObserved()).toBe(false)
+    expect(acks(socket)).toEqual([])
+    socket.clear()
+    void sdk.call({ function_id: 'a::plain', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    expect(socket.framesOf('invokefunction').map((f) => f.function_id)).toEqual(['a::plain'])
+  })
+
+  it('held after a reconnect to an engine without it, a function releases what it held: local dispatch, observers, reports', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    warnings()
+    const removed: string[] = []
+    const ref = sdk
+      .registerFunction('c::private', (e: unknown) => e, { private: true })
+      .onObserverRemoved((obs) => {
+        removed.push(obs.id)
+      })
+    socket.open()
+    socket.deliver(functionRegistered('c::private', [observerInfo('a', 't::a'), observerInfo('b', 't::b')]))
+    await settle()
+    expect(ref.isObserved()).toBe(true)
+    socket.drop()
+    // run here while disconnected: its report waits for the next connection
+    await expect(sdk.call({ function_id: 'c::private', payload: { n: 1 } })).resolves.toEqual({ n: 1 })
+    await fake.elapse(50)
+    const again = fake.lastSocket()
+    expect(again).not.toBe(socket)
+    again.open(fake.ENGINE_FEATURES_V1)
+    await settle()
+    expect(again.framesOf('registerfunction')).toEqual([])
+    expect(removed).toEqual(['a', 'b'])
+    expect(ref.isObserved()).toBe(false)
+    void sdk.call({ function_id: 'c::private', payload: { n: 2 }, timeoutMs: 20 }).catch(() => undefined)
+    expect(again.framesOf('invokefunction').filter((f) => f.function_id === 'c::private')).toHaveLength(1)
+    await fake.elapse(10)
+    expect(again.framesOf('invocationsobserved')).toEqual([])
+  })
+
   it('INVALID_ARGS_FORMAT and UNSUPPORTED refuse one function and keep the connection', async () => {
     const { sdk, socket } = worker()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
