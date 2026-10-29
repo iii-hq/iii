@@ -67,7 +67,7 @@ export function Footer({ container }: { container?: string } = {}) {
               <Logo className="h-7 text-foreground" />
             </a>
             <p className="mt-4 max-w-[320px] text-pretty text-[15px] text-muted-foreground leading-relaxed">
-              A next-generation software system. Workers. Triggers. Functions.
+              A next-generation software system. Workers. Functions. Observers.
             </p>
             <p className="mt-2 font-sans text-[12px] text-muted-foreground">
               Pronounced <span className="text-foreground/80">&quot;three eye&quot;</span>

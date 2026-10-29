@@ -314,7 +314,7 @@ function griffeToType(obj: GriffeObject): TypeDoc {
         })
       } else if (member.kind === 'function') {
         // Methods document as callable-typed rows so their parameters survive
-        // (e.g. `Trigger.unregister`, `TriggerTypeRef.register_trigger`).
+        // (e.g. `FunctionRef.unregister`, `Observer.reject`).
         fields.push({
           name: member.name,
           type: buildSignature(member),
@@ -355,7 +355,7 @@ function resolve(obj: GriffeObject | undefined, index: Map<string, GriffeObject>
   return obj
 }
 
-const PUBLIC_SUBMODULES = ['channel', 'errors', 'trigger', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state']
+const PUBLIC_SUBMODULES = ['channel', 'errors', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state']
 
 /** True if `path` belongs to one of our own packages (not typing.*, pydantic.*). */
 function isLocalPath(path: string | undefined, pkgs: string[]): boolean {
@@ -511,7 +511,7 @@ export function parseGriffe(jsonPath: string): SdkDoc {
 const HELPERS_MODULE_DESCRIPTIONS: Record<string, string> = {
   http: 'HTTP request/response types, auth config, and the `http` helper.',
   queue: 'Queue enqueue result types.',
-  stream: 'Stream trigger configs, change events, IO inputs, and update operations.',
+  stream: 'Stream change events, IO inputs, and update operations.',
   worker_connection_manager: 'RBAC auth and registration callback types.',
   observability: 'Logger, OpenTelemetry config, and span helpers.',
 }

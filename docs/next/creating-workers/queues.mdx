@@ -1,8 +1,7 @@
 ---
 title: "Queues"
 description:
-  "Async job processing with named topics, retries, and dead-letter support via the queue
-  worker."
+  "Async job processing with named topics, retries, and dead-letter support via the queue worker."
 owner: "devrel"
 type: "how-to"
 ---
@@ -27,23 +26,24 @@ iii compose --namespace dev --engine ws://127.0.0.1:49134
 
 `iii compose` is an intentional verbless daemon invocation, documented in the
 [CLI reference](../cli-reference/index#iii-compose). The `-n` used below is the short form of
-`--namespace` for [`iii trigger`](../cli-reference/index#iii-trigger).
+`--namespace` for [`iii call`](../using-iii/cli).
 
 Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
-iii trigger -n dev compose::add worker=queue
+iii call -n dev compose::add worker=queue
 ```
 
 <Note>
-  This page covers common queue patterns. For the complete configuration and trigger API, see the
+  This page covers common queue patterns. For the complete configuration and function API, see the
   [queue worker docs](https://workers.iii.dev/workers/queue).
 </Note>
 
 ## Named Queues
 
 When you need to control function execution for time consuming operations, or guarantee a certain
-number of retries then you can use `TriggerAction.Enqueue` to place that operation into a queue.
+number of retries, call the function with the `CallAction.Enqueue` action to place the call into a
+queue.
 
 ### Creating a Queue
 
@@ -54,18 +54,18 @@ options.
 
 ### Enqueue functions
 
-Enqueued functions are registered the same as any other call to `worker.trigger` with the one
-difference being providing an action called `TriggerAction.Enqueue` to the trigger:
+An enqueued call is a regular `worker.call` with the `CallAction.Enqueue` action. It returns a
+receipt right away, and the queue runs the function:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { TriggerAction, type EnqueueResult } from "iii-sdk";
+    import { CallAction, type EnqueueResult } from "iii-sdk";
 
-    const { messageReceiptId } = await worker.trigger<unknown, EnqueueResult>({
+    const { messageReceiptId } = await worker.call<unknown, EnqueueResult>({
       function_id: "email::send",
       payload: { to: "a@b.com", subject: "hi" },
-      action: TriggerAction.Enqueue({ queue: "email-jobs" }), // "queue" specifies the name of the queue
+      action: CallAction.Enqueue({ queue: "email-jobs" }), // "queue" specifies the name of the queue
     });
     // messageReceiptId identifies the enqueued job
     ```
@@ -73,12 +73,12 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
   </Tab>
   <Tab title="Python">
     ```python
-    from iii import TriggerAction
+    from iii import CallAction
 
-    receipt = worker.trigger({
+    receipt = worker.call({
         "function_id": "email::send",
         "payload": {"to": "a@b.com", "subject": "hi"},
-        "action": TriggerAction.Enqueue(queue="email-jobs"), # "queue" specifies the name of the queue
+        "action": CallAction.Enqueue(queue="email-jobs"), # "queue" specifies the name of the queue
     })
     # receipt["messageReceiptId"] identifies the enqueued job
     ```
@@ -86,15 +86,15 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerAction;
-    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::CallAction;
+    use iii_sdk::protocol::CallRequest;
     use serde_json::json;
 
     let receipt = worker
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "email::send".to_string(),
             payload: json!({ "to": "a@b.com", "subject": "hi" }),
-            action: Some(TriggerAction::Enqueue { queue: "email-jobs".to_string() }), // "queue" specifies the name of the queue
+            action: Some(CallAction::Enqueue { queue: "email-jobs".to_string() }), // "queue" specifies the name of the queue
             timeout_ms: None,
         })
         .await?;
@@ -106,7 +106,7 @@ difference being providing an action called `TriggerAction.Enqueue` to the trigg
     ```go
     import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
 
-    res, err := client.Trigger(ctx, iii.TriggerRequest{
+    res, err := client.Call(ctx, iii.CallRequest{
         FunctionID: "email::send",
         Payload:    json.RawMessage(`{"to":"a@b.com","subject":"hi"}`),
         Action:     iii.EnqueueAction("email-jobs"), // "email-jobs" is the name of the queue
@@ -132,20 +132,13 @@ same data and it's important that the messages be durable (ie. will succeed).
 
 ### Consuming messages
 
-A consumer can bind to a message by registering a Trigger for `durable:subscriber` trigger to it.
-The engine runs the function once per message, passing the published `data` as the payload.
-Returning normally acknowledges the message; throwing nacks it, so it is retried and eventually
-dead-lettered.
+`worker.observe({ function_id: "queue::on-message", args: { topic } }, target)` means: when a
+message is published to `topic`, `target` runs with the message's `data`. Returning acknowledges the
+message; throwing retries it, and after the last retry the message moves to the dead-letter queue.
 
-<Note>
-  `registerTrigger` is deprecated in 0.25, but the queue worker still publishes the
-  `durable:subscriber` trigger type, so it remains the way to consume messages. It logs one warning
-  per process. See [Providers not migrated
-  yet](../upgrading/from-0-24-x#providers-not-migrated-yet).
-</Note>
-
-In a worker, register the consumer function and subscribe it to the topic. If you do not have a
-worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its source:
+In a worker, register the consumer function and observe `queue::on-message` with the topic. If you
+do not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
+source:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -165,11 +158,7 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
       return { sent: true };
     });
 
-    worker.registerTrigger({
-      type: "durable:subscriber",
-      function_id: "email::send",
-      config: { topic: "emails" },
-    });
+    worker.observe({ function_id: "queue::on-message", args: { topic: "emails" } }, "email::send");
     ```
 
   </Tab>
@@ -190,18 +179,13 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
 
     worker.register_function("email::send", send)
 
-    worker.register_trigger({
-        "type": "durable:subscriber",
-        "function_id": "email::send",
-        "config": {"topic": "emails"},
-    })
+    worker.observe({"function_id": "queue::on-message", "args": {"topic": "emails"}}, "email::send")
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
-    use iii_sdk::protocol::RegisterTriggerInput;
+    use iii_sdk::{InitOptions, RegisterFunction, Source, register_worker};
     use serde::Deserialize;
     use schemars::JsonSchema;
     use serde_json::json;
@@ -227,11 +211,10 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
         Ok(json!({ "sent": true }))
     }));
 
-    worker.register_trigger(RegisterTriggerInput::new(
-        "durable:subscriber",
+    worker.observe(
+        Source::function("queue::on-message").args(json!({ "topic": "emails" })),
         "email::send",
-        json!({ "topic": "emails" }),
-    ))?;
+    );
     ```
 
   </Tab>
@@ -255,11 +238,10 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
         return map[string]bool{"sent": true}, nil
     })
 
-    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-        Type:       "durable:subscriber",
-        FunctionID: "email::send",
-        Config:     json.RawMessage(`{"topic":"emails"}`),
-    }); err != nil {
+    if _, err := client.Observe(iii.Source{
+        FunctionID: "queue::on-message",
+        Args:       iii.Args{"topic": "emails"},
+    }, "email::send"); err != nil {
         log.Fatal(err)
     }
     ```
@@ -270,17 +252,17 @@ worker yet, follow [Create a new worker](./workers#create-a-new-worker), then ed
 Add the worker to start it:
 
 ```bash
-iii trigger -n dev compose::add worker=./email-worker
+iii call -n dev compose::add worker=./email-worker
 ```
 
 ### Publishing a message
 
-With the consumer running, publish to its topic. The engine delivers the `data` to every subscriber,
-so `email::send` runs once per message:
+With the consumer running, publish to its topic. The queue worker delivers the `data` to every
+subscriber, so `email::send` runs once per message:
 
 ```bash
 # publish a message to the "emails" topic
-iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+iii call iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
 ```
 
 <Tip>
@@ -290,62 +272,75 @@ iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.co
 
 ### Retries and delivery
 
-The examples use the `topic` to choose what to consume and `queue_config` to tune delivery for
-one subscriber. See the
-[`durable:subscriber` reference](https://workers.iii.dev/workers/queue) for the complete trigger
-schema, including filtering and adapter-specific options.
+Each observer of `queue::on-message` is one subscriber. Its `args` choose what it consumes and how:
 
-A failed delivery retries with exponential backoff (1 second, then 2 seconds) for up to 3 attempts,
-then the message dead-letters.
+| Arg            | Meaning                                                                                     |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| `topic`        | The topic to consume. Required.                                                             |
+| `max_retries`  | Retries of a failed delivery before the message moves to the dead-letter queue (default 3). |
+| `backoff_ms`   | The first retry delay. Each later retry doubles it.                                         |
+| `queue_config` | Delivery settings for this subscriber, for example `{ type: "fifo" }`.                      |
+| `group`        | Subscribers that name the same group share one consumer, which handles each message once.   |
 
-Each subscriber's durable queue is scoped by the subscribing worker's namespace, so two subscribers
-of the same topic and function id in different namespaces are two queues that each receive every
-published event, rather than two competing consumers of one queue.
+Observer `filters` select messages by their `data` as `input`. A message the filters reject is
+acknowledged without running the target. See the
+[queue worker docs](https://workers.iii.dev/workers/queue) for every arg and the adapter-specific
+options.
+
+By default, a failed delivery is retried up to 3 times with exponential backoff (1 second, then 2,
+then 4), then the message moves to the dead-letter queue.
+
+Each subscriber has its own durable queue, so two observers of the same topic each receive every
+published message. To spread one stream of messages across several consumers, give their observers
+the same `group`.
 
 <Warning>
   RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
   0.22.x](../upgrading/from-0-22-x#step-1-redeclare-rabbitmq-durable-subscriber-queues).
 </Warning>
 
-For example, to process messages strictly one at a time instead of concurrently, register the
-trigger with a `fifo` queue:
+For example, to process messages strictly one at a time instead of concurrently, observe the topic
+with a `fifo` queue:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    worker.registerTrigger({
-      type: "durable:subscriber",
-      function_id: "email::send",
-      config: { topic: "emails", queue_config: { type: "fifo" } },
-    });
+    worker.observe(
+      {
+        function_id: "queue::on-message",
+        args: { topic: "emails", queue_config: { type: "fifo" } },
+      },
+      "email::send",
+    );
     ```
   </Tab>
   <Tab title="Python">
     ```python
-    worker.register_trigger({
-        "type": "durable:subscriber",
-        "function_id": "email::send",
-        "config": {"topic": "emails", "queue_config": {"type": "fifo"}},
-    })
+    worker.observe(
+        {
+            "function_id": "queue::on-message",
+            "args": {"topic": "emails", "queue_config": {"type": "fifo"}},
+        },
+        "email::send",
+    )
     ```
   </Tab>
   <Tab title="Rust">
     ```rust
-    worker.register_trigger(RegisterTriggerInput::new(
-        "durable:subscriber",
+    worker.observe(
+        Source::function("queue::on-message")
+            .args(json!({ "topic": "emails", "queue_config": { "type": "fifo" } })),
         "email::send",
-        json!({ "topic": "emails", "queue_config": { "type": "fifo" } }),
-    ))?;
+    );
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-        Type:       "durable:subscriber",
-        FunctionID: "email::send",
-        Config:     json.RawMessage(`{"topic":"emails","queue_config":{"type":"fifo"}}`),
-    }); err != nil {
+    if _, err := client.Observe(iii.Source{
+        FunctionID: "queue::on-message",
+        Args:       iii.Args{"topic": "emails", "queue_config": iii.Args{"type": "fifo"}},
+    }, "email::send"); err != nil {
         log.Fatal(err)
     }
     ```
@@ -355,7 +350,7 @@ trigger with a `fifo` queue:
 
 ## Inspecting Queue Topics
 
-These commands list both kinds of queue. A pub/sub topic appears once a function subscribes to it,
+These commands list both kinds of queue. A pub/sub topic appears once an observer subscribes to it,
 and shows `broker_type: "builtin"`. (Publishing to a topic that nothing subscribes to does not
 register it, so there is nothing to inspect.) A configured named queue appears with
 `broker_type: "function_queue"`.
@@ -363,7 +358,7 @@ register it, so there is nothing to inspect.) A configured named queue appears w
 List every topic (this inspects the `emails` topic from above):
 
 ```bash
-iii trigger engine::queue::list_topics
+iii call engine::queue::list_topics
 ```
 
 ```json
@@ -375,7 +370,7 @@ dead-lettered). A topic whose consumer keeps up sits at `depth: 0`. For a named 
 `consumer_count` reports its active delivery slots:
 
 ```bash
-iii trigger engine::queue::topic_stats topic=emails
+iii call engine::queue::topic_stats topic=emails
 ```
 
 ```json
@@ -384,8 +379,8 @@ iii trigger engine::queue::topic_stats topic=emails
 
 ## Inspecting Dead Letter Queue Messages
 
-A message reaches the dead-letter queue only once its subscribed function exhausts its retries, so
-the DLQ functions return empty until something fails.
+A message reaches the dead-letter queue only once its target exhausts its retries, so the DLQ
+functions return empty until something fails.
 
 ### Forcing a message into the dead-letter queue
 
@@ -399,11 +394,7 @@ then fails its 3 delivery attempts (a few seconds with the exponential backoff) 
       throw new Error("forced failure");
     });
 
-    worker.registerTrigger({
-      type: "durable:subscriber",
-      function_id: "email::send",
-      config: { topic: "emails" },
-    });
+    worker.observe({ function_id: "queue::on-message", args: { topic: "emails" } }, "email::send");
     ```
 
   </Tab>
@@ -414,11 +405,7 @@ then fails its 3 delivery attempts (a few seconds with the exponential backoff) 
 
     worker.register_function("email::send", send)
 
-    worker.register_trigger({
-        "type": "durable:subscriber",
-        "function_id": "email::send",
-        "config": {"topic": "emails"},
-    })
+    worker.observe({"function_id": "queue::on-message", "args": {"topic": "emails"}}, "email::send")
     ```
 
   </Tab>
@@ -428,11 +415,10 @@ then fails its 3 delivery attempts (a few seconds with the exponential backoff) 
         Err::<serde_json::Value, _>(iii_sdk::Error::Handler("forced failure".into()))
     }));
 
-    worker.register_trigger(RegisterTriggerInput::new(
-        "durable:subscriber",
+    worker.observe(
+        Source::function("queue::on-message").args(json!({ "topic": "emails" })),
         "email::send",
-        json!({ "topic": "emails" }),
-    ))?;
+    );
     ```
 
   </Tab>
@@ -442,11 +428,10 @@ then fails its 3 delivery attempts (a few seconds with the exponential backoff) 
         return nil, errors.New("forced failure")
     })
 
-    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-        Type:       "durable:subscriber",
-        FunctionID: "email::send",
-        Config:     json.RawMessage(`{"topic":"emails"}`),
-    }); err != nil {
+    if _, err := client.Observe(iii.Source{
+        FunctionID: "queue::on-message",
+        Args:       iii.Args{"topic": "emails"},
+    }, "email::send"); err != nil {
         log.Fatal(err)
     }
     ```
@@ -458,13 +443,13 @@ Now publish a message; after the retries run out it lands in the DLQ (exact ids,
 sizes vary per run):
 
 ```bash
-iii trigger iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
+iii call iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com","subject":"hi"}}'
 ```
 
 ### Listing topics with dead-lettered messages
 
 ```bash
-iii trigger engine::queue::dlq_topics
+iii call engine::queue::dlq_topics
 ```
 
 ```json
@@ -474,7 +459,7 @@ iii trigger engine::queue::dlq_topics
 ### Browsing dead-lettered messages
 
 ```bash
-iii trigger engine::queue::dlq_messages topic=emails
+iii call engine::queue::dlq_messages topic=emails
 ```
 
 ```json
@@ -496,7 +481,7 @@ Fix the code back to what it was originally, then move the topic's dead-lettered
 the main queue for reprocessing:
 
 ```bash
-iii trigger iii::queue::redrive topic=emails
+iii call iii::queue::redrive topic=emails
 ```
 
 ```json
@@ -506,7 +491,7 @@ iii trigger iii::queue::redrive topic=emails
 The fixed function now processes them, so the DLQ is empty again:
 
 ```bash
-iii trigger engine::queue::dlq_messages topic=emails
+iii call engine::queue::dlq_messages topic=emails
 ```
 
 ### Redriving or discarding a single message
@@ -515,7 +500,7 @@ To handle one message instead of the whole topic, pass the `id` from `engine::qu
 Redrive one message back to the main queue:
 
 ```bash
-iii trigger iii::queue::redrive_message topic=emails message_id=0b9c…
+iii call iii::queue::redrive_message topic=emails message_id=0b9c…
 ```
 
 ```json
@@ -525,7 +510,7 @@ iii trigger iii::queue::redrive_message topic=emails message_id=0b9c…
 Or discard it, deleting it from the DLQ permanently:
 
 ```bash
-iii trigger iii::queue::discard_message topic=emails message_id=0b9c…
+iii call iii::queue::discard_message topic=emails message_id=0b9c…
 ```
 
 ```json

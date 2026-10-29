@@ -13,7 +13,7 @@ A really good piece from Yohei this week, named something a lot of us building a
 
 That description is exact. What I want to argue, from a year of building [iii](https://iii.dev/), is that the substrate is not the missing thing. The framing has been. Treating the substrate as a problem each agent team has to solve is what makes everyone rebuild it. Treat it as a system everyone shares and installs into, and the problem dissolves.
 
-That is the bet iii has been running on. Three primitives: Worker, Trigger, Function. Small enough that every category in the list above is the same primitive composed differently. And because they're the same primitive, the substrate is not architecture. It's a command.
+That is the bet iii has been running on. Three primitives: Worker, Function, Observer. Small enough that every category in the list above is the same primitive composed differently. And because they're the same primitive, the substrate is not architecture. It's a command.
 
 **iii worker add**
 
@@ -23,14 +23,14 @@ The single most important line is:
 
 That sounds like a tagline. It is also literally true.
 
-When you type `iii worker add iii-state`, the engine pulls a published worker from the [registry at workers.iii.dev](https://workers.iii.dev/), starts it, and registers its functions and triggers on the engine. From the moment that command returns, every other worker in your system can call `state::set` and `state::get` and subscribe to state-change triggers. There is no integration code. There is no SDK to import. There is no client to instantiate. The worker is there, the catalog updated, and every existing worker, including any agent already running, can use it on the next tick.
+When you type `iii worker add iii-state`, the engine pulls a published worker from the [registry at workers.iii.dev](https://workers.iii.dev/), starts it, and registers its functions on the engine. From the moment that command returns, every other worker in your system can call `state::set` and `state::get` and observe `state::on-changed`. There is no integration code. There is no SDK to import. There is no client to instantiate. The worker is there, the catalog updated, and every existing worker, including any agent already running, can use it on the next tick.
 
 That is the move that turns **"the missing substrate" into "an installable package."**
 
 Here is what's in the registry today:
 
 ```bash
-iii worker add iii-state          # distributed KV state with reactive change triggers
+iii worker add iii-state          # distributed KV state with observable changes
 iii worker add iii-queue          # async jobs with retries, dead-letter
 iii worker add iii-pubsub         # topic-based pub/sub
 iii worker add iii-stream         # durable streams
@@ -66,25 +66,30 @@ Walk through each adjective in that substrate description: persistent, reactive,
 
 **Persistent.** State has to survive restarts, network blips, and worker disconnects. `iii worker add iii-state` exposes `state::set`, `state::get`, scopes, transactional reads. The state lives in the state worker, not in the agent process. Crash the agent worker; reconnect it; read scoped state; resume.
 
-**Reactive.** Changes in the substrate cause work to happen elsewhere, without the affected workers polling for them. iii-state ships reactive change triggers as a first-class trigger type. Any worker can register:
+**Reactive.** Changes in the substrate cause work to happen elsewhere, without the affected workers polling for them. iii-state calls `state::on-changed` for every change, and any worker can observe it:
 
 ```ts
-iii.registerTrigger({
-  type: 'state',
-  function_id: 'agents::researcher',
-  config: { scope: 'research-tasks', condition: 'status == "pending"' },
-})
+iii.observe(
+  {
+    function_id: 'state::on-changed',
+    filters: {
+      'input.scope': { $eq: 'research-tasks' },
+      'input.new_value.status': { $eq: 'pending' },
+    },
+  },
+  'agents::researcher',
+)
 ```
 
-The agent function runs every time a row enters that state. No queue subscription you wrote. No webhook you maintained. No cron polling at 5-second intervals. The state change is the event, declared at registration time, fired by the engine.
+The agent function runs every time a row enters that state. No queue subscription you wrote. No webhook you maintained. No cron polling at 5-second intervals. The state change is the event, declared once as an observer, delivered by the engine.
 
 Want it broadcast instead of narrowed? `iii worker add iii-pubsub` and the same shape works on a topic. Want it durable across a backlog? `iii worker add iii-queue` and you have retries and dead-letter for free. The reactive property is composed from these workers, not bolted on top.
 
-**Inspectable.** `iii worker add iii-observability` adds OpenTelemetry traces, metrics, and logs across every worker on the bus, in one trace per logical call. The agent's `state::set` writes a span. The state worker's change-trigger fire writes a child span. The downstream function that handles the change writes another child span. The whole chain across languages, across worker boundaries, across queue handoffs is one trace. The observability worker isn't a separate vendor you correlated with timestamp magic. It's a worker that subscribes to the same engine bus that everything else uses.
+**Inspectable.** `iii worker add iii-observability` adds OpenTelemetry traces, metrics, and logs across every worker on the bus, in one trace per logical call. The agent's `state::set` writes a span. The state worker's `state::on-changed` call writes a child span. The downstream function that handles the change writes another child span. The whole chain across languages, across worker boundaries, across queue handoffs is one trace. The observability worker isn't a separate vendor you correlated with timestamp magic. It's a worker that subscribes to the same engine bus that everything else uses.
 
 **Evolving.** This is the property the other systems struggle with most, and it's where the worker model has its strongest answer.
 
-A worker joins the system by opening a single WebSocket connection to the engine and registering functions and triggers. The moment that connection lands, the engine's live catalog updates, and every other worker on the bus sees the new functions. No restart. No redeploy. No config reload. Capabilities appear at runtime.
+A worker joins the system by opening a single WebSocket connection to the engine and registering functions. The moment that connection lands, the engine's live catalog updates, and every other worker on the bus sees the new functions. No restart. No redeploy. No config reload. Capabilities appear at runtime.
 
 This is what makes "capability evolution" a property of the substrate by construction. The set of things the system can do is whatever set of workers is currently connected. When that set changes, the catalog changes. When the catalog changes, every reader sees the new shape on its next read. An agent that holds the catalog in context window for reasoning is, by definition, reasoning over the live state of the system.
 
@@ -98,7 +103,7 @@ The reason the substrate has to be installable, and not built bespoke per team, 
 
 The iii docs put it directly: four services means at least six possible integration edges. Twenty means 190. Every new capability quadratically compounds the coordination cost of everything already in your stack. That cost is what shows up as "every long-running agent eventually rebuilds the same surrounding infrastructure." It's not laziness. It's that every team starts from a stateless model plus a chat loop, and the only way to integrate ten other things into that shape is to write ten integration layers, each with its own retry semantics, its own observability story, its own state-handoff convention.
 
-`iii worker add` is the operation that flattens that curve. Adding two workers or two hundred is the same operation. A new worker joins the system by opening a single WebSocket connection and becomes immediately available to every other worker at that moment. The 190-edge graph for twenty services becomes one bus with twenty workers on it. Every worker speaks the same protocol. Every cross-worker call is a `trigger()`. Every state read is `state::get`. Every observability hook is automatic.
+`iii worker add` is the operation that flattens that curve. Adding two workers or two hundred is the same operation. A new worker joins the system by opening a single WebSocket connection and becomes immediately available to every other worker at that moment. The 190-edge graph for twenty services becomes one bus with twenty workers on it. Every worker speaks the same protocol. Every cross-worker call is a `call()`. Every state read is `state::get`. Every observability hook is automatic.
 
 The integration code stops existing because there is no longer anything to integrate. There's a worker, it's on the bus, it's ready.
 
@@ -110,15 +115,15 @@ When the engine docs say "becomes immediately available to every other worker at
 
 This is the property that lets the system extend itself while it's running. Most architectures bolt that on with hot reload, config push, service discovery, sidecar registries. In iii, it's a consequence of the wire shape. The catalog is the source of truth, the catalog updates on every worker connect and disconnect, and every worker reads from the catalog. There is nothing to bolt on because the wire was designed to carry it.
 
-The same is true of the observability and state stories. iii-observability doesn't need to be configured into the application. It subscribes to the engine bus and starts emitting OTLP. iii-state doesn't need an ORM. It exposes functions. The substrate is realtime not because someone added real-time support to it, but because the primitive, a WebSocket-connected worker registering functions and triggers, is real-time by construction.
+The same is true of the observability and state stories. iii-observability doesn't need to be configured into the application. It subscribes to the engine bus and starts emitting OTLP. iii-state doesn't need an ORM. It exposes functions. The substrate is realtime not because someone added real-time support to it, but because the primitive, a WebSocket-connected worker registering functions, is real-time by construction.
 
 ## Same contract, both sides
 
 The other thing that makes the substrate composable is the symmetry of the contract.
 
-The docs put it in one phrase under [Same Contract, Both Sides](https://iii.dev/docs): application teams register functions and declare triggers, focused entirely on business logic. Platform teams publish workers, focused entirely on the capabilities they provide. Both sides fulfill the same contract.
+The docs put it in one phrase under [Same Contract, Both Sides](https://iii.dev/docs): application teams register functions and declare observers, focused entirely on business logic. Platform teams publish workers, focused entirely on the capabilities they provide. Both sides fulfill the same contract.
 
-This is the part that kills the integration tax for good. When the "platform" workers you install — iii-state, iii-queue, iii-pubsub, iii-observability — speak the same protocol as the "application" workers you write, there is no boundary between them. Your `agents::researcher` function and the state worker's `state::set` function are the same kind of thing in the catalog. The agent calling state and the state worker calling back via a change trigger are both ordinary `trigger()` calls. The cross-language case: a Python ML pipeline calling a Rust state worker, which in turn calls a TypeScript agent, has the same shape end to end.
+This is the part that kills the integration tax for good. When the "platform" workers you install — iii-state, iii-queue, iii-pubsub, iii-observability — speak the same protocol as the "application" workers you write, there is no boundary between them. Your `agents::researcher` function and the state worker's `state::set` function are the same kind of thing in the catalog. The agent calling state and the state worker calling `state::on-changed` are both ordinary `call()` invocations. The cross-language case: a Python ML pipeline calling a Rust state worker, which in turn calls a TypeScript agent, has the same shape end to end.
 
 That symmetry is what makes the worker model actually compose, instead of just being a thin abstraction over a service mesh.
 
@@ -154,7 +159,7 @@ This is the part the harness debate doesn't see when it argues "thin versus thic
 
 Pull all of this together and the shape of building an agent on iii looks different from building one on top of a framework.
 
-You install a few workers from the registry. You write your agent as a worker that registers a function. The agent's tools are functions on other workers it can call via `trigger()`. The agent's memory is `state::set` and `state::get` against iii-state. The agent's branching is forked scopes against the same state worker. The agent's lineage is the OpenTelemetry trace iii-observability is already collecting. The agent's approvals are the approval-gate worker pausing the call. The agent's policies are the policy-denylist worker rejecting it. The agent's durable runs are turn-orchestrator driving the state machine. The agent's sandboxed code execution is iii-sandbox booting a fresh microVM.
+You install a few workers from the registry. You write your agent as a worker that registers a function. The agent's tools are functions on other workers it can call via `call()`. The agent's memory is `state::set` and `state::get` against iii-state. The agent's branching is forked scopes against the same state worker. The agent's lineage is the OpenTelemetry trace iii-observability is already collecting. The agent's approvals are the approval-gate worker pausing the call. The agent's policies are the policy-denylist worker rejecting it. The agent's durable runs are turn-orchestrator driving the state machine. The agent's sandboxed code execution is iii-sandbox booting a fresh microVM.
 
 You did not build any of those layers. You installed them. And because they're all workers on the same bus, the trace from the HTTP request that started the run to the final state mutation is one continuous trace across every one of them.
 

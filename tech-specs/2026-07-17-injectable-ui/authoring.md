@@ -1,3 +1,5 @@
+> **Status:** this spec describes the pre-0.26 trigger API. In 0.26 triggers are observable functions and observers; see [observe v2](../2026-10-29-observe-v2/README.md).
+
 # Authoring injectable UI — the worker side
 
 What a worker author actually writes: one content function, one trigger

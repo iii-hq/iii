@@ -1,6 +1,6 @@
 # AGENTS.md
 
-You are working in the iii monorepo — a backend unification engine with three primitives: **Function**, **Trigger**, **Worker**. The engine is Rust. SDKs exist for TypeScript, Python, and Rust. All communicate over WebSocket.
+You are working in the iii monorepo — a backend unification engine with three primitives: **Worker**, **Function**, **Observer**. The engine is Rust. SDKs exist for TypeScript (Node and browser), Python, Rust, and Go. All communicate over WebSocket.
 
 ## Commands
 
@@ -47,6 +47,7 @@ sdk/packages/node/iii/           TypeScript SDK (npm: iii-sdk)
 sdk/packages/node/iii-browser/   Browser SDK (npm: iii-browser-sdk)
 sdk/packages/python/iii/         Python SDK (PyPI: iii-sdk)
 sdk/packages/rust/iii/           Rust SDK (crates.io: iii-sdk)
+sdk/packages/go/iii/             Go SDK (github.com/iii-hq/iii/sdk/packages/go/iii)
 skills/                          8 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website
@@ -80,8 +81,9 @@ scripts/                         Build and CI scripts
 - Use `pnpm` (never `npm`) for JS/TS packages
 - Use `cargo fmt --all` before committing Rust changes
 - Use `pnpm fmt` before committing JS/TS changes
-- Use leading slashes for HTTP `api_path` values: `/orders`, `/users/:id`
-- Use `expression` (not `cron`) for cron trigger config fields
+- Use `call` to invoke functions (`call_async` in Python, `client.Call` in Go, `iii call` in the CLI)
+- Use leading slashes for the `path` arg of `http::on-request` observers: `/orders`, `/users/:id`
+- Use `expression` for the schedule arg of `cron::on-tick` observers
 - Use `::` separator for function IDs: `orders::validate`, `reports::daily-summary`
 - Use `workspace:*` for internal pnpm package references
 - Include `## When to Use` and `## Boundaries` sections in every SKILL.md
@@ -102,14 +104,15 @@ scripts/                         Build and CI scripts
 - Push directly to `main`
 - Change engine and CLI licensing (ELv2) or SDK licensing (Apache-2.0)
 - Remove "When to Use" / "Boundaries" from SKILL.md files (SkillKit validates these)
-- Use `cron` as a config key — the engine uses `expression`
-- Omit leading slashes on `api_path` — the engine standard is `/path`
+- Use `cron` as an arg key for `cron::on-tick`: the cron worker reads `expression`
+- Omit the leading slash on an `http::on-request` `path` arg: the http worker standard is `/path`
 
 ## Code Style
 
-`registerTrigger` / `register_trigger` and `registerTriggerType` are deprecated since 0.25 (they
-still work, and remain the way to bind the http, cron, queue, state, stream, pubsub, and database
-workers); observe functions and engine events with `iii.observe(source, target)`.
+Workers register functions, call them with `call`, and make one function run when another runs with
+`observe(source, target)`. HTTP routes, cron schedules, and queue subscriptions are observers of
+`http::on-request`, `cron::on-tick`, and `queue::on-message`: `args` are for that function's worker,
+and `filters` are for iii.
 
 **Rust (engine + SDK):**
 ```rust
@@ -119,16 +122,22 @@ iii.register_function(
     RegisterFunction::new(validate_order).description("Validate an incoming order"),
 );
 
-// HTTP triggers use leading slash
-iii.register_trigger(
-    IIITrigger::Http(HttpTriggerConfig::new("/orders/validate").method(HttpMethod::Post))
-        .for_function("orders::validate"),
+// Call a function and wait for its result
+let result = iii
+    .call(CallRequest::new("orders::validate", json!({ "sku": "A1", "qty": 2 })))
+    .await?;
+
+// HTTP route: observe http::on-request; `path` has a leading slash
+iii.observe(
+    Source::function("http::on-request")
+        .args(json!({ "method": "POST", "path": "/orders/validate" })),
+    "orders::validate",
 );
 
-// Cron triggers use `expression` field (7-field: sec min hour dom month dow year)
-iii.register_trigger(
-    IIITrigger::Cron(CronTriggerConfig::new("0 0 9 * * * *"))
-        .for_function("reports::daily-summary"),
+// Cron schedule: observe cron::on-tick with `expression` (7-field: sec min hour dom month dow year)
+iii.observe(
+    Source::function("cron::on-tick").args(json!({ "expression": "0 0 9 * * * *" })),
+    "reports::daily-summary",
 );
 
 // Observe a function: filters use explicit operators; the target is a registered function
@@ -140,61 +149,106 @@ iii.observe(
 
 **TypeScript (SDK):**
 ```typescript
-// HTTP trigger with leading slash
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'orders::validate',
-  config: { api_path: '/orders/validate', http_method: 'POST' },
-});
+// Call a function and wait for its result
+const result = await iii.call({ function_id: 'orders::validate', payload: { sku: 'A1', qty: 2 } });
 
-// HTTP trigger with middleware chain
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'orders::validate',
-  config: {
-    api_path: '/orders/validate',
-    http_method: 'POST',
-    middleware_function_ids: ['middleware::auth', 'middleware::rate-limit'],
+// Fire-and-forget
+await iii.call({ function_id: 'audit::log', payload: entry, action: CallAction.Void() });
+
+// When orders::create runs, alerts::big-order runs
+iii.observe('orders::create', 'alerts::big-order');
+
+// HTTP route: observe http::on-request; `path` has a leading slash
+iii.observe(
+  { function_id: 'http::on-request', args: { method: 'POST', path: '/orders/validate' } },
+  'orders::validate',
+);
+
+// HTTP route with middleware chain
+iii.observe(
+  {
+    function_id: 'http::on-request',
+    args: {
+      method: 'POST',
+      path: '/orders/validate',
+      middleware_function_ids: ['middleware::auth', 'middleware::rate-limit'],
+    },
   },
-});
+  'orders::validate',
+);
 
-// Cron trigger with `expression` (not `cron`)
-iii.registerTrigger({
-  type: 'cron',
-  function_id: 'reports::daily-summary',
-  config: { expression: '0 0 9 * * * *' },
-});
+// Cron schedule: observe cron::on-tick with `expression`
+iii.observe(
+  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * * *' } },
+  'reports::daily-summary',
+);
 
-// Trigger with metadata (optional, stored with the trigger)
-iii.registerTrigger({
-  type: 'cron',
-  function_id: 'reports::daily-summary',
-  config: { expression: '0 0 9 * * * *' },
-  metadata: { owner: 'billing-team', priority: 'high' },
-});
+// Observer with metadata (optional, passed to the target with each run)
+iii.observe(
+  { function_id: 'cron::on-tick', args: { expression: '0 0 9 * * * *' } },
+  'reports::daily-summary',
+  { metadata: { owner: 'billing-team', priority: 'high' } },
+);
 
-// Observe a function (or an engine event such as engine::on-functions-changed)
+// Filters select calls (or an engine event such as engine::on-functions-changed)
 iii.observe(
   { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
   'alerts::big-order',
-  { metadata: { owner: 'billing-team' } },
 );
+
+// Provide an event source: the handler returns the event, and the worker calls the function when the
+// event happens. Hooks override iii's defaults for this function's observers.
+iii.registerFunction('files::on-change', (change: FileChange) => change, {
+  args_format: WatchArgsSchema,
+  private: true,
+})
+  .onObserverAdded((obs) => watcher.retain(obs.args.path as string))
+  .onObserverRemoved((obs) => watcher.release(obs.args.path as string))
+  // each change goes to the observers of its path: keys that iii indexes
+  .onObserverMatch({ observer: (obs) => obs.args.path as string, call: (call) => call.input.path });
+
+watcher.on('change', (change) => iii.call({ function_id: 'files::on-change', payload: change }));
 ```
 
 **Python (SDK):**
 ```python
-# Same patterns — leading slash, expression field
-iii.register_trigger({
-    "type": "http",
-    "function_id": "orders::validate",
-    "config": {"api_path": "/orders/validate", "http_method": "POST"},
-})
+# Call a function: call blocks, call_async is awaitable
+result = iii.call({"function_id": "orders::validate", "payload": {"sku": "A1", "qty": 2}})
+result = await iii.call_async({"function_id": "orders::validate", "payload": {"sku": "A1", "qty": 2}})
+
+# Same patterns: leading slash on `path`, schedule in `expression`
+iii.observe(
+    {"function_id": "http::on-request", "args": {"method": "POST", "path": "/orders/validate"}},
+    "orders::validate",
+)
+iii.observe(
+    {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}},
+    "reports::daily-summary",
+)
 
 # Observe a function
 iii.observe(
     {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
     "alerts::big-order",
 )
+```
+
+**Go (SDK):**
+```go
+// Call a function and wait for its result
+result, err := client.Call(ctx, iii.CallRequest{
+    FunctionID: "orders::validate",
+    Payload:    json.RawMessage(`{"sku":"A1","qty":2}`),
+})
+
+// HTTP route: observe http::on-request; `path` has a leading slash
+client.Observe(iii.Source{
+    FunctionID: "http::on-request",
+    Args:       iii.Args{"method": "POST", "path": "/orders/validate"},
+}, "orders::validate")
+
+// When orders::create runs, alerts::big-order runs
+client.ObserveFunction("orders::create", "alerts::big-order")
 ```
 
 ## Skills

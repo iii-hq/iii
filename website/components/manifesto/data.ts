@@ -38,7 +38,7 @@ export const statements: Statement[] = [
     accent: 'three primitives',
     heavy: 'are enough.',
     body: [
-      'worker. trigger. function. a worker is any process that joins the system. a trigger is anything that causes work to run. a function is the unit of work. every capability (queues, cron, streaming, sandboxing, observability, agents, business logic, devices, UIs, and everything not yet imagined) is built from these three things. the primitives are small enough to hold in your head. everything else is a property of the engine, or a worker someone published.',
+      'worker. function. observer. a worker is any process that joins the system. a function is the unit of work. an observer runs one function when another runs, which makes everything reactive. every capability (queues, cron, streaming, sandboxing, observability, agents, business logic, devices, UIs, and everything not yet imagined) is built from these three things. the primitives are small enough to hold in your head. everything else is a property of the engine, or a worker someone published.',
     ],
   },
   {
@@ -76,7 +76,7 @@ export const statements: Statement[] = [
     accent: 'same contract,',
     heavy: 'both sides of the house.',
     body: [
-      'application teams register functions and declare triggers, focused entirely on business logic. platform teams publish workers, focused entirely on the capabilities they provide. both sides fulfill the exact same contract. no bespoke SDKs. no internal client libraries. no per-service API contracts. no integration consulting. the work that used to live between teams disappears.',
+      'application teams register functions and declare observers, focused entirely on business logic. platform teams publish workers, focused entirely on the capabilities they provide. both sides fulfill the exact same contract. no bespoke SDKs. no internal client libraries. no per-service API contracts. no integration consulting. the work that used to live between teams disappears.',
     ],
   },
   {
@@ -108,7 +108,7 @@ export const statements: Statement[] = [
     accent: 'agents',
     heavy: 'are workers.',
     body: [
-      "an agent's tools are functions. its memory is state. its orchestration is triggers. the harness is the system. an agent that hits a task outside its current capabilities can register a worker at runtime and use its functions immediately. this is the difference between scripted LLM calls and real autonomy.",
+      "an agent's tools are functions. its memory is state. its orchestration is observers. the harness is the system. an agent that hits a task outside its current capabilities can register a worker at runtime and use its functions immediately. this is the difference between scripted LLM calls and real autonomy.",
     ],
   },
   {

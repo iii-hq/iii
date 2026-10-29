@@ -7,14 +7,15 @@ owner: "engineering"
 type: "reference"
 ---
 
-A filter is the `filters` object of an observer's source. It decides whether one event reaches one
-observer's target. The language is declarative JSON (`iii-filter` v1): small, total, without side
-effects or regular expressions, so the same filter gives the same answer wherever it runs:
+A filter is the `filters` object of an observer's source. It decides whether one call of the
+observed function reaches one observer's target. The language is declarative JSON (`iii-filter` v1):
+small, total, without side effects or regular expressions, so the same filter gives the same answer
+wherever it runs:
 
-- in the engine, for routed invocations of auto-delivered functions;
-- in the SDK that hosts the function, for its local invocations;
-- in the owner's SDK, for owner-delivered functions, inside `obs.emit`, `obs.call`, and
-  `obs.matches`.
+- in the SDK of the worker that hosts the function, for every call it delivers: in iii's delivery
+  and in `obs.matches(call)`;
+- in the engine, for routed calls to hosts that did not declare `observe.v2`, for engine-hosted
+  functions, and for functions registered with `invocation` (HTTP-invoked).
 
 The engine, the Rust SDK (`iii-filter` crate), and the Node, browser, Python, and Go evaluators all
 run the same conformance vectors
@@ -22,14 +23,15 @@ run the same conformance vectors
 observers use filters, see [Observers](../using-iii/observers#filters).
 
 <Note>
-  Filters are not arguments. An owner-delivered function's `args` (a schedule, a route, a table) go
-  to its owner, which decides what to set up and which observers each event is for. Filters decide
-  which of those events reach the target, and the owner never changes them.
+  `args` are for the function's worker and `filters` are for iii. A function's `args` (a schedule, a
+  route, a table) go to the worker that hosts it, whose hooks decide what to set up and which
+  observers each call is for. Filters decide which of those calls reach the target, and the worker
+  never changes them.
 </Note>
 
 ## The document
 
-A filter reads one document per event, with five roots:
+A filter reads one document per call, with five roots:
 
 ```jsonc
 {
@@ -50,8 +52,8 @@ A filter reads one document per event, with five roots:
 - A filter may reference any root, whatever the observer captures. `capture` only decides what is
   shipped to the target.
 - `on` (`success`, `error`, `complete`) is checked before the filter.
-- For an owner-delivered function, the document is built from what the owner passes to `obs.emit` or
-  `obs.call`: `input`, `caller`, and `metadata`. `output` and `error` do not exist at that point.
+- `output` is the handler's return value, which is what observers observe. An event source's handler
+  returns the event it is called with, so its `input` and `output` are the same value.
 
 ## Syntax
 
@@ -69,7 +71,7 @@ A path clause always takes an **operator object**. There is no literal shorthand
 `{ "input.op": "insert" }` is `INVALID_FILTER`; write `{ "input.op": { "$eq": "insert" } }`.
 
 - A filter is a JSON object. Anything else, `null` included, is `INVALID_FILTER`. An absent
-  `filters` matches every event.
+  `filters` matches every call.
 - A filter object holds paths, `$and`, `$or`, and `$not`. Any other `$` key is `INVALID_FILTER`,
   value operators included (`{ "$eq": 1 }` needs a path).
 - `$and` and `$or` take a non-empty array of filters (`[]` is `INVALID_FILTER`). `$not` takes one
@@ -182,13 +184,13 @@ When the observed function registered a `request_format` (for `input.*` paths) o
 - `@` paths inside `$any` are checked against the array's `items`.
 - When the function is not registered yet, the checks run when it registers.
 
-Schema checks run in the engine only. `args` are validated separately, against the function's
-`args_format` (`INVALID_ARGS`), and filters cannot reference them.
+Schema checks run in the engine only. `args` are validated separately, against the observed
+function's `args_format` (`INVALID_ARGS`), and filters cannot reference them.
 
 ## Normal form
 
-The engine normalizes every filter before it stores it or pushes it to the function's owner
-(`engine::observers::list` shows the normal form too):
+The engine normalizes every filter before it stores it or pushes it to the worker that hosts the
+function (`engine::observers::list` shows the normal form too):
 
 - Every filter, nested ones included, becomes `{}` or `{ "$and": [ ... ] }` with one clause per
   object.
@@ -253,9 +255,10 @@ explicit operators only:
 
 ## Evaluate a filter in code
 
-Owners evaluate an observer's filters with `obs.matches(doc)` (`Matches` in Go), for example to
-answer a request differently before calling `obs.call`. The Python, Rust, and Go SDKs also expose
-the evaluator itself, which is handy in tests:
+A worker evaluates an observer's filters, with its `on`, through `obs.matches(call)` (`Matches` in
+Go). An `onObserverDeliver` hook that runs a target itself with `iii.call({ observer, payload })`
+checks the call this way first, for example to answer a request differently when the filters reject
+it. The Python, Rust, and Go SDKs also expose the evaluator itself, which is handy in tests:
 
 <Tabs>
   <Tab title="Python">

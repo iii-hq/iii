@@ -295,9 +295,11 @@ function Benchmarks({ run }: { run: Summary }) {
         lede={
           <>
             <p>
-              A source like cron or a database hands each event to the observers that asked for it, with{' '}
-              <code className="font-mono text-[0.9em] text-foreground">obs.emit()</code>. We offer a steady rate, from
-              1k to 500k events a second over 16 observers, and count what arrives.
+              A source like cron or a database calls its event function (
+              <code className="font-mono text-[0.9em] text-foreground">cron::on-tick</code>,{' '}
+              <code className="font-mono text-[0.9em] text-foreground">database::on-row-changed</code>) for each event,
+              and iii delivers each call to the observers whose args and filters match. We offer a steady rate, from 1k
+              to 500k events a second over 16 observers, and count what arrives.
             </p>
             <p className="mt-3">
               Up to some rate, everything does. That rate is the size&rsquo;s sustained capacity, and past it the engine
@@ -328,7 +330,7 @@ function Benchmarks({ run }: { run: Summary }) {
           <ChartCard
             title="Activations delivered, by events offered"
             subtitle="Per second, over 16 observers, on logarithmic scales: a line on the diagonal delivers everything."
-            read="On the dashed line, everything offered arrives. Where a size's line leaves it, its engine is full: it keeps delivering at capacity, and the excess is dropped and counted instead of queueing without bound. While the observers' queues are full, the engine stops reading the emitting worker, whose SDK drops what it cannot hold (BUFFER_FULL)."
+            read="On the dashed line, everything offered arrives. Where a size's line leaves it, its engine is full: it keeps delivering at capacity, and the excess is dropped and counted instead of queueing without bound. While the observers' queues are full, the engine stops reading the reporting worker, whose SDK drops what it cannot hold (BUFFER_FULL)."
           >
             <Chart
               series={views.delivery(run)}
@@ -593,7 +595,7 @@ function Benchmarks({ run }: { run: Summary }) {
                 ],
                 [
                   'The load',
-                  'Real SDK workers (the Rust SDK) call, host, observe and emit, as an application would. Idle workers are raw WebSockets, so ten thousand fit in one process.',
+                  'Real SDK workers (the Rust SDK) call, host, observe and report observed calls, as an application would. Idle workers are raw WebSockets, so ten thousand fit in one process.',
                 ],
                 [
                   'A step',

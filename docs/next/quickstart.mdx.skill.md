@@ -54,7 +54,7 @@ All commands in this tutorial use the `default` namespace.
 </Info>
 
 ```bash
-iii trigger compose::add worker=./workers/math-worker
+iii call compose::add worker=./workers/math-worker
 ```
 
 The Compose daemon terminal reports the worker becoming ready:
@@ -74,7 +74,7 @@ This worker registered the function `math::add` with the engine. You could call 
 now using the command below.
 
 ```bash
-iii trigger math::add a=2 b=3
+iii call math::add a=2 b=3
 ```
 
 However this is not much different than running an equivalent script on its own. The utility of iii
@@ -90,7 +90,7 @@ in.
 ## 4. Start the TypeScript worker
 
 ```bash
-iii trigger compose::add worker=./workers/caller-worker
+iii call compose::add worker=./workers/caller-worker
 ```
 
 The Compose daemon reports:
@@ -108,7 +108,7 @@ This worker registered the function `math::add_two_numbers` with the engine.
 Call the TypeScript worker. It will call the Python worker through the engine and return the result:
 
 ```bash
-iii trigger math::add_two_numbers a=10 b=20
+iii call math::add_two_numbers a=10 b=20
 ```
 
 ```json
@@ -123,7 +123,7 @@ worker, which gives every function access to a persistent key-value store.
 From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii trigger compose::add worker=state
+iii call compose::add worker=state
 ```
 
 Now open `workers/math-worker/src/math_worker.py` in your code editor and uncomment the state block
@@ -136,14 +136,14 @@ def add_handler(payload: dict) -> dict:
     logger.info(f"math::add called in Python with a={a}, b={b}")
     result = {"c": a + b}
 
-    running_total = worker.trigger(
+    running_total = worker.call(
         {
             "function_id": "state::get",
             "payload": {"scope": "math", "key": "running_total"},
         }
     )
     new_total = (running_total or 0) + result["c"]
-    worker.trigger(
+    worker.call(
         {
             "function_id": "state::set",
             "payload": {"scope": "math", "key": "running_total", "value": new_total},
@@ -157,7 +157,7 @@ def add_handler(payload: dict) -> dict:
 Save the file and call the function a few times:
 
 ```bash
-iii trigger math::add a=2 b=3
+iii call math::add a=2 b=3
 ```
 
 ```json
@@ -165,7 +165,7 @@ iii trigger math::add a=2 b=3
 ```
 
 ```bash
-iii trigger math::add a=10 b=20
+iii call math::add a=10 b=20
 ```
 
 ```json
@@ -182,7 +182,7 @@ Now let's add an HTTP worker to expose your functions as REST endpoints.
 From the folder containing `worker-compose.yaml`, run:
 
 ```bash
-iii trigger compose::add worker=http
+iii call compose::add worker=http
 ```
 
 Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the bottom of the file:
@@ -191,7 +191,7 @@ Open `workers/caller-worker/src/worker.ts` and uncomment the HTTP block at the b
 worker.registerFunction(
   "http::add_two_numbers",
   async (payload: { body: { a: number; b: number } }) => {
-    const result = await worker.trigger<
+    const result = await worker.call<
       { a: number; b: number },
       { c: number; running_total: number }
     >({
@@ -206,12 +206,18 @@ worker.registerFunction(
   },
 );
 
-worker.registerTrigger({
-  type: "http",
-  function_id: "http::add_two_numbers",
-  config: { api_path: "/math/add-two-numbers", http_method: "POST" },
-});
+worker.observe(
+  {
+    function_id: "http::on-request",
+    args: { method: "POST", path: "/math/add-two-numbers" },
+  },
+  "http::add_two_numbers",
+);
 ```
+
+Each request the http worker receives is a call of its function `http::on-request`. The observer
+tells the http worker which route it wants in `args`, so each `POST /math/add-two-numbers` request
+runs `http::add_two_numbers`, and the value it returns is the HTTP response.
 
 Save the file, then call the new endpoint with curl:
 
@@ -225,25 +231,18 @@ curl -X POST http://localhost:3111/math/add-two-numbers \
 { "c": 300, "running_total": 335 }
 ```
 
-The same functions that respond to `iii trigger` now also respond to HTTP requests with no code
-changes to the handlers themselves.
-
-<Note>
-  The worker logs a deprecation warning for `registerTrigger` once. In 0.25 it is still the way to
-  bind HTTP routes, because the http worker publishes the `http` trigger type; the warning is
-  informational. See [Upgrading from 0.24.x](./upgrading/from-0-24-x#providers-not-migrated-yet).
-</Note>
+`math::add_two_numbers` answers both `iii call` and HTTP requests, which reach it through
+`http::add_two_numbers`.
 
 ## How it works
 
-For a walkthrough of how the engine, workers, functions, and triggers in this scaffold fit together,
-see [Understanding iii](./understanding-iii). It uses this project as the worked example.
+For a walkthrough of how the engine, workers, functions, and observers in this scaffold fit
+together, see [Understanding iii](./understanding-iii). It uses this project as the worked example.
 
 <Tip title="Inspect what's running">
-  Open the iii console in ADE: run `iii trigger compose::add worker=ade` in a new terminal in the
+  Open the iii console in ADE: run `iii call compose::add worker=ade` in a new terminal in the
   project folder, then open `http://127.0.0.1:3113`. It shows your workers, traces, and logs, and
-  lets you chat with agents. See the full [Console documentation](./using-iii/console) for
-  details.
+  lets you chat with agents. See the full [Console documentation](./using-iii/console) for details.
 </Tip>
 
 {/* TODO: re-add the "Give your coding agent context" Tip with `npx skills add iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}
@@ -262,6 +261,6 @@ running system.
     Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
-    Understand workers, triggers, and functions from a conceptual point of view.
+    Understand workers, functions, and observers from a conceptual point of view.
   </Card>
 </CardGroup>

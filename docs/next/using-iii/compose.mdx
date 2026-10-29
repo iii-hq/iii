@@ -14,14 +14,14 @@ supervises running workers.
 ## The daemon
 
 The daemon is itself a worker. It registers under the name `compose` and exposes the `compose::*`
-functions, so every project operation is a standard [trigger](./triggers).
+functions, so every project operation is a standard [function call](./functions#call-a-function).
 
 Bare `iii compose` is the command to start the compose worker/daemon. It reads `worker-compose.yaml`
 in the working directory and starts only the compose worker.
 
 `iii compose --up` is provided as a convenience. It starts the compose worker, the iii engine, and
 the workers specified in `worker-compose.yaml`. It is approximately the equivalent of running `iii`,
-`iii compose`, and `iii trigger compose::up` as separate commands.
+`iii compose`, and `iii call compose::up` as separate commands.
 
 `iii compose --up` combines engine and project startup for development. Independent `iii` and
 `iii compose` daemons provide separate lifecycle control for production deployments.
@@ -182,18 +182,18 @@ considered relative to the daemon's directory, not the caller's working director
 absolute path as well.
 
 ```bash
-iii trigger compose::up      --namespace dev file=./worker-compose.yaml
-iii trigger compose::up      --namespace dev file=./worker-compose.yaml frozen=true
-iii trigger compose::up      --namespace dev file=./worker-compose.yaml container=api
-iii trigger compose::status  --namespace dev file=./worker-compose.yaml
-iii trigger compose::logs    --namespace dev file=./worker-compose.yaml worker=api tail=100
-iii trigger compose::down    --namespace dev file=./worker-compose.yaml
-iii trigger compose::list    --namespace dev
-iii trigger compose::add     --namespace dev file=./worker-compose.yaml worker=database worker=web
-iii trigger compose::remove  --namespace dev file=./worker-compose.yaml worker=state
-iii trigger compose::restart --namespace dev file=./worker-compose.yaml
-iii trigger compose::schema  --namespace dev function_id=compose::up
-iii trigger compose::stop    --namespace dev
+iii call compose::up      --namespace dev file=./worker-compose.yaml
+iii call compose::up      --namespace dev file=./worker-compose.yaml frozen=true
+iii call compose::up      --namespace dev file=./worker-compose.yaml container=api
+iii call compose::status  --namespace dev file=./worker-compose.yaml
+iii call compose::logs    --namespace dev file=./worker-compose.yaml worker=api tail=100
+iii call compose::down    --namespace dev file=./worker-compose.yaml
+iii call compose::list    --namespace dev
+iii call compose::add     --namespace dev file=./worker-compose.yaml worker=database worker=web
+iii call compose::remove  --namespace dev file=./worker-compose.yaml worker=state
+iii call compose::restart --namespace dev file=./worker-compose.yaml
+iii call compose::schema  --namespace dev function_id=compose::up
+iii call compose::stop    --namespace dev
 ```
 
 ### Starting a project
@@ -314,7 +314,7 @@ the container fields from `worker-compose.yaml`. The container key comes from th
 the worker name or directory path.
 
 ```bash
-iii trigger compose::add --namespace dev file=./worker-compose.yaml --json '{
+iii call compose::add --namespace dev file=./worker-compose.yaml --json '{
   "workers": [
     "database",
     {
@@ -433,8 +433,8 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
 
 ```bash
-iii trigger compose::update
-iii trigger compose::update file=worker-compose.yaml
+iii call compose::update
+iii call compose::update file=worker-compose.yaml
 ```
 
 `compose::update worker=state` resolves the selector already in the compose file. A tag such as
@@ -502,7 +502,7 @@ container key), `ports`, `compose_file`, `orphan`, `started_at` (seconds since t
 `command`. `orphan` is `true` for a worker of the project that no Compose daemon supervises.
 
 ```bash
-iii trigger compose::ps --namespace dev file=./worker-compose.yaml
+iii call compose::ps --namespace dev file=./worker-compose.yaml
 ```
 
 To see every iii process on the machine, including other projects, use [`iii ps`](#finding-and-stopping-iii-processes).
@@ -525,8 +525,8 @@ entry in `entries` has `stream` and `message`. A `cursor` has `generation` and `
 is `true` when the cursor sent is older than the retained archives.
 
 ```bash
-iii trigger compose::logs --namespace dev worker=api tail=200
-iii trigger compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
+iii call compose::logs --namespace dev worker=api tail=200
+iii call compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
 ```
 
 ### Listing projects
@@ -570,16 +570,17 @@ Each entry holds `function_id`, `description`, `request`, `response`, `default_t
 `engine::functions::info`.
 
 ```bash
-iii trigger compose::schema --namespace dev
-iii trigger compose::schema --namespace dev function_id=compose::up
-iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
+iii call compose::schema --namespace dev
+iii call compose::schema --namespace dev function_id=compose::up
+iii call compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
 ## Configure a namespace
 
 Set the namespace in `worker-compose.yaml` or pass `--namespace` when starting Compose. Use the same
-namespace in Trigger and Function calls that target the project's workers. For the daemon namespace,
-project namespace, and routing model, see [Compose architecture](../understanding-iii/compose).
+namespace in function calls and observers that target the project's workers. For the daemon
+namespace, project namespace, and routing model, see
+[Compose architecture](../understanding-iii/compose).
 
 ### Precedence
 
@@ -983,7 +984,7 @@ Add `**/.iii/compose/` to the repository's `.gitignore` to exclude generated sta
 from nested projects, from version control.
 
 ```bash
-iii trigger compose::status --namespace dev file=./worker-compose.yaml
+iii call compose::status --namespace dev file=./worker-compose.yaml
 # ... "state_dir": "/home/you/shop/.iii/compose/dev"
 ls /home/you/shop/.iii/compose/dev/logs/
 ```
@@ -1046,7 +1047,7 @@ Compose can output the following error codes:
 These are literal diagnostic identifiers emitted by Compose, not worker categories.
 `ENGINE_WORKER_IS_BUILTIN` reports that a worker declared under `containers` is already supplied
 by the engine. Its name is retained for compatibility; it does not define a separate worker type.
-All workers follow the same Function/Trigger/Worker model.
+All workers follow the same model of workers, functions, and observers.
 
 ## Related
 

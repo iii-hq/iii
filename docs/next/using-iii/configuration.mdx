@@ -86,7 +86,7 @@ verbatim, so a console edit does not overwrite an environment-driven value. Savi
 immediately.
 
 ```bash
-iii trigger -n dev compose::add worker=ade
+iii call -n dev compose::add worker=ade
 ```
 
 Replace `dev` with the namespace of the running Compose daemon.
@@ -94,19 +94,19 @@ Replace `dev` with the namespace of the running Compose daemon.
 ### Call `configuration::set`
 
 `configuration::set` replaces the value for an entry, validates it against the registered schema,
-and applies it, whether from the [CLI](./functions#trigger-functions-from-the-cli), any SDK, or your
+and applies it, whether from the [CLI](./functions#call-functions-from-the-cli), any SDK, or your
 own automation:
 
 <Tabs>
   <Tab title="CLI">
     ```bash
-    iii trigger configuration::get --json '{"id": "http"}'
-    iii trigger configuration::set --json '{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}}'
+    iii call configuration::get --json '{"id": "http"}'
+    iii call configuration::set --json '{"id": "http", "value": {"port": 8080, "host": "127.0.0.1"}}'
     ```
   </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
-    await worker.trigger({
+    await worker.call({
       function_id: "configuration::set",
       payload: { id: "http", value: { port: 8080, host: "127.0.0.1" } },
     });
@@ -172,7 +172,7 @@ observers:
   max_observe_depth: 8          # activations deeper than this are dropped (LOOP_GUARD)
   observer_grace_ms: 30000      # how long a disconnected worker's observers wait for it
   disposed_retention_ms: 3600000 # how long a worker back later is told they were disposed
-  owner_ack_timeout_ms: 30000   # an owner that does not acknowledge in time fails the observer (OWNER_TIMEOUT)
+  owner_ack_timeout_ms: 30000   # how long the worker that hosts a function may take to accept an observer (OWNER_TIMEOUT)
   activation_timeout_ms: 30000  # how long an activation may run before its slot is freed (TIMEOUT)
   default_max_in_flight: 64     # max_in_flight of observers that set none
   max_queue_per_observer: 1024  # activations queued behind max_in_flight before OVERFLOW
@@ -218,14 +218,9 @@ workers:
 
 ## Reacting to configuration changes
 
-Workers subscribe to changes by binding a `configuration` trigger instead of polling: the bound
-function fires on every register, set, and delete, including file edits. This is the same mechanism
-workers use to hot-apply their own settings. See the
-[configuration worker docs](https://workers.iii.dev/workers/configuration) for the trigger's config
-fields and event types.
-
-From 0.25 you can observe `configuration::on-updated` instead, with a filter on the entry and the
-event type. The `configuration` trigger type keeps working.
+When an entry is registered, set, or deleted, including by a file edit, `configuration::on-updated`
+runs with the change. Observe it to react to changes, with filters on the entry and the event type.
+Workers hot-apply their own settings the same way.
 
 ```typescript
 worker.observe(

@@ -9,7 +9,9 @@ description: >-
 # Getting Started with iii
 
 iii replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability
-pipeline with a single engine and three primitives: **Function**, **Trigger**, **Worker**.
+pipeline with a single engine and three primitives: **Worker**, **Function**, **Observer**. Workers
+host functions, any worker runs a function with `call`, and `iii.observe(a, b)` means "when `a`
+runs, `b` runs".
 
 ## Step 1: Install the Engine
 
@@ -45,7 +47,7 @@ The file's `engine:` section starts the engine; `containers:` starts project wor
 commonly listens on `ws://localhost:49134`. Keep this foreground supervisor running.
 
 `--namespace dev` names the daemon and becomes `III_NAMESPACE` for every worker it starts, so your
-workers register and call each other in `dev`; that is why the `iii trigger` commands below pass
+workers register and call each other in `dev`; that is why the `iii call` commands below pass
 `-n dev`. Engine-owned functions (`engine::*`, `configuration::*`) stay in `default`, and SDK calls
 to them resolve there without a namespace (see `iii-sdk-reference`).
 
@@ -66,30 +68,32 @@ cargo add iii-sdk iii-helpers
 
 ## Step 5: Write Your First Worker
 
+The worker registers `hello::greet` and observes `http::on-request` with a route: each
+`POST /hello` request runs `hello::greet`, and its return value is the HTTP response.
+
 ### TypeScript
 
 ```typescript
-import { registerWorker, TriggerAction } from "iii-sdk";
+import { registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 
 const iii = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
 
 iii.registerFunction(
   "hello::greet",
-  async (input) => {
+  async (req: { body?: { name?: string } }) => {
     const logger = new Logger();
-    const name = input?.name ?? "world";
+    const name = req.body?.name ?? "world";
     logger.info("Greeting user", { name });
-    return { message: `Hello, ${name}!` };
+    return { status_code: 200, body: { message: `Hello, ${name}!` } };
   },
   { description: "Greet a user by name" },
 );
 
-iii.registerTrigger({
-  type: "http",
-  function_id: "hello::greet",
-  config: { api_path: "/hello", http_method: "POST" },
-});
+iii.observe(
+  { function_id: "http::on-request", args: { method: "POST", path: "/hello" } },
+  "hello::greet",
+);
 ```
 
 ### Python
@@ -100,21 +104,24 @@ from iii_helpers.observability import Logger
 
 iii = register_worker(address="ws://localhost:49134", options=InitOptions(worker_name="hello-worker"))
 
-def greet(data):
+def greet(req):
     logger = Logger()
-    name = data.get("name", "world") if isinstance(data, dict) else "world"
+    body = req.get("body") or {}
+    name = body.get("name", "world") if isinstance(body, dict) else "world"
     logger.info("Greeting user", {"name": name})
-    return {"message": f"Hello, {name}!"}
+    return {"status_code": 200, "body": {"message": f"Hello, {name}!"}}
 
 iii.register_function("hello::greet", greet, description="Greet a user by name")
-iii.register_trigger({"type": "http", "function_id": "hello::greet", "config": {"api_path": "/hello", "http_method": "POST"}})
+iii.observe(
+    {"function_id": "http::on-request", "args": {"method": "POST", "path": "/hello"}},
+    "hello::greet",
+)
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, RegisterFunction};
-use iii_sdk::protocol::RegisterTriggerInput;
+use iii_sdk::{register_worker, InitOptions, RegisterFunction, Source};
 use iii_helpers::observability::Logger;
 use serde_json::json;
 
@@ -122,35 +129,30 @@ let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
 iii.register_function(
     "hello::greet",
-    RegisterFunction::new(|input: serde_json::Value| -> Result<serde_json::Value, iii_sdk::Error> {
+    RegisterFunction::new(|req: serde_json::Value| -> Result<serde_json::Value, iii_sdk::Error> {
         let logger = Logger::new();
-        let name = input["name"].as_str().unwrap_or("world");
+        let name = req["body"]["name"].as_str().unwrap_or("world");
         logger.info("Greeting user", Some(json!({ "name": name })));
-        Ok(json!({ "message": format!("Hello, {}!", name) }))
+        Ok(json!({ "status_code": 200, "body": { "message": format!("Hello, {}!", name) } }))
     }).description("Greet a user by name"),
 );
 
-// Deprecated since 0.25, still how you bind to the http worker: compiles with a warning.
-#[allow(deprecated)]
-iii.register_trigger(RegisterTriggerInput::new(
-    "http",
+iii.observe(
+    Source::function("http::on-request").args(json!({ "method": "POST", "path": "/hello" })),
     "hello::greet",
-    json!({ "api_path": "/hello", "http_method": "POST" }),
-))?;
+);
 ```
 
-`registerTrigger` logs a one-time deprecation warning in iii 0.25. It keeps working, and it is still
-the way to bind to the `http`, `cron`, queue, `state`, `stream`, and pub/sub workers, which have not
-moved to source functions yet. To run a function after another one, use `iii.observe` (see
-`iii-observe`).
+To run a function whenever another one runs, observe it the same way:
+`iii.observe("hello::greet", "audit::record")` (see `iii-observe`).
 
 ## Step 6: Test It
 
-The `http` trigger type comes from the `http` worker. Add it once through the running Compose
-daemon, then call your endpoint:
+`http::on-request` comes from the `http` worker. Add it once through the running Compose daemon,
+then call your endpoint:
 
 ```bash
-iii trigger -n dev compose::add worker=http
+iii call -n dev compose::add worker=http
 ```
 
 ```bash
@@ -171,9 +173,9 @@ To add a capability that already exists, browse `https://workers.iii.dev/` and a
 running Compose daemon:
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::add worker=queue
-iii trigger -n dev compose::add worker=image-resize@0.1.2
+iii call -n dev compose::add worker=state
+iii call -n dev compose::add worker=queue
+iii call -n dev compose::add worker=image-resize@0.1.2
 ```
 
 `compose::add` resolves dependencies, writes exact versions to `worker-compose.yaml`, and restarts
@@ -187,30 +189,32 @@ Get all iii skills for your AI coding agent:
 npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent the top-level iii model: functions, triggers, workers, observers, registry
-access, SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
+Skills teach your agent the top-level iii model: workers, functions, observers, registry access,
+SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
 live with the worker docs and registry entries.
 
 ## Adapting This Pattern
 
-- Add more functions to the same worker: each gets its own `registerFunction` + `registerTrigger`
-  calls
+- Add more functions to the same worker: each gets its own `registerFunction`, plus an `observe`
+  for each event that should run it
 - Use `::` separator for function IDs to namespace them: `orders::create`, `orders::validate`
-- Add cron triggers with `{ type: 'cron', config: { expression: '0 0 9 * * * *' } }` (7-field: sec
-  min hour day month weekday year)
-- Add queue triggers with `{ type: 'durable:subscriber', config: { topic: 'my-queue' } }`
-- Use `iii.trigger()` to invoke other functions from within a function
-- Use `iii.observe({ function_id: "hello::greet" }, "audit::record")` to run a registered function
-  after every successful call of another one (see `iii-observe`)
+- Run a function on a schedule with `iii.observe({ function_id: 'cron::on-tick', args: {
+  expression: '0 0 9 * * * *' } }, 'reports::daily')` (7-field: sec min hour day month weekday
+  year; needs the `cron` worker)
+- Run a function for each queue message with `iii.observe({ function_id: 'queue::on-message', args:
+  { topic: 'my-queue' } }, 'jobs::process')` (needs the `queue` worker)
+- Use `iii.call()` to invoke other functions from within a function
+- Use `iii.observe("hello::greet", "audit::record")` to run a registered function after every
+  successful call of another one (see `iii-observe`)
 - Use `state::get` / `state::set` to persist data across function calls
-- Use `iii trigger -n <daemon> compose::add worker=<name>` when the capability already exists in
-  the worker registry
+- Use `iii call -n <daemon> compose::add worker=<name>` when the capability already exists in the
+  worker registry
 
 ## Recommended Next Steps
 
 After getting your first worker running:
 
-1. **Register functions, triggers, and workers**: see `iii-core-primitives`
+1. **Register functions, call them, and create workers**: see `iii-core-primitives`
 2. **Observe functions and engine events**: see `iii-observe`
 3. **Choose the right SDK APIs**: see `iii-sdk-reference`
 4. **Configure the engine**: see `iii-engine-config`
@@ -227,15 +231,14 @@ After getting your first worker running:
 - [Configuration](https://iii.dev/docs/using-iii/configuration)
 - [Console](https://iii.dev/docs/using-iii/console)
 - [Observers](https://iii.dev/docs/using-iii/observers)
-- [Upgrading from 0.24.x](https://iii.dev/docs/upgrading/from-0-24-x)
+- [Upgrading from 0.25.x](https://iii.dev/docs/upgrading/from-0-25-x)
 - Every docs page is also available as Markdown by adding a `.md` suffix to its URL.
 
 ## Pattern Boundaries
 
-- For function and trigger registration patterns, worker creation, worker registry access, trigger
-  payload schemas, invocation modes, channels, custom triggers, and HTTP-invoked functions, prefer
-  `iii-core-primitives`
-- For observing functions and engine events, and for migrating off `registerTrigger`, prefer
+- For function registration and calls, worker creation, worker registry access, built-in source
+  functions, invocation modes, channels, and HTTP-invoked functions, prefer `iii-core-primitives`
+- For observers, filters, engine events, event sources, and upgrading 0.25 code, prefer
   `iii-observe`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`
 - For engine configuration, prefer `iii-engine-config`
@@ -246,7 +249,7 @@ After getting your first worker running:
 
 - Use this skill when the task is about installing iii, creating a new project, or writing a first
   worker.
-- Triggers when the request asks for setup help, quickstart guidance, or getting started with iii.
+- Use it when the request asks for setup help, quickstart guidance, or getting started with iii.
 
 ## Boundaries
 

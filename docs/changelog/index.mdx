@@ -5,6 +5,113 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.26.0" description="Upcoming">
+  ## Functions, observers, and four hooks
+
+  iii has workers, functions, and observers. `iii.observe(a, b)` means: when `a` runs, `b` runs.
+  Triggers are removed: every trigger type is an observable function (`cron` is `cron::on-tick`),
+  and every trigger is an observer of it. See
+  [Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
+
+  - The worker that hosts a function changes what observing it means with four hooks.
+    `onObserverAdded` and `onObserverRemoved` set up and tear down what an observer's `args` ask
+    for: a cron job, an HTTP route, a database trigger. Set them for one function or for every
+    function the worker hosts. Both levels run, the worker's hook first when an observer is added
+    and last when it is removed. Throwing `ObserveRejection` from `onObserverAdded` rejects the
+    observer with your code.
+  - `onObserverMatch` says which observers want each call of one function: a predicate
+    `(obs, call) => boolean`, or `{ observer, call }` keys that iii indexes, so a call finds its
+    observers with one hash lookup per key, whatever the number of observers. iii's delivery then
+    applies each matched observer's `on`, filters, policy, and `deliver`. `isObserved(call)` tells
+    a source whether anyone would get a call before it builds the event.
+  - `onObserverDeliver(call, observers)` delivers each call of one function itself: it receives the
+    observers that matched, and what it returns or throws is what the caller gets back.
+    `iii.call({ observer, payload })` runs one observer's target from the hook and resolves to the
+    target's result, such as an HTTP route's response or a queue message's acknowledgement.
+    `obs.accepted()` resolves once the SDK has acknowledged the observer; a call through it made
+    afterwards reaches an active observer, so a provider can send it initial state.
+  - Hooks are methods on the client, by function id, and on the `FunctionRef` that
+    `registerFunction` returns. Rust names the by-id forms with `_for` (`on_observer_added_for`,
+    `on_observer_match_for`) and builds a match hook with `Match::predicate` or `Match::keys`.
+    Python hooks also work as decorators, and `on_observer_match` takes a predicate or `observer=`
+    and `call=` key functions. Go has `OnObserverAddedFor`, `OnObserverMatchFor` (with
+    `iii.MatchFunc` or `iii.MatchKeys`), and `OnObserverDeliverFor`.
+  - `iii.observe("fn::id", target)` is the short form of
+    `iii.observe({ function_id: "fn::id" }, target)`. Go adds `client.ObserveFunction`.
+
+  See [Observable functions](/next/creating-workers/observable-functions) and
+  [Observers](/next/using-iii/observers).
+
+  ## Function options
+
+  - `args_format` declares the JSON Schema of observers' `args` on any function. The engine
+    validates args against it (`INVALID_ARGS`) and refuses a schema that is not valid with
+    `INVALID_ARGS_FORMAT`.
+  - `private: true` lets only the hosting worker call the function, while other workers may observe
+    it. A private function cannot be an observer's target, and a worker's call to its own private
+    function passes the input and the result by reference.
+  - `observable: false` refuses every observer of the function with `NOT_OBSERVABLE`.
+  - `standby: true` makes a second instance wait while another connection hosts the function, then
+    take over the function and its observers when the host leaves.
+
+  ## `call`
+
+  - `call` invokes a function in every SDK, with `CallRequest` and `CallAction`: `iii.call`,
+    `call_async` in Python, and `client.Call` in Go. The CLI command is `iii call`. The 0.25 names
+    stay as aliases; see the upgrade guide.
+
+  ## Engine
+
+  - Engines and SDKs negotiate the `observe.v2` protocol feature. The worker that hosts a function
+    delivers its calls: it evaluates observers' filters once per call, and the matches of a routed
+    call ride its `invocationresult` (`observed`), so an observed routed call costs no extra frame.
+    An event source whose handler returns its input sends each event once (`output_is_input`).
+  - The new engine-hosted source `engine::on-observers-changed` is called once per observer state
+    change. Engine-hosted sources are private functions whose handler returns the event, so their
+    `input` and `output` are both the event. `iii-stream` hosts `stream::on-changed`,
+    `stream::on-join`, and `stream::on-leave`.
+  - `engine::functions::list` and `engine::functions::info` report `args_format`, `private`,
+    `observable`, and `observer_count`. `engine::workers::info` reports the worker's `functions` and
+    the `observers` it created.
+  - The RBAC hook `on_function_registration_function_id` receives `args_format`, `private`, and
+    `observable`, and its answer may rewrite them.
+  - `iii.observer.activations.total` labels `delivery` as `engine`, `host`, or `observer_call`.
+    Telemetry reports `observer_count`, `observable_function_count`, and `private_function_count`.
+
+  See [Engine protocol](/next/reference/engine-protocol).
+
+  ## Removed
+
+  - Triggers, in every SDK: `registerTrigger`, `registerTriggerType`, `unregisterTrigger`,
+    `unregisterTriggerType`, `TriggerHandler`, trigger handles, the typed trigger configs
+    (`IIITrigger`, `HttpTriggerConfig`, `CronTriggerConfig`, and the rest), and `EngineTriggers`,
+    whose ids live in `EngineSources`.
+  - The trigger wire messages `registertrigger`, `unregistertrigger`, `triggerregistrationresult`,
+    `registertriggertype`, and `unregistertriggertype`. The engine drops them with one `warn` per
+    connection and message type, naming the replacement.
+  - The engine functions `engine::register_trigger`, `engine::unregister_trigger`,
+    `engine::triggers::list`, `engine::triggers::info`, `engine::registered-triggers::list`, and
+    `engine::registered-triggers::info`.
+  - The RBAC keys `allowed_trigger_types`, `allow_trigger_type_registration`,
+    `on_trigger_registration_function_id`, and `on_trigger_type_registration_function_id`. A config
+    that still sets them loads, with a `warn` naming the replacement.
+  - 0.25 owner delivery: `observe.delivery`, `obs.emit`, `obs.call`, `legacy_trigger_type` with the
+    engine's legacy shim, `Observer.legacy`, and Rust's `Observe::owner()`, `Observe::auto()`, and
+    `ObserveHandler`. The engine refuses a 0.25 registration with `delivery: "owner"` with
+    `UNSUPPORTED`.
+  - The engine's queue compatibility module for `durable:subscriber`. The queue worker serves
+    `queue::on-message`.
+  - The error codes `NOT_OWNER_DELIVERED`, `TARGET_MISMATCH`, `FILTERS_NOT_MATCHED`, and
+    `INVALID_OBSERVE_DESCRIPTOR`.
+
+  <Callout type="warning">
+    A 0.25 worker that binds with `registerTrigger` receives no events on a 0.26 engine, and a 0.26
+    SDK leaves functions that declare `args_format`, `private`, or `observable: false`, or set
+    `onObserverDeliver`, unregistered on a 0.25 engine. Upgrade the engine, the iii workers, and the
+    SDKs together. See [Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
+  </Callout>
+</Update>
+
 <Update label="0.25.0" description="October 2026">
   ## Observe: every function is observable
 

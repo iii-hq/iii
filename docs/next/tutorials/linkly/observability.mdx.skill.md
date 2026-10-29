@@ -13,7 +13,7 @@ The iii console (ADE) is a standalone web application for monitoring and interac
 application. Add it to your project with:
 
 ```bash
-iii trigger compose::add worker=ade
+iii call compose::add worker=ade
 ```
 
 Open it at [http://127.0.0.1:3113](http://127.0.0.1:3113). Set the Traces grouping to "no grouping"
@@ -69,7 +69,7 @@ curl -s -o /dev/null http://127.0.0.1:3111/s/missing
 Then check the logs:
 
 ```bash
-iii trigger engine::logs::list limit=500 \
+iii call engine::logs::list limit=500 \
   | jq '.logs[]
       | select(.body == "link resolved")
       | { body,
@@ -108,8 +108,8 @@ full execution context of the request. Grab the most recent redirect's `trace_id
 request as a tree. Capturing the id into a shell variable keeps this a single paste:
 
 ```bash
-trace_id=$(iii trigger engine::traces::list name="GET /s/:code" limit=1 | jq -r '.traces[0].trace_id')
-iii trigger engine::traces::tree trace_id="$trace_id" | jq -r '
+trace_id=$(iii call engine::traces::list name="GET /s/:code" limit=1 | jq -r '.traces[0].trace_id')
+iii call engine::traces::tree trace_id="$trace_id" | jq -r '
   def walk(depth):
     ("  " * depth // "") + .name + " (" + .service_name + ") "
       + (((.end_time_unix_nano - .start_time_unix_nano) / 1e6 * 1000 | round) / 1000 | tostring) + " ms",
@@ -134,9 +134,9 @@ GET /s/:code (http) 6.686 ms
   call engine::channels::create (iii) 0.031 ms
 ```
 
-This shows the redirect arriving through `/s/:code` via the `http` worker's Trigger, calling
-`http::redirect` in `link`, which then calls `link::resolve` in the `link` worker via the engine.
-The per-span timing shows where the request spends its time.
+This shows the redirect arriving at the `http` worker on `/s/:code`, running `http::redirect` in
+`link`, which then calls `link::resolve` in the `link` worker via the engine. The per-span timing
+shows where the request spends its time.
 
 <Note>
   Worker spans export on a short delay, so a brand-new request's trace can be missing or look
@@ -149,7 +149,7 @@ To compare many traces it's possible to filter, list, and sort them in one opera
 redirect traces sorted by duration, slowest first:
 
 ```bash
-iii trigger engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 \
+iii call engine::traces::list name="GET /s/:code" sort_by=duration_ms sort_order=desc limit=10 \
   | jq -r '.traces[]
       | select(.end_time_unix_nano != null)
       | "\(((.end_time_unix_nano - .start_time_unix_nano) / 1e6 * 1000 | round) / 1000) ms  \(.trace_id)"'
@@ -168,6 +168,6 @@ which hop is responsible.
 ## Conclusion
 
 Linkly is now observable: the console shows every worker, trace, and log as it happens, and you can
-read the same data from the engine with `iii trigger`. The links are still kept only in memory,
-though, so restarting the engine clears them. Next, in
+read the same data from the engine with `iii call`. The links are still kept only in memory, though,
+so restarting the engine clears them. Next, in
 [Ch. 3: Persist everything](/tutorials/linkly/persistence), you move them into durable storage.

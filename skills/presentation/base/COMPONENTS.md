@@ -187,8 +187,8 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 ### EventFanOut
 - kind: archetype
 - import: `import { EventFanOut } from '@lib/components/diagrams/EventFanOut'`
-- purpose: A17 — one concrete write → trigger type → N named subscribers, ambient animation
-- props: `{ heading; source; sourceSub?; trigger; handlers: FanOutHandler[]; edges: FanOutEdge[]; footnote?; ariaLabel; … }`
+- purpose: A17 — one concrete write → observed function → N named observers, ambient animation
+- props: `{ heading; source; sourceSub?; fn; handlers: FanOutHandler[]; edges: FanOutEdge[]; footnote?; ariaLabel; … }`
 - use when: narrating a specific reactive write with named handlers, always-on
 - not when: you need an abstract many-to-one/one-to-many with steppable ripples (use FanOut)
 - used by: 2026-06-08-agentic
@@ -197,7 +197,7 @@ kinds, in section order: **layout · primitive · archetype · hook · util · g
 - kind: archetype
 - import: `import { FanOut } from '@lib/components/diagrams/FanOut'`
 - purpose: A7 — one write fans to many handlers, ripple + marching edges
-- props: `{ source: {label, sub?}; trigger: string; handlers: FanHandler[]; … }`
+- props: `{ source: {label, sub?}; fn: string; handlers: FanHandler[]; … }`
 - use when: the reactive surface is the claim (subscribe once, everything updates)
 - used by: 2026-06-29-codegen, 2026-06-22-rbac-proxy-worker
 
