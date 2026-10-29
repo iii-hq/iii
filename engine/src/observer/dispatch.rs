@@ -1680,7 +1680,6 @@ fn sdk_drop_reason(reason: &str) -> &'static str {
     [
         observe_codes::BUFFER_FULL,
         observe_codes::TOO_LARGE,
-        observe_codes::LATE_DELIVERY,
         observe_codes::DISCONNECTED,
     ]
     .into_iter()
@@ -2114,7 +2113,6 @@ mod tests {
     fn sdk_drop_reasons_are_bucketed_and_counts_saturate() {
         assert_eq!(super::sdk_drop_reason("buffer_full"), "BUFFER_FULL");
         assert_eq!(super::sdk_drop_reason("TOO_LARGE"), "TOO_LARGE");
-        assert_eq!(super::sdk_drop_reason("LATE_DELIVERY"), "LATE_DELIVERY");
         assert_eq!(super::sdk_drop_reason("disconnected"), "DISCONNECTED");
         assert_eq!(super::sdk_drop_reason("a-label-of-my-own"), "OTHER");
         let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
@@ -2158,6 +2156,107 @@ mod tests {
         );
         let info = registry.get_info(&engine, None, "obs").unwrap();
         assert_eq!(info.dropped.get("OVERFLOW"), Some(&1));
+    }
+
+    /// `test::src` hosted by a connection of its own, observed by `a`
+    /// (whose filter no call here matches) and `b`, each with its own
+    /// target. Returns the host and the targets' inputs.
+    async fn hosted_source(
+        engine: &Arc<Engine>,
+    ) -> (
+        Uuid,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+        tokio::sync::mpsc::Receiver<crate::engine::Outbound>,
+    ) {
+        source(engine);
+        let a = test_support::capture(engine, "test::a");
+        let b = test_support::capture(engine, "test::b");
+        let (worker, socket) = test_support::worker(engine);
+        let filtered = test_support::request(
+            "a",
+            "test::src",
+            "test::a",
+            Some(json!({ "input.n": { "$eq": 99 } })),
+        );
+        test_support::observe_request(engine, &worker, filtered).await;
+        let unfiltered = test_support::request("b", "test::src", "test::b", None);
+        test_support::observe_request(engine, &worker, unfiltered).await;
+        let host = Uuid::new_v4();
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+            (host, crate::engine::InvocationKind::Regular),
+        );
+        (host, a, b, socket)
+    }
+
+    /// Completes one observed call of `test::src` with `{ n }` as its input,
+    /// answered by `host` listing `observed`.
+    fn complete_delivered(engine: &Engine, n: u64, host: Uuid, observed: &[&str]) {
+        let registry = &engine.observers;
+        let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
+        let set = registry.watch(DEFAULT_NAMESPACE, "test::src").unwrap();
+        let call = registry.begin(set, &json!({ "n": n }), &None, &None, &None);
+        registry.complete(
+            call,
+            DEFAULT_NAMESPACE,
+            "test::src",
+            Uuid::new_v4(),
+            &Ok(Ok(Some(json!({ "n": n })))),
+            Some(super::HostDelivery {
+                host,
+                observed: observed.iter().map(|id| id.to_string()).collect(),
+            }),
+            &ctx,
+        );
+    }
+
+    /// A completion its host delivered activates each active observer it
+    /// lists once, whatever the observer's filters, and nothing else.
+    #[tokio::test]
+    async fn a_delivered_completion_activates_what_its_host_lists() {
+        let engine = Arc::new(Engine::new());
+        let (host, mut a, mut b, _socket) = hosted_source(&engine).await;
+        let before = engine.observers.evaluated();
+        complete_delivered(&engine, 1, host, &["a", "a", "not-an-observer"]);
+        assert_eq!(test_support::next(&mut a).await, json!({ "n": 1 }));
+        until(|| engine.observers.evaluated() == before + 1).await;
+        assert_eq!(engine.observers.fires("a"), Some(1), "listed twice");
+        assert_eq!(engine.observers.fires("b"), Some(0), "not listed");
+        assert!(b.try_recv().is_err());
+
+        // From anyone but the host, the list activates nothing.
+        complete_delivered(&engine, 2, Uuid::new_v4(), &["a"]);
+        let info = engine.observers.get_info(&engine, None, "a").unwrap();
+        assert_eq!(info.dropped.get("REPORTER_NOT_OWNER"), Some(&1));
+        assert_eq!(engine.observers.fires("a"), Some(1));
+    }
+
+    /// When the evaluator has no room for a delivered completion, only the
+    /// observers its host listed count the `OVERFLOW`.
+    #[tokio::test]
+    async fn a_delivered_completion_without_room_charges_what_it_lists() {
+        let engine = Arc::new(Engine::new());
+        engine
+            .observers
+            .evaluator_capacity
+            .store(1, Ordering::SeqCst);
+        let (host, _a, _b, _socket) = hosted_source(&engine).await;
+        // No yield in between: the evaluator task cannot drain the queue.
+        for n in 0..2 {
+            complete_delivered(&engine, n, host, &["a"]);
+        }
+        let dropped = |id: &str| {
+            engine
+                .observers
+                .get_info(&engine, None, id)
+                .unwrap()
+                .dropped
+                .get("OVERFLOW")
+                .copied()
+        };
+        assert_eq!(dropped("a"), Some(1));
+        assert_eq!(dropped("b"), None, "not listed");
     }
 
     /// Completes one observed call of `test::src` with `body` as its input.
@@ -2302,6 +2401,85 @@ mod tests {
             queues: AtomicUsize::new(0),
             charged: AtomicUsize::new(0),
         })
+    }
+
+    /// `iii.observer.activations.total` labels an activation by who matched
+    /// it (decision 12): `engine` when the engine evaluated the call, `host`
+    /// when the call's host listed it on its answer or reported it.
+    #[tokio::test]
+    async fn activations_are_labelled_by_who_matched_them() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let (gate, mut delivered) = gated(&engine, "test::held");
+        let (worker, _socket) = test_support::worker(&engine);
+        let mut request = test_support::request("obs", "test::src", "test::held", None);
+        request.max_in_flight = Some(1);
+        test_support::observe_request(&engine, &worker, request).await;
+        let host = Uuid::new_v4();
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+            (host, crate::engine::InvocationKind::Regular),
+        );
+
+        // The first one holds the observer's only slot: the rest queue.
+        complete_call(&engine, json!({ "n": 0 }));
+        until(|| engine.observers.in_flight("obs") == Some((1, 0))).await;
+        complete_call(&engine, json!({ "n": 1 }));
+        complete_delivered(&engine, 2, host, &["obs"]);
+        let full = engine.observers.report(
+            host,
+            DEFAULT_NAMESPACE,
+            vec![crate::protocol::ObservedItem {
+                function_id: "test::src".to_string(),
+                namespace: None,
+                invocation_id: Uuid::new_v4().to_string(),
+                matched: vec!["obs".to_string()],
+                status: crate::protocol::InvocationStatus::Success,
+                input: Some(json!({ "n": 3 })),
+                output: None,
+                error: None,
+                caller: None,
+                metadata: None,
+                started_at_ms: 1,
+                duration_ms: 0.5,
+                observe_depth: 0,
+                traceparent: None,
+                baggage: None,
+                output_is_input: true,
+            }]
+            .into(),
+        );
+        assert!(full.is_empty());
+        until(|| engine.observers.in_flight("obs") == Some((1, 3))).await;
+        // The report activates as it is read, before the evaluator gets to
+        // the others: sorted, by the call each came from.
+        let mut labels: Vec<(u64, &str)> = {
+            let observer = engine.observers.get("obs").unwrap();
+            let flow = super::lock(&observer.flow);
+            flow.queue
+                .iter()
+                .map(|pending| {
+                    let n = pending.event.input.as_deref().unwrap()["n"]
+                        .as_u64()
+                        .unwrap();
+                    (n, pending.event.delivery)
+                })
+                .collect()
+        };
+        labels.sort();
+        assert_eq!(
+            labels,
+            [
+                (1, super::ENGINE_DELIVERY),
+                (2, super::HOST_DELIVERY),
+                (3, super::HOST_DELIVERY)
+            ]
+        );
+
+        gate.add_permits(4);
+        for _ in 0..4 {
+            test_support::next(&mut delivered).await;
+        }
     }
 
     /// Every observer an event matched queues the same event, not a copy of

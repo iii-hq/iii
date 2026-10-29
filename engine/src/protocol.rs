@@ -558,9 +558,6 @@ pub mod observe_codes {
     pub const BUFFER_FULL: &str = "BUFFER_FULL";
     /// SDK-side, reported through `localinvocationstats`.
     pub const TOO_LARGE: &str = "TOO_LARGE";
-    /// SDK-side: a deliver hook's `next` call on a routed call after the hook
-    /// settled, reported through `localinvocationstats`.
-    pub const LATE_DELIVERY: &str = "LATE_DELIVERY";
     /// SDK-side: report items lost to a closed connection, reported through
     /// `localinvocationstats`.
     pub const DISCONNECTED: &str = "DISCONNECTED";
@@ -838,8 +835,8 @@ pub struct Activation {
     pub activation_id: Option<String>,
 }
 
-/// One item of `invocationsobserved`: a call of a function the reporting
-/// connection hosts, with the observers its delivery matched.
+/// One item of `invocationsobserved`: a local call of a function the
+/// reporting connection hosts, with the observers its delivery matched.
 ///
 /// `input` / `output` / `error` / `metadata` keep `null` apart from absent: a
 /// function that returned `null` is not one whose output was not captured.
@@ -1063,8 +1060,7 @@ pub struct LocalFunctionStats {
 }
 
 /// SDK-side report drops in `localinvocationstats`. `reason` is a drop reason
-/// from [`observe_codes`] (`BUFFER_FULL`, `TOO_LARGE`, `LATE_DELIVERY`,
-/// `DISCONNECTED`).
+/// from [`observe_codes`] (`BUFFER_FULL`, `TOO_LARGE`, `DISCONNECTED`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DroppedReportStats {
     pub function_id: String,

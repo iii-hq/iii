@@ -432,6 +432,75 @@ async fn an_owner_coming_back_gets_the_set_again_and_acks_it() {
     sink.reply(&activation, Value::Null).await;
 }
 
+/// A standby (v2 §7): a second instance whose registration conflicts while
+/// the host is connected registers once the host leaves, gets the
+/// function's current observers in `functionregistered`, acks them, and
+/// they are active again.
+#[tokio::test]
+async fn a_standby_takes_over_the_functions_observers_when_its_host_leaves() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut cron = observe_support::connect_v2(&t, "cron").await;
+    cron.register_function_with(json!({
+        "type": "registerfunction",
+        "id": "cron::on-tick",
+        "args_format": {
+            "type": "object",
+            "required": ["expression"],
+            "properties": { "expression": { "type": "string" } }
+        },
+        "private": true
+    }))
+    .await;
+    registered(&t.engine, "default", "cron::on-tick").await;
+    let mut sink = host(&t, "sink", &["sink::ticks"]).await;
+    sink.observe_active(observer(
+        "nightly",
+        json!({ "function_id": "cron::on-tick", "args": { "expression": "0 0 * * *" } }),
+        "sink::ticks",
+    ))
+    .await;
+
+    let mut standby = observe_support::connect_v2(&t, "cron-standby").await;
+    standby.manual_acks();
+    standby.register_function("cron::on-tick").await;
+    let conflict = standby
+        .expect("registrationrejected", |f| {
+            f["type"] == "registrationrejected"
+        })
+        .await;
+    assert_eq!(conflict["code"], "FUNCTION_NAMESPACE_CONFLICT");
+
+    cron.disconnect().await;
+    let pending = sink.state_becomes("nightly", "pending").await;
+    assert_eq!(pending["reason"]["code"], "OWNER_UNAVAILABLE");
+
+    standby
+        .register_function_with(json!({
+            "type": "registerfunction",
+            "id": "cron::on-tick",
+            "args_format": { "type": "object" },
+            "private": true
+        }))
+        .await;
+    let set = function_registered(&mut standby, "cron::on-tick").await;
+    assert_eq!(set["observers"].as_array().unwrap().len(), 1, "{set}");
+    assert_eq!(set["observers"][0]["id"], "nightly");
+    assert_eq!(
+        set["observers"][0]["args"],
+        json!({ "expression": "0 0 * * *" })
+    );
+    ack(&mut standby, "cron::on-tick", "nightly", &set["revision"]).await;
+    sink.state_becomes("nightly", "active").await;
+
+    // The standby hosts the function now: its calls reach the observer.
+    standby
+        .send(report(vec![item("cron::on-tick", &["nightly"], "success")]))
+        .await;
+    let activation = sink.invoked("sink::ticks").await;
+    assert_eq!(activation["data"]["observer_id"], "nightly");
+    sink.reply(&activation, Value::Null).await;
+}
+
 #[tokio::test]
 async fn a_report_from_a_connection_that_does_not_own_the_function_is_dropped() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -817,7 +886,60 @@ async fn calls_through_an_observer_that_are_refused() {
     let info = get(&mut http, "route").await;
     assert_eq!(info["dropped"]["LOOP_GUARD"], 1, "{info}");
     assert_eq!(info["dropped"]["OVERFLOW"], 1, "{info}");
+    assert!(
+        info["dropped"].get("NOT_FUNCTION_OWNER").is_none(),
+        "the caller got the refusal: no drop: {info}"
+    );
     assert_eq!(info["fires"], 2);
+}
+
+/// A fire-and-forget call through an observer that the engine refuses gets
+/// no answer: it is dropped and counted under the refusal's code (decision
+/// 13), on the observer when it exists.
+#[tokio::test]
+async fn a_refused_fire_and_forget_call_through_an_observer_is_counted() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut http = http_owner(&t).await;
+    let mut users = host(&t, "users", &["users::get"]).await;
+    users
+        .observe_active(route("route", "/users/:id", "users::get"))
+        .await;
+    let waiting = users
+        .observe(route("waiting", "/later", "users::missing"))
+        .await;
+    assert_eq!(waiting["state"], "pending");
+    let void = |observer_id: &str| json!({ "activation": { "observer_id": observer_id }, "action": { "type": "void" } });
+
+    let mut stranger = connect(&t, "stranger", true).await;
+    stranger
+        .call_with("users::get", json!({}), void("route"))
+        .await;
+    http.call_with("users::missing", json!({}), void("waiting"))
+        .await;
+    http.call_with("users::get", json!({}), void("no-such-observer"))
+        .await;
+    // No invocation id: nobody can wait for the answer either.
+    http.send(json!({
+        "type": "invokefunction",
+        "function_id": "users::missing",
+        "data": {},
+        "activation": { "observer_id": "waiting" },
+    }))
+    .await;
+
+    get(&mut stranger, "route").await;
+    let route = get(&mut http, "route").await;
+    assert_eq!(route["dropped"]["NOT_FUNCTION_OWNER"], 1, "{route}");
+    assert_eq!(route["fires"], 0);
+    let waiting = get(&mut http, "waiting").await;
+    assert_eq!(waiting["dropped"]["OBSERVER_NOT_ACTIVE"], 2, "{waiting}");
+    for client in [&mut http, &mut stranger] {
+        assert!(
+            !client.has_seen(|f| f["type"] == "invocationresult" && f["error"].is_object()),
+            "no answer to a fire-and-forget call"
+        );
+    }
+    assert!(!users.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "users::get"));
 }
 
 #[tokio::test]

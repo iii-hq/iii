@@ -672,6 +672,32 @@ mod tests {
     }
 
     #[test]
+    fn a_call_is_pending_until_its_answer_is_taken() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let (sender, _receiver) = oneshot::channel();
+        handler.invocations.insert(
+            id,
+            Invocation {
+                id,
+                function_id: "orders::create".to_string(),
+                worker_id: None,
+                sender,
+                traceparent: None,
+                baggage: None,
+            },
+        );
+        assert!(handler.is_pending(&id, "orders::create"));
+        assert!(
+            !handler.is_pending(&id, "orders::other"),
+            "another function"
+        );
+        assert!(!handler.is_pending(&Uuid::new_v4(), "orders::create"));
+        handler.remove(&id);
+        assert!(!handler.is_pending(&id, "orders::create"));
+    }
+
+    #[test]
     fn test_invocation_handler_halt_nonexistent_is_noop() {
         let handler = InvocationHandler::new();
         let id = Uuid::new_v4();

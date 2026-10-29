@@ -1,6 +1,7 @@
-//! Engine-hosted sources over real WebSockets: `engine::on-functions-changed`
-//! and `engine::on-workers-changed` are observed like any function, and the
-//! engine calls them once per change of its functions or workers.
+//! Engine-hosted sources over real WebSockets: `engine::on-functions-changed`,
+//! `engine::on-workers-changed` and `engine::on-observers-changed` are
+//! observed like any function, and the engine calls them once per change of
+//! its functions, workers or observers.
 
 mod observe_support;
 
@@ -76,6 +77,65 @@ async fn on_workers_changed_reports_a_worker_announcing_itself() {
     );
     assert_eq!(activation["caller"]["worker_name"], "iii-engine");
     sink.reply(&activation, Value::Null).await;
+}
+
+/// The next activation of `sink::changes`, answered.
+async fn next_change(sink: &mut Client) -> Value {
+    let activation = sink.invoked("sink::changes").await;
+    sink.reply(&activation, Value::Null).await;
+    activation
+}
+
+/// One call of `engine::on-observers-changed` per state change of an
+/// observer (decision 6), with the `reason` when there is one; the engine is
+/// its caller.
+#[tokio::test]
+async fn on_observers_changed_reports_each_state_change() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut sink = host(&t, "sink", &["sink::changes", "sink::orders"]).await;
+    sink.observe_active(observer(
+        "obs-changes",
+        json!({
+            "function_id": "engine::on-observers-changed",
+            "deliver": "input",
+            "filters": { "input.observer_id": { "$eq": "watched" } }
+        }),
+        "sink::changes",
+    ))
+    .await;
+    let orders = host(&t, "orders", &["orders::create"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    watcher
+        .observe_active(observer(
+            "watched",
+            json!({ "function_id": "orders::create" }),
+            "sink::orders",
+        ))
+        .await;
+
+    let active = next_change(&mut sink).await;
+    assert_eq!(
+        active["data"],
+        json!({
+            "observer_id": "watched",
+            "function_id": "orders::create",
+            "target": "sink::orders",
+            "state": "active"
+        })
+    );
+    assert_eq!(active["caller"]["worker_name"], "iii-engine");
+
+    orders.disconnect().await;
+    let pending = next_change(&mut sink).await;
+    assert_eq!(pending["data"]["state"], "pending");
+    assert_eq!(pending["data"]["reason"]["code"], "OWNER_UNAVAILABLE");
+
+    watcher
+        .send(json!({ "type": "unobserve", "id": "watched" }))
+        .await;
+    let disposed = next_change(&mut sink).await;
+    assert_eq!(disposed["data"]["state"], "disposed");
+    assert_eq!(disposed["data"]["reason"]["code"], "UNOBSERVED");
 }
 
 #[tokio::test]

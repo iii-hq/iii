@@ -3839,6 +3839,98 @@ mod tests {
         )));
     }
 
+    /// A function registered with `invocation` is called over HTTP: no
+    /// connection answers it, so the engine evaluates its observers itself
+    /// (decision 43), whatever the registering connection declared.
+    #[tokio::test]
+    async fn the_engine_evaluates_the_calls_of_an_http_invoked_function() {
+        use crate::observer::events::test_support;
+        ensure_default_meter();
+        let engine = Arc::new(Engine::new());
+        let http_functions = HttpFunctionsWorker::create(
+            engine.clone(),
+            Some(
+                serde_json::to_value(HttpFunctionsConfig {
+                    security: SecurityConfig {
+                        require_https: false,
+                        block_private_ips: false,
+                        url_allowlist: vec!["*".to_string()],
+                    },
+                })
+                .expect("serialize config"),
+            ),
+        )
+        .await
+        .expect("create module");
+        http_functions
+            .initialize()
+            .await
+            .expect("initialize module");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let app = axum::Router::new().route(
+            "/lambda",
+            axum::routing::post(|| async { axum::Json(serde_json::json!({ "ok": true })) }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        assert!(
+            worker
+                .features
+                .set(&["observe.v1".to_string(), "observe.v2".to_string()])
+        );
+        engine.worker_registry.register_worker(worker.clone());
+        engine
+            .router_msg(
+                &worker,
+                &Message::RegisterFunction {
+                    id: "external::lambda".to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                    invocation: Some(HttpInvocationRef {
+                        url: format!("http://{address}/lambda"),
+                        method: crate::invocation::method::HttpMethod::Post,
+                        timeout_ms: Some(5_000),
+                        headers: HashMap::new(),
+                        auth: None,
+                    }),
+                    args_format: None,
+                    private: false,
+                    observable: true,
+                    observe: None,
+                },
+            )
+            .await
+            .expect("register function");
+
+        let mut sink = test_support::capture(&engine, "test::sink");
+        let _observing = test_support::observe(
+            &engine,
+            "obs-http",
+            "external::lambda",
+            "test::sink",
+            Some(serde_json::json!({ "output.ok": { "$eq": true } })),
+        )
+        .await;
+        let result = engine
+            .call("external::lambda", serde_json::json!({ "n": 1 }))
+            .await
+            .expect("the endpoint answers");
+        assert_eq!(result, Some(serde_json::json!({ "ok": true })));
+        assert_eq!(
+            test_support::next(&mut sink).await,
+            serde_json::json!({ "n": 1 }),
+            "the engine matched its filter on the endpoint's answer"
+        );
+    }
+
     // ---------------------------------------------------------------
     // 1. router_msg tests for different message types
     // ---------------------------------------------------------------

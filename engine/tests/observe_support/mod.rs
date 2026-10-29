@@ -498,6 +498,12 @@ impl Client {
         .await;
     }
 
+    /// Discards every frame received so far.
+    pub fn discard_received(&mut self) {
+        while self.frames.try_recv().is_ok() {}
+        self.buffered.clear();
+    }
+
     /// The next frame, buffered or new, with no time limit; `None` once the
     /// socket closed.
     pub async fn recv(&mut self) -> Option<Value> {

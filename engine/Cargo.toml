@@ -68,6 +68,10 @@ harness = false
 name = "observe_dispatch_bench"
 harness = false
 
+[[bench]]
+name = "observe_routed_bench"
+harness = false
+
 [features]
 # Test-only controls (the durable trace archive's) for this crate's own tests.
 # Enabled only through the self dev-dependency below; never in a normal build.

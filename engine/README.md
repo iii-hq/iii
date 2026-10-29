@@ -124,6 +124,14 @@ The engine speaks JSON messages over WebSocket. Key message types: `registerfunc
 
 Invocations can be fire-and-forget by omitting `invocation_id`.
 
+The engine advertises `observe.v1`, `observe.v2` and `local-dispatch.v1` in
+`workerregistered`. A worker that declares `observe.v2` delivers the calls of the
+functions it hosts: it lists the observers its delivery matched on each
+`invocationresult` (`observed`), and reports its local calls in `invocationsobserved`.
+The engine activates those observers, and evaluates the observers of every other call
+itself: calls to workers without `observe.v2`, to engine-hosted and HTTP-invoked
+functions.
+
 ## Repository Layout
 
 - `src/main.rs` – CLI entrypoint (`iii` binary)
