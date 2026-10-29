@@ -153,7 +153,7 @@ fn is_namespaced_registration(msg: &Message) -> bool {
     )
 }
 
-/// The 0.25 message types this engine no longer decodes, with what replaces
+/// The 0.25 message types this engine does not decode, with what replaces
 /// each. A worker that sends one gets one `warn` per connection and type
 /// (`WorkerConnection::first_removed_message`), and the frame is dropped.
 pub(crate) const REMOVED_MESSAGES: [(&str, &str); 5] = [
@@ -763,7 +763,8 @@ impl Engine {
             .remove_function_from_services(namespace, function_id);
     }
 
-    /// Resolves `function_id` in exactly one namespace.
+    /// Resolves `function_id`'s handler in exactly one namespace, and names
+    /// that namespace.
     ///
     /// `Some(ns)` resolves only in `ns`; `None` resolves only in
     /// [`DEFAULT_NAMESPACE`]. There is deliberately no best-fit and no
@@ -774,37 +775,17 @@ impl Engine {
     /// the target of an invoke depend on who is asking, which is exactly the
     /// ambiguity namespaces exist to remove.
     ///
-    /// The sole compatibility exception is the immutable built-in
-    /// `iii-observability` UI content callback: published Console workers do
-    /// not preserve its explicit `default` target and invoke it from their
-    /// project namespace. No user function participates in that fallback.
-    ///
-    /// A miss keeps the pre-existing `function_not_found` code (SDKs and the
-    /// `Enqueue` provider-missing DX branch both match on it) and only enriches
-    /// the message with the namespaces where the id *does* exist.
-    #[cfg(test)]
-    fn resolve_function(
-        &self,
-        requested_ns: Option<&str>,
-        function_id: &str,
-    ) -> Result<Function, ErrorBody> {
-        self.resolve_function_with(requested_ns, function_id, FunctionsRegistry::get)
-    }
-
-    /// The handler and the namespace it was found in: the requested one, or
-    /// `default` for the one compatibility fallback in
-    /// [`Self::resolve_function_with`].
+    /// A miss keeps the `function_not_found` code (SDKs and the `Enqueue`
+    /// provider-missing DX branch both match on it) and enriches the message
+    /// with the namespaces where the id *does* exist.
     fn resolve_function_handler<'a>(
         &self,
         requested_ns: Option<&'a str>,
         function_id: &str,
     ) -> Result<(&'a str, Arc<crate::function::HandlerFn>), ErrorBody> {
         let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
-        if let Some(handler) = self.functions.get_handler(namespace, function_id) {
-            return Ok((namespace, handler));
-        }
         self.resolve_function_with(requested_ns, function_id, FunctionsRegistry::get_handler)
-            .map(|handler| (DEFAULT_NAMESPACE, handler))
+            .map(|handler| (namespace, handler))
     }
 
     pub(crate) fn is_function_allowed(
@@ -8440,7 +8421,7 @@ mod tests {
         );
     }
 
-    // ── Trigger removal and function options (observe v2) ─────────────────
+    // ── Removed messages and function options (observe v2) ────────────────
 
     fn fixture_frame(name: &str) -> Message {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -8468,8 +8449,7 @@ mod tests {
                     "config": {}
                 })
                 .to_string();
-                let error =
-                    serde_json::from_str::<Message>(&frame).expect_err("no longer a message");
+                let error = serde_json::from_str::<Message>(&frame).expect_err("not a message");
                 engine
                     .undecodable_frame(&worker, peer, frame.as_bytes(), &error)
                     .await;

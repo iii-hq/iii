@@ -199,55 +199,6 @@ impl HttpInvoker {
             })
     }
 
-    pub async fn deliver_webhook(
-        &self,
-        function_path: &str,
-        endpoint: &HttpEndpointParams<'_>,
-        trigger_type: &str,
-        trigger_id: &str,
-        payload: Value,
-    ) -> Result<(), ErrorBody> {
-        self.validate_url(endpoint.url).await?;
-        let (timestamp, body) = self.prepare_request(&payload)?;
-
-        let invocation_id = Uuid::new_v4().to_string();
-        let trace_id_value = format!("trace-{}", Uuid::new_v4());
-
-        let mut request = self.build_base_request(
-            endpoint,
-            function_path,
-            &invocation_id,
-            timestamp,
-            body.clone(),
-        );
-
-        request = request
-            .header("x-iii-Trace-ID", &trace_id_value)
-            .header("x-iii-Trigger-Type", trigger_type)
-            .header("x-iii-Trigger-ID", trigger_id);
-
-        request = self.apply_auth(request, endpoint.auth, &body, timestamp);
-
-        let response = request.send().await.map_err(|err| ErrorBody {
-            code: "http_request_failed".into(),
-            message: format_reqwest_error(&err),
-            stacktrace: None,
-        })?;
-
-        if is_non_error_status(response.status()) {
-            return Ok(());
-        }
-
-        let status = response.status();
-        let bytes = response.bytes().await.map_err(|err| ErrorBody {
-            code: "http_response_failed".into(),
-            message: format_reqwest_error(&err),
-            stacktrace: None,
-        })?;
-
-        Err(Self::parse_error_response(status, &bytes))
-    }
-
     pub async fn invoke_http(
         &self,
         function_path: &str,
@@ -837,7 +788,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_webhook_sets_trigger_headers_and_hmac_signature() {
+    async fn invoke_http_signs_hmac_requests() {
         let capture = RequestCapture::default();
         let base_url = spawn_server(capture.clone()).await;
         let invoker = permissive_invoker();
@@ -857,16 +808,18 @@ mod tests {
             auth: &auth,
         };
 
-        invoker
-            .deliver_webhook(
+        let result = invoker
+            .invoke_http(
                 "svc.webhook",
                 &endpoint,
-                "durable:subscriber",
-                "trigger-1",
+                Uuid::nil(),
                 payload.clone(),
+                None,
+                Some("trace-1"),
             )
             .await
-            .expect("deliver webhook");
+            .expect("invoke webhook");
+        assert_eq!(result, None);
 
         let headers = capture.headers.lock().expect("lock headers").clone();
         let timestamp = headers
@@ -875,23 +828,10 @@ mod tests {
             .parse::<u64>()
             .expect("timestamp should parse");
         assert_eq!(
-            headers.get("x-iii-trigger-type"),
-            Some(&"durable:subscriber".to_string())
-        );
-        assert_eq!(
-            headers.get("x-iii-trigger-id"),
-            Some(&"trigger-1".to_string())
-        );
-        assert_eq!(
             headers.get("x-iii-function-path"),
             Some(&"svc.webhook".to_string())
         );
-        assert!(
-            headers
-                .get("x-iii-trace-id")
-                .expect("trace id header")
-                .starts_with("trace-")
-        );
+        assert_eq!(headers.get("x-iii-trace-id"), Some(&"trace-1".to_string()));
         assert_eq!(
             headers.get("x-iii-signature"),
             Some(&sign_request(&expected_body, "top-secret", timestamp))
@@ -903,7 +843,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_webhook_propagates_plain_http_errors() {
+    async fn invoke_http_propagates_plain_http_errors() {
         let capture = RequestCapture::default();
         let base_url = spawn_server(capture).await;
         let invoker = permissive_invoker();
@@ -920,13 +860,7 @@ mod tests {
         };
 
         let error = invoker
-            .deliver_webhook(
-                "svc.webhook",
-                &endpoint,
-                "durable:subscriber",
-                "trigger-1",
-                json!({}),
-            )
+            .invoke_http("svc.webhook", &endpoint, Uuid::nil(), json!({}), None, None)
             .await
             .expect_err("plain error response should fail");
         assert_eq!(error.code, "http_error");
