@@ -10,35 +10,35 @@ use thiserror::Error;
 /// Each variant maps to a stable W-code surfaced over the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerOpErrorKind {
-    InvalidName,                   // W100
-    InvalidSource,                 // W101
-    LocalPathNotAllowedViaTrigger, // W102
-    MissingTarget,                 // W103
-    ConsentRequired,               // W104
-    BadRequest,                    // W105
-    NotFound,                      // W110
-    AlreadyExists,                 // W111
-    NotInstalled,                  // W112
-    NotRunning,                    // W113
-    AlreadyRunning,                // W114
-    LockBusy,                      // W120
-    LockIo,                        // W121
-    ConfigIo,                      // W130
-    ConfigParse,                   // W131
-    Registry,                      // W140
-    OciPull,                       // W141
-    Download,                      // W142
-    LockfileMismatch,              // W150
-    Spawn,                         // W160
-    StartTimeout,                  // W161
-    StopTimeout,                   // W162
-    Cancelled,                     // W170
-    BundleManifestRejected,        // W180
-    BundleArchiveUnsafe,           // W181
-    BundleResourceClamped,         // W182  (carried by warn events, not Err returns)
-    BundleDepGraphExceeded,        // W183
-    DependencyGraphInvalid,        // W184
-    Internal,                      // W900
+    InvalidName,                // W100
+    InvalidSource,              // W101
+    LocalPathNotAllowedViaCall, // W102
+    MissingTarget,              // W103
+    ConsentRequired,            // W104
+    BadRequest,                 // W105
+    NotFound,                   // W110
+    AlreadyExists,              // W111
+    NotInstalled,               // W112
+    NotRunning,                 // W113
+    AlreadyRunning,             // W114
+    LockBusy,                   // W120
+    LockIo,                     // W121
+    ConfigIo,                   // W130
+    ConfigParse,                // W131
+    Registry,                   // W140
+    OciPull,                    // W141
+    Download,                   // W142
+    LockfileMismatch,           // W150
+    Spawn,                      // W160
+    StartTimeout,               // W161
+    StopTimeout,                // W162
+    Cancelled,                  // W170
+    BundleManifestRejected,     // W180
+    BundleArchiveUnsafe,        // W181
+    BundleResourceClamped,      // W182  (carried by warn events, not Err returns)
+    BundleDepGraphExceeded,     // W183
+    DependencyGraphInvalid,     // W184
+    Internal,                   // W900
 }
 
 impl WorkerOpErrorKind {
@@ -46,7 +46,7 @@ impl WorkerOpErrorKind {
         match self {
             Self::InvalidName => "W100",
             Self::InvalidSource => "W101",
-            Self::LocalPathNotAllowedViaTrigger => "W102",
+            Self::LocalPathNotAllowedViaCall => "W102",
             Self::MissingTarget => "W103",
             Self::ConsentRequired => "W104",
             Self::BadRequest => "W105",
@@ -88,11 +88,11 @@ pub enum WorkerOpError {
     #[error("invalid worker source {input:?}: {reason}")]
     InvalidSource { input: String, reason: String },
 
-    /// Reserved. Local-path installs are now permitted over the trigger
+    /// Reserved. Local-path installs are now permitted over a call
     /// surface, so this is no longer constructed by any production path.
     /// Kept for wire-code stability because W102 is a published code.
-    #[error("local path {path:?} is not allowed via the worker::* trigger surface")]
-    LocalPathNotAllowedViaTrigger { path: String },
+    #[error("local path {path:?} is not allowed via a worker::* call")]
+    LocalPathNotAllowedViaCall { path: String },
 
     #[error("missing target for {op:?}: {reason}")]
     MissingTarget { op: String, reason: String },
@@ -236,7 +236,7 @@ impl WorkerOpError {
         match self {
             Self::InvalidName { .. } => K::InvalidName,
             Self::InvalidSource { .. } => K::InvalidSource,
-            Self::LocalPathNotAllowedViaTrigger { .. } => K::LocalPathNotAllowedViaTrigger,
+            Self::LocalPathNotAllowedViaCall { .. } => K::LocalPathNotAllowedViaCall,
             Self::MissingTarget { .. } => K::MissingTarget,
             Self::ConsentRequired { .. } => K::ConsentRequired,
             Self::BadRequest { .. } => K::BadRequest,
@@ -275,7 +275,7 @@ impl WorkerOpError {
             Self::InvalidSource { input, reason } => {
                 json!({ "input": input, "reason": reason })
             }
-            Self::LocalPathNotAllowedViaTrigger { path } => json!({ "path": path }),
+            Self::LocalPathNotAllowedViaCall { path } => json!({ "path": path }),
             Self::MissingTarget { op, reason } => json!({ "op": op, "reason": reason }),
             Self::ConsentRequired { op } => json!({ "op": op }),
             Self::BadRequest {
@@ -361,8 +361,8 @@ impl WorkerOpError {
         }
     }
 
-    pub fn local_path_not_allowed_via_trigger(path: impl Into<String>) -> Self {
-        Self::LocalPathNotAllowedViaTrigger { path: path.into() }
+    pub fn local_path_not_allowed_via_call(path: impl Into<String>) -> Self {
+        Self::LocalPathNotAllowedViaCall { path: path.into() }
     }
 
     pub fn not_found(name: impl Into<String>) -> Self {
@@ -391,8 +391,8 @@ mod tests {
     }
 
     #[test]
-    fn local_path_not_allowed_via_trigger_is_w102() {
-        let err = WorkerOpError::local_path_not_allowed_via_trigger("./my-worker");
+    fn local_path_not_allowed_via_call_is_w102() {
+        let err = WorkerOpError::local_path_not_allowed_via_call("./my-worker");
         assert_eq!(err.to_payload()["code"], "W102");
     }
 

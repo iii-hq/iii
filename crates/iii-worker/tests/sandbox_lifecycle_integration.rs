@@ -2,7 +2,7 @@
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
 
-//! Integration tests for the lifecycle `sandbox::*` triggers
+//! Integration tests for the lifecycle `sandbox::*` functions
 //! (create/exec/stop/list).
 //!
 //! Sister file to `sandbox_fs_integration.rs`. Drives the four lifecycle
@@ -13,10 +13,10 @@
 //!
 //! - per-handler error code stability
 //! - the registry mutex must not be held across an adapter `await`
-//!   (otherwise concurrent triggers wedge each other)
+//!   (otherwise concurrent calls wedge each other)
 //! - `exec_in_progress` is cleared on error paths, not just success
 //! - state transitions: `stopped` rejects further exec with S004
-//! - cross-handler invariants (concurrent trigger calls don't deadlock)
+//! - cross-handler invariants (concurrent calls don't deadlock)
 //!
 //! Note on `handle_create`: the function calls `rootfs_cache::resolve_cached`
 //! and `OverlayLayout::ensure_dirs` BEFORE `launcher.boot`, both of which

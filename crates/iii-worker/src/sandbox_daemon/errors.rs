@@ -180,7 +180,7 @@ pub enum SandboxError {
     FsChannelAborted(String),
 
     #[error(
-        "fs operation unsupported by this sandbox supervisor; upgrade iii-worker to enable fs::* triggers (see S219 docs)"
+        "fs operation unsupported by this sandbox supervisor; upgrade iii-worker to enable the fs::* functions (see S219 docs)"
     )]
     FsUnsupported,
 
@@ -205,7 +205,7 @@ pub enum SandboxError {
 impl SandboxError {
     // Code assignments are the wire ABI surfaced to SDK callers via the
     // flat `{type, code, message, docs_url, retryable}` payload they
-    // receive from `iii.trigger()`. The `sdk_contract_mapping` test
+    // receive from `iii.call()`. The `sdk_contract_mapping` test
     // pins this mapping; changing any arm below silently changes the
     // S-code every SDK user sees.
     pub fn code(&self) -> SandboxErrorCode {
@@ -643,7 +643,7 @@ mod tests {
     }
 
     /// Wire ABI pin. SDKs receive the flat `to_payload()` shape via
-    /// `iii.trigger()`; the S-codes below are the stable surface callers
+    /// `iii.call()`; the S-codes below are the stable surface callers
     /// branch on. Changing any row silently renumbers the error every
     /// Node / Python / Rust caller sees.
     #[test]

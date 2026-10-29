@@ -6,7 +6,7 @@
 //! Unlike the lifecycle ops this is a pure host-filesystem read: no project
 //! lock, no events, no host shim. The log directories live under the
 //! daemon's `~/.iii`, not the project root, and reading them has no side
-//! effects worth fanning out to `worker` trigger subscribers.
+//! effects worth fanning out to `worker::*` observers.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};

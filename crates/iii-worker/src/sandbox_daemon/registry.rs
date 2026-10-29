@@ -230,7 +230,7 @@ impl SandboxRegistry {
         self.inner.lock().await.len()
     }
 
-    /// Update `last_exec_at` to now. Called by fs::* trigger handlers (which
+    /// Update `last_exec_at` to now. Called by fs::* function handlers (which
     /// don't use the exec-serialization guard) to keep the idle reaper from
     /// evicting a sandbox that is actively performing file operations.
     pub async fn bump_last_exec(&self, id: Uuid) {

@@ -126,7 +126,7 @@ mod tests {
     //!
     //! `IiiShellFsRunner` is the only place a wire S-code from the guest
     //! supervisor is translated back into a typed `SandboxError` variant.
-    //! Every `sandbox::fs::*` trigger response — and therefore every SDK
+    //! Every `sandbox::fs::*` call's response — and therefore every SDK
     //! caller — depends on this mapping being exact. A silent rename
     //! here (e.g. someone refactors `FsNotFound { path }` to
     //! `FsNotFoundAt { path }`) would change the wire `code`/`type` that
@@ -253,7 +253,7 @@ mod tests {
     /// Every non-`FsError` `VmClientError` variant — connection failures,
     /// protocol violations, write timeouts, EOF — funnels into FsIo with
     /// the `"shell client error: "` prefix. The prefix is what callers
-    /// see in the message field of the trigger response, so it's part
+    /// see in the message field of the call's response, so it's part
     /// of the public surface; pin it.
     ///
     /// `VmClientError` is not `Clone`, so each iteration builds a fresh

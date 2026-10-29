@@ -354,7 +354,7 @@ pub struct SandboxDaemonArgs {
 }
 
 /// Subcommands for `iii worker sandbox`. Each one talks to the engine's
-/// `sandbox::*` trigger handlers via the iii-sdk WebSocket client.
+/// `sandbox::*` function handlers via the iii-sdk WebSocket client.
 #[derive(Subcommand, Debug)]
 pub enum SandboxCmd {
     /// Create a one-shot sandbox, run a command inside it, and stop it.

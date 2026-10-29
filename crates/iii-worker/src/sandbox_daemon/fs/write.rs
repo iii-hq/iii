@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! sandbox::fs::write — streaming file upload trigger.
+//! sandbox::fs::write — streaming file upload function.
 //!
 //! The caller creates a channel and passes its `reader_ref` (a
 //! `StreamChannelRef`) in the request JSON. This handler constructs a
@@ -234,7 +234,7 @@ pub async fn handle_write_with_reader<R: FsRunner + ?Sized>(
     }
 }
 
-/// Public trigger handler. Dispatches on the body shape and delegates
+/// Public function handler. Dispatches on the body shape and delegates
 /// to [`handle_write_with_reader`].
 ///
 /// Accepts three input shapes (exactly one must be present):

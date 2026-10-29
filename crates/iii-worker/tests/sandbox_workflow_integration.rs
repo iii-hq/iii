@@ -2,7 +2,7 @@
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
 
-//! Cross-handler workflow tests for the sandbox::* trigger surface.
+//! Cross-handler workflow tests for the sandbox::* functions.
 //!
 //! These exercise scenarios that touch more than one handler in sequence,
 //! verifying the contracts between create/exec/stop/list and fs::* hold
@@ -10,7 +10,7 @@
 //! review, the focus is on:
 //!
 //! - state transitions are visible across handlers (stop -> exec sees S004)
-//! - fs::* triggers also reject after stop, not just exec
+//! - fs::* functions also reject after stop, not just exec
 //! - one happy-path scripted workflow that touches every layer
 //!
 //! As with `sandbox_lifecycle_integration.rs`, sandbox state is inserted

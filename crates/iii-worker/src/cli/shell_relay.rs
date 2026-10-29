@@ -481,10 +481,10 @@ fn claim_slot(slots: &Slots) -> Option<usize> {
 /// slot reuse, otherwise a new client claiming the same slot would
 /// reuse the same id_offset range and collide with still-alive
 /// sessions. For clean disconnects with empty `owned_ids` (every
-/// FS trigger after its terminal frame, every cleanly-exited
+/// FS call after its terminal frame, every cleanly-exited
 /// exec), the slot returns directly to `Free` — no SIGKILL was
 /// sent so there's nothing to drain. Without this distinction,
-/// a tight burst of 16+ fast sequential triggers exhausts all
+/// a tight burst of 16+ fast sequential calls exhausts all
 /// `MAX_CLIENTS=16` slot cooldowns simultaneously and the listener
 /// rejects further connects with `early eof on handshake`, which
 /// surfaces as `S216` on the host side.
@@ -714,7 +714,7 @@ async fn client_session(
     }
     drop(map);
     // Cooldown only when SIGKILL fan-out actually happened. For the
-    // common case (every FS trigger after its terminal frame, every
+    // common case (every FS call after its terminal frame, every
     // cleanly-exited exec) `ids` is empty and the slot returns
     // straight to Free — keeps tight burst patterns from exhausting
     // the slot pool.
@@ -1016,14 +1016,14 @@ mod tests {
     /// every slot still cooling and the listener refused with
     /// `early eof on handshake` → host saw S216
     /// (`relay rejected connection (uid mismatch?)`). Real-world
-    /// repro: `fs-example.mjs` running ~14 happy-path triggers then
-    /// a few adversarial-section setup triggers in <250 ms.
+    /// repro: `fs-example.mjs` running ~14 happy-path calls then
+    /// a few adversarial-section setup calls in <250 ms.
     ///
     /// Fix: only enter Cooldown when SIGKILL fan-out actually
     /// happened (owned_ids non-empty at session end). Clean
-    /// disconnects — every FS trigger that received its terminal
+    /// disconnects — every FS call that received its terminal
     /// frame, every cleanly-exited exec — drop straight to Free,
-    /// so back-to-back trigger bursts don't burn slot capacity.
+    /// so back-to-back call bursts don't burn slot capacity.
     ///
     /// This test fires 32 sequential connect/handshake/disconnect
     /// cycles — twice MAX_CLIENTS — and asserts every one received

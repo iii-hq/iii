@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[schemars(
-    description = "Where to fetch the worker from. Use `registry` for the public iii worker registry, `oci` for an arbitrary container image, or `local` for a filesystem path on the engine/daemon host (works over the trigger too; the path is resolved on the host, not the caller)."
+    description = "Where to fetch the worker from. Use `registry` for the public iii worker registry, `oci` for an arbitrary container image, or `local` for a filesystem path on the engine/daemon host (works over a call too; the path is resolved on the host, not the caller)."
 )]
 pub enum WorkerSource {
     Registry {
@@ -27,7 +27,7 @@ pub enum WorkerSource {
     },
     Local {
         #[schemars(
-            description = "Path to a worker PROJECT DIRECTORY on the engine/daemon host (NOT the caller's machine), e.g. \"/srv/workers/my-worker\". The directory MUST contain an `iii.worker.yaml` manifest.\n\nMinimal manifest (just name + how to start):\n  name: my-worker\n  scripts:\n    start: \"node src/index.js\"\n\nAll iii.worker.yaml fields:\n  name        (required) worker id; must be a single path segment (alphanumerics, '-', '_', '.').\n  description (optional) one-line human/LLM-readable summary.\n  scripts.start   (required unless inferred) command that runs the worker process.\n  scripts.setup   (optional) one-time host provisioning, e.g. \"apt-get install -y build-essential\".\n  scripts.install (optional) dependency install, e.g. \"npm install\".\n  dependencies    (optional) map of other-worker-name -> semver range, e.g. { iii-state: \"^0.19\" }.\n  resources.cpus   (optional) integer vCPUs, default 2.\n  resources.memory (optional) MiB, default 2048.\n  env             (optional) string->string vars injected into the worker (III_URL/III_ENGINE_URL are set by the engine and ignored here).\n  runtime.base_image (optional) OCI rootfs override, e.g. \"oven/bun:1\".\n\nUnknown keys are rejected at add time. The setup/install/start scripts run on the host. Works over the trigger as well as the CLI. Dry-run a manifest with `worker::validate`; fetch the full manifest JSON Schema via `worker::schema { function_id: \"iii.worker.yaml\" }`."
+            description = "Path to a worker PROJECT DIRECTORY on the engine/daemon host (NOT the caller's machine), e.g. \"/srv/workers/my-worker\". The directory MUST contain an `iii.worker.yaml` manifest.\n\nMinimal manifest (just name + how to start):\n  name: my-worker\n  scripts:\n    start: \"node src/index.js\"\n\nAll iii.worker.yaml fields:\n  name        (required) worker id; must be a single path segment (alphanumerics, '-', '_', '.').\n  description (optional) one-line human/LLM-readable summary.\n  scripts.start   (required unless inferred) command that runs the worker process.\n  scripts.setup   (optional) one-time host provisioning, e.g. \"apt-get install -y build-essential\".\n  scripts.install (optional) dependency install, e.g. \"npm install\".\n  dependencies    (optional) map of other-worker-name -> semver range, e.g. { iii-state: \"^0.19\" }.\n  resources.cpus   (optional) integer vCPUs, default 2.\n  resources.memory (optional) MiB, default 2048.\n  env             (optional) string->string vars injected into the worker (III_URL/III_ENGINE_URL are set by the engine and ignored here).\n  runtime.base_image (optional) OCI rootfs override, e.g. \"oven/bun:1\".\n\nUnknown keys are rejected at add time. The setup/install/start scripts run on the host. Works over a call as well as the CLI. Dry-run a manifest with `worker::validate`; fetch the full manifest JSON Schema via `worker::schema { function_id: \"iii.worker.yaml\" }`."
         )]
         path: PathBuf,
     },
@@ -50,12 +50,12 @@ pub struct AddOptions {
     pub reset_config: bool,
     #[serde(default)]
     #[schemars(
-        description = "Proceed without confirmation when a registry dependency graph contains more than 32 workers. Required for large-graph installs over the trigger or in non-interactive environments."
+        description = "Proceed without confirmation when a registry dependency graph contains more than 32 workers. Required for large-graph installs over a call or in non-interactive environments."
     )]
     pub yes: bool,
     #[serde(default = "default_wait")]
     #[schemars(
-        description = "Block until the worker reports ready. Default true. Over the trigger surface installs routinely exceed bus invocation timeouts (npm install etc.) — prefer wait:false and poll worker::status. If a wait:true call times out, the install KEEPS RUNNING server-side: do not re-issue blindly (the project lock will be busy, W120); poll worker::status instead."
+        description = "Block until the worker reports ready. Default true. Over a call, installs routinely exceed bus invocation timeouts (npm install etc.) — prefer wait:false and poll worker::status. If a wait:true call times out, the install KEEPS RUNNING server-side: do not re-issue blindly (the project lock will be busy, W120); poll worker::status instead."
     )]
     pub wait: bool,
 }
@@ -320,7 +320,7 @@ pub struct StatusOutcome {
     )]
     pub stdout_tail: Vec<String>,
     #[schemars(
-        description = "Suggested next step derived from the state above (e.g. retry guidance, which trigger to call). Advisory, not machine-stable."
+        description = "Suggested next step derived from the state above (e.g. retry guidance, which function to call). Advisory, not machine-stable."
     )]
     pub hint: String,
 }

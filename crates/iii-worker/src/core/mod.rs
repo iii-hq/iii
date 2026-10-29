@@ -2,7 +2,7 @@
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
 //! Pure async ops backing `iii worker <cmd>` and the `worker::*` SDK
-//! triggers. No CLI presentation, no `i32` exit codes, no global state.
+//! functions. No CLI presentation, no `i32` exit codes, no global state.
 //! Every op takes an explicit `ProjectCtx`.
 
 pub mod error;

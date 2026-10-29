@@ -1,6 +1,6 @@
 # iii-worker integration tests
 
-Two test tiers cover the `sandbox::*` trigger surface plus the broader worker.
+Two test tiers cover the `sandbox::*` functions plus the broader worker.
 Pick the right tier when adding a test.
 
 ## Tier A — in-process integration (default `cargo test`)
@@ -13,7 +13,7 @@ Runs in every PR; target runtime <1s combined.
 |---|---|---|
 | `sandbox_lifecycle_integration.rs` | `sandbox::{create,exec,stop,list}` | ~21 |
 | `sandbox_workflow_integration.rs` | cross-handler scenarios + state transitions | 4 |
-| `sandbox_fs_integration.rs` | `sandbox::fs::*` (10 triggers) | ~10 |
+| `sandbox_fs_integration.rs` | `sandbox::fs::*` (10 functions) | ~10 |
 | `sandbox_error_codes_integration.rs` | wire ABI pin against `tests/fixtures/sandbox_error_codes.json` | 3 |
 
 Run:
@@ -39,7 +39,7 @@ Drives the production adapters (`IiiWorkerLauncher`, `ShellProtoRunner`,
 |---|---|---|
 | `vm_integration.rs` | `vm_boot.rs` arg construction (uses `--features integration-vm`) | many |
 | `vm_lifecycle_integration.rs` | host↔guest lifecycle (SIGTERM, meminfo, rlimit) | 3 stubs |
-| `sandbox_integration_e2e.rs` | `sandbox::*` trigger surface end-to-end | 3 stubs |
+| `sandbox_integration_e2e.rs` | `sandbox::*` functions end-to-end | 3 stubs |
 
 Host requirements:
 - Linux + KVM, or macOS with Hypervisor.framework entitlements
@@ -66,19 +66,19 @@ the `#[ignore]` list. The whole point of tier-C is to catch bugs that
 fakes can't see (URL rewrite, real-kernel networking, real signal
 delivery), so an ignored test there is a hole in the safety net.
 
-## Adding a new sandbox::* trigger
+## Adding a new sandbox::* function
 
 1. Add the typed `Request`/`Response` + `handle_*` in `sandbox_daemon/`.
 2. Add a fake adapter constructor in `tests/common/sandbox_fakes.rs` if
-   the trigger uses a new trait.
+   the function uses a new trait.
 3. Add unit tests inline in the handler module (validation paths).
 4. Add an in-process integration test in `sandbox_lifecycle_integration.rs`
    or `sandbox_workflow_integration.rs` — every error variant the handler
    can return must be exercised.
-5. If the new trigger introduces a new `SandboxError` variant, add a row
+5. If the new function introduces a new `SandboxError` variant, add a row
    to `tests/fixtures/sandbox_error_codes.json` and update the
    exhaustiveness check in `sandbox_error_codes_integration.rs`.
-6. Add a tier-C scenario in `sandbox_integration_e2e.rs` if the trigger
+6. Add a tier-C scenario in `sandbox_integration_e2e.rs` if the function
    has any host-kernel-visible behavior (networking, real fs semantics,
    resource limits).
 
