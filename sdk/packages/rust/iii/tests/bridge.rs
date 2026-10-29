@@ -10,16 +10,16 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::runtime::FunctionInfo;
-use iii_sdk::{RegisterFunction, TriggerAction};
+use iii_sdk::{CallAction, RegisterFunction};
 
 #[tokio::test]
 async fn connect_successfully() {
     let iii = common::shared_iii();
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
             action: None,
@@ -59,14 +59,14 @@ async fn register_and_invoke_function() {
     common::settle().await;
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::bridge::rs::echo".to_string(),
             payload: json!({"message": "hello"}),
             action: None,
             timeout_ms: None,
         })
         .await
-        .expect("trigger");
+        .expect("call");
 
     assert_eq!(result["echoed"]["message"], "hello");
     assert_eq!(received.lock().await[0]["message"], "hello");
@@ -101,14 +101,14 @@ async fn invoke_function_fire_and_forget() {
     common::settle().await;
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::bridge::rs::receiver".to_string(),
             payload: json!({"value": 42}),
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await
-        .expect("void trigger");
+        .expect("void call");
 
     assert!(result.is_null());
 
@@ -138,7 +138,7 @@ async fn list_registered_functions() {
     common::settle().await;
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
             action: None,
@@ -167,7 +167,7 @@ async fn reject_non_existent_function() {
     let iii = common::shared_iii();
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "nonexistent::function::rs".to_string(),
             payload: json!({}),
             action: None,

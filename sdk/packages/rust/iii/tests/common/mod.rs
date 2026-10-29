@@ -6,7 +6,8 @@ pub mod proxy;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use iii_sdk::{IIIClient, InitOptions, register_worker};
+use iii_sdk::{IIIClient, InitOptions, ObserverHandle, Source, register_worker};
+use serde_json::{Value, json};
 
 static SHARED_RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 static SHARED_III: OnceLock<IIIClient> = OnceLock::new();
@@ -45,4 +46,18 @@ pub fn shared_iii() -> &'static IIIClient {
 
         register_worker(&engine_ws_url(), InitOptions::default())
     })
+}
+
+/// Routes `method path` of the HTTP worker to `function_id`: an observer of
+/// `http::on-request` with the route as its args. The target receives the
+/// request and returns the response.
+pub async fn route(iii: &IIIClient, method: &str, path: &str, function_id: &str) -> ObserverHandle {
+    route_with(iii, json!({ "method": method, "path": path }), function_id).await
+}
+
+/// [`route`] with the full args, `middleware_function_ids` included.
+pub async fn route_with(iii: &IIIClient, args: Value, function_id: &str) -> ObserverHandle {
+    let observer = iii.observe(Source::function("http::on-request").args(args), function_id);
+    observer.ready().await.expect("route");
+    observer
 }

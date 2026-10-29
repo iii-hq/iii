@@ -2,9 +2,6 @@
 //!
 //! Requires a running III engine with WorkerModule RBAC configured on port 49135.
 
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
-
 mod common;
 
 use std::collections::HashMap;
@@ -16,10 +13,8 @@ use serial_test::serial;
 
 use iii_helpers::worker_connection_manager::{
     AuthInput, AuthResult, OnFunctionRegistrationInput, OnFunctionRegistrationResult,
-    OnTriggerRegistrationInput, OnTriggerRegistrationResult, OnTriggerTypeRegistrationInput,
-    OnTriggerTypeRegistrationResult,
 };
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::runtime::IIIConnectionState;
 use iii_sdk::{InitOptions, MiddlewareFunctionInput, RegisterFunction, register_worker};
 use serde::Deserialize;
@@ -33,21 +28,10 @@ struct FnRow {
 }
 
 static RBAC_AUTH_CALLS: OnceLock<Arc<Mutex<Vec<AuthInput>>>> = OnceLock::new();
-static RBAC_TT_REG_CALLS: OnceLock<Arc<Mutex<Vec<OnTriggerTypeRegistrationInput>>>> =
-    OnceLock::new();
-static RBAC_TRIG_REG_CALLS: OnceLock<Arc<Mutex<Vec<OnTriggerRegistrationInput>>>> = OnceLock::new();
 static RBAC_FUNCS_REGISTERED: OnceLock<()> = OnceLock::new();
 
 fn auth_calls() -> &'static Arc<Mutex<Vec<AuthInput>>> {
     RBAC_AUTH_CALLS.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-}
-
-fn tt_reg_calls() -> &'static Arc<Mutex<Vec<OnTriggerTypeRegistrationInput>>> {
-    RBAC_TT_REG_CALLS.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-}
-
-fn trig_reg_calls() -> &'static Arc<Mutex<Vec<OnTriggerRegistrationInput>>> {
-    RBAC_TRIG_REG_CALLS.get_or_init(|| Arc::new(Mutex::new(Vec::new())))
 }
 
 fn ew_url() -> String {
@@ -88,7 +72,7 @@ async fn wait_until_function_registered(function_id: &str, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let list_result = common::shared_iii()
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::list".to_string(),
                 payload: json!({}),
                 action: None,
@@ -140,8 +124,6 @@ fn ensure_functions_registered() {
                             namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec![],
-                            allowed_trigger_types: None,
-                            allow_trigger_type_registration: false,
                             allow_function_registration: true,
                             context: json!({ "role": "anonymous", "user_id": "anonymous" }),
                             function_registration_prefix: None,
@@ -150,8 +132,6 @@ fn ensure_functions_registered() {
                             namespaces: Default::default(),
                             allowed_functions: vec!["test::ew::valid-token-echo".to_string()],
                             forbidden_functions: vec![],
-                            allowed_trigger_types: None,
-                            allow_trigger_type_registration: true,
                             allow_function_registration: true,
                             context: json!({ "role": "admin", "user_id": "user-1" }),
                             function_registration_prefix: None,
@@ -160,8 +140,6 @@ fn ensure_functions_registered() {
                             namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec!["test::ew::echo".to_string()],
-                            allowed_trigger_types: None,
-                            allow_trigger_type_registration: false,
                             allow_function_registration: true,
                             context: json!({ "role": "restricted", "user_id": "user-2" }),
                             function_registration_prefix: None,
@@ -170,8 +148,6 @@ fn ensure_functions_registered() {
                             namespaces: Default::default(),
                             allowed_functions: vec![],
                             forbidden_functions: vec![],
-                            allowed_trigger_types: None,
-                            allow_trigger_type_registration: true,
                             allow_function_registration: true,
                             context: json!({ "role": "prefixed", "user_id": "user-prefix" }),
                             function_registration_prefix: Some("test-prefix".to_string()),
@@ -200,7 +176,7 @@ fn ensure_functions_registered() {
                         ),
                     );
 
-                    iii.trigger(TriggerRequest {
+                    iii.call(CallRequest {
                         function_id: input.function_id,
                         payload: json!(enriched),
                         action: None,
@@ -225,66 +201,6 @@ fn ensure_functions_registered() {
                 })
             }),
         ));
-
-        let tt_reg_calls = tt_reg_calls().clone();
-        refs.push(iii.register_function(
-            "test::rbac-worker::on-trigger-type-reg",
-            RegisterFunction::new_async(move |input: OnTriggerTypeRegistrationInput| {
-                let tt_reg_calls = tt_reg_calls.clone();
-                async move {
-                    let denied = input.trigger_type_id.starts_with("denied-tt::");
-                    tt_reg_calls.lock().unwrap().push(input);
-                    if denied {
-                        return Err(iii_sdk::Error::Handler(
-                            "denied trigger type registration".into(),
-                        ));
-                    }
-                    Ok::<_, iii_sdk::Error>(OnTriggerTypeRegistrationResult::default())
-                }
-            }),
-        ));
-
-        let trig_reg_calls = trig_reg_calls().clone();
-        refs.push(iii.register_function(
-            "test::rbac-worker::on-trigger-reg",
-            RegisterFunction::new_async(move |input: OnTriggerRegistrationInput| {
-                let trig_reg_calls = trig_reg_calls.clone();
-                async move {
-                    let denied = input.function_id.starts_with("denied-trig::");
-                    trig_reg_calls.lock().unwrap().push(input);
-                    if denied {
-                        return Err(iii_sdk::Error::Handler(
-                            "denied trigger registration".into(),
-                        ));
-                    }
-                    Ok::<_, iii_sdk::Error>(OnTriggerRegistrationResult::default())
-                }
-            }),
-        ));
-
-        {
-            struct NoopHandler;
-            #[async_trait::async_trait]
-            impl iii_sdk::trigger::TriggerHandler for NoopHandler {
-                async fn register_trigger(
-                    &self,
-                    _config: iii_sdk::trigger::TriggerConfig,
-                ) -> Result<(), iii_sdk::Error> {
-                    Ok(())
-                }
-                async fn unregister_trigger(
-                    &self,
-                    _config: iii_sdk::trigger::TriggerConfig,
-                ) -> Result<(), iii_sdk::Error> {
-                    Ok(())
-                }
-            }
-            iii.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-                "test-rbac-trigger",
-                "Trigger type for RBAC tests",
-                NoopHandler,
-            ));
-        }
 
         refs.push(iii.register_function(
             "test::ew::public::echo",
@@ -339,14 +255,14 @@ async fn should_return_auth_result_for_valid_token() {
     );
 
     let result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::ew::valid-token-echo".to_string(),
             payload: json!({ "msg": "hello" }),
             action: None,
             timeout_ms: None,
         })
         .await
-        .expect("trigger should succeed");
+        .expect("call should succeed");
 
     assert_eq!(result["valid_token"], true);
     assert_eq!(result["echoed"]["msg"], "hello");
@@ -373,7 +289,7 @@ async fn should_return_error_for_private_function() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::ew::private".to_string(),
             payload: json!({ "msg": "hello" }),
             action: None,
@@ -381,7 +297,7 @@ async fn should_return_error_for_private_function() {
         })
         .await;
 
-    assert!(result.is_err(), "triggering a private function should fail");
+    assert!(result.is_err(), "calling a private function should fail");
 
     iii_client.shutdown_async().await;
 }
@@ -398,7 +314,7 @@ async fn should_return_forbidden_functions_for_restricted_token() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::ew::echo".to_string(),
             payload: json!({ "msg": "hello" }),
             action: None,
@@ -406,10 +322,7 @@ async fn should_return_forbidden_functions_for_restricted_token() {
         })
         .await;
 
-    assert!(
-        result.is_err(),
-        "triggering a forbidden function should fail"
-    );
+    assert!(result.is_err(), "calling a forbidden function should fail");
 
     iii_client.shutdown_async().await;
 }
@@ -435,7 +348,7 @@ async fn should_deny_function_registration_via_hook() {
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     let result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "denied::blocked-fn".to_string(),
             payload: json!({}),
             action: None,
@@ -443,95 +356,7 @@ async fn should_deny_function_registration_via_hook() {
         })
         .await;
 
-    assert!(result.is_err(), "triggering a denied function should fail");
-
-    iii_client.shutdown_async().await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[serial]
-async fn should_deny_trigger_type_registration_via_hook() {
-    ensure_functions_registered();
-    tt_reg_calls().lock().unwrap().clear();
-
-    common::settle().await;
-    tokio::time::sleep(Duration::from_millis(700)).await;
-
-    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "deny-tt-reg"));
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    {
-        struct DeniedHandler;
-        #[async_trait::async_trait]
-        impl iii_sdk::trigger::TriggerHandler for DeniedHandler {
-            async fn register_trigger(
-                &self,
-                _config: iii_sdk::trigger::TriggerConfig,
-            ) -> Result<(), iii_sdk::Error> {
-                Ok(())
-            }
-            async fn unregister_trigger(
-                &self,
-                _config: iii_sdk::trigger::TriggerConfig,
-            ) -> Result<(), iii_sdk::Error> {
-                Ok(())
-            }
-        }
-        iii_client.register_trigger_type(iii_sdk::RegisterTriggerType::new(
-            "denied-tt::test",
-            "Should be denied",
-            DeniedHandler,
-        ));
-    }
-
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    {
-        let calls = tt_reg_calls().lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].trigger_type_id, "denied-tt::test");
-        assert_eq!(calls[0].description, "Should be denied");
-        assert_eq!(
-            calls[0].context.get("user_id").and_then(|v| v.as_str()),
-            Some("user-1")
-        );
-    }
-
-    iii_client.shutdown_async().await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[serial]
-async fn should_deny_trigger_registration_via_hook() {
-    ensure_functions_registered();
-    trig_reg_calls().lock().unwrap().clear();
-
-    common::settle().await;
-    tokio::time::sleep(Duration::from_millis(700)).await;
-
-    let iii_client = register_worker(&ew_url(), ew_options("valid-token", "deny-trig-reg"));
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let _ = iii_client.register_trigger(iii_sdk::protocol::RegisterTriggerInput::new(
-        "test-rbac-trigger".to_string(),
-        "denied-trig::my-fn".to_string(),
-        json!({ "key": "value" }),
-    ));
-
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-
-    {
-        let calls = trig_reg_calls().lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].trigger_type, "test-rbac-trigger");
-        assert_eq!(calls[0].function_id, "denied-trig::my-fn");
-        assert_eq!(
-            calls[0].context.get("user_id").and_then(|v| v.as_str()),
-            Some("user-1")
-        );
-    }
+    assert!(result.is_err(), "calling a denied function should fail");
 
     iii_client.shutdown_async().await;
 }
@@ -560,14 +385,14 @@ async fn should_apply_function_registration_prefix_and_strip_on_invocation() {
 
     let iii_server = common::shared_iii();
     let result = iii_server
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test-prefix::prefixed-echo".to_string(),
             payload: json!({ "msg": "prefix-test" }),
             action: None,
             timeout_ms: None,
         })
         .await
-        .expect("trigger with prefixed function_id should succeed");
+        .expect("call with prefixed function_id should succeed");
 
     assert_eq!(result["echoed"]["msg"], "prefix-test");
 
@@ -586,7 +411,7 @@ async fn should_only_list_allowed_functions_for_valid_token() {
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     let list_result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
             action: None,
@@ -640,7 +465,7 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     let list_result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::list".to_string(),
             payload: json!({}),
             action: None,
@@ -706,7 +531,7 @@ async fn should_only_list_exposed_functions_for_restricted_token() {
 /// The handler is registered on the worker client (so it runs under the
 /// restricted session) and invokes `engine::log::info` through its own client.
 /// If the carve-out regresses, the nested invocation FORBIDDENs and the
-/// handler surfaces that as a trigger-level error instead of returning
+/// handler surfaces that as a call-level error instead of returning
 /// `{ logged: true }`.
 #[tokio::test(flavor = "current_thread")]
 #[serial]
@@ -725,7 +550,7 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
     );
 
     // Register a handler whose body calls engine::log::info. If the carve-out
-    // regresses, this inner trigger returns FORBIDDEN and the outer trigger
+    // regresses, this inner call returns FORBIDDEN and the outer call
     // propagates the error.
     //
     // Use a test-unique function_id (not an id from ensure_functions_registered())
@@ -740,7 +565,7 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
             let client = inner_client.clone();
             async move {
                 client
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "engine::log::info".to_string(),
                         payload: json!({
                             "message": "carve-out regression guard: handler reached logger",
@@ -766,7 +591,7 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
         .await;
 
     let result = common::shared_iii()
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::ew::carveout-logger-handler".to_string(),
             payload: json!({ "msg": "real-usage-case" }),
             action: None,
@@ -791,7 +616,7 @@ async fn infrastructure_logger_callable_from_user_handler_under_restricted_expos
 /// Direct variant: a restricted worker client invokes `engine::log::info`
 /// without going through a registered handler — mirrors what a bootstrap
 /// script or CLI does. Proves the carve-out is reachable via the client's
-/// own `trigger()` method, not only from inside a handler invocation context.
+/// own `call()` method, not only from inside a handler invocation context.
 #[tokio::test(flavor = "current_thread")]
 #[serial]
 async fn infrastructure_logger_directly_callable_under_restricted_expose() {
@@ -808,7 +633,7 @@ async fn infrastructure_logger_directly_callable_under_restricted_expose() {
     // carve-out recognizes it as SDK infrastructure. A FORBIDDEN here is
     // exactly the bug this PR fixes.
     let result = iii_client
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::log::info".to_string(),
             payload: json!({ "message": "carve-out direct invocation" }),
             action: None,

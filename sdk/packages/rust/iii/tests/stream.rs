@@ -6,7 +6,7 @@ mod common;
 
 use serde_json::{Value, json};
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 
 const STREAM_NAME: &str = "test-stream-rs";
 const GROUP_ID: &str = "test-group";
@@ -27,7 +27,7 @@ async fn stream_set_new_item() {
     let test_data = json!({"name": "Test Item", "value": 42});
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::set".to_string(),
             payload: json!({
                 "stream_name": STREAM_NAME,
@@ -53,7 +53,7 @@ async fn stream_set_overwrite() {
     let initial_data = json!({"value": 1});
     let updated_data = json!({"value": 2, "updated": true});
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::set".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": initial_data}),
         action: None,
@@ -63,7 +63,7 @@ async fn stream_set_overwrite() {
     .expect("stream::set initial");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::set".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": updated_data}),
             action: None,
@@ -83,7 +83,7 @@ async fn stream_get_existing_item() {
 
     let test_data = json!({"name": "Test", "value": 100});
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::set".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": test_data}),
         action: None,
@@ -93,7 +93,7 @@ async fn stream_get_existing_item() {
     .expect("stream::set");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::get".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id}),
             action: None,
@@ -110,7 +110,7 @@ async fn stream_get_non_existent_item() {
     let iii = common::shared_iii();
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::get".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": "non-existent-item"}),
             action: None,
@@ -127,7 +127,7 @@ async fn stream_delete_existing_item() {
     let item_id = unique_item("delete-existing");
     let iii = common::shared_iii();
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::set".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id, "data": {"test": true}}),
         action: None,
@@ -136,7 +136,7 @@ async fn stream_delete_existing_item() {
     .await
     .expect("stream::set");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::delete".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id}),
         action: None,
@@ -146,7 +146,7 @@ async fn stream_delete_existing_item() {
     .expect("stream::delete");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::get".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": item_id}),
             action: None,
@@ -162,7 +162,7 @@ async fn stream_delete_existing_item() {
 async fn stream_delete_non_existent_item() {
     let iii = common::shared_iii();
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::delete".to_string(),
         payload: json!({"stream_name": STREAM_NAME, "group_id": GROUP_ID, "item_id": "non-existent"}),
         action: None,
@@ -191,7 +191,7 @@ async fn stream_list_items_in_group() {
     ];
 
     for item in &items {
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: "stream::set".to_string(),
             payload: json!({
                 "stream_name": STREAM_NAME,
@@ -207,7 +207,7 @@ async fn stream_list_items_in_group() {
     }
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::list".to_string(),
             payload: json!({"stream_name": STREAM_NAME, "group_id": group_id}),
             action: None,
@@ -240,7 +240,7 @@ async fn stream_list_groups_returns_available_groups() {
         .as_millis();
     let group_id = format!("list-groups-rs-{ts}");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::set".to_string(),
         payload: json!({
             "stream_name": STREAM_NAME,
@@ -255,7 +255,7 @@ async fn stream_list_groups_returns_available_groups() {
     .expect("stream::set anchor");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::list_groups".to_string(),
             payload: json!({"stream_name": STREAM_NAME}),
             action: None,
@@ -277,7 +277,7 @@ async fn stream_list_groups_returns_available_groups() {
         "expected groups to contain {group_id}, got {groups:?}"
     );
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::delete".to_string(),
         payload: json!({
             "stream_name": STREAM_NAME,
@@ -304,7 +304,7 @@ async fn stream_update_applies_partial_updates_via_ops() {
     let group_id = format!("update-group-rs-{ts}");
     let item_id = format!("update-item-rs-{ts}");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::set".to_string(),
         payload: json!({
             "stream_name": STREAM_NAME,
@@ -318,7 +318,7 @@ async fn stream_update_applies_partial_updates_via_ops() {
     .await
     .expect("stream::set initial");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::update".to_string(),
         payload: json!({
             "stream_name": STREAM_NAME,
@@ -333,7 +333,7 @@ async fn stream_update_applies_partial_updates_via_ops() {
     .expect("stream::update");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::get".to_string(),
             payload: json!({
                 "stream_name": STREAM_NAME,
@@ -349,7 +349,7 @@ async fn stream_update_applies_partial_updates_via_ops() {
     assert_eq!(result["count"], json!(5));
     assert_eq!(result["name"], json!("initial"));
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::delete".to_string(),
         payload: json!({
             "stream_name": STREAM_NAME,
