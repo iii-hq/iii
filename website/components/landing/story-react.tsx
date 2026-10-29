@@ -7,19 +7,19 @@ import { STORY_BEATS } from './story-model'
 import styles from './story-react.module.css'
 
 /**
- * Reactivity as triggers, drawn as one fan-out read top to bottom: a pull request opens, the github worker emits
- * `github::pr::event` into iii, iii delivers it to every subscriber at once, and each handler reacts on its own.
- * Then a fourth handler subscribes to the same event without anything upstream changing.
+ * Reactivity as observers, drawn as one fan-out read top to bottom: a pull request opens, the github worker calls
+ * `github::pr::on-event` through iii, iii delivers it to every observer at once, and each handler reacts on its own.
+ * Then a fourth handler observes the same function without anything upstream changing.
  */
 
 const HANDLERS = [
   { id: 'review', name: 'Review bot', fn: 'review::start', result: 'Review started' },
   { id: 'notify', name: 'Notify team', fn: 'notify::team', result: '#checkout pinged' },
   { id: 'ci', name: 'CI checks', fn: 'ci::run', result: '48 tests running' },
-  { id: 'deploy', name: 'Preview deploy', fn: 'deploy::preview', result: 'Subscribed' },
+  { id: 'deploy', name: 'Preview deploy', fn: 'deploy::preview', result: 'Observing' },
 ] as const
 
-/** Beats: 1 PR opens, 2 event reaches iii, 3 delivered to subscribers, 4 handlers react, 5 a fourth subscribes. */
+/** Beats: 1 PR opens, 2 event reaches iii, 3 delivered to observers, 4 handlers react, 5 a fourth observes. */
 const AT = { opened: 1, emitted: 2, delivered: 3, reacted: 4, added: 5 } as const
 
 export function ReactPreview({ beat }: { beat: number }) {
@@ -35,8 +35,8 @@ export function ReactPreview({ beat }: { beat: number }) {
         <span className={shared.activityIcon}>
           <IconGitHub className="size-4" />
         </span>
-        <span className={shared.activityLabel}>Triggers</span>
-        <code className={styles.fn}>github::pr::event</code>
+        <span className={shared.activityLabel}>Observers</span>
+        <code className={styles.fn}>github::pr::on-event</code>
       </figcaption>
 
       <div className={styles.body}>
@@ -60,11 +60,11 @@ export function ReactPreview({ beat }: { beat: number }) {
           <span className={styles.hubMark} aria-hidden>
             iii
           </span>
-          <code>github::pr::event</code>
-          <span className={styles.hubNote}>{beat >= AT.added ? '4 subscribers' : '3 subscribers'}</span>
+          <code>github::pr::on-event</code>
+          <span className={styles.hubNote}>{beat >= AT.added ? '4 observers' : '3 observers'}</span>
         </div>
 
-        {/* 3 · iii delivers it to every subscriber at once. */}
+        {/* 3 · iii delivers it to every observer at once. */}
         <div className={styles.fan} aria-hidden data-added={beat >= AT.added}>
           <span className={styles.fanStem} data-lit={beat >= AT.delivered} />
           <span className={styles.rail} />
@@ -82,7 +82,7 @@ export function ReactPreview({ beat }: { beat: number }) {
           ))}
         </div>
 
-        {/* 4 · Each handler reacts on its own. The fourth slot fills when a new handler subscribes. */}
+        {/* 4 · Each handler reacts on its own. The fourth slot fills when a new handler observes. */}
         <ol className={styles.handlers}>
           {HANDLERS.map((handler, i) => {
             const on = subscribed(i)
@@ -105,7 +105,7 @@ export function ReactPreview({ beat }: { beat: number }) {
                         <IconCheckCircle className={cn(styles.check, 'size-3.5')} />
                       </span>
                       <span key={done ? 'done' : 'wait'} className="swap-in">
-                        {done ? handler.result : i === 3 ? 'Subscribed' : 'Listening'}
+                        {done ? handler.result : i === 3 ? 'Observing' : 'Listening'}
                       </span>
                     </p>
                   </>
@@ -126,9 +126,9 @@ export function ReactPreview({ beat }: { beat: number }) {
         </span>
       </div>
       <p className="sr-only">
-        Example: a pull request opens and the github worker emits github::pr::event through iii. A review bot, a team
-        notifier and CI checks each subscribe to that event and react independently. A fourth handler, a preview deploy,
-        subscribes later without any change to the event source.
+        Example: a pull request opens and the github worker calls github::pr::on-event through iii. A review bot, a team
+        notifier and CI checks each observe that function and react independently. A fourth handler, a preview deploy,
+        observes it later without any change to the event source.
       </p>
     </figure>
   )

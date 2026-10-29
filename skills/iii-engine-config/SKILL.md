@@ -66,13 +66,13 @@ HTTP, cron, queue, state, pubsub, bridge, application, and custom workers belong
 `containers:`. Add registry packages with:
 
 ```bash
-iii trigger -n orders-daemon compose::add worker=state
+iii call -n orders-daemon compose::add worker=state
 ```
 
 ## Observers
 
-Since 0.25 the engine reads an optional top-level `observers:` section (`iii-observe` explains the
-model). Every key is optional; these are the defaults:
+The engine reads an optional top-level `observers:` section (`iii-observe` explains the model).
+Every key is optional; these are the defaults:
 
 ```yaml
 observers:
@@ -82,7 +82,7 @@ observers:
   max_observe_depth: 8            # deeper activations are dropped (LOOP_GUARD)
   observer_grace_ms: 30000        # suspended observers of a disconnected worker wait this long
   disposed_retention_ms: 3600000  # a worker back after the grace period is told they were disposed
-  owner_ack_timeout_ms: 30000     # an unacknowledged add fails with OWNER_TIMEOUT
+  owner_ack_timeout_ms: 30000     # an observer not acked by its host in time fails with OWNER_TIMEOUT
   activation_timeout_ms: 30000    # an unanswered activation frees its slot and counts as TIMEOUT
   default_max_in_flight: 64       # max_in_flight of an observer that sets none
   max_queue_per_observer: 1024    # queued activations beyond max_in_flight (then OVERFLOW)
@@ -96,7 +96,8 @@ observers:
 - Inspect live observers with `engine::observers::list({ function_id?, namespace?, worker? })` and
   `engine::observers::get({ id })` (results are filtered to functions the caller may invoke).
   `engine::observers::dispose({ id })` is allowed for the observing worker and unrestricted callers.
-- Metrics: `iii.observer.activations.total{function_id,delivery}`,
+- Metrics: `iii.observer.activations.total{function_id,delivery}` (`delivery` is `engine`, `host`,
+  or `observer_call`),
   `iii.observer.dropped.total{function_id,reason}`, `iii.observers{state}`,
   `iii.observer.reports.total{function_id}`,
   `iii.observer.activation.failures.total{function_id,reason}`; locally dispatched calls are counted
@@ -108,11 +109,11 @@ Keep the engine port internal and put the `rbac-proxy` worker in front of it whe
 untrusted workers, browsers, or agents need to connect:
 
 ```bash
-iii trigger -n orders-daemon compose::add worker=rbac-proxy
+iii call -n orders-daemon compose::add worker=rbac-proxy
 ```
 
 `rbac-proxy` opens its own WebSocket port, speaks the worker protocol verbatim, and at the boundary
-authenticates each connection (`rbac.auth_function_id`), gates every invocation and trigger binding
+authenticates each connection (`rbac.auth_function_id`), gates every invocation and observer
 (`rbac.expose_functions`, plus `allowed_functions` / `forbidden_functions` from the auth result),
 namespaces a session's registrations (`function_registration_prefix`), runs
 `middleware_function_id` and the registration hooks, and filters `engine::*` discovery results to
@@ -131,13 +132,15 @@ rbac:
 RBAC is mandatory on untrusted networks: only the proxy's port may face one, never the engine port,
 and a public proxy must always set `auth_function_id`. Full schema: https://workers.iii.dev/workers/rbac-proxy.
 
-Observers under RBAC (0.25 engine): creating one requires that the session may invoke both the
-observed function and the target, or it fails with `FORBIDDEN`. The engine's `rbac:` settings
-accept `on_observer_registration_function_id`, a hook with the same contract as
-`on_trigger_registration_function_id`: an object answer may rewrite `function_id`,
+Observers under RBAC: creating one requires that the session's grants (`expose_functions`,
+`namespaces`) cover both the observed function and the target, or it fails with `FORBIDDEN`. A
+private function is observable by any session whose grants cover it. The engine's `rbac:` settings accept
+`on_observer_registration_function_id`, a hook whose object answer may rewrite `function_id`,
 `target_function_id`, `args`, `filters`, and `metadata`; any other answer denies with `FORBIDDEN`.
-Sessions with a `middleware_function_id` get no local dispatch, so the middleware always runs.
-Check the rbac-proxy worker's docs for the version that forwards the observe messages.
+The `on_function_registration_function_id` hook receives `args_format`, `private`, and `observable`
+with the rest of the registration, and its answer may rewrite them. Sessions with a
+`middleware_function_id` get no local dispatch, so the middleware always runs. Check the
+rbac-proxy worker's docs for the version that forwards the observe messages.
 
 ## Directly supervised engine
 
@@ -188,6 +191,6 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 ## Boundaries
 
 - Project worker lifecycle belongs to Compose, not `config.yaml` or `iii worker`.
-- For function and trigger code, use `iii-core-primitives`; for observer code and filters, use
-  `iii-observe`.
+- For function code and calls, use `iii-core-primitives`; for observer code, filters, and event
+  sources, use `iii-observe`.
 - For worker-specific HTTP, queue, cron, state, or pubsub behavior, use that worker's docs.

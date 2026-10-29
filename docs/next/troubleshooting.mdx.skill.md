@@ -26,23 +26,25 @@ Windows terminal and reopen your distribution.
 List the observers of the observed function:
 
 ```bash
-iii trigger engine::observers::list function_id=orders::create
+iii call engine::observers::list function_id=orders::create
 ```
 
 Find yours by its `target` and read its `state`:
 
-- `pending` or `error`: `reason` says why, for example the owner has not acknowledged it, the target
-  is not registered, or the args were refused (`INVALID_ARGS`). See
+- `pending` or `error`: `reason` says why, for example the source or the target is not registered,
+  the source's worker has not accepted the observer yet, or it refused the observer's args
+  (`INVALID_ARGS`, or a code from the worker such as `INVALID_CRON_EXPRESSION`). See
   [Observer states](./using-iii/observers#observer-states).
-- `active` with `fires` and `dropped` at 0: no event has reached it. Check `delivery`:
-  - `owner`: the observer gets an event only when the function's code calls `obs.emit` or `obs.call`
-    on it. Inside `onObserverAdded`, the observer is not active yet, so these calls do not deliver.
-    See
-    [Advanced function observation with owner delivery](./creating-workers/observable-functions#advanced-function-observation-with-owner-delivery).
-  - `auto`: only invocations that start after the observer turned `active`, end with the outcome its
-    `on` asks for (`success` by default), and pass its filters are events. A call already running
-    when the observer turned `active` is not one, so call the function again.
-- `dropped` or `activation_failures` above 0: events reached it and were dropped or failed, counted
+- `active` with `fires` and `dropped` at 0: no call has reached it. Check these:
+  - Only calls that start after the observer turned `active`, end with the outcome its `on` asks for
+    (`success` by default), and pass its filters run the target. A call already running when the
+    observer turned `active` does not, so call the function again.
+  - A function whose worker chooses observers for each call (with `onObserverDeliver`) gives a call
+    only to the observers its `args` select. Compare the observer's `args` with that function's
+    documentation, for example the `method` and `path` of an `http::on-request` observer or the
+    `expression` of a `cron::on-tick` observer. See
+    [Observable functions](./creating-workers/observable-functions).
+- `dropped` or `activation_failures` above 0: calls reached it and were dropped or failed, counted
   by reason (`OVERFLOW`, `LOOP_GUARD`, ...).
 
 ## `Logger` lines do not show up
@@ -51,7 +53,7 @@ Find yours by its `target` and read its `state`:
 engine's output (under `iii compose --up`, `.iii/compose/<namespace>/engine.log`), or run:
 
 ```bash
-iii trigger engine::logs::list
+iii call engine::logs::list
 ```
 
 If they are not there either, the worker's OpenTelemetry export may be off (`OTEL_ENABLED=false`).

@@ -26,10 +26,14 @@ stack.
 
 iii reduces that quadratic effort to zero. Adding two workers or two hundred is the same operation.
 
-iii accomplishes this by organizing software into three primitives: **Worker**, **Trigger**,
-**Function**. Something hosts work, something causes it, something does it. Every capability in
-every system can be built from these three things: queues, cron, streaming, sandboxing,
-observability, agents, business logic, devices, even frontend browser UIs.
+iii accomplishes this by organizing software into three primitives: **Worker**, **Function**,
+**Observer**. Workers host work, functions do it, and observers make it reactive: `observe(a, b)`
+means that when function `a` runs, function `b` runs. Every capability in every system can be built
+from these three things: queues, cron, streaming, sandboxing, observability, agents, business logic,
+devices, even frontend browser UIs.
+
+An HTTP request is a call of `http::on-request`, a cron tick is a call of `cron::on-tick`, and a
+queue message is a call of `queue::on-message`. Reacting to any of them is the same `observe`.
 
 ## Have a Need? Add a Worker
 
@@ -43,10 +47,10 @@ available to every other worker in the system and recorded in `worker-compose.ya
 
 ## Same Contract, Both Sides
 
-Application teams register functions and declare triggers, focused entirely on business logic.
-Platform teams publish workers, focused entirely on the capabilities they provide. Both sides
-fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service API
-contracts. The work that used to live between teams disappears.
+Application teams register functions and observe the functions they react to, focused entirely on
+business logic. Platform teams publish workers, focused entirely on the capabilities they provide.
+Both sides fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service
+API contracts. The work that used to live between teams disappears.
 
 ## Any Language, Any Runtime
 
@@ -61,7 +65,7 @@ agentic. In iii an agent is a worker and can, with permission, act on every part
 through the shared system runtime.
 
 Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
-triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
+observers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
 rest of the system. An agent that hits a task outside its current capabilities can register a worker
 at runtime, expose new functions, and extend the system it operates inside. That is what makes iii
 different.

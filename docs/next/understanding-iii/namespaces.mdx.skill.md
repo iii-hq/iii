@@ -13,34 +13,27 @@ The engine uses these registry keys:
 
 - `(namespace, function_id)` for functions.
 - `(namespace, worker_name)` for workers.
-- `(namespace, trigger_type_id)` for trigger type providers.
 
-A worker connection has one namespace. Its function, service, and trigger type registrations use
-that namespace.
+A worker connection has one namespace. Its function and service registrations, and the observers it
+creates, use that namespace.
 
-## Trigger types and the two namespaces a trigger names
+## The two namespaces an observer names
 
-A trigger names two namespaces, and they answer different questions:
+An observer names two functions, and each one resolves in a namespace:
 
-- **`namespace`** is where the target function resolves when the trigger fires.
-- **`trigger_namespace`** is where the trigger type's provider is found.
+- The **source's `namespace`** is where the observed function is found. Absent, it is `default` for
+  `engine::*` and `configuration::*` functions, and the observing worker's namespace for every other
+  function.
+- The **target's `namespace`** is where the target runs when the source runs. Absent, it is the
+  observing worker's namespace.
 
-Both are optional. `namespace` absent means the engine's default namespace.
-`trigger_namespace` absent is not `default`: the engine resolves it, taking the
-registering worker's namespace first and the default namespace second.
+The engine hosts its own event sources in the `default` namespace. A worker in any namespace
+observes `engine::*` and `configuration::*` sources without naming one. For `observability::*` and
+`stream::*` sources, a worker in another namespace names `namespace: "default"`.
 
-That order is what lets a project ship its own provider for a trigger type the
-engine also provides. The engine's own providers (`http`, `cron`, `state`,
-`stream`) live in the default namespace, so a worker that names nothing reaches
-them. A project that registers its own provider for the same type id gets that
-one instead, without any worker changing how it binds.
-
-Naming `trigger_namespace` explicitly is strict: that namespace or nothing. A
-binding that names one is never moved.
-
-A provider that registers after a binding already fell back to the default
-namespace claims that binding back. Start order therefore does not decide which
-provider serves a project.
+Every other observed function resolves only in the observer's namespace (the one it names, or the
+observing worker's): a worker in `orders` that observes `http::on-request` reaches the http worker
+in `orders`, and names `namespace: "default"` to reach the one in `default`.
 
 ## What namespaces enable
 
@@ -68,8 +61,8 @@ worker. These two values stay separate.
 
 ## Why routing is strict
 
-A call with `namespace: "orders"` resolves in `orders` only. A call with no namespace resolves in the
-namespace of the calling worker.
+A call with `namespace: "orders"` resolves in `orders` only. A call with no namespace resolves in
+the namespace of the calling worker.
 
 The engine does not search other namespaces after a miss. A fallback could send a call to another
 tenant. Instead, the engine returns `function_not_found` and lists the namespaces where the function
@@ -101,9 +94,8 @@ A worker declares its namespace in the `engine::workers::register` call. The eng
 namespace timer when the WebSocket connection opens. The default timeout is `5000 ms`.
 
 A client can send registration messages before `engine::workers::register`. The engine holds
-`RegisterFunction`, `UnregisterFunction`, `RegisterService`, `RegisterTrigger`, and
-`UnregisterTrigger` messages until it knows the namespace. It does not register them in `default`
-and move them later.
+`RegisterFunction`, `UnregisterFunction`, `RegisterService`, `Observe`, and `Unobserve` messages
+until it knows the namespace. It does not register them in `default` and move them later.
 
 If `engine::workers::register` arrives first, the engine sets the declared namespace. An absent
 value selects `default`. The engine then processes the held messages in arrival order.
@@ -116,7 +108,7 @@ To change the timeout, use `registration_namespace_grace_ms` or `III_NAMESPACE_G
 
 ## Use namespaces
 
-For deployment configuration, SDK examples, cross-namespace calls, trigger targets, discovery, and
+For deployment configuration, SDK examples, cross-namespace calls, observer targets, discovery, and
 registration errors, see [Use namespaces](../using-iii/namespaces).
 
 ## Related

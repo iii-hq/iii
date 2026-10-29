@@ -35,7 +35,7 @@ type Worker = { id: string; fn: string; lang: string; cloud: Cloud }
 
 /** Seven registry workers in the order they join, each tagged with its language and where it runs. */
 export const WORKERS: Worker[] = [
-  { id: 'http', fn: 'trigger · http', lang: 'Rust', cloud: 'AWS' },
+  { id: 'http', fn: 'http::on-request', lang: 'Rust', cloud: 'AWS' },
   { id: 'database', fn: 'database::execute', lang: 'Rust', cloud: 'GCP' },
   { id: 'harness', fn: 'agent::events', lang: 'Rust', cloud: 'AWS' },
   { id: 'llm-router', fn: 'router::chat', lang: 'Rust', cloud: 'Azure' },

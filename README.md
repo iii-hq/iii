@@ -6,7 +6,6 @@
 <a href="https://trendshift.io/repositories/22583?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-22583" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/22583" alt="iii-hq%2Fiii | Trendshift" width="250" height="55"/></a>
 </p>
 
-
 <!-- Release -->
 <p align="center">
   <a href="https://hub.docker.com/r/iiidev/iii"><img src="https://img.shields.io/docker/v/iiidev/iii?label=docker" alt="Docker"></a>
@@ -47,9 +46,9 @@ complicates CODER. iii solves all of these concerns with one live system surface
 
 ```bash
 iii compose --namespace dev --up
-iii trigger -n dev compose::add worker=queue
-iii trigger -n dev compose::add worker=agent
-iii trigger -n dev compose::add worker=<anything>
+iii call -n dev compose::add worker=queue
+iii call -n dev compose::add worker=agent
+iii call -n dev compose::add worker=<anything>
 ```
 
 Each worker joins the live catalog. Every other worker is notified and can call it immediately.
@@ -63,20 +62,20 @@ uses.
 
 iii is powered by 3 primitives:
 
-**Workers** are processes that register with the iii engine and then register triggers and
-functions. A TypeScript API service is a worker. A Python data pipeline is a worker. A Rust
-microservice is a worker. Any functionality can be transformed into a worker with a few lines of
-code. Compose can also add workers at runtime, so agents and applications can extend the system
-while it is running.
-
-**Triggers** are anything that causes a function to run. A trigger can be a direct call to a
-function, an HTTP endpoint, a cron schedule, a queue subscription, a state change, a stream event,
-or anything else. Triggers are declarative: the Worker defines "this function runs when this thing
-happens," and iii handles routing, serialization, and delivery.
+**Workers** are processes that connect to the iii engine and register functions. A TypeScript API
+service is a worker. A Python data pipeline is a worker. A Rust microservice is a worker. Any
+functionality can be transformed into a worker with a few lines of code. Compose can also add
+workers at runtime, so agents and applications can extend the system while it is running.
 
 **Functions** are units of work with a stable identifier (e.g., `content::classify`,
-`orders::validate`). It receives input, does work, and optionally returns output. Functions exist in
-workers.
+`orders::validate`). A function receives input, does work, and optionally returns output. Functions
+exist in workers, and any worker runs any function with `iii.call()`, wherever it is.
+
+**Observers** make the system reactive. `iii.observe('orders::create', 'alerts::big-order')` means:
+when `orders::create` runs, `alerts::big-order` runs. Every function can be observed, including the
+ones workers provide for events: an HTTP request is a call of `http::on-request`, a cron tick is a
+call of `cron::on-tick`, and a queue message is a call of `queue::on-message`. iii handles routing,
+serialization, and delivery.
 
 By mapping everything a service can do to these three primitives iii creates a development process
 that is both effortlessly composable, and completely observable.
@@ -95,8 +94,8 @@ After iii:
 - Run them with `iii compose --up`
 - Done. It is in the system, traceable, and callable.
 
-Platform teams publish workers. Application teams register functions and declare triggers. Agents
-use the same catalog and the same function calls.
+Platform teams publish workers. Application teams register functions and observe the functions they
+react to. Agents use the same catalog and the same function calls.
 
 Extending iii is adding a Compose worker. Composing iii is calling functions. Observing iii is
 opening the trace.
@@ -114,7 +113,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 Declare project workers in `worker-compose.yaml`, or add them through a running Compose daemon:
 
 ```bash
-iii trigger -n dev compose::add worker=queue
+iii call -n dev compose::add worker=queue
 ```
 
 Browse packages at [workers.iii.dev](https://workers.iii.dev/) and see the
@@ -122,12 +121,12 @@ Browse packages at [workers.iii.dev](https://workers.iii.dev/) and see the
 
 ## SDKs
 
-| Language | Package                                            | Install                                     |
-| -------- | -------------------------------------------------- | ------------------------------------------- |
-| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk` |
-| Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk`                       |
-| Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`                         |
-| Go       | [`iii-sdk`](sdk/packages/go/iii)                       | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
+| Language | Package                                            | Install                                            |
+| -------- | -------------------------------------------------- | -------------------------------------------------- |
+| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk`        |
+| Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk`                              |
+| Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`                                |
+| Go       | [`iii-sdk`](sdk/packages/go/iii)                   | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
 
 ## Agent Skills for 3rd party harnesses
 
@@ -139,8 +138,8 @@ If you're using another harness you can install iii's skills via:
 npx skills add iii-hq/iii/skills
 ```
 
-These cover every iii primitive: HTTP endpoints, queues, cron, state, streams, custom triggers, and
-more. See [skills/](skills/) for the full list.
+These cover every iii primitive: HTTP endpoints, queues, cron, state, streams, observers, observable
+functions, and more. See [skills/](skills/) for the full list.
 
 Each worker in [iii-hq/workers](https://github.com/iii-hq/workers) also ships its own skill. Install
 them alongside the worker itself:
@@ -151,22 +150,21 @@ npx skills add iii-hq/workers --skill database # one worker
 npx skills add iii-hq/workers --all         # every worker skill
 ```
 
-The engine-owned workers (`configuration`, `iii-worker-manager`, `iii-http-functions`,
-`iii-stream`, and `iii-sandbox`) and the automatically supplied engine functions, telemetry, and
-observability workers live in this repo. HTTP, cron, queue, state, pubsub, and bridge are standalone
-Compose workers. Install an engine skill with
-`npx skills add iii-hq/iii --full-depth --skill <name>`; standalone workers ship their own skills in
-[iii-hq/workers](https://github.com/iii-hq/workers).
+The engine-owned workers (`configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`,
+and `iii-sandbox`) and the automatically supplied engine functions, telemetry, and observability
+workers live in this repo. HTTP, cron, queue, state, pubsub, and bridge are standalone Compose
+workers. Install an engine skill with `npx skills add iii-hq/iii --full-depth --skill <name>`;
+standalone workers ship their own skills in [iii-hq/workers](https://github.com/iii-hq/workers).
 
 ## Repository Structure
 
-| Directory  | What it is                                              | README                                 |
-| ---------- | ------------------------------------------------------- | -------------------------------------- |
-| `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md)   |
-| `sdk/`     | SDKs for Node.js, Python, Rust, and Go                  | [sdk/README.md](sdk/README.md)         |
-| `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md)   |
-| `website/` | iii website                                             | [website/](website/)                   |
-| `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)       |
+| Directory  | What it is                                              | README                               |
+| ---------- | ------------------------------------------------------- | ------------------------------------ |
+| `engine/`  | iii Engine (Rust) - core runtime, modules, and protocol | [engine/README.md](engine/README.md) |
+| `sdk/`     | SDKs for Node.js, Python, Rust, and Go                  | [sdk/README.md](sdk/README.md)       |
+| `skills/`  | Agent-readable reference material                       | [skills/README.md](skills/README.md) |
+| `website/` | iii website                                             | [website/](website/)                 |
+| `docs/`    | Documentation site (Mintlify/MDX)                       | [docs/README.md](docs/README.md)     |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md#how-dependencies-work) for workspace dependencies and
 [CI/CD details](CONTRIBUTING.md#cicd).
@@ -199,7 +197,7 @@ The iii is licensed as such:
 | `engine/`  | [Elastic License 2.0](engine/LICENSE) |
 | `sdk/`     | [Apache License 2.0](sdk/LICENSE)     |
 | `docs/`    | [Apache License 2.0](docs/LICENSE)    |
-| `website/` | [Apache License 2.0](docs/LICENSE) |
+| `website/` | [Apache License 2.0](docs/LICENSE)    |
 
 The engine runtime and the CLI are licensed under the Elastic License 2.0 (ELv2). All SDKs,
 documentation, and the website are licensed under the Apache License 2.0.

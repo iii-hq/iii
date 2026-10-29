@@ -17,7 +17,7 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 | Subcommand | What it does |
 | --- | --- |
 | `iii compose` | Run the Compose daemon, prepare registry packages with `build`, or supervise a project with `--up`. |
-| `iii trigger` | Invoke a registered function on a running engine. |
+| `iii call` | Call a registered function on a running engine. |
 | `iii project` | Scaffold projects and generate Docker assets. |
 | `iii cloud` | Manage hosted iii deployments. |
 | `iii update` | Update iii and its managed support binaries. |
@@ -49,8 +49,8 @@ The `iii cloud` command group manages hosted deployments. See
 inside `worker-compose.yaml`; update one with `compose::update`:
 
 ```bash
-iii trigger -n dev compose::update worker=state
-iii trigger -n dev compose::update worker=state@0.22.2
+iii call -n dev compose::update worker=state
+iii call -n dev compose::update worker=state@0.22.2
 ```
 
 Run `iii update --list-targets` to list the binaries the installer can update.

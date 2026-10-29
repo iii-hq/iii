@@ -1,26 +1,25 @@
 ---
 name: iii-core-primitives
 description: >-
-  Use when registering iii functions, binding triggers, observing functions, selecting
-  sync/void/enqueue invocation, creating workers, inspecting the live worker registry, installing
-  registry workers, authoring event sources, moving channel data, or adapting external HTTP
-  functions across TypeScript, Python, and Rust.
+  Use when registering iii functions, calling them (call with sync, void, or enqueue), observing
+  functions and event sources, creating workers, inspecting the live worker registry, installing
+  registry workers, moving channel data, or adapting external HTTP functions across TypeScript,
+  Python, and Rust.
 ---
 
 # Core Primitives
 
-iii has three top-level primitives:
+iii has three primitives:
 
-- **Function**: a named unit of work such as `orders::validate`
-- **Trigger**: an event source bound to a function
-- **Worker**: a process that connects to the engine and executes functions
+- **Worker**: a process that connects to the engine, registers functions, and calls them
+- **Function**: a named unit of work such as `orders::validate`; any worker runs it with `call`
+- **Observer**: `iii.observe(a, b)`: when `a` runs, `b` runs
 
-Since 0.25 every function is also **observable**: `iii.observe(source, target)` invokes `target`
-on each invocation of `source` that passes its filters. Observers replace trigger bindings over
-time; the built-in providers (`http`, `cron`, queue, `state`, `stream`, pub/sub, database) still
-use trigger types in 0.25, so keep `registerTrigger` for them. See `iii-observe`.
+Everything is reactive. An HTTP request, a cron tick, a queue message, and a state change are each a
+call of a source function (`http::on-request`, `cron::on-tick`, `queue::on-message`,
+`state::on-changed`), so observing that function is how work starts on the event. See `iii-observe`.
 
-Use `::` in function IDs, leading slashes in HTTP `api_path`, and `expression` for cron config.
+Use `::` in function IDs, leading slashes in HTTP `path` args, and `expression` for cron args.
 
 ## Function Registration
 
@@ -31,21 +30,20 @@ iii should call an existing external endpoint.
 | --- | --- |
 | `registerFunction(id, handler, options?)` | Local worker code |
 | `registerFunction(id, HttpInvocationConfig, options?)` | Existing HTTP services |
-| `registerTrigger({ type, function_id, config, metadata? })` | Binding a built-in event source (deprecated in 0.25, still required for providers that have not migrated) |
-| `observe({ function_id, args?, filters? }, target, options?)` | Running `target` after another function's invocations, or on an engine event (`iii-observe`) |
-| `trigger({ function_id, payload, action?, timeout? })` | Calling any function by ID |
+| `observe(source, target, options?)` | Running `target` when `source` runs: another function, an HTTP route, a cron schedule, a queue topic, an engine event (`iii-observe`) |
+| `call({ function_id, payload, action?, timeoutMs? })` | Calling any function by ID |
 
-Functions and triggers can carry metadata for ownership, discovery, and generated skills. Do not put
-secrets in metadata.
+Functions and observers can carry metadata for ownership, discovery, and generated skills. Do not
+put secrets in metadata.
 
 ## Workers and Registry
 
-A worker is any process that connects to the engine and registers functions or trigger types. There
-are two common paths:
+A worker is any process that connects to the engine and registers functions. There are two common
+paths:
 
 | Task | Use |
 | --- | --- |
-| Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, and `registerTrigger` or `observe` |
+| Create your own worker | Write SDK code that calls `registerWorker`, `registerFunction`, `call`, and `observe` |
 | Add an existing capability | Browse `https://workers.iii.dev/`, then call `compose::add worker=<name>` |
 | Pin a worker version | `compose::add worker=<name>@<version>` |
 | Declare a local worker | Add `worker: path://./workers/my-worker` under `containers:` |
@@ -53,8 +51,9 @@ are two common paths:
 
 The public worker registry at `workers.iii.dev` is for installable workers such as HTTP, state,
 queue, pub/sub, cron, database, shell, console, rbac-proxy, and other capability workers.
-(`iii-sandbox` and `iii-observability` are engine-owned and are not added through the registry.) Those workers may ship their own function-level skills; do not duplicate every capability
-as a top-level iii skill.
+(`iii-sandbox` and `iii-observability` are engine-owned and are not added through the registry.)
+Those workers may ship their own function-level skills; do not duplicate every capability as a
+top-level iii skill.
 
 ### Worker Manifest
 
@@ -76,49 +75,44 @@ registrations are what make the worker part of iii.
 
 ### Live Engine Registry
 
-The engine keeps a live registry of connected workers, registered functions, triggers, and trigger
-types. Read it through the built-in discovery functions:
+The engine keeps a live registry of connected workers, registered functions, and observers. Read it
+through the built-in discovery functions:
 
 | Function | Returns |
 | --- | --- |
 | `engine::workers::list` | Connected workers and metrics |
-| `engine::functions::list` | Registered functions |
-| `engine::triggers::list` | Registered triggers |
-| `engine::trigger-types::list` | Advertised trigger types and schemas |
+| `engine::functions::list` | Registered functions, with `args_format`, `private`, `observable`, and `observer_count` |
 | `engine::observers::list` | Observers you may see (`function_id`, `namespace`, `worker` filters) |
 
-For topology changes, observe the engine-hosted sources `engine::on-workers-changed` or
-`engine::on-functions-changed` with `deliver: 'input'` (see `iii-observe`). The older
-`engine::workers-available` and `engine::functions-available` trigger types still fire.
+For topology changes, observe the engine-hosted sources `engine::on-workers-changed`,
+`engine::on-functions-changed`, or `engine::on-observers-changed` with `deliver: 'input'` (see
+`iii-observe`).
 
-## Built-In Trigger Shapes
+## Built-In Sources
 
-The workers behind these types have not moved to source functions in 0.25, so bind them with
-`registerTrigger`. Each call logs a one-time deprecation warning per process; it is informational
-and the binding works as before. For `log`, the engine also hosts the `observability::on-log`
-source (`iii-observe`).
+Capability workers host these source functions, and the engine hosts `observability::on-log`. Add
+the worker, then observe the function with the args it takes; `iii-observe` has the full table and
+the other engine-hosted sources.
 
-| Trigger type | Registration config | Handler payload |
+| Source function | `args` | What the target receives |
 | --- | --- | --- |
-| `http` | `{ api_path: "/orders/:id", http_method: "POST" }` | `{ query_params, path_params, headers, path, method, body }` |
-| `cron` | `{ expression: "0 0 9 * * * *" }` | `{ trigger, job_id, scheduled_time, actual_time }` |
-| `durable:subscriber` | `{ topic: "payments" }` | The queued message payload |
-| `subscribe` | `{ topic: "orders.created" }` | The published event payload |
-| `state` | `{ scope: "orders", key?: "order-123" }` | `{ event_type, scope, key, old_value, new_value }` |
-| `stream` | `{ stream_name, group_id, item_id? }` | Stream event details |
-| `log` | `{ level: "warn" }` | OpenTelemetry-style log data |
+| `http::on-request` | `{ method: "POST", path: "/orders/:id", middleware_function_ids? }` | `{ method, path, path_params, query_params, headers, body }`; its result is the response `{ status_code, headers?, body? }` |
+| `cron::on-tick` | `{ expression: "0 0 9 * * * *" }` | The envelope; `input` is `{ expression, scheduled_time, actual_time }` |
+| `queue::on-message` | `{ topic: "payments", max_retries?, backoff_ms?, group? }` | The published data; returning acks the message |
+| `state::on-changed` | none; filter on `input.scope`, `input.key` | The envelope; `input` is `{ event_type, scope, key, old_value, new_value }` |
+| `database::on-row-changed` | `{ db, table?, ops? }` | The envelope; `input` is the row change |
+| `observability::on-log` | none; filter on `input.severity_text`; from a namespaced worker, observe with `namespace: "default"` | The envelope; `input` is one log record |
 
-Add `condition_function_id` to built-in trigger config when the handler should only run if a boolean
-condition function returns `true`. With `observe`, a condition you can state over the event becomes a
-declarative filter; a condition that needs code stays on `registerTrigger` or moves into the target.
+A condition you can state over the call (its input, output, error, caller, or metadata) is a
+filter on the observer. A condition that needs code goes in the target.
 
 ## Invocation Modes
 
 | Mode | Shape | Use when |
 | --- | --- | --- |
-| Sync | `trigger({ function_id, payload })` | The caller needs the result |
-| Void | `TriggerAction.Void()` | Optional side effect, no result needed |
-| Enqueue | `TriggerAction.Enqueue({ queue })` | Reliable async work with queue policy |
+| Sync | `call({ function_id, payload })` | The caller needs the result |
+| Void | `CallAction.Void()` | Optional side effect, no result needed |
+| Enqueue | `CallAction.Enqueue({ queue })` | Reliable async work with queue policy |
 
 Use enqueue for work that must complete with retries. Use void for analytics, notifications, and
 other non-critical side effects.
@@ -128,10 +122,11 @@ other non-critical side effects.
 Every worker registers in a namespace: the `namespace` init option, else `III_NAMESPACE`, else the
 engine's `default`. Compose sets `III_NAMESPACE` to its daemon's namespace for every worker it
 starts, so all workers in one `worker-compose.yaml` share a namespace and call each other by bare
-function id. Engine-owned functions (`engine::*`, `configuration::*`, `stream::*`) live in `default`;
-`engine::*` resolves there implicitly, the others need `namespace: "default"` on the call from a
+function id. Engine-owned functions (`engine::*`, `configuration::*`, `observability::*`,
+`stream::*`) live in `default`; `engine::*` and `configuration::*` resolve there implicitly, and
+`observability::*` and `stream::*` need `namespace: "default"` on the call or observer from a
 namespaced worker. Routing is strict and ids are never prefixed with a namespace. From the CLI,
-`iii trigger -n <namespace> <function>` selects it. Details and per-language examples are in
+`iii call -n <namespace> <function>` selects it. Details and per-language examples are in
 `iii-sdk-reference`.
 
 ## Code Examples
@@ -139,7 +134,7 @@ namespaced worker. Routing is strict and ids are never prefixed with a namespace
 ### TypeScript
 
 ```typescript
-import { registerWorker, TriggerAction } from "iii-sdk";
+import { registerWorker, CallAction } from "iii-sdk";
 
 const iii = registerWorker("ws://localhost:49134", { workerName: "orders-worker" });
 
@@ -148,21 +143,21 @@ iii.registerFunction("orders::validate", async (order) => {
   return { ...order, valid: true };
 });
 
-iii.registerFunction("orders::process", async (order) => {
-  const validated = await iii.trigger({ function_id: "orders::validate", payload: order });
-  await iii.trigger({
+iii.registerFunction("orders::process", async (req) => {
+  const validated = await iii.call({ function_id: "orders::validate", payload: req.body });
+  await iii.call({
     function_id: "orders::charge",
     payload: validated,
-    action: TriggerAction.Enqueue({ queue: "payments" }),
+    action: CallAction.Enqueue({ queue: "payments" }),
   });
-  return { accepted: true, orderId: validated.id };
+  return { status_code: 202, body: { accepted: true, orderId: validated.id } };
 });
 
-iii.registerTrigger({
-  type: "http",
-  function_id: "orders::process",
-  config: { api_path: "/orders", http_method: "POST" },
-});
+// POST /orders runs orders::process; its result is the HTTP response
+iii.observe(
+  { function_id: "http::on-request", args: { method: "POST", path: "/orders" } },
+  "orders::process",
+);
 ```
 
 ### Python
@@ -177,29 +172,28 @@ def validate(order):
         raise ValueError("missing order id")
     return {**order, "valid": True}
 
-def process(order):
-    validated = iii.trigger({"function_id": "orders::validate", "payload": order})
-    iii.trigger({
+def process(req):
+    validated = iii.call({"function_id": "orders::validate", "payload": req["body"]})
+    iii.call({
         "function_id": "orders::charge",
         "payload": validated,
         "action": {"type": "enqueue", "queue": "payments"},
     })
-    return {"accepted": True, "orderId": validated["id"]}
+    return {"status_code": 202, "body": {"accepted": True, "orderId": validated["id"]}}
 
 iii.register_function("orders::validate", validate)
 iii.register_function("orders::process", process)
-iii.register_trigger({
-    "type": "http",
-    "function_id": "orders::process",
-    "config": {"api_path": "/orders", "http_method": "POST"},
-})
+iii.observe(
+    {"function_id": "http::on-request", "args": {"method": "POST", "path": "/orders"}},
+    "orders::process",
+)
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, Error, InitOptions, RegisterFunction, TriggerAction};
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{register_worker, CallAction, Error, InitOptions, RegisterFunction, Source};
+use iii_sdk::protocol::CallRequest;
 use serde_json::{json, Value};
 
 let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
@@ -212,36 +206,33 @@ iii.register_function("orders::validate", RegisterFunction::new(|order: Value| -
 }));
 
 let process_client = iii.clone();
-iii.register_function("orders::process", RegisterFunction::new_async(move |order: Value| {
+iii.register_function("orders::process", RegisterFunction::new_async(move |req: Value| {
     let iii = process_client.clone();
     async move {
-        let validated = iii.trigger(TriggerRequest::new("orders::validate", order)).await?;
-        iii.trigger(TriggerRequest {
+        let validated = iii.call(CallRequest::new("orders::validate", req["body"].clone())).await?;
+        iii.call(CallRequest {
             function_id: "orders::charge".into(),
             payload: validated.clone(),
-            action: Some(TriggerAction::Enqueue { queue: "payments".into() }),
+            action: Some(CallAction::Enqueue { queue: "payments".into() }),
             timeout_ms: None,
         }).await?;
-        Ok::<_, Error>(json!({ "accepted": true, "order": validated }))
+        Ok::<_, Error>(json!({ "status_code": 202, "body": { "accepted": true, "order": validated } }))
     }
 }));
 
-// Deprecated since 0.25 (the http worker still provides a trigger type): compiles with a warning.
-#[allow(deprecated)]
-iii.register_trigger(RegisterTriggerInput::new(
-    "http",
+// POST /orders runs orders::process; its result is the HTTP response
+iii.observe(
+    Source::function("http::on-request").args(json!({ "method": "POST", "path": "/orders" })),
     "orders::process",
-    json!({ "api_path": "/orders", "http_method": "POST" }),
-))?;
+);
 ```
 
 ## Advanced Primitive Patterns
 
-- **Custom event sources**: since 0.25, register a function with an `observe` descriptor
-  (`delivery: 'owner'`, `args_format`, `onObserverAdded` / `onObserverRemoved`) and hand events to
-  observers with `obs.emit` or `obs.call` (see `iii-observe`). `registerTriggerType({ id,
-  description }, handler)` is deprecated: it still works and logs one warning per process. Keep
-  listener setup in `registerTrigger` and cleanup in `unregisterTrigger` if you maintain one.
+- **Event sources**: a worker turns events from outside iii into calls of a function it hosts,
+  registered with a handler that returns the event and `{ args_format, private: true }`. It
+  overrides iii's defaults with `onObserverAdded` (set up from `obs.args`), `onObserverRemoved`
+  (tear down), and `onObserverDeliver` (choose observers per call). See `iii-observe`.
 - **Channels**: use `createChannel()` for binary or streaming data that should not be serialized into
   JSON payloads. Pass `readerRef` or `writerRef` through a function payload.
 - **HTTP-invoked functions**: use `HttpInvocationConfig` for legacy APIs, third-party endpoints, or
@@ -251,17 +242,15 @@ iii.register_trigger(RegisterTriggerInput::new(
 
 ## When to Use
 
-- Use this skill for function registration, trigger binding, trigger payload shapes, invocation mode
-  decisions, worker creation, worker registry access, trigger conditions, custom trigger types,
-  channels, and HTTP-invoked functions.
-- Use it to decide between `registerTrigger` (built-in providers in 0.25) and `observe` (any
-  function, engine events, migrated providers).
+- Use this skill for function registration, calling functions, invocation mode decisions, worker
+  creation, worker registry access, the built-in source functions and their args, channels, and
+  HTTP-invoked functions.
 - Use this when a task spans TypeScript, Python, or Rust examples for the same iii primitive.
 
 ## Boundaries
 
-- For `iii.observe`, filters, observable functions, local dispatch, and migrating off
-  `registerTrigger` / `registerTriggerType`, use `iii-observe`.
+- For `iii.observe` options, filters, engine-hosted sources, observer hooks, event sources, and
+  local dispatch, use `iii-observe`.
 - For engine ports, adapters, engine-owned workers, RBAC (`rbac-proxy`), and deployment config,
   use `iii-engine-config`.
 - For SDK-specific package exports and language caveats, use `iii-sdk-reference`.

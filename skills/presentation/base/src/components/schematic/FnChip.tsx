@@ -17,7 +17,7 @@ interface FnChipProps extends React.HTMLAttributes<HTMLSpanElement> {
 }
 
 /**
- * a function-id / trigger-type chip: 1px border, code-sm mono, no fill.
+ * a function-id chip: 1px border, code-sm mono, no fill.
  * identifiers keep their original casing — the lowercase rule does not
  * apply to ids.
  */

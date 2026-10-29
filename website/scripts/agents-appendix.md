@@ -1,6 +1,6 @@
 ## What iii is, to an agent
 
-An engine and a single open protocol (JSON over WebSocket) with three primitives: Function, Trigger, Worker. An agent is a worker. Its tools are functions. Its memory is state. Its orchestration is triggers.
+An engine and a single open protocol (JSON over WebSocket) with three primitives: Worker, Function, Observer. An agent is a worker. Its tools are functions. Its memory is state. Its orchestration is observers: when one function runs, another runs.
 
 No harness separate from the backend. No tool layer wired by hand. No memory system you integrate. One system, one trace, one set of primitives. The harness IS the system.
 
@@ -12,11 +12,11 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 ## Primitives (wire-level)
 
-| Primitive | What it is                                                                                             | How an agent uses it                                                                                          |
-| --------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| Worker    | A process that speaks the iii protocol and registers functions and triggers                            | Spawn via SDK; self-registers on connect                                                                      |
-| Trigger   | What causes a function to run: direct call, HTTP, cron, queue subscription, state change, stream event | Declare on your worker; the engine handles routing and delivery                                               |
-| Function  | Stable identifier (e.g. `orders::validate`) wrapping input → output                                    | Invoke from another worker via your language SDK against the engine (not the `iii trigger` CLI for app logic) |
+| Primitive | What it is                                                                                                                                                                                                                             | How an agent uses it                                                                                                  |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Worker    | A process that speaks the iii protocol, registers functions, and calls them                                                                                                                                                            | Spawn via SDK; self-registers on connect                                                                              |
+| Function  | Stable identifier (e.g. `orders::validate`) wrapping input → output                                                                                                                                                                    | Call it from another worker with your language SDK's `call` against the engine (not the `iii call` CLI for app logic) |
+| Observer  | `observe(a, b)`: when function `a` runs, function `b` runs. HTTP requests, cron ticks, queue messages, and state changes are calls of source functions (`http::on-request`, `cron::on-tick`, `queue::on-message`, `state::on-changed`) | Observe from your worker; the engine handles routing and delivery                                                     |
 
 ## Install / start
 
@@ -33,11 +33,11 @@ Add `--non-interactive` after `sh -s --` to install without the setup prompt. `i
 
 A project is one **`worker-compose.yaml`**: the `engine:` block declares the engine and its engine-owned workers, and `containers:` declares the project's workers (registry packages or local `path://` workers). Each worker's runtime settings (ports, hosts, adapters) live in the **configuration worker**, one YAML file per worker under `./config/`. Read those files and the docs; do not assume fixed port numbers from a static list. The list-shaped `config.yaml` is only for an engine that another supervisor owns.
 
-The UI comes from the **console worker**. The project templates include it; once the project is up it serves at http://127.0.0.1:3113 by default (the port is set in the console worker's configuration under `./config/`). Add it to another project with `iii trigger compose::add worker=console`.
+The UI comes from the **console worker**. The project templates include it; once the project is up it serves at http://127.0.0.1:3113 by default (the port is set in the console worker's configuration under `./config/`). Add it to another project with `iii call compose::add worker=console`.
 
-Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. **`iii trigger <function>`** is how a human or an agent outside iii calls a function on the running engine, including the `compose::*` lifecycle functions. Code that runs inside a worker calls functions through the SDK's `trigger`, not by shelling out to the CLI.
+Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. **`iii call <function>`** is how a human or an agent outside iii calls a function on the running engine, including the `compose::*` lifecycle functions. Code that runs inside a worker calls functions through the SDK's `call`, not by shelling out to the CLI.
 
-Add a worker from the registry with `iii trigger compose::add worker=<name>`; it writes the worker and its dependencies into `worker-compose.yaml` and restarts the project. `iii update` updates iii and its managed binaries. (`iii worker add` was removed in 0.23.)
+Add a worker from the registry with `iii call compose::add worker=<name>`; it writes the worker and its dependencies into `worker-compose.yaml` and restarts the project. `iii update` updates iii and its managed binaries. (`iii worker add` was removed in 0.23.)
 
 Install an SDK:
 
@@ -53,9 +53,9 @@ Full docs: https://iii.dev/docs
 Agents should follow:
 
 - Function IDs use `::` (e.g. `orders::validate`)
-- HTTP `api_path` values use a leading slash (e.g. `/orders/validate`)
-- Cron triggers use config field `expression`, not `cron`
-- Inside a worker, call functions through the SDK's `trigger`; `iii trigger` is for humans and agents outside iii, including the `compose::*` lifecycle functions
+- HTTP routes are observers of `http::on-request` with args `{ method, path }`; `path` has a leading slash (e.g. `/orders/validate`)
+- Cron schedules are observers of `cron::on-tick` with args `{ expression }` (7 fields: sec min hour day month weekday year)
+- Inside a worker, call functions through the SDK's `call`; `iii call` is for humans and agents outside iii, including the `compose::*` lifecycle functions
 - Project workers are declared in `worker-compose.yaml`; each worker's runtime settings live in `./config/<worker>.yaml`; the console worker provides the UI
 
 ## Agent skills (after onboarding)
@@ -79,11 +79,11 @@ Catalogs: https://github.com/iii-hq/iii/tree/main/skills and https://github.com/
 
 ## Harness composition as a shape, not a product
 
-The thin-vs-thick harness debate is a composition choice in iii. A thin harness is a worker with a few functions that lets the model decide what to trigger next. A thick harness is a worker with more functions, approval gates, and conditional logic before enqueuing the next step. Same primitives, different shape. Change the shape by adding or removing functions, not by rearchitecting.
+The thin-vs-thick harness debate is a composition choice in iii. A thin harness is a worker with a few functions that lets the model decide what to call next. A thick harness is a worker with more functions, approval gates, and conditional logic before enqueuing the next step. Same primitives, different shape. Change the shape by adding or removing functions, not by rearchitecting.
 
 ## Process isolation
 
-iii ships a sandbox worker that runs arbitrary ephemeral code on demand; use it for untrusted or generated code. Compose it with the `rbac-proxy` worker (`iii trigger compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port. RBAC gates who may call what; it is not isolation. An agent that needs to execute generated or installed code calls the sandbox functions, gated by RBAC.
+iii ships a sandbox worker that runs arbitrary ephemeral code on demand; use it for untrusted or generated code. Compose it with the `rbac-proxy` worker (`iii call compose::add worker=rbac-proxy`), which puts role-based access control in front of the engine on its own port. RBAC gates who may call what; it is not isolation. An agent that needs to execute generated or installed code calls the sandbox functions, gated by RBAC.
 
 ## Discovery and extensibility
 

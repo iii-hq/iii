@@ -383,7 +383,7 @@
 .mobileGraph {
   display: none;
 }
-/* ---------- Activity cards (Compose, Extend, Triggers): a quiet terminal surface with one accent. ---------- */
+/* ---------- Activity cards (Compose, Extend, Observers): a quiet terminal surface with one accent. ---------- */
 .activity {
   --code-value: oklch(0.86 0.09 60);
   --activity-ease: cubic-bezier(0.23, 1, 0.32, 1);

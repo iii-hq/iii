@@ -21,9 +21,9 @@ worker. An RBAC listener runs on its own port, gates every connection through an
 and restricts each session to an allowlist of functions.
 
 <Warning>
-  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the default `49134`
-  trusted listener. You must also declare the trusted `49134` listener yourself alongside
-  the RBAC one, otherwise your own workers lose the port they connect through.
+  Declaring **any** `iii-worker-manager` in `config.yaml` replaces the default `49134` trusted
+  listener. You must also declare the trusted `49134` listener yourself alongside the RBAC one,
+  otherwise your own workers lose the port they connect through.
 </Warning>
 
 Declare both listeners: the trusted one your own workers keep using on `49134`, and an RBAC-gated
@@ -51,11 +51,11 @@ workers:
 ```
 
 <Warning title="Deprecated">
-  The `stream::*` rule above exposes deprecated functions. `stream::*` is deprecated (iii-stream) and
-  will be removed in an upcoming release. Behavior is unchanged for now. Expose your own
-  domain functions instead; see [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
-  The `auth_function_id` on this page is connection authorization and is **not** deprecated. Only the
-  separate `auth_function` setting of `iii-stream` is.
+  The `stream::*` rule above exposes deprecated functions. `stream::*` is deprecated (iii-stream)
+  and will be removed in an upcoming release. Behavior is unchanged for now. Expose your own domain
+  functions instead; see [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+  The `auth_function_id` on this page is connection authorization and is **not** deprecated. Only
+  the separate `auth_function` setting of `iii-stream` is.
 </Warning>
 
 `auth_function_id` names a function the worker invokes once per connection to authorize the worker
@@ -142,13 +142,13 @@ to reject the connection.**
         return {
           allowed_functions: [], // extra IDs to allow beyond expose_functions
           forbidden_functions: [], // denied even if matched; supersedes allowed
-          allow_trigger_type_registration: false, // can the worker register its own trigger types
           allow_function_registration: true, // can the worker register its own callbacks
           context: { source: "browser" }, // forwarded to middleware on every call
         };
       },
     );
     ```
+
   </Tab>
   <Tab title="Python">
     ```python src/main.py
@@ -167,18 +167,18 @@ to reject the connection.**
         return {
             "allowed_functions": [],  # extra IDs to allow beyond expose_functions
             "forbidden_functions": [],  # denied even if matched; supersedes allowed
-            "allow_trigger_type_registration": False,  # register its own trigger types
             "allow_function_registration": True,  # register its own callbacks
             "context": {"source": "browser"},  # forwarded to middleware on every call
         }
 
     worker.register_function("auth::browser", browser)
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust src/main.rs
     use iii_helpers::worker_connection_manager::AuthInput;
-    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::protocol::CallRequest;
     use iii_sdk::{InitOptions, MiddlewareFunctionInput, RegisterFunction, register_worker};
     use serde_json::{json, Value};
 
@@ -194,7 +194,6 @@ to reject the connection.**
         Ok(json!({
             "allowed_functions": [],          // extra IDs to allow beyond expose_functions
             "forbidden_functions": [],        // denied even if matched; supersedes allowed
-            "allow_trigger_type_registration": false, // register its own trigger types
             "allow_function_registration": true,      // register its own callbacks
             "context": { "source": "browser" },       // forwarded to middleware on every call
         }))
@@ -223,7 +222,6 @@ to reject the connection.**
         return map[string]any{
             "allowed_functions":               []string{}, // extra IDs to allow beyond expose_functions
             "forbidden_functions":             []string{}, // denied even if matched; supersedes allowed
-            "allow_trigger_type_registration": false,      // register its own trigger types
             "allow_function_registration":     true,       // register its own callbacks
             // forwarded to middleware on every call
             "context": map[string]string{"source": "browser"},
@@ -239,16 +237,14 @@ the untrusted client connects through `3110`.
 
 The returned object is an `AuthResult`:
 
-| Field                             | Meaning                                                          |
-| --------------------------------- | ---------------------------------------------------------------- |
-| `namespaces`                      | Grants per namespace: `{ "orders": ["svc::*"] }`. See below.     |
-| `allowed_functions`               | Function IDs to allow in addition to `expose_functions`, in `default` only. |
-| `forbidden_functions`             | Function IDs to deny even if they match. Takes precedence.       |
-| `allowed_trigger_types`           | Trigger types the session may bind. Omit to allow all.           |
-| `allow_trigger_type_registration` | Whether the session may register new trigger types.              |
-| `allow_function_registration`     | Whether the session may register functions (defaults to `true`). |
-| `context`                         | Arbitrary object forwarded to the middleware on every call.      |
-| `function_registration_prefix`    | Optional prefix applied to every function the session registers. |
+| Field                          | Meaning                                                                     |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `namespaces`                   | Grants per namespace: `{ "orders": ["svc::*"] }`. See below.                |
+| `allowed_functions`            | Function IDs to allow in addition to `expose_functions`, in `default` only. |
+| `forbidden_functions`          | Function IDs to deny even if they match. Takes precedence.                  |
+| `allow_function_registration`  | Whether the session may register functions (defaults to `true`).            |
+| `context`                      | Arbitrary object forwarded to the middleware on every call.                 |
+| `function_registration_prefix` | Optional prefix applied to every function the session registers.            |
 
 ### Scope a session to namespaces
 
@@ -268,7 +264,7 @@ uses:
 The keys carry a second meaning: they are the namespaces the session may declare on
 `engine::workers::register`. A session holding this result registers in `orders` or `analytics`;
 declaring `default`, or any other namespace, is refused with `FORBIDDEN`. An entry with an empty
-list, like `analytics` above, grants the namespace and no functions inside it -- the session may
+list, like `analytics` above, grants the namespace and no functions inside it: the session may
 register there and reaches only what `expose_functions` exposes.
 
 Return an empty `namespaces` (or omit it) to leave the session unscoped: it declares any namespace,
@@ -330,7 +326,7 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
       }) => {
         // stamp the authenticated caller onto every payload, then forward the call
         const payload = { ...input.payload, _source: input.context.source };
-        return worker.trigger({ function_id: input.function_id, payload });
+        return worker.call({ function_id: input.function_id, payload });
       },
     );
     ```
@@ -340,10 +336,11 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
     def middleware(req: dict) -> dict:
         # stamp the authenticated caller onto every payload, then forward the call
         payload = {**req["payload"], "_source": req["context"]["source"]}
-        return worker.trigger({"function_id": req["function_id"], "payload": payload})
+        return worker.call({"function_id": req["function_id"], "payload": payload})
 
     worker.register_function("auth::middleware", middleware)
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust src/main.rs
@@ -361,14 +358,7 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
                         input.context.get("source").cloned().unwrap_or(Value::Null),
                     );
                 }
-                worker
-                    .trigger(TriggerRequest {
-                        function_id: input.function_id,
-                        payload,
-                        action: None,
-                        timeout_ms: None,
-                    })
-                    .await
+                worker.call(CallRequest::new(input.function_id, payload)).await
             }
         }),
     );
@@ -397,7 +387,7 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
         if err != nil {
             return nil, err
         }
-        return client.Trigger(ctx, iii.TriggerRequest{
+        return client.Call(ctx, iii.CallRequest{
             FunctionID: input.FunctionID,
             Payload:    forwarded,
             Namespace:  input.Namespace, // stay in the namespace the caller addressed
@@ -408,17 +398,23 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
   </Tab>
 </Tabs>
 
-The `rbac` block also accepts `on_function_registration_function_id`,
-`on_trigger_registration_function_id`, and `on_trigger_type_registration_function_id` hooks. Each
-runs when an untrusted session registers a function, trigger, or trigger type, and can remap the
-registration (return the mapped fields) or throw to deny it.
+The `rbac` block also accepts an `on_function_registration_function_id` hook. It runs when an
+untrusted session registers a function, and can remap the registration (return the mapped fields) or
+throw to deny it. Its input includes the function's `args_format`, `private` and `observable`
+options, and its answer may rewrite them.
 
 `on_observer_registration_function_id` does the same for [observers](../using-iii/observers). It
-receives `{ observer_id, function_id, namespace, args, filters, target_function_id,
-target_namespace, metadata, context }`. An object answer may rewrite `function_id`,
-`target_function_id`, `args`, `filters`, and `metadata`; any other answer, or an error, denies the
-observer with `FORBIDDEN`. Independently of the hook, a session may observe a function only when it
-may invoke both the observed function and the target.
+receives
+`{ observer_id, function_id, namespace, args, filters, target_function_id, target_namespace, metadata, context }`.
+An object answer may rewrite `function_id`, `target_function_id`, `args`, `filters`, and `metadata`;
+any other answer, or an error, denies the observer with `FORBIDDEN`. Independently of the hook, a
+session may observe a function only when its grants (`expose_functions`, `namespaces`) cover both
+the observed function and the target.
+
+A [private function](./observable-functions#private-functions) accepts calls only from the
+connection that hosts it. A call to it from any other session fails with `FORBIDDEN`, whatever the
+session's grants, and an `observe` that names it as the target fails with `FORBIDDEN`. A session
+whose grants cover a private function may observe it.
 
 Calls a worker makes to its own functions normally run in-process
 ([local dispatch](../using-iii/observers#local-dispatch)). For a session with a
