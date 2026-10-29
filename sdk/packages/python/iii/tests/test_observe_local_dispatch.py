@@ -21,7 +21,7 @@ from observe_fake_engine import (
 )
 from pydantic import BaseModel
 
-from iii import CallAction, InvocationError, current_invocation
+from iii import Call, CallAction, InvocationError, current_invocation
 from iii.iii import III
 
 
@@ -553,22 +553,40 @@ def test_on_error_sees_only_failures_with_the_error_and_the_caller(engine: FakeE
     assert "caller" not in item
 
 
-def test_the_reported_input_is_the_handlers_and_the_callers_payload_is_untouched(
-    engine: FakeEngine, connect: Any
+@pytest.mark.parametrize("hook", [False, True])
+def test_the_reported_input_and_metadata_are_the_callers_at_call_start(
+    engine: FakeEngine, connect: Any, hook: bool
 ) -> None:
     client = connect(engine)
+    delivered: list[tuple[Any, Any]] = []
 
-    def mutate(data: dict[str, Any]) -> None:
+    def mutate(data: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
         data["touched"] = True
+        metadata["touched"] = True
+        return data
+
+    if hook:
+
+        @client.on_observer_deliver("local::mutate")
+        def keep(call: Call[Any, Any], observers: Any) -> Any:
+            delivered.append((call.input, call.metadata))
+            return call.output
 
     client.register_function("local::mutate", mutate)
-    _confirm(client, engine, "local::mutate", [observer_info("o", "t", capture=["input"])])
+    _confirm(client, engine, "local::mutate", [observer_info("o", "t", capture=["input", "output", "metadata"])])
     payload = {"n": 1}
-    client.call({"function_id": "local::mutate", "payload": payload})
-    engine.wait_for(lambda: reported_items(engine), what="the report")
-    # the input the handler ran with, as on the routed path; the caller keeps its own value
-    assert reported_items(engine)[0]["input"] == {"n": 1, "touched": True}
-    assert payload == {"n": 1}
+    metadata = {"tenant": "acme"}
+    result = client.call({"function_id": "local::mutate", "payload": payload, "metadata": metadata})
+    # the handler works on its own copies; the caller keeps its values
+    assert result == {"n": 1, "touched": True}
+    assert payload == {"n": 1} and metadata == {"tenant": "acme"}
+    if hook:
+        assert delivered == [({"n": 1}, {"tenant": "acme"})]
+        return
+    [item] = engine.wait_for(lambda: reported_items(engine), what="the report")
+    # the payload and metadata as the caller passed them, apart from what the handler did to its copies
+    assert (item["input"], item["metadata"]) == ({"n": 1}, {"tenant": "acme"})
+    assert item["output"] == {"n": 1, "touched": True} and "output_is_input" not in item
 
 
 def test_reports_nothing_for_a_call_no_filter_matches_and_nothing_for_an_unobserved_function(

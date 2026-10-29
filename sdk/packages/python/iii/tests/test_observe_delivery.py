@@ -736,17 +736,83 @@ def test_a_private_function_passes_input_and_result_by_reference(engine: FakeEng
     assert copied == event and copied is not event and seen[-1] is not event
 
 
+_REF = {"channel_id": "ch-1", "access_key": "k", "direction": "read"}
+
+
 @pytest.mark.parametrize("private", [True, False])
-def test_an_event_source_reports_the_event_once_with_output_is_input(
+def test_the_delivery_sees_channel_refs_as_sent_and_the_handler_gets_readers(
     engine: FakeEngine, connect: Any, private: bool
 ) -> None:
+    from iii.channels import ChannelReader
+
     client = connect(engine)
-    client.register_function("events::on-thing", lambda event: event, private=private)
-    client.register_function("events::other", lambda event: dict(event), private=private)
+    bodies: list[Any] = []
+
+    def put(data: dict[str, Any]) -> dict[str, Any]:
+        bodies.append(data["body"])
+        return {"stored": data["name"]}
+
+    client.register_function("files::put", put, private=private)
+    _confirm(
+        client,
+        engine,
+        "files::put",
+        observer_info("o", "t", capture=["input"], filters={"$and": [{"input.body.direction": {"$eq": "read"}}]}),
+    )
+    client.call({"function_id": "files::put", "payload": {"name": "a.txt", "body": _REF}})
+    engine.deliver(invoke("files::put", {"name": "b.txt", "body": _REF}, "r-ref"))
+    [answer] = engine.wait_for(lambda: answers(engine, "r-ref"), what="the answer")
+    settle(client, engine)
+    assert len(bodies) == 2 and all(isinstance(body, ChannelReader) for body in bodies)
+    # filters see the ref, local or routed; the report carries it
+    [item] = _items(engine, "files::put")
+    assert (item["matched"], item["input"]) == (["o"], {"name": "a.txt", "body": _REF})
+    assert (answer["result"], answer["observed"]) == ({"stored": "b.txt"}, ["o"])
+
+
+def test_a_deliver_hook_forwards_the_call_input_with_its_channel_refs(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    forwarded: list[Any] = []
+
+    def store(frame: dict[str, Any]) -> list[dict[str, Any]] | None:
+        if frame.get("type") != "invokefunction" or frame.get("function_id") != "files::store":
+            return None
+        forwarded.append(frame["data"])
+        return [
+            {
+                "type": "invocationresult",
+                "invocation_id": frame["invocation_id"],
+                "function_id": "files::store",
+                "result": {"ok": True},
+            }
+        ]
+
+    engine.on_frame = store
+
+    @client.on_observer_deliver("files::put")
+    async def forward(call: Call[Any, Any], observers: Any) -> Any:
+        return await client.call_async({"function_id": "files::store", "payload": call.input})
+
+    client.register_function("files::put", lambda data: None)
+    _confirm(client, engine, "files::put")
+    assert client.call({"function_id": "files::put", "payload": {"name": "a.txt", "body": _REF}}) == {"ok": True}
+    engine.deliver(invoke("files::put", {"name": "b.txt", "body": _REF}, "r-forward"))
+    [answer] = engine.wait_for(lambda: answers(engine, "r-forward"), what="the answer")
+    assert answer["result"] == {"ok": True}
+    assert forwarded == [{"name": "a.txt", "body": _REF}, {"name": "b.txt", "body": _REF}]
+
+
+def test_an_event_source_reports_the_event_once_with_output_is_input(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    client.register_function("events::on-thing", lambda event: event, private=True)
+    client.register_function("events::other", lambda event: dict(event), private=True)
+    client.register_function("events::shared", lambda event: event)
     _confirm(client, engine, "events::on-thing", observer_info("o", "t"))
     _confirm(client, engine, "events::other", observer_info("p", "t"))
+    _confirm(client, engine, "events::shared", observer_info("q", "t"))
     client.call({"function_id": "events::on-thing", "payload": {"n": 1}})
     client.call({"function_id": "events::other", "payload": {"n": 2}})
+    client.call({"function_id": "events::shared", "payload": {"n": 4}})
 
     async def from_a_loop() -> None:
         await client.call_async({"function_id": "events::on-thing", "payload": {"n": 3}})
@@ -758,6 +824,9 @@ def test_an_event_source_reports_the_event_once_with_output_is_input(
     assert all(s["output_is_input"] is True and "output" not in s for s in sources)
     [other] = _items(engine, "events::other")
     assert other["output"] == {"n": 2} and "output_is_input" not in other
+    # not private: the report carries the caller's payload, and the handler returned its own copy
+    [shared] = _items(engine, "events::shared")
+    assert shared["input"] == shared["output"] == {"n": 4} and "output_is_input" not in shared
 
 
 def test_an_engine_without_observe_v2_gets_output_not_output_is_input(engine_factory: Any, connect: Any) -> None:

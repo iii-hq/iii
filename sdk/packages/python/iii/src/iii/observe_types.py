@@ -134,7 +134,8 @@ class Call(Generic[InputT, OutputT]):
         function_id: The called function.
         invocation_id: This call's id.
         status: ``"success"`` or ``"error"``.
-        input: What the function was called with.
+        input: What the function was called with, as the caller passed it
+            (channel refs as refs, not readers and writers).
         output: The handler's return value: what observers observe (``None``
             when it raised).
         error: What the handler raised, ``{code, message, stacktrace?}``

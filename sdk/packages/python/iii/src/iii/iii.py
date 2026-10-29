@@ -246,8 +246,9 @@ class _Request:
 @dataclass
 class _LocalInvocation:
     """What a local call works on: its context, the input and metadata its
-    handler and its delivery see, and the active set and deliver hook it
-    started with."""
+    handler sees, those its delivery sees (``call_input``,
+    ``call_metadata``), and the active set and deliver hook it started
+    with."""
 
     ctx: ActiveInvocation
     state: FunctionObservers
@@ -255,8 +256,15 @@ class _LocalInvocation:
     hook: DeliverHook | None
     input: Any = None
     metadata: Any = None
+    call_input: Any = None
+    call_metadata: Any = None
     started_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
     t0: float = field(default_factory=time.perf_counter)
+
+    @property
+    def delivers(self) -> bool:
+        """It has a deliver hook or observers: the call is delivered when it ends."""
+        return self.hook is not None or bool(self.active.observers)
 
 
 def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
@@ -1797,7 +1805,17 @@ class III:
             hook = self._deliver_hooks.get(path)
             if hook is not None or active.observers:
                 await self._invoke_routed_and_deliver(
-                    invocation_id, path, func, state, active, hook, resolved_data, traceparent, baggage, metadata
+                    invocation_id,
+                    path,
+                    func,
+                    state,
+                    active,
+                    hook,
+                    data,
+                    resolved_data,
+                    traceparent,
+                    baggage,
+                    metadata,
                 )
                 return
 
@@ -1856,14 +1874,17 @@ class III:
         active: ActiveSet,
         hook: DeliverHook | None,
         data: Any,
+        resolved_data: Any,
         traceparent: str | None,
         baggage: str | None,
         metadata: dict[str, Any] | None,
     ) -> None:
         """A routed call of an observed function (or one with a deliver hook)
         on an ``observe.v2`` engine: the handler, then its delivery, then the
-        answer. The ids iii's delivery selected ride the answer's
-        ``observed``; a function with a deliver hook lists none."""
+        answer. The handler gets ``resolved_data`` (channel refs as readers
+        and writers); its delivery sees ``data``, the input as it arrived.
+        The ids iii's delivery selected ride the answer's ``observed``; a
+        function with a deliver hook lists none."""
         handler = cast(Callable[..., Awaitable[Any]], func.handler)
         ctx = cast(ActiveInvocation, current_context())
         started_at_ms = time.time() * 1000.0
@@ -1871,11 +1892,11 @@ class III:
         delivery: Delivery | None = None
         answer: InvocationResultMessage
         try:
-            with self._execute_span(path, data, traceparent, baggage) as outcome:
+            with self._execute_span(path, resolved_data, traceparent, baggage) as outcome:
                 output: Any = None
                 handler_error: BaseException | None = None
                 try:
-                    output = await handler(data, metadata)
+                    output = await handler(resolved_data, metadata)
                 except asyncio.CancelledError:
                     raise
                 except BaseException as error:
@@ -2841,10 +2862,13 @@ class III:
     def _local_invocation(self, call: _Request) -> _LocalInvocation:
         """The new invocation context, the values a local call works on, and
         the active set and deliver hook it starts with. A private function's
-        input and metadata pass by reference; any other function's handler
-        gets copies. Its delivery sees the handler's input and metadata, so a
-        handler that returns its input reports it once (``output_is_input``).
-        Raises what copying the payload raises."""
+        input and metadata pass by reference, so its handler that returns its
+        input reports it once (``output_is_input``). Any other function's
+        handler gets copies, and its delivery a copy of the payload and the
+        metadata as the caller passed them, taken here, at call start, when
+        the call is delivered. The delivery sees channel refs as the caller
+        passed them; the handler gets readers and writers. Raises what
+        copying the payload raises."""
         state = cast(FunctionObservers, call.state)
         parent = current_context()
         caller: dict[str, Any] = dict(self._observe_host.identity())
@@ -2854,7 +2878,7 @@ class III:
             grandparent = strip_caller(parent.caller)
             if grandparent:
                 caller["parent"] = grandparent
-        # The handler's own copy of the metadata sidecar.
+        # The handler's metadata sidecar: its own copy, unless the function is private.
         metadata = call.metadata if state.private else _clone_value(call.metadata)
         ctx = ActiveInvocation(
             function_id=call.function_id,
@@ -2868,7 +2892,13 @@ class III:
         local = _LocalInvocation(
             ctx=ctx, state=state, active=state.active, hook=self._deliver_hooks.get(call.function_id)
         )
-        local.input = self._resolve_channels(call.payload if state.private else _clone_value(call.payload))
+        if state.private:
+            local.call_input, local.call_metadata = call.payload, call.metadata
+            local.input = self._resolve_channels(call.payload)
+        else:
+            if local.delivers:
+                local.call_input, local.call_metadata = _clone_value(call.payload), _clone_value(call.metadata)
+            local.input = self._resolve_channels(_clone_value(call.payload))
         local.metadata = metadata
         return local
 
@@ -2877,7 +2907,7 @@ class III:
     ) -> Delivery | None:
         """The delivery of a finished local call, or ``None`` when nothing
         observes it and it has no deliver hook."""
-        if local.hook is None and not local.active.observers:
+        if not local.delivers:
             return None
         return Delivery(
             local.state,
@@ -2885,11 +2915,11 @@ class III:
                 function_id=call.function_id,
                 invocation_id=local.ctx.invocation_id,
                 status="success" if handler_error is None else "error",
-                input=local.input,
+                input=local.call_input,
                 output=output,
                 error=_handler_error_body(handler_error) if handler_error is not None else None,
                 caller=local.ctx.caller,
-                metadata=local.metadata,
+                metadata=local.call_metadata,
             ),
             handler_error,
             local.active,
