@@ -172,7 +172,7 @@ fn route_call(mock: &MockEngine, function_id: &str, invocation_id: &str, input: 
 }
 
 /// The answer to the routed call `invocation_id`.
-async fn answer(mock: &MockEngine, invocation_id: &str) -> Value {
+async fn answer_to(mock: &MockEngine, invocation_id: &str) -> Value {
     frame(mock, |m| {
         m["type"] == "invocationresult" && m["invocation_id"] == invocation_id
     })
@@ -2208,5 +2208,847 @@ async fn a_conflict_during_an_add_hook_undoes_the_add() {
     assert!(acks(&mock).is_empty(), "no ack for it: {:#?}", acks(&mock));
     assert!(!function.is_observed());
     assert!(!hook.held.seen.lock().unwrap().clone().unwrap().is_active());
+    iii.shutdown_async().await;
+}
+
+// ───────────────────────────── hooks at both levels ──────────────────────
+
+type Events = Arc<Mutex<Vec<String>>>;
+
+/// An added hook that records `"{label} added {id}"`, and rejects an
+/// observer whose args name its label under `reject`.
+fn added_hook(
+    events: &Events,
+    label: &'static str,
+) -> impl Fn(
+    Observer,
+)
+    -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ObserveRejection>> + Send>>
++ Send
++ Sync
++ 'static {
+    let events = events.clone();
+    move |obs: Observer| {
+        let events = events.clone();
+        Box::pin(async move {
+            if obs.args_value()["reject"] == label {
+                return Err(ObserveRejection::new("NOPE", format!("{label} says no")));
+            }
+            events
+                .lock()
+                .unwrap()
+                .push(format!("{label} added {}", obs.id()));
+            Ok(())
+        })
+    }
+}
+
+/// A removed hook that records `"{label} removed {id}"`.
+fn removed_hook(
+    events: &Events,
+    label: &'static str,
+) -> impl Fn(Observer) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
++ Send
++ Sync
++ 'static {
+    let events = events.clone();
+    move |obs: Observer| {
+        let events = events.clone();
+        Box::pin(async move {
+            events
+                .lock()
+                .unwrap()
+                .push(format!("{label} removed {}", obs.id()));
+        })
+    }
+}
+
+fn observer_with_args(id: &str, args: Value) -> Value {
+    json!({ "id": id, "args": args, "filters": {}, "target": "t::target",
+            "capture": ["input"], "on": "success" })
+}
+
+fn events_of(events: &Events) -> Vec<String> {
+    events.lock().unwrap().clone()
+}
+
+/// The worker's added hook runs, then the function's; removal runs the
+/// function's, then the worker's. The worker's hooks run for every function
+/// it hosts.
+#[tokio::test]
+async fn hooks_run_at_both_levels_in_order() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let events: Events = Arc::default();
+    iii.on_observer_added(added_hook(&events, "worker"))
+        .on_observer_removed(removed_hook(&events, "worker"))
+        .on_observer_added_for("both::f", added_hook(&events, "function"))
+        .on_observer_removed_for("both::f", removed_hook(&events, "function"));
+    hosted(
+        &mock,
+        &iii,
+        "both::f",
+        echo(),
+        json!([view("o", json!({}), json!(["input"]), "success")]),
+    )
+    .await;
+    acked_for(&mock, "both::f", &[("o", 1)]).await;
+    mock.send_to_client(json!({
+        "type": "observerremoved", "function_id": "both::f", "revision": 2, "id": "o"
+    }));
+    until("the removal", || events_of(&events).len() == 4).await;
+    assert_eq!(
+        events_of(&events),
+        vec![
+            "worker added o",
+            "function added o",
+            "function removed o",
+            "worker removed o"
+        ]
+    );
+
+    events.lock().unwrap().clear();
+    let other = hosted(
+        &mock,
+        &iii,
+        "other::f",
+        echo(),
+        json!([view("p", json!({}), json!(["input"]), "success")]),
+    )
+    .await;
+    acked_for(&mock, "other::f", &[("p", 1)]).await;
+    other.unregister();
+    until("the removal", || events_of(&events).len() == 2).await;
+    assert_eq!(
+        events_of(&events),
+        vec!["worker added p", "worker removed p"]
+    );
+    iii.shutdown_async().await;
+}
+
+/// A rejected observer: the removed hooks of the levels whose added hook
+/// already resolved run, and no other.
+#[tokio::test]
+async fn a_rejection_unwinds_the_levels_that_resolved() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let events: Events = Arc::default();
+    iii.on_observer_added(added_hook(&events, "worker"))
+        .on_observer_removed(removed_hook(&events, "worker"))
+        .on_observer_added_for("un::f", added_hook(&events, "function"))
+        .on_observer_removed_for("un::f", removed_hook(&events, "function"));
+    hosted(&mock, &iii, "un::f", echo(), json!([])).await;
+
+    // the function's hook rejects: the worker's setup is undone
+    mock.send_to_client(added("un::f", 2, "late", json!({ "reject": "function" })));
+    let acks = acked(&mock, &[("late", 2)]).await;
+    assert_eq!(acks[0]["error"]["code"], "NOPE");
+    until("the unwinding", || events_of(&events).len() == 2).await;
+    assert_eq!(
+        events_of(&events),
+        vec!["worker added late", "worker removed late"]
+    );
+
+    // the worker's hook rejects: nothing resolved, nothing to undo
+    events.lock().unwrap().clear();
+    mock.send_to_client(added("un::f", 3, "early", json!({ "reject": "worker" })));
+    let acks = acked(&mock, &[("early", 3)]).await;
+    assert!(
+        acks.iter()
+            .any(|a| a["id"] == "early" && a["error"]["code"] == "NOPE")
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(events_of(&events).is_empty(), "{:?}", events_of(&events));
+    iii.shutdown_async().await;
+}
+
+/// The removed hooks run exactly once for every accepted observer, and never
+/// for one that was not accepted.
+#[tokio::test]
+async fn removal_runs_once_per_accepted_observer() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "once::f", &recorder);
+    let function = hosted(
+        &mock,
+        &iii,
+        "once::f",
+        echo(),
+        json!([
+            observer_with_args("a", json!({})),
+            observer_with_args("r", json!({ "reject": "NOPE" }))
+        ]),
+    )
+    .await;
+    acked(&mock, &[("a", 1), ("r", 1)]).await;
+    let removed = |n: usize| {
+        let recorder = recorder.clone();
+        move || {
+            recorder
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.starts_with("remove"))
+                .count()
+                == n
+        }
+    };
+
+    // an accepted observer, removed twice: once
+    for revision in [2, 3] {
+        mock.send_to_client(json!({
+            "type": "observerremoved", "function_id": "once::f", "revision": revision, "id": "a"
+        }));
+    }
+    // a rejected one: never
+    mock.send_to_client(json!({
+        "type": "observerremoved", "function_id": "once::f", "revision": 4, "id": "r"
+    }));
+    until("a removed", removed(1)).await;
+
+    // rejected late: removed when the engine removes it, and not again on a
+    // replay that no longer lists it
+    mock.send_to_client(added("once::f", 5, "b", json!({})));
+    until("b added", || function.is_observed()).await;
+    observer(&recorder, "b").reject("GONE", "config reloaded");
+    mock.send_to_client(json!({
+        "type": "observerremoved", "function_id": "once::f", "revision": 6, "id": "b"
+    }));
+    until("b removed", removed(2)).await;
+    confirm(&mock, "once::f", 7, true, json!([]));
+
+    // still held when the function is unregistered
+    mock.send_to_client(added("once::f", 8, "c", json!({})));
+    until("c added", || function.is_observed()).await;
+    function.unregister();
+    until("c removed", removed(3)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec![
+            "add a", "reject r", "remove a", "add b", "remove b", "add c", "remove c"
+        ]
+    );
+    iii.shutdown_async().await;
+}
+
+/// Hooks run one at a time per function, and concurrently across functions:
+/// a hook of one function that waits for a hook of another finishes.
+#[tokio::test]
+async fn hooks_of_different_functions_run_concurrently() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let release = Arc::new(tokio::sync::Notify::new());
+    iii.on_observer_added_for("wait::f", {
+        let release = release.clone();
+        move |_obs: Observer| {
+            let release = release.clone();
+            async move {
+                release.notified().await;
+                Ok(())
+            }
+        }
+    });
+    iii.on_observer_added_for("free::f", {
+        let release = release.clone();
+        move |_obs: Observer| {
+            let release = release.clone();
+            async move {
+                release.notify_one();
+                Ok(())
+            }
+        }
+    });
+    hosted(&mock, &iii, "wait::f", echo(), json!([])).await;
+    hosted(&mock, &iii, "free::f", echo(), json!([])).await;
+    mock.send_to_client(added("wait::f", 2, "waits", json!({})));
+    mock.send_to_client(added("free::f", 2, "frees", json!({})));
+    let acks = acked(&mock, &[("waits", 2), ("frees", 2)]).await;
+    assert!(acks.iter().all(|a| a.get("error").is_none()), "{acks:#?}");
+    iii.shutdown_async().await;
+}
+
+/// An added hook set once a function has active observers runs for each of
+/// them; one that fails rejects its observer late.
+#[tokio::test]
+async fn a_hook_set_late_is_caught_up() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let function = hosted(
+        &mock,
+        &iii,
+        "late::f",
+        echo(),
+        json!([
+            observer_with_args("o1", json!({})),
+            observer_with_args("o2", json!({ "reject": "function" }))
+        ]),
+    )
+    .await;
+    acked(&mock, &[("o1", 1), ("o2", 1)]).await;
+    until("both active", || function.observers().len() == 2).await;
+    mock.clear();
+
+    let events: Events = Arc::default();
+    function.on_observer_added(added_hook(&events, "function"));
+    let rejection = frame(&mock, |m| {
+        m["type"] == "observerack" && m["id"] == "o2" && m["error"].is_object()
+    })
+    .await;
+    assert_eq!(rejection["error"]["code"], "NOPE");
+    assert_eq!(rejection["revision"], 1);
+    until("caught up", || events_of(&events).len() == 1).await;
+    assert_eq!(events_of(&events), vec!["function added o1"]);
+    until("o2 out", || function.observers().len() == 1).await;
+    assert_eq!(
+        acks(&mock).len(),
+        1,
+        "an accepted observer is not acked again"
+    );
+    iii.shutdown_async().await;
+}
+
+// ───────────────────────────── keyed delivery ────────────────────────────
+
+/// A `Keyed` index follows adds and removes: a call reaches the observers
+/// filed under its keys, `is_observed_for` answers by key, and filters still
+/// apply.
+#[tokio::test]
+async fn keyed_delivery_follows_adds_and_removes() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "cron");
+    connected(&mock, &iii, true).await;
+    iii.on_observer_deliver_for(
+        "cron::on-tick",
+        Keyed::new(
+            |obs| {
+                obs.args_value()["expression"]
+                    .as_str()
+                    .unwrap_or("*")
+                    .into()
+            },
+            |call| Keys::from(vec![call.input["expression"].as_str().unwrap_or(""), "*"]),
+        ),
+    );
+    let on_tick = hosted(
+        &mock,
+        &iii,
+        "cron::on-tick",
+        echo().private(),
+        json!([
+            observer_with_args("nine", json!({ "expression": "A" })),
+            observer_with_args("five", json!({ "expression": "B" })),
+            observer_with_args("every", json!({}))
+        ]),
+    )
+    .await;
+    acked(&mock, &[("nine", 1), ("five", 1), ("every", 1)]).await;
+    let tick = |expression: &str, n: i64| Call {
+        input: json!({ "expression": expression, "n": n }),
+        ..Call::default()
+    };
+    assert!(on_tick.is_observed_for(&tick("A", 0)));
+    assert!(
+        on_tick.is_observed_for(&tick("C", 0)),
+        "every is filed under *"
+    );
+
+    let delivered = |input: Value| {
+        let iii = iii.clone();
+        let mock = &mock;
+        async move {
+            mock.clear();
+            iii.call(CallRequest::new("cron::on-tick", input))
+                .await
+                .unwrap();
+            let messages = mock
+                .wait_for(|m| !report_items_in(m).is_empty(), WAIT)
+                .await;
+            let mut matched: Vec<String> = report_items_in(&messages)[0]["matched"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_string())
+                .collect();
+            matched.sort();
+            matched
+        }
+    };
+    assert_eq!(
+        delivered(json!({ "expression": "A" })).await,
+        vec!["every", "nine"]
+    );
+    assert_eq!(
+        delivered(json!({ "expression": "B" })).await,
+        vec!["every", "five"]
+    );
+
+    // removed: unfiled
+    mock.send_to_client(json!({
+        "type": "observerremoved", "function_id": "cron::on-tick", "revision": 2, "id": "every"
+    }));
+    until("every unfiled", || !on_tick.is_observed_for(&tick("C", 0))).await;
+    assert_eq!(delivered(json!({ "expression": "A" })).await, vec!["nine"]);
+
+    // added with a filter: filed, and its filter applies
+    mock.send_to_client(json!({
+        "type": "observeradded", "function_id": "cron::on-tick", "namespace": "default",
+        "revision": 3,
+        "observer": { "id": "late-a", "args": { "expression": "A" },
+                      "filters": { "$and": [{ "input.n": { "$gt": 1 } }] },
+                      "target": "t::target", "capture": ["input"], "on": "success" }
+    }));
+    acked(&mock, &[("late-a", 3)]).await;
+    assert_eq!(
+        delivered(json!({ "expression": "A", "n": 1 })).await,
+        vec!["nine"]
+    );
+    assert_eq!(
+        delivered(json!({ "expression": "A", "n": 2 })).await,
+        vec!["late-a", "nine"]
+    );
+    iii.shutdown_async().await;
+}
+
+// ───────────────────────────── routed calls ──────────────────────────────
+
+fn ids(value: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = value
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .map(|id| id.as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids
+}
+
+/// An `observe.v2` host delivers a routed call itself: the matches ride the
+/// answer, and nothing else is sent.
+#[tokio::test]
+async fn a_routed_call_rides_its_answer() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "orders");
+    connected(&mock, &iii, true).await;
+    let expected = fixture("invocationresult-observed.json");
+    let result = expected["result"].clone();
+    let observed = ids(&expected["observed"]);
+    hosted(
+        &mock,
+        &iii,
+        "orders::create",
+        RegisterFunction::new(move |_: Value| Ok::<_, Error>(result.clone())),
+        json!([
+            {
+                "id": observed[0], "args": {}, "target": "t::a", "capture": ["input"],
+                "filters": { "$and": [{ "input.qty": { "$gte": 1 } }] }, "on": "success"
+            },
+            observer_with_args(&observed[1], json!({})),
+            { "id": "on-error", "args": {}, "filters": {}, "target": "t::b",
+              "capture": ["error"], "on": "error" },
+            { "id": "big", "args": {}, "target": "t::c", "capture": ["input"],
+              "filters": { "$and": [{ "input.qty": { "$gte": 100 } }] }, "on": "success" }
+        ]),
+    )
+    .await;
+    acked(&mock, &[("on-error", 1), ("big", 1)]).await;
+    mock.clear();
+
+    let invocation = expected["invocation_id"].as_str().unwrap();
+    route_call(
+        &mock,
+        "orders::create",
+        invocation,
+        json!({ "sku": "A-1", "qty": 2 }),
+    );
+    let answer = answer_to(&mock, invocation).await;
+    for key in ["type", "invocation_id", "function_id", "result"] {
+        assert_eq!(answer[key], expected[key], "{key}: {answer:#}");
+    }
+    assert_eq!(ids(&answer["observed"]), observed);
+    assert!(answer.get("error").is_none());
+
+    // the filters pick: only the unfiltered observer matches qty 0
+    route_call(
+        &mock,
+        "orders::create",
+        "2f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        json!({ "sku": "A-1", "qty": 0 }),
+    );
+    let filtered = answer_to(&mock, "2f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(ids(&filtered["observed"]), vec![observed[1].clone()]);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        frames(&mock, "invocationsobserved").is_empty(),
+        "a match costs no frame"
+    );
+    iii.shutdown_async().await;
+}
+
+/// The error the handler threw rides its answer with the `on: error`
+/// observers it matched.
+#[tokio::test]
+async fn a_routed_error_rides_the_error_answer() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "payments");
+    connected(&mock, &iii, true).await;
+    let expected = fixture("invocationresult-observed-error.json");
+    hosted(
+        &mock,
+        &iii,
+        "payments::charge",
+        RegisterFunction::new(|_: Value| {
+            Err::<Value, _>(Error::Remote {
+                code: "CARD_DECLINED".into(),
+                message: "card declined by issuer".into(),
+                stacktrace: None,
+            })
+        }),
+        json!([
+            { "id": expected["observed"][0], "args": {}, "target": "alerts::payment-failed",
+              "filters": { "$and": [{ "input.amount": { "$gte": 500 } }] },
+              "capture": ["input", "error", "caller"], "on": "error" },
+            observer_with_args("on-success", json!({}))
+        ]),
+    )
+    .await;
+    acked(&mock, &[("on-success", 1)]).await;
+    let invocation = expected["invocation_id"].as_str().unwrap();
+    route_call(
+        &mock,
+        "payments::charge",
+        invocation,
+        json!({ "amount": 1250 }),
+    );
+    let answer = answer_to(&mock, invocation).await;
+    assert_eq!(answer["error"]["code"], expected["error"]["code"]);
+    assert_eq!(answer["error"]["message"], expected["error"]["message"]);
+    assert!(answer.get("result").is_none());
+    assert_eq!(answer["observed"], expected["observed"]);
+    iii.shutdown_async().await;
+}
+
+/// A deliver hook that answers with its own value: the matches go in a report
+/// item carrying the handler's call, sent just ahead of the answer.
+#[tokio::test]
+async fn a_hook_result_sends_the_matches_ahead_of_the_answer() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "orders");
+    connected(&mock, &iii, true).await;
+    let item = fixture("invocationsobserved-routed.json")["items"][0].clone();
+    let expected = fixture("invocationresult-hook-result.json");
+    let handler_output = item["output"].clone();
+    let hook_result = expected["result"].clone();
+    iii.on_observer_deliver_for("orders::submit", {
+        move |call: Call, observers: Vec<Observer>, next: Next| {
+            let hook_result = hook_result.clone();
+            async move {
+                next.run(&call, &observers)?;
+                Ok(hook_result)
+            }
+        }
+    });
+    hosted(
+        &mock,
+        &iii,
+        "orders::submit",
+        RegisterFunction::new(move |_: Value| Ok::<_, Error>(handler_output.clone())),
+        json!([{ "id": item["matched"][0], "args": {}, "filters": {}, "target": "t::a",
+                 "capture": ["input", "output", "caller"], "on": "success" }]),
+    )
+    .await;
+    acked(&mock, &[(item["matched"][0].as_str().unwrap(), 1)]).await;
+    mock.clear();
+
+    let invocation = expected["invocation_id"].as_str().unwrap();
+    route_call(
+        &mock,
+        "orders::submit",
+        invocation,
+        json!({ "sku": "A-1", "qty": 2 }),
+    );
+    let answer = answer_to(&mock, invocation).await;
+    assert_eq!(answer["result"], expected["result"]);
+    assert!(answer.get("observed").is_none(), "{answer:#}");
+    let messages = mock.received_messages();
+    let report_at = messages
+        .iter()
+        .position(is("invocationsobserved"))
+        .expect("the matches are reported");
+    let answer_at = messages.iter().position(is("invocationresult")).unwrap();
+    assert!(report_at < answer_at, "items go ahead of the answer");
+    let sent = &messages[report_at]["items"][0];
+    for key in [
+        "function_id",
+        "namespace",
+        "invocation_id",
+        "matched",
+        "status",
+        "input",
+        "output",
+        "caller",
+        "observe_depth",
+    ] {
+        assert_eq!(sent[key], item[key], "{key}: {sent:#}");
+    }
+    iii.shutdown_async().await;
+}
+
+/// `next` given changed calls sends one item each, and the matches of the
+/// unchanged call ride the answer: items and `observed` coexist.
+#[tokio::test]
+async fn changed_calls_send_their_own_items() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "orders");
+    connected(&mock, &iii, true).await;
+    let fixture_items = fixture("invocationsobserved-routed-items.json")["items"].clone();
+    let output = fixture_items[0]["output"].clone();
+    iii.on_observer_deliver_for(
+        "orders::import",
+        |call: Call, observers: Vec<Observer>, next: Next| async move {
+            let result = next.run(&call, &observers);
+            for order in call.input["orders"].as_array().cloned().unwrap_or_default() {
+                let one = Call {
+                    input: order,
+                    ..call.clone()
+                };
+                next.run(&one, &observers)?;
+            }
+            result
+        },
+    );
+    let warehouse = |id: &Value, warehouse: &str| {
+        json!({ "id": id, "args": {}, "target": "t::w", "capture": ["input", "output", "caller"],
+                "filters": { "$and": [{ "input.warehouse": { "$eq": warehouse } }] },
+                "on": "success" })
+    };
+    hosted(
+        &mock,
+        &iii,
+        "orders::import",
+        RegisterFunction::new(move |_: Value| Ok::<_, Error>(output.clone())),
+        json!([
+            observer_with_args("batch", json!({})),
+            warehouse(&fixture_items[0]["matched"][0], "ams-2"),
+            warehouse(&fixture_items[1]["matched"][0], "fra-1")
+        ]),
+    )
+    .await;
+    acked(&mock, &[("batch", 1)]).await;
+    mock.clear();
+
+    let invocation = fixture_items[0]["invocation_id"].as_str().unwrap();
+    let orders: Vec<Value> = fixture_items
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["input"].clone())
+        .collect();
+    route_call(
+        &mock,
+        "orders::import",
+        invocation,
+        json!({ "orders": orders }),
+    );
+    let answer = answer_to(&mock, invocation).await;
+    assert_eq!(answer["result"], fixture_items[0]["output"]);
+    assert_eq!(
+        answer["observed"],
+        json!(["batch"]),
+        "the unchanged call's match"
+    );
+    let items = report_items_in(&mock.received_messages());
+    assert_eq!(items.len(), 2, "{items:#?}");
+    for (sent, expected) in items.iter().zip(fixture_items.as_array().unwrap()) {
+        for key in ["invocation_id", "matched", "input", "output"] {
+            assert_eq!(sent[key], expected[key], "{key}: {sent:#}");
+        }
+        // the call's caller as it arrived, without the worker the engine stamps
+        assert_eq!(
+            sent["caller"],
+            json!({ "function_id": "checkout::confirm",
+                    "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20" })
+        );
+    }
+    iii.shutdown_async().await;
+}
+
+// ──────────────────── engines without observe.v2, private, standby ───────
+
+/// A 0.25 engine: functions that need `observe.v2` stay unregistered, the
+/// engine evaluates routed calls, and a report of a source carries `output`.
+#[tokio::test]
+async fn an_engine_without_observe_v2_evaluates_routed_calls() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "database");
+    frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+    hello_with(
+        &mock,
+        fixture("workerregistered-v1.json")["features"].clone(),
+    );
+    let held = iii.register_function("v1::private", echo().private());
+    let plain = hosted(
+        &mock,
+        &iii,
+        "v1::source",
+        echo(),
+        json!([{ "id": "o", "args": {}, "filters": {}, "target": "t::a",
+                 "capture": ["input", "output"], "on": "success" }]),
+    )
+    .await;
+    acked(&mock, &[("o", 1)]).await;
+    until("observed", || plain.is_observed()).await;
+
+    // a routed call: the engine evaluates it, the answer has no `observed`
+    route_call(
+        &mock,
+        "v1::source",
+        "3f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        json!({ "n": 1 }),
+    );
+    let answer = answer_to(&mock, "3f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert!(answer.get("observed").is_none(), "{answer:#}");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(frames(&mock, "invocationsobserved").is_empty());
+
+    // a local call of a source: reported with its output
+    iii.call(CallRequest::new("v1::source", json!({ "n": 2 })))
+        .await
+        .unwrap();
+    let report = frame(&mock, is("invocationsobserved")).await;
+    let item = &report["items"][0];
+    assert_eq!(item["input"], json!({ "n": 2 }));
+    assert_eq!(item["output"], json!({ "n": 2 }));
+    assert!(item.get("output_is_input").is_none());
+
+    // the observe API keeps working
+    let handle = iii.observe("v1::source", "t::a");
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == handle.id()).await;
+    assert!(
+        frames(&mock, "registerfunction")
+            .iter()
+            .all(|m| m["id"] != "v1::private"),
+        "a private function needs observe.v2"
+    );
+    assert!(!held.local_dispatch_active());
+    iii.shutdown_async().await;
+}
+
+/// The registration of a private source, as the fixture pins it: top-level
+/// `args_format` and `private`, no `observe` object, sent once this
+/// connection's engine advertised `observe.v2`.
+#[tokio::test]
+async fn a_private_source_registers_with_the_fixture_shape() {
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct CronArgs {
+        expression: String,
+    }
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "cron");
+    let expected = fixture("registerfunction-private.json");
+    iii.register_function(
+        "cron::on-tick",
+        RegisterFunction::new(|tick: Value| Ok::<_, Error>(tick))
+            .description(expected["description"].as_str().unwrap())
+            .request_format(expected["request_format"].clone())
+            .response_format(expected["response_format"].clone())
+            .args_format_value(expected["args_format"].clone())
+            .private(),
+    );
+    iii.register_function("vault::read-secret", echo().observable(false));
+    frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        frames(&mock, "registerfunction").is_empty(),
+        "held for the hello"
+    );
+    hello(&mock, true);
+    let sent = frame(&mock, registered("cron::on-tick")).await;
+    assert_eq!(sent, expected);
+    let closed = frame(&mock, registered("vault::read-secret")).await;
+    assert_eq!(closed["observable"], false);
+    assert!(closed.get("observe").is_none());
+
+    // the generated schema is a JSON Schema of the args
+    let generated = iii.register_function(
+        "cron::typed",
+        RegisterFunction::new(|tick: Value| Ok::<_, Error>(tick)).args_format::<CronArgs>(),
+    );
+    let sent = frame(&mock, registered("cron::typed")).await;
+    assert_eq!(sent["args_format"]["required"], json!(["expression"]));
+    assert_eq!(sent["args_format"]["additionalProperties"], false);
+    generated.unregister();
+    iii.shutdown_async().await;
+}
+
+/// A standby registers again about every second while another host holds
+/// the id, and runs its hooks once the engine confirms it.
+#[tokio::test]
+async fn a_standby_takes_over_when_the_host_leaves() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "cron-2");
+    connected(&mock, &iii, true).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "solo::f", &recorder);
+    let function = iii.register_function("solo::f", echo().standby());
+    let plain = iii.register_function("solo::plain", echo());
+    frame(&mock, registered("solo::f")).await;
+    frame(&mock, registered("solo::plain")).await;
+    let conflict = |id: &str| {
+        json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
+                "namespace": "default", "function_id": id, "owner_worker_id": "w-host" })
+    };
+    mock.clear();
+    let started = Instant::now();
+    mock.send_to_client(conflict("solo::f"));
+    mock.send_to_client(conflict("solo::plain"));
+    frame(&mock, registered("solo::f")).await;
+    let first = started.elapsed();
+    assert!(
+        first >= Duration::from_millis(700),
+        "about a second later: {first:?}"
+    );
+    mock.clear();
+    mock.send_to_client(conflict("solo::f"));
+    frame(&mock, registered("solo::f")).await;
+
+    // the host left: the engine accepts it, with the function's observers
+    confirm(
+        &mock,
+        "solo::f",
+        1,
+        true,
+        json!([view("kept", json!({}), json!(["input"]), "success")]),
+    );
+    acked(&mock, &[("kept", 1)]).await;
+    until("taken over", || function.local_dispatch_active()).await;
+    assert_eq!(*recorder.events.lock().unwrap(), vec!["add kept"]);
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert_eq!(
+        frames(&mock, "registerfunction")
+            .iter()
+            .filter(|m| m["id"] == "solo::f")
+            .count(),
+        1,
+        "no retry once confirmed"
+    );
+    assert!(
+        frames(&mock, "registerfunction")
+            .iter()
+            .all(|m| m["id"] != "solo::plain"),
+        "only a standby registers again"
+    );
+    assert!(!plain.local_dispatch_active());
     iii.shutdown_async().await;
 }

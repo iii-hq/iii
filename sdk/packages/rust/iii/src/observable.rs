@@ -1475,6 +1475,197 @@ mod tests {
         });
     }
 
+    /// Records the warnings of the current thread.
+    #[derive(Clone, Default)]
+    struct Warnings(Arc<Mutex<Vec<String>>>);
+
+    impl tracing::Subscriber for Warnings {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::WARN
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Line(String);
+            impl tracing::field::Visit for Line {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+                    use std::fmt::Write;
+                    let _ = write!(self.0, "{}={:?} ", field.name(), value);
+                }
+            }
+            let mut line = Line(String::new());
+            event.record(&mut line);
+            self.0.lock().unwrap().push(line.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// An added hook set once observers are active runs for each of them,
+    /// with one warning naming the function and how many.
+    #[tokio::test]
+    async fn a_late_hook_is_caught_up_with_one_warning() {
+        let warnings = Warnings::default();
+        let _capture = tracing::subscriber::set_default(warnings.clone());
+        let (iii, mut rx) = client();
+        let function = iii.register_function("late::f", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "late::f", "revision": 1, "local_dispatch": true,
+                    "observers": [{ "id": "o1", "target": "t", "filters": {} },
+                                  { "id": "o2", "target": "t", "filters": {} }] }),
+        );
+        next_ack(&mut rx).await;
+        next_ack(&mut rx).await;
+        while function.observers().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let ran = Arc::new(AtomicUsize::new(0));
+        function.on_observer_added({
+            let ran = ran.clone();
+            move |_obs: Observer| {
+                let ran = ran.clone();
+                async move {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        });
+        while ran.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+        let lines = warnings.0.lock().unwrap().clone();
+        let caught: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("were active before its on_observer_added hook was set"))
+            .collect();
+        assert_eq!(caught.len(), 1, "{lines:#?}");
+        assert!(
+            caught[0].contains("2 observer(s) of late::f"),
+            "{}",
+            caught[0]
+        );
+
+        // cleared: nothing runs again
+        function.clear_observer_added();
+        tokio::task::yield_now().await;
+        assert_eq!(ran.load(Ordering::SeqCst), 2);
+    }
+
+    fn deliver_and_keep_next(
+        kept: Arc<Mutex<Option<(Call, Vec<Observer>, crate::Next)>>>,
+    ) -> impl crate::DeliverHook {
+        move |call: Call, observers: Vec<Observer>, next: crate::Next| {
+            let kept = kept.clone();
+            async move {
+                // twice: each observer is delivered at most once per call
+                next.run(&call, &observers)?;
+                let result = next.run(&call, &observers);
+                *kept.lock().unwrap() = Some((call, observers, next));
+                result
+            }
+        }
+    }
+
+    fn v2_hello(iii: &IIIClient) {
+        feed(
+            iii,
+            json!({ "type": "workerregistered", "worker_id": "w",
+                    "features": ["observe.v1", "observe.v2", "local-dispatch.v1"] }),
+        );
+    }
+
+    async fn next_frame(rx: &mut UnboundedReceiver<Outbound>, ty: &str) -> Value {
+        loop {
+            let Some(Outbound::Message(envelope)) = rx.recv().await else {
+                panic!("sender gone");
+            };
+            let value: Value = serde_json::from_str(envelope.payload.as_str()).unwrap();
+            if value["type"] == ty {
+                return value;
+            }
+        }
+    }
+
+    /// A routed call delivers each observer once, however many times `next`
+    /// runs; a `next` after the hook settled delivers nothing and counts as
+    /// `LATE_DELIVERY`.
+    #[tokio::test]
+    async fn a_next_after_the_hook_settled_is_late() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let kept = Arc::new(Mutex::new(None));
+        iii.on_observer_deliver_for("late::routed", deliver_and_keep_next(kept.clone()));
+        let function = iii.register_function("late::routed", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "late::routed", "revision": 1,
+                    "local_dispatch": true,
+                    "observers": [{ "id": "o", "target": "t", "filters": {} }] }),
+        );
+        next_ack(&mut rx).await;
+        while !function.is_observed() {
+            tokio::task::yield_now().await;
+        }
+        feed(
+            &iii,
+            json!({ "type": "invokefunction", "invocation_id": "11111111-2222-4333-8444-555555555555",
+                    "function_id": "late::routed", "data": { "n": 1 } }),
+        );
+        let answer = next_frame(&mut rx, "invocationresult").await;
+        assert_eq!(answer["result"], json!({ "n": 1 }));
+        assert_eq!(answer["observed"], json!(["o"]), "once");
+
+        let (call, observers, next) = kept.lock().unwrap().take().unwrap();
+        assert_eq!(next.run(&call, &observers).unwrap(), json!({ "n": 1 }));
+        assert_eq!(
+            iii.reporter().take_drops(),
+            vec![("late::routed".to_string(), "LATE_DELIVERY", 1)]
+        );
+        assert!(sent(&mut rx).is_empty(), "a late next sends nothing");
+    }
+
+    /// The report items of a routed call whose connection is gone are not
+    /// sent: they count as `DISCONNECTED`.
+    #[tokio::test]
+    async fn routed_items_of_a_closed_connection_are_disconnected() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        iii.on_observer_deliver_for(
+            "gone::f",
+            |call: Call, observers: Vec<Observer>, next: crate::Next| async move {
+                next.run(&call, &observers)?;
+                Ok(json!("the hook's own answer"))
+            },
+        );
+        let function = iii.register_function("gone::f", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "gone::f", "revision": 1,
+                    "local_dispatch": true,
+                    "observers": [{ "id": "o", "target": "t", "filters": {} }] }),
+        );
+        next_ack(&mut rx).await;
+        while !function.is_observed() {
+            tokio::task::yield_now().await;
+        }
+        feed(
+            &iii,
+            json!({ "type": "invokefunction", "invocation_id": "21111111-2222-4333-8444-555555555555",
+                    "function_id": "gone::f", "data": { "n": 1 } }),
+        );
+        let answer = next_frame(&mut rx, "invocationresult").await;
+        assert_eq!(answer["result"], "the hook's own answer");
+        assert!(answer.get("observed").is_none());
+        assert_eq!(
+            iii.reporter().take_drops(),
+            vec![("gone::f".to_string(), "DISCONNECTED", 1)]
+        );
+    }
+
     /// A peer that stops reading: flushed frames wait in the outbound channel,
     /// and their bytes keep counting against the 8 MiB bound.
     #[tokio::test]
