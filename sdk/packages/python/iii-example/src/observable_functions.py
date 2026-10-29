@@ -2,14 +2,14 @@
 
 Shows three patterns:
 1. An event source with args: a webhook function whose observers name the path
-   they receive, set up by ``on_observer_added`` and delivered by key
+   they receive, set up by ``on_observer_added`` and matched by key
 2. A source that sets something up per observer: a schedule per ``at``
 3. Observers of the built-in sources (cron, state, pubsub)
 """
 
 from typing import Any
 
-from iii import IIIClient, Observer, ObserveRejection, keyed
+from iii import IIIClient, Observer, ObserveRejection
 from pydantic import BaseModel, Field
 
 # ── Webhook source ───────────────────────────────────────────────────────
@@ -59,9 +59,10 @@ def setup(iii: IIIClient) -> None:
         print(f"[webhook] {obs.target} no longer receives {obs.args['path']}")
 
     # each webhook reaches the observers of its path
-    iii.on_observer_deliver(
+    iii.on_observer_match(
         "example::on-webhook",
-        keyed(observer=lambda obs: obs.args["path"], call=lambda call: call.input["path"]),
+        observer=lambda obs: obs.args["path"],
+        call=lambda call: call.input["path"],
     )
 
     # an event source returns the event it is called with

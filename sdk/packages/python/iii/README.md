@@ -108,20 +108,27 @@ observer.dispose()
 
 ### Hosting Observable Functions
 
-The worker that hosts a function decides what observing it means with three
-hooks. `on_observer_added` runs before an observer is accepted (raise
-`ObserveRejection` to reject it), `on_observer_removed` runs once for each
-accepted observer when it goes, and `on_observer_deliver` decides which
-observers get each call and what the caller gets back. The first two can be
-set for one function or for every function the worker hosts; both levels run,
-the worker's first when an observer is added and last when it is removed.
+The worker that hosts a function decides what observing it means with four
+hooks. Each one overrides something iii does by default:
+
+| Hook | What iii does by default |
+|---|---|
+| `on_observer_added(obs)` | accepts the observer: it becomes active and receives the function's calls. Raise `ObserveRejection` to reject it. |
+| `on_observer_removed(obs)` | stops delivering to the observer and forgets it |
+| `on_observer_match` | every observer wants every call |
+| `on_observer_deliver(call, observers)` | runs the target of every matching observer whose `on` and filters match the call, and gives the caller the handler's return value |
+
+`on_observer_added` and `on_observer_removed` can be set for one function or
+for every function the worker hosts; both levels run, the worker's first when
+an observer is added and last when it is removed. `on_observer_match` and
+`on_observer_deliver` are set per function.
 
 The methods work as decorators and as plain calls, on the client by function
 id or on the `FunctionRef` that `register_function` returns. Set hooks by id
 before registering the function so they run for every observer.
 
 ```python
-from iii import Observer, ObserveRejection, keyed
+from iii import Call, Observer, ObserveRejection
 
 @iii.on_observer_added("cron::on-tick")
 def start(obs: Observer) -> None:
@@ -133,11 +140,10 @@ def start(obs: Observer) -> None:
 def stop(obs: Observer) -> None:
     scheduler.release(obs.args["expression"])
 
-# each tick reaches the observers of its expression
-iii.on_observer_deliver("cron::on-tick", keyed(
-    observer=lambda obs: obs.args["expression"],
-    call=lambda call: call.input["expression"],
-))
+# an observer of expression X gets the ticks of expression X
+@iii.on_observer_match("cron::on-tick")
+def same_expression(obs: Observer, call: Call) -> bool:
+    return obs.args["expression"] == call.input["expression"]
 
 iii.register_function(
     "cron::on-tick",
@@ -151,14 +157,33 @@ iii.register_function(
 iii.call({"function_id": "cron::on-tick", "payload": {"expression": "*/5 * * * * *", "scheduled_time": now}})
 ```
 
-A deliver hook receives the `Call`, the function's active observers and
-`next`, iii's delivery of a call to the observers passed. What the hook
-returns is what the caller gets back, so a function can route each call to one
-observer and answer with its target's result:
+`on_observer_match` takes a predicate `(obs, call) -> bool`, asked once per
+active observer per call, or `observer=` and `call=` key functions for a
+function with many observers. An observer wants a call when they share a key;
+the SDK computes an observer's keys once, when it is accepted, and keeps an
+index, so a call costs one lookup per key:
+
+```python
+iii.on_observer_match(
+    "database::on-row-changed",
+    observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",  # what this observer listens for
+    call=lambda call: f"{call.input['table']}|{call.input['op']}",  # what this call is
+)
+```
+
+iii's delivery applies the `on` and filters of the observers that matched.
+`iii.is_observed(function_id, call)` tells a source whether a call would reach
+anyone (on a function matched by keys, by looking up the call's keys), and
+`iii.observers(function_id)` lists the active observers.
+
+A function whose observers' answers matter, or whose calls each go to one
+observer, delivers its calls itself. Its `on_observer_deliver` receives the
+`Call` and the observers that matched it, calls through an observer, and
+returns what the caller gets back. iii delivers nothing for that function:
 
 ```python
 @iii.on_observer_deliver("http::on-request")
-async def route(call, observers, next):
+async def route(call, observers):
     obs = routes.match(call.input)
     if obs is None:
         return {"status_code": 404}
@@ -166,10 +191,6 @@ async def route(call, observers, next):
         return {"status_code": 422}
     return await iii.call_async({"observer": obs, "payload": call.input})
 ```
-
-`next` is awaitable in an async hook and returns directly in a sync one.
-`iii.is_observed(function_id, call)` tells a source whether a call would reach
-anyone, and `iii.observers(function_id)` lists the active observers.
 
 Inside any handler, `iii.current_invocation()` returns the running invocation
 (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`). Sync
