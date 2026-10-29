@@ -550,7 +550,7 @@ wheels = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "../helpers" }
 dependencies = [
     { name = "httpx" },
@@ -579,7 +579,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "iii-sdk"
-version = "0.25.0"
+version = "0.26.0"
 source = { editable = "." }
 dependencies = [
     { name = "iii-helpers" },

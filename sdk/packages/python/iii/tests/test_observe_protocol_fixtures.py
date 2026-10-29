@@ -443,36 +443,6 @@ def test_invocationresult_observed_json_routed_call_matches_ride_the_answer(engi
     assert reported_items(engine) == []  # no extra frame
 
 
-def test_invocationresult_hook_result_json_a_deliver_hook_answers_with_its_value_and_reports_nothing(
-    engine: FakeEngine, connect: Any
-) -> None:
-    expected = fixture("invocationresult-hook-result.json")
-    output = {"order_id": "ord_1004", "sku": "A-1", "qty": 2, "total": 1250, "warehouse": "ams-2"}
-    client = connect(engine)
-    client.register_function("orders::submit", lambda order: output)
-
-    @client.on_observer_deliver("orders::submit")
-    def accept(call: Any, observers: Any) -> dict[str, Any]:
-        return {"order_id": call.output["order_id"], "status": "accepted"}
-
-    _confirm(client, engine, "orders::submit", [observer_info("c6ccda45-4a35-461a-a9c4-a318eec7c36a", "t")])
-    engine.clear()
-    engine.deliver(
-        invoke(
-            "orders::submit",
-            {"sku": "A-1", "qty": 2},
-            expected["invocation_id"],
-            traceparent=expected["traceparent"],
-            caller={"worker_id": "w-1", "worker_name": "checkout"},
-        )
-    )
-    [answer] = engine.wait_for(lambda: answers(engine, expected["invocation_id"]), what="the answer")
-    assert same_trace(answer, expected) == expected  # the hook's value, no `observed`
-    settle(client, engine)
-    # a routed call is reported only through its answer, and a function with a deliver hook lists nothing
-    assert engine.frames_of("invocationsobserved") == []
-
-
 def test_invocationresult_observed_error_json_shape_an_error_answer_keeps_observed(
     engine: FakeEngine, connect: Any
 ) -> None:

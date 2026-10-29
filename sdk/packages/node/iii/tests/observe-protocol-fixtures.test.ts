@@ -85,7 +85,6 @@ const HANDLED = {
     'invokefunction-workers-register.json',
     'invocationresult-observed.json',
     'invocationresult-observed-error.json',
-    'invocationresult-hook-result.json',
   ],
   engineToWorker: [
     'workerregistered.json',
@@ -111,16 +110,6 @@ const HANDLED = {
   /** The 0.25 `observe` object: no v2 SDK builds or decodes it (README, engine-only). */
   engineOnly: ['registerfunction-v1-owner.json', 'registerfunction-v1-not-observable.json'],
 }
-
-/**
- * Report items for routed calls, which observe v2 has none of (decision 38,
- * acceptance E11): no SDK builds them, and they leave the fixture set. The
- * coverage test accepts them, present or not.
- */
-const OBSOLETE: ReadonlySet<string> = new Set([
-  'invocationsobserved-routed.json',
-  'invocationsobserved-routed-items.json',
-])
 
 describe('worker → engine: what the SDK builds equals the fixture', () => {
   it.each([
@@ -301,28 +290,6 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
       items: [{ ...want, invocation_id: item.invocation_id, traceparent: item.traceparent, baggage: item.baggage }],
     })
     expect(item).not.toHaveProperty('output')
-  })
-
-  it('invocationresult-hook-result.json (a routed call answered by onObserverDeliver: its value, no observed)', async () => {
-    const expected = fixture('invocationresult-hook-result.json')
-    const { sdk, socket } = connect({ workerName: 'orders' })
-    sdk
-      .registerFunction('orders::submit', (order: Json) => ({ order_id: 'ord_1004', sku: order.sku, total: 1250 }))
-      .onObserverDeliver((call) => ({ order_id: call.output?.order_id, status: 'accepted' }))
-    socket.deliver(
-      fake.functionRegistered('orders::submit', [fake.observerInfo('c6ccda45-4a35-461a-a9c4-a318eec7c36a', 'w::r')]),
-    )
-    await fake.settle()
-    socket.clear()
-    socket.deliver(
-      fake.invokeFunction(
-        'orders::submit',
-        { sku: 'A-1', qty: 2 },
-        { invocation_id: expected.invocation_id as string, traceparent: expected.traceparent as string },
-      ),
-    )
-    await fake.settle()
-    expect(socket.frames()).toEqual([expected])
   })
 
   it("invocationresult-observed.json (iii's delivery of a routed call: the ids ride the answer)", async () => {
@@ -598,7 +565,7 @@ describe('fixture coverage', () => {
   it('every fixture file is exercised above', () => {
     const files = readdirSync(DIR).filter((f) => f.endsWith('.json'))
     const handled = new Set([...HANDLED.workerToEngine, ...HANDLED.engineToWorker, ...HANDLED.engineOnly])
-    expect(files.filter((f) => !handled.has(f) && !OBSOLETE.has(f))).toEqual([])
+    expect(files.filter((f) => !handled.has(f))).toEqual([])
     expect([...handled].filter((f) => !files.includes(f))).toEqual([])
   })
 })

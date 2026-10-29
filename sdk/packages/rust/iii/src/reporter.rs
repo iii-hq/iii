@@ -1566,7 +1566,6 @@ mod tests {
             include_str!(
                 "../../../../fixtures/protocol/observe/invocationsobserved-event-source.json"
             ),
-            include_str!("../../../../fixtures/protocol/observe/invocationsobserved-routed.json"),
         ];
         let expected: Vec<Value> = fixtures
             .iter()

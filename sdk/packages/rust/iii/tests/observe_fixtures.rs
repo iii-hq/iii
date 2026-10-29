@@ -359,15 +359,6 @@ fn engine_to_worker_fixtures_carry_their_meaning() {
     assert!(result.is_none());
     assert_eq!(error.unwrap().code, "CARD_DECLINED");
     assert_eq!(observed, vec!["c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60"]);
-    let Message::InvocationResult { observed, .. } =
-        decode(&fixture("invocationresult-hook-result.json"))
-    else {
-        panic!()
-    };
-    assert!(
-        observed.is_empty(),
-        "a hook's own result carries no observed"
-    );
 
     let Message::InvokeFunction { activation, .. } =
         decode(&fixture("invokefunction-observer-call-forwarded.json"))
