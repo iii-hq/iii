@@ -758,7 +758,7 @@ impl IIIClient {
         if keyed {
             entry.enqueue(self, HookOp::CatchUp(CatchUp::Index));
         }
-        self.withdraw_unsupported(&entry);
+        self.reconcile_registration(&entry);
     }
 
     /// The function entries a hook set for `function_id` (every function

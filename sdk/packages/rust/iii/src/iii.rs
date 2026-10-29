@@ -2284,22 +2284,34 @@ impl IIIClient {
         }
     }
 
-    /// A function that needs `observe.v2` (a deliver hook was just set on it)
-    /// and whose registration went to an engine without it is unregistered
-    /// there.
-    pub(crate) fn withdraw_unsupported(&self, entry: &FunctionEntry) {
+    /// A deliver hook was just set on a registered function, or removed:
+    /// one that needs `observe.v2` now and went to an engine without it is
+    /// unregistered there, and one that needs it no longer is registered.
+    /// Until this connection's engine said what it supports, its
+    /// `workerregistered` decides.
+    pub(crate) fn reconcile_registration(&self, entry: &Arc<FunctionEntry>) {
         let features = self.inner.engine_features.load(Ordering::SeqCst);
-        if !entry.needs_v2()
-            || matches!(features, ENGINE_FEATURES_UNKNOWN | ENGINE_WITH_OBSERVE_V2)
-            || !entry.sent_on(self.connection_epoch())
-        {
+        if features == ENGINE_FEATURES_UNKNOWN {
             return;
         }
-        entry.unmark_sent();
-        let _ = self.send_message(Message::UnregisterFunction {
-            id: entry.id.clone(),
-        });
-        self.warn_unsupported(vec![entry.id.clone()]);
+        if entry.sent_on(self.connection_epoch()) {
+            if entry.needs_v2() && features != ENGINE_WITH_OBSERVE_V2 {
+                entry.unmark_sent();
+                let _ = self.send_message(Message::UnregisterFunction {
+                    id: entry.id.clone(),
+                });
+                self.warn_unsupported(vec![entry.id.clone()]);
+            }
+            return;
+        }
+        let message = match self.functions().get(&entry.id) {
+            Some(data) if Arc::ptr_eq(&data.observe, entry) => data.message.to_message(),
+            _ => return,
+        };
+        match Self::prepare_envelope(&message) {
+            Ok(envelope) => self.send_registration(entry, envelope),
+            Err(error) => tracing::warn!(error = %error, "registration rejected locally"),
+        }
     }
 
     /// Register a function with the engine.
@@ -3853,12 +3865,13 @@ impl IIIClient {
                 ObserveSupport::notify(tell, observe);
             }
         }
-        let unregistered = {
-            let functions = self.functions();
-            self.inner
-                .hooks
-                .take_unregistered(|id| functions.contains_key(id))
-        };
+        // The registered ids first: the hook store is never locked under
+        // the functions lock (a registration takes them the other way).
+        let registered: HashSet<String> = self.functions().keys().cloned().collect();
+        let unregistered = self
+            .inner
+            .hooks
+            .take_unregistered(|id| registered.contains(id));
         for id in unregistered {
             tracing::warn!(
                 function_id = %id,

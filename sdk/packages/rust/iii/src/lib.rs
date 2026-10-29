@@ -283,7 +283,7 @@ fn _ensure_errors_submodule_path() {}
 // ---------------------------------------------------------------------------
 // 0.20 clean break: the deprecated crate-root re-exports and renamed aliases
 // are removed. The relocated types live under their canonical submodule paths
-// (`iii_sdk::{trigger,channel,runtime}`) and the renamed types use their new
+// (`iii_sdk::{channel,runtime}`) and the renamed types use their new
 // names (`IIIClient`, `Error`, `TelemetryOptions`).
 // ---------------------------------------------------------------------------
 

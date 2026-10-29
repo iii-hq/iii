@@ -272,7 +272,8 @@ impl Observer {
     /// status and its filters match the call. A deliver hook that calls
     /// targets itself applies them with this.
     pub fn matches(&self, call: &Call) -> bool {
-        if !self.accepts(call.status == InvocationStatus::Success) {
+        let success = call.status == InvocationStatus::Success;
+        if !self.accepts(success) {
             return false;
         }
         let filter = &self.inner.filter;
@@ -282,7 +283,7 @@ impl Observer {
         let parts = DocParts::of(filter.roots(), call.error.as_ref(), call.caller.as_ref());
         filter.matches(&parts.doc(
             Some(&call.input),
-            call.output.as_ref(),
+            call.output.as_ref().filter(|_| success),
             call.metadata.as_ref(),
         ))
     }
@@ -1431,6 +1432,19 @@ mod tests {
         assert_eq!(
             frames[0],
             json!({ "type": "unregisterfunction", "id": "o::plain" })
+        );
+        // and registered again once it needs observe.v2 no longer
+        iii.clear_observer_deliver_for("o::plain");
+        assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
+        iii.on_observer_deliver_for(
+            "o::plain",
+            |call: Call, observers: Vec<Observer>, next: crate::Next| async move {
+                next.run(&call, &observers)
+            },
+        );
+        assert_eq!(
+            sent(&mut rx),
+            vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
         );
 
         // an engine with observe.v2 registers them all
