@@ -94,14 +94,9 @@ differ, this file wins, and the spec is updated to match.
     use.
 
 36. **What routed observers observe.** The engine takes a routed call's
-    `output` from `invocationresult.result`. A host lists ids in `observed`
-    only when that result is the handler's output and `next` was given the
-    call unchanged. Unchanged means the same `input`, `status`, `output`,
-    `error`, `caller` and `metadata`, compared field by field: by identity in
-    Node, browser and Python (a copied `Call` whose fields hold the same
-    references is unchanged), by serialized bytes in Rust and Go. Otherwise it reports those matches in an
-    `invocationsobserved` item for the same `invocation_id`, carrying the call
-    `next` was given. The engine strips `observed` before forwarding a result,
+    `output` from `invocationresult.result`, which is the handler's return
+    value whenever iii delivers (a function with `onObserverDeliver` lists no
+    `observed` ids). The engine strips `observed` before forwarding a result,
     and activates the `observed` ids on every routed answer from an
     `observe.v2` host, including a target's answer to an activation.
 37. **0.25 `observe` object.** Decoded from any connection:
@@ -111,22 +106,14 @@ differ, this file wins, and the spec is updated to match.
     false`; `delivery: owner` or an unknown value is refused with
     `UNSUPPORTED`.
 
-38. **Caller on host-reported routed items.** For an `invocationsobserved`
-    item that reports a routed invocation (decision 36), the engine stamps
-    `caller.worker_id` and `caller.worker_name` from the caller it recorded
-    when it forwarded the call: exactly the forwarded `worker_id` and
-    `worker_name`, leaving out `worker_id` when the forwarded caller had none
-    (an activation's caller). The engine holds a routed call from forwarding
-    until it processes the call's `invocationresult`. The host sends the items
-    before the answer (decision 20); an item whose `invocation_id` the engine
-    does not hold, and that is not a local call of the reporting host, is
-    dropped as `INVALID_REPORT`.
+38. **No host reports for routed calls.** A host reports matches of a routed
+    call only through `invocationresult.observed`; an `invocationsobserved`
+    item always reports a local call of the reporting host. The engine drops an
+    item whose `invocation_id` is a routed call it forwarded to that host, as
+    `INVALID_REPORT`.
 39. **Errors on routed answers.** `observed` may ride an `invocationresult`
-    that carries `error` when that error is the one the handler threw (iii's
-    delivery rethrows it, or the hook rethrows it unchanged). The envelope's
-    `status` and `error` come from the answer. When the hook turns a handler
-    error into a result or a result into an error, the host reports the
-    matches as decision 36 says.
+    that carries `error`: iii's delivery rethrows the handler's error, and the
+    envelope's `status` and `error` come from the answer.
 40. **`_caller_worker_id`.** The engine removes the top-level
     `_caller_worker_id` from every observed `input` and `output` it delivers:
     the envelope's fields, and the bare value under `deliver: input` or
@@ -144,6 +131,14 @@ differ, this file wins, and the spec is updated to match.
 44. **Re-acks.** As in 0.25: an SDK re-acks every `functionregistered` entry,
     runs `onObserverAdded` only for observers it does not already hold, and
     treats an observer whose `args` changed as removed and then added.
+
+45. **`onObserverMatch`.** Per function. A predicate runs once per active
+    observer per call, before filters; a predicate that throws counts as no
+    match and is logged once per function. Keys are computed once per observer
+    when it is accepted and once per call; an observer whose key function
+    throws is rejected (`OBSERVE_REJECTED`). A match hook set while observers
+    are active rebuilds the index from them. With `onObserverDeliver` also set,
+    the deliver hook receives the matched observers.
 
 ## SDKs (all five)
 
@@ -172,19 +167,11 @@ differ, this file wins, and the spec is updated to match.
     Calls through the observer sent after it resolves reach an active observer
     (frames are processed in order). Providers send initial state this way
     (ADE asset sync, ring-on-bind).
-20. **Deliver hook context and `next`.** `onObserverDeliver` runs inside the
-    function's invocation context and span, so calls it makes have the
-    function's invocation as caller. Each observer is delivered at most once
-    per call, however many times `next` runs. For a routed call, the ids
-    matched by `next` calls given the unchanged call (decision 36) are pooled
-    into `observed`; each `next` call given a changed call sends its own
-    `invocationsobserved` item for the same `invocation_id`. Items and
-    `observed` can coexist for one invocation. The SDK collects the matches of
-    every `next` call made before the hook settles, sends the items, then the
-    answer. A `next` call on a routed call after the hook settled delivers
-    nothing; the SDK counts it in `localinvocationstats.dropped_reports` with
-    reason `LATE_DELIVERY`. Items lost to a closed connection count as
-    `DISCONNECTED`.
+20. **`onObserverDeliver` context.** The hook runs inside the function's
+    invocation context and span, so calls it makes have the function's
+    invocation as caller. It receives the observers that matched
+    (`onObserverMatch`, or all of them), as a snapshot taken when the call
+    started. iii delivers nothing for a function that sets it.
 21. **`standby`.** On `FUNCTION_NAMESPACE_CONFLICT` the SDK retries the
     registration every second (±20 % jitter) until it succeeds or the function
     is unregistered; hooks run when `functionregistered` arrives.
@@ -197,33 +184,30 @@ differ, this file wins, and the spec is updated to match.
     - **Rust.** `Call { function_id, invocation_id, status, input: Value,
       output: Option<Value>, error, caller, metadata }`. Hooks take `Observer`
       by value. Traits `AddedHook::on_added`, `RemovedHook::on_removed`,
-      `DeliverHook::on_deliver(call, observers, next) -> Result<Value, Error>`,
+      `DeliverHook::on_deliver(call, observers) -> Result<Value, Error>`,
       implemented for async closures. `FunctionRef` methods take `&self` and
       return `&Self`; `clear_observer_added()`, `clear_observer_removed()`,
-      `clear_observer_deliver()` remove. Client: `on_observer_added(h)`,
-      `on_observer_added_for(id, h)`, `…_removed…`, `on_observer_deliver_for`.
-      `is_observed()` and `is_observed_for(&call)`. `Keyed` implements
-      `DeliverHook` and exposes its index through `DeliverHook::as_keyed()`
-      (default `None`) so the SDK files observers in hook-task order.
+      `clear_observer_match()`, `clear_observer_deliver()` remove. Client:
+      `on_observer_added(h)`, `on_observer_added_for(id, h)`, `…_removed…`,
+      `on_observer_match_for(id, m)`, `on_observer_deliver_for(id, h)`.
+      `is_observed()` and `is_observed_for(&call)`. `Match::predicate(f)` and `Match::keys(observer_fn, call_fn)` are the `onObserverMatch` forms; the SDK files observers in the key index in hook-task order.
       `RegisterFunction::new(h).args_format::<T>().private().observable(false)
       .standby()`.
     - **Node / browser.** As in the spec §4. `CallRequest`, `CallAction`,
-      `keyed`, `ObserveRejection`, `EngineSources` exported from the package
+      `ObserveRejection`, `EngineSources` exported from the package
       root.
     - **Python.** `register_function(id, handler, *, args_format=None,
       private=False, observable=True, standby=False, ...)` keyword options
       (existing keywords stay). Hook methods work as decorators and plain
       calls and return the hook; `iii.on_observer_added('id')` with no hook is
-      a decorator factory; passing `None` as the hook removes it. Hooks may be
-      sync or async; `next` in a deliver hook is awaitable from async hooks and
-      returns directly from sync hooks. `Call` is a dataclass.
+      a decorator factory; passing `None` as the hook removes it. Hooks may be sync or async. `on_observer_match` takes a predicate `(obs, call) -> bool`, or `observer=` and `call=` key functions. `Call` is a dataclass.
     - **Go.** `RegisterFunction` keeps its current return shape. Hooks are
       func types (`AddedHook func(ctx, *Observer) error`, …). `Call` struct
       with `Input`, `Output json.RawMessage`. `CallRequest` with `type
       TriggerRequest = CallRequest`; `CallAction`. `Observer.Matches(*Call)`.
       `client.OnObserverAdded(h)`, `client.OnObserverAddedFor(id, h)`,
       `client.OnObserverDeliverFor(id, h)`, `ref.OnObserverDeliver(h)`,
-      `iii.Keyed(observerKeys, callKeys)`.
+      `client.OnObserverMatchFor(id, m)` and `ref.OnObserverMatch(m)` with `iii.MatchFunc(func(*Observer, *Call) bool)` or `iii.MatchKeys(observerKeys, callKeys)`.
 
 ## CLI and crates
 
@@ -236,7 +220,7 @@ differ, this file wins, and the spec is updated to match.
 27. **Benches and load tests.** `trigger_fanout_bench` becomes
     `observe_fanout_bench`; `observe_dispatch/auto/*` becomes
     `observe_dispatch/default/*`. The loadtest `emit` scenario becomes
-    `source`; a new `keyed` scenario measures keyed delivery. The §13 rows are
+    `source`; a new `match-keys` scenario measures matching by keys. The §13 rows are
     measured by `sdk/packages/rust/iii/benches/observe_bench.rs` (runs on
     macOS) and by the loadtest on Linux when available.
 
