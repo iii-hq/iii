@@ -355,7 +355,8 @@ export interface IIIClient {
  *   .onObserverRemoved((obs) => routes.remove(obs.id))
  * ```
  */
-export interface FunctionRef<I = unknown, O = unknown> {
+// biome-ignore lint/suspicious/noExplicitAny: refs of differently typed functions share one type (`FunctionRef[]`)
+export interface FunctionRef<I = any, O = any> {
   /** The unique function identifier. */
   readonly id: string
   /** {@link IIIClient.onObserverAdded} for this function. */

@@ -281,7 +281,8 @@ describe('Reporter', () => {
     r.sendNow([item(5), item(6)])
     h.state.online = true
     r.sendStats()
-    expect(h.parsed().at(-1)?.dropped_reports).toEqual([
+    const frames = h.parsed()
+    expect(frames[frames.length - 1].dropped_reports).toEqual([
       { function_id: 'fn::a', reason: 'TOO_LARGE', count: 1 },
       { function_id: 'fn::a', reason: 'DISCONNECTED', count: 2 },
     ])

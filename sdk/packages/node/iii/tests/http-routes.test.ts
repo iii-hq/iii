@@ -2,8 +2,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it, vi } from 'vitest'
-import { http, type HttpRequest, type HttpResponse } from '@iii-dev/helpers/http'
+import { type HttpRequest, type HttpResponse, http } from '@iii-dev/helpers/http'
+import { describe, expect, it } from 'vitest'
 import type { StreamResponse } from '../src/types'
 import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
 
@@ -13,7 +13,7 @@ const pdfPath = path.join(__dirname, '..', '..', '..', '..', 'test-assets', 'han
 // fixtures below that limit, including multipart framing overhead.
 const uploadFixtureBytes = 8 * 1024 * 1024
 
-describe('API Triggers', () => {
+describe('HTTP routes: observers of http::on-request', () => {
   it('should register GET endpoint', async () => {
     const fn = iii.registerFunction(
       'test.api.get',
@@ -23,14 +23,7 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/hello',
-        http_method: 'GET',
-      },
-    })
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/test/hello' } }, fn.id)
 
     await sleep(300)
 
@@ -40,29 +33,19 @@ describe('API Triggers', () => {
     expect(response.data).toEqual({ message: 'Hello from GET' })
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should register POST endpoint with body', async () => {
-    const fn = iii.registerFunction(
-      'test.api.post',
-      async (req: HttpRequest): Promise<HttpResponse> => {
-        const body = (req.body as Record<string, unknown>) ?? {}
-        return {
-          status_code: 201,
-          body: { received: body, created: true },
-        }
-      },
-    )
-
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/items',
-        http_method: 'POST',
-      },
+    const fn = iii.registerFunction('test.api.post', async (req: HttpRequest): Promise<HttpResponse> => {
+      const body = (req.body as Record<string, unknown>) ?? {}
+      return {
+        status_code: 201,
+        body: { received: body, created: true },
+      }
     })
+
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'POST', path: '/test/items' } }, fn.id)
 
     await sleep(300)
 
@@ -73,7 +56,7 @@ describe('API Triggers', () => {
     expect(response.data.received).toHaveProperty('name', 'test item')
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should expose raw JSON request body through request_body', async () => {
@@ -97,14 +80,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: '/test/json/raw',
-        http_method: 'POST',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/json/raw' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -121,7 +100,7 @@ describe('API Triggers', () => {
     expect(data.raw_body).toBe(rawJson)
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should handle path parameters', async () => {
@@ -133,14 +112,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/items/:id',
-        http_method: 'GET',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/items/:id' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -150,32 +125,22 @@ describe('API Triggers', () => {
     expect(response.data).toEqual({ id: 'abc123' })
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should handle query parameters', async () => {
-    const fn = iii.registerFunction(
-      'test.api.search',
-      async (req: HttpRequest): Promise<HttpResponse> => {
-        const q = req.query_params?.q
-        const limit = req.query_params?.limit
-        const qVal = Array.isArray(q) ? q[0] : q
-        const limitVal = Array.isArray(limit) ? limit[0] : limit
-        return {
-          status_code: 200,
-          body: { query: qVal, limit: limitVal },
-        }
-      },
-    )
-
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/search',
-        http_method: 'GET',
-      },
+    const fn = iii.registerFunction('test.api.search', async (req: HttpRequest): Promise<HttpResponse> => {
+      const q = req.query_params?.q
+      const limit = req.query_params?.limit
+      const qVal = Array.isArray(q) ? q[0] : q
+      const limitVal = Array.isArray(limit) ? limit[0] : limit
+      return {
+        status_code: 200,
+        body: { query: qVal, limit: limitVal },
+      }
     })
+
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/test/search' } }, fn.id)
 
     await sleep(300)
 
@@ -186,7 +151,7 @@ describe('API Triggers', () => {
     expect(response.data.limit).toBe('10')
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should return custom status code', async () => {
@@ -198,14 +163,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/missing',
-        http_method: 'GET',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/missing' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -215,7 +176,7 @@ describe('API Triggers', () => {
     expect(response.data).toEqual({ error: 'Not found' })
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should honor Content-Type header when returning HttpResponse with string body', async () => {
@@ -229,14 +190,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/xml-return',
-        http_method: 'POST',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/xml-return' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -246,7 +203,7 @@ describe('API Triggers', () => {
     expect(await response.text()).toBe(xmlBody)
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should download a PDF file via streaming response', async () => {
@@ -263,14 +220,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/download/pdf',
-        http_method: 'GET',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/download/pdf' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -283,7 +236,7 @@ describe('API Triggers', () => {
     expect(downloadedBuffer.equals(originalPdf)).toBe(true)
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should upload a PDF file via streaming request', async () => {
@@ -309,14 +262,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/upload/pdf',
-        http_method: 'POST',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/upload/pdf' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -335,7 +284,7 @@ describe('API Triggers', () => {
     expect(receivedBuffer.equals(originalPdf)).toBe(true)
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should stream SSE events', async () => {
@@ -373,14 +322,7 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/sse',
-        http_method: 'GET',
-      },
-    })
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/test/sse' } }, fn.id)
 
     await sleep(300)
 
@@ -416,7 +358,7 @@ describe('API Triggers', () => {
     }
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should handle application/x-www-form-urlencoded request', async () => {
@@ -446,14 +388,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/form/urlencoded',
-        http_method: 'POST',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/form/urlencoded' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -477,7 +415,7 @@ describe('API Triggers', () => {
     expect(data.age).toBe('30')
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should handle multipart/form-data with file upload', async () => {
@@ -518,14 +456,10 @@ describe('API Triggers', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/form/multipart',
-        http_method: 'POST',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/form/multipart' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -549,12 +483,10 @@ describe('API Triggers', () => {
     expect(data.body_size).toBeGreaterThan(originalPdf.length)
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
-  it('should reject a conflicting route structure without crashing the engine', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-
+  it('rejects a conflicting route (HTTP_ROUTE_CONFLICT) without crashing the engine', async () => {
     const handler = async (_req: HttpRequest): Promise<HttpResponse> => ({
       status_code: 200,
       body: { ok: true },
@@ -562,43 +494,28 @@ describe('API Triggers', () => {
 
     // First route registers normally.
     const fnA = iii.registerFunction('test.api.conflict.a', handler)
-    const triggerA = iii.registerTrigger({
-      type: 'http',
-      function_id: fnA.id,
-      config: {
-        api_path: 'test/node/conflict/:listId/:userId',
-        http_method: 'GET',
-      },
-    })
+    const routeA = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/node/conflict/:listId/:userId' } },
+      fnA.id,
+    )
+    await routeA.ready()
 
     // Second route has the same axum shape with swapped param names -> conflict.
     const fnB = iii.registerFunction('test.api.conflict.b', handler)
-    const triggerB = iii.registerTrigger({
-      type: 'http',
-      function_id: fnB.id,
-      config: {
-        api_path: 'test/node/conflict/:userId/:listId',
-        http_method: 'GET',
-      },
-    })
-
-    await sleep(500)
+    const routeB = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/node/conflict/:userId/:listId' } },
+      fnB.id,
+    )
+    await expect(routeB.ready()).rejects.toMatchObject({ code: 'HTTP_ROUTE_CONFLICT' })
 
     // Engine stayed alive and the first route still serves — no panic.
-    const response = await execute(async () =>
-      httpRequest('GET', '/test/node/conflict/list1/user1'),
-    )
+    const response = await execute(async () => httpRequest('GET', '/test/node/conflict/list1/user1'))
     expect(response.status).toBe(200)
     expect(response.data).toEqual({ ok: true })
 
-    // The conflicting registration was surfaced as an error.
-    const formatted = errorSpy.mock.calls.map((args) => args.join(' ')).join('\n')
-    expect(formatted.toLowerCase()).toContain('conflict')
-    errorSpy.mockRestore()
-
     fnA.unregister()
-    triggerA.unregister()
+    await routeA.dispose()
     fnB.unregister()
-    triggerB.unregister()
+    await routeB.dispose()
   })
 })

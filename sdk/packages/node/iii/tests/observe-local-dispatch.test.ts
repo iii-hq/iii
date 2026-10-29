@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InvocationContext } from '../src/observe-types'
-import type { IIIClient } from '../src/types'
+import type { FunctionRef, IIIClient } from '../src/types'
 
 /** Local dispatch, the invocation context, caller propagation and iii's delivery of local calls against a fake engine (sdk.md §3, §4.3; v2 §4.4, §6). */
 vi.mock('ws', async () => (await import('./observe-fake-engine')).wsModule())
@@ -423,7 +423,9 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
 
   it('the caller of a call made inside a handler: that invocation, never worker_id / worker_name', async () => {
     const { sdk, socket } = await observed([observerInfo('all', 'audit::all', { capture: ['caller'] })])
-    sdk.registerFunction('checkout::confirm', async () => sdk.call({ function_id: 'payments::charge', payload: { amount: 5 } }))
+    sdk.registerFunction('checkout::confirm', async () =>
+      sdk.call({ function_id: 'payments::charge', payload: { amount: 5 } }),
+    )
     socket.deliver(functionRegistered('checkout::confirm'))
     await settle()
     socket.deliver({
@@ -597,7 +599,7 @@ describe('the reporter against the socket and the function registry', () => {
   it('FUNCTION_NAMESPACE_CONFLICT and unregister() discard the function’s held reports as INACTIVE; others still go out', async () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
-    const fns: Record<string, ReturnType<IIIClient['registerFunction']>> = {}
+    const fns: Record<string, FunctionRef> = {}
     for (const id of ['f::one', 'f::two', 'f::three']) {
       fns[id] = sdk.registerFunction(id, async (n: number) => n)
     }
@@ -777,13 +779,15 @@ describe('the reporter against the socket and the function registry', () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
     let release!: () => void
-    sdk.registerFunction('f::hooked', async (n: number) => n).onObserverAdded(async (obs) => {
-      if (obs.id === 'slow') {
-        await new Promise<void>((r) => {
-          release = r
-        })
-      }
-    })
+    sdk
+      .registerFunction('f::hooked', async (n: number) => n)
+      .onObserverAdded(async (obs) => {
+        if (obs.id === 'slow') {
+          await new Promise<void>((r) => {
+            release = r
+          })
+        }
+      })
     socket.open()
     socket.deliver(functionRegistered('f::hooked', [observerInfo('a', 'audit::a', { capture: ['input'] })]))
     await settle()

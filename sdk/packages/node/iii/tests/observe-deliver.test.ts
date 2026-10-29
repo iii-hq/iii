@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Call, InvocationContext, Observer } from '../src/observe-types'
+import type { Call, DeliverHook, InvocationContext, Observer } from '../src/observe-types'
 import type { IIIClient } from '../src/types'
 
 /**
@@ -12,8 +12,7 @@ vi.resetModules()
 const fake = await import('./observe-fake-engine')
 const { registerWorker, CallAction, keyed } = await import('../src/index')
 const { InvocationError, ObserveRejection } = await import('../src/errors')
-const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, reportedItems, invokeFunction } =
-  fake
+const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, reportedItems, invokeFunction } = fake
 
 type Json = Record<string, unknown>
 
@@ -109,9 +108,7 @@ describe('onObserverDeliver with next', () => {
       })
       .onObserverDeliver(async (call, observers, next) => {
         seen.push(await next(call, observers).catch((e) => e))
-        seen.push(
-          await next({ ...call, error: { code: 'DECLINED', message: 'declined' } }, observers).catch((e) => e),
-        )
+        seen.push(await next({ ...call, error: { code: 'DECLINED', message: 'declined' } }, observers).catch((e) => e))
         // not awaited: no unhandled rejection either way
         void next(call, observers)
         return 'handled'
@@ -143,10 +140,14 @@ describe('onObserverDeliver with next', () => {
     await settle()
     socket.clear()
     socket.deliver(
-      invokeFunction('orders::on-placed', { id: 1 }, {
-        invocation_id: 'inv-routed',
-        caller: { worker_id: 'w-shop', worker_name: 'shop', function_id: 'shop::checkout', invocation_id: 'inv-0' },
-      }),
+      invokeFunction(
+        'orders::on-placed',
+        { id: 1 },
+        {
+          invocation_id: 'inv-routed',
+          caller: { worker_id: 'w-shop', worker_name: 'shop', function_id: 'shop::checkout', invocation_id: 'inv-0' },
+        },
+      ),
     )
     await settle()
     expect(inHook).toEqual(inHandler)
@@ -212,9 +213,10 @@ describe('onObserverDeliver with next', () => {
 describe('routed calls: the host delivers (v2 §8.2)', () => {
   const answer = (socket: ReturnType<typeof fake.lastSocket>, id: string) => fake.resultOf(socket, id)
 
-  async function routed(observers: Json[], hook?: Parameters<IIIClient['onObserverDeliver']>[1]) {
+  type Order = { fail?: boolean; qty: number }
+  async function routed(observers: Json[], hook?: DeliverHook<Order, { order_id: string; qty: number }, unknown>) {
     const { sdk, socket } = worker()
-    const ref = sdk.registerFunction('orders::create', async (order: { fail?: boolean; qty: number }) => {
+    const ref = sdk.registerFunction('orders::create', async (order: Order) => {
       if (order.fail) throw new Error('out of stock')
       return { order_id: 'o-1', qty: order.qty }
     })
@@ -249,7 +251,12 @@ describe('routed calls: the host delivers (v2 §8.2)', () => {
     socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
     await settle()
     expect(socket.frames()).toEqual([
-      { type: 'invocationresult', invocation_id: 'i-1', function_id: 'orders::create', result: { order_id: 'o-1', qty: 1 } },
+      {
+        type: 'invocationresult',
+        invocation_id: 'i-1',
+        function_id: 'orders::create',
+        result: { order_id: 'o-1', qty: 1 },
+      },
     ])
   })
 
@@ -271,14 +278,17 @@ describe('routed calls: the host delivers (v2 §8.2)', () => {
   })
 
   it("a hook that rethrows the handler's error keeps observed; another error moves the ids to an item", async () => {
-    const { socket } = await routed([observerInfo('errors', 'alerts::errors', { on: 'error' })], async (call, obs, next) => {
-      try {
-        return await next(call, obs)
-      } catch (error) {
-        if ((call.input as { qty: number }).qty === 1) throw error
-        throw new Error('wrapped')
-      }
-    })
+    const { socket } = await routed(
+      [observerInfo('errors', 'alerts::errors', { on: 'error' })],
+      async (call, obs, next) => {
+        try {
+          return await next(call, obs)
+        } catch (error) {
+          if ((call.input as { qty: number }).qty === 1) throw error
+          throw new Error('wrapped')
+        }
+      },
+    )
     socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'same' }))
     await settle()
     socket.deliver(invokeFunction('orders::create', { qty: 2, fail: true }, { invocation_id: 'other' }))
@@ -389,7 +399,10 @@ describe('keyed delivery (v2 §4.5)', () => {
       row('big-only', { db: 'primary', table: 'orders' }, { filters: { $and: [{ 'input.big': { $eq: true } }] } }),
       row('users', { db: 'primary', table: 'users' }),
     ])
-    await sdk.call({ function_id: 'database::on-row-changed', payload: { db: 'primary', table: 'orders', op: 'insert' } })
+    await sdk.call({
+      function_id: 'database::on-row-changed',
+      payload: { db: 'primary', table: 'orders', op: 'insert' },
+    })
     await flushed()
     expect(reportedItems(socket).map((i) => (i.matched as string[]).sort())).toEqual([
       ['every-insert', 'orders-any', 'orders-insert'],
@@ -401,9 +414,9 @@ describe('keyed delivery (v2 §4.5)', () => {
     expect(ref.isObserved()).toBe(true)
     expect(ref.isObserved({ input: { db: 'primary', table: 'orders', op: 'insert' } })).toBe(true)
     expect(ref.isObserved({ input: { db: 'primary', table: 'orders', op: 'delete' } })).toBe(false)
-    expect(sdk.isObserved('database::on-row-changed', { input: { db: 'replica', table: 'orders', op: 'insert' } })).toBe(
-      false,
-    )
+    expect(
+      sdk.isObserved('database::on-row-changed', { input: { db: 'replica', table: 'orders', op: 'insert' } }),
+    ).toBe(false)
     expect(sdk.isObserved('no::such-fn')).toBe(false)
   })
 
@@ -550,9 +563,9 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
     sdk
       .registerFunction('inventory::on-stock', (e: unknown) => e)
       .onObserverAdded((obs) => {
-        void obs.accepted().then(() =>
-          sdk.call({ observer: obs, payload: { initial: true }, action: CallAction.Void() }),
-        )
+        void obs
+          .accepted()
+          .then(() => sdk.call({ observer: obs, payload: { initial: true }, action: CallAction.Void() }))
       })
     socket.clear()
     socket.deliver(functionRegistered('inventory::on-stock'))
@@ -576,10 +589,12 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
   it('accepted() rejects for an observer that is not accepted', async () => {
     const { sdk, socket } = worker()
     let obs: Observer | undefined
-    sdk.registerFunction('inventory::on-stock', (e: unknown) => e).onObserverAdded((o) => {
-      obs = o
-      throw new ObserveRejection('NO_STORE', 'unknown store')
-    })
+    sdk
+      .registerFunction('inventory::on-stock', (e: unknown) => e)
+      .onObserverAdded((o) => {
+        obs = o
+        throw new ObserveRejection('NO_STORE', 'unknown store')
+      })
     socket.deliver(functionRegistered('inventory::on-stock', [observerInfo('o', 't::a')]))
     await settle()
     await expect(obs?.accepted()).rejects.toMatchObject({ name: 'ObserveRejection', code: 'NO_STORE' })

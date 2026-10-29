@@ -1,5 +1,5 @@
 /**
- * Result returned when a function is invoked with `TriggerAction.Enqueue`.
+ * Result returned when a function is called with `CallAction.Enqueue`.
  */
 export type EnqueueResult = {
   /** Unique receipt ID for the enqueued message. */

@@ -13,10 +13,30 @@ describe('Package Exports', () => {
     expect(typeof registerWorker).toBe('function')
   })
 
-  it('registerWorker returns an IIIClient-shaped object', () => {
+  it('registerWorker returns an IIIClient-shaped object; trigger is call', () => {
     expect(typeof iii.registerFunction).toBe('function')
-    expect(typeof iii.trigger).toBe('function')
+    expect(typeof iii.call).toBe('function')
+    expect(iii.trigger).toBe(iii.call)
+    for (const hook of ['onObserverAdded', 'onObserverRemoved', 'onObserverDeliver', 'observers', 'isObserved']) {
+      expect(typeof (iii as unknown as Record<string, unknown>)[hook]).toBe('function')
+    }
     void iii.shutdown()
+  })
+
+  it('exports call, keyed, ObserveRejection and EngineSources from the root, and no trigger API', async () => {
+    const root = (await import('../src/index')) as Record<string, unknown>
+    expect(typeof root.keyed).toBe('function')
+    expect(root.CallAction).toBeDefined()
+    expect(root.TriggerAction).toBe(root.CallAction)
+    expect(typeof root.ObserveRejection).toBe('function')
+    expect(root.EngineSources).toMatchObject({
+      FUNCTIONS_CHANGED: 'engine::on-functions-changed',
+      OBSERVERS_CHANGED: 'engine::on-observers-changed',
+    })
+    expect(root.EngineTriggers).toBeUndefined()
+    const engine = (await import('../src/engine')) as Record<string, unknown>
+    expect(engine.EngineSources).toBe(root.EngineSources)
+    expect(engine.EngineTriggers).toBeUndefined()
   })
 
   it('should import stream module', async () => {
@@ -37,10 +57,6 @@ describe('Package Exports', () => {
     const root = (await import('../src/index')) as Record<string, unknown>
     expect(root.ChannelReader).toBeUndefined()
     expect(root.ChannelWriter).toBeUndefined()
-  })
-
-  it('should import the trigger subpath module', async () => {
-    await expect(import('../src/trigger')).resolves.toBeDefined()
   })
 
   it('should import the runtime subpath module', async () => {

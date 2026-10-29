@@ -310,13 +310,7 @@ export type StreamDeleteResult = {
  * @see {@link UpdateSet}, {@link UpdateIncrement}, {@link UpdateDecrement},
  *      {@link UpdateAppend}, {@link UpdateRemove}, {@link UpdateMerge}
  */
-export type UpdateOp =
-  | UpdateSet
-  | UpdateIncrement
-  | UpdateDecrement
-  | UpdateAppend
-  | UpdateRemove
-  | UpdateMerge
+export type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
 
 /**
  * Input for atomically updating a stream item.
@@ -335,32 +329,6 @@ export type StreamUpdateInput = {
 }
 
 /**
- * Trigger config for `stream` triggers. Filters which item changes fire the handler.
- *
- * @deprecated StreamTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
- */
-export interface StreamTriggerConfig {
-  /** Stream name to watch. Only changes on this stream fire the handler. */
-  stream_name: string
-  /** If set, only changes within this group fire the handler. */
-  group_id?: string
-  /** If set, only changes to this specific item fire the handler. */
-  item_id?: string
-  /** Function ID for conditional execution. If it returns `false`, the handler is skipped. */
-  condition_function_id?: string
-}
-
-/**
- * Trigger config for `stream:join` and `stream:leave` triggers.
- *
- * @deprecated StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
- */
-export interface StreamJoinLeaveTriggerConfig {
-  /** Function ID for conditional execution. If it returns `false`, the handler is skipped. */
-  condition_function_id?: string
-}
-
-/**
  * Detail of a stream change event containing the mutation type and data.
  *
  * @deprecated StreamChangeEventDetail is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
@@ -374,7 +342,7 @@ export type StreamChangeEventDetail = {
 }
 
 /**
- * Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`, or `stream::delete`.
+ * The event of `stream::on-changed`, called when an item changes via `stream::set`, `stream::update`, or `stream::delete`.
  *
  * @deprecated StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */

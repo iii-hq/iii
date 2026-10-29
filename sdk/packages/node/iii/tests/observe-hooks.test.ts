@@ -41,20 +41,19 @@ function deferred<T = void>() {
 
 const acks = (socket: ReturnType<typeof fake.lastSocket>) => socket.framesOf('observerack')
 
-const warnings = () =>
-  vi
-    .spyOn(console, 'warn')
-    .mockImplementation(() => undefined)
+const warnings = () => vi.spyOn(console, 'warn').mockImplementation(() => undefined)
 
 describe('onObserverAdded / onObserverRemoved', () => {
   it('runs onObserverAdded once per add, and the observer is in the compiled set before the ack', async () => {
     const { sdk, socket } = worker()
     let observedAtAck: boolean | undefined
     const added: Observer[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded((obs) => {
-      added.push(obs)
-      expect(acks(socket)).toHaveLength(0) // before the ack
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((obs) => {
+        added.push(obs)
+        expect(acks(socket)).toHaveLength(0) // before the ack
+      })
     socket.open()
     const send = socket.send.bind(socket)
     vi.spyOn(socket, 'send').mockImplementation((data, cb) => {
@@ -102,11 +101,13 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('rejects with the ObserveRejection code, or OBSERVE_REJECTED for a plain error', async () => {
     const { sdk, socket } = worker()
     const seen: Observer[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded((obs) => {
-      seen.push(obs)
-      if (obs.id === 'bad-expr') throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'bad field')
-      throw new Error('nope')
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((obs) => {
+        seen.push(obs)
+        if (obs.id === 'bad-expr') throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'bad field')
+        throw new Error('nope')
+      })
     socket.open()
     socket.deliver(
       functionRegistered('cron::on-tick', [observerInfo('bad-expr', 't::a'), observerInfo('plain', 't::b')], {
@@ -181,10 +182,12 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const blocked = deferred()
     const started: string[] = []
     for (const id of ['a::on-x', 'b::on-y']) {
-      sdk.registerFunction(id, async () => null).onObserverAdded(async () => {
-        started.push(id)
-        await blocked.promise
-      })
+      sdk
+        .registerFunction(id, async () => null)
+        .onObserverAdded(async () => {
+          started.push(id)
+          await blocked.promise
+        })
     }
     socket.open()
     socket.deliver(functionRegistered('a::on-x', [observerInfo('o-a', 't::a')]))
@@ -198,7 +201,10 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker()
     const added = vi.fn()
     const removed = vi.fn()
-    const ref = sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded(added).onObserverRemoved(removed)
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(added)
+      .onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('o-1', 't::a')], { revision: 5 }))
     socket.deliver(observerAdded('cron::on-tick', 5, observerInfo('o-2', 't::b')))
@@ -322,9 +328,11 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('logs an onObserverRemoved error and goes on', async () => {
     const { sdk, socket } = worker()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const ref = sdk.registerFunction('orders::archive', async () => null).onObserverRemoved(() => {
-      throw new Error('cleanup failed')
-    })
+    const ref = sdk
+      .registerFunction('orders::archive', async () => null)
+      .onObserverRemoved(() => {
+        throw new Error('cleanup failed')
+      })
     socket.open()
     socket.deliver(functionRegistered('orders::archive', [observerInfo('a', 't::a')], { revision: 1 }))
     socket.deliver(observerRemoved('orders::archive', 2, 'a'))
@@ -359,9 +367,11 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('a kept observer whose new filters do not compile is acked INVALID_FILTER at the new revision, which reject() then uses', async () => {
     const { sdk, socket } = worker()
     let obs: Observer | undefined
-    sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded((o) => {
-      obs = o
-    })
+    sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((o) => {
+        obs = o
+      })
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a')], { revision: 3 }))
     socket.deliver(
@@ -382,13 +392,15 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker()
     const gate = deferred()
     const pending: Observer[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded(async (obs) => {
-      if (obs.id === 'sync') obs.reject('BAD_CONFIG', 'rejected inside the hook')
-      if (obs.id === 'async') {
-        pending.push(obs)
-        await gate.promise
-      }
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(async (obs) => {
+        if (obs.id === 'sync') obs.reject('BAD_CONFIG', 'rejected inside the hook')
+        if (obs.id === 'async') {
+          pending.push(obs)
+          await gate.promise
+        }
+      })
     socket.open()
     socket.deliver(
       functionRegistered('cron::on-tick', [observerInfo('sync', 't::a'), observerInfo('async', 't::b')], {
@@ -469,7 +481,10 @@ describe('both levels: the worker hooks and the function hooks', () => {
     const { sdk, socket } = worker()
     const { calls, hook } = recorder()
     sdk.onObserverAdded(hook('worker+')).onObserverRemoved(hook('worker-'))
-    sdk.registerFunction('a::source', (e: unknown) => e).onObserverAdded(hook('a+')).onObserverRemoved(hook('a-'))
+    sdk
+      .registerFunction('a::source', (e: unknown) => e)
+      .onObserverAdded(hook('a+'))
+      .onObserverRemoved(hook('a-'))
     sdk.registerFunction('b::plain', async () => null)
     socket.open()
     socket.deliver(functionRegistered('a::source', [observerInfo('o-a', 't::a')], { revision: 1 }))
@@ -486,9 +501,7 @@ describe('both levels: the worker hooks and the function hooks', () => {
   it('a function hook that rejects unwinds the worker level; a worker hook that rejects runs nothing else', async () => {
     const { sdk, socket } = worker()
     const { calls, hook } = recorder()
-    sdk
-      .onObserverAdded(hook('worker+', (obs) => obs.id === 'worker-refuses'))
-      .onObserverRemoved(hook('worker-'))
+    sdk.onObserverAdded(hook('worker+', (obs) => obs.id === 'worker-refuses')).onObserverRemoved(hook('worker-'))
     sdk
       .registerFunction('a::source', (e: unknown) => e)
       .onObserverAdded(hook('fn+', (obs) => obs.id === 'fn-refuses'))
@@ -516,7 +529,9 @@ describe('both levels: the worker hooks and the function hooks', () => {
     sdk.onObserverRemoved(workerRemoved)
     const ref = sdk.registerFunction('a::source', (e: unknown) => e).onObserverRemoved(removed)
     socket.open()
-    socket.deliver(functionRegistered('a::source', [observerInfo('a', 't::a'), observerInfo('b', 't::b')], { revision: 1 }))
+    socket.deliver(
+      functionRegistered('a::source', [observerInfo('a', 't::a'), observerInfo('b', 't::b')], { revision: 1 }),
+    )
     await settle()
     const [a] = ref.observers()
     a.reject('RELOADED', 'config changed')
@@ -564,9 +579,11 @@ describe('hooks by function id', () => {
       seen.push(`a ${obs.id}`)
     })
     sdk.registerFunction('a::byid', (e: unknown) => e)
-    sdk.registerFunction('b::chained', (e: unknown) => e).onObserverAdded((obs) => {
-      seen.push(`b ${obs.id}`)
-    })
+    sdk
+      .registerFunction('b::chained', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        seen.push(`b ${obs.id}`)
+      })
     const c = sdk.registerFunction('c::later', (e: unknown) => e)
     socket.open()
     socket.deliver(functionRegistered('a::byid', [observerInfo('1', 't::a')]))
@@ -583,7 +600,10 @@ describe('hooks by function id', () => {
     const { sdk, socket } = worker()
     const added = vi.fn()
     const removed = vi.fn()
-    const first = sdk.registerFunction('a::again', (e: unknown) => e).onObserverAdded(added).onObserverRemoved(removed)
+    const first = sdk
+      .registerFunction('a::again', (e: unknown) => e)
+      .onObserverAdded(added)
+      .onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('a::again', [observerInfo('1', 't::a')]))
     await settle()
@@ -755,7 +775,7 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
   it('INVALID_ARGS_FORMAT and UNSUPPORTED refuse one function and keep the connection', async () => {
     const { sdk, socket } = worker()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    sdk.registerFunction('queue::on-message', (m: unknown) => m, { args_format: { type: 'nonsense' } })
+    sdk.registerFunction('queue::on-message', (m: unknown) => m, { args_format: { type: 'nonsense' } as never })
     socket.open()
     socket.deliver(fake.functionRegistered('queue::on-message', [observerInfo('o', 't::a')]))
     await settle()
