@@ -13,6 +13,8 @@ services:
     environment:
       - RUST_LOG=info
       - III_EXECUTION_CONTEXT=docker
+      - REDIS_URL=redis://redis:6379
+      - STREAM_HOST=0.0.0.0
     depends_on:
       redis:
         condition: service_healthy
