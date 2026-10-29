@@ -3,16 +3,12 @@ package iii
 import (
 	"context"
 	"encoding/json"
-	"log"
-	"reflect"
-	"slices"
-	"sync"
 )
 
-// This file is what a worker does when its functions are observed: the three hooks,
-// set for one function by id (on the client or on its FunctionRef) or, for added and
-// removed, for every function the worker hosts; the Call they read; and Keyed
-// delivery.
+// This file is what a worker does when its functions are observed: the four hooks, set
+// for one function by id (on the client or on its FunctionRef) or, for added and
+// removed, for every function the worker hosts; and the Call the match and deliver
+// hooks read.
 
 // AddedHook runs when an observer is added to a function this worker hosts, before the
 // SDK acks it. Returning nil accepts the observer; an error built with
@@ -25,24 +21,76 @@ type AddedHook func(ctx context.Context, obs *Observer) error
 // level rejects the observer. A panic is logged; the observer is removed either way.
 type RemovedHook func(ctx context.Context, obs *Observer)
 
-// DeliverHook decides which observers get each call of one function and what its caller
-// gets back. It receives the call, the function's active observers when the call
-// started, and next, which is iii's delivery for the observers passed. What it returns
-// is the caller's result, encoded as a handler's is; the error it returns is the
-// caller's error. It runs inside the function's invocation, so calls made with ctx
-// have that invocation as their caller.
-type DeliverHook func(ctx context.Context, call *Call, observers []*Observer, next Next) (any, error)
+// MatchHook says which observers want each call of one function; without one, every
+// observer wants every call. Build it with [MatchFunc] (a predicate) or [MatchKeys]
+// (keys the SDK indexes). The observers it matches are what iii delivers the call to,
+// after their on and filters, or what the function's [DeliverHook] receives. A nil
+// MatchHook, and the zero one, match every observer.
+type MatchHook struct {
+	predicate    func(*Observer, *Call) bool
+	observerKeys func(*Observer) []string
+	callKeys     func(*Call) []string
+}
 
-// Next is iii's delivery: it delivers call to each of observers whose on and filters
-// match it and that no earlier next of the same call delivered, without waiting for
-// the targets, and returns the call's outcome: its Output, or its Error as an
-// *[InvocationError]. A call that differs from the handler's is reported as given. The
-// engine drops a delivery to an observer that is not active.
-type Next func(ctx context.Context, call *Call, observers []*Observer) (any, error)
+// MatchFunc is a match hook that asks predicate, once per active observer per call,
+// whether the observer wants the call. A predicate that panics counts as no match, and
+// the SDK logs it once per function. A nil predicate gives a nil MatchHook.
+//
+//	// an observer of expression X gets the ticks of expression X
+//	client.OnObserverMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+//		var tick struct{ Expression string `json:"expression"` }
+//		_ = json.Unmarshal(call.Input, &tick)
+//		return obs.Args["expression"] == tick.Expression
+//	}))
+func MatchFunc(predicate func(obs *Observer, call *Call) bool) *MatchHook {
+	if predicate == nil {
+		return nil
+	}
+	return &MatchHook{predicate: predicate}
+}
 
-// Call is one call of a function, as its host sees it in a [DeliverHook], in [Keyed]
-// and in [Observer.Matches]. The fields of a call the SDK hands over are read-only: to
-// deliver a different call, pass next a copy with other values.
+// MatchKeys is a match hook by keys: an observer wants a call when they share a key, and
+// the SDK keeps an index of the active observers by key instead of asking each of them.
+// observerKeys says what an observer listens for: the SDK computes it once, when the
+// observer is accepted, files the observer under each key and unfiles it when it is
+// removed. An observer whose observerKeys panics is rejected with OBSERVE_REJECTED.
+// callKeys says what a call is: the call matches the observers filed under any of its
+// keys, each once; a callKeys that panics matches nothing, and the SDK logs it once per
+// function. Keys express wildcards by listing them: an observer of every table is filed
+// under "primary|*|insert", and a change matches "primary|orders|insert",
+// "primary|orders|*", "primary|*|insert" and "primary|*|*". A nil function gives a nil
+// MatchHook.
+//
+// On a function matched by keys, [Client.IsObservedFor] answers with one lookup per
+// call key.
+func MatchKeys(observerKeys func(obs *Observer) []string, callKeys func(call *Call) []string) *MatchHook {
+	if observerKeys == nil || callKeys == nil {
+		return nil
+	}
+	return &MatchHook{observerKeys: observerKeys, callKeys: callKeys}
+}
+
+// set reports whether m narrows the observers: a predicate, or key functions.
+func (m *MatchHook) set() bool {
+	return m != nil && (m.predicate != nil || (m.observerKeys != nil && m.callKeys != nil))
+}
+
+// byKeys reports whether m matches by keys.
+func (m *MatchHook) byKeys() bool {
+	return m != nil && m.predicate == nil && m.observerKeys != nil && m.callKeys != nil
+}
+
+// DeliverHook delivers each call of one function itself. It receives the call and the
+// observers that matched it ([MatchHook], or every active observer), as they were when
+// the call started. What it returns is the caller's result, encoded as a handler's is;
+// the error it returns is the caller's error. iii delivers nothing for the function:
+// the hook calls a target through its observer ([CallRequest].Observer) and applies the
+// observer's on and filters with [Observer.Matches]. It runs inside the function's
+// invocation, so calls made with ctx have that invocation as their caller.
+type DeliverHook func(ctx context.Context, call *Call, observers []*Observer) (any, error)
+
+// Call is one call of a function, as its host sees it in a [MatchHook], a [DeliverHook]
+// and [Observer.Matches]. The fields of a call the SDK hands over are read-only.
 type Call struct {
 	FunctionID   string
 	InvocationID string
@@ -73,18 +121,6 @@ func (call *Call) succeeded() bool {
 	return call.Error == nil
 }
 
-// outcome is what next returns for call: its output, or its error.
-func (call *Call) outcome() (any, error) {
-	if call.succeeded() {
-		return call.Output, nil
-	}
-	body := call.Error
-	if body == nil {
-		body = &ErrorBody{Code: "invocation_failed", Message: "the call failed"}
-	}
-	return nil, newInvocationError(body, call.FunctionID)
-}
-
 // doc is the call as filters read it.
 func (call *Call) doc() *lazyDoc {
 	doc := &lazyDoc{input: call.Input, caller: call.Caller, metadata: call.Metadata}
@@ -107,11 +143,12 @@ type observerHooks struct {
 	// generation is caught up with the hook (catchUp).
 	addedGen uint64
 	removed  RemovedHook
+	match    *MatchHook
 	deliver  DeliverHook
 }
 
 func (h *observerHooks) empty() bool {
-	return h == nil || (h.added == nil && h.removed == nil && h.deliver == nil)
+	return h == nil || (h.added == nil && h.removed == nil && h.match == nil && h.deliver == nil)
 }
 
 // hookLevel names a level of the added and removed hooks.
@@ -181,13 +218,34 @@ func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Clie
 	return c
 }
 
-// OnObserverDeliverFor sets how calls of functionID are delivered; nil restores iii's
-// delivery, which delivers each call to every observer whose on and filters match it.
-// It is stored by function id, as [Client.OnObserverAddedFor] is. A function with a
-// deliver hook needs an engine with observe.v2: against an older one it stays
-// unregistered, and the SDK logs UNSUPPORTED once. A deliver hook does not run for a
-// function registered with [Client.RegisterHTTPFunction]: the engine delivers its
-// calls. It returns the client, for chaining.
+// OnObserverMatchFor sets which observers want each call of functionID: [MatchFunc] or
+// [MatchKeys]; nil restores the default, where every observer wants every call. It is
+// stored by id, as [Client.OnObserverAddedFor] is. A match hook set on a registered
+// function takes effect on the function's hook queue, after the hooks queued before it,
+// and calls use the previous one until then. A hook by keys set while the function has
+// active observers rebuilds the index from them; an observer whose keys panic is
+// late-rejected with OBSERVE_REJECTED. It returns the client, for chaining.
+func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client {
+	if !m.set() {
+		m = nil
+	}
+	c.setFunctionHook(functionID, func(h *observerHooks, f *functionObservers) {
+		h.match = m
+		if f != nil {
+			f.setMatch(m)
+		}
+	})
+	return c
+}
+
+// OnObserverDeliverFor sets the hook that delivers each call of functionID itself; nil
+// restores iii's delivery, which delivers each call to every matched observer whose on
+// and filters accept it, and gives the caller the handler's result. It is stored by id,
+// as [Client.OnObserverAddedFor] is. A function with a deliver hook needs an engine with
+// observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED
+// once. A deliver hook does not run for a function registered with
+// [Client.RegisterHTTPFunction]: the engine delivers its calls. It returns the client,
+// for chaining.
 func (c *Client) OnObserverDeliverFor(functionID string, hook DeliverHook) *Client {
 	c.setFunctionHook(functionID, func(h *observerHooks, f *functionObservers) {
 		h.deliver = hook
@@ -216,6 +274,8 @@ func (c *Client) setFunctionHook(functionID string, set func(*observerHooks, *fu
 	set(h, f)
 	if h.empty() {
 		delete(c.functionHooks, functionID)
+	} else if f == nil && c.registeredOnConnection {
+		c.checkHookIDsLater(c.epoch)
 	}
 	return f
 }
@@ -272,6 +332,15 @@ func (r *FunctionRef) OnObserverRemoved(hook RemovedHook) *FunctionRef {
 	return r
 }
 
+// OnObserverMatch sets the function's match hook, as [Client.OnObserverMatchFor] does
+// for its id, and returns the handle, for chaining.
+func (r *FunctionRef) OnObserverMatch(m *MatchHook) *FunctionRef {
+	if r != nil && r.client != nil {
+		r.client.OnObserverMatchFor(r.ID, m)
+	}
+	return r
+}
+
 // OnObserverDeliver sets the function's deliver hook, as [Client.OnObserverDeliverFor]
 // does for its id, and returns the handle, for chaining.
 func (r *FunctionRef) OnObserverDeliver(hook DeliverHook) *FunctionRef {
@@ -279,190 +348,4 @@ func (r *FunctionRef) OnObserverDeliver(hook DeliverHook) *FunctionRef {
 		r.client.OnObserverDeliverFor(r.ID, hook)
 	}
 	return r
-}
-
-// keyed is the spec of a [Keyed] deliver hook.
-type keyed struct {
-	observerKeys func(*Observer) []string
-	callKeys     func(*Call) []string
-}
-
-// Keyed is a deliver hook that delivers each call to the observers filed under one of
-// its keys, each at most once, through next (so on, filters, policy and deliver
-// apply). observerKeys gives the keys an observer is filed under: the SDK computes
-// them once, when the observer is accepted, and unfiles the observer when it is
-// removed. callKeys gives the keys a call is delivered to. Wildcards are keys too: an
-// observer of every table is filed under "primary|*|insert", and a change is delivered
-// to "primary|orders|insert", "primary|orders|*", "primary|*|insert" and
-// "primary|*|*".
-//
-// On a function delivered by Keyed, [FunctionRef.IsObservedFor] answers with one
-// lookup per call key.
-func Keyed(observerKeys func(*Observer) []string, callKeys func(*Call) []string) DeliverHook {
-	k := &keyed{observerKeys: observerKeys, callKeys: callKeys}
-	return k.deliver
-}
-
-// keyedDeliverCode identifies a Keyed hook: every one is a method value of
-// (*keyed).deliver, which shares its code.
-var keyedDeliverCode = reflect.ValueOf(DeliverHook((*keyed)(nil).deliver)).Pointer()
-
-// keyedProbe is the context key that asks a Keyed hook for its spec.
-type keyedProbe struct{}
-
-// asKeyed returns the spec of a hook made by Keyed, or nil for any other hook. Only a
-// hook with Keyed's code is called, and it answers the probe without delivering.
-func asKeyed(hook DeliverHook) *keyed {
-	if hook == nil || reflect.ValueOf(hook).Pointer() != keyedDeliverCode {
-		return nil
-	}
-	var spec *keyed
-	_, _ = hook(context.WithValue(context.Background(), keyedProbe{}, &spec), nil, nil, nil)
-	return spec
-}
-
-func (k *keyed) deliver(ctx context.Context, call *Call, observers []*Observer, next Next) (any, error) {
-	if probe, ok := ctx.Value(keyedProbe{}).(**keyed); ok {
-		*probe = k
-		return nil, nil
-	}
-	keys := k.keysOfCall(call)
-	if run := deliveryFrom(ctx); run != nil {
-		if idx := run.f.keyed.Load(); idx != nil && idx.spec == k {
-			return next(ctx, call, idx.lookup(keys))
-		}
-	}
-	// not indexed by the SDK (the hook was wrapped, or its index is being built)
-	var chosen []*Observer
-	for _, obs := range observers {
-		if slices.ContainsFunc(k.keysOfObserver(obs), func(key string) bool { return slices.Contains(keys, key) }) {
-			chosen = append(chosen, obs)
-		}
-	}
-	return next(ctx, call, chosen)
-}
-
-// keysOfObserver runs observerKeys; a panic files the observer under no key.
-func (k *keyed) keysOfObserver(obs *Observer) (keys []string) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("iii: Keyed observer keys failed for observer %s of %q: %v", obs.id, obs.FunctionID, r)
-			keys = nil
-		}
-	}()
-	return k.observerKeys(obs)
-}
-
-// keysOfCall runs callKeys; a panic delivers the call to no key.
-func (k *keyed) keysOfCall(call *Call) (keys []string) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("iii: Keyed call keys failed for %q: %v", call.FunctionID, r)
-			keys = nil
-		}
-	}()
-	return k.callKeys(call)
-}
-
-// keyedIndex is one function's index of its active observers by key, for a Keyed
-// deliver hook. It holds exactly the active observers: an observer is filed when it is
-// activated (on the function's hook queue) and unfiled when it is deactivated.
-type keyedIndex struct {
-	spec *keyed
-
-	mu    sync.RWMutex
-	byKey map[string][]*Observer
-	filed map[*Observer][]string
-}
-
-func newKeyedIndex(spec *keyed) *keyedIndex {
-	return &keyedIndex{spec: spec, byKey: map[string][]*Observer{}, filed: map[*Observer][]string{}}
-}
-
-// file files obs under keys while it is active. The caller computed keys outside any
-// lock; a deactivation that ran meanwhile left obs inactive, and it is not filed.
-func (x *keyedIndex) file(obs *Observer, keys []string) {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if _, done := x.filed[obs]; done || !obs.active.Load() {
-		return
-	}
-	var unique []string
-	for _, key := range keys {
-		if slices.Contains(unique, key) {
-			continue
-		}
-		unique = append(unique, key)
-		x.byKey[key] = append(x.byKey[key], obs)
-	}
-	x.filed[obs] = unique
-}
-
-func (x *keyedIndex) unfile(obs *Observer) {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	keys, ok := x.filed[obs]
-	if !ok {
-		return
-	}
-	delete(x.filed, obs)
-	for _, key := range keys {
-		// lookup copies under the lock, so the bucket is edited in place
-		list := slices.DeleteFunc(x.byKey[key], func(o *Observer) bool { return o == obs })
-		if len(list) == 0 {
-			delete(x.byKey, key)
-		} else {
-			x.byKey[key] = list
-		}
-	}
-}
-
-// lookup returns the observers filed under any of keys, each once, in key order.
-func (x *keyedIndex) lookup(keys []string) []*Observer {
-	x.mu.RLock()
-	defer x.mu.RUnlock()
-	var out []*Observer
-	var seen map[*Observer]bool
-	for _, key := range keys {
-		bucket := x.byKey[key]
-		if len(bucket) == 0 {
-			continue
-		}
-		if out == nil {
-			out = append([]*Observer(nil), bucket...)
-			continue
-		}
-		if seen == nil {
-			seen = make(map[*Observer]bool, len(out)+len(bucket))
-			for _, obs := range out {
-				seen[obs] = true
-			}
-		}
-		for _, obs := range bucket {
-			if !seen[obs] {
-				seen[obs] = true
-				out = append(out, obs)
-			}
-		}
-	}
-	return out
-}
-
-// reset unfiles every observer (the function's observers were all released).
-func (x *keyedIndex) reset() {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	x.byKey, x.filed = map[string][]*Observer{}, map[*Observer][]string{}
-}
-
-// has reports whether an observer is filed under one of keys.
-func (x *keyedIndex) has(keys []string) bool {
-	x.mu.RLock()
-	defer x.mu.RUnlock()
-	for _, key := range keys {
-		if len(x.byKey[key]) > 0 {
-			return true
-		}
-	}
-	return false
 }

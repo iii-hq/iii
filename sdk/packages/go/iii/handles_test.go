@@ -219,10 +219,9 @@ func TestFunctionRefUnregisterClearsObserveState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deliver := func(_ context.Context, call *Call, observers []*Observer, next Next) (any, error) {
-		return next(context.Background(), call, observers)
-	}
-	ref.OnObserverAdded(func(context.Context, *Observer) error { return nil }).OnObserverDeliver(deliver)
+	ref.OnObserverAdded(func(context.Context, *Observer) error { return nil }).
+		OnObserverMatch(MatchFunc(func(*Observer, *Call) bool { return true })).
+		OnObserverDeliver(handlerAnswer)
 	obs := c.functionObservers("obs::fn")
 	if obs == nil {
 		t.Fatal("no observe state after RegisterFunction")
@@ -253,14 +252,14 @@ func TestFunctionRefUnregisterClearsObserveState(t *testing.T) {
 	if warned {
 		t.Error("UNSUPPORTED warning state kept")
 	}
-	if hooks == nil || hooks.added == nil || hooks.deliver == nil {
+	if hooks == nil || hooks.added == nil || hooks.match == nil || hooks.deliver == nil {
 		t.Fatal("the hooks set for the id were dropped by Unregister")
 	}
 	if _, err := c.RegisterFunction("obs::fn", noopHandler); err != nil {
 		t.Fatal(err)
 	}
-	if c.functionObservers("obs::fn").deliverHook() == nil {
-		t.Error("a registration of the id again does not get its deliver hook")
+	if st := c.functionObservers("obs::fn").state.Load(); st.deliver == nil || st.match == nil {
+		t.Error("a registration of the id again does not get its deliver and match hooks")
 	}
 }
 
@@ -303,7 +302,7 @@ func TestForeignHandles(t *testing.T) {
 	zero := &FunctionRef{ID: "x"}
 	if zero.OnObserverAdded(func(context.Context, *Observer) error { return nil }) != zero ||
 		nilFn.OnObserverRemoved(func(context.Context, *Observer) {}) != nil ||
-		zero.OnObserverDeliver(nil) != zero || zero.IsObservedFor(&Call{}) || zero.IsObserved() {
+		zero.OnObserverMatch(nil) != zero || zero.OnObserverDeliver(nil) != zero || zero.IsObservedFor(&Call{}) || zero.IsObserved() {
 		t.Error("a foreign handle's methods must return it and report nothing observed")
 	}
 }

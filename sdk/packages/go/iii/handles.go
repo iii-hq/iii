@@ -66,9 +66,9 @@ func (r *FunctionRef) IsObserved() bool {
 }
 
 // IsObservedFor reports whether call would reach an observer, as
-// [Client.IsObservedFor] does: on a function delivered by [Keyed], whether an observer
-// is filed under one of the call's keys; otherwise [FunctionRef.IsObserved]. False for
-// a handle that does not control the function's current registration.
+// [Client.IsObservedFor] does: on a function matched by keys ([MatchKeys]), whether an
+// observer is filed under one of the call's keys; otherwise [FunctionRef.IsObserved].
+// False for a handle that does not control the function's current registration.
 func (r *FunctionRef) IsObservedFor(call *Call) bool {
 	if r == nil || r.observe == nil {
 		return false

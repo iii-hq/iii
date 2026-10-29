@@ -109,7 +109,7 @@ func TestNoRegisterFunctionCarriesTheObserveObject(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	closed := false
-	c.OnObserverDeliverFor("hooked::fn", deliverAll)
+	c.OnObserverDeliverFor("hooked::fn", handlerAnswer)
 	for id, opts := range map[string]RegisterFunctionOptions{
 		"plain::fn":   {},
 		"args::fn":    {ArgsFormat: json.RawMessage(`{"type":"object"}`)},
@@ -413,7 +413,9 @@ func TestObserveFixturesReportsBuiltBySDK(t *testing.T) {
 	stats.stats["database::query"] = &functionStats{count: 37, errors: 2, durationMsSum: 15.5}
 	stats.statsOrder = []string{"database::on-row-changed", "database::query"}
 	stats.dropLocked("database::on-row-changed", dropBufferFull, 12)
-	stats.countDrop("database::execute", dropLateDelivery)
+	// a drop is sent with its reason as counted; the fixture's second row has a reason
+	// of the engine's contract this SDK does not count
+	stats.dropLocked("database::execute", "LATE_DELIVERY", 1)
 	if !stats.sendStats(now) {
 		t.Fatal("stats not sent")
 	}

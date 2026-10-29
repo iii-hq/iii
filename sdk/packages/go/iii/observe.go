@@ -173,9 +173,10 @@ func (c *Client) IsObserved(functionID string) bool {
 }
 
 // IsObservedFor reports whether call of functionID, registered by this worker, would
-// reach an observer. On a function delivered by [Keyed] it is true when an observer is
-// filed under one of the call's keys (one lookup per key); on any other function call
-// is ignored, and it is [Client.IsObserved]. Set what the keys read (Input, Metadata).
+// reach an observer. On a function matched by keys ([MatchKeys]) it is true when an
+// observer is filed under one of the call's keys (one lookup per key); on any other
+// function call is ignored, and it is [Client.IsObserved]. Set what the keys read
+// (Input, Metadata).
 func (c *Client) IsObservedFor(functionID string, call *Call) bool {
 	f := c.functionObservers(functionID)
 	return f != nil && f.isObservedFor(call)
@@ -368,7 +369,8 @@ func (c *Client) queueUnobserveLocked(id string, epoch uint64) {
 // without it they stay unregistered (UNSUPPORTED, logged once each). With observe.v1
 // the observers are replayed (after the functions) and held reports flushed; without
 // it Observe fails with UNSUPPORTED. Hook ids this worker has not registered are
-// reported once each, which catches a mistyped id.
+// reported once each, after a grace period (checkHookIDsLater), which catches a
+// mistyped id.
 func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 	// Holding observeMu across the replay keeps a concurrent Dispose (or a re-routed
 	// unobserve) either before it (parked, drained here) or after it (sent directly).
@@ -390,7 +392,7 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 	unobserve := c.pendingUnobserve
 	c.pendingUnobserve = nil
 	var held []*RegisterFunctionMessage
-	var unsupported, unknownHooks []string
+	var unsupported []string
 	for id, fn := range c.functions {
 		if !c.needsV2Locked(fn) {
 			continue
@@ -401,17 +403,11 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 			unsupported = append(unsupported, id)
 		}
 	}
-	for id := range c.functionHooks {
-		if _, ok := c.functions[id]; !ok && !c.hookIDWarned[id] {
-			c.hookIDWarned[id] = true
-			unknownHooks = append(unknownHooks, id)
-		}
-	}
+	c.checkHookIDsLater(epoch)
 	c.mu.Unlock()
 	slices.SortFunc(handles, func(a, b *ObserverHandle) int { return cmp.Compare(a.seq, b.seq) })
 	slices.SortFunc(held, func(a, b *RegisterFunctionMessage) int { return cmp.Compare(a.ID, b.ID) })
 	slices.Sort(unsupported)
-	slices.Sort(unknownHooks)
 
 	// The held registrations go through the observe pump, on this connection only and
 	// ahead of the observers that may name them as targets.
@@ -422,9 +418,6 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 	}
 	for _, id := range unsupported {
 		logUnsupported(id)
-	}
-	for _, id := range unknownHooks {
-		log.Printf("iii: observer hooks are set for %q, which this worker has not registered", id)
 	}
 	if supported {
 		for _, id := range unobserve {
@@ -440,6 +433,43 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 		h.setState(ObserverError, unsupportedReason)
 	}
 	c.reporter.clear()
+}
+
+// hookIDCheckDelay is how long after the connection is registered, or after a hook is
+// set for an id this worker has not registered, the SDK checks the hook ids: a
+// registration that follows its hooks within it is not reported.
+const hookIDCheckDelay = 1500 * time.Millisecond
+
+// checkHookIDsLater checks the hook ids once hookIDCheckDelay has passed, if
+// connection epoch is still the registered one then. The caller holds mu.
+func (c *Client) checkHookIDsLater(epoch uint64) {
+	delay := c.hookIDDelay
+	if delay <= 0 {
+		delay = hookIDCheckDelay
+	}
+	time.AfterFunc(delay, func() { c.checkHookIDs(epoch) })
+}
+
+// checkHookIDs logs, once per id, each hook id this worker has not registered, which
+// catches a mistyped id.
+func (c *Client) checkHookIDs(epoch uint64) {
+	c.mu.Lock()
+	if !c.registeredLocked(epoch) {
+		c.mu.Unlock()
+		return
+	}
+	var unknown []string
+	for id := range c.functionHooks {
+		if _, ok := c.functions[id]; !ok && !c.hookIDWarned[id] {
+			c.hookIDWarned[id] = true
+			unknown = append(unknown, id)
+		}
+	}
+	c.mu.Unlock()
+	slices.Sort(unknown)
+	for _, id := range unknown {
+		log.Printf("iii: observer hooks are set for %q, which this worker has not registered", id)
+	}
 }
 
 func (c *Client) onObserverState(id, state string, reason *ErrorBody) {

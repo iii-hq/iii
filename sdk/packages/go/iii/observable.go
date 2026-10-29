@@ -17,8 +17,8 @@ import (
 
 // This file is the hosting side of observe: per-function observer state as the engine
 // pushed it (functionregistered, observeradded, observerremoved), the added and removed
-// hooks at both levels run on the function's hook queue, the Keyed index, and the
-// Observer handed to the hooks.
+// hooks at both levels run on the function's hook queue, and the Observer handed to the
+// hooks.
 
 // observeHookTimeout is how long an added hook may run before the observer is
 // rejected with OWNER_TIMEOUT.
@@ -38,11 +38,6 @@ type dispatchState struct {
 	namespace string
 }
 
-// deliverState is the function's deliver hook, swapped as one pointer.
-type deliverState struct {
-	hook DeliverHook
-}
-
 // functionObservers is one registered function's observers. Hooks run one at a time,
 // in revision order, on a queue drained by its own goroutine. It never calls into the
 // client or the reporter while holding mu.
@@ -54,14 +49,13 @@ type functionObservers struct {
 	private bool
 
 	dispatch atomic.Pointer[dispatchState]
-	// compiled holds the active observers: swapped on change, read once per call.
-	compiled atomic.Pointer[[]*Observer]
-	// deliver is the function's deliver hook; nil means iii's delivery.
-	deliver atomic.Pointer[deliverState]
-	// keyed is the index of a Keyed deliver hook, once built on the queue.
-	keyed atomic.Pointer[keyedIndex]
+	// state is what a call reads when it starts: the active observers, the deliver hook
+	// and the match hook. Swapped under mu, loaded once per call.
+	state atomic.Pointer[callState]
 	// standingBy: a standby registration is waiting for the function's host to leave.
 	standingBy atomic.Bool
+	// matchPanicLogged: a panic of the match hook was logged.
+	matchPanicLogged atomic.Bool
 
 	mu sync.Mutex
 	// confirmedEpoch is the connection functionregistered arrived on, or -1.
@@ -83,6 +77,8 @@ type functionObservers struct {
 	revision int64
 	known    map[string]*Observer
 	disposed bool
+	// wantMatch is the match hook last set; the hook queue installs it (applyMatch).
+	wantMatch *MatchHook
 
 	qmu     sync.Mutex
 	tasks   []func()
@@ -103,57 +99,46 @@ func newFunctionObservers(c *Client, functionID string, localDispatch, private b
 		known:               map[string]*Observer{},
 	}
 	f.dispatch.Store(&dispatchState{})
-	f.compiled.Store(&[]*Observer{})
-	f.deliver.Store(&deliverState{})
+	f.state.Store(&callState{})
 	return f
 }
 
-func (f *functionObservers) compiledSet() []*Observer { return *f.compiled.Load() }
-
-func (f *functionObservers) deliverHook() DeliverHook { return f.deliver.Load().hook }
+// compiledSet is the active observers.
+func (f *functionObservers) compiledSet() []*Observer { return f.state.Load().observers }
 
 func (f *functionObservers) isObserved() bool { return len(f.compiledSet()) > 0 }
 
-// isObservedFor: with a Keyed index, whether an observer is filed under one of the
-// call's keys; otherwise whether any observer is active.
+// isObservedFor: on a function matched by keys, whether an observer is filed under one
+// of the call's keys; otherwise whether any observer is active.
 func (f *functionObservers) isObservedFor(call *Call) bool {
-	if call == nil {
-		return f.isObserved()
+	st := f.state.Load()
+	if len(st.observers) == 0 {
+		return false
 	}
-	if idx := f.keyed.Load(); idx != nil {
-		return idx.has(idx.spec.keysOfCall(call))
+	if call == nil || !st.match.byKeys() {
+		return true
 	}
-	return f.isObserved()
+	return st.match.index.has(f.callKeys(st.match.hook, call))
 }
 
 func (f *functionObservers) observers() []*Observer { return slices.Clone(f.compiledSet()) }
 
-// setDeliver installs the function's deliver hook. A Keyed hook gets its index built
-// on the queue, from the observers active then; until it is, Keyed scans them.
-func (f *functionObservers) setDeliver(hook DeliverHook) {
-	f.deliver.Store(&deliverState{hook: hook})
-	f.keyed.Store(nil)
-	spec := asKeyed(hook)
-	if spec == nil {
-		return
-	}
-	f.enqueue(func() {
-		if current := asKeyed(f.deliverHook()); current != spec {
-			return // replaced meanwhile
-		}
-		idx := newKeyedIndex(spec)
-		f.keyed.Store(idx)
-		for _, obs := range f.compiledSet() {
-			idx.file(obs, spec.keysOfObserver(obs))
-		}
-	})
+// installHooks sets the hooks of a function being registered, before its registration
+// is sent: no observer is active yet, so the match hook's index starts empty.
+func (f *functionObservers) installHooks(h *observerHooks) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wantMatch = h.match
+	f.state.Store(&callState{deliver: h.deliver, match: newMatchState(h.match)})
 }
 
-// fileKeyed files an observer just activated in the Keyed index, on the queue.
-func (f *functionObservers) fileKeyed(obs *Observer) {
-	if idx := f.keyed.Load(); idx != nil {
-		idx.file(obs, idx.spec.keysOfObserver(obs))
-	}
+// setDeliver installs the function's deliver hook: calls that start after it use it.
+func (f *functionObservers) setDeliver(hook DeliverHook) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st := *f.state.Load()
+	st.deliver = hook
+	f.state.Store(&st)
 }
 
 // syncedOn: functionregistered arrived on connection epoch and its set was applied
@@ -165,12 +150,13 @@ func (f *functionObservers) syncedOn(epoch uint64) bool {
 }
 
 // reportStatus is what a flush on connection epoch does with this function's
-// reports: send them, hold them, or drop them as INACTIVE.
+// reports: send them, hold them, or drop them as INACTIVE (the engine refused the
+// function on that connection, or it stays unregistered there for lack of observe.v2).
 func (f *functionObservers) reportStatus(epoch uint64) reportStatus {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
-	case f.releasedEpoch == int64(epoch):
+	case f.releasedEpoch == int64(epoch), f.unsupportedEpoch == int64(epoch):
 		return reportGone
 	case f.syncedEpoch == int64(epoch):
 		return reportReady
@@ -247,13 +233,15 @@ func (f *functionObservers) release() {
 	f.mu.Lock()
 	f.confirmedEpoch = -1
 	f.syncedEpoch = -1
-	for _, obs := range f.compiledSet() {
+	st := *f.state.Load()
+	for _, obs := range st.observers {
 		obs.active.Store(false)
 	}
-	f.compiled.Store(&[]*Observer{})
-	if idx := f.keyed.Load(); idx != nil {
-		idx.reset()
+	st.observers = nil
+	if st.match != nil {
+		st.match = newMatchState(st.match.hook)
 	}
+	f.state.Store(&st)
 	f.mu.Unlock()
 	f.dispatch.Store(&dispatchState{})
 	f.enqueue(func() {
@@ -324,27 +312,30 @@ func (f *functionObservers) drain() {
 	}
 }
 
-// activateLocked puts obs in the compiled set (before its ack is sent). The caller
-// files it in the Keyed index once mu is released (fileKeyed).
+// activateLocked puts obs in the active set (before its ack is sent). The caller holds
+// mu.
 func (f *functionObservers) activateLocked(obs *Observer) {
 	if obs.active.Load() {
 		return
 	}
 	obs.active.Store(true)
-	next := append(slices.Clone(f.compiledSet()), obs)
-	f.compiled.Store(&next)
+	st := *f.state.Load()
+	st.observers = append(slices.Clone(st.observers), obs)
+	f.state.Store(&st)
 }
 
-// deactivateLocked takes obs out of the compiled set and the Keyed index.
+// deactivateLocked takes obs out of the active set and the key index. The caller holds
+// mu.
 func (f *functionObservers) deactivateLocked(obs *Observer) {
 	if !obs.active.Load() {
 		return
 	}
 	obs.active.Store(false)
-	next := slices.DeleteFunc(slices.Clone(f.compiledSet()), func(o *Observer) bool { return o == obs })
-	f.compiled.Store(&next)
-	if idx := f.keyed.Load(); idx != nil {
-		idx.unfile(obs)
+	st := *f.state.Load()
+	st.observers = slices.DeleteFunc(slices.Clone(st.observers), func(o *Observer) bool { return o == obs })
+	f.state.Store(&st)
+	if st.match.byKeys() {
+		st.match.index.unfile(obs)
 	}
 }
 
@@ -393,10 +384,11 @@ func (f *functionObservers) applySet(list []ObserverInfo, revision uint64, names
 	}
 }
 
-// add runs the added hooks of both levels, the worker's then the function's, then
-// activates the observer and acks it. A hook that fails rejects the observer, and the
-// removed hook of each level whose added hook resolved runs. A kept observer is acked
-// again (with its late rejection, if the host rejected it).
+// add runs the added hooks of both levels, the worker's then the function's, computes
+// the observer's match keys when the function is matched by keys, then activates the
+// observer and acks it. A hook that fails, or keys that panic, reject the observer, and
+// the removed hook of each level whose added hook resolved runs. A kept observer is
+// acked again (with its late rejection, if the host rejected it).
 func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace string, epoch uint64) {
 	if f.isDisposed() {
 		return
@@ -431,12 +423,7 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 			resolved = append(resolved, level)
 			continue
 		}
-		f.mu.Lock()
-		obs.adding = false
-		f.mu.Unlock()
-		f.ack(info.ID, revision, namespace, epoch, outcome.body)
-		obs.settle(&ObserveRejectionError{Code: outcome.body.Code, Message: outcome.body.Message})
-		f.callRemoved(obs, resolved)
+		f.refuse(obs, revision, namespace, epoch, outcome.body, resolved)
 		if outcome.late != nil {
 			// It may still finish and set something up: undo that once it does.
 			go func() {
@@ -446,6 +433,17 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 			}()
 		}
 		return
+	}
+	// The keys are computed once, for the match state installed now: only this queue
+	// replaces it, and a release, which the critical section below sees.
+	match := f.state.Load().match
+	var keys []string
+	if match.byKeys() {
+		var rejection *ErrorBody
+		if keys, rejection = f.observerKeys(match.hook, obs); rejection != nil {
+			f.refuse(obs, revision, namespace, epoch, rejection, resolved)
+			return
+		}
 	}
 	// adding ends in the same critical section as the insert: a Reject is either seen
 	// below or finds the observer known.
@@ -468,12 +466,25 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 		obs.settle(&ObserveRejectionError{Code: rejection.Code, Message: rejection.Message})
 		return
 	}
-	// In the compiled set before the ack: the first call after "active" is delivered.
+	// In the active set before the ack: the first call after "active" is delivered.
 	f.activateLocked(obs)
+	if match.byKeys() && f.state.Load().match == match {
+		match.index.file(obs, keys)
+	}
 	f.mu.Unlock()
-	f.fileKeyed(obs)
 	f.ack(obs.id, revision, namespace, epoch, nil)
 	obs.settle(nil)
+}
+
+// refuse rejects an observer whose add failed with body: it is acked with the error,
+// Accepted returns it, and the removed hook of each level in resolved runs.
+func (f *functionObservers) refuse(obs *Observer, revision uint64, namespace string, epoch uint64, body *ErrorBody, resolved []hookLevel) {
+	f.mu.Lock()
+	obs.adding = false
+	f.mu.Unlock()
+	f.ack(obs.id, revision, namespace, epoch, body)
+	obs.settle(&ObserveRejectionError{Code: body.Code, Message: body.Message})
+	f.callRemoved(obs, resolved)
 }
 
 // keep acks an observer the hooks already ran for, again. A late rejection stays in
@@ -490,9 +501,6 @@ func (f *functionObservers) keep(obs *Observer, revision uint64, namespace strin
 		f.activateLocked(obs)
 	}
 	f.mu.Unlock()
-	if rejection == nil {
-		f.fileKeyed(obs)
-	}
 	f.ack(obs.id, revision, namespace, epoch, rejection)
 }
 
@@ -646,7 +654,8 @@ type Observer struct {
 	// Args are the observer's args, validated against args_format by the engine
 	// (numbers decode as float64; see DecodeArgs).
 	Args map[string]any
-	// Filters are the observer's filters in normal form; next and Matches apply them.
+	// Filters are the observer's filters in normal form; iii's delivery and Matches
+	// apply them.
 	Filters map[string]any
 	// Target is the target function id.
 	Target  string
@@ -730,7 +739,7 @@ func (o *Observer) DecodeArgs(v any) error { return json.Unmarshal(o.argsRaw, v)
 
 // Matches reports whether call reaches the observer: its on accepts the call's status
 // and its filters match the call. A deliver hook that calls targets itself checks it
-// before calling through the observer; next applies it on its own.
+// before calling through the observer; iii's delivery applies it on its own.
 func (o *Observer) Matches(call *Call) bool {
 	if call == nil || o.filter == nil {
 		return false

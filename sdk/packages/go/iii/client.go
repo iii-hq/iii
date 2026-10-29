@@ -174,6 +174,8 @@ type Client struct {
 	hookTimeout time.Duration
 	// standbyInterval overrides standbyRetryInterval (tests).
 	standbyInterval time.Duration
+	// hookIDDelay overrides hookIDCheckDelay (tests).
+	hookIDDelay time.Duration
 
 	// invocationTimeout is how long Call waits when CallRequest.Timeout is zero:
 	// WithInvocationTimeout, else DefaultInvocationTimeout.
@@ -497,11 +499,12 @@ func (c *Client) setState(s ConnectionState) {
 // setting.
 //
 // The handler's return value is what observers observe. Every call of the function,
-// local or routed, runs the handler and then delivers to the observers its deliver hook
-// picks ([Client.OnObserverDeliverFor]), or to every observer whose on and filters
-// match. Set hooks by id before registering: the SDK acks no observer before
-// RegisterFunction returns, but a hook set on the returned handle can miss observers
-// already accepted, and is caught up for them.
+// local or routed, runs the handler and is then delivered to the observers that want it
+// ([Client.OnObserverMatchFor]; by default all of them): by the function's deliver hook
+// ([Client.OnObserverDeliverFor]), or by iii, to those whose on and filters match. Set
+// hooks by id before registering: the SDK acks no observer before RegisterFunction
+// returns, but a hook set on the returned handle can miss observers already accepted,
+// and is caught up for them.
 //
 // Handlers read the optional per-invocation metadata sidecar from their ctx with
 // [MetadataFromContext].
@@ -574,6 +577,12 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 	// A function without a local handler (RegisterHTTPFunction) never runs in-process.
 	localDispatch := handler != nil && (cfg.LocalDispatch == nil || *cfg.LocalDispatch)
 	observe := newFunctionObservers(c, id, localDispatch, msg.Private)
+	// No observer of the function is acked before this call returns: its hook queue
+	// waits for the return from before the function is visible, so also when a
+	// reconnect's replay sends the registration first.
+	registered := make(chan struct{})
+	defer close(registered)
+	observe.enqueue(func() { <-registered })
 	c.mu.Lock()
 	if _, exists := c.functions[id]; exists {
 		c.mu.Unlock()
@@ -581,16 +590,11 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 	}
 	fn := registeredFunction{message: msg, handler: handler, observe: observe, standby: cfg.Standby}
 	c.functions[id] = fn
-	if deliver := c.deliverHookLocked(id); deliver != nil {
-		// before the registration is sent: no call reaches the function without it
-		observe.setDeliver(deliver)
+	if h := c.functionHooks[id]; h != nil {
+		// before the registration is sent: no call reaches the function without them
+		observe.installHooks(h)
 	}
 	c.mu.Unlock()
-	// No observer of the function is acked before this call returns: its hook queue
-	// waits for the return.
-	registered := make(chan struct{})
-	defer close(registered)
-	observe.enqueue(func() { <-registered })
 	c.sendFunction(fn)
 	return &FunctionRef{ID: id, client: c, observe: observe}, nil
 }
@@ -679,6 +683,7 @@ func (c *Client) reconsiderRegistration(functionID string) {
 			logUnsupported(functionID)
 		}
 		fn.observe.release()
+		c.reporter.discardFunction(functionID)
 		c.sendUnregistration(&UnregisterFunctionMessage{ID: functionID})
 	case !needsV2 && unsupportedHere:
 		c.sendRegistration(fn.message)
@@ -1643,9 +1648,9 @@ func (c *Client) enqueueOutboundDirect(frame []byte) {
 // handleInvoke runs a registered function for an inbound InvokeFunction that arrived on
 // connection epoch and, unless the call is fire-and-forget (no invocation_id), replies
 // with an InvocationResult. With an engine that advertised observe.v2 this worker
-// delivers the call (a void one included: the engine sends it with an invocation_id):
-// the report items go out first, then the answer, which lists in observed what was
-// delivered with the handler's call.
+// delivers the call (a void one included: the engine sends it with an invocation_id),
+// and the answer lists in observed the observers iii delivered it to. A function with a
+// deliver hook answers with what the hook returns, and lists none.
 func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunctionMessage) {
 	c.mu.Lock()
 	fn, ok := c.functions[msg.FunctionID]
@@ -1689,25 +1694,22 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	}
 	hctx := withInvocation(withMetadata(injectTraceContext(ctx, tc), msg.Metadata), inv)
 	f := fn.observe
-	// the observers active when the call started
-	set := f.compiledSet()
-	deliver := f.deliverHook()
+	// the observers active when the call started, and the hooks set then
+	st := f.state.Load()
 	var observed []string
-	var items []*reportItem
-	started := time.Now()
 	out := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, handler outcome) outcome {
-		if !hostDelivers || (deliver == nil && len(set) == 0) {
+		if !hostDelivers || !st.delivering() {
 			return handler
 		}
-		run := newDeliveryRun(f, handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, msg.Metadata), deliver != nil, true)
-		run.startedAt, run.duration, run.observeDepth, run.trace = started, time.Since(started), msg.ObserveDepth, tc
-		answer := outcomeOf(run.deliver(ctx, deliver, set))
-		observed, items = run.settleRouted(answer)
+		answer, ids := f.deliver(ctx, &callDelivery{
+			state:   st,
+			call:    handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, msg.Metadata),
+			handler: handler,
+			routed:  true,
+		})
+		observed = ids
 		return answer
 	})
-	if len(items) > 0 {
-		c.reporter.sendItems(epoch, true, items)
-	}
 	c.replyInvocation(epoch, msg, out.result, out.errBody, tc, observed)
 }
 
@@ -1720,12 +1722,13 @@ type outcome struct {
 }
 
 // outcomeOf encodes what a handler or a deliver hook returned: a json.RawMessage is
-// used as given once it is checked, any other value is marshaled.
-func outcomeOf(value any, err error) outcome {
+// used as given once it is checked (copied when copyRaw is set), any other value is
+// marshaled.
+func outcomeOf(value any, err error, copyRaw bool) outcome {
 	if err != nil {
 		return outcome{errBody: errorBodyFromHandlerError(err), err: err}
 	}
-	encoded, err := encodeResult(value)
+	encoded, err := encodeResult(value, copyRaw)
 	if err != nil {
 		return outcome{errBody: &ErrorBody{Code: "invocation_failed", Message: err.Error()}, err: err}
 	}
@@ -1734,14 +1737,13 @@ func outcomeOf(value any, err error) outcome {
 
 // runInvocation runs handler h and then deliver, with the handler's outcome, inside the
 // invocation's span; deliver's outcome is the call's. A handler panic is recovered into
-// an error, so a caller gets an InvocationResult.error, not a timeout. clone copies a
-// json.RawMessage the handler returns.
-func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, clone bool, deliver func(ctx context.Context, handler outcome) outcome) outcome {
+// an error, so a caller gets an InvocationResult.error, not a timeout. copyRaw copies a
+// json.RawMessage the handler returns (any other value is marshaled into a buffer of its
+// own).
+func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, copyRaw bool, deliver func(ctx context.Context, handler outcome) outcome) outcome {
 	ctx, endSpan := c.startInvocationSpan(ctx, data) // otel_client.go: "execute <fn>" span
-	handler := outcomeOf(callHandler(ctx, h, data))
-	if clone && handler.result != nil {
-		handler.result = bytes.Clone(handler.result)
-	}
+	value, err := callHandler(ctx, h, data)
+	handler := outcomeOf(value, err, copyRaw)
 	out := deliver(ctx, handler)
 	if out.err != nil {
 		endSpan(nil, out.err)
@@ -1782,7 +1784,7 @@ func errorBodyFromHandlerError(err error) *ErrorBody {
 // replyInvocation sends the InvocationResult for an invocation on the connection it
 // arrived on, unless it was fire-and-forget (no invocation_id), in which case there is
 // nowhere to reply. Echoes the incoming trace context back on the result, as the engine
-// expects, and lists the observers delivered with the handler's call in observed.
+// expects, and lists in observed the observers iii delivered the call to.
 func (c *Client) replyInvocation(epoch uint64, msg *InvokeFunctionMessage, result json.RawMessage, errBody *ErrorBody, tc traceContext, observed []string) {
 	if msg.InvocationID == nil {
 		return // fire-and-forget: no reply expected

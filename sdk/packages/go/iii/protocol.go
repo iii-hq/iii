@@ -410,8 +410,8 @@ type ObserverAckMessage struct {
 	Error      *ErrorBody `json:"error,omitempty"`
 }
 
-// InvocationsObservedMessage carries the matches of calls this worker delivered,
-// batched: local calls, and the calls next was given changed for a routed call.
+// InvocationsObservedMessage carries the matches of the local calls this worker
+// delivered, batched. A routed call's matches ride its answer (Observed).
 type InvocationsObservedMessage struct {
 	Items []ObservedItem `json:"items"`
 }
@@ -457,7 +457,7 @@ type LocalFunctionStats struct {
 }
 
 // DroppedReports counts report items the SDK dropped (BUFFER_FULL, TOO_LARGE,
-// LATE_DELIVERY, DISCONNECTED, INACTIVE).
+// DISCONNECTED, INACTIVE).
 type DroppedReports struct {
 	FunctionID string `json:"function_id"`
 	Reason     string `json:"reason"`

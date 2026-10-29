@@ -12,8 +12,8 @@ import (
 )
 
 // This file is the reporter: one bounded buffer for the deliveries of local calls,
-// flushed as invocationsobserved batches, the report items of a routed call (sent at
-// once, ahead of its answer), and the periodic localinvocationstats.
+// flushed as invocationsobserved batches, and the periodic localinvocationstats. A
+// routed call is reported only in its answer's observed list.
 //
 // It never blocks a call: pushing only appends under a mutex. When the buffer is full
 // the newest item is dropped and counted (BUFFER_FULL); an item too large on its own is
@@ -71,7 +71,6 @@ const (
 	dropBufferFull   = "BUFFER_FULL"
 	dropTooLarge     = "TOO_LARGE"
 	dropInactive     = "INACTIVE"
-	dropLateDelivery = "LATE_DELIVERY"
 	dropDisconnected = "DISCONNECTED"
 )
 
@@ -371,55 +370,6 @@ func (r *reporter) push(init reportInit, captures []Capture) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.enqueueLocked(item)
-}
-
-// countDrop counts one report the SDK could not deliver.
-func (r *reporter) countDrop(functionID, reason string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.dropLocked(functionID, reason, 1)
-}
-
-// sendItems sends the report items of a routed call on connection epoch at once, in
-// frames under the frame limit, ahead of the call's answer. Items too large for a frame
-// are counted TOO_LARGE, and items whose connection is gone DISCONNECTED.
-func (r *reporter) sendItems(epoch uint64, v2 bool, items []*reportItem) {
-	var frame []byte
-	var inFrame []*reportItem
-	send := func() {
-		if frame == nil {
-			return
-		}
-		frame = append(frame, reportFrameTail...)
-		if !r.host.sendReport(epoch, frame) {
-			r.mu.Lock()
-			for _, it := range inFrame {
-				r.dropLocked(it.wire.FunctionID, dropDisconnected, 1)
-			}
-			r.mu.Unlock()
-		}
-		frame, inFrame = nil, nil
-	}
-	for _, it := range items {
-		if it.v2 != v2 && it.render(v2) != nil {
-			continue
-		}
-		if len(it.json)+reportFrameOverhead > r.limits.maxFrameBytes {
-			r.countDrop(it.wire.FunctionID, dropTooLarge)
-			continue
-		}
-		if frame != nil && len(frame)+1+len(it.json)+len(reportFrameTail) > r.limits.maxFrameBytes {
-			send()
-		}
-		if frame == nil {
-			frame = append([]byte(nil), reportFrameHead...)
-		} else {
-			frame = append(frame, ',')
-		}
-		frame = append(frame, it.json...)
-		inFrame = append(inFrame, it)
-	}
-	send()
 }
 
 func (r *reporter) logUnencodable(functionID string, err error) {

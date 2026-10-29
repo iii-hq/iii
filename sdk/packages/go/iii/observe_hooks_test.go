@@ -495,7 +495,7 @@ func TestHooksByIDSurviveUnregisterAndChain(t *testing.T) {
 	ref = registerHost(t, c, "re::fn", echoHandler)
 	waitUntil(t, "added again", func() bool { a, _ := l.snapshot(); return len(a) == 2 })
 
-	if ref.OnObserverAdded(nil).OnObserverRemoved(nil).OnObserverDeliver(nil) != ref {
+	if ref.OnObserverAdded(nil).OnObserverRemoved(nil).OnObserverMatch(nil).OnObserverDeliver(nil) != ref {
 		t.Fatal("the FunctionRef's hook methods return the handle")
 	}
 	c.mu.Lock()
@@ -841,11 +841,8 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	logs := captureLog(t)
 	fe := newFakeEngine(t).v1Engine()
 	c := fe.newClient()
-	deliverAll := func(ctx context.Context, call *Call, observers []*Observer, next Next) (any, error) {
-		return next(ctx, call, observers)
-	}
 	closed := false
-	c.OnObserverDeliverFor("hooked::fn", deliverAll)
+	c.OnObserverDeliverFor("hooked::fn", handlerAnswer)
 	for id, opts := range map[string]RegisterFunctionOptions{
 		"args::fn":    {ArgsFormat: json.RawMessage(`{"type":"object"}`)},
 		"private::fn": {Private: true},
@@ -877,7 +874,7 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	waitUntil(t, "later::fn UNSUPPORTED", func() bool { return logs.count(`UNSUPPORTED: function "later::fn"`) == 1 })
 
 	// a deliver hook set on a registered function: unregistered; removed: registered again
-	c.OnObserverDeliverFor("plain::fn", deliverAll)
+	c.OnObserverDeliverFor("plain::fn", handlerAnswer)
 	waitFrame(t, fe.m, MsgUnregisterFunction, "plain::fn")
 	if logs.count(`UNSUPPORTED: function "plain::fn"`) != 1 {
 		t.Error("no UNSUPPORTED for plain::fn")

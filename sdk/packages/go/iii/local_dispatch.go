@@ -12,8 +12,8 @@ import (
 
 // This file is the local path of Call: a function this worker hosts, confirmed by the
 // engine for in-process calls, runs here without touching the wire, and is delivered
-// here as a routed call is. Nobody observing it means zero frames; a matched observer
-// means one report item.
+// here as a routed call is. Nobody observing it means zero frames; matched observers
+// mean one report item.
 
 // localTarget returns the function Call may run in-process: registered here, the
 // engine confirmed it with local_dispatch, the local-dispatch option is on, and the
@@ -76,11 +76,11 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Cal
 		inv.metadata = copyOf(req.Metadata)
 	}
 
-	// Delivered to the observers active when the call started: an unobserved call
-	// without a deliver hook is never reported, and its input is not copied for it.
-	set := f.compiledSet()
-	deliver := f.deliverHook()
-	delivering := deliver != nil || len(set) > 0
+	// Delivered to the observers active when the call started, by the hooks set then:
+	// an unobserved call without a deliver hook is never reported, and its input is not
+	// copied for it.
+	st := f.state.Load()
+	delivering := st.delivering()
 	input := copyOf(data)
 	// what observers see is the payload as the caller passed it
 	observedInput := input
@@ -96,26 +96,24 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Cal
 
 	run := func() outcome {
 		started := time.Now()
-		var delivery *deliveryRun
-		out := c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, handler outcome) outcome {
+		return c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, handler outcome) outcome {
 			duration := time.Since(started)
 			c.reporter.recordLocal(functionID, handler.errBody == nil, float64(duration)/float64(time.Millisecond))
 			if !delivering {
 				return handler
 			}
-			delivery = newDeliveryRun(f, handlerCall(functionID, inv.invocationID, observedInput, handler, caller, inv.metadata), deliver != nil, false)
-			delivery.startedAt, delivery.duration, delivery.observeDepth, delivery.trace = started, duration, inv.observeDepth, inv.trace
-			answer := outcomeOf(delivery.deliver(ctx, deliver, set))
-			if !private && deliver != nil && answer.result != nil {
-				// the hook's value is the caller's own copy, as the handler's is
-				answer.result = bytes.Clone(answer.result)
-			}
+			answer, _ := f.deliver(ctx, &callDelivery{
+				state:        st,
+				call:         handlerCall(functionID, inv.invocationID, observedInput, handler, caller, inv.metadata),
+				handler:      handler,
+				copyRaw:      !private,
+				startedAt:    started,
+				duration:     duration,
+				observeDepth: inv.observeDepth,
+				trace:        inv.trace,
+			})
 			return answer
 		})
-		if delivery != nil {
-			delivery.settleLocal()
-		}
-		return out
 	}
 
 	if req.Action != nil && req.Action.Type == "void" {

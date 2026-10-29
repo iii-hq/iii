@@ -169,10 +169,11 @@ func ExampleClient_ObserveFunction() {
 	}
 }
 
-// ExampleKeyed hosts an event source: one call of timer::on-tick per tick of each
-// interval its observers ask for, delivered to the observers of that interval only. The
-// hooks are set by id before the registration, so they run for every observer.
-func ExampleKeyed() {
+// ExampleMatchKeys hosts an event source: one call of timer::on-tick per tick of each
+// interval its observers ask for, matched by keys to the observers of that interval
+// only. The hooks are set by id before the registration, so they run for every
+// observer.
+func ExampleMatchKeys() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
@@ -224,14 +225,14 @@ func ExampleKeyed() {
 			delete(stops, keyOf(args.EveryMs))
 		}
 	})
-	client.OnObserverDeliverFor("timer::on-tick", iii.Keyed(
-		func(obs *iii.Observer) []string {
+	client.OnObserverMatchFor("timer::on-tick", iii.MatchKeys(
+		func(obs *iii.Observer) []string { // what the observer listens for
 			var args timerArgs
 			_ = obs.DecodeArgs(&args)
 			return []string{keyOf(args.EveryMs)}
 		},
-		func(call *iii.Call) []string {
-			var tick timerArgs // the tick carries every_ms too
+		func(call *iii.Call) []string { // what the call is: the tick carries every_ms too
+			var tick timerArgs
 			_ = json.Unmarshal(call.Input, &tick)
 			return []string{keyOf(tick.EveryMs)}
 		},
@@ -247,34 +248,32 @@ func ExampleKeyed() {
 }
 
 // ExampleClient_OnObserverDeliverFor routes each chat command to the one observer that
-// handles it, calls its target through the observer, and answers the caller with the
-// target's result.
+// handles it: the match hook picks the observer of the command, and the deliver hook
+// calls its target through it and answers the caller with the target's result.
 func ExampleClient_OnObserverDeliverFor() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	commandOf := func(obs *iii.Observer) string {
-		command, _ := obs.Args["command"].(string)
-		return command
-	}
-	client.OnObserverDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer, next iii.Next) (any, error) {
+	commandOf := func(call *iii.Call) string {
 		var req struct {
 			Command string `json:"command"`
 		}
-		if err := json.Unmarshal(call.Input, &req); err != nil {
-			return nil, err
+		_ = json.Unmarshal(call.Input, &req)
+		return req.Command
+	}
+	client.OnObserverMatchFor("chat::on-command", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+		return obs.Args["command"] == commandOf(call)
+	}))
+	client.OnObserverDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+		if len(observers) == 0 {
+			return map[string]string{"reply": "unknown command /" + commandOf(call)}, nil
 		}
-		for _, obs := range observers {
-			if commandOf(obs) != req.Command {
-				continue
-			}
-			if !obs.Matches(call) {
-				return map[string]string{"reply": "/" + req.Command + " is not available"}, nil
-			}
-			// what this hook returns is what the caller gets back
-			return client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+		obs := observers[0]
+		if !obs.Matches(call) {
+			return map[string]string{"reply": "/" + commandOf(call) + " is not available"}, nil
 		}
-		return map[string]string{"reply": "unknown command /" + req.Command}, nil
+		// what this hook returns is what the caller gets back
+		return client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
 	})
 
 	if _, err := client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{
