@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Call, DeliverHook, InvocationContext, Observer } from '../src/observe-types'
-import type { IIIClient } from '../src/types'
+import type { Call, InvocationContext, MatchKeys, MatchPredicate, Observer } from '../src/observe-types'
+import type { FunctionRef, IIIClient } from '../src/types'
 
 /**
- * Delivery by the host (v2 §4.4–§4.6, §8.2; decisions 13, 20, 36, 39): the
- * deliver hook and `next`, keyed delivery, `isObserved(call)`, routed calls
- * and calls through an observer, against a fake engine.
+ * Matching and delivery in the host (v2 §4.4–§4.6, §8.2; decisions 13, 20,
+ * 36, 38, 39, 45): onObserverMatch (predicate and keys), onObserverDeliver,
+ * isObserved(call), routed calls and calls through an observer, against a
+ * fake engine.
  */
 vi.mock('ws', async () => (await import('./observe-fake-engine')).wsModule())
 vi.resetModules()
 const fake = await import('./observe-fake-engine')
-const { registerWorker, CallAction, keyed } = await import('../src/index')
-const { InvocationError, ObserveRejection } = await import('../src/errors')
+const { registerWorker, CallAction } = await import('../src/index')
+const { ObserveRejection } = await import('../src/errors')
 const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, reportedItems, invokeFunction } = fake
 
 type Json = Record<string, unknown>
@@ -46,25 +47,27 @@ const every = (id: string, expression: string, extra: { filters?: Json; capture?
   observerInfo(id, `local::${id}`, { args: { expression }, capture: ['input'], ...extra })
 
 /** `cron::on-tick`: an event source whose observers ask for an expression. */
-async function cron(observers: Json[], hook: (iii: IIIClient) => void) {
+async function cron(observers: Json[], hooks: (iii: IIIClient) => void) {
   const { sdk, socket } = worker()
   sdk.registerFunction('cron::on-tick', (tick: Tick) => tick, { private: true })
-  hook(sdk)
+  hooks(sdk)
   socket.deliver(functionRegistered('cron::on-tick', observers, { revision: 1 }))
   await settle()
   socket.clear()
   return { sdk, socket }
 }
 
-describe('onObserverDeliver with next', () => {
-  it('choose observers, let iii deliver: only the observers passed to next are reported', async () => {
-    const { sdk, socket } = await cron([every('five', '*/5'), every('ten', '*/10')], (iii) =>
-      iii.onObserverDeliver<Tick, Tick>('cron::on-tick', (call, observers, next) =>
-        next(
-          call,
-          observers.filter((o) => o.args.expression === call.input.expression),
-        ),
-      ),
+const byExpression: MatchPredicate<Tick, Tick> = (obs, call) => obs.args.expression === call.input.expression
+
+describe('onObserverMatch: a predicate', () => {
+  it('only the observers that want the call are delivered; their filters still apply', async () => {
+    const { sdk, socket } = await cron(
+      [
+        every('five', '*/5'),
+        every('ten', '*/10'),
+        every('ten-late', '*/10', { filters: { $and: [{ 'input.n': { $gte: 10 } }] } }),
+      ],
+      (iii) => iii.onObserverMatch<Tick, Tick>('cron::on-tick', byExpression),
     )
     await expect(sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/10', n: 1 } })).resolves.toEqual({
       expression: '*/10',
@@ -74,314 +77,56 @@ describe('onObserverDeliver with next', () => {
     expect(reportedItems(socket).map((i) => [i.matched, i.input])).toEqual([[['ten'], { expression: '*/10', n: 1 }]])
   })
 
-  it("what the hook returns or throws is what the caller gets back; next resolves to the handler's output", async () => {
-    const { sdk } = worker()
-    let nextGave: unknown
-    sdk
-      .registerFunction('http::on-request', (req: { path: string }) => req)
-      .onObserverDeliver(async (call, observers, next) => {
-        nextGave = await next(call, observers)
-        if (call.input.path === '/boom') throw new Error('no route')
-        return { status_code: 404, path: call.input.path }
-      })
-    fake.lastSocket().deliver(functionRegistered('http::on-request'))
-    await settle()
-    await expect(sdk.call({ function_id: 'http::on-request', payload: { path: '/x' } })).resolves.toEqual({
-      status_code: 404,
-      path: '/x',
-    })
-    expect(nextGave).toEqual({ path: '/x' })
-    await expect(sdk.call({ function_id: 'http::on-request', payload: { path: '/boom' } })).rejects.toMatchObject({
-      code: 'invocation_failed',
-      message: 'invocation_failed: no route',
-      function_id: 'http::on-request',
-    })
-  })
-
-  it("next rejects with the handler's error, and with an InvocationError for a changed call that failed", async () => {
-    const { sdk } = worker()
-    const handlerError = new Error('card declined')
-    const seen: unknown[] = []
-    sdk
-      .registerFunction('payments::charge', async () => {
-        throw handlerError
-      })
-      .onObserverDeliver(async (call, observers, next) => {
-        seen.push(await next(call, observers).catch((e) => e))
-        seen.push(await next({ ...call, error: { code: 'DECLINED', message: 'declined' } }, observers).catch((e) => e))
-        // not awaited: no unhandled rejection either way
-        void next(call, observers)
-        return 'handled'
-      })
-    fake.lastSocket().deliver(functionRegistered('payments::charge'))
-    await settle()
-    await expect(sdk.call({ function_id: 'payments::charge', payload: {} })).resolves.toBe('handled')
-    expect(seen[0]).toBe(handlerError)
-    expect(seen[1]).toBeInstanceOf(InvocationError)
-    expect(seen[1]).toMatchObject({ code: 'DECLINED', function_id: 'payments::charge' })
-  })
-
-  it("runs inside the function's invocation: currentInvocation() and the caller of the calls it makes", async () => {
-    const { sdk, socket } = worker()
-    let inHook: InvocationContext | undefined
-    let inHandler: InvocationContext | undefined
-    sdk
-      .registerFunction('orders::on-placed', (order: unknown) => {
-        inHandler = sdk.currentInvocation()
-        return order
-      })
-      .onObserverDeliver(async (call) => {
-        await Promise.resolve()
-        inHook = sdk.currentInvocation()
-        void sdk.call({ function_id: 'audit::log', payload: {}, timeoutMs: 50 }).catch(() => undefined)
-        return call.output
-      })
-    socket.deliver(functionRegistered('orders::on-placed'))
-    await settle()
-    socket.clear()
-    socket.deliver(
-      invokeFunction(
-        'orders::on-placed',
-        { id: 1 },
-        {
-          invocation_id: 'inv-routed',
-          caller: { worker_id: 'w-shop', worker_name: 'shop', function_id: 'shop::checkout', invocation_id: 'inv-0' },
-        },
-      ),
-    )
-    await settle()
-    expect(inHook).toEqual(inHandler)
-    expect(inHook?.invocation_id).toBe('inv-routed')
-    const [out] = socket.framesOf('invokefunction')
-    expect(out.caller).toEqual({
-      function_id: 'orders::on-placed',
-      invocation_id: 'inv-routed',
-      parent: { worker_id: 'w-shop', worker_name: 'shop', function_id: 'shop::checkout', invocation_id: 'inv-0' },
-    })
-  })
-
-  it('delivers each observer at most once per call, however many times next runs', async () => {
+  it('a predicate that throws matches nothing, and is logged once per function', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { sdk, socket } = await cron([every('five', '*/5'), every('ten', '*/10')], (iii) =>
-      iii.onObserverDeliver('cron::on-tick', async (call, observers, next) => {
-        await next(call, observers)
-        await next(call, observers)
-        await next({ ...call, input: { ...call.input, n: 2 } }, observers)
-        return call.output
+      iii.onObserverMatch<Tick, Tick>('cron::on-tick', (obs, call) => {
+        if (obs.id === 'ten') throw new Error('bad observer')
+        return byExpression(obs, call)
       }),
     )
-    await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/5', n: 1 } })
+    for (const expression of ['*/5', '*/10', '*/10']) {
+      await sdk.call({ function_id: 'cron::on-tick', payload: { expression, n: 1 } })
+    }
     await flushed()
-    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['five', 'ten']])
+    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['five']])
+    expect(errors.mock.calls.filter((c) => String(c[0]).includes('onObserverMatch of cron::on-tick'))).toHaveLength(1)
   })
 
-  it('local: a changed call is its own item; the unchanged calls pool into one item with the handler call', async () => {
-    const { sdk, socket } = await cron(
-      [
-        every('all', '*', { capture: ['input', 'output'] }),
-        every('two', '*', { filters: { $and: [{ 'input.n': { $eq: 2 } }] }, capture: ['input', 'output'] }),
-      ],
-      (iii) =>
-        iii.onObserverDeliver<Tick, Tick>('cron::on-tick', async (call, observers, next) => {
-          await next(call, observers)
-          await next({ ...call, input: { ...call.input, n: 2 } }, observers)
-          await next({ ...call }, observers) // a copy holding the same values is the same call
-          return call.output as Tick
-        }),
-    )
-    await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*', n: 1 } })
-    await flushed()
-    const items = reportedItems(socket)
-    expect(items.map((i) => [i.matched, i.input, i.output, i.output_is_input])).toEqual([
-      [['two'], { expression: '*', n: 2 }, { expression: '*', n: 1 }, undefined],
-      [['all'], { expression: '*', n: 1 }, undefined, true],
-    ])
-    expect(new Set(items.map((i) => i.invocation_id)).size).toBe(1)
-  })
-
-  it('ignores what is not an observer of this function', async () => {
+  it('isObserved(call) does not read the call; without a match hook every observer wants every call', async () => {
     const { sdk, socket } = await cron([every('five', '*/5')], (iii) =>
-      iii.onObserverDeliver('cron::on-tick', (call, observers, next) =>
-        next(call, [...observers, { id: 'forged', on: 'success', capture: ['input'] } as unknown as Observer]),
-      ),
+      iii.onObserverMatch<Tick, Tick>('cron::on-tick', byExpression),
     )
-    await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/5', n: 1 } })
+    expect(sdk.isObserved('cron::on-tick', { input: { expression: '*/9', n: 0 } })).toBe(true)
+    sdk.onObserverMatch('cron::on-tick', null)
+    await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/9', n: 0 } })
     await flushed()
     expect(reportedItems(socket).map((i) => i.matched)).toEqual([['five']])
   })
-})
 
-describe('routed calls: the host delivers (v2 §8.2)', () => {
-  const answer = (socket: ReturnType<typeof fake.lastSocket>, id: string) => fake.resultOf(socket, id)
-
-  type Order = { fail?: boolean; qty: number }
-  async function routed(observers: Json[], hook?: DeliverHook<Order, { order_id: string; qty: number }, unknown>) {
-    const { sdk, socket } = worker()
-    const ref = sdk.registerFunction('orders::create', async (order: Order) => {
-      if (order.fail) throw new Error('out of stock')
-      return { order_id: 'o-1', qty: order.qty }
-    })
-    if (hook) ref.onObserverDeliver(hook)
-    socket.deliver(functionRegistered('orders::create', observers))
-    await settle()
-    socket.clear()
-    return { sdk, socket }
-  }
-
-  it("iii's delivery: the matched ids ride the answer, and nothing else is sent", async () => {
-    const { socket } = await routed([
-      observerInfo('big', 'alerts::big', { filters: { $and: [{ 'input.qty': { $gte: 10 } }] } }),
-      observerInfo('all', 'audit::all'),
-      observerInfo('errors', 'alerts::errors', { on: 'error' }),
-    ])
-    socket.deliver(invokeFunction('orders::create', { qty: 12 }, { invocation_id: 'i-1' }))
-    socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'i-2' }))
-    await settle()
-    await flushed()
-    expect(socket.frames().map((f) => f.type)).toEqual(['invocationresult', 'invocationresult'])
-    expect(answer(socket, 'i-1')).toMatchObject({ result: { order_id: 'o-1', qty: 12 }, observed: ['big', 'all'] })
-    // an error the handler threw: observed rides the error answer
-    expect(answer(socket, 'i-2')).toMatchObject({
-      error: { code: 'invocation_failed', message: 'out of stock' },
-      observed: ['errors'],
-    })
-  })
-
-  it('a call nobody matches is answered without observed', async () => {
-    const { socket } = await routed([observerInfo('errors', 'alerts::errors', { on: 'error' })])
-    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
-    await settle()
-    expect(socket.frames()).toEqual([
-      {
-        type: 'invocationresult',
-        invocation_id: 'i-1',
-        function_id: 'orders::create',
-        result: { order_id: 'o-1', qty: 1 },
-      },
-    ])
-  })
-
-  it("an answer that is not the handler's own outcome: the pooled ids go in an item, sent before the answer", async () => {
-    const all = observerInfo('all', 'audit::all', { on: 'complete', capture: ['input', 'output', 'error'] })
-    const { socket } = await routed([all], async (call, obs, next) => {
-      await next(call, obs).catch(() => undefined)
-      return { recovered: true } // a handler error turned into a result
-    })
-    socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'i-1' }))
-    await settle()
-    const [batch, result] = socket.frames()
-    expect(batch.type).toBe('invocationsobserved')
-    expect(batch.items).toMatchObject([
-      { invocation_id: 'i-1', matched: ['all'], status: 'error', error: { message: 'out of stock' } },
-    ])
-    expect(result).toMatchObject({ type: 'invocationresult', invocation_id: 'i-1', result: { recovered: true } })
-    expect(result).not.toHaveProperty('observed')
-  })
-
-  it("a hook that rethrows the handler's error keeps observed; another error moves the ids to an item", async () => {
-    const { socket } = await routed(
-      [observerInfo('errors', 'alerts::errors', { on: 'error' })],
-      async (call, obs, next) => {
-        try {
-          return await next(call, obs)
-        } catch (error) {
-          if ((call.input as { qty: number }).qty === 1) throw error
-          throw new Error('wrapped')
-        }
-      },
-    )
-    socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'same' }))
-    await settle()
-    socket.deliver(invokeFunction('orders::create', { qty: 2, fail: true }, { invocation_id: 'other' }))
-    await settle()
-    expect(answer(socket, 'same')).toMatchObject({ error: { message: 'out of stock' }, observed: ['errors'] })
-    expect(answer(socket, 'other')).toMatchObject({ error: { message: 'wrapped' } })
-    expect(answer(socket, 'other')).not.toHaveProperty('observed')
-    expect(reportedItems(socket).map((i) => [i.invocation_id, i.matched])).toEqual([['other', ['errors']]])
-  })
-
-  it('next given no observers delivers and reports nothing, whatever call it is given', async () => {
-    const { socket } = await routed([], async (call, _obs, next) => {
-      await next({ ...call, input: { qty: 99 } }, [])
-      return call.output
-    })
-    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
-    await settle()
-    expect(socket.frames().map((f) => f.type)).toEqual(['invocationresult'])
-  })
-
-  it('a next call after the hook settled delivers nothing and is counted as LATE_DELIVERY', async () => {
-    let later: (() => Promise<unknown>) | undefined
-    const { socket } = await routed([observerInfo('all', 'audit::all')], (call, obs, next) => {
-      later = () => next(call, obs)
-      return call.output
-    })
-    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
-    await settle()
-    await later?.()
-    await flushed()
-    expect(reportedItems(socket)).toEqual([])
-    expect(answer(socket, 'i-1')).not.toHaveProperty('observed')
-    await fake.elapse(10_000)
-    expect(socket.framesOf('localinvocationstats').flatMap((f) => f.dropped_reports as Json[])).toEqual([
-      { function_id: 'orders::create', reason: 'LATE_DELIVERY', count: 1 },
-    ])
-  })
-
-  it('items of a routed call whose connection closed before the hook settled count as DISCONNECTED', async () => {
-    let release!: () => void
-    const { socket } = await routed([observerInfo('all', 'audit::all')], async (call, obs, next) => {
-      await next({ ...call, input: { qty: 7 } }, obs)
-      await new Promise<void>((r) => {
-        release = r
-      })
-      return call.output
-    })
-    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
-    await settle()
-    socket.drop()
-    release()
-    await settle()
-    await fake.elapse(1500)
-    const next = fake.lastSocket()
-    next.open()
-    await fake.elapse(10_000)
-    expect(next.framesOf('invocationsobserved')).toEqual([])
-    expect(next.framesOf('localinvocationstats').flatMap((f) => f.dropped_reports as Json[])).toEqual([
-      { function_id: 'orders::create', reason: 'DISCONNECTED', count: 1 },
-    ])
-  })
-
-  it('against an engine without observe.v2 the engine evaluates routed calls: no observed, no items', async () => {
-    const { sdk, socket } = worker(fake.ENGINE_FEATURES_V1)
-    sdk.registerFunction('orders::create', async () => ({ ok: true }))
-    socket.deliver(functionRegistered('orders::create', [observerInfo('all', 'audit::all')]))
-    await settle()
-    socket.clear()
-    socket.deliver(invokeFunction('orders::create', {}, { invocation_id: 'i-1' }))
-    await settle()
-    await flushed()
-    expect(socket.frames()).toEqual([
-      { type: 'invocationresult', invocation_id: 'i-1', function_id: 'orders::create', result: { ok: true } },
-    ])
+  it('refuses a match hook that is neither a predicate, key functions nor null', () => {
+    const { sdk } = worker()
+    expect(() => sdk.onObserverMatch('cron::on-tick', { observer: () => 'k' } as never)).toThrow(TypeError)
+    expect(() => sdk.onObserverMatch('cron::on-tick', 'expression' as never)).toThrow(TypeError)
   })
 })
 
-describe('keyed delivery (v2 §4.5)', () => {
+describe('onObserverMatch: keys (v2 §4.5)', () => {
   const rowKey = (db: string, table: string, op: string) => `${db}|${table}|${op}`
-  type Change = { db: string; table: string; op: string }
-  const changes = keyed<Change, Change>({
+  type Change = { db: string; table: string; op: string; big?: boolean }
+  const byRow: MatchKeys<Change, Change> = {
     observer: ({ args }) =>
       ((args.ops as string[] | undefined) ?? ['*']).map((op) =>
         rowKey(args.db as string, (args.table as string | undefined) ?? '*', op),
       ),
     call: ({ input }) => [input.table, '*'].flatMap((t) => [input.op, '*'].map((op) => rowKey(input.db, t, op))),
-  })
+  }
 
   async function database(observers: Json[]) {
     const { sdk, socket } = worker()
     const ref = sdk
       .registerFunction('database::on-row-changed', (change: Change) => change, { private: true })
-      .onObserverDeliver(changes)
+      .onObserverMatch(byRow)
     socket.deliver(functionRegistered('database::on-row-changed', observers, { revision: 1 }))
     await settle()
     socket.clear()
@@ -391,7 +136,7 @@ describe('keyed delivery (v2 §4.5)', () => {
   const row = (id: string, args: Json, extra: { filters?: Json } = {}) =>
     observerInfo(id, `t::${id}`, { args, capture: ['input'], ...extra })
 
-  it('a call reaches the observers filed under any of its keys, each once, through next (filters apply)', async () => {
+  it('a call matches the observers filed under any of its keys, each once; filters still apply', async () => {
     const { sdk, socket } = await database([
       row('orders-insert', { db: 'primary', table: 'orders', ops: ['insert'] }),
       row('orders-any', { db: 'primary', table: 'orders' }),
@@ -436,7 +181,15 @@ describe('keyed delivery (v2 §4.5)', () => {
     expect(ref.isObserved()).toBe(false)
   })
 
-  it('a keyed hook set while observers are active files them; one whose keys throw is rejected', async () => {
+  it('an observer whose keys throw when it is added is rejected (OBSERVE_REJECTED)', async () => {
+    const { socket, ref } = await database([])
+    socket.deliver(observerAdded('database::on-row-changed', 2, row('bad-ops', { db: 'primary', ops: 5 })))
+    await settle()
+    expect(socket.framesOf('observerack')).toMatchObject([{ id: 'bad-ops', error: { code: 'OBSERVE_REJECTED' } }])
+    expect(ref.observers()).toEqual([])
+  })
+
+  it('set while observers are active, it builds the index from them; one whose keys throw is rejected', async () => {
     const { sdk, socket } = worker()
     const ref = sdk.registerFunction('cron::on-tick', (tick: Tick) => tick)
     socket.deliver(
@@ -445,38 +198,225 @@ describe('keyed delivery (v2 §4.5)', () => {
       }),
     )
     await settle()
-    ref.onObserverDeliver(
-      keyed({
-        observer: (obs) => {
-          if (typeof obs.args.expression !== 'string') throw new Error('no expression')
-          return obs.args.expression
-        },
-        call: (call) => call.input.expression,
-      }),
-    )
+    ref.onObserverMatch({
+      observer: (obs) => {
+        if (typeof obs.args.expression !== 'string') throw new Error('no expression')
+        return obs.args.expression
+      },
+      call: (call) => call.input.expression,
+    })
     expect(ref.observers().map((o) => o.id)).toEqual(['five'])
     expect(socket.framesOf('observerack').filter((a) => a.error)).toMatchObject([
       { id: 'broken', error: { code: 'OBSERVE_REJECTED' } },
     ])
     expect(ref.isObserved({ input: { expression: '*/5', n: 0 } })).toBe(true)
-    // removing the hook: isObserved(call) no longer reads the call
-    ref.onObserverDeliver(null)
+    expect(ref.isObserved({ input: { expression: '*/9', n: 0 } })).toBe(false)
+    // a predicate in its place: isObserved(call) no longer reads the call
+    ref.onObserverMatch(byExpression)
     expect(ref.isObserved({ input: { expression: '*/9', n: 0 } })).toBe(true)
   })
 
-  it('wrapped in another hook, keyed scans the observers it is given', async () => {
-    const inner = keyed<Tick, Tick>({ observer: (o) => o.args.expression as string, call: (c) => c.input.expression })
-    const { sdk, socket } = await cron([every('five', '*/5'), every('ten', '*/10')], (iii) =>
-      iii.onObserverDeliver<Tick, Tick>('cron::on-tick', (call, observers, next) => inner(call, observers, next)),
-    )
-    await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/5', n: 1 } })
+  it('call keys that throw match nothing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { sdk, socket } = await database([row('any', { db: 'primary' })])
+    await sdk.call({ function_id: 'database::on-row-changed', payload: { db: 'primary', table: 'x', op: 'insert' } })
+    sdk.onObserverMatch('database::on-row-changed', {
+      observer: () => 'k',
+      call: () => {
+        throw new Error('no key')
+      },
+    })
+    await sdk.call({ function_id: 'database::on-row-changed', payload: { db: 'primary', table: 'x', op: 'insert' } })
+    expect(sdk.isObserved('database::on-row-changed', { input: {} })).toBe(false)
     await flushed()
-    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['five']])
+    expect(reportedItems(socket)).toHaveLength(1) // the first call, matched by byRow's keys
+  })
+})
+
+describe('onObserverDeliver', () => {
+  it('what the hook returns or throws is what the caller gets back; iii delivers nothing for the function', async () => {
+    const { sdk, socket } = worker()
+    let seen: readonly Observer[] = []
+    sdk
+      .registerFunction('http::on-request', (req: { path: string }) => req)
+      .onObserverDeliver(async (call, observers) => {
+        seen = observers
+        if (call.input.path === '/boom') throw new Error('no route')
+        return { status_code: 404, path: call.input.path }
+      })
+    socket.deliver(functionRegistered('http::on-request', [observerInfo('route', 'users::get')]))
+    await settle()
+    socket.clear()
+    await expect(sdk.call({ function_id: 'http::on-request', payload: { path: '/x' } })).resolves.toEqual({
+      status_code: 404,
+      path: '/x',
+    })
+    expect(seen.map((o) => o.id)).toEqual(['route'])
+    await expect(sdk.call({ function_id: 'http::on-request', payload: { path: '/boom' } })).rejects.toMatchObject({
+      code: 'invocation_failed',
+      message: 'invocation_failed: no route',
+      function_id: 'http::on-request',
+    })
+    await flushed()
+    expect(socket.sent).toHaveLength(0)
   })
 
-  it('isObserved(call) on a function without keyed delivery ignores the call', async () => {
-    const { sdk } = await cron([every('five', '*/5')], () => undefined)
-    expect(sdk.isObserved('cron::on-tick', { input: { expression: 'anything' } })).toBe(true)
+  it('runs with no observers too, and receives only the observers that matched', async () => {
+    const seen: string[][] = []
+    const { sdk } = await cron([every('five', '*/5'), every('ten', '*/10')], (iii) =>
+      iii
+        .onObserverMatch<Tick, Tick>('cron::on-tick', byExpression)
+        .onObserverDeliver<Tick, Tick, string>('cron::on-tick', (call, observers) => {
+          seen.push(observers.map((o) => o.id))
+          return `delivered ${call.input.expression}`
+        }),
+    )
+    await expect(sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/10', n: 1 } })).resolves.toBe(
+      'delivered */10',
+    )
+    await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '* * *', n: 2 } })
+    expect(seen).toEqual([['ten'], []])
+  })
+
+  it("runs inside the function's invocation: currentInvocation() and the caller of the calls it makes", async () => {
+    const { sdk, socket } = worker()
+    let inHook: InvocationContext | undefined
+    let inHandler: InvocationContext | undefined
+    sdk
+      .registerFunction('orders::on-placed', (order: unknown) => {
+        inHandler = sdk.currentInvocation()
+        return order
+      })
+      .onObserverDeliver(async (call) => {
+        await Promise.resolve()
+        inHook = sdk.currentInvocation()
+        void sdk.call({ function_id: 'audit::log', payload: {}, timeoutMs: 50 }).catch(() => undefined)
+        return call.output
+      })
+    socket.deliver(functionRegistered('orders::on-placed'))
+    await settle()
+    socket.clear()
+    socket.deliver(
+      invokeFunction(
+        'orders::on-placed',
+        { id: 1 },
+        {
+          invocation_id: 'inv-routed',
+          caller: { worker_id: 'w-shop', worker_name: 'shop', function_id: 'shop::checkout', invocation_id: 'inv-0' },
+        },
+      ),
+    )
+    await settle()
+    expect(inHook).toEqual(inHandler)
+    expect(inHook?.invocation_id).toBe('inv-routed')
+    const [out] = socket.framesOf('invokefunction')
+    expect(out.caller).toEqual({
+      function_id: 'orders::on-placed',
+      invocation_id: 'inv-routed',
+      parent: { worker_id: 'w-shop', worker_name: 'shop', function_id: 'shop::checkout', invocation_id: 'inv-0' },
+    })
+  })
+})
+
+describe('routed calls: the host delivers (v2 §8.2)', () => {
+  const answer = (socket: ReturnType<typeof fake.lastSocket>, id: string) => fake.resultOf(socket, id)
+
+  type Order = { fail?: boolean; qty: number }
+  type Created = { order_id: string; qty: number }
+  async function routed(observers: Json[], hooks: (ref: FunctionRef<Order, Created>) => void = () => undefined) {
+    const { sdk, socket } = worker()
+    const ref = sdk.registerFunction('orders::create', async (order: Order) => {
+      if (order.fail) throw new Error('out of stock')
+      return { order_id: 'o-1', qty: order.qty }
+    })
+    hooks(ref)
+    socket.deliver(functionRegistered('orders::create', observers))
+    await settle()
+    socket.clear()
+    return { sdk, socket }
+  }
+
+  it("iii's delivery: the selected ids ride the answer, on success and on the handler's error; no report is sent", async () => {
+    const { socket } = await routed([
+      observerInfo('big', 'alerts::big', { filters: { $and: [{ 'input.qty': { $gte: 10 } }] } }),
+      observerInfo('all', 'audit::all'),
+      observerInfo('errors', 'alerts::errors', { on: 'error' }),
+    ])
+    socket.deliver(invokeFunction('orders::create', { qty: 12 }, { invocation_id: 'i-1' }))
+    socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'i-2' }))
+    await settle()
+    await flushed()
+    expect(socket.frames().map((f) => f.type)).toEqual(['invocationresult', 'invocationresult'])
+    expect(answer(socket, 'i-1')).toMatchObject({ result: { order_id: 'o-1', qty: 12 }, observed: ['big', 'all'] })
+    expect(answer(socket, 'i-2')).toMatchObject({
+      error: { code: 'invocation_failed', message: 'out of stock' },
+      observed: ['errors'],
+    })
+  })
+
+  it('a call nobody matches is answered without observed', async () => {
+    const { socket } = await routed([observerInfo('errors', 'alerts::errors', { on: 'error' })])
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
+    await settle()
+    expect(socket.frames()).toEqual([
+      {
+        type: 'invocationresult',
+        invocation_id: 'i-1',
+        function_id: 'orders::create',
+        result: { order_id: 'o-1', qty: 1 },
+      },
+    ])
+  })
+
+  it('the match hook applies to routed calls', async () => {
+    const { socket } = await routed(
+      [
+        observerInfo('small', 'audit::small', { args: { max: 5 } }),
+        observerInfo('large', 'audit::large', { args: { max: 50 } }),
+      ],
+      (ref) => ref.onObserverMatch((obs, call) => call.input.qty <= (obs.args.max as number)),
+    )
+    socket.deliver(invokeFunction('orders::create', { qty: 10 }, { invocation_id: 'i-1' }))
+    await settle()
+    expect(answer(socket, 'i-1')).toMatchObject({ observed: ['large'] })
+  })
+
+  it('a function with onObserverDeliver lists no observed: its answer is what the hook returns or throws', async () => {
+    const { socket } = await routed([observerInfo('all', 'audit::all', { on: 'complete' })], (ref) =>
+      ref.onObserverDeliver(async (call) => {
+        if (call.status === 'error') return { recovered: true }
+        throw new Error('rejected by the hook')
+      }),
+    )
+    socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'recovered' }))
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'rejected' }))
+    await settle()
+    await flushed()
+    expect(socket.frames().map((f) => f.type)).toEqual(['invocationresult', 'invocationresult'])
+    expect(answer(socket, 'recovered')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'recovered',
+      function_id: 'orders::create',
+      result: { recovered: true },
+    })
+    expect(answer(socket, 'rejected')).toMatchObject({
+      error: { code: 'invocation_failed', message: 'rejected by the hook' },
+    })
+    expect(answer(socket, 'rejected')).not.toHaveProperty('observed')
+  })
+
+  it('against an engine without observe.v2 the engine evaluates routed calls: no observed', async () => {
+    const { sdk, socket } = worker(fake.ENGINE_FEATURES_V1)
+    sdk.registerFunction('orders::create', async () => ({ ok: true }))
+    socket.deliver(functionRegistered('orders::create', [observerInfo('all', 'audit::all')]))
+    await settle()
+    socket.clear()
+    socket.deliver(invokeFunction('orders::create', {}, { invocation_id: 'i-1' }))
+    await settle()
+    await flushed()
+    expect(socket.frames()).toEqual([
+      { type: 'invocationresult', invocation_id: 'i-1', function_id: 'orders::create', result: { ok: true } },
+    ])
   })
 })
 
@@ -544,7 +484,7 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
     expect(socket.framesOf('invokefunction')).toEqual([])
   })
 
-  it("the engine's refusal reaches the caller as an InvocationError", async () => {
+  it("the engine's refusal reaches the caller as an error", async () => {
     const { sdk, socket } = await http()
     const response = sdk.call({ function_id: 'http::on-request', payload: { path: '/users' } })
     await settle()

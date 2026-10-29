@@ -270,24 +270,6 @@ describe('Reporter', () => {
     expect(plain).not.toHaveProperty('output_is_input')
   })
 
-  it('sendNow: sends at once, ahead of buffered items and whatever their function waits on; never requeues', () => {
-    const h = host({ status: 'wait' })
-    const r = reporter(h, { maxFrameBytes: 400 })
-    r.push(item(1))
-    r.sendNow([item(2), item(3), item(4, { values: { input: 'x'.repeat(1000) } })])
-    expect(h.parsed().map((f) => (f.items ?? []).map((i) => i.invocation_id))).toEqual([['inv-2', 'inv-3']])
-    expect(r.size).toBe(1)
-    h.state.online = false
-    r.sendNow([item(5), item(6)])
-    h.state.online = true
-    r.sendStats()
-    const frames = h.parsed()
-    expect(frames[frames.length - 1].dropped_reports).toEqual([
-      { function_id: 'fn::a', reason: 'TOO_LARGE', count: 1 },
-      { function_id: 'fn::a', reason: 'DISCONNECTED', count: 2 },
-    ])
-  })
-
   it('replaces lone surrogates with U+FFFD in strings and keys, so the engine can decode the frame', () => {
     const h = host()
     const r = reporter(h)

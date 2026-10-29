@@ -6,7 +6,7 @@ These three recipes rebuild what applications used iii-stream for with SDK primi
 
 | Recipe | Existing requirement | Replaces | Replacement |
 |---|---|---|---|
-| [`owned-source.ts`](./owned-source.ts) | Ephemeral change/lifecycle notification | iii-stream `set` / `send` used only to notify; observing iii-stream changes or the Streams WebSocket to listen | The domain worker hosts its own private source (`orders::on-changed`) with `args_format` and keyed delivery; consumers observe it |
+| [`owned-source.ts`](./owned-source.ts) | Ephemeral change/lifecycle notification | iii-stream `set` / `send` used only to notify; observing iii-stream changes or the Streams WebSocket to listen | The domain worker hosts its own private source (`orders::on-changed`) with `args_format`, matched by keys; consumers observe it |
 | [`stored-records.ts`](./stored-records.ts) | Queryable records with live updates | iii-stream `set` / `get` / `list` / `delete` as a generic KV store plus observing it | Explicit storage owned by the domain worker, `tasks::get` + paginated `tasks::list`, and a `tasks::on-changed` source called after commit with `{ id, revision, op }`; consumers do an initial read, reconcile by revision and resync after reconnect |
 | [`channel.ts`](./channel.ts) | Continuous content for one operation | Writing progress or partial output into stream items per job and watching them over the WebSocket | A channel created for the operation, with an explicit lifetime (deadline, cancel, close) and bounded buffering |
 
@@ -20,7 +20,7 @@ A notification is not a database or a durable event log. If consumers need histo
 | iii-stream `get` / `list` / `list_groups` | Your own `<worker>::get` and paginated `<worker>::list` functions |
 | iii-stream `send` (ephemeral event) | `iii.call({ function_id: '<worker>::on-changed', payload: event })`: iii delivers it to the observers whose args and filters match. iii-stream `send` already skips the KV write but still depends on iii-stream and has a different event envelope, so switching `set` to `send` is not a migration |
 | Observing `stream::on-changed` with filters on `{ stream_name, group_id }` | `iii.observe({ function_id: '<worker>::on-changed', args: { ...validated by args_format } }, target)` |
-| Groups, `stream:join` / `stream:leave`, the Streams `auth_function` | A required tenant/scope key in the observer's args that `args_format` requires and keyed delivery files observers under; who may observe is enforced with worker-manager RBAC. A transport change alone does not reproduce these policies |
+| Groups, `stream:join` / `stream:leave`, the Streams `auth_function` | A required tenant/scope key in the observer's args that `args_format` requires and `onObserverMatch` files observers under; who may observe is enforced with worker-manager RBAC. A transport change alone does not reproduce these policies |
 | Browser or Streams WebSocket subscription | The Browser SDK observes the same sources (it is a worker too); long content goes over a channel |
 
 ## What each recipe demonstrates
@@ -28,7 +28,7 @@ A notification is not a database or a durable event log. If consumers need histo
 **`owned-source.ts`** (provider `orders`, consumer `billing`)
 - The provider hosts `orders::on-changed`, a private function whose handler returns the event: only it may call the source, everyone may observe it.
 - Args are validated by the engine against `args_format`: unknown keys, a missing `tenant_id` or unknown event names refuse the observer with `INVALID_ARGS` before any hook runs; `onObserverAdded` caps the observers (`MAX_OBSERVERS`).
-- Keyed delivery files each observer under its tenant, order and events, so an event reaches its observers with four lookups, whatever their number; `isObserved(event)` skips events nobody observes.
+- `onObserverMatch` files each observer under its tenant, order and events, so an event reaches its observers with four lookups, whatever their number; `isObserved(event)` skips events nobody observes.
 - The observer's metadata reaches the handler as its second argument; `deliver: 'input'` hands the target the event itself.
 - Tenant isolation: a `tenant-2` event never reaches a `tenant-1` observer.
 - Cleanup: `observer.dispose()` reaches the provider (`onObserverRemoved`) and delivery stops.
@@ -83,7 +83,7 @@ Prerequisites: Node.js 23.6+ (it runs `.ts` files natively) or Bun, the workspac
 
 Provider (the worker that owns the data or the events):
 - Hosts its source as a private function whose handler returns the event; describes the observers' args with `args_format` and keeps `onObserverAdded` for setup and limits.
-- Delivers with `keyed` (or another `onObserverDeliver`) when observers ask for different events, and skips events nobody observes with `isObserved(event)`.
+- Sets `onObserverMatch` (keys or a predicate) when observers ask for different events, and skips events nobody observes with `isObserved(event)`.
 - Calls the source only after the write is committed; events stay small (ids plus revision), and the data is read through queries.
 
 Consumer:

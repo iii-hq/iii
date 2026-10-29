@@ -4,12 +4,12 @@
  *
  * Shows three patterns:
  * 1. A source with args: `args_format` for the observers' args, hooks that set
- *    something up per observer, and keyed delivery
+ *    something up per observer, and matching by keys
  * 2. Observing the built-in sources (cron, state, pubsub) with args or filters
  * 3. Listing the functions and how many observers each has
  */
 
-import { keyed, ObserveRejection } from 'iii-sdk'
+import { ObserveRejection } from 'iii-sdk'
 import { EngineFunctions } from 'iii-sdk/engine'
 import { iii } from './iii'
 
@@ -77,12 +77,10 @@ const webhooks = iii
     else listeners.set(url, left)
   })
   // each webhook reaches the observers of its url
-  .onObserverDeliver(
-    keyed<WebhookEvent, WebhookEvent>({
-      observer: obs => (obs.args as WebhookArgs).url,
-      call: call => call.input.url,
-    }),
-  )
+  .onObserverMatch({
+    observer: obs => (obs.args as WebhookArgs).url,
+    call: call => call.input.url,
+  })
 
 /** What the webhook server calls for each request; nothing is sent when nobody listens. */
 export async function onWebhook(event: WebhookEvent): Promise<void> {

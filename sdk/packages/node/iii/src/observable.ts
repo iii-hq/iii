@@ -1,10 +1,10 @@
 /**
  * The host side of observe (v2 §4): per-function observer state, the
  * observer hooks of the worker and of the function, the `Observer` object
- * handed to them, keyed delivery, and the delivery of each call of a hosted
- * function.
+ * handed to them, matching (the key index), and the delivery of each call of
+ * a hosted function.
  */
-import { InvocationError, ObserveRejection } from './errors'
+import { ObserveRejection } from './errors'
 import { type CompiledFilter, compileFilter, type FilterDoc } from './filter'
 import type { CallerWire, ErrorBody, ObserverInfoWire } from './iii-types'
 import type {
@@ -13,7 +13,9 @@ import type {
   Capture,
   DeliverHook,
   Filter,
-  KeyedSpec,
+  Key,
+  MatchHook,
+  MatchKeys,
   ObserveReason,
   Observer,
   RemovedHook,
@@ -29,6 +31,7 @@ export type FunctionHooks = {
   workerRemoved?: RemovedHook
   added?: AddedHook
   removed?: RemovedHook
+  match?: MatchHook
   deliver?: DeliverHook
 }
 
@@ -107,61 +110,13 @@ function reportCaller(caller: CallerWire | undefined): CallerWire | undefined {
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
-/** The same call (decision 36): every field holds the same value, compared by identity. */
-function sameCall(a: Call, b: Call): boolean {
-  return (
-    a === b ||
-    (a.input === b.input &&
-      a.status === b.status &&
-      a.output === b.output &&
-      a.error === b.error &&
-      a.caller === b.caller &&
-      a.metadata === b.metadata)
-  )
+/** The key functions of a match hook given as keys, if it is one. */
+function matchKeysOf(hook: MatchHook | undefined): MatchKeys | undefined {
+  return hook !== undefined && typeof hook !== 'function' ? hook : undefined
 }
 
-const KEYED = Symbol('iii.keyed')
-
-/** The keys behind a deliver hook made by {@link keyed}, if it is one. */
-function keyedSpecOf(hook: DeliverHook | undefined): KeyedSpec | undefined {
-  return (hook as { [KEYED]?: KeyedSpec } | undefined)?.[KEYED]
-}
-
-function keyList(keys: string | readonly string[]): readonly string[] {
+function keyList(keys: Key): readonly string[] {
   return typeof keys === 'string' ? [keys] : keys
-}
-
-/**
- * Keyed delivery (v2 §4.5): set as a function's `onObserverDeliver`, the SDK
- * files each observer under the keys `spec.observer` returns, once, when it is
- * accepted, and unfiles it when it is removed. A call reaches the observers
- * filed under any of the keys `spec.call` returns, each at most once, through
- * `next`, so `on`, filters, policy and `deliver` apply. A call costs one hash
- * lookup per key, whatever the number of observers.
- *
- * Keys express wildcards by listing them: an observer of every table is filed
- * under `primary|*|insert`, and a change is delivered to
- * `primary|orders|insert` and `primary|*|insert`.
- *
- * @example
- * ```typescript
- * iii.onObserverDeliver('cron::on-tick', keyed({
- *   observer: (obs) => obs.args.expression as string,
- *   call: (call) => call.input.expression,
- * }))
- * ```
- */
-// biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped key functions read their input
-export function keyed<I = any, O = any>(spec: KeyedSpec<I, O>): DeliverHook<I, O, O> {
-  // Called as a plain function (wrapped in another hook), it scans the observers it is given.
-  const hook: DeliverHook<I, O, O> = (call, observers, next) => {
-    const wanted = new Set(keyList(spec.call(call)))
-    return next(
-      call,
-      observers.filter((obs) => keyList(spec.observer(obs)).some((key) => wanted.has(key))),
-    )
-  }
-  return Object.assign(hook, { [KEYED]: spec as KeyedSpec })
 }
 
 /** The `Observer` a host receives. Its identity is stable while the observer lives. */
@@ -189,7 +144,7 @@ export class ObserverImpl implements Observer {
   adding = false
   /** @internal Where it stands at each hook level. */
   readonly levels: Record<Level, LevelState> = { worker: 'none', fn: 'none' }
-  /** @internal The keys it is filed under (keyed delivery), computed once. */
+  /** @internal The keys it is filed under (`onObserverMatch` by keys), computed once. */
   keys?: readonly string[]
   private acceptance: 'pending' | 'accepted' | ObserveReason = 'pending'
   private waiters?: { resolve: () => void; reject: (error: ObserveRejection) => void }[]
@@ -296,10 +251,12 @@ export class FunctionObservers {
    * (An unregistered function is gone because it left the function map.)
    */
   releasedEpoch?: number
-  /** The keys the index is built for: the function's deliver hook, when {@link keyed} made it. */
-  private keyedSpec?: KeyedSpec
-  /** Keyed delivery: the active observers by key. */
+  /** The key functions the index is built for: the function's match hook, when it is given as keys. */
+  private matchKeys?: MatchKeys
+  /** Matching by keys: the active observers by key. */
   private index?: Map<string, Set<ObserverImpl>>
+  /** A match hook threw: logged once per function. */
+  private matchFailureLogged = false
 
   constructor(
     readonly functionId: string,
@@ -307,7 +264,7 @@ export class FunctionObservers {
     private readonly hasHandler: boolean,
     private readonly host: ObserveHost,
   ) {
-    this.deliverChanged()
+    this.matchChanged()
   }
 
   get reporter(): Reporter {
@@ -321,18 +278,47 @@ export class FunctionObservers {
 
   /**
    * Whether a call would reach anyone. Without a call: any active observer
-   * (one load). With a call, under keyed delivery: an observer filed under one
-   * of its keys (one lookup per key). Otherwise the call is not read.
+   * (one load). With a call, on a function matched by keys: an observer filed
+   * under one of its keys (one lookup per key). Otherwise the call is not read.
    */
   isObserved(call?: Partial<Call>): boolean {
     if (this.compiled.length === 0) return false
-    const spec = this.keyedSpec
+    const keys = this.matchKeys
     const index = this.index
-    if (call === undefined || !spec || !index) return true
-    for (const key of keyList(spec.call(call as Call))) {
+    if (call === undefined || !keys || !index) return true
+    for (const key of this.callKeys(keys, call as Call)) {
       if (index.has(key)) return true
     }
     return false
+  }
+
+  /**
+   * The observers in `snapshot` that want `call` (`onObserverMatch`): all of
+   * them without a match hook, those the predicate accepts, or those filed
+   * under one of the call's keys, each once. A match hook that throws matches
+   * nothing.
+   */
+  matching(call: Call, snapshot: readonly ObserverImpl[]): readonly ObserverImpl[] {
+    const hook = this.host.hooks(this.functionId).match
+    if (hook === undefined) return snapshot
+    if (typeof hook === 'function') {
+      return snapshot.filter((obs) => {
+        try {
+          return hook(obs, call) === true
+        } catch (error) {
+          this.matchFailed(error)
+          return false
+        }
+      })
+    }
+    const index = this.index
+    if (this.matchKeys !== hook || !index) return []
+    const found = new Set<ObserverImpl>()
+    for (const key of this.callKeys(hook, call)) {
+      const filed = index.get(key)
+      if (filed) for (const obs of filed) found.add(obs)
+    }
+    return [...found]
   }
 
   observers(): readonly Observer[] {
@@ -434,15 +420,15 @@ export class FunctionObservers {
   }
 
   /**
-   * The function's deliver hook was set or removed. Keyed delivery files the
-   * active observers anew under the keys of the new hook; an observer whose
-   * keys cannot be computed is late-rejected.
+   * The function's match hook was set or removed (decision 45). Matching by
+   * keys rebuilds the index from the active observers; an observer whose keys
+   * cannot be computed is late-rejected.
    */
-  deliverChanged(): void {
-    const spec = keyedSpecOf(this.host.hooks(this.functionId).deliver)
-    if (spec === this.keyedSpec) return
-    this.keyedSpec = spec
-    this.index = spec ? new Map() : undefined
+  matchChanged(): void {
+    const keys = matchKeysOf(this.host.hooks(this.functionId).match)
+    if (keys === this.matchKeys) return
+    this.matchKeys = keys
+    this.index = keys ? new Map() : undefined
     for (const obs of this.known.values()) obs.keys = undefined
     for (const obs of this.compiled) {
       const failure = this.prepareKeys(obs)
@@ -451,22 +437,20 @@ export class FunctionObservers {
     }
   }
 
-  /** @internal The index is built for `spec`: a call is delivered from it. */
-  indexes(spec: KeyedSpec): boolean {
-    return this.keyedSpec === spec && this.index !== undefined
+  /** The keys of a call; a key function that throws gives none. */
+  private callKeys(keys: MatchKeys, call: Call): readonly string[] {
+    try {
+      return keyList(keys.call(call))
+    } catch (error) {
+      this.matchFailed(error)
+      return []
+    }
   }
 
-  /** @internal The observers filed under the call's keys, each once. */
-  keyedObservers(call: Call): ObserverImpl[] {
-    const spec = this.keyedSpec
-    const index = this.index
-    if (!spec || !index) return []
-    const found = new Set<ObserverImpl>()
-    for (const key of keyList(spec.call(call))) {
-      const filed = index.get(key)
-      if (filed) for (const obs of filed) found.add(obs)
-    }
-    return [...found]
+  private matchFailed(error: unknown): void {
+    if (this.matchFailureLogged) return
+    this.matchFailureLogged = true
+    this.host.logError(`onObserverMatch of ${this.functionId} threw; the call matches no observer`, error)
   }
 
   /**
@@ -510,12 +494,12 @@ export class FunctionObservers {
     this.unfile(obs)
   }
 
-  /** Computes the keys `obs` is filed under, once, when the function's deliver hook is keyed. */
+  /** Computes the keys `obs` is filed under, once, when the function is matched by keys. */
   private prepareKeys(obs: ObserverImpl): ObserveReason | undefined {
-    const spec = this.keyedSpec
-    if (!spec || obs.keys) return undefined
+    const keys = this.matchKeys
+    if (!keys || obs.keys) return undefined
     try {
-      obs.keys = [...new Set(keyList(spec.observer(obs)))]
+      obs.keys = [...new Set(keyList(keys.observer(obs)))]
       return undefined
     } catch (error) {
       return {
@@ -772,31 +756,19 @@ export type DeliveryInit = {
   observe_depth: number
   traceparent?: string
   baggage?: string
-  /**
-   * A routed call: its items are handed here once the hook settles, to go
-   * out ahead of the answer, and the answer lists {@link Delivery.observed}.
-   * A local call's items go to the reporter.
-   */
-  routed?: (items: ReportInit[]) => void
+  /** A routed call: what iii's delivery selects rides the answer (`observed`); a local call is reported. */
+  routed: boolean
 }
 
 /**
- * The delivery of one call (v2 §4.4, decisions 20, 36): runs the function's
- * `onObserverDeliver` with `next`, or `next` alone, and reports what each
- * `next` delivered. Each observer is delivered at most once per call. The
- * `next` calls given the handler's call unchanged pool what they deliver: in
- * the routed answer's `observed` when that answer is the handler's own
- * outcome, otherwise in one item that carries the handler's call. Each `next`
- * call given a changed call reports its own item.
+ * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45): the
+ * observers are matched (`onObserverMatch`), then the function's
+ * `onObserverDeliver` delivers the call itself, or iii delivers it to the
+ * matched observers whose `on` and filters accept it: a local call in one
+ * report item, a routed call in its answer's `observed`.
  */
 export class Delivery {
-  private readonly delivered = new Set<string>()
-  /** Delivered by the `next` calls given the handler's call unchanged. */
-  private readonly pooled: ObserverImpl[] = []
-  /** A routed call's items, until the hook settles. */
-  private readonly items: ReportInit[] = []
-  private settled = false
-  /** A routed call's `observed`: the pooled ids, when the answer is the handler's own outcome. */
+  /** A routed call's `observed`: what iii's delivery selected. */
   observed: readonly string[] = []
 
   constructor(
@@ -804,104 +776,38 @@ export class Delivery {
     private readonly init: DeliveryInit,
   ) {}
 
-  /** iii's delivery, as the deliver hook's `next`. */
-  readonly next = (call: Call, observers: readonly Observer[]): Promise<unknown> => {
-    this.deliver(call, observers)
-    return this.outcome(call)
-  }
-
-  /**
-   * Runs `hook` (or iii's delivery without one) and settles the call's
-   * reports: resolves to what the caller gets back, or rejects with what the
-   * hook threw.
-   */
-  async run(hook: DeliverHook | undefined): Promise<unknown> {
-    const { call, snapshot, thrown } = this.init
-    let value: unknown
-    try {
-      const spec = keyedSpecOf(hook)
-      if (hook === undefined) value = await this.next(call, snapshot)
-      else if (spec && this.owner.indexes(spec)) value = await this.next(call, this.owner.keyedObservers(call))
-      else value = await hook(call, snapshot, this.next)
-    } catch (error) {
-      this.settle(call.status === 'error' && error === thrown)
-      throw error
+  /** Resolves to what the caller gets back, or rejects with what it gets thrown. */
+  async run(deliver: DeliverHook | undefined): Promise<unknown> {
+    const { call, snapshot, thrown, routed } = this.init
+    const matched = this.owner.matching(call, snapshot)
+    if (deliver !== undefined) return deliver(call, matched)
+    const selected = this.select(call, matched)
+    if (selected.length > 0) {
+      if (routed) this.observed = selected.map((obs) => obs.id)
+      else this.owner.reporter.push(this.item(call, selected))
     }
-    this.settle(call.status === 'success' && value === call.output)
-    return value
+    if (call.status === 'error') throw thrown
+    return call.output
   }
 
-  /** The error body an answer carries for `error`: the handler's own, or what the hook threw. */
+  /** The error body an answer carries for `error`: the handler's own, or what the deliver hook threw. */
   errorBody(error: unknown): ErrorBody {
     const { call, thrown } = this.init
     return error === thrown && call.error ? call.error : handlerErrorBody(error)
   }
 
-  private deliver(call: Call, observers: readonly Observer[]): void {
-    if (this.settled && this.init.routed) {
-      // The answer is out: the engine would refuse the item (INVALID_REPORT).
-      this.owner.reporter.drop(this.owner.functionId, 'LATE_DELIVERY')
-      return
-    }
-    const matched = this.match(call, observers)
-    if (matched.length === 0) return
-    if (this.settled || !sameCall(call, this.init.call)) this.report(this.item(call, matched))
-    else this.pooled.push(...matched)
-  }
-
-  /** The observers given whose `on` and filters match `call`, less those already delivered. */
-  private match(call: Call, observers: readonly Observer[]): ObserverImpl[] {
+  /** The matched observers whose `on` and filters accept `call`. */
+  private select(call: Call, matched: readonly ObserverImpl[]): ObserverImpl[] {
     const ok = call.status !== 'error'
     const doc = filterDoc(call)
-    const matched: ObserverImpl[] = []
-    for (const obs of observers) {
-      if (!(obs instanceof ObserverImpl) || obs.function_id !== this.owner.functionId) continue
-      if (this.delivered.has(obs.id) || !onAccepts(obs.on, ok) || !obs.filter.matches(doc)) continue
-      this.delivered.add(obs.id)
-      matched.push(obs)
-    }
-    return matched
+    return matched.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
   }
 
-  /** What `next` resolves to: the call's output, or its error. */
-  private outcome(call: Call): Promise<unknown> {
-    if (call.status !== 'error') return Promise.resolve(call.output)
-    const { call: handlerCall, thrown } = this.init
-    const error =
-      call.error === handlerCall.error
-        ? thrown
-        : new InvocationError({
-            code: call.error?.code ?? 'invocation_failed',
-            message: call.error?.message ?? '',
-            function_id: this.owner.functionId,
-          })
-    const rejected = Promise.reject(error)
-    // Delivered either way: a hook that does not await `next` leaves no unhandled rejection.
-    rejected.catch(() => undefined)
-    return rejected
-  }
-
-  private report(item: ReportInit): void {
-    if (this.init.routed) this.items.push(item)
-    else this.owner.reporter.push(item)
-  }
-
-  private settle(own: boolean): void {
-    if (this.settled) return
-    this.settled = true
-    const { routed, call } = this.init
-    if (this.pooled.length > 0) {
-      if (routed && own) this.observed = this.pooled.map((obs) => obs.id)
-      else this.report(this.item(call, this.pooled))
-    }
-    if (routed && this.items.length > 0) routed(this.items.splice(0))
-  }
-
-  /** A report item: `call` as delivered to `matched`, under the handler call's invocation. */
-  private item(call: Call, matched: readonly ObserverImpl[]): ReportInit {
+  /** The report item of a local call delivered to `selected`. */
+  private item(call: Call, selected: readonly ObserverImpl[]): ReportInit {
     const init = this.init
     const captures = new Set<string>()
-    for (const obs of matched) for (const c of obs.capture) captures.add(c)
+    for (const obs of selected) for (const c of obs.capture) captures.add(c)
     const ok = call.status !== 'error'
     const values: ReportValues = { input: call.input }
     if (ok) values.output = call.output
@@ -912,8 +818,8 @@ export class Delivery {
     return {
       function_id: this.owner.functionId,
       namespace: this.owner.namespace,
-      invocation_id: init.call.invocation_id,
-      matched: matched.map((obs) => obs.id),
+      invocation_id: call.invocation_id,
+      matched: selected.map((obs) => obs.id),
       status: ok ? 'success' : 'error',
       values,
       captures,

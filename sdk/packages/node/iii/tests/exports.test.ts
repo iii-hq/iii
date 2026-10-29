@@ -17,15 +17,21 @@ describe('Package Exports', () => {
     expect(typeof iii.registerFunction).toBe('function')
     expect(typeof iii.call).toBe('function')
     expect(iii.trigger).toBe(iii.call)
-    for (const hook of ['onObserverAdded', 'onObserverRemoved', 'onObserverDeliver', 'observers', 'isObserved']) {
+    for (const hook of [
+      'onObserverAdded',
+      'onObserverRemoved',
+      'onObserverMatch',
+      'onObserverDeliver',
+      'observers',
+      'isObserved',
+    ]) {
       expect(typeof (iii as unknown as Record<string, unknown>)[hook]).toBe('function')
     }
     void iii.shutdown()
   })
 
-  it('exports call, keyed, ObserveRejection and EngineSources from the root, and no trigger API', async () => {
+  it('exports CallAction, ObserveRejection and EngineSources from the root, and no trigger API', async () => {
     const root = (await import('../src/index')) as Record<string, unknown>
-    expect(typeof root.keyed).toBe('function')
     expect(root.CallAction).toBeDefined()
     expect(root.TriggerAction).toBe(root.CallAction)
     expect(typeof root.ObserveRejection).toBe('function')

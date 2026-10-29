@@ -194,33 +194,45 @@ export type AddedHook = (obs: Observer) => void | Promise<void>
 /** Runs once for every accepted observer when it is removed. An error it throws is logged. */
 export type RemovedHook = (obs: Observer) => void | Promise<void>
 
-/**
- * iii's delivery for the observers passed: those whose `on` and filters match
- * `call` reach their targets (each observer at most once per call, however
- * many times it runs). Resolves to `call.output`, or rejects with its error.
- */
-export type Next<I = unknown, O = unknown> = (call: Call<I, O>, observers: readonly Observer[]) => Promise<O>
+/** A match key, or several: an observer wants a call when they share one. */
+export type Key = string | readonly string[]
+
+/** `onObserverMatch` as a predicate: whether this observer wants this call. */
+export type MatchPredicate<I = unknown, O = unknown> = (obs: Observer, call: Call<I, O>) => boolean
 
 /**
- * Decides which observers get each call of a function, and what its caller
- * gets back: what the hook returns (or throws). It receives the call, the
- * function's active observers when the call started, and `next`, iii's
- * delivery. It runs inside the function's invocation, so the calls it makes
- * have that invocation as their caller.
+ * `onObserverMatch` as keys: an observer wants a call when they share a key,
+ * and the SDK keeps an index instead of asking every observer.
+ */
+export interface MatchKeys<I = unknown, O = unknown> {
+  /** What this observer listens for, computed once when it is accepted. */
+  observer: (obs: Observer) => Key
+  /** What this call is. */
+  call: (call: Call<I, O>) => Key
+}
+
+/**
+ * Which observers want each call of a function (`onObserverMatch`). By
+ * default every observer wants every call. A predicate is asked once per
+ * active observer per call (a throw counts as no match). Keys are computed
+ * once per observer, when it is accepted, and once per call. The observers'
+ * `on`, filters, policy and `deliver` still apply.
+ */
+export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKeys<I, O>
+
+/**
+ * Delivers each call of a function itself (`onObserverDeliver`): it receives
+ * the call and the observers that matched it (a snapshot taken when the call
+ * started), and what it returns (or throws) is what the caller gets back. iii
+ * delivers nothing for that function; the hook calls through observers
+ * (`iii.call({ observer, payload })`) and applies their filters with
+ * `obs.matches(call)`. It runs inside the function's invocation, so the calls
+ * it makes have that invocation as their caller.
  */
 export type DeliverHook<I = unknown, O = unknown, R = O> = (
   call: Call<I, O>,
   observers: readonly Observer[],
-  next: Next<I, O>,
 ) => R | Promise<R>
-
-/** The keys of {@link keyed} delivery: each function returns a key or a list of keys. */
-export interface KeyedSpec<I = unknown, O = unknown> {
-  /** The keys an observer is filed under, computed once when it is accepted. */
-  observer: (obs: Observer) => string | readonly string[]
-  /** The keys a call is delivered to. */
-  call: (call: Call<I, O>) => string | readonly string[]
-}
 
 /**
  * The invocation the current code runs in, in every handler, remote or

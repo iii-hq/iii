@@ -9,6 +9,9 @@ import type {
   Call,
   DeliverHook,
   InvocationContext,
+  MatchHook,
+  MatchKeys,
+  MatchPredicate,
   Observer,
   ObserverHandle,
   ObserverOptions,
@@ -277,16 +280,51 @@ export interface IIIClient {
   onObserverRemoved(functionId: string, hook: RemovedHook | null): IIIClient
 
   /**
-   * Decides which observers get each call of a function, and what its caller
-   * gets back: what `hook` returns (or throws). Without it, iii delivers every
-   * call to the observers whose `on` and filters match, and the caller gets
-   * the handler's result. `next(call, observers)` is that delivery for the
-   * observers passed. `null` removes the hook.
+   * Says which observers want each call of a function. By default every
+   * observer wants every call. A predicate `(obs, call) => boolean` is asked
+   * once per active observer per call; `{ observer, call }` key functions are
+   * computed once per observer, when it is accepted, and once per call, and an
+   * observer wants a call when they share a key (the SDK keeps an index). The
+   * observers' `on`, filters, policy and `deliver` still apply. A hook set
+   * while observers are active rebuilds the index from them. `null` removes
+   * the hook.
    *
    * @example
    * ```typescript
-   * iii.onObserverDeliver('cron::on-tick', (call, observers, next) =>
-   *   next(call, observers.filter((o) => o.args.expression === call.input.expression)))
+   * // an observer of expression X gets the ticks of expression X
+   * iii.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+   *
+   * // many observers: keys, one lookup per key
+   * iii.onObserverMatch('database::on-row-changed', {
+   *   observer: (obs) => `${obs.args.table}|${obs.args.op}`,
+   *   call: (call) => `${call.input.table}|${call.input.op}`,
+   * })
+   * ```
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
+  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchPredicate<I, O> | null): IIIClient
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped key functions read their input
+  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchKeys<I, O>): IIIClient
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
+  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchHook<I, O> | null): IIIClient
+
+  /**
+   * Delivers each call of a function itself: `hook` receives the call and the
+   * observers that matched it (a snapshot taken when the call started), and
+   * what it returns (or throws) is what the caller gets back. iii delivers
+   * nothing for that function: the hook calls through observers and applies
+   * their filters with `obs.matches(call)`. Without it, iii delivers every
+   * call to the matching observers whose `on` and filters accept it, and the
+   * caller gets the handler's result. `null` removes the hook.
+   *
+   * @example
+   * ```typescript
+   * iii.onObserverDeliver('http::on-request', async (call) => {
+   *   const route = routes.match(call.input)
+   *   if (!route) return { status_code: 404 }
+   *   if (!route.obs.matches(call)) return { status_code: 422 }
+   *   return iii.call({ observer: route.obs, payload: call.input })
+   * })
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
@@ -297,9 +335,9 @@ export interface IIIClient {
 
   /**
    * Whether a call of a function this worker hosts would reach anyone.
-   * Without a call: any active observer. With a call, on a function
-   * delivered by `keyed`: an observer filed under one of the call's keys. On
-   * any other function the call is not read.
+   * Without a call: any active observer. With a call, on a function matched
+   * by keys: an observer filed under one of the call's keys. On any other
+   * function the call is not read.
    */
   isObserved(functionId: string, call?: Partial<Call>): boolean
 
@@ -363,6 +401,10 @@ export interface FunctionRef<I = any, O = any> {
   onObserverAdded(hook: AddedHook | null): FunctionRef<I, O>
   /** {@link IIIClient.onObserverRemoved} for this function. */
   onObserverRemoved(hook: RemovedHook | null): FunctionRef<I, O>
+  /** {@link IIIClient.onObserverMatch} for this function. */
+  onObserverMatch(hook: MatchPredicate<I, O> | null): FunctionRef<I, O>
+  onObserverMatch(hook: MatchKeys<I, O>): FunctionRef<I, O>
+  onObserverMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
   /** {@link IIIClient.onObserverDeliver} for this function. */
   onObserverDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
   /** The active observers, as this host sees them. */

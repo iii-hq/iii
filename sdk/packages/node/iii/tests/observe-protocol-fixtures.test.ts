@@ -186,7 +186,10 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
         'observerack-error.json',
         15,
         () => {
-          throw new ObserveRejection('INVALID_CRON_EXPRESSION', "invalid day-of-week field 'Mon-Fry' in '0 0 9 * * Mon-Fry'")
+          throw new ObserveRejection(
+            'INVALID_CRON_EXPRESSION',
+            "invalid day-of-week field 'Mon-Fry' in '0 0 9 * * Mon-Fry'",
+          )
         },
       ],
     ] as const) {
@@ -292,87 +295,55 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(item).not.toHaveProperty('output')
   })
 
-  it('invocationsobserved-routed.json, then invocationresult-hook-result.json (the hook returns another value)', async () => {
-    const expected = fixture('invocationsobserved-routed.json')
-    const [want] = expected.items as Json[]
+  it.each([
+    'invocationsobserved-routed.json',
+    'invocationsobserved-routed-items.json',
+  ])('%s (the item shape: encodes from its values)', (name) => {
+    // Decision 38 (a93643b29): a host reports a routed call only through
+    // `invocationresult.observed`, so the SDK builds these items for no call;
+    // their shape is the one every local report item has.
+    const expected = fixture(name)
+    const items = (expected.items as Json[]).map((item) =>
+      encodeReportItem({
+        function_id: item.function_id as string,
+        namespace: item.namespace as string,
+        invocation_id: item.invocation_id as string,
+        matched: item.matched as string[],
+        status: item.status as 'success',
+        values: { input: item.input, output: item.output, caller: item.caller as never },
+        captures: ['input', 'output', 'caller'],
+        started_at_ms: item.started_at_ms as number,
+        duration_ms: item.duration_ms as number,
+        observe_depth: item.observe_depth as number,
+        traceparent: item.traceparent as string,
+      }),
+    )
+    expect(JSON.parse(`{"type":"invocationsobserved","items":[${items.join(',')}]}`)).toEqual(expected)
+  })
+
+  it('invocationresult-hook-result.json (a routed call answered by onObserverDeliver: its value, no observed)', async () => {
+    const expected = fixture('invocationresult-hook-result.json')
     const { sdk, socket } = connect({ workerName: 'orders' })
     sdk
-      .registerFunction('orders::submit', (order: Json) => ({
-        order_id: 'ord_1004',
-        sku: order.sku,
-        qty: order.qty,
-        total: 1250,
-        warehouse: 'ams-2',
-      }))
-      .onObserverDeliver(async (call, observers, next) => {
-        const placed = (await next(call, observers)) as Json
-        return { order_id: placed.order_id, status: 'accepted' }
-      })
+      .registerFunction('orders::submit', (order: Json) => ({ order_id: 'ord_1004', sku: order.sku, total: 1250 }))
+      .onObserverDeliver((call) => ({ order_id: call.output?.order_id, status: 'accepted' }))
     socket.deliver(
-      fake.functionRegistered('orders::submit', [fake.observerInfo((want.matched as string[])[0], 'warehouse::reserve')]),
+      fake.functionRegistered('orders::submit', [fake.observerInfo('c6ccda45-4a35-461a-a9c4-a318eec7c36a', 'w::r')]),
     )
     await fake.settle()
     socket.clear()
     socket.deliver(
-      fake.invokeFunction('orders::submit', want.input, {
-        invocation_id: want.invocation_id as string,
-        traceparent: want.traceparent as string,
-        caller: { worker_id: '2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f', worker_name: 'checkout', ...(want.caller as Json) },
-      }),
+      fake.invokeFunction(
+        'orders::submit',
+        { sku: 'A-1', qty: 2 },
+        { invocation_id: expected.invocation_id as string, traceparent: expected.traceparent as string },
+      ),
     )
     await fake.settle()
-    const [batch, answer] = socket.frames()
-    // the items go out before the answer
-    expect({ ...batch, items: (batch.items as Json[]).map((it) => timed(it, want)) }).toEqual(expected)
-    expect(answer).toEqual(fixture('invocationresult-hook-result.json'))
+    expect(socket.frames()).toEqual([expected])
   })
 
-  it('invocationsobserved-routed-items.json (next given a changed call per order; the unchanged call rides observed)', async () => {
-    const expected = fixture('invocationsobserved-routed-items.json')
-    const wanted = expected.items as Json[]
-    const [first] = wanted
-    const { sdk, socket } = connect({ workerName: 'orders' })
-    type Batch = { orders: Json[] }
-    sdk
-      .registerFunction('orders::import', (_batch: Batch) => first.output)
-      .onObserverDeliver(async (call, observers, next) => {
-        await next(call, observers)
-        for (const order of call.input.orders) await next({ ...call, input: order } as Call<Batch>, observers)
-        return call.output
-      })
-    const byWarehouse = (item: Json) =>
-      fake.observerInfo((item.matched as string[])[0], 'warehouse::stock', {
-        filters: { $and: [{ 'input.warehouse': { $eq: (item.input as Json).warehouse } }] },
-      })
-    socket.deliver(
-      fake.functionRegistered('orders::import', [
-        ...wanted.map(byWarehouse),
-        fake.observerInfo('a1b2c3d4-0000-4000-8000-000000000001', 'erp::audit', {
-          filters: { $and: [{ 'input.orders': { $exists: true } }] },
-        }),
-      ]),
-    )
-    await fake.settle()
-    socket.clear()
-    socket.deliver(
-      fake.invokeFunction('orders::import', { orders: wanted.map((item) => item.input) }, {
-        invocation_id: first.invocation_id as string,
-        traceparent: first.traceparent as string,
-        caller: { worker_id: 'w-erp', worker_name: 'erp', ...(first.caller as Json) },
-      }),
-    )
-    await fake.settle()
-    const [batch, answer] = socket.frames()
-    expect({ ...batch, items: (batch.items as Json[]).map((it, i) => timed(it, wanted[i])) }).toEqual(expected)
-    expect(answer).toMatchObject({
-      type: 'invocationresult',
-      invocation_id: first.invocation_id,
-      result: first.output,
-      observed: ['a1b2c3d4-0000-4000-8000-000000000001'],
-    })
-  })
-
-  it('invocationresult-observed.json (iii\'s delivery of a routed call: the ids ride the answer)', async () => {
+  it("invocationresult-observed.json (iii's delivery of a routed call: the ids ride the answer)", async () => {
     const expected = fixture('invocationresult-observed.json')
     const { sdk, socket } = connect({ workerName: 'orders' })
     sdk.registerFunction('orders::create', () => expected.result)
@@ -385,10 +356,14 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     await fake.settle()
     socket.clear()
     socket.deliver(
-      fake.invokeFunction('orders::create', { sku: 'A-1', qty: 2 }, {
-        invocation_id: expected.invocation_id as string,
-        traceparent: expected.traceparent as string,
-      }),
+      fake.invokeFunction(
+        'orders::create',
+        { sku: 'A-1', qty: 2 },
+        {
+          invocation_id: expected.invocation_id as string,
+          traceparent: expected.traceparent as string,
+        },
+      ),
     )
     await fake.settle()
     expect(socket.frames()).toEqual([expected])
@@ -477,9 +452,11 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     const activation = expected.activation as Json
     const { sdk, socket } = connect()
     let observer: Observer | undefined
-    sdk.registerFunction('inventory::on-stock-changed', (e: unknown) => e).onObserverAdded((obs) => {
-      observer = obs
-    })
+    sdk
+      .registerFunction('inventory::on-stock-changed', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        observer = obs
+      })
     socket.deliver(
       fake.functionRegistered('inventory::on-stock-changed', [
         fake.observerInfo(activation.observer_id as string, expected.function_id as string),

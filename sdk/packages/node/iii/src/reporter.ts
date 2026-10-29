@@ -1,8 +1,7 @@
 /**
  * The reporter (sdk.md §4.4, CONTRACT D12): one bounded buffer for the local
  * calls of hosted functions that observers matched, flushed as
- * `invocationsobserved` batches; the items of routed calls, sent at once
- * ahead of the call's answer; and the periodic `localinvocationstats`.
+ * `invocationsobserved` batches; plus the periodic `localinvocationstats`.
  *
  * It never blocks a call: when the buffer is full the newest item is dropped
  * and counted (`BUFFER_FULL`), and an item too large on its own is dropped and
@@ -212,48 +211,10 @@ export class Reporter {
 
   /** A local call that observers matched. */
   push(init: ReportInit): boolean {
-    const item = this.create(init)
-    if (!item) return false
-    return this.enqueue(item)
-  }
-
-  /**
-   * The items of a routed call, sent at once on the current connection: the
-   * engine must have them before the call's answer, so they are never held
-   * or requeued. Items the closed connection could not take count as
-   * `DISCONNECTED`.
-   */
-  sendNow(inits: readonly ReportInit[]): void {
-    let frame: ReportItem[] = []
-    let frameBytes = FRAME_OVERHEAD
-    const send = () => {
-      if (frame.length === 0) return
-      const data = `${FRAME_HEAD}${frame.map((it) => it.json).join(',')}${FRAME_TAIL}`
-      if (!this.host.sendFrame(data)) {
-        for (const item of frame) this.drop(item.init.function_id, 'DISCONNECTED')
-      }
-      frame = []
-      frameBytes = FRAME_OVERHEAD
-    }
-    for (const init of inits) {
-      const item = this.create(init)
-      if (!item) continue
-      if (this.tooLarge(item)) {
-        this.drop(item.init.function_id, 'TOO_LARGE')
-        continue
-      }
-      const separator = frame.length > 0 ? 1 : 0
-      if (frameBytes + separator + item.bytes > this.limits.maxFrameBytes) send()
-      frameBytes += (frame.length > 0 ? 1 : 0) + item.bytes
-      frame.push(item)
-    }
-    send()
-  }
-
-  private create(init: ReportInit): ReportItem | undefined {
     const { captures, ...rest } = init
     const item = new ReportItem(rest)
-    return this.build(item, captures) ? item : undefined
+    if (!this.build(item, captures)) return false
+    return this.enqueue(item)
   }
 
   private build(item: ReportItem, captures: Iterable<string>): boolean {
@@ -311,7 +272,7 @@ export class Reporter {
     this.lingerTimer.unref?.()
   }
 
-  /** Counts a report the SDK dropped (`BUFFER_FULL`, `TOO_LARGE`, `INACTIVE`, `LATE_DELIVERY`, `DISCONNECTED`). */
+  /** Counts a report the SDK dropped (`BUFFER_FULL`, `TOO_LARGE`, `INACTIVE`). */
   drop(functionId: string, reason: string, count = 1): void {
     let byReason = this.drops.get(functionId)
     if (!byReason) {

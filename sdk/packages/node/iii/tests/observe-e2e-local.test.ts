@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { keyed, ObserveRejection } from '../src/index'
+import { ObserveRejection } from '../src/index'
 import type { Observer } from '../src/observe-types'
 import {
   type Activation,
@@ -16,7 +16,7 @@ import {
 
 /**
  * Observable functions against the real engine: local dispatch, the reporter,
- * observer hooks, keyed delivery, private functions and calls through an
+ * observer hooks, matching by keys, private functions and calls through an
  * observer (v2 §4, §6, §10).
  */
 afterEach(closeWorkers)
@@ -145,7 +145,7 @@ describe('zero-wire and the activation race', () => {
 describe('functions with args and observer hooks', () => {
   type Tick = { expression: string; n: number }
 
-  /** A cron-like source: private, args `{ expression }`, keyed delivery by expression. */
+  /** A cron-like source: private, args `{ expression }`, matched by expression keys. */
   function cronSource(role = 'cron-source') {
     // A function id of its own: observers of an earlier test's host outlive it (suspended, 30 s grace).
     const fn = `cron::on-tick-${crypto.randomUUID().slice(0, 8)}`
@@ -174,9 +174,7 @@ describe('functions with args and observer hooks', () => {
       .onObserverRemoved((obs) => {
         removed.push(obs)
       })
-      .onObserverDeliver(
-        keyed<Tick, Tick>({ observer: (obs) => obs.args.expression as string, call: (c) => c.input.expression }),
-      )
+      .onObserverMatch({ observer: (obs) => obs.args.expression as string, call: (c) => c.input.expression })
     return {
       fn,
       owner,
@@ -211,7 +209,7 @@ describe('functions with args and observer hooks', () => {
     expect(cron.added).toHaveLength(1)
   })
 
-  it('keyed delivery: two observers with different args only receive their calls; a call right after ready() is delivered', async () => {
+  it('matching by keys: two observers with different args only receive their calls; a call right after ready() is delivered', async () => {
     const cron = cronSource()
     const watcher = worker('routing-watcher')
     const five = collector(watcher, `routing::five-${RUN}`)

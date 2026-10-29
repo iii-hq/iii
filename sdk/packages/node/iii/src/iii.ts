@@ -80,6 +80,7 @@ import type {
   Call,
   DeliverHook,
   InvocationContext,
+  MatchHook,
   Observer,
   ObserverHandle,
   ObserverOptions,
@@ -104,7 +105,7 @@ import {
   stripCaller,
 } from './observe-wire'
 import { ObserverHandleImpl, toObserverState } from './observer-handle'
-import { Reporter, type ReporterLimits, type ReportInit } from './reporter'
+import { Reporter, type ReporterLimits } from './reporter'
 import type { IStream } from './stream'
 import type {
   FunctionRef,
@@ -385,7 +386,10 @@ class Sdk implements IIIClient {
   // Observer hooks of every function this worker hosts.
   private workerHooks: { added?: AddedHook; removed?: RemovedHook } = {}
   // Observer hooks by function id: they outlive a registration of the id.
-  private functionHooks = new Map<string, { added?: AddedHook; removed?: RemovedHook; deliver?: DeliverHook }>()
+  private functionHooks = new Map<
+    string,
+    { added?: AddedHook; removed?: RemovedHook; match?: MatchHook; deliver?: DeliverHook }
+  >()
   private hooksInactiveWarned = new Set<string>()
   private unsupportedWarned = new Set<string>()
   private unregisteredHooksWarned = new Set<string>()
@@ -553,6 +557,10 @@ class Sdk implements IIIClient {
         this.onObserverRemoved(functionId, hook)
         return ref
       },
+      onObserverMatch: (hook: MatchHook<I, O> | null) => {
+        this.onObserverMatch(functionId, hook)
+        return ref
+      },
       onObserverDeliver: (hook) => {
         this.onObserverDeliver(functionId, hook)
         return ref
@@ -716,36 +724,52 @@ class Sdk implements IIIClient {
       workerRemoved: this.workerHooks.removed,
       added: own?.added,
       removed: own?.removed,
+      match: own?.match,
       deliver: own?.deliver,
     }
   }
 
   private hasObserverHooks(functionId: string): boolean {
     const own = this.functionHooks.get(functionId)
-    return !!(this.workerHooks.added || this.workerHooks.removed || own?.added || own?.removed || own?.deliver)
+    return !!(
+      this.workerHooks.added ||
+      this.workerHooks.removed ||
+      own?.added ||
+      own?.removed ||
+      own?.match ||
+      own?.deliver
+    )
   }
 
-  private setFunctionHook<K extends 'added' | 'removed' | 'deliver'>(
+  private setFunctionHook<K extends 'added' | 'removed' | 'match' | 'deliver'>(
     functionId: string,
     kind: K,
-    hook: { added: AddedHook; removed: RemovedHook; deliver: DeliverHook }[K] | null,
+    hook: { added: AddedHook; removed: RemovedHook; match: MatchHook; deliver: DeliverHook }[K] | null,
   ): void {
     if (typeof functionId !== 'string' || functionId.trim() === '') {
       throw new TypeError('the function id of an observer hook is required')
     }
-    if (hook !== null && typeof hook !== 'function') {
-      throw new TypeError(`the ${kind} hook of ${functionId} must be a function, or null to remove it`)
+    const keys =
+      kind === 'match' &&
+      hook !== null &&
+      typeof hook === 'object' &&
+      typeof (hook as { observer?: unknown }).observer === 'function' &&
+      typeof (hook as { call?: unknown }).call === 'function'
+    if (hook !== null && typeof hook !== 'function' && !keys) {
+      throw new TypeError(
+        kind === 'match'
+          ? `the match hook of ${functionId} must be a predicate, { observer, call } key functions, or null to remove it`
+          : `the ${kind} hook of ${functionId} must be a function, or null to remove it`,
+      )
     }
     const hooks = { ...this.functionHooks.get(functionId), [kind]: hook ?? undefined }
-    if (hooks.added || hooks.removed || hooks.deliver) this.functionHooks.set(functionId, hooks)
+    if (hooks.added || hooks.removed || hooks.match || hooks.deliver) this.functionHooks.set(functionId, hooks)
     else this.functionHooks.delete(functionId)
     const fn = this.functions.get(functionId)
     if (!fn) return
     if (kind === 'added' && hook) fn.observe.catchUp('fn')
-    if (kind === 'deliver') {
-      fn.observe.deliverChanged()
-      this.reconcileRegistration(functionId)
-    }
+    if (kind === 'match') fn.observe.matchChanged()
+    if (kind === 'deliver') this.reconcileRegistration(functionId)
   }
 
   private setWorkerHook<K extends 'added' | 'removed'>(
@@ -785,9 +809,21 @@ class Sdk implements IIIClient {
   }
 
   /**
-   * Decides which observers get each call of `functionId` and what its
-   * caller gets back. `next(call, observers)` is iii's delivery for the
-   * observers passed. `null` removes the hook.
+   * Says which observers want each call of `functionId`: a predicate
+   * `(obs, call) => boolean`, or `{ observer, call }` key functions the SDK
+   * indexes. iii's delivery (or the function's deliver hook) gets only the
+   * observers that want the call. `null` removes the hook.
+   */
+  onObserverMatch: IIIClient['onObserverMatch'] = (functionId: string, hook: MatchHook | null): IIIClient => {
+    this.setFunctionHook(functionId, 'match', hook)
+    return this
+  }
+
+  /**
+   * Delivers each call of `functionId` itself: the hook receives the call and
+   * the observers that matched it, and what it returns (or throws) is what the
+   * caller gets back. iii delivers nothing for that function. `null` removes
+   * the hook.
    */
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
   onObserverDeliver = <I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient => {
@@ -1254,6 +1290,7 @@ class Sdk implements IIIClient {
         observe_depth: ctx.observe_depth,
         traceparent,
         baggage,
+        routed: false,
       })
       return delivery.run(hook)
     }
@@ -1314,18 +1351,6 @@ class Sdk implements IIIClient {
     if (caller !== undefined) call.caller = caller
     if (metadata !== undefined) call.metadata = metadata as Record<string, unknown>
     return call
-  }
-
-  /**
-   * The items of a routed call, ahead of its answer, on the connection the
-   * call arrived on: lost (`DISCONNECTED`) when that connection is gone.
-   */
-  private sendRoutedItems(items: ReportInit[], epoch: number): void {
-    if (epoch !== this.connectionEpoch || !this.isOpen()) {
-      for (const item of items) this.reporter.drop(item.function_id, 'DISCONNECTED')
-      return
-    }
-    this.reporter.sendNow(items)
   }
 
   private registerWorkerMetadata(): void {
@@ -2017,12 +2042,11 @@ class Sdk implements IIIClient {
       if (observeFields.activation) ctx.activation = observeFields.activation
 
       // An observe.v2 host delivers its routed calls (v2 §8.2): the delivery
-      // sees the input as it arrived (channel refs unresolved), and the
-      // matches ride the answer (`observed`) or go ahead of it as items.
+      // sees the input as it arrived (channel refs unresolved), and what iii's
+      // delivery selects rides the answer (`observed`).
       const snapshot: readonly ObserverImpl[] = fn.observe.compiled
       const hook = this.functionHooks.get(function_id)?.deliver
       const delivering = this.engineFeatures.has(FEATURE_OBSERVE_V2) && (hook !== undefined || snapshot.length > 0)
-      const epoch = this.connectionEpoch
       const startedAt = Date.now()
       const t0 = performance.now()
       let delivery: Delivery | undefined
@@ -2037,7 +2061,7 @@ class Sdk implements IIIClient {
               observe_depth: ctx.observe_depth,
               traceparent,
               baggage,
-              routed: (items) => this.sendRoutedItems(items, epoch),
+              routed: true,
             })
             return delivery.run(hook)
           }

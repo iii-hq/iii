@@ -12,7 +12,6 @@ export type { IIIConnectionState } from './iii-constants'
 export { EngineSources } from './iii-constants'
 
 export type { CallRequest, JsonValue, MiddlewareFunctionInput, TriggerRequest } from './iii-types'
-export { keyed } from './observable'
 export type {
   AddedHook,
   Call,
@@ -22,8 +21,10 @@ export type {
   DeliverHook,
   Filter,
   InvocationContext,
-  KeyedSpec,
-  Next,
+  Key,
+  MatchHook,
+  MatchKeys,
+  MatchPredicate,
   Observed,
   ObserveReason,
   Observer,

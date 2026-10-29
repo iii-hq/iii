@@ -8,7 +8,7 @@
  * With: an observable source OWNED by the domain worker (`orders::on-changed`) plus a
  * consumer function observing it. The source is a private function whose handler returns
  * the event it is called with; the engine validates each observer's args against its
- * `args_format`, and keyed delivery hands each event to the observers of its tenant, order
+ * `args_format`, and matching by keys hands each event to the observers of its tenant, order
  * and event. Payloads are small (ids only); a consumer that needs the record asks the
  * owner (see stored-records.ts).
  *
@@ -20,7 +20,7 @@
  *
  * Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
-import { type IIIClient, keyed, ObserveRejection, registerWorker } from 'iii-sdk'
+import { type IIIClient, ObserveRejection, registerWorker } from 'iii-sdk'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 // Distinct worker names per run: the engine keeps one live worker per (namespace, name).
@@ -68,7 +68,7 @@ const ARGS_FORMAT = {
   },
 }
 
-/** Keys of keyed delivery: an observer is filed under its tenant, order (or `*`) and events (or `*`). */
+/** Match keys: an observer is filed under its tenant, order (or `*`) and events (or `*`). */
 const key = (tenant: string, order: string, event: string) => `${tenant}|${order}|${event}`
 
 // ── Provider: the orders domain worker ──────────────────────────────────────
@@ -111,18 +111,16 @@ export function startOrdersWorker(engineUrl = ENGINE_URL) {
       // Runs on dispose, and when the observing worker's observers are removed.
       console.log(`[orders] observer ${obs.id} removed`)
     })
-    .onObserverDeliver(
-      keyed<OrderChangedEvent, OrderChangedEvent>({
-        observer: ({ args }) => {
-          const { tenant_id, order_id, events } = args as OrderChangedArgs
-          return (events ?? ['*']).map(event => key(tenant_id, order_id ?? '*', event))
-        },
-        call: ({ input }) =>
-          [input.order_id, '*'].flatMap(order =>
-            [input.event, '*'].map(event => key(input.tenant_id, order, event)),
-          ),
-      }),
-    )
+    .onObserverMatch({
+      observer: ({ args }) => {
+        const { tenant_id, order_id, events } = args as OrderChangedArgs
+        return (events ?? ['*']).map(event => key(tenant_id, order_id ?? '*', event))
+      },
+      call: ({ input }) =>
+        [input.order_id, '*'].flatMap(order =>
+          [input.event, '*'].map(event => key(input.tenant_id, order, event)),
+        ),
+    })
 
   // A domain operation. The event describes something that already happened.
   iii.registerFunction(

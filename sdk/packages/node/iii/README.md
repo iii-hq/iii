@@ -36,7 +36,7 @@ const result = await iii.call({ function_id: 'hello::greet', payload: { name: 'w
 | Call (fire-and-forget)   | `iii.call({ function_id, payload, action: CallAction.Void() })`               | Call without waiting                                            |
 | Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`   | Route the call through a named queue                            |
 | Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)` | Call `target` on every matching call of a function              |
-| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverDeliver`                   | Change what observing a function this worker hosts means        |
+| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | Change what observing a function this worker hosts means       |
 | Call through an observer | `await iii.call({ observer, payload })`                                       | Run an observer's target, with its policy and metadata          |
 | Current invocation       | `iii.currentInvocation()`                                                     | The invocation the running handler serves (caller, activation)  |
 
@@ -94,26 +94,27 @@ await observer.dispose()
 
 ### Hosting Observable Functions
 
-The worker that hosts a function decides what observing it means with three
+The worker that hosts a function decides what observing it means with four
 hooks, each overriding a default:
 
-| Hook                                       | Default                                                         |
-| ------------------------------------------ | --------------------------------------------------------------- |
-| `onObserverAdded(obs)`                     | accept the observer                                             |
-| `onObserverRemoved(obs)`                   | stop delivering to it and forget it                             |
-| `onObserverDeliver(call, observers, next)` | after each call, run every observer whose filters match the call |
+| Hook                                 | Default                                                                       |
+| ------------------------------------ | ----------------------------------------------------------------------------- |
+| `onObserverAdded(obs)`               | accept the observer                                                           |
+| `onObserverRemoved(obs)`             | stop delivering to it and forget it                                           |
+| `onObserverMatch(obs, call)`         | every observer wants every call                                               |
+| `onObserverDeliver(call, observers)` | run every matching observer whose filters match the call; return the handler's value |
 
 `onObserverAdded` and `onObserverRemoved` can be set for every function the
 worker hosts, or for one function by id or on its `FunctionRef`.
-`onObserverDeliver` is set per function. Each method returns its receiver, and
-`null` removes a hook.
+`onObserverMatch` and `onObserverDeliver` are set per function. Each method
+returns its receiver, and `null` removes a hook.
 
 An event source returns the event it is called with. `args_format` describes
 the `args` its observers pass, and `private: true` lets only this worker call
 it:
 
 ```javascript
-import { keyed, ObserveRejection } from 'iii-sdk'
+import { ObserveRejection } from 'iii-sdk'
 
 iii
   .registerFunction('cron::on-tick', (tick) => tick, {
@@ -127,14 +128,25 @@ iii
   })
   .onObserverRemoved((obs) => scheduler.release(obs.args.expression))
   // each tick reaches the observers of its expression
-  .onObserverDeliver(keyed({ observer: (obs) => obs.args.expression, call: (call) => call.input.expression }))
+  .onObserverMatch((obs, call) => obs.args.expression === call.input.expression)
 
 // a consumer
 iii.observe({ function_id: 'cron::on-tick', args: { expression: '0 0 9 * * * *' } }, 'reports::daily')
 ```
 
-A deliver hook can call targets itself, and what it returns is what the
-function's caller gets back:
+With many observers, match by keys instead: the SDK keeps an index, one
+lookup per key whatever the number of observers.
+
+```javascript
+iii.onObserverMatch('database::on-row-changed', {
+  observer: (obs) => `${obs.args.table}|${obs.args.op}`, // what this observer listens for
+  call: (call) => `${call.input.table}|${call.input.op}`, // what this call is
+})
+```
+
+A deliver hook delivers each call itself: it receives the call and the
+observers that matched it, and what it returns is what the function's caller
+gets back:
 
 ```javascript
 iii.onObserverDeliver('http::on-request', async (call) => {

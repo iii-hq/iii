@@ -3,8 +3,8 @@
  * without explicit type arguments. Not executed at runtime — vitest only picks
  * up `*.test.ts` — but `tsc --noEmit` (run in CI) compiles it.
  */
-import type { Call, FunctionRef, Observer, TriggerRequest } from '../src/index'
-import { keyed, registerWorker } from '../src/index'
+import type { Call, FunctionRef, MatchHook, Observer, TriggerRequest } from '../src/index'
+import { registerWorker } from '../src/index'
 
 // biome-ignore lint/correctness/noUnusedVariables: compile-only assertions
 async function callTypingAssertions() {
@@ -49,29 +49,31 @@ async function callTypingAssertions() {
   // @ts-expect-error: an observer call names no function
   await worker.call({ observer, function_id: 'x::y', payload: {} })
 
-  // The handler's types reach the hooks of its FunctionRef.
+  // The handler's types reach the hooks of its FunctionRef, in both match forms.
   type RowChange = { db: string; table: string; op: string }
   const rowChanged: FunctionRef<RowChange, RowChange> = worker
     .registerFunction('database::on-row-changed', (change: RowChange) => change, { private: true })
-    .onObserverDeliver(
-      keyed({
-        observer: (obs) => obs.args.db as string,
-        call: (call) => [call.input.db, `${call.input.db}|${call.input.table}`],
-      }),
-    )
+    .onObserverMatch({
+      observer: (obs) => obs.args.db as string,
+      call: (call) => [call.input.db, `${call.input.db}|${call.input.table}`],
+    })
+    .onObserverMatch((obs, call) => obs.args.table === call.input.table)
   rowChanged.isObserved({ input: { db: 'primary', table: 'orders', op: 'insert' } })
+  const keys: MatchHook<RowChange, RowChange> = { observer: () => 'k', call: () => ['k'] }
+  rowChanged.onObserverMatch(keys).onObserverMatch(null)
 
-  // An async handler's resolved type is the output observers observe.
+  // An async handler's resolved type is the output observers observe; the deliver hook's
+  // return type is what the caller gets back.
   worker
     .registerFunction('orders::create', async (order: { qty: number }) => ({ id: 'o-1', qty: order.qty }))
-    .onObserverDeliver((call: Call<{ qty: number }, { id: string; qty: number }>) => call.output?.id ?? 'none')
+    .onObserverDeliver((call: Call<{ qty: number }, { id: string; qty: number }>, observers) =>
+      observers.length > 0 ? (call.output?.id ?? 'none') : 'unobserved',
+    )
 
-  // Untyped deliver hooks read their call's input.
-  worker.onObserverDeliver('cron::on-tick', (call, observers, next) =>
-    next(
-      call,
-      observers.filter((o) => o.args.expression === call.input.expression),
-    ),
-  )
+  // Untyped hooks by id read their call's input.
+  worker
+    .onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+    .onObserverMatch('database::on-row-changed', { observer: (obs) => obs.id, call: (call) => call.input.table })
+    .onObserverDeliver('http::on-request', async (call, [route]) => (route ? route.matches(call) : false))
   worker.onObserverAdded(() => undefined).onObserverRemoved('cron::on-tick', null)
 }

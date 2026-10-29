@@ -18,7 +18,7 @@
  *
  * Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
-import { type IIIClient, keyed, ObserveRejection, registerWorker } from 'iii-sdk'
+import { type IIIClient, ObserveRejection, registerWorker } from 'iii-sdk'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 const RUN_ID = Math.random().toString(36).slice(2, 8)
@@ -99,7 +99,7 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
 
   // The source: the handler returns the change it is called with, which is what observers
   // observe. `private`: only this worker calls it. The engine validates observers' args
-  // against `args_format` (INVALID_ARGS); keyed delivery reaches the observers of one task
+  // against `args_format` (INVALID_ARGS); matching by keys reaches the observers of one task
   // and those of every task, with one lookup per key.
   const changed = iii
     .registerFunction(TASK_CHANGED, (change: TaskChange) => change, {
@@ -125,12 +125,10 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
     .onObserverRemoved(obs => {
       console.log(`[tasks] observer ${obs.id} removed`)
     })
-    .onObserverDeliver(
-      keyed<TaskChange, TaskChange>({
-        observer: obs => (obs.args as TaskChangedArgs).id ?? '*',
-        call: call => [call.input.id, '*'],
-      }),
-    )
+    .onObserverMatch({
+      observer: obs => (obs.args as TaskChangedArgs).id ?? '*',
+      call: call => [call.input.id, '*'],
+    })
 
   /** Notify: one call of the source; iii delivers it to the matching observers. */
   async function emit(change: TaskChange): Promise<void> {

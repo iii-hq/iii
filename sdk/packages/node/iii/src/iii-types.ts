@@ -191,10 +191,7 @@ export type ObserverAckMessage = {
   error?: ErrorBody
 }
 
-/**
- * One call of a hosted function, with the observers its delivery matched: a
- * local call, or a routed one reported under its `invocation_id`.
- */
+/** One local call of a hosted function, with the observers its delivery selected. */
 export type ObservedItemWire = {
   function_id: string
   namespace?: string
@@ -232,7 +229,7 @@ export type LocalFunctionStatsWire = {
 
 export type DroppedReportStatsWire = {
   function_id: string
-  /** `BUFFER_FULL` | `TOO_LARGE` | `LATE_DELIVERY` | `DISCONNECTED` | `INACTIVE` (SDK-side drops). */
+  /** `BUFFER_FULL` | `TOO_LARGE` | `INACTIVE` (SDK-side drops). */
   reason: string
   count: number
 }
@@ -477,8 +474,9 @@ export type InvocationResultMessage = {
    */
   baggage?: string
   /**
-   * Host → engine (`observe.v2`): the observers the call's delivery matched,
-   * when this answer is the handler's own outcome. Left out when empty.
+   * Host → engine (`observe.v2`): the observers iii's delivery selected for
+   * this routed call. Left out when empty, and by a function with
+   * `onObserverDeliver`.
    */
   observed?: string[]
 }
