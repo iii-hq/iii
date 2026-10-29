@@ -1361,7 +1361,7 @@ crate::register_worker!(
 mod tests {
     use std::sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     };
 
     use async_trait::async_trait;
@@ -2330,7 +2330,7 @@ mod tests {
             "obs-changed",
             STREAM_ON_CHANGED,
             "test::on-changed",
-            Some(serde_json::json!({ "input.stream_name": "orders" })),
+            Some(serde_json::json!({ "input.stream_name": { "$eq": "orders" } })),
         )
         .await;
         let _ = module

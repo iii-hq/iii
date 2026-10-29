@@ -1775,7 +1775,7 @@ mod tests {
         let _socket = test_support::observe(&engine, "obs", "test::src", "test::dst", None).await;
         let registry = engine.observers.clone();
         let set = registry
-            .watch_routed(DEFAULT_NAMESPACE, "test::src")
+            .watch(DEFAULT_NAMESPACE, "test::src")
             .expect("observed");
         let ctx = InvocationCtx::engine_internal_at(0);
         let call = registry.begin(set, &json!({ "n": 1 }), &None, &None, &None, &ctx);
@@ -1808,7 +1808,7 @@ mod tests {
         let _socket = test_support::observe(&engine, "obs", "test::src", "test::dst", None).await;
         let set = engine
             .observers
-            .watch_routed(DEFAULT_NAMESPACE, "test::src")
+            .watch(DEFAULT_NAMESPACE, "test::src")
             .expect("observed");
         let ctx = InvocationCtx::engine_internal_at(0);
         drop(
@@ -1904,9 +1904,7 @@ mod tests {
         let copies = registry.payload_copies();
         // No yield in between: the evaluator task cannot drain the queue.
         for n in 0..2 {
-            let set = registry
-                .watch_routed(DEFAULT_NAMESPACE, "test::src")
-                .unwrap();
+            let set = registry.watch(DEFAULT_NAMESPACE, "test::src").unwrap();
             let call = registry.begin(set, &json!({ "n": n }), &None, &None, &None, &ctx);
             registry.complete(
                 call,
@@ -1930,9 +1928,7 @@ mod tests {
     fn complete_call(engine: &Engine, body: Value) {
         let registry = &engine.observers;
         let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
-        let set = registry
-            .watch_routed(DEFAULT_NAMESPACE, "test::src")
-            .unwrap();
+        let set = registry.watch(DEFAULT_NAMESPACE, "test::src").unwrap();
         let call = registry.begin(set, &body, &None, &None, &None, &ctx);
         registry.complete(
             call,
@@ -2051,6 +2047,7 @@ mod tests {
 
     fn event(n: u64) -> Arc<super::Completed> {
         Arc::new(super::Completed {
+            delivery: super::ENGINE_DELIVERY,
             namespace: DEFAULT_NAMESPACE.to_string(),
             function_id: "test::src".to_string(),
             invocation_id: n.to_string(),

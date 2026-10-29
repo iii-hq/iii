@@ -361,7 +361,14 @@ pub(crate) mod test_support {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("`{id}` never became active"));
+        .unwrap_or_else(|_| {
+            let observer = engine.observers.get(&id);
+            panic!(
+                "`{id}` never became active: {:?} {:?}",
+                observer.as_ref().map(|o| o.state()),
+                observer.and_then(|o| o.reason())
+            )
+        });
     }
 
     /// Observes `source` with `target` from a new observing worker and waits
@@ -464,7 +471,7 @@ mod tests {
             "obs-envelope",
             ON_WORKERS_CHANGED,
             "test::workers",
-            Some(json!({ "output.event": "worker_connected" })),
+            Some(json!({ "output.event": { "$eq": "worker_connected" } })),
         );
         request.source.deliver = Some(Deliver::Envelope);
         test_support::observe_request(&engine, &worker, request).await;
@@ -493,7 +500,7 @@ mod tests {
             "obs-changes",
             ON_OBSERVERS_CHANGED,
             "test::changes",
-            Some(json!({ "input.observer_id": "watched" })),
+            Some(json!({ "input.observer_id": { "$eq": "watched" } })),
         )
         .await;
         let _source = test_support::capture(&engine, "test::source");

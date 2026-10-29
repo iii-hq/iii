@@ -74,9 +74,7 @@ fn session_with(
         namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: forbidden,
-        allowed_trigger_types: None,
         allow_function_registration: true,
-        allow_trigger_type_registration: true,
         context: json!({}),
         function_registration_prefix: None,
     }
@@ -86,8 +84,6 @@ fn restrictive_rbac() -> RbacConfig {
     RbacConfig {
         auth_function_id: None,
         expose_functions: vec![FunctionFilter::match_pattern("api::*")],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     }
@@ -311,8 +307,6 @@ async fn listener_middleware_runs_in_caller_namespace() {
     let orders_rbac = RbacConfig {
         auth_function_id: None,
         expose_functions: vec![FunctionFilter::match_pattern("api::*").in_namespace("orders")],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     };
@@ -479,8 +473,6 @@ async fn middleware_runs_for_non_infrastructure_engine_prefix() {
     let rbac = RbacConfig {
         auth_function_id: None,
         expose_functions: vec![FunctionFilter::match_pattern("engine::custom::*")],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     };

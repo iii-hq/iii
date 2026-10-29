@@ -245,8 +245,6 @@ fn session_exposing_metadata(
         rbac: Some(RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::metadata(expected).in_namespace(namespace)],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         }),
@@ -261,9 +259,7 @@ fn session_exposing_metadata(
         namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: vec![],
-        allowed_trigger_types: None,
         allow_function_registration: true,
-        allow_trigger_type_registration: true,
         context: json!({}),
         function_registration_prefix: None,
     })

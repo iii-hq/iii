@@ -1148,13 +1148,12 @@ crate::register_worker!(
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::{env, future::Future, pin::Pin, sync::atomic::Ordering, time::Duration};
+    use std::{env, sync::atomic::Ordering, time::Duration};
     use tokio::sync::mpsc;
 
     use crate::{
         function::{Function, FunctionResult, HandlerFn},
         services::Service,
-        trigger::{Trigger, TriggerRegistrator, TriggerType},
         worker_connections::WorkerConnection,
         workers::{
             observability::metrics::get_metrics_accumulator, telemetry::collector::collector,
@@ -1213,7 +1212,6 @@ mod tests {
         telemetry.kv_deletes.store(0, Ordering::Relaxed);
         telemetry.api_requests.store(0, Ordering::Relaxed);
         telemetry.function_registrations.store(0, Ordering::Relaxed);
-        telemetry.trigger_registrations.store(0, Ordering::Relaxed);
         telemetry.peak_active_workers.store(0, Ordering::Relaxed);
     }
 
@@ -1241,24 +1239,6 @@ mod tests {
             "svc",
             "worker",
         );
-    }
-
-    struct NoopRegistrator;
-
-    impl TriggerRegistrator for NoopRegistrator {
-        fn register_trigger(
-            &self,
-            _trigger: Trigger,
-        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn unregister_trigger(
-            &self,
-            _trigger: Trigger,
-        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
-        }
     }
 
     fn make_env_info() -> EnvironmentInfo {
@@ -2000,7 +1980,7 @@ mod tests {
     }
 
     // =========================================================================
-    // collect_functions_and_triggers
+    // collect_functions_and_observers
     // =========================================================================
 
     fn make_test_engine() -> Arc<Engine> {
@@ -2008,18 +1988,19 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_functions_and_triggers_empty_engine() {
+    fn test_collect_functions_and_observers_empty_engine() {
         let engine = make_test_engine();
-        let result = collect_functions_and_triggers(&engine);
+        let result = collect_functions_and_observers(&engine);
 
         assert_eq!(result.function_count, 0);
-        assert_eq!(result.trigger_count, 0);
         assert!(result.functions.is_empty());
-        assert!(result.trigger_types.is_empty());
+        assert_eq!(result.observer_count, 0);
+        assert_eq!(result.observable_function_count, 0);
+        assert_eq!(result.private_function_count, 0);
     }
 
     #[test]
-    fn test_collect_functions_and_triggers_filters_engine_and_iii_prefixes() {
+    fn test_collect_functions_and_observers_filters_engine_and_iii_prefixes() {
         let engine = make_test_engine();
 
         let handler: Arc<crate::function::HandlerFn> =
@@ -2069,54 +2050,55 @@ mod tests {
             },
         );
 
-        let result = collect_functions_and_triggers(&engine);
+        let result = collect_functions_and_observers(&engine);
         assert_eq!(result.function_count, 2);
         let mut fns = result.functions.clone();
         fns.sort();
         assert_eq!(fns, vec!["math::add", "user::my_function"]);
     }
 
-    #[test]
-    fn test_collect_functions_and_triggers_with_triggers() {
+    /// Workers' observers are counted, with the functions they observe; the
+    /// engine's own observers are not. Private user functions are counted.
+    #[tokio::test]
+    async fn test_collect_functions_and_observers_counts_workers_observers() {
+        use crate::observer::events::test_support;
         let engine = make_test_engine();
-
-        engine.trigger_registry.triggers.insert(
-            "trigger-1".to_string(),
-            crate::trigger::Trigger {
-                id: "trigger-1".to_string(),
-                trigger_type: "cron".to_string(),
-                function_id: "my_fn".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
+        let _orders = test_support::capture(&engine, "orders::create");
+        let _alerts = test_support::capture(&engine, "alerts::big-order");
+        let _audit = test_support::capture(&engine, "audit::log");
+        let _first = test_support::observe(
+            &engine,
+            "obs-1",
+            "orders::create",
+            "alerts::big-order",
+            None,
+        )
+        .await;
+        let _second =
+            test_support::observe(&engine, "obs-2", "orders::create", "audit::log", None).await;
+        let default = crate::protocol::DEFAULT_NAMESPACE.to_string();
+        engine
+            .observers
+            .observe_as_engine(crate::observer::EngineObserver {
+                id: "engine-obs".to_string(),
+                function: (default.clone(), "alerts::big-order".to_string()),
+                args: serde_json::json!({}),
+                filters: None,
+                target: (default, "audit::log".to_string()),
+                deliver: crate::protocol::Deliver::Input,
                 metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
+            })
+            .unwrap();
+        engine.observers.set_options(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "audit::log",
+            crate::observer::FunctionOptions::private(),
         );
 
-        engine.trigger_registry.triggers.insert(
-            "trigger-2".to_string(),
-            crate::trigger::Trigger {
-                id: "trigger-2".to_string(),
-                trigger_type: "http".to_string(),
-                function_id: "other_fn".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
-        );
-
-        let result = collect_functions_and_triggers(&engine);
-        assert_eq!(result.trigger_count, 2);
-
-        assert!(result.trigger_types.contains(&"cron".to_string()));
-        assert!(result.trigger_types.contains(&"http".to_string()));
+        let result = collect_functions_and_observers(&engine);
+        assert_eq!(result.observer_count, 2);
+        assert_eq!(result.observable_function_count, 1);
+        assert_eq!(result.private_function_count, 1);
     }
 
     // =========================================================================
@@ -2176,11 +2158,12 @@ mod tests {
     #[test]
     fn test_build_base_properties_includes_short_term_names() {
         let snap = EngineSnapshot {
-            ft: FunctionTriggerData {
+            ft: FunctionObserverData {
                 function_count: 2,
                 functions: vec!["orders::charge".to_string(), "agent::memory".to_string()],
-                trigger_count: 1,
-                trigger_types: vec!["http".to_string()],
+                observer_count: 3,
+                observable_function_count: 1,
+                private_function_count: 1,
             },
             wd: WorkerData {
                 worker_count_total: 2,
@@ -2204,6 +2187,9 @@ mod tests {
 
         let props = build_base_properties(&snap);
         assert_eq!(props["project_name"], serde_json::json!("checkout"));
+        assert_eq!(props["observer_count"], 3);
+        assert_eq!(props["observable_function_count"], 1);
+        assert_eq!(props["private_function_count"], 1);
         assert_eq!(
             props["functions"],
             serde_json::json!(["orders::charge", "agent::memory"])
@@ -2489,37 +2475,64 @@ mod tests {
         ));
         // Not observability: other engine surfaces and user functions.
         assert!(!is_observability_function_id("engine::functions::list"));
-        assert!(!is_observability_function_id("engine::register_trigger"));
+        assert!(!is_observability_function_id("engine::observers::list"));
         assert!(!is_observability_function_id("configuration::list"));
         assert!(!is_observability_function_id("state::get"));
         assert!(!is_observability_function_id("orders::process"));
     }
 
     // =========================================================================
-    // topic_watch
+    // watch_topic
     // =========================================================================
 
-    #[test]
-    fn a_default_namespace_watch_keeps_the_plain_trigger_id() {
-        let watch = topic_watch("t::watch", "t::on-event", "some:topic", "default");
-        assert_eq!(watch.id, "t::watch");
-        assert_eq!(watch.trigger_namespace.as_deref(), Some("default"));
-        assert_eq!(watch.home_namespace, "default");
-        assert_eq!(watch.namespace, "default");
-        assert_eq!(watch.config["topic"], "some:topic");
-    }
+    /// A topic is observed on `queue::on-message` with `{ topic }` as args,
+    /// in every namespace the queue worker registers it in, delivering to
+    /// the engine's handler in `default`.
+    #[tokio::test]
+    async fn a_topic_is_observed_in_every_namespace_the_queue_runs_in() {
+        use crate::engine::{EngineTrait, Handler, RegisterFunctionRequest};
+        let engine = make_test_engine();
+        let _handler = crate::observer::events::test_support::capture(&engine, "t::on-event");
+        watch_topic(&engine, "t::watch", "some:topic", "t::on-event");
+        assert!(engine.observers.get("t::watch").is_none(), "no queue yet");
 
-    #[test]
-    fn each_namespace_gets_its_own_binding_of_the_same_topic() {
-        let project = topic_watch("t::watch", "t::on-event", "some:topic", "my-project");
-        // Its own id, so it never replaces the default one.
-        assert_eq!(project.id, "t::watch:my-project");
-        // Strict: this project's provider or nothing, because a binding at
-        // home in `default` would otherwise never reach it.
-        assert_eq!(project.trigger_namespace.as_deref(), Some("my-project"));
-        // The handler it fires stays where this worker registered it.
-        assert_eq!(project.namespace, "default");
-        assert_eq!(project.home_namespace, "default");
+        for namespace in [crate::protocol::DEFAULT_NAMESPACE, "my-project"] {
+            // The queue worker's function validates its subscribers' args.
+            engine.observers.set_options(
+                namespace,
+                QUEUE_ON_MESSAGE,
+                crate::observer::FunctionOptions {
+                    args_format: Some(serde_json::json!({ "type": "object" })),
+                    ..crate::observer::FunctionOptions::private()
+                },
+            );
+            engine.register_function_handler_ns(
+                namespace,
+                RegisterFunctionRequest {
+                    function_id: QUEUE_ON_MESSAGE.to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                Handler::new(|message: serde_json::Value| async move {
+                    FunctionResult::Success(Some(message))
+                }),
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while engine.observers.get("t::watch").is_none()
+                || engine.observers.get("t::watch@my-project").is_none()
+            {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("an observer per namespace");
+        let project = engine.observers.get("t::watch@my-project").unwrap();
+        assert_eq!(project.args, serde_json::json!({ "topic": "some:topic" }));
+        assert_eq!(project.function.0, "my-project");
+        assert_eq!(project.target.0, crate::protocol::DEFAULT_NAMESPACE);
     }
 
     // =========================================================================
@@ -2843,33 +2856,6 @@ mod tests {
         let engine = make_test_engine();
         register_test_function(&engine, "svc::worker");
 
-        engine
-            .trigger_registry
-            .register_trigger_type(TriggerType::new(
-                "durable:subscriber",
-                "Queue",
-                Box::new(NoopRegistrator),
-                None,
-            ))
-            .await
-            .expect("register trigger type");
-        engine
-            .trigger_registry
-            .register_trigger(Trigger {
-                id: "queue-trigger-1".to_string(),
-                trigger_type: "durable:subscriber".to_string(),
-                function_id: "svc::worker".to_string(),
-                config: serde_json::json!({ "topic": "orders" }),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            })
-            .await
-            .expect("register trigger");
-
         let (worker_tx, _worker_rx) = mpsc::channel(1);
         let mut worker = WorkerConnection::new(worker_tx);
         worker.runtime = Some("node".to_string());
@@ -2893,7 +2879,6 @@ mod tests {
         telemetry.queue_emits.store(7, Ordering::Relaxed);
         telemetry.api_requests.store(5, Ordering::Relaxed);
         telemetry.function_registrations.store(1, Ordering::Relaxed);
-        telemetry.trigger_registrations.store(1, Ordering::Relaxed);
 
         let module = build_manual_module(engine, 1);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

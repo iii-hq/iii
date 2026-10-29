@@ -399,7 +399,7 @@ mod tests {
             "obs-join",
             STREAM_ON_JOIN,
             "test::on-join",
-            Some(json!({ "input.stream_name": "orders" })),
+            Some(json!({ "input.stream_name": { "$eq": "orders" } })),
         )
         .await;
         let _leave_socket = test_support::observe(
@@ -438,7 +438,11 @@ mod tests {
         let leave = test_support::next(&mut leaves).await;
         assert_eq!(leave["subscription_id"], "sub-1");
         assert_eq!(leave["context"], json!({ "user": "alice" }));
-        assert!(connection.subscriptions.is_empty());
+        assert_eq!(
+            connection.subscriptions.len(),
+            1,
+            "sub-other is still subscribed"
+        );
     }
 
     #[tokio::test]

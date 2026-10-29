@@ -77,8 +77,6 @@ iii.registerFunction(
       forbidden_functions: user.role === 'readonly'
         ? ['api::users::delete', 'api::users::update']
         : [],
-      allowed_trigger_types: user.role === 'admin' ? ['cron', 'webhook'] : undefined,
-      allow_trigger_type_registration: user.role === 'admin',
       function_registration_prefix: `tenant-${user.tenant_id}`,
       context: { user_id: user.id, role: user.role, tenant_id: user.tenant_id },
     }

@@ -16,7 +16,8 @@ pub enum OtelExporterType {
     Otlp,
     /// Store traces in memory (queryable via API)
     Memory,
-    /// Export traces via OTLP and store in memory (enables triggers with OTLP export)
+    /// Export traces via OTLP and store in memory (`observability::on-span` and the API
+    /// alongside OTLP export)
     Both,
 }
 
@@ -172,12 +173,12 @@ pub struct SamplingRule {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SpanCollapseRule {
-    /// Span name pattern (supports wildcards like `trigger *`). Required.
+    /// Span name pattern (supports wildcards like `call *`). Required.
     pub name: String,
 
     /// Optional `service.name` pattern. When set, only spans whose service
     /// matches are collapsed — disambiguates same-named spans across services
-    /// (e.g. a worker `trigger *` vs the engine's own `trigger *`).
+    /// (e.g. a worker's `call *` vs the engine's own `call *`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
 }

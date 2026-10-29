@@ -1659,7 +1659,6 @@ crate::register_worker!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::function::{Function, HandlerFn};
     use crate::workers::observability::metrics::ensure_default_meter;
     use crate::workers::observability::metrics::{
         StoredDataPoint, StoredMetric, StoredMetricType, StoredNumberDataPoint, get_metric_storage,
@@ -1686,30 +1685,6 @@ mod tests {
             crate::engine::Handler::new(
                 |_input: Value| async move { FunctionResult::Success(None) },
             ),
-        );
-    }
-
-    fn insert_trigger_instance(
-        engine: &Engine,
-        id: &str,
-        trigger_type: &str,
-        function_id: &str,
-        config: Value,
-    ) {
-        engine.trigger_registry.triggers.insert(
-            id.to_string(),
-            crate::trigger::Trigger {
-                id: id.to_string(),
-                trigger_type: trigger_type.to_string(),
-                function_id: function_id.to_string(),
-                config,
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
         );
     }
 
@@ -1845,8 +1820,6 @@ mod tests {
     #[test]
     fn input_defaults_round_trip() {
         let _: FunctionsListInput = serde_json::from_value(serde_json::json!({})).unwrap();
-        let _: TriggersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
-        let _: RegisteredTriggersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
         let _: WorkersListInput = serde_json::from_value(serde_json::json!({})).unwrap();
         let info: FunctionInfoInput =
             serde_json::from_value(serde_json::json!({"function_id": "test"})).unwrap();
@@ -1902,59 +1875,6 @@ mod tests {
             .find(|f| f.function_id == "state::get")
             .unwrap();
         assert_eq!(entry.worker_name, "iii-state");
-    }
-
-    // ── list_registered_trigger_summaries tests ─────────────────────────
-
-    #[tokio::test]
-    async fn list_registered_trigger_summaries_empty() {
-        let (_engine, module) = setup_engine_and_module();
-        let triggers = module.list_registered_trigger_summaries(false).await;
-        assert!(triggers.is_empty());
-    }
-
-    #[tokio::test]
-    async fn list_registered_trigger_summaries_returns_registered_triggers() {
-        let (engine, module) = setup_engine_and_module();
-        insert_trigger_instance(
-            &engine,
-            "trig-1",
-            "cron",
-            "test::handler",
-            serde_json::json!({"interval": 5}),
-        );
-
-        let summaries = module.list_registered_trigger_summaries(false).await;
-        assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].id, "trig-1");
-        assert_eq!(summaries[0].trigger_type, "cron");
-        assert_eq!(summaries[0].function_id, "test::handler");
-        assert_eq!(summaries[0].worker_name, "test"); // fallback first segment
-        assert!(summaries[0].config_summary.contains("interval"));
-    }
-
-    #[tokio::test]
-    async fn list_registered_trigger_summaries_truncates_long_config() {
-        let (engine, module) = setup_engine_and_module();
-        let huge = "x".repeat(200);
-        insert_trigger_instance(
-            &engine,
-            "trig-long",
-            "cron",
-            "test::handler",
-            serde_json::json!({"data": huge}),
-        );
-
-        let summaries = module.list_registered_trigger_summaries(false).await;
-        assert_eq!(summaries.len(), 1);
-        let summary = &summaries[0].config_summary;
-        let char_count = summary.chars().count();
-        assert!(
-            char_count <= CONFIG_SUMMARY_MAX_LEN + 1,
-            "got {} chars",
-            char_count
-        );
-        assert!(summary.ends_with('…'));
     }
 
     // ── list_worker_summaries tests ─────────────────────────────────────
@@ -2268,6 +2188,9 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    args_format: None,
+                    private: false,
+                    observable: true,
                     observe: None,
                 },
             )
@@ -2315,6 +2238,9 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    args_format: None,
+                    private: false,
+                    observable: true,
                     observe: None,
                 },
             )
@@ -2390,6 +2316,9 @@ mod tests {
                     response_format: None,
                     metadata: None,
                     invocation: None,
+                    args_format: None,
+                    private: false,
+                    observable: true,
                     observe: None,
                 },
             )
@@ -2411,208 +2340,6 @@ mod tests {
         );
     }
 
-    // ── TriggerRegistrator implementation tests ─────────────────────────
-
-    #[tokio::test]
-    async fn trigger_registrator_register_and_unregister() {
-        let (_engine, module) = setup_engine_and_module();
-
-        let trigger = crate::trigger::Trigger {
-            id: "eng-trig-1".to_string(),
-            trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
-            function_id: "test::on_functions_changed".to_string(),
-            config: serde_json::json!({}),
-            worker_id: None,
-            metadata: None,
-            namespace: "default".to_string(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        };
-
-        let result = module.register_trigger(trigger.clone()).await;
-        assert!(result.is_ok());
-        assert_eq!(module.triggers.len(), 1);
-        assert!(module.triggers.contains_key("eng-trig-1"));
-
-        let result = module.unregister_trigger(trigger).await;
-        assert!(result.is_ok());
-        assert!(module.triggers.is_empty());
-    }
-
-    #[tokio::test]
-    async fn trigger_registrator_register_multiple() {
-        let (_engine, module) = setup_engine_and_module();
-
-        for i in 0..3 {
-            let trigger = crate::trigger::Trigger {
-                id: format!("eng-trig-{}", i),
-                trigger_type: TRIGGER_WORKERS_AVAILABLE.to_string(),
-                function_id: format!("test::handler_{}", i),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            };
-            module.register_trigger(trigger).await.unwrap();
-        }
-
-        assert_eq!(module.triggers.len(), 3);
-    }
-
-    // ── fire_triggers tests ─────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn fire_triggers_no_matching_triggers() {
-        let (_engine, module) = setup_engine_and_module();
-        let trigger = crate::trigger::Trigger {
-            id: "trig-1".to_string(),
-            trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
-            function_id: "test::handler".to_string(),
-            config: serde_json::json!({}),
-            worker_id: None,
-            metadata: None,
-            namespace: "default".to_string(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        };
-        module.register_trigger(trigger).await.unwrap();
-
-        module
-            .fire_triggers(
-                TRIGGER_WORKERS_AVAILABLE,
-                serde_json::json!({"event": "test"}),
-            )
-            .await;
-    }
-
-    #[tokio::test]
-    async fn fire_triggers_with_matching_trigger() {
-        let (engine, module) = setup_engine_and_module();
-
-        let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
-        let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
-        let tx_clone = tx.clone();
-
-        engine.register_function_handler(
-            crate::engine::RegisterFunctionRequest {
-                function_id: "test::on_workers".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            crate::engine::Handler::new(move |input: Value| {
-                let tx = tx_clone.clone();
-                async move {
-                    if let Some(sender) = tx.lock().unwrap().take() {
-                        let _ = sender.send(input);
-                    }
-                    FunctionResult::Success(None)
-                }
-            }),
-        );
-
-        let trigger = crate::trigger::Trigger {
-            id: "trig-workers".to_string(),
-            trigger_type: TRIGGER_WORKERS_AVAILABLE.to_string(),
-            function_id: "test::on_workers".to_string(),
-            config: serde_json::json!({}),
-            worker_id: None,
-            metadata: None,
-            namespace: "default".to_string(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        };
-        module.register_trigger(trigger).await.unwrap();
-
-        let data = serde_json::json!({"event": "worker_connected", "worker_id": "w1"});
-        module
-            .fire_triggers(TRIGGER_WORKERS_AVAILABLE, data.clone())
-            .await;
-
-        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
-            .await
-            .expect("timed out waiting for trigger fire")
-            .expect("channel closed");
-
-        assert_eq!(received, data);
-    }
-
-    /// BUG 1 on the third fire path: `EngineFunctionsWorker::fire_triggers`
-    /// keeps its own trigger map and dispatches the target. It must resolve in
-    /// the trigger's namespace, not `default` — otherwise a namespaced worker's
-    /// `on_functions_available` callback silently never runs. `test::on_fns`
-    /// exists in both `orders` ("from-orders") and `default` ("from-default");
-    /// the trigger bound in `orders` must fire "from-orders". Reverting either
-    /// dispatch site to `DEFAULT_NAMESPACE` turns this RED.
-    #[tokio::test]
-    async fn engine_functions_worker_fires_trigger_in_its_namespace() {
-        use std::sync::Mutex as StdMutex;
-
-        let (engine, module) = setup_engine_and_module();
-
-        let fired: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
-        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
-            let fired = fired.clone();
-            engine.register_function_handler_ns(
-                ns,
-                crate::engine::RegisterFunctionRequest {
-                    function_id: "test::on_fns".to_string(),
-                    description: None,
-                    request_format: None,
-                    response_format: None,
-                    metadata: None,
-                },
-                crate::engine::Handler::new(move |_input: Value| {
-                    let fired = fired.clone();
-                    async move {
-                        fired.lock().unwrap().push(tag.to_string());
-                        FunctionResult::Success(None)
-                    }
-                }),
-            );
-        }
-
-        module
-            .register_trigger(crate::trigger::Trigger {
-                id: "trig-fns-orders".to_string(),
-                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
-                function_id: "test::on_fns".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "orders".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            })
-            .await
-            .unwrap();
-
-        module
-            .fire_triggers(
-                TRIGGER_FUNCTIONS_AVAILABLE,
-                serde_json::json!({"event": "fns"}),
-            )
-            .await;
-
-        // fire_triggers spawns the dispatch; give it a moment to run.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        let fired = fired.lock().unwrap().clone();
-        assert_eq!(
-            fired,
-            vec!["from-orders".to_string()],
-            "the orders-bound functions-available trigger must fire the orders target; got: {fired:?}"
-        );
-    }
-
     // ── Serialization tests ─────────────────────────────────────────────
 
     #[test]
@@ -2623,6 +2350,7 @@ mod tests {
             worker_name: "my".to_string(),
             description: Some("desc".to_string()),
             metadata: None,
+            observe: FunctionObserveInfo::default(),
         };
         let json = serde_json::to_value(&summary).expect("serialize");
         assert_eq!(json["function_id"], "my::func");
@@ -2638,6 +2366,7 @@ mod tests {
             worker_name: "my".to_string(),
             description: None,
             metadata: None,
+            observe: FunctionObserveInfo::default(),
         };
         let json = serde_json::to_value(&summary).expect("serialize");
         assert!(json.get("description").is_none());
@@ -2652,6 +2381,7 @@ mod tests {
             worker_name: "my".to_string(),
             description: None,
             metadata: None,
+            observe: FunctionObserveInfo::default(),
         };
         let json = serde_json::to_value(&without).expect("serialize");
         assert!(
@@ -2666,52 +2396,10 @@ mod tests {
             worker_name: "my".to_string(),
             description: None,
             metadata: Some(serde_json::json!({ "internal": true })),
+            observe: FunctionObserveInfo::default(),
         };
         let json = serde_json::to_value(&with).expect("serialize");
         assert_eq!(json["metadata"]["internal"], true);
-    }
-
-    #[test]
-    fn registered_trigger_summary_serializes() {
-        let summary = RegisteredTriggerSummary {
-            id: "t-1".to_string(),
-            trigger_type: "cron".to_string(),
-            function_id: "fn::handler".to_string(),
-            worker_name: "fn".to_string(),
-            status: RegisteredTriggerStatus::Active,
-            config: serde_json::json!({ "x": 1 }),
-            config_summary: "{\"x\":1}".to_string(),
-            served_by: None,
-            observer_state: None,
-        };
-        let json = serde_json::to_value(&summary).expect("serialize");
-        assert_eq!(json["id"], "t-1");
-        assert_eq!(json["trigger_type"], "cron");
-        assert_eq!(json["function_id"], "fn::handler");
-        assert_eq!(json["worker_name"], "fn");
-        assert_eq!(json["config"], serde_json::json!({ "x": 1 }));
-        assert_eq!(json["config_summary"], "{\"x\":1}");
-    }
-
-    #[test]
-    fn trigger_type_detail_uses_request_schema_alias() {
-        let detail = TriggerTypeDetail {
-            id: "http".to_string(),
-            worker_name: "iii-http".to_string(),
-            description: "HTTP trigger".to_string(),
-            configuration_schema: Some(serde_json::json!({"type": "object"})),
-            request_schema: Some(serde_json::json!({"type": "object"})),
-            response_schema: None,
-            instance_count: 2,
-            namespace: crate::protocol::default_namespace(),
-        };
-        let json = serde_json::to_value(&detail).expect("serialize");
-        assert!(json.get("configuration_schema").is_some());
-        assert!(json.get("request_schema").is_some());
-        assert!(json.get("response_schema").is_none());
-        assert!(json.get("call_request_format").is_none());
-        assert!(json.get("trigger_request_format").is_none());
-        assert_eq!(json["instance_count"], 2);
     }
 
     #[test]
@@ -2740,35 +2428,11 @@ mod tests {
 
     // ── Lifecycle tests ─────────────────────────────────────────────────
 
+    /// `engine::on-functions-changed` is called from the registry itself (no
+    /// polling task) with `functions_changed` and the full list, and folds a
+    /// burst of registrations into one call.
     #[tokio::test]
-    async fn initialize_registers_engine_trigger_types() {
-        let (engine, module) = setup_engine_and_module();
-        module.initialize().await.unwrap();
-        assert!(
-            engine
-                .trigger_registry
-                .trigger_types
-                .contains_key(&crate::trigger::type_key(
-                    crate::protocol::DEFAULT_NAMESPACE,
-                    TRIGGER_FUNCTIONS_AVAILABLE
-                ))
-        );
-        assert!(
-            engine
-                .trigger_registry
-                .trigger_types
-                .contains_key(&crate::trigger::type_key(
-                    crate::protocol::DEFAULT_NAMESPACE,
-                    TRIGGER_WORKERS_AVAILABLE
-                ))
-        );
-    }
-
-    /// `engine::functions-available` fires from the registry itself (no
-    /// polling task), keeps its original payload (`functions_changed` + the
-    /// full list), and folds a burst of registrations into one event.
-    #[tokio::test]
-    async fn functions_available_fires_on_change_with_full_list() {
+    async fn functions_changed_fires_on_change_with_full_list() {
         let (engine, module) = setup_engine_and_module();
         module.initialize().await.unwrap();
 
@@ -2789,20 +2453,10 @@ mod tests {
                 }
             }),
         );
-        engine.trigger_registry.triggers.insert(
-            "trig-fns".to_string(),
-            crate::trigger::Trigger {
-                id: "trig-fns".to_string(),
-                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
-                function_id: "test::on_fns".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
+        observe_source(
+            &engine,
+            crate::observer::events::ON_FUNCTIONS_CHANGED,
+            "test::on_fns",
         );
 
         fn ids(event: &Value) -> Vec<String> {
@@ -2828,7 +2482,7 @@ mod tests {
                 }
             })
             .await
-            .expect("functions-available must fire")
+            .expect("engine::on-functions-changed must be called")
         }
 
         for id in ["burst::a", "burst::b", "burst::c"] {
@@ -2858,10 +2512,10 @@ mod tests {
 
     /// A registry change made from a thread with no current Tokio runtime
     /// (register/remove are synchronous and public) must still produce an
-    /// `engine::functions-available` event: the listener spawns on the handle
+    /// `engine::on-functions-changed` event: the listener spawns on the handle
     /// captured at `initialize`, not on a per-change lookup.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn functions_available_fires_for_changes_outside_the_runtime() {
+    async fn functions_changed_fires_for_changes_outside_the_runtime() {
         let (engine, module) = setup_engine_and_module();
         module.initialize().await.unwrap();
 
@@ -2882,20 +2536,10 @@ mod tests {
                 }
             }),
         );
-        engine.trigger_registry.triggers.insert(
-            "trig-fns".to_string(),
-            crate::trigger::Trigger {
-                id: "trig-fns".to_string(),
-                trigger_type: TRIGGER_FUNCTIONS_AVAILABLE.to_string(),
-                function_id: "test::on_fns".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: crate::protocol::DEFAULT_NAMESPACE.to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
+        observe_source(
+            &engine,
+            crate::observer::events::ON_FUNCTIONS_CHANGED,
+            "test::on_fns",
         );
 
         let off_runtime = engine.clone();
@@ -2921,7 +2565,7 @@ mod tests {
             }
         })
         .await
-        .expect("a change made off the runtime must still fire functions-available");
+        .expect("a change made off the runtime must still call engine::on-functions-changed");
         assert_eq!(event["event"], "functions_changed");
     }
 
@@ -3285,13 +2929,17 @@ mod tests {
             ),
         );
 
-        insert_trigger_instance(
-            &engine,
-            "trig-d",
-            "cron",
+        engine.observers.set_options(
+            crate::protocol::DEFAULT_NAMESPACE,
             "test::detailed",
-            serde_json::json!({"interval": 5}),
+            FunctionOptions {
+                args_format: Some(serde_json::json!({ "type": "object" })),
+                private: true,
+                observable: true,
+            },
         );
+        register_simple_function(&engine, "test::sink", None);
+        observe_source(&engine, "test::detailed", "test::sink");
 
         let result = module
             .functions_info(
@@ -3317,9 +2965,15 @@ mod tests {
                     Some(serde_json::json!({"type": "string"}))
                 );
                 assert_eq!(detail.metadata, Some(serde_json::json!({"v": 1})));
-                assert_eq!(detail.registered_triggers.len(), 1);
-                assert_eq!(detail.registered_triggers[0].id, "trig-d");
-                assert_eq!(detail.registered_triggers[0].trigger_type, "cron");
+                assert_eq!(
+                    detail.observe,
+                    FunctionObserveInfo {
+                        args_format: Some(serde_json::json!({ "type": "object" })),
+                        private: true,
+                        observable: None,
+                        observer_count: 1,
+                    }
+                );
             }
             _ => panic!("expected single functions_info success"),
         }
@@ -3424,348 +3078,6 @@ mod tests {
                 FunctionResult::Failure(err) => assert_eq!(err.code, "INVALID_ARGUMENTS"),
                 _ => panic!("expected INVALID_ARGUMENTS failure"),
             }
-        }
-    }
-
-    // ── triggers_list / triggers_info ───────────────────────────────────
-
-    #[tokio::test]
-    async fn triggers_list_returns_trigger_types_not_instances() {
-        let (engine, module) = setup_engine_and_module();
-        engine.trigger_registry.trigger_types.insert(
-            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"user-type".to_string()),
-            crate::trigger::TriggerType::new(
-                "user-type",
-                "User type",
-                Box::new(module.clone()),
-                None,
-            ),
-        );
-        engine.trigger_registry.trigger_types.insert(
-            crate::trigger::type_key(
-                crate::protocol::DEFAULT_NAMESPACE,
-                &"engine::internal-type".to_string(),
-            ),
-            crate::trigger::TriggerType::new(
-                "engine::internal-type",
-                "Internal",
-                Box::new(module.clone()),
-                None,
-            ),
-        );
-
-        let filtered = module.triggers_list(TriggersListInput::default()).await;
-        match filtered {
-            FunctionResult::Success(result) => {
-                assert_eq!(result.triggers.len(), 1);
-                assert_eq!(result.triggers[0].id, "user-type");
-            }
-            _ => panic!("expected success"),
-        }
-
-        let all = module
-            .triggers_list(TriggersListInput {
-                include_internal: Some(true),
-                ..Default::default()
-            })
-            .await;
-        match all {
-            FunctionResult::Success(result) => {
-                assert!(
-                    result
-                        .triggers
-                        .iter()
-                        .any(|t| t.id == "engine::internal-type")
-                );
-                assert!(result.triggers.iter().any(|t| t.id == "user-type"));
-            }
-            _ => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn triggers_info_returns_schemas_and_instance_count() {
-        let (engine, module) = setup_engine_and_module();
-        // Use a builtin trigger type id so default schemas are populated.
-        let tt = crate::trigger::TriggerType::new(
-            "cron",
-            "Cron trigger",
-            Box::new(module.clone()),
-            None,
-        );
-        engine
-            .trigger_registry
-            .register_trigger_type(tt)
-            .await
-            .unwrap();
-
-        insert_trigger_instance(
-            &engine,
-            "trig-a",
-            "cron",
-            "test::handler_a",
-            serde_json::json!({"expression": "* * * * * *"}),
-        );
-        insert_trigger_instance(
-            &engine,
-            "trig-b",
-            "cron",
-            "test::handler_b",
-            serde_json::json!({"expression": "* * * * * *"}),
-        );
-
-        let result = module
-            .triggers_info(TriggerInfoInput {
-                id: "cron".to_string(),
-                namespace: None,
-                caller_worker_id: None,
-            })
-            .await;
-        match result {
-            FunctionResult::Success(detail) => {
-                assert_eq!(detail.id, "cron");
-                assert_eq!(detail.instance_count, 2);
-                assert!(detail.configuration_schema.is_some());
-                assert!(detail.request_schema.is_some());
-                assert!(detail.response_schema.is_none());
-            }
-            _ => panic!("expected triggers_info success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn triggers_info_returns_http_response_schema() {
-        let (engine, module) = setup_engine_and_module();
-        let tt = crate::trigger::TriggerType::new(
-            "http",
-            "HTTP trigger",
-            Box::new(module.clone()),
-            None,
-        );
-        engine
-            .trigger_registry
-            .register_trigger_type(tt)
-            .await
-            .unwrap();
-
-        let result = module
-            .triggers_info(TriggerInfoInput {
-                id: "http".to_string(),
-                namespace: None,
-                caller_worker_id: None,
-            })
-            .await;
-        match result {
-            FunctionResult::Success(detail) => {
-                let schema = detail
-                    .response_schema
-                    .clone()
-                    .expect("http trigger type exposes response_schema");
-                let properties = schema
-                    .get("properties")
-                    .and_then(Value::as_object)
-                    .expect("response_schema has a properties object");
-                for key in ["status_code", "headers", "body"] {
-                    assert!(
-                        properties.contains_key(key),
-                        "expected property '{key}', got: {properties:?}"
-                    );
-                }
-                // Pin optionality: the worker treats every field as optional, so
-                // none may be in the schema's `required` array.
-                if let Some(required) = schema.get("required").and_then(Value::as_array) {
-                    for key in ["status_code", "headers", "body"] {
-                        assert!(
-                            !required.iter().any(|v| v.as_str() == Some(key)),
-                            "'{key}' must not be required, got required: {required:?}"
-                        );
-                    }
-                }
-
-                let json = serde_json::to_value(&detail).expect("serialize");
-                let serialized_response_schema = json
-                    .get("response_schema")
-                    .expect("serialized response_schema present");
-                let serialized_properties = serialized_response_schema
-                    .get("properties")
-                    .and_then(Value::as_object)
-                    .expect("serialized response_schema has a properties object");
-                for key in ["status_code", "headers", "body"] {
-                    assert!(
-                        serialized_properties.contains_key(key),
-                        "expected serialized property '{key}', got: {serialized_properties:?}"
-                    );
-                }
-                // Pin optionality on the serialized form too.
-                if let Some(required) = serialized_response_schema
-                    .get("required")
-                    .and_then(Value::as_array)
-                {
-                    for key in ["status_code", "headers", "body"] {
-                        assert!(
-                            !required.iter().any(|v| v.as_str() == Some(key)),
-                            "'{key}' must not be required in serialized schema, got required: {required:?}"
-                        );
-                    }
-                }
-            }
-            _ => panic!("expected triggers_info success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn triggers_info_not_found_returns_failure() {
-        let (_engine, module) = setup_engine_and_module();
-        let result = module
-            .triggers_info(TriggerInfoInput {
-                id: "nope".to_string(),
-                namespace: None,
-                caller_worker_id: None,
-            })
-            .await;
-        assert!(matches!(result, FunctionResult::Failure(_)));
-    }
-
-    // ── registered_triggers_list / info ─────────────────────────────────
-
-    #[tokio::test]
-    async fn registered_triggers_list_filters_internal_by_default() {
-        let (engine, module) = setup_engine_and_module();
-        insert_trigger_instance(
-            &engine,
-            "internal-row",
-            "cron",
-            "engine::internal",
-            serde_json::json!({}),
-        );
-        insert_trigger_instance(
-            &engine,
-            "user-row",
-            "cron",
-            "user::handler",
-            serde_json::json!({}),
-        );
-
-        let filtered = module
-            .registered_triggers_list(RegisteredTriggersListInput::default())
-            .await;
-        match filtered {
-            FunctionResult::Success(result) => {
-                assert_eq!(result.registered_triggers.len(), 1);
-                assert_eq!(result.registered_triggers[0].id, "user-row");
-            }
-            _ => panic!("expected success"),
-        }
-
-        let all = module
-            .registered_triggers_list(RegisteredTriggersListInput {
-                include_internal: Some(true),
-                ..Default::default()
-            })
-            .await;
-        match all {
-            FunctionResult::Success(result) => {
-                assert_eq!(result.registered_triggers.len(), 2);
-            }
-            _ => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn registered_triggers_list_filters_by_trigger_type_and_function_id() {
-        let (engine, module) = setup_engine_and_module();
-        insert_trigger_instance(&engine, "a", "cron", "user::a", serde_json::json!({}));
-        insert_trigger_instance(&engine, "b", "http", "user::b", serde_json::json!({}));
-
-        let by_type = module
-            .registered_triggers_list(RegisteredTriggersListInput {
-                trigger_type: Some("http".to_string()),
-                ..Default::default()
-            })
-            .await;
-        match by_type {
-            FunctionResult::Success(result) => {
-                assert_eq!(result.registered_triggers.len(), 1);
-                assert_eq!(result.registered_triggers[0].id, "b");
-            }
-            _ => panic!("expected success"),
-        }
-
-        let by_function = module
-            .registered_triggers_list(RegisteredTriggersListInput {
-                function_id: Some("user::a".to_string()),
-                ..Default::default()
-            })
-            .await;
-        match by_function {
-            FunctionResult::Success(result) => {
-                assert_eq!(result.registered_triggers.len(), 1);
-                assert_eq!(result.registered_triggers[0].id, "a");
-            }
-            _ => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn registered_triggers_info_returns_composite_with_function_and_trigger() {
-        let (engine, module) = setup_engine_and_module();
-        register_simple_function(&engine, "user::target", Some("target function"));
-        let tt = crate::trigger::TriggerType::new("cron", "Cron", Box::new(module.clone()), None);
-        engine
-            .trigger_registry
-            .register_trigger_type(tt)
-            .await
-            .unwrap();
-        insert_trigger_instance(
-            &engine,
-            "compose-1",
-            "cron",
-            "user::target",
-            serde_json::json!({"expression": "0 0 * * * *"}),
-        );
-
-        let result = module
-            .registered_triggers_info(RegisteredTriggerInfoInput {
-                id: "compose-1".to_string(),
-            })
-            .await;
-        match result {
-            FunctionResult::Success(detail) => {
-                assert_eq!(detail.id, "compose-1");
-                assert_eq!(detail.trigger_type, "cron");
-                assert_eq!(detail.function_id, "user::target");
-                assert!(detail.trigger.is_some());
-                assert!(detail.function.is_some());
-                let f = detail.function.unwrap();
-                assert_eq!(f.function_id, "user::target");
-                assert_eq!(f.description.as_deref(), Some("target function"));
-            }
-            _ => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn registered_triggers_info_returns_null_for_dangling_pointers() {
-        let (engine, module) = setup_engine_and_module();
-        insert_trigger_instance(
-            &engine,
-            "dangling",
-            "unknown-type",
-            "missing::function",
-            serde_json::json!({}),
-        );
-
-        let result = module
-            .registered_triggers_info(RegisteredTriggerInfoInput {
-                id: "dangling".to_string(),
-            })
-            .await;
-        match result {
-            FunctionResult::Success(detail) => {
-                assert!(detail.trigger.is_none());
-                assert!(detail.function.is_none());
-            }
-            _ => panic!("expected success"),
         }
     }
 
@@ -3908,13 +3220,6 @@ mod tests {
         });
         register_simple_function(&engine, "state::get", Some("get state"));
         register_simple_function(&engine, "state::set", Some("set state"));
-        insert_trigger_instance(
-            &engine,
-            "trg-state",
-            "cron",
-            "state::get",
-            serde_json::json!({}),
-        );
 
         let result = module
             .workers_info(WorkerInfoInput {
@@ -3926,76 +3231,11 @@ mod tests {
             FunctionResult::Success(detail) => {
                 assert_eq!(detail.worker.name.as_deref(), Some("iii-state"));
                 assert_eq!(detail.functions.len(), 2);
-                assert_eq!(detail.registered_triggers.len(), 1);
-                assert_eq!(detail.registered_triggers[0].id, "trg-state");
-                assert!(detail.worker.internal == false);
-            }
-            _ => panic!("expected success"),
-        }
-    }
-
-    #[tokio::test]
-    async fn workers_info_attributes_ws_trigger_types_like_triggers_list() {
-        let (engine, module) = setup_engine_and_module();
-
-        // The name resolves to a runtime entry first…
-        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
-            id: "ops-worker".to_string(),
-            name: "ops-worker".to_string(),
-            description: None,
-            worker_type: "ops-worker".to_string(),
-            connected_at: chrono::Utc::now(),
-            function_ids: vec![],
-            internal: false,
-        });
-
-        // …while the trigger type is pinned to a same-named WS connection's
-        // Uuid (the stale-daemon / duplicate-name scenario). Id-based
-        // attribution dropped the type here; name-based attribution — the
-        // index `engine::triggers::list` uses — must keep it.
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let conn = crate::worker_connections::WorkerConnection::new(tx);
-        let conn_id = conn.id;
-        engine.worker_registry.register_worker(conn);
-        engine.worker_registry.update_worker_metadata(
-            &conn_id,
-            "rust".to_string(),
-            Some("1.0.0".to_string()),
-            Some("ops-worker".to_string()),
-            None,
-            Some("linux".to_string()),
-            None,
-            None,
-            None,
-            None,
-        );
-        let tt = crate::trigger::TriggerType::new(
-            "worker",
-            "Worker lifecycle events",
-            Box::new(module.clone()),
-            Some(conn_id),
-        );
-        engine
-            .trigger_registry
-            .register_trigger_type(tt)
-            .await
-            .unwrap();
-
-        let result = module
-            .workers_info(WorkerInfoInput {
-                name: "ops-worker".to_string(),
-                namespace: None,
-            })
-            .await;
-        match result {
-            FunctionResult::Success(detail) => {
-                let ids: Vec<&str> = detail.trigger_types.iter().map(|t| t.id.as_str()).collect();
-                assert_eq!(
-                    ids,
-                    vec!["worker"],
-                    "workers::info must attribute WS-registered trigger types by \
-                     owner name, matching engine::triggers::list"
+                assert!(
+                    detail.observers.is_empty(),
+                    "an in-process worker observes nothing"
                 );
+                assert!(detail.worker.internal == false);
             }
             _ => panic!("expected success"),
         }
@@ -4024,68 +3264,6 @@ mod tests {
             sanitize_worker_text("a\u{202e}b\u{2066}c".to_string()),
             Some("abc".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn workers_info_excludes_trigger_types_owned_by_other_workers() {
-        let (engine, module) = setup_engine_and_module();
-
-        engine.upsert_runtime_worker(crate::worker_connections::RuntimeWorkerInfo {
-            id: "ops-worker".to_string(),
-            name: "ops-worker".to_string(),
-            description: None,
-            worker_type: "ops-worker".to_string(),
-            connected_at: chrono::Utc::now(),
-            function_ids: vec![],
-            internal: false,
-        });
-
-        // A trigger type pinned to a DIFFERENT worker name must never be
-        // attributed to the queried worker (guards against an over-broad
-        // attribution regression — e.g. matching everything).
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        let conn = crate::worker_connections::WorkerConnection::new(tx);
-        let conn_id = conn.id;
-        engine.worker_registry.register_worker(conn);
-        engine.worker_registry.update_worker_metadata(
-            &conn_id,
-            "rust".to_string(),
-            Some("1.0.0".to_string()),
-            Some("other-worker".to_string()),
-            None,
-            Some("linux".to_string()),
-            None,
-            None,
-            None,
-            None,
-        );
-        let tt = crate::trigger::TriggerType::new(
-            "foreign",
-            "Owned by other-worker",
-            Box::new(module.clone()),
-            Some(conn_id),
-        );
-        engine
-            .trigger_registry
-            .register_trigger_type(tt)
-            .await
-            .unwrap();
-
-        let result = module
-            .workers_info(WorkerInfoInput {
-                name: "ops-worker".to_string(),
-                namespace: None,
-            })
-            .await;
-        match result {
-            FunctionResult::Success(detail) => {
-                assert!(
-                    detail.trigger_types.iter().all(|t| t.id != "foreign"),
-                    "workers::info must not attribute another worker's trigger type"
-                );
-            }
-            _ => panic!("expected success"),
-        }
     }
 
     #[tokio::test]
@@ -4188,8 +3366,9 @@ mod tests {
     // ── register_worker service ─────────────────────────────────────────
 
     #[tokio::test]
-    async fn register_worker_service_fires_worker_trigger() {
+    async fn register_worker_service_calls_on_workers_changed() {
         let (engine, module) = setup_engine_and_module();
+        module.initialize().await.unwrap();
 
         let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
@@ -4213,20 +3392,10 @@ mod tests {
             }),
         );
 
-        engine.trigger_registry.triggers.insert(
-            "worker-trigger".to_string(),
-            crate::trigger::Trigger {
-                id: "worker-trigger".to_string(),
-                trigger_type: TRIGGER_WORKERS_AVAILABLE.to_string(),
-                function_id: "test::worker_listener".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
+        observe_source(
+            &engine,
+            crate::observer::events::ON_WORKERS_CHANGED,
+            "test::worker_listener",
         );
 
         let worker =
@@ -4256,8 +3425,8 @@ mod tests {
 
         let payload = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
-            .expect("timed out waiting for worker trigger")
-            .expect("worker trigger channel closed");
+            .expect("timed out waiting for engine::on-workers-changed")
+            .expect("listener channel closed");
         assert_eq!(payload["event"], "worker_metadata_updated");
         assert_eq!(payload["worker_id"], worker_id);
     }
@@ -4268,450 +3437,105 @@ mod tests {
         module.destroy().await.unwrap();
     }
 
-    // ── engine::register_trigger / engine::unregister_trigger ────────────
-
-    /// Registers `test-type` (with the module itself as registrator) so
-    /// `register_trigger_fn` can bind against it.
-    async fn register_test_trigger_type(engine: &Engine, module: &EngineFunctionsWorker) {
-        engine
-            .trigger_registry
-            .register_trigger_type(crate::trigger::TriggerType::new(
-                "test-type",
-                "Test trigger type",
-                Box::new(module.clone()),
-                None,
-            ))
-            .await
-            .unwrap();
-    }
-
+    /// Function rows carry the registration's options (the defaults left
+    /// out) and the observer count, in `engine::functions::list` and in the
+    /// `engine::on-functions-changed` event; `engine::workers::info` lists
+    /// the ids of the observers a worker created.
     #[tokio::test]
-    async fn register_trigger_fn_binds_directly_and_delivers_metadata_as_arg() {
+    async fn function_rows_carry_options_and_observer_counts() {
         let (engine, module) = setup_engine_and_module();
-        register_test_trigger_type(&engine, &module).await;
-
-        // Target function records the payload AND the metadata sidecar it
-        // receives as a distinct argument.
-        let recorded_input: Arc<std::sync::Mutex<Option<Value>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let recorded_meta: Arc<std::sync::Mutex<Option<Value>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let ri = recorded_input.clone();
-        let rm = recorded_meta.clone();
-        let handler: Arc<HandlerFn> = Arc::new(move |_inv, input, _session, metadata| {
-            let ri = ri.clone();
-            let rm = rm.clone();
-            Box::pin(async move {
-                *ri.lock().unwrap() = Some(input);
-                *rm.lock().unwrap() = metadata;
-                FunctionResult::Success(None)
-            })
-        });
-        engine.functions.register_function(
-            "test::target".to_string(),
-            Function {
-                handler,
-                _function_id: "test::target".to_string(),
-                _description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
+        register_simple_function(&engine, "plain::fn", None);
+        engine.observers.set_options(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "vault::read",
+            FunctionOptions {
+                args_format: None,
+                private: false,
+                observable: false,
             },
         );
+        register_simple_function(&engine, "vault::read", None);
 
-        let wid = uuid::Uuid::new_v4();
-        let meta = serde_json::json!({ "session_id": "s_1", "subscription_id": "sub_1" });
-        let id = match module
-            .register_trigger_fn(
-                RegisterTriggerInput {
-                    trigger_type: "test-type".to_string(),
-                    function_id: "test::target".to_string(),
-                    config: serde_json::json!({}),
-                    metadata: Some(meta.clone()),
-                    caller_worker_id: Some(wid.to_string()),
-                    trigger_namespace: None,
-                },
-                None,
-            )
-            .await
-        {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected register success"),
+        let rows = module.list_function_summaries().await;
+        let row = |id: &str| {
+            let row = rows.iter().find(|row| row.function_id == id).unwrap();
+            serde_json::to_value(row).unwrap()
         };
-
-        // The trigger binds DIRECTLY to the target — no proxy function exists —
-        // and carries the metadata. Function-path registrations are durable:
-        // the caller's connection is deliberately NOT recorded as owner, so
-        // the caller's disconnect can never reap the binding.
-        let trig = engine
-            .trigger_registry
-            .triggers
-            .get(&id)
-            .expect("trigger registered");
-        assert_eq!(trig.function_id, "test::target");
-        assert_eq!(trig.worker_id, None);
-        assert_eq!(trig.metadata, Some(meta.clone()));
-
-        // Fire the way a registrator does: metadata travels explicitly, NOT
-        // folded into the payload.
-        let event = serde_json::json!({ "event_type": "set", "key": "k", "value": 1 });
-        engine
-            .call_with_metadata(&trig.function_id, event.clone(), trig.metadata.clone())
-            .await
-            .expect("fire ok");
-
-        let got_input = recorded_input.lock().unwrap().clone().expect("invoked");
-        let got_meta = recorded_meta.lock().unwrap().clone();
-        // Payload is untouched — no `__metadata` smuggled in.
-        assert_eq!(got_input, event);
-        assert!(got_input.get("__metadata").is_none());
-        // Metadata arrived as the separate argument.
-        assert_eq!(got_meta, Some(meta));
-    }
-
-    #[tokio::test]
-    async fn unregister_trigger_fn_removes_trigger_and_is_idempotent() {
-        let (engine, module) = setup_engine_and_module();
-        register_test_trigger_type(&engine, &module).await;
-        register_simple_function(&engine, "test::target", None);
-
-        let id = match module
-            .register_trigger_fn(
-                RegisterTriggerInput {
-                    trigger_type: "test-type".to_string(),
-                    function_id: "test::target".to_string(),
-                    config: serde_json::json!({}),
-                    metadata: Some(serde_json::json!({ "session_id": "s" })),
-                    caller_worker_id: None,
-                    trigger_namespace: None,
-                },
-                None,
-            )
-            .await
-        {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected register success"),
-        };
-        assert!(engine.trigger_registry.triggers.contains_key(&id));
-
-        // First unregister removes the trigger.
-        match module
-            .unregister_trigger_fn(UnregisterTriggerInput {
-                id: id.clone(),
-                trigger_type: None,
-            })
-            .await
-        {
-            FunctionResult::Success(r) => assert!(r.removed),
-            _ => panic!("expected unregister success"),
+        let plain = row("plain::fn");
+        assert_eq!(plain["observer_count"], 0);
+        for key in ["args_format", "private", "observable"] {
+            assert!(plain.get(key).is_none(), "{key}: {plain}");
         }
-        assert!(!engine.trigger_registry.triggers.contains_key(&id));
+        assert_eq!(row("vault::read")["observable"], false);
 
-        // Second unregister is a no-op reporting removed: false.
-        match module
-            .unregister_trigger_fn(UnregisterTriggerInput {
-                id,
-                trigger_type: None,
-            })
-            .await
-        {
-            FunctionResult::Success(r) => assert!(!r.removed),
-            _ => panic!("expected idempotent unregister success"),
-        }
+        let event = module.functions_changed_payload().await;
+        let vault = event["functions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["function_id"] == "vault::read")
+            .unwrap();
+        assert_eq!(vault["observable"], false);
+        assert_eq!(vault["observer_count"], 0);
     }
 
-    /// Builds a session whose `function_registration_prefix` is set, mirroring
-    /// the message-path prefix tests in `engine::mod`.
-    fn session_with_prefix(
-        engine: Arc<Engine>,
-        prefix: &str,
-    ) -> Arc<crate::workers::worker::rbac_session::Session> {
-        use crate::workers::worker::{WorkerManagerConfig, rbac_session::Session};
-        Arc::new(Session {
-            engine,
-            config: Arc::new(WorkerManagerConfig::default()),
-            ip_address: "127.0.0.1".to_string(),
-            session_id: uuid::Uuid::new_v4(),
-            namespaces: Default::default(),
-            allowed_functions: vec![],
-            forbidden_functions: vec![],
-            allowed_trigger_types: None,
-            allow_function_registration: true,
-            allow_trigger_type_registration: true,
-            context: serde_json::json!({}),
-            function_registration_prefix: Some(prefix.to_string()),
-        })
-    }
-
-    /// A prefixed session registers its functions under `prefix::id`, so a
-    /// trigger bound via `engine::register_trigger` must target the prefixed
-    /// function — parity with the `Message::RegisterTrigger` path. Before the
-    /// fix the raw id was stored and firing missed the real function.
+    /// `engine::workers::info` lists the ids of the observers the worker
+    /// created.
     #[tokio::test]
-    async fn register_trigger_fn_applies_session_function_prefix() {
+    async fn workers_info_lists_the_observers_a_worker_created() {
         let (engine, module) = setup_engine_and_module();
-        register_test_trigger_type(&engine, &module).await;
-        register_simple_function(&engine, "pfx::test::target", None);
-
-        let session = session_with_prefix(engine.clone(), "pfx");
-        let id = match module
-            .register_trigger_fn(
-                RegisterTriggerInput {
-                    trigger_type: "test-type".to_string(),
-                    function_id: "test::target".to_string(),
-                    config: serde_json::json!({}),
-                    metadata: None,
-                    caller_worker_id: None,
-                    trigger_namespace: None,
-                },
-                Some(session),
-            )
-            .await
-        {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected register success"),
-        };
-
-        let trig = engine
-            .trigger_registry
-            .triggers
-            .get(&id)
-            .expect("trigger registered");
-        assert_eq!(
-            trig.function_id, "pfx::test::target",
-            "trigger must bind to the session-prefixed function id"
-        );
-    }
-
-    #[tokio::test]
-    async fn register_trigger_fn_unknown_type_defers_and_activates_later() {
-        let (engine, module) = setup_engine_and_module();
-        register_simple_function(&engine, "test::target", None);
-
-        let result = module
-            .register_trigger_fn(
-                RegisterTriggerInput {
-                    trigger_type: "test-type".to_string(),
-                    function_id: "test::target".to_string(),
-                    config: serde_json::json!({}),
-                    metadata: None,
-                    caller_worker_id: None,
-                    trigger_namespace: None,
-                },
-                None,
-            )
-            .await;
-        // Registering ahead of the trigger type's provider succeeds and
-        // returns a usable id: the intent is parked, not live.
-        let id = match result {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected deferred register success"),
-        };
-        assert!(engine.trigger_registry.triggers.is_empty());
-        assert!(engine.trigger_registry.pending_triggers.contains_key(&id));
-
-        // Once the type registers, the parked intent goes live.
-        register_test_trigger_type(&engine, &module).await;
-        assert!(engine.trigger_registry.pending_triggers.is_empty());
-        assert!(engine.trigger_registry.triggers.contains_key(&id));
-    }
-
-    /// Registers a WS worker connection whose `engine::workers::register`
-    /// declared `namespace`, returning its id as a `_caller_worker_id`.
-    async fn connect_worker_in_namespace(
-        engine: &Engine,
-        module: &EngineFunctionsWorker,
-        namespace: &str,
-    ) -> String {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        register_simple_function(&engine, "orders::create", None);
+        register_simple_function(&engine, "alerts::big-order", None);
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let worker = crate::worker_connections::WorkerConnection::new(tx);
         let worker_id = worker.id.to_string();
-        engine.worker_registry.register_worker(worker);
-        module
-            .register_worker_metadata(register_worker_input_with_namespace(
-                &worker_id,
-                Some(namespace.to_string()),
-            ))
+        engine.worker_registry.register_worker(worker.clone());
+        let mut registration = register_worker_input_with_namespace(&worker_id, None);
+        registration.name = Some("orders-worker".to_string());
+        module.register_worker_metadata(registration).await;
+        engine
+            .observers
+            .observe(
+                &engine,
+                &worker,
+                crate::observer::events::test_support::request(
+                    "obs-big-order",
+                    "orders::create",
+                    "alerts::big-order",
+                    None,
+                ),
+            )
             .await;
-        worker_id
-    }
 
-    fn register_trigger_input_from(caller_worker_id: &str) -> RegisterTriggerInput {
-        RegisterTriggerInput {
-            trigger_type: "test-type".to_string(),
-            function_id: "test::target".to_string(),
-            config: serde_json::json!({}),
-            metadata: None,
-            caller_worker_id: Some(caller_worker_id.to_string()),
-            trigger_namespace: None,
+        match module
+            .workers_info(WorkerInfoInput {
+                name: "orders-worker".to_string(),
+                namespace: None,
+            })
+            .await
+        {
+            FunctionResult::Success(detail) => {
+                assert_eq!(detail.observers, vec!["obs-big-order".to_string()]);
+            }
+            _ => panic!("expected workers_info success"),
         }
     }
 
-    /// The reported bug: a worker in `orders` binds a `state`-style trigger
-    /// whose provider is the engine's own, in `default`. The binding must go
-    /// live on that provider with `orders` as target and home — not park in
-    /// `pending_triggers` because `default` was assumed to be its home.
-    #[tokio::test]
-    async fn register_trigger_fn_from_namespaced_caller_falls_back_to_default_provider() {
-        let (engine, module) = setup_engine_and_module();
-        register_test_trigger_type(&engine, &module).await;
-        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
-
-        let id = match module
-            .register_trigger_fn(register_trigger_input_from(&caller), None)
-            .await
-        {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected register success"),
-        };
-
-        assert!(engine.trigger_registry.pending_triggers.is_empty());
-        let trig = engine
-            .trigger_registry
-            .triggers
-            .get(&id)
-            .expect("trigger live");
-        assert_eq!(
-            trig.namespace, "orders",
-            "target resolves in the caller's namespace"
-        );
-        assert_eq!(trig.home_namespace, "orders");
-        assert_eq!(trig.provider_namespace, crate::protocol::DEFAULT_NAMESPACE);
-    }
-
-    /// A provider registered in the caller's own namespace wins over the
-    /// engine's fallback, exactly as it does on the `Message::RegisterTrigger`
-    /// path.
-    #[tokio::test]
-    async fn register_trigger_fn_prefers_provider_in_callers_namespace() {
-        let (engine, module) = setup_engine_and_module();
-        register_test_trigger_type(&engine, &module).await;
+    /// An engine-owned observer of `source` delivering its input to the
+    /// in-process function `target`.
+    fn observe_source(engine: &Arc<Engine>, source: &str, target: &str) {
+        let default = crate::protocol::DEFAULT_NAMESPACE.to_string();
         engine
-            .trigger_registry
-            .register_trigger_type(crate::trigger::TriggerType::new_ns(
-                "orders",
-                "test-type",
-                "Orders' own provider",
-                Box::new(module.clone()),
-                None,
-            ))
-            .await
-            .unwrap();
-        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
-
-        let id = match module
-            .register_trigger_fn(register_trigger_input_from(&caller), None)
-            .await
-        {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected register success"),
-        };
-
-        let trig = engine.trigger_registry.triggers.get(&id).expect("live");
-        assert_eq!(trig.provider_namespace, "orders");
-    }
-
-    /// A parked registration is still a registration: `list` shows it as
-    /// `pending` when asked (a bare list stays the set of live bindings), `info`
-    /// always resolves it, and both flip it to `active` once its provider
-    /// registers.
-    #[tokio::test]
-    async fn registered_triggers_list_and_info_include_pending_rows_with_status() {
-        let (engine, module) = setup_engine_and_module();
-        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
-
-        let id = match module
-            .register_trigger_fn(register_trigger_input_from(&caller), None)
-            .await
-        {
-            FunctionResult::Success(r) => r.id,
-            _ => panic!("expected deferred register success"),
-        };
-        assert!(engine.trigger_registry.pending_triggers.contains_key(&id));
-
-        let bare = match module
-            .registered_triggers_list(RegisteredTriggersListInput::default())
-            .await
-        {
-            FunctionResult::Success(r) => r.registered_triggers,
-            _ => panic!("expected list success"),
-        };
-        assert!(bare.is_empty(), "a bare list is live bindings only");
-
-        let listed = match module
-            .registered_triggers_list(RegisteredTriggersListInput {
-                include_pending: Some(true),
-                ..Default::default()
+            .observers
+            .observe_as_engine(crate::observer::EngineObserver {
+                id: format!("test-observer:{target}"),
+                function: (default.clone(), source.to_string()),
+                args: serde_json::json!({}),
+                filters: None,
+                target: (default, target.to_string()),
+                deliver: crate::protocol::Deliver::Input,
+                metadata: None,
             })
-            .await
-        {
-            FunctionResult::Success(r) => r.registered_triggers,
-            _ => panic!("expected list success"),
-        };
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].id, id);
-        assert_eq!(listed[0].status, RegisteredTriggerStatus::Pending);
-
-        let detail = match module
-            .registered_triggers_info(RegisteredTriggerInfoInput { id: id.clone() })
-            .await
-        {
-            FunctionResult::Success(d) => d,
-            _ => panic!("pending row must be inspectable"),
-        };
-        assert_eq!(detail.status, RegisteredTriggerStatus::Pending);
-        assert_eq!(detail.function_id, "test::target");
-
-        register_test_trigger_type(&engine, &module).await;
-        let detail = match module
-            .registered_triggers_info(RegisteredTriggerInfoInput { id })
-            .await
-        {
-            FunctionResult::Success(d) => d,
-            _ => panic!("expected info success"),
-        };
-        assert_eq!(detail.status, RegisteredTriggerStatus::Active);
-    }
-
-    /// `engine::triggers::info` without a namespace answers for the caller's
-    /// own provider first, then `default` — not `default` alone, which reported
-    /// a namespaced worker's provider as NOT_FOUND.
-    #[tokio::test]
-    async fn triggers_info_resolves_callers_namespace_before_default() {
-        let (engine, module) = setup_engine_and_module();
-        engine
-            .trigger_registry
-            .register_trigger_type(crate::trigger::TriggerType::new_ns(
-                "orders",
-                "test-type",
-                "Orders' own provider",
-                Box::new(module.clone()),
-                None,
-            ))
-            .await
-            .unwrap();
-        let caller = connect_worker_in_namespace(&engine, &module, "orders").await;
-
-        let from_orders = module
-            .triggers_info(TriggerInfoInput {
-                id: "test-type".to_string(),
-                namespace: None,
-                caller_worker_id: Some(caller),
-            })
-            .await;
-        match from_orders {
-            FunctionResult::Success(detail) => assert_eq!(detail.namespace, "orders"),
-            _ => panic!("caller's own provider must resolve"),
-        }
-
-        // An in-process caller is at home in `default`, where nothing provides it.
-        let from_default = module
-            .triggers_info(TriggerInfoInput {
-                id: "test-type".to_string(),
-                namespace: None,
-                caller_worker_id: None,
-            })
-            .await;
-        assert!(matches!(from_default, FunctionResult::Failure(_)));
+            .expect("observe the source");
     }
 }

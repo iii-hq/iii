@@ -648,26 +648,31 @@ mod tests {
             Some("my-project::auth".to_string())
         );
         assert_eq!(config.expose_functions.len(), 2);
-        assert!(config.on_trigger_registration_function_id.is_none());
-        assert!(config.on_trigger_type_registration_function_id.is_none());
+        assert!(config.on_function_registration_function_id.is_none());
+        assert!(config.on_observer_registration_function_id.is_none());
     }
 
+    /// The registration hooks of earlier engines still load, and are
+    /// ignored: the config parses, and nothing reads them.
     #[test]
-    fn deserialize_config_with_trigger_hooks() {
+    fn removed_registration_hooks_are_ignored() {
         let yaml = r#"
-            on_trigger_registration_function_id: my-project::on-trigger-reg
-            on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+            on_trigger_registration_function_id: my-project::on-reg
+            on_trigger_type_registration_function_id: my-project::on-type-reg
+            on_observer_registration_function_id: my-project::on-observe
             expose_functions: []
         "#;
         let config: RbacConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
-            config.on_trigger_registration_function_id,
-            Some("my-project::on-trigger-reg".to_string())
+            config.on_observer_registration_function_id,
+            Some("my-project::on-observe".to_string())
         );
-        assert_eq!(
-            config.on_trigger_type_registration_function_id,
-            Some("my-project::on-trigger-type-reg".to_string())
-        );
+        let raw: Value = serde_yaml::from_str(yaml).unwrap();
+        warn_removed_keys(&raw);
+        let reencoded = serde_json::to_value(&config).unwrap();
+        for (key, _) in REMOVED_KEYS {
+            assert!(reencoded.get(key).is_none(), "{key}");
+        }
     }
 
     #[test]
@@ -675,8 +680,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::match_pattern("*")],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -698,8 +701,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -720,8 +721,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -741,8 +740,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::match_pattern("api::*")],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -764,8 +761,6 @@ mod tests {
                 .iter()
                 .map(|p| FunctionFilter::match_pattern(p))
                 .collect(),
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         }
@@ -1013,8 +1008,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::match_pattern("svc::*").in_namespace("orders")],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -1187,8 +1180,6 @@ mod tests {
                 FunctionFilter::match_pattern("stream::*"),
                 FunctionFilter::match_pattern("state::*"),
             ],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };

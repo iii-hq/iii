@@ -279,7 +279,6 @@ mod tests {
     #[test]
     fn stream_outbound_message_variants() {
         let cases = vec![
-            json!({"type": "unauthorized"}),
             json!({"type": "sync", "data": 1}),
             json!({"type": "create", "data": "x"}),
             json!({"type": "update", "data": null}),

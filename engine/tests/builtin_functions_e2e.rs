@@ -131,10 +131,10 @@ async fn functions_info_returns_schemas_for_engine_builtin() {
     );
     assert!(
         result
-            .get("registered_triggers")
-            .and_then(|v| v.as_array())
+            .get("observer_count")
+            .and_then(|v| v.as_u64())
             .is_some(),
-        "functions::info must include the registered_triggers array"
+        "functions::info must include the observer_count"
     );
 }
 
@@ -193,94 +193,6 @@ async fn functions_info_batch_returns_details_and_markers() {
     assert!(functions[2].get("error").is_none());
 }
 
-/// `engine::triggers::list` now returns trigger TYPES (templates), not
-/// instances. Every row must carry an `id`, `worker_name`, and `description`.
-#[tokio::test]
-async fn triggers_list_returns_trigger_types() {
-    let (builder, _config_dir) = boot_bare_engine().await;
-    let engine = builder.engine();
-
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    let result = engine
-        .call(
-            "engine::triggers::list",
-            json!({ "include_internal": true }),
-        )
-        .await
-        .expect("engine::triggers::list should succeed")
-        .expect("response should not be None");
-
-    let triggers = result
-        .get("triggers")
-        .and_then(|v| v.as_array())
-        .expect("triggers array");
-
-    assert!(!triggers.is_empty(), "expected at least one trigger type");
-
-    for trigger in triggers {
-        let id = trigger
-            .get("id")
-            .and_then(|v| v.as_str())
-            .expect("trigger row must have id");
-        assert!(!id.is_empty(), "trigger id must not be empty");
-        trigger
-            .get("worker_name")
-            .and_then(|v| v.as_str())
-            .expect("trigger row must have worker_name");
-        trigger
-            .get("description")
-            .and_then(|v| v.as_str())
-            .expect("trigger row must have description");
-        // Schemas live on info, never on list.
-        assert!(trigger.get("configuration_schema").is_none());
-        assert!(trigger.get("request_schema").is_none());
-    }
-}
-
-/// `engine::registered-triggers::list` lists subscriber rows. On a bare
-/// engine without any user subscriptions there are no internal rows either
-/// (the engine's own triggers run through the in-process registrator, not
-/// through the trigger registry), but the call must succeed and return the
-/// canonical `{ registered_triggers: [] }` envelope.
-#[tokio::test]
-async fn registered_triggers_list_returns_canonical_envelope() {
-    let (builder, _config_dir) = boot_bare_engine().await;
-    let engine = builder.engine();
-
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    let result = engine
-        .call(
-            "engine::registered-triggers::list",
-            json!({ "include_internal": true }),
-        )
-        .await
-        .expect("engine::registered-triggers::list should succeed")
-        .expect("response should not be None");
-
-    let rows = result
-        .get("registered_triggers")
-        .and_then(|v| v.as_array())
-        .expect("registered_triggers array");
-
-    for row in rows {
-        row.get("id").and_then(|v| v.as_str()).expect("row id");
-        row.get("trigger_type")
-            .and_then(|v| v.as_str())
-            .expect("row trigger_type");
-        row.get("function_id")
-            .and_then(|v| v.as_str())
-            .expect("row function_id");
-        row.get("worker_name")
-            .and_then(|v| v.as_str())
-            .expect("row worker_name");
-        row.get("config_summary")
-            .and_then(|v| v.as_str())
-            .expect("row config_summary");
-    }
-}
-
 /// `engine::workers::info` exposes the local-only `pid`, `internal`, and
 /// (optional) `latest_metrics` extras alongside the shared core envelope.
 /// Looking up a known in-process runtime worker by `name` must succeed.
@@ -318,14 +230,10 @@ async fn workers_info_returns_full_surface_for_runtime_worker() {
     assert!(!functions.is_empty(), "iii-stream should expose functions");
 }
 
-/// In-process workers register `TriggerType` with `worker_id: None`, so the
-/// `worker_registry` Uuid lookup used for WebSocket workers cannot attribute
-/// them. `engine::workers::info` must still roll trigger types up into the
-/// owning runtime worker via the static `BUILTIN_TRIGGER_TYPES` map —
-/// otherwise the publish workflow ships an empty `triggers: []` array to the
-/// registry for the engine-resident iii-stream provider.
+/// `engine::workers::info` lists a worker's functions and the observers it
+/// created; the engine's own workers create none.
 #[tokio::test]
-async fn workers_info_attributes_trigger_types_to_in_process_worker() {
+async fn workers_info_lists_functions_and_observers() {
     let (builder, _config_dir) = boot_bare_engine().await;
     let engine = builder.engine();
 
@@ -337,27 +245,9 @@ async fn workers_info_attributes_trigger_types_to_in_process_worker() {
         .expect("engine::workers::info should succeed")
         .expect("response should not be None");
 
-    let trigger_types = result
-        .get("trigger_types")
+    let observers = result
+        .get("observers")
         .and_then(|v| v.as_array())
-        .expect("trigger_types array");
-
-    let ids: Vec<&str> = trigger_types
-        .iter()
-        .filter_map(|tt| tt.get("id").and_then(|v| v.as_str()))
-        .collect();
-    assert!(
-        ids.contains(&"stream"),
-        "iii-stream workers::info should include the `stream` trigger type, got {:?}",
-        ids
-    );
-
-    for tt in trigger_types {
-        assert_eq!(
-            tt.get("worker_name").and_then(|v| v.as_str()),
-            Some("iii-stream"),
-            "trigger_type {:?} should be attributed to iii-stream",
-            tt.get("id")
-        );
-    }
+        .expect("observers array");
+    assert!(observers.is_empty());
 }

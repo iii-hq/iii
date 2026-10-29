@@ -252,7 +252,6 @@ iii.registerFunction(
       allowed_trigger_types: user.role === 'admin'
         ? ['cron', 'webhook']
         : undefined,
-      allow_trigger_type_registration: user.role === 'admin',
       context: {
         user_id: user.id,
         role: user.role,

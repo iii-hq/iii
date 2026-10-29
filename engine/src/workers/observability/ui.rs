@@ -157,6 +157,15 @@ mod tests {
         observe_console_assets(&engine);
         assert!(engine.observers.get(PAGE_OBSERVER_ID).is_none());
 
+        // The Console's function validates the args it is observed with.
+        engine.observers.set_options(
+            "harness-ns",
+            CONSOLE_ASSET_FUNCTION_ID,
+            crate::observer::FunctionOptions {
+                args_format: Some(json!({ "type": "object" })),
+                ..crate::observer::FunctionOptions::private()
+            },
+        );
         engine.register_function_handler_ns(
             "harness-ns",
             RegisterFunctionRequest {
