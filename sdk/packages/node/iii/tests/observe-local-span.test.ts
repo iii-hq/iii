@@ -46,7 +46,7 @@ describe('local dispatch and tracing', () => {
 
     socket.deliver(fake.functionRegistered('math::double'))
     socket.clear()
-    await expect(sdk.trigger({ function_id: 'math::double', payload: 2 })).resolves.toBe(4)
+    await expect(sdk.call({ function_id: 'math::double', payload: 2 })).resolves.toBe(4)
     expect(spans.map((s) => s.name)).toEqual(['execute math::double', 'execute math::double'])
     expect(socket.sent).toHaveLength(0)
   })
