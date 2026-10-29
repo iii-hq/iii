@@ -1,0 +1,33 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "e7c9a1b3-d5f7-4a9b-8d1f-3b5d7f9a1c3e",
+  "function_id": "users::get",
+  "data": {
+    "method": "GET",
+    "route": "/users/:id",
+    "path": "/users/42",
+    "path_params": {
+      "id": "42"
+    },
+    "query_params": {},
+    "headers": {
+      "x-tenant": "acme"
+    },
+    "_caller_worker_id": "63ef233a-28b2-46b6-8883-ae8596c25fea"
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  "metadata": {
+    "team": "identity"
+  },
+  "caller": {
+    "worker_id": "63ef233a-28b2-46b6-8883-ae8596c25fea",
+    "worker_name": "http",
+    "function_id": "http::on-request",
+    "invocation_id": "9b1d3f5a-7c9e-4b1d-8f3a-5c7e9b1d3f5a"
+  },
+  "observe_depth": 1,
+  "activation": {
+    "observer_id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c",
+    "activation_id": "62ae7356-c3e8-43ac-bbce-0c4b0d89b0f0"
+  }
+}

@@ -14,10 +14,12 @@ matter; keys, values and the absence of keys do). The engine must run the same
 round trip through its `Message` enum
 (`engine/tests/protocol_observe_fixtures.rs`), so every file here must be a
 shape the engine both accepts and produces. Two files, marked *engine-only*,
-carry the 0.25 `observe` object that no v2 SDK sends; an SDK suite exercises
-them by checking that no `registerfunction` it builds carries an `observe`
-key. If a fixture looks inconsistent with the spec, report it; do not fork the
-format in one SDK.
+carry the 0.25 `observe` object that no v2 SDK sends, and that v2 SDK types
+do not have (dec. 17). SDK suites skip the decode/encode round trip for these
+two files and instead check that no `registerfunction` they build carries an
+`observe` key; the engine runs the round trip on them like on every other
+file. If a fixture looks inconsistent with the spec, report it; do not fork
+the format in one SDK.
 
 **Sources.** The *From* column cites **v2 §n** (a section of the observe v2
 spec), **dec. n** (an item of its `decisions.md`, which wins over the spec)
@@ -76,11 +78,13 @@ and **0.25 §n** (a section of the 0.25 `protocol.md`).
   stable across replays (0.25 §2.2). `invocation_id`, `activation_id`, the
   ids in `observed` and `matched`, and the ids inside `caller` are strings
   too.
-- **Codes are exact strings** from 0.25 §4 as amended by v2 §8.5 and dec. 11:
-  error codes in `error.code` and `registrationrejected.code`, state reasons
-  in `reason.code`, drop reasons in `dropped_reports[].reason`
-  (`BUFFER_FULL`, `TOO_LARGE`). `NOT_OWNER_DELIVERED`, `TARGET_MISMATCH`,
-  `FILTERS_NOT_MATCHED` and `INVALID_OBSERVE_DESCRIPTOR` are retired.
+- **Codes are exact strings** from 0.25 §4 as amended by v2 §8.5 and dec. 11
+  and 20: error codes in `error.code` and `registrationrejected.code`, state
+  reasons in `reason.code`, SDK drop reasons in `dropped_reports[].reason`
+  (`BUFFER_FULL`, `TOO_LARGE`, `LATE_DELIVERY`, `DISCONNECTED`; the engine
+  counts any other SDK reason as `OTHER`). `NOT_OWNER_DELIVERED`,
+  `TARGET_MISMATCH`, `FILTERS_NOT_MATCHED` and `INVALID_OBSERVE_DESCRIPTOR`
+  are retired.
 - **Numbers.** `revision`, `fires`, `count`, `errors`, `window_ms`,
   `started_at_ms`, `max_fires`, `expires_in_ms`, `max_in_flight` and
   `observe_depth` are non-negative integers. `duration_ms` and
@@ -106,27 +110,39 @@ and **0.25 §n** (a section of the 0.25 `protocol.md`).
 - **Who delivers (v2 §8.2, dec. 2, 3, 20, 36, 38, 39, 43).** A connection
   that declared `observe.v2` delivers the calls of the functions it hosts.
   Every call the engine routes to it carries an `invocation_id`, `void` calls
-  included, and the host answers each with `invocationresult`. The host lists
-  in `observed` the observers its delivery matched only when both hold:
-  - **the answer is the handler's own outcome**: its `result` is the
-    handler's output, or its `error` is the error the handler threw;
-  - **`next` was given the call unchanged**: the call `next` received has
-    the handler call's `input`, `status`, `output`, `error`, `caller` and
-    `metadata`.
+  included, and the host answers each with `invocationresult`. iii's own
+  delivery is one `next` call given the handler's call; a deliver hook makes
+  any number of `next` calls, and each observer is delivered at most once per
+  call, however many times `next` runs. The host reports what each `next`
+  call of a routed call delivered in one of two ways:
+  - **`observed`.** The ids delivered by the `next` calls given the call
+    *unchanged* are pooled, each once, into the answer's `observed` when the
+    answer is the handler's own outcome: its `result` is the handler's
+    output, or its `error` is the error the handler threw. When the answer is
+    anything else, the host leaves `observed` out and sends these ids in one
+    `invocationsobserved` item for the same `invocation_id`, carrying the
+    handler's call.
+  - **Items.** Each `next` call given a changed call sends its own
+    `invocationsobserved` item for the same `invocation_id`, carrying the
+    call it was given and listing in `matched` what it delivered.
 
-  Both are compared by identity in Node, browser and Python (the same `Call`
-  object, or fields holding the same references), and by serialized bytes in
-  Rust and Go. Otherwise the host leaves `observed` out and reports those
-  matches in an `invocationsobserved` item for the same `invocation_id`,
-  carrying the call `next` was given, and sends that item before the call's
-  `invocationresult` (`invocationsobserved-routed.json`, then
-  `invocationresult-hook-result.json`; Notes, caller on report items). So a
-  deliver hook that throws an error other than the handler's, or returns a
-  value for a call that threw, sends an item. When the hook calls `next` more
-  than once, the second condition is checked per `next` call: if the first
-  holds, `observed` lists what the `next` calls given the call unchanged
-  delivered, and each other `next` call sends an item of its own (Notes,
-  `matched` and `observed`).
+  *Unchanged* (dec. 36) means the call `next` was given has the handler
+  call's `input`, `status`, `output`, `error`, `caller` and `metadata`,
+  compared field by field: by identity in Node, browser and Python, so a
+  copied `Call` whose fields hold the same references is unchanged, and by
+  serialized bytes in Rust and Go. Whether the answer is the handler's own
+  outcome is compared the same way. So a deliver hook that throws an error
+  other than the handler's, or returns a value for a call that threw, sends
+  an item (`invocationsobserved-routed.json`, then
+  `invocationresult-hook-result.json`), and items and `observed` can coexist
+  for one invocation (`invocationsobserved-routed-items.json`).
+
+  The host collects the matches of every `next` call made before the hook
+  settles, sends the items, then the answer (dec. 20; Notes, caller on report
+  items). A `next` call on a routed call after its hook settled delivers
+  nothing: the SDK counts it in `localinvocationstats.dropped_reports` with
+  reason `LATE_DELIVERY`. Items an SDK loses to a closed connection count
+  there as `DISCONNECTED`.
 
   The engine evaluates no filters for these calls. For the ids in `observed`
   it builds the envelope from the input and metadata it kept, the caller it
@@ -176,10 +192,11 @@ function with `observable: false` unregistered (dec. 18).
 | `unobserve.json` | `unobserve` | Dispose an observer this connection owns. | 0.25 §2.2 | none |
 | `observerack.json` | `observerack` | The host accepts an added observer once every `onObserverAdded` that applies has resolved, echoing `function_id`, `namespace`, `id` and `revision` from `observeradded`. | v2 §4.3, §8.4 | `namespace` (absent: the sending connection's namespace), `error` |
 | `observerack-error.json` | `observerack` | The host rejects an added observer (here one announced at revision 15 whose expression has an invalid day-of-week field): `error` is the `ObserveRejection` its `onObserverAdded` threw (here `INVALID_CRON_EXPRESSION`), `OBSERVE_REJECTED` for any other error, or `OWNER_TIMEOUT` for a hook past 30 s. Also the shape of a late rejection (`obs.reject`). | v2 §4.3, §10.2 | as above |
-| `invocationsobserved.json` | `invocationsobserved` | One batch from one connection, the `checkout` worker, with three local call reports: a call that failed (`status: error`, `error`); a call that returned `null` (`"output": null`), made outside any handler, so it has no `caller`; and a call whose `input` and `output` differ, with the call's `metadata` for an observer that captures it. The failed call and the third one are made inside the `checkout::confirm` handler, so their `caller` names that invocation. No item carries `caller.worker_id` or `caller.worker_name`: the engine sets both, here from the reporting connection, since no item's `invocation_id` is a call the engine routed to it (Notes, caller on report items). Every item is at `observe_depth` 0. | v2 §8.2; dec. 38; 0.25 §2.2 | per item: `namespace`, `input`, `output`, `error`, `caller`, `metadata`, `traceparent`, `baggage`, `output_is_input` |
+| `invocationsobserved.json` | `invocationsobserved` | One batch from one connection, the `checkout` worker, with three local call reports: a call that failed (`status: error`, `error`); a call that returned `null` (`"output": null`), made outside any handler, so it has no `caller`; and a call whose `input` and `output` differ, with the call's `metadata` for an observer that captures it. The failed call and the third one are made inside the `checkout::confirm` handler, so their `caller` names that invocation. No item carries `caller.worker_id` or `caller.worker_name`: the engine sets both, here from the reporting connection, since every item reports a local call of that worker (Notes, caller on report items). Every item is at `observe_depth` 0. | v2 §8.2; dec. 38; 0.25 §2.2 | per item: `namespace`, `input`, `output`, `error`, `caller`, `metadata`, `traceparent`, `baggage`, `output_is_input` |
 | `invocationsobserved-event-source.json` | `invocationsobserved` | One batch from the `database` worker: an event source's local call (`database::on-row-changed` returns the row change it is called with), matched by two observers and sent with `"output_is_input": true` and no `output`. It is made inside the `database::execute` call of `invokefunction-caller.json`, so its `caller` is that invocation, with that call's `caller` as `parent`, and its `observe_depth` is that call's, 0. | v2 §8.2, §10.1; dec. 4 | as above |
-| `invocationsobserved-routed.json` | `invocationsobserved` | The matches of a routed call, reported by its `observe.v2` host under the routed `invocation_id`: the `orders::submit` call that `invocationresult-hook-result.json` answers. The host sends this batch before that answer. Its `onObserverDeliver` returned something other than the handler's output, so the item carries the call `next` was given, with the handler's `output`. `input` is the call's `data` as it arrived, with the engine's `_caller_worker_id` stamp, which the engine removes from the envelope (Notes, `_caller_worker_id`). `caller` carries the `function_id` and `invocation_id` the call arrived with and no `worker_id` or `worker_name`: the engine sets them from the caller it forwarded the call with, which it still holds because the answer has not arrived (Notes, caller on report items). | dec. 36, 38, 40; v2 §8.2 | as above |
-| `localinvocationstats.json` | `localinvocationstats` | The periodic counts of the `database` worker's local calls and SDK-side report drops; sent only when non-zero. Every field is sent, `errors: 0` included. | 0.25 §2.2 | none (a decoder reads an absent `errors` or `duration_ms_sum` as 0, and an absent array as empty) |
+| `invocationsobserved-routed.json` | `invocationsobserved` | The matches of a routed call, reported by its `observe.v2` host under the routed `invocation_id`: the `orders::submit` call that `invocationresult-hook-result.json` answers. The host sends this batch before that answer. Its `onObserverDeliver` returned something other than the handler's output, so the item carries the call `next` was given, with the handler's `output`. `input` is the call's `data` as it arrived, with the engine's `_caller_worker_id` stamp, which the engine removes from what it delivers (Notes, `_caller_worker_id`). `caller` carries the `function_id` and `invocation_id` the call arrived with and no `worker_id` or `worker_name`: the engine copies them from the caller it forwarded the call with, which it holds until it processes the answer (Notes, caller on report items). | dec. 36, 38, 40; v2 §8.2 | as above |
+| `invocationsobserved-routed-items.json` | `invocationsobserved` | Several items under one routed `invocation_id`, in one batch from the `orders` worker, an `observe.v2` host: a call of `orders::import` with a batch of two orders, made by `erp::sync`. Its `onObserverDeliver` called `next` with the unchanged call, then once per order with a copy of the call whose `input` is that order. Each `next` call given a changed call sends its own item, carrying the call it was given (here the order as `input` and the handler's `output`) and listing in `matched` what it delivered: the observer whose filter on `input.warehouse` names that order's warehouse. The hook returned the handler's output, so the ids the `next` call given the unchanged call delivered ride the answer's `observed`: items and `observed` coexist for one invocation, and the engine applies each item. Each item's `caller` is the `erp::sync` invocation the call arrived with; the engine copies `worker_id` and `worker_name` from the caller it forwarded the call with. The host sends this batch before that answer. | dec. 20, 36, 38; v2 §4.4, §8.2 | as above |
+| `localinvocationstats.json` | `localinvocationstats` | The periodic counts of the `database` worker's local calls and SDK-side report drops; sent only when non-zero. Every field is sent, `errors: 0` included. `dropped_reports` holds a `BUFFER_FULL` drop of `database::on-row-changed` reports and a `LATE_DELIVERY`: a `next` call on a routed `database::execute` call after its hook settled. `LATE_DELIVERY` counts `next` calls; `DISCONNECTED` counts items lost to a closed connection. | 0.25 §2.2; dec. 20 | none (a decoder reads an absent `errors` or `duration_ms_sum` as 0, and an absent array as empty) |
 | `registerfunction.json` | `registerfunction` | A function with no v2 field set: no `args_format`, and `private: false` / `observable: true` left out as defaults. | v2 §4.1, §8.3 | `description`, `request_format`, `response_format`, `metadata`, `invocation`, `args_format`, `private`, `observable`, `observe` |
 | `registerfunction-private.json` | `registerfunction` | An event source with every v2 field it sets: `cron::on-tick` with top-level `args_format` and `private: true`, its `response_format` equal to its `request_format` (the handler returns the tick); `observable` left out (`true`). Hooks and `standby` never travel. | v2 §4.1, §8.3, §10.2; dec. 24 | as above |
 | `registerfunction-not-observable.json` | `registerfunction` | `observable: false`: every `observe` of the function fails with `NOT_OBSERVABLE`. | v2 §4.1, §8.3 | as above |
@@ -189,7 +206,7 @@ function with `observable: false` unregistered (dec. 18).
 | `invokefunction-observer-call-namespace.json` | `invokefunction` | A call through an observer that carries a `namespace` anyway. SDKs send none; the engine routes to the observer's stored target and ignores it. | v2 §4.6; dec. 13 | as above |
 | `invokefunction-observer-call-void.json` | `invokefunction` | A fire-and-forget call through an observer (`iii.call({ observer, payload, action: CallAction.Void() })`): no `invocation_id`, `action: void`, `function_id` the observer's `target`, `activation` with `observer_id` only. Here a provider sends a new observer its initial state once `obs.accepted()` resolves; the call is made outside any handler, so it has no `caller`. No answer comes back; a refused call is dropped and counted (Notes, calls through an observer). | v2 §4.6; dec. 13, 19 | as above |
 | `invokefunction-legacy.json` | `invokefunction` | A call from a pre-0.25 SDK, without `caller`, `observe_depth` or `activation`. It must keep decoding. | 0.25 §2.4 | as above |
-| `invokefunction-workers-register.json` | `invokefunction` | A native v2 SDK's (here Node) fire-and-forget `engine::workers::register` call (no `invocation_id` on a `void` call), declaring `observe.v1`, `observe.v2`, `local-dispatch.v1` and `large-messages.v1` in `data.features`. The browser SDK sends the same list without `large-messages.v1`. | dec. 2; v2 §8.1 | `data.features` (absent: a pre-0.25 SDK, no features) |
+| `invokefunction-workers-register.json` | `invokefunction` | A native v2 SDK's (here Node) fire-and-forget `engine::workers::register` call (no `invocation_id` on a `void` call), declaring `observe.v1`, `observe.v2`, `local-dispatch.v1` and `large-messages.v1` in `data.features`. The browser SDK sends the same list without `large-messages.v1`. Only `data.features` is normative: the other `data` keys show what the Node SDK sends and are not part of the observe contract. An unset `isolation` is left out, never sent as `null`. | dec. 2; v2 §8.1 | `data.features` (absent: a pre-0.25 SDK, no features) |
 | `invocationresult-observed.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `orders::create`: the `result`, which is the handler's output, and in `observed` the ids of the two observers its delivery matched. | v2 §8.2; dec. 3, 36 | `result` (absent: the function returned nothing), `observed` (absent: none), `error`, `traceparent`, `baggage` |
 | `invocationresult-observed-error.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `payments::charge` that threw: `error` is the error the handler threw and there is no `result`, and in `observed` the `on: error` observer of `observe-on-error.json`, which its delivery matched. The engine builds that observer's envelope with `status: error` and this `error`. A decoder keeps `observed` on an error answer. | v2 §4.4, §8.2; dec. 3, 36, 39 | as above |
 | `invocationresult-hook-result.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `orders::submit` whose `onObserverDeliver` passed the call to `next` and returned `{ order_id, status }` instead of the handler's output: `result` is the hook's value and there is no `observed`. The matches go in `invocationsobserved-routed.json`, which the host sent before this answer. | dec. 36, 38; v2 §4.2, §8.2 | as above |
@@ -203,19 +220,20 @@ function with `observable: false` unregistered (dec. 18).
 | `workerregistered-legacy.json` | `workerregistered` | What a pre-0.25 engine sends: no `features`, so `observe()` fails with `UNSUPPORTED` and nothing runs locally. | 0.25 §1 | as above |
 | `registrationrejected-unsupported.json` | `registrationrejected` | The engine's answer to `registerfunction-v1-owner.json`: `code: UNSUPPORTED`, the function and its namespace, and `owner_worker_id: ""`, as on every rejection that is not a conflict. Only that registration is refused; the connection stays open. | dec. 1, 37; v2 §11 | `worker_name`, `function_id` |
 | `registrationrejected-invalid-args-format.json` | `registrationrejected` | The answer to a `registerfunction` whose `args_format` is not a valid JSON Schema: `code: INVALID_ARGS_FORMAT`. | dec. 11 | as above |
-| `invocationresult.json` | `invocationresult` | The engine's answer to `invokefunction-observer-call.json`: the target's result under the frame's `invocation_id` and `function_id`, without `observed`. When the target's host listed `observed`, the engine activates those ids and strips the field before forwarding. | dec. 13, 36; v2 §4.6 | `result`, `observed`, `error`, `traceparent`, `baggage` |
+| `invocationresult.json` | `invocationresult` | The engine's answer to `invokefunction-observer-call.json`: the result the target returned for `invokefunction-observer-call-forwarded.json`, under the frame's `invocation_id` and `function_id`, without `observed`. When the target's host listed `observed`, the engine activates those ids and strips the field before forwarding. | dec. 13, 36; v2 §4.6 | `result`, `observed`, `error`, `traceparent`, `baggage` |
 | `invocationresult-not-function-owner.json` | `invocationresult` | The engine's refusal of `invokefunction-observer-call-namespace.json` from a connection that does not host the observer's function: `error.code: NOT_FUNCTION_OWNER` under the frame's `invocation_id` and `function_id`, no `result`, no `observed`. Every refusal of a request/response call through an observer has this shape. | v2 §4.6, §8.5; dec. 13 | as above |
 | `observeresult.json` | `observeresult` | The reply to `observe` (also to a replay): the observer's current state. | 0.25 §2.3 | `error`, `warnings` |
 | `observeresult-error.json` | `observeresult` | A rejected observer: `state: error`, the `error`, and `warnings` from filter paths that could not be verified. | 0.25 §2.3 | as above |
 | `observerstatechanged.json` | `observerstatechanged` | A lifecycle transition (here to `active`). `fires` is always sent. | 0.25 §2.3, §3.3 | `reason` |
 | `observerstatechanged-reason.json` | `observerstatechanged` | A transition with its `reason`: the `HTTP_ROUTE_CONFLICT` that `http::on-request`'s `onObserverAdded` threw for a route `GET /users/:uid` next to `GET /users/:id`. | v2 §10.3; 0.25 §2.3 | as above |
-| `functionregistered.json` | `functionregistered` | The `registerfunction` ack with the full current observer set; `local_dispatch: true`. `revision` is per `(namespace, function)` and goes up by one with every announcement: this message, each `observeradded` and each `observerremoved` (so an ack for an earlier announcement is stale). Always accepted; it replaces the set the SDK holds, also for a standby that takes over the function. | v2 §7, §8.4; 0.25 §2.3 | none |
+| `functionregistered.json` | `functionregistered` | The `registerfunction` ack with the full current observer set; `local_dispatch: true`. `revision` is per `(namespace, function)` and goes up by one with every announcement: this message, each `observeradded` and each `observerremoved` (so an ack for an earlier announcement is stale). Always accepted; it replaces the set the SDK holds, also for a standby that takes over the function. Each entry has the observer shape of `observeradded.json`: never `deliver`, metadata, policy, the observing worker or the 0.25 `legacy` key. | v2 §7, §8.4; 0.25 §2.3 | none |
 | `functionregistered-empty.json` | `functionregistered` | No observers yet, and `local_dispatch: false` (e.g. the session has RBAC middleware). `observers` is sent even when empty. `revision` is 1: the first announcement of the function. | v2 §8.4; 0.25 §2.3 | none |
-| `observeradded.json` | `observeradded` | One observer attached to a function this connection hosts, as the host sees it: `id`, `args` (`{}` when none), the normalized `filters`, the `target` function id (its namespace is not disclosed), `capture` and `on`, always sent resolved; never `deliver`, metadata, policy or the observing worker. | v2 §4.7, §8.4; 0.25 §2.3 | none |
+| `observeradded.json` | `observeradded` | One observer attached to a function this connection hosts, as the host sees it: `id`, `args` (`{}` when none), the normalized `filters`, the `target` function id (its namespace is not disclosed), `capture` and `on`, always sent resolved; never `deliver`, metadata, policy, the observing worker or the 0.25 `legacy` key (gone with the legacy shim). | v2 §4.7, §8.4; 0.25 §2.3 | none |
 | `observerremoved.json` | `observerremoved` | One observer detached. An SDK ignores an added/removed message whose `revision` is not greater than the one it holds. | v2 §8.4; 0.25 §2.3 | none |
-| `invokefunction-activation.json` | `invokefunction` | An activation: `data` is the `Observed` envelope (per the observer's `capture`; the observed `input` is the payload as its caller sent it, without the engine's `_caller_worker_id` stamp, dec. 40), `metadata` is the observer's sidecar, `caller` is the engine (`worker_name: "iii-engine"`, the observed function and invocation), `observe_depth` is the observed depth + 1, `activation` carries `observer_id` and `activation_id`. The envelope is built from `invocationsobserved.json`'s failed `payments::charge` call, whose `caller` the engine stamped with the `checkout` worker that reported it. It reaches the target with an `invocation_id` and no `action`; the target's SDK answers with an `invocationresult`. The engine discards that result for the observed side, but activates the ids in its `observed` (the target's own observers, when its host declared `observe.v2`), as for any routed answer. The answer frees the observer's `max_in_flight` slot (so does `observers.activation_timeout_ms`, 30 s by default, for an activation never answered). | v2 §4.4; dec. 36; 0.25 §3.4 | `caller`, `observe_depth`, `activation` |
+| `invokefunction-activation.json` | `invokefunction` | An activation: `data` is the `Observed` envelope (per the observer's `capture`; the observed `input` is the payload as its caller sent it, without the engine's `_caller_worker_id` stamp, dec. 40), `metadata` is the observer's sidecar, `caller` is the engine (`worker_name: "iii-engine"`, the observed function and invocation), `observe_depth` is the observed depth + 1, `activation` carries `observer_id` and `activation_id`. The envelope is built from `invocationsobserved.json`'s failed `payments::charge` call, whose `caller` the engine stamped with the `checkout` worker that reported it. It reaches the target with an `invocation_id` and no `action`; the target's SDK answers with an `invocationresult`. The engine discards that result for the observed side, but activates the ids in its `observed` (the target's own observers, when its host declared `observe.v2`), as for any routed answer. An item the target's host reports for this call gets this `caller`'s `worker_name`, `iii-engine`, and no `worker_id` (dec. 38). The answer frees the observer's `max_in_flight` slot (so does `observers.activation_timeout_ms`, 30 s by default, for an activation never answered). | v2 §4.4; dec. 36; 0.25 §3.4 | `caller`, `observe_depth`, `activation` |
 | `invokefunction-activation-engine-source.json` | `invokefunction` | An activation from an engine-hosted source: `engine::on-observers-changed`, called once per observer state change with the event `{ observer_id, function_id, target, state, reason? }` (here the `HTTP_ROUTE_CONFLICT` of `observerstatechanged-reason.json`). The observer, `0ad9be10` of `console::observers::refresh`, sets no `capture`, so it captures the default `input`, `output` and `caller`. The source's handler returns its event, so the envelope carries it as both `input` and `output`, and its `caller` is `{ worker_name: "iii-engine" }`, the caller of every call of an engine-hosted source (Notes, engine-hosted sources). The activation's own `caller` is the engine with the source's `function_id` and `invocation_id`, as for every activation. | dec. 6, 7, 42 | as above |
 | `invokefunction-caller.json` | `invokefunction` | A routed call forwarded by the engine: `billing::close-invoice` calls `database::execute`. `caller.worker_id` / `worker_name` are stamped from the calling connection; `function_id` / `invocation_id` / `parent` are asserted by the calling SDK. `data` carries the engine's `_caller_worker_id` stamp, `billing`'s `worker_id`, as on every call a worker makes (Notes, `_caller_worker_id`). `observe_depth` is the calling handler's depth, here 0 and so left out: `billing::close-invoice` was called directly by `checkout::confirm`, and depth grows only on activations. To an `observe.v2` host it always carries an `invocation_id`. | v2 §8.2; dec. 40; 0.25 §2.4 | as above |
+| `invokefunction-observer-call-forwarded.json` | `invokefunction` | The engine's call to the target of a call through an observer: `invokefunction-observer-call.json` as `users::get`'s host receives it, under that frame's `invocation_id`. `function_id` is the observer's stored target, with no `namespace`. `data` is the payload the `http` worker sent, not an envelope, with the engine's `_caller_worker_id` stamp (the `http` worker's id), as on every call a worker makes. `caller` is the calling worker: `worker_id` and `worker_name` stamped from its connection, and the `function_id` and `invocation_id` it asserted (the `http::on-request` invocation its deliver hook runs in). `observe_depth` is the calling frame's depth + 1, here 1. `activation` carries the `observer_id` and the `activation_id` the engine assigned. `metadata` is the observer's metadata sidecar. The target's host answers with an `invocationresult`; the engine activates the ids in its `observed`, strips the field and forwards the result to the caller (`invocationresult.json`). The answer frees the observer's `max_in_flight` slot. | v2 §4.6, §8.2; dec. 13, 36; 0.25 §3.5 | as above |
 
 ## Notes for SDK authors
 
@@ -251,41 +269,50 @@ function with `observable: false` unregistered (dec. 18).
   never `caller.worker_id` or `caller.worker_name` (a `parent` keeps its own,
   as the context received them), and sends no `caller` for a call made
   outside any handler. The engine sets `caller.worker_id` and
-  `caller.worker_name` on every item it applies, creating `caller` when it is
-  absent and overwriting any that were sent. It finds the item's
-  `invocation_id` in one of two sets it keeps per `observe.v2` connection for
-  the calls it routes there, or in neither:
-  - **held**: from forwarding a call until it handles that call's
-    `invocationresult`, the engine holds the forwarded `worker_id` and
-    `worker_name`, with the input it kept. An item of a held call is stamped
-    from them.
-  - **ended**: when the engine ends a routed call before the host answers (its
-    caller disconnected), it drops what it held and keeps the bare
-    `invocation_id` until the host's `invocationresult` for it arrives or the
-    host disconnects. This is the call dec. 38 says the engine no longer
-    holds: an item of it is dropped as `INVALID_REPORT`, and the late
-    `invocationresult` is discarded, `observed` included.
-  - **neither**: the item reports a local call and is stamped from the
-    reporting connection, whose worker made the call.
+  `caller.worker_name` on every item it applies, overwriting any that were
+  sent:
+  - **A routed call the engine holds.** The engine holds each call it routes
+    to an `observe.v2` connection, with the input it kept and the caller it
+    forwarded the call with, from forwarding the call until it processes the
+    call's `invocationresult` (or the connection closes). When the call's
+    caller goes away before the answer, the engine still holds the call and
+    processes the answer's `observed` and the call's items. An item of a
+    call held for the reporting connection gets exactly the forwarded
+    `worker_id` and `worker_name`, leaving out `worker_id` when the forwarded
+    caller had none: an activation's caller is the engine (`worker_name:
+    "iii-engine"`, no `worker_id`), so an item reporting an activation gets
+    no `worker_id`.
+  - **A local call of the reporting host.** The item is stamped from the
+    reporting connection, whose worker made the call; the engine creates
+    `caller` when it is absent.
+  - **Anything else** is dropped as `INVALID_REPORT`: an item of a routed
+    call that the engine does not hold for the reporting connection, as when
+    the host sends it after the call's answer.
 
   So the host sends a routed call's items before that call's
-  `invocationresult`, on the connection the call arrived on: it flushes the
-  batch that holds them ahead of the answer, without waiting out the batch
-  linger. The engine handles one connection's frames in order, so the items
-  find the call held. An SDK drops the items of a routed call whose
-  connection closed before they were sent. An item sent after its call's
-  answer is in neither set, and the engine stamps it as a local call.
+  `invocationresult`, on the connection the call arrived on: once the hook
+  settles, it flushes the batch that holds them ahead of the answer, without
+  waiting out the batch linger (dec. 20). The engine handles one connection's
+  frames in order, so the items find the call held. A correct host never
+  sends an item after its call's answer: a `next` call made after the hook
+  settled delivers nothing and counts as `LATE_DELIVERY`, and the items of a
+  routed call whose connection closed before they were sent are dropped and
+  count as `DISCONNECTED` (`localinvocationstats.json`).
 - **`_caller_worker_id` (dec. 40; 0.25 §2.4).** The engine still adds
   `_caller_worker_id` to the `data` of every call a worker makes, calls routed
-  to `observe.v2` hosts included (`invokefunction-caller.json`). SDKs pass
-  `data` to the handler, to `onObserverDeliver` and to filters as it arrived,
-  stamp included, so a handler that returns its input returns the stamp too.
-  No envelope contains it: the engine removes a top-level `_caller_worker_id`
-  from every `input` and `output` it puts in an envelope, wherever it took
-  them from (the input it kept for a routed call, an `invocationresult`'s
-  `result`, an item's `input` or `output`), and from an item's `input` before
-  it fills `output` from `input` for `output_is_input`. The `result` the
-  engine forwards to the caller stays as the host sent it.
+  to `observe.v2` hosts and calls through an observer included
+  (`invokefunction-caller.json`, `invokefunction-observer-call-forwarded.json`).
+  SDKs pass `data` to the handler, to `onObserverDeliver` and to filters as it
+  arrived, stamp included, so a handler that returns its input returns the
+  stamp too. No observed value an observer receives contains it: the engine
+  removes a top-level `_caller_worker_id` from every observed `input` and
+  `output` it delivers, both the envelope's fields and the bare value that is
+  an activation's `data` under `deliver: input` or `deliver: output`,
+  wherever it took them from (the input it kept for a routed call, an
+  `invocationresult`'s `result`, an item's `input` or `output`). It removes
+  it from an item's `input` before it fills `output` from `input` for
+  `output_is_input`. The `result` the engine forwards to the caller stays as
+  the host sent it.
 - **Engine-hosted sources (dec. 7, 42).** The `caller` of a call of an
   engine-hosted source is `{ worker_name: "iii-engine" }`, with no
   `worker_id`, `function_id` or `invocation_id`. An observer that captures
@@ -297,15 +324,16 @@ function with `observable: false` unregistered (dec. 18).
   delivers the observers it was given whose `on` and filters match the call
   it was given, less those an earlier `next` call of the same call delivered:
   each observer is delivered at most once per call. The `next` calls given the
-  handler's call unchanged pool what they deliver, each id once: in
-  `observed` when the call is routed and the answer is the handler's own
-  outcome, otherwise in one item that carries the handler's call. Each `next`
-  call given a changed call sends one item of its own, carrying the call it
-  was given and listing in `matched` the observers it delivered. So one batch
-  may carry several items with the same `invocation_id`, and a routed answer
-  may carry `observed` while items report the rest of its matches; the engine
-  applies each. A report item that would carry both `input` and `output` of a
-  handler that returned its input carries `input` and
+  handler's call unchanged (Who delivers) pool what they deliver, each id
+  once: in `observed` when the call is routed and the answer is the handler's
+  own outcome, otherwise in one item that carries the handler's call. Each
+  `next` call given a changed call sends one item of its own, carrying the
+  call it was given and listing in `matched` the observers it delivered. So
+  one batch may carry several items with the same `invocation_id`, and a
+  routed answer may carry `observed` while items report the rest of its
+  matches (`invocationsobserved-routed-items.json`); the engine applies each
+  item and each id. A report item that would carry both `input` and `output`
+  of a handler that returned its input carries `input` and
   `"output_is_input": true` instead of `output`, and the engine fills
   `output` from `input`. Node, browser and Python detect it by identity, Rust
   and Go by comparing the serialized bytes. An `invocationresult` has no such
@@ -330,6 +358,45 @@ function with `observable: false` unregistered (dec. 18).
   private with `observeresult` error `FORBIDDEN`. A call the engine makes
   itself (a hook or middleware) to a private function also fails with
   `FORBIDDEN`.
+- **Builtin payloads (dec. 6).** These are the inputs and results of engine
+  functions, not frames, so no fixture pins them; an SDK that decodes them
+  into types follows this note. Every function row, in
+  `engine::functions::list`, `engine::functions::info` and the
+  `engine::on-functions-changed` event, carries `observer_count` always,
+  `args_format` when set, `private: true` when the function is private and
+  `observable: false` when it is not observable, and no
+  `registered_triggers`. `engine::workers::info` carries `functions` and
+  `observers`, the ids of the observers the worker created, and no
+  `trigger_types` or `registered_triggers`. `engine::register_trigger`,
+  `engine::unregister_trigger`, `engine::triggers::list|info` and
+  `engine::registered-triggers::list|info` are removed. The
+  `engine::functions::list` row of `registerfunction-private.json`'s
+  `cron::on-tick`, with the two observers of `functionregistered.json`:
+
+  ```json
+  {
+    "function_id": "cron::on-tick",
+    "namespace": "default",
+    "worker_name": "cron",
+    "description": "One call per tick of a cron expression. Observe it with args { expression }.",
+    "args_format": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expression"],
+      "properties": { "expression": { "type": "string" } }
+    },
+    "private": true,
+    "observer_count": 2
+  }
+  ```
+- **Registration hook (dec. 10).** The RBAC
+  `on_function_registration_function_id` hook is a function the engine calls,
+  so its input and result are payloads, not frames. Its input carries, next
+  to `function_id`, `description`, `metadata`, `namespace` and `context`, the
+  registration's top-level `private` and `observable`, always sent (defaults
+  included), and `args_format` when the registration sets it. A result object
+  may carry any of `private`, `observable` and `args_format`; each one present
+  replaces the registration's value.
 - **Removed trigger frames (dec. 5).** The engine drops each of the five 0.25
   trigger frames with one `warn` per connection and message type. No v2 SDK
   sends them.

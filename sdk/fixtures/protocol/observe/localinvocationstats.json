@@ -20,6 +20,11 @@
       "function_id": "database::on-row-changed",
       "reason": "BUFFER_FULL",
       "count": 12
+    },
+    {
+      "function_id": "database::execute",
+      "reason": "LATE_DELIVERY",
+      "count": 1
     }
   ]
 }
