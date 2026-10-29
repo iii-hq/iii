@@ -961,21 +961,24 @@ func TestRegistrationsThatNeedObserveV2WaitForWorkerRegistered(t *testing.T) {
 }
 
 // Against an engine without observe.v2 the functions that need it (args_format,
-// private, observable false, a deliver hook) stay unregistered and UNSUPPORTED is
-// logged once per function, also across reconnects; everything else registers. A
-// deliver hook set on a registered function unregisters it, and removing the hook
-// registers it again. An engine with observe.v2 registers them all.
+// private, observable false, a match or deliver hook) stay unregistered and UNSUPPORTED
+// is logged once per function, also across reconnects; everything else registers. A
+// match or deliver hook set on a registered function unregisters it, and removing the
+// hook registers it again. An engine with observe.v2 registers them all.
 func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	logs := captureLog(t)
 	fe := newFakeEngine(t).v1Engine()
 	c := fe.newClient()
 	closed := false
+	everyCall := MatchFunc(func(*Observer, *Call) bool { return true })
 	c.OnObserverDeliverFor("hooked::fn", handlerAnswer)
+	c.OnObserverMatchFor("matched::fn", everyCall)
 	for id, opts := range map[string]RegisterFunctionOptions{
 		"args::fn":    {ArgsFormat: json.RawMessage(`{"type":"object"}`)},
 		"private::fn": {Private: true},
 		"closed::fn":  {Observable: &closed},
 		"hooked::fn":  {},
+		"matched::fn": {},
 		"plain::fn":   {},
 	} {
 		if _, err := c.RegisterFunction(id, echoHandler, opts); err != nil {
@@ -984,7 +987,7 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	}
 	fe.connect(c)
 	msgs := sentinel(t, fe.m, c, "sentinel::v1")
-	unsupported := []string{"args::fn", "private::fn", "closed::fn", "hooked::fn"}
+	unsupported := []string{"args::fn", "private::fn", "closed::fn", "hooked::fn", "matched::fn"}
 	for _, id := range unsupported {
 		if n := countRegister(msgs, string(MsgRegisterFunction), id); n != 0 {
 			t.Errorf("%s registered on an engine without observe.v2", id)
@@ -1011,10 +1014,19 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	waitUntil(t, "plain::fn registered again", func() bool {
 		return countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "plain::fn") == 2
 	})
+	// a match hook does the same
+	c.OnObserverMatchFor("plain::fn", everyCall)
+	waitUntil(t, "plain::fn unregistered by its match hook", func() bool {
+		return countRegister(fe.m.receivedMessages(), string(MsgUnregisterFunction), "plain::fn") == 2
+	})
+	c.OnObserverMatchFor("plain::fn", nil)
+	waitUntil(t, "plain::fn registered once its match hook is removed", func() bool {
+		return countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "plain::fn") == 3
+	})
 
 	fe.reconnect(c)
 	sentinel(t, fe.m, c, "sentinel::v1-again")
-	if logs.count("UNSUPPORTED") != 6 {
+	if logs.count("UNSUPPORTED") != 7 {
 		t.Errorf("UNSUPPORTED logged again after a reconnect:\n%s", logs.String())
 	}
 
@@ -1137,4 +1149,201 @@ func firstIndex(msgs []map[string]json.RawMessage, pred func(map[string]json.Raw
 		}
 	}
 	return -1
+}
+
+// An observeradded queued behind a running added hook when the function's registration
+// is withdrawn (a match hook set on an engine without observe.v2), one the engine sent
+// before it handled the unregistration, and its answer to the withdrawn registration
+// run no hook and get no ack (decisions 18, 41), also once the function is registered
+// again.
+func TestObserversOfAWithdrawnRegistrationAreIgnored(t *testing.T) {
+	captureLog(t)
+	fe := newFakeEngine(t).v1Engine()
+	fe.setObservers("wq::fn", 1, observerInfo("slow", "x::y", "", ""))
+	c := fe.newClient()
+	gate := make(chan struct{})
+	var l hookLog
+	c.OnObserverAddedFor("wq::fn", func(_ context.Context, obs *Observer) error {
+		l.add(obs.ID)
+		if obs.ID == "slow" {
+			<-gate
+		}
+		return nil
+	})
+	fe.connect(c)
+	if _, err := c.RegisterFunction("probe::fn", echoHandler); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := c.RegisterFunction("wq::fn", echoHandler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "slow's added hook", func() bool { a, _ := l.snapshot(); return len(a) == 1 })
+	// handled by the read loop before the probe's answer: queued behind slow's hook
+	fe.send(&ObserverAddedMessage{FunctionID: "wq::fn", Namespace: "default", Revision: 2, Observer: observerInfo("queued", "x::y", "", "")})
+	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "probe::fn"}))
+
+	ref.OnObserverMatch(MatchFunc(func(*Observer, *Call) bool { return true }))
+	waitFrame(t, fe.m, MsgUnregisterFunction, "wq::fn")
+	fe.send(&ObserverAddedMessage{FunctionID: "wq::fn", Namespace: "default", Revision: 3, Observer: observerInfo("after", "x::y", "", "")})
+	fe.send(&FunctionRegisteredMessage{ID: "wq::fn", Namespace: "default", Revision: 4, LocalDispatch: true,
+		Observers: []ObserverInfo{observerInfo("late", "x::y", "", "")}})
+	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "probe::fn"}))
+	// registered again (the hook is removed) before the queued add runs: it stays not added
+	fe.setObservers("wq::fn", 5)
+	ref.OnObserverMatch(nil)
+	waitUntil(t, "wq::fn registered again", func() bool {
+		return countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "wq::fn") == 2
+	})
+	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "probe::fn"}))
+	close(gate)
+	time.Sleep(50 * time.Millisecond)
+	if added, _ := l.snapshot(); !slices.Equal(added, []string{"slow"}) {
+		t.Errorf("added hooks ran for %v, want [slow]", added)
+	}
+	if acks := fe.acks("wq::fn"); len(acks) != 0 {
+		t.Errorf("acks %+v for a withdrawn registration", acks)
+	}
+	if c.IsObserved("wq::fn") {
+		t.Error("the withdrawn function is still observed")
+	}
+}
+
+// An observer the engine announces again with the same args is re-acked without running
+// any hook, and served with the filters, target and capture it was announced with:
+// listed by functionregistered or by observeradded (decision 44). Its late rejection,
+// through the pointer the added hook got, carries the revision announced last and is
+// re-acked when it is listed again, whatever its args; a fresh observeradded starts it
+// over, and other args are a removal and then an add.
+func TestAReplayWithTheSameArgsRunsNoHook(t *testing.T) {
+	fe := newFakeEngine(t)
+	fe.setObservers("ra::fn", 1, observerInfo("a", "x::y", `{"kind":"a"}`, ""))
+	c := fe.newClient()
+	var l hookLog
+	c.OnObserverAddedFor("ra::fn", func(_ context.Context, obs *Observer) error {
+		l.event("add " + obs.ID + " " + fmt.Sprint(obs.Args["kind"]))
+		return nil
+	})
+	c.OnObserverRemovedFor("ra::fn", func(_ context.Context, obs *Observer) {
+		l.event("remove " + obs.ID + " " + fmt.Sprint(obs.Args["kind"]))
+	})
+	fe.connect(c)
+	registerHost(t, c, "ra::fn", echoHandler)
+	fe.waitAck("ra::fn", "a", 1)
+	held := c.Observers("ra::fn")[0]
+	above := func(n int) ObserverInfo {
+		return observerInfo("a", "t::target", `{"kind":"a"}`, fmt.Sprintf(`{"$and":[{"input.n":{"$gt":%d}}]}`, n),
+			CaptureInput, CaptureCaller)
+	}
+	observed := func(n int) []string {
+		t.Helper()
+		id := fe.invoke(InvokeFunctionMessage{FunctionID: "ra::fn", Data: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))})
+		return fe.waitResult(id).Observed
+	}
+
+	// listed by functionregistered
+	fe.setObservers("ra::fn", 2, above(1))
+	fe.reconnect(c)
+	if a := fe.waitAck("ra::fn", "a", 2); a.Error != nil {
+		t.Fatalf("re-ack %+v", a.Error)
+	}
+	if got := observed(1); len(got) != 0 {
+		t.Errorf("observed %v under filters it no longer has", got)
+	}
+	if got := observed(2); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("observed %v, want [a]", got)
+	}
+	// announced by observeradded
+	fe.send(&ObserverAddedMessage{FunctionID: "ra::fn", Namespace: "default", Revision: 3, Observer: above(5)})
+	fe.waitAck("ra::fn", "a", 3)
+	if got := observed(2); len(got) != 0 {
+		t.Errorf("observed %v under filters it no longer has", got)
+	}
+	if got := observed(6); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("observed %v, want [a]", got)
+	}
+	if events := l.eventList(); !slices.Equal(events, []string{"add a a"}) {
+		t.Errorf("hooks %v: a replay with the same args ran one", events)
+	}
+	current := c.Observers("ra::fn")[0]
+	if current.Target != "t::target" || !slices.Equal(current.Capture, []Capture{CaptureInput, CaptureCaller}) ||
+		fmt.Sprint(current.Filters) != fmt.Sprint(map[string]any{"$and": []any{map[string]any{"input.n": map[string]any{"$gt": float64(5)}}}}) {
+		t.Errorf("served %+v, want the view announced last", current)
+	}
+	if held.Target != "x::y" {
+		t.Errorf("the pointer handed out first changed its view: %+v", held)
+	}
+
+	// the pointer the added hook got rejects the observer, at the revision announced last
+	held.Reject("GONE", "config reloaded")
+	rejection := fe.waitFrames(MsgObserverAck, 1, func(d *DecodedMessage) bool {
+		a := d.ObserverAck
+		return a.FunctionID == "ra::fn" && a.Error != nil && a.Error.Code == "GONE"
+	})[0].ObserverAck
+	if rejection.Revision != 3 {
+		t.Errorf("late rejection at revision %d, want 3", rejection.Revision)
+	}
+	waitUntil(t, "rejected", func() bool { return !c.IsObserved("ra::fn") })
+	// listed again, whatever its args: re-acked with its rejection
+	fe.setObservers("ra::fn", 4, observerInfo("a", "x::y", `{"kind":"other"}`, ""))
+	fe.reconnect(c)
+	if a := fe.waitAck("ra::fn", "a", 4); a.Error == nil || a.Error.Code != "GONE" {
+		t.Errorf("re-ack of a rejected observer %+v", a.Error)
+	}
+	if c.IsObserved("ra::fn") {
+		t.Error("a rejected observer came back on a replay")
+	}
+
+	// a fresh observeradded brings it back; other args: removed, then added
+	fe.send(&ObserverAddedMessage{FunctionID: "ra::fn", Namespace: "default", Revision: 5, Observer: observerInfo("a", "x::y", `{"kind":"a"}`, "")})
+	if a := fe.waitAck("ra::fn", "a", 5); a.Error != nil {
+		t.Errorf("fresh add %+v", a.Error)
+	}
+	fe.send(&ObserverAddedMessage{FunctionID: "ra::fn", Namespace: "default", Revision: 6, Observer: observerInfo("a", "x::y", `{"kind":"b"}`, "")})
+	if a := fe.waitAck("ra::fn", "a", 6); a.Error != nil {
+		t.Errorf("add with other args %+v", a.Error)
+	}
+	waitUntil(t, "the hooks", func() bool { return len(l.eventList()) == 5 })
+	if events := l.eventList(); !slices.Equal(events, []string{"add a a", "remove a a", "add a a", "remove a a", "add a b"}) {
+		t.Errorf("hooks %v", events)
+	}
+	if obs := c.Observers("ra::fn"); len(obs) != 1 || obs[0].Args["kind"] != "b" {
+		t.Errorf("observers %+v", obs)
+	}
+}
+
+// On a function matched by keys, an observer served a changed view is filed under the
+// keys of that view, in place of the ones it had, and no hook runs.
+func TestAReplayedViewIsFiledUnderItsKeys(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	var l hookLog
+	recordHooks(c, "rk::fn", &l)
+	c.OnObserverMatchFor("rk::fn", MatchKeys(
+		func(obs *Observer) []string { return []string{obs.Target} },
+		func(call *Call) []string {
+			var in struct {
+				To string `json:"to"`
+			}
+			_ = json.Unmarshal(call.Input, &in)
+			return []string{in.To}
+		},
+	))
+	ref := registerHost(t, c, "rk::fn", echoHandler)
+	addObserver(t, fe, "rk::fn", observerInfo("a", "t::one", "", ""))
+	to := func(target string) *Call { return &Call{Input: json.RawMessage(fmt.Sprintf(`{"to":%q}`, target))} }
+	if !ref.IsObservedFor(to("t::one")) {
+		t.Fatal("a is not filed under its target")
+	}
+	fe.send(&ObserverAddedMessage{FunctionID: "rk::fn", Namespace: "default", Revision: 2, Observer: observerInfo("a", "t::two", "", "")})
+	fe.waitAck("rk::fn", "a", 2)
+	if ref.IsObservedFor(to("t::one")) || !ref.IsObservedFor(to("t::two")) {
+		t.Error("the replayed view is not filed under its own keys")
+	}
+	if idx := keyIndexOf(c, "rk::fn"); idx.filed != 1 {
+		t.Errorf("%d observers filed, want 1", idx.filed)
+	}
+	if added, removed := l.snapshot(); len(added) != 1 || len(removed) != 0 {
+		t.Errorf("hooks ran: added %v removed %v", added, removed)
+	}
 }

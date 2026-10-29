@@ -224,9 +224,9 @@ func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Clie
 // function takes effect on the function's hook queue, after the hooks queued before it,
 // and calls use the previous one until then. A hook by keys set while the function has
 // active observers rebuilds the index from them; an observer whose keys panic is
-// late-rejected with OBSERVE_REJECTED. Against an engine without observe.v2 the engine
-// delivers the routed calls of the function, to every observer whose on and filters
-// match; local calls apply the match hook. It returns the client, for chaining.
+// late-rejected with OBSERVE_REJECTED. A function with a match hook needs an engine with
+// observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED
+// once. It returns the client, for chaining.
 func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client {
 	if !m.set() {
 		m = nil
@@ -237,6 +237,7 @@ func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client {
 			f.setMatch(m)
 		}
 	})
+	c.reconsiderRegistration(functionID)
 	return c
 }
 
@@ -304,14 +305,6 @@ func (c *Client) removedHook(functionID string, level hookLevel) RemovedHook {
 	}
 	if h := c.functionHooks[functionID]; h != nil {
 		return h.removed
-	}
-	return nil
-}
-
-// deliverHookLocked is functionID's deliver hook. The caller holds mu.
-func (c *Client) deliverHookLocked(functionID string) DeliverHook {
-	if h := c.functionHooks[functionID]; h != nil {
-		return h.deliver
 	}
 	return nil
 }

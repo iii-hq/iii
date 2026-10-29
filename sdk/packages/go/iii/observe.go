@@ -533,7 +533,9 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		epoch := c.epoch
 		fn, ok := c.functions[msg.ID]
 		c.mu.Unlock()
-		if ok {
+		// The answer to a registration withdrawn on this connection (a function that
+		// needs observe.v2, on an engine without it) is ignored: it stays unregistered.
+		if ok && !fn.observe.heldOn(epoch) {
 			// held reports go once the set is applied and acked (applySet kicks)
 			fn.observe.onFunctionRegistered(msg, epoch)
 		}
@@ -543,7 +545,8 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		epoch := c.epoch
 		fn, ok := c.functions[msg.FunctionID]
 		c.mu.Unlock()
-		if ok {
+		// An observer of a registration withdrawn on this connection: no hook, no ack.
+		if ok && !fn.observe.heldOn(epoch) {
 			fn.observe.onObserverAdded(msg, epoch)
 		}
 	case MsgObserverRemoved:

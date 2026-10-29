@@ -3,11 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ObserveRejection } from '../src/errors'
 import { registerWorker } from '../src/index'
 import type { Observer } from '../src/observe-types'
-import type { ISdk } from '../src/types'
+import type { FunctionRef, ISdk } from '../src/types'
 import * as fake from './observe-fake-engine'
 
 /** Observer hooks against a fake engine (v2 §4.2, §4.3, §7, §11; decisions 18, 21, 41, 44). */
-const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle } = fake
+const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, invokeFunction } = fake
 
 let sdk: ISdk | undefined
 afterEach(async () => {
@@ -361,14 +361,16 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(ref.observers().map((o) => o.id)).toEqual(['no-filters'])
   })
 
-  it('a kept observer whose new filters do not compile is acked INVALID_FILTER at the new revision, which reject() then uses', async () => {
+  it('a held observer announced again with filters that do not compile is removed, then refused INVALID_FILTER', async () => {
     const { sdk, socket } = worker()
     let obs: Observer | undefined
-    sdk
+    const removed = vi.fn()
+    const ref = sdk
       .registerFunction('cron::on-tick', async () => null)
       .onObserverAdded((o) => {
         obs = o
       })
+      .onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a')], { revision: 3 }))
     socket.deliver(
@@ -377,12 +379,121 @@ describe('onObserverAdded / onObserverRemoved', () => {
       }),
     )
     await settle()
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(ref.observers()).toEqual([])
+    // the observer it held is gone: its late rejection sends nothing
     obs?.reject('GONE', 'no longer wanted')
     expect(acks(socket).map((a) => [a.revision, (a.error as { code?: string } | undefined)?.code])).toEqual([
       [3, undefined],
       [5, 'INVALID_FILTER'],
-      [5, 'GONE'],
     ])
+  })
+
+  it('an observer announced again with the same args runs no hook and is served with the view announced (decision 44)', async () => {
+    const { sdk, socket } = worker()
+    const events: string[] = []
+    const ref = sdk
+      .registerFunction('ra::f', (input: unknown) => input)
+      .onObserverAdded((obs) => {
+        events.push(`add ${obs.id} ${JSON.stringify(obs.args)}`)
+      })
+      .onObserverRemoved((obs) => {
+        events.push(`remove ${obs.id} ${JSON.stringify(obs.args)}`)
+      })
+    socket.open()
+    socket.deliver(functionRegistered('ra::f', [observerInfo('a', 't::a', { args: { kind: 'a' } })], { revision: 1 }))
+    await settle()
+    const held = ref.observers()[0]
+    const above = (n: number) =>
+      observerInfo('a', 't::target', {
+        args: { kind: 'a' },
+        filters: { $and: [{ 'input.n': { $gt: n } }] },
+        capture: ['input', 'caller'],
+      })
+    let calls = 0
+    const observed = async (n: number) => {
+      const id = `i-${++calls}`
+      socket.deliver(invokeFunction('ra::f', { n }, { invocation_id: id }))
+      await settle()
+      return fake.resultOf(socket, id)?.observed
+    }
+
+    // listed by functionregistered
+    socket.deliver(functionRegistered('ra::f', [above(1)], { revision: 2 }))
+    await settle()
+    expect(await observed(1)).toBeUndefined()
+    expect(await observed(2)).toEqual(['a'])
+    // announced by observeradded
+    socket.deliver(observerAdded('ra::f', 3, above(5)))
+    await settle()
+    expect(await observed(2)).toBeUndefined()
+    expect(await observed(6)).toEqual(['a'])
+    expect(events).toEqual(['add a {"kind":"a"}'])
+    expect(acks(socket).map((a) => [a.id, a.revision, a.error])).toEqual([
+      ['a', 1, undefined],
+      ['a', 2, undefined],
+      ['a', 3, undefined],
+    ])
+    expect(ref.observers()).toEqual([held])
+    expect(held).toMatchObject({ target: 't::target', capture: ['input', 'caller'], filters: above(5).filters })
+
+    // its late rejection carries the revision announced last; listed again, it is re-acked with it
+    held.reject('GONE', 'config reloaded')
+    socket.deliver(
+      functionRegistered('ra::f', [observerInfo('a', 't::a', { args: { kind: 'other' } })], { revision: 4 }),
+    )
+    await settle()
+    expect(
+      acks(socket)
+        .slice(3)
+        .map((a) => [a.revision, (a.error as { code?: string } | undefined)?.code]),
+    ).toEqual([
+      [3, 'GONE'],
+      [4, 'GONE'],
+    ])
+    expect(ref.isObserved()).toBe(false)
+    expect(events).toEqual(['add a {"kind":"a"}', 'remove a {"kind":"a"}'])
+
+    // a fresh observeradded brings it back as a new observer; other args: removed, then added
+    socket.deliver(observerAdded('ra::f', 5, observerInfo('a', 't::a', { args: { kind: 'a' } })))
+    await settle()
+    expect(ref.isObserved()).toBe(true)
+    socket.deliver(observerAdded('ra::f', 6, observerInfo('a', 't::a', { args: { kind: 'b' } })))
+    await settle()
+    expect(events).toEqual([
+      'add a {"kind":"a"}',
+      'remove a {"kind":"a"}',
+      'add a {"kind":"a"}',
+      'remove a {"kind":"a"}',
+      'add a {"kind":"b"}',
+    ])
+    expect(ref.observers().map((o) => o.args)).toEqual([{ kind: 'b' }])
+    expect(
+      acks(socket)
+        .slice(5)
+        .map((a) => [a.revision, a.error]),
+    ).toEqual([
+      [5, undefined],
+      [6, undefined],
+    ])
+  })
+
+  it('on a function matched by keys, a held observer served a changed view is filed under its new keys', async () => {
+    const { sdk, socket } = worker()
+    const added = vi.fn()
+    const ref = sdk
+      .registerFunction('rk::f', (input: unknown) => input)
+      .onObserverAdded(added)
+      .onObserverMatch({ observer: (obs) => obs.target, call: (call) => (call.input as { to: string }).to })
+    socket.open()
+    socket.deliver(functionRegistered('rk::f', [observerInfo('a', 't::one')], { revision: 1 }))
+    await settle()
+    expect(ref.isObserved({ input: { to: 't::one' } })).toBe(true)
+    socket.deliver(observerAdded('rk::f', 2, observerInfo('a', 't::two')))
+    await settle()
+    expect(added).toHaveBeenCalledTimes(1)
+    expect(ref.isObserved({ input: { to: 't::one' } })).toBe(false)
+    expect(ref.isObserved({ input: { to: 't::two' } })).toBe(true)
   })
 
   it('a rejection made while onObserverAdded is still running wins over the add', async () => {
@@ -748,6 +859,8 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     sdk.registerFunction('c::private', (e: unknown) => e, { private: true })
     sdk.registerFunction('d::secret', async () => null, { observable: false })
     sdk.registerFunction('e::routed', async () => null).onObserverDeliver((call) => call.output)
+    sdk.onObserverMatch('e::matched', () => true)
+    sdk.registerFunction('e::matched', async () => null)
   }
 
   it('wait for WorkerRegistered, then go out when the engine advertises observe.v2', () => {
@@ -762,6 +875,7 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
       'c::private',
       'd::secret',
       'e::routed',
+      'e::matched',
     ])
   })
 
@@ -779,6 +893,7 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
       'c::private',
       'd::secret',
       'e::routed',
+      'e::matched',
       'f::late',
     ])
 
@@ -787,7 +902,7 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     const again = fake.lastSocket()
     again.open(fake.ENGINE_FEATURES_V1)
     expect(again.framesOf('registerfunction').map((f) => f.id)).toEqual(['a::plain'])
-    expect(unsupported()).toHaveLength(5) // once per function
+    expect(unsupported()).toHaveLength(6) // once per function
 
     again.drop()
     await vi.advanceTimersByTimeAsync(50)
@@ -799,23 +914,65 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
       'c::private',
       'd::secret',
       'e::routed',
+      'e::matched',
       'f::late',
     ])
   })
 
-  it('a deliver hook set later on a function registered with such an engine unregisters it; removing it registers it again', () => {
+  const setHook = {
+    deliver: (ref: FunctionRef, set: boolean) => ref.onObserverDeliver(set ? (call) => call.output : null),
+    match: (ref: FunctionRef, set: boolean) => ref.onObserverMatch(set ? () => true : null),
+  }
+
+  it.each([
+    'deliver',
+    'match',
+  ] as const)('a %s hook set later on a function registered with such an engine unregisters it; removing it registers it again', (kind) => {
     const { sdk, socket } = worker()
-    warnings()
+    const warn = warnings()
     const ref = sdk.registerFunction('a::plain', async () => null)
     socket.open(fake.ENGINE_FEATURES_V1)
     socket.clear()
-    ref.onObserverDeliver((call) => call.output)
+    setHook[kind](ref, true)
     expect(socket.frames().map((f) => [f.type, f.id])).toEqual([['unregisterfunction', 'a::plain']])
-    ref.onObserverDeliver(null)
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('[iii] UNSUPPORTED'))).toHaveLength(1)
+    setHook[kind](ref, false)
     expect(socket.frames().map((f) => [f.type, f.id])).toEqual([
       ['unregisterfunction', 'a::plain'],
       ['registerfunction', 'a::plain'],
     ])
+  })
+
+  it('an observer announced for a withdrawn registration, or queued before the withdrawal, runs no hook and gets no ack', async () => {
+    const { sdk, socket } = worker()
+    warnings()
+    const gate = deferred()
+    const ran: string[] = []
+    const ref = sdk
+      .registerFunction('w::f', async () => null)
+      .onObserverAdded(async (obs) => {
+        ran.push(obs.id)
+        if (obs.id === 'slow') await gate.promise
+      })
+    socket.open(fake.ENGINE_FEATURES_V1)
+    socket.deliver(functionRegistered('w::f', [observerInfo('slow', 't::a')], { revision: 1 }))
+    await settle()
+    expect(ran).toEqual(['slow'])
+    // queued behind the running hook, then the registration is withdrawn
+    socket.deliver(observerAdded('w::f', 2, observerInfo('queued', 't::b')))
+    ref.onObserverMatch(() => true)
+    expect(socket.framesOf('unregisterfunction').map((f) => f.id)).toEqual(['w::f'])
+    // announced by the engine before it handled the unregistration
+    socket.deliver(observerAdded('w::f', 3, observerInfo('after', 't::c')))
+    // registered again (the hook is removed) before the queued add runs: it stays not added
+    ref.onObserverMatch(null)
+    socket.deliver(functionRegistered('w::f', [], { revision: 4 }))
+    gate.resolve()
+    await settle()
+    expect(ran).toEqual(['slow'])
+    expect(acks(socket)).toEqual([])
+    expect(ref.isObserved()).toBe(false)
+    expect(socket.framesOf('registerfunction').map((f) => f.id)).toEqual(['w::f', 'w::f'])
   })
 
   it('a deliver hook chained before WorkerRegistered: against an engine without it, the function sent is unregistered', async () => {

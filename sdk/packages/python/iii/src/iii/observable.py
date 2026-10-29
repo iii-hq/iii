@@ -15,6 +15,7 @@ once, when it starts.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import logging
@@ -110,6 +111,17 @@ def _same_json(a: Any, b: Any) -> bool:
         return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
     except (TypeError, ValueError):
         return bool(a == b)
+
+
+def _same_view(obs: Observer, info: ObserverInfoWire) -> bool:
+    """Whether ``obs`` is served with the view ``info`` announces: its
+    filters, target, capture and ``on``."""
+    return (
+        obs.target == info.target
+        and obs.on == info.on
+        and obs.capture == list(info.capture)
+        and _same_json(obs.filters, info.filters)
+    )
 
 
 def _on_accepts(on: str, ok: bool) -> bool:
@@ -373,6 +385,22 @@ class ActiveSet:
             index = filed
         return ActiveSet(tuple(o for o in self.observers if o is not obs), self.match, index)
 
+    def refiling(self, obs: Observer, keys: tuple[str, ...]) -> ActiveSet:
+        """This set with ``obs`` filed under ``keys`` instead of its own
+        (``obs._keys``), in the same place among the observers."""
+        if self.index is None:
+            return self
+        filed = dict(self.index)
+        for key in obs._keys:
+            rest = tuple(o for o in filed.get(key, ()) if o is not obs)
+            if rest:
+                filed[key] = rest
+            else:
+                filed.pop(key, None)
+        for key in keys:
+            filed[key] = (*filed.get(key, ()), obs)
+        return ActiveSet(self.observers, self.match, filed)
+
 
 class HookQueue:
     """The observer hooks of one function id, run one at a time in the order
@@ -586,9 +614,26 @@ class FunctionObservers:
     def on_observer_added(self, namespace: str, revision: int, info: ObserverInfoWire) -> None:
         if self._disposed or revision <= self.revision:
             return
+        if self.released_epoch is not None:
+            # Refused or withdrawn: the function is not this worker's. No hook runs, no ack goes out.
+            log.debug("observeradded for released function %s ignored", self.function_id)
+            return
         self.revision = revision
         releases = self._releases
-        self._enqueue(lambda: self._add(info, revision, namespace, releases, fresh=True))
+
+        async def added() -> None:
+            # Released since it arrived: nothing to add, nothing to ack.
+            if self._released_since(releases):
+                return
+            held = self._known.get(info.id)
+            if held is not None:
+                if self._reack(held, info, revision, namespace, listed=False):
+                    return
+                # Other args, or rejected late: a fresh observer, after the one held is removed.
+                await self._remove(info.id)
+            await self._add(info, revision, namespace, releases)
+
+        self._enqueue(added)
 
     def on_observer_removed(self, revision: int, observer_id: str) -> None:
         if self._disposed or revision <= self.revision:
@@ -712,36 +757,71 @@ class FunctionObservers:
         for info in observers:
             if self._released_since(releases):
                 return
-            existing = self._known.get(info.id)
-            if existing is not None and _same_json(existing.args, info.args):
-                self._keep(existing, info, revision, namespace)
-            else:
-                if existing is not None:
-                    await self._remove(info.id)
-                await self._add(info, revision, namespace, releases, fresh=False)
+            held = self._known.get(info.id)
+            if held is not None:
+                if self._reack(held, info, revision, namespace, listed=True):
+                    continue
+                # Other args: removed, then added as a new observer.
+                await self._remove(info.id)
+            await self._add(info, revision, namespace, releases)
 
-    def _keep(self, obs: Observer, info: ObserverInfoWire, revision: int, namespace: str) -> None:
-        """A kept observer: its hooks already ran; take the engine's filters
-        and ack it again (with its rejection, if it has one)."""
-        obs._revision = revision
-        if obs._rejection is not None:
-            self._ack(obs, revision, namespace, obs._rejection)
-            return
+    def _reack(self, obs: Observer, info: ObserverInfoWire, revision: int, namespace: str, *, listed: bool) -> bool:
+        """Acks again, at ``revision`` and without running any hook, an
+        observer this SDK holds that the engine announced again (decision 44):
+        one with the same args, served from now on with the filters, target,
+        capture and ``on`` it was announced with (filed under its keys again
+        when they changed), or, when ``listed`` by ``functionregistered``, one
+        rejected late, whose rejection is sent again. ``False`` for an
+        observer to add as a new one after removing the one held: other args, a
+        late rejection announced by ``observeradded``, or a view this SDK
+        cannot serve (filters that do not compile, keys that raise)."""
+        changed = _same_json(obs.args, info.args) and not _same_view(obs, info)
+        # Prepared outside the lock: key functions are the worker's code.
+        view = self._prepare_view(obs, info) if changed else None
+        with self._lock:
+            # Under the lock, ordered with `reject()` from another thread.
+            rejection = obs._rejection
+            if rejection is not None:
+                if not listed:
+                    return False
+            elif not _same_json(obs.args, info.args):
+                return False
+            elif changed:
+                if view is None:
+                    return False
+                filter_, keys, match = view
+                if keys is not None and obs._active and self.active.match is match:
+                    self.active = self.active.refiling(obs, keys)
+                    obs._keys = keys
+                obs._update(info, filter_)
+            obs._revision = revision
+        self._ack(obs, revision, namespace, rejection)
+        return True
+
+    def _prepare_view(
+        self, obs: Observer, info: ObserverInfoWire
+    ) -> tuple[CompiledFilter, tuple[str, ...] | None, MatchHook | None] | None:
+        """What ``obs`` is served with once it takes the view ``info``: its
+        compiled filters, and its keys on a function matched by keys (computed
+        on a copy, so ``obs`` stays as it was), with the match hook they are
+        for. ``None`` for a view this SDK cannot serve."""
         filter_ = obs._filter
         if not _same_json(obs.filters, info.filters):
             try:
                 filter_ = compile_filter(info.filters, trusted=True)
-            except Exception as error:
-                self._deactivate(obs)
-                self._ack(obs, revision, namespace, {"code": "INVALID_FILTER", "message": str(error)})
-                return
-        obs._update(info, filter_)
-        if self._activate(obs):
-            self._ack(obs, revision, namespace)
-        else:
-            self._ack(obs, revision, namespace, obs._rejection)
+            except Exception:
+                return None
+        match = self.active.match
+        if not isinstance(match, MatchKeys):
+            return filter_, None, match
+        view = copy.copy(obs)
+        view._update(info, filter_)
+        try:
+            return filter_, match_keys(match.observer(view), "observer"), match
+        except Exception:
+            return None
 
-    async def _add(self, info: ObserverInfoWire, revision: int, namespace: str, releases: int, *, fresh: bool) -> None:
+    async def _add(self, info: ObserverInfoWire, revision: int, namespace: str, releases: int) -> None:
         """An added observer: the worker's ``on_observer_added``, then the
         function's, then the active set, then the ack. A hook that raises (or
         runs past the timeout) rejects the observer, and the
@@ -750,16 +830,6 @@ class FunctionObservers:
         an add queued before the function was released never runs its hooks."""
         if self._released_since(releases):
             return
-        existing = self._known.get(info.id)
-        if existing is not None:
-            if fresh and existing._rejection is not None:
-                # A fresh `observeradded` for an observer rejected late: a new start.
-                await self._remove(info.id)
-                if self._released_since(releases):
-                    return  # released while its removal hook ran
-            else:
-                self._keep(existing, info, revision, namespace)
-                return
         try:
             filter_ = compile_filter(info.filters, trusted=True)
         except Exception as error:
@@ -900,7 +970,7 @@ class FunctionObservers:
             if self._known.get(obs.id) is not obs:
                 return
             # Kept on the observer: if this ack is lost with the connection,
-            # the replayed set gets it again (`_keep`).
+            # the replayed set gets it again (`_reack`).
             obs._rejection = {"code": code, "message": message}
         self._deactivate(obs)
         self._ack(obs, obs._revision, self.namespace, obs._rejection)

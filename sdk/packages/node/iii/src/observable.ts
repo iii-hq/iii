@@ -73,6 +73,16 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+/** Whether `obs` is served with the view `info` announces: its filters, target, capture and `on`. */
+function sameView(obs: ObserverImpl, info: ObserverInfoWire): boolean {
+  return (
+    obs.target === info.target &&
+    obs.on === info.on &&
+    sameJson(obs.capture, info.capture) &&
+    sameJson(obs.filters, info.filters)
+  )
+}
+
 function rejectionBody(error: unknown): { code: string; message: string } {
   if (error instanceof ObserveRejection) return { code: error.code, message: error.message }
   return { code: 'OBSERVE_REJECTED', message: error instanceof Error ? error.message : String(error) }
@@ -365,9 +375,11 @@ export class FunctionObservers {
     this.localDispatch = msg.local_dispatch && this.localDispatchOption && this.hasHandler
     this.namespace = msg.namespace
     this.revision = msg.revision
+    const releases = this.releases
     this.enqueue(async () => {
       try {
-        await this.applySet(msg.observers, msg.revision, msg.namespace)
+        // Released after it arrived: the function is not this worker's, and its set is not applied.
+        if (this.releases === releases) await this.applySet(msg.observers, msg.revision, msg.namespace)
       } finally {
         // Reports held across a reconnect go out only now, after the acks: the
         // engine drops an item whose observer is still pending (INACTIVE).
@@ -381,9 +393,15 @@ export class FunctionObservers {
   onObserverAdded(msg: { namespace: string; revision: number; observer: ObserverInfoWire }): void {
     if (this.disposed || msg.revision <= this.revision) return
     this.revision = msg.revision
+    const releases = this.releases
     this.enqueue(async () => {
-      // A fresh add of an observer this host rejected: it starts over (removed, then added).
-      if (this.known.get(msg.observer.id)?.rejection) await this.remove(msg.observer.id)
+      // Released (refused, withdrawn, unregistered) since it arrived: the
+      // function is not this worker's. No hook runs, no ack goes out.
+      if (this.disposed || this.releases !== releases || this.releasedEpoch !== undefined) return
+      const held = this.known.get(msg.observer.id)
+      if (held && this.reack(held, msg.observer, msg.revision, msg.namespace, false)) return
+      // New, with other args, or rejected late: a fresh observer (the one held is removed first).
+      if (held) await this.remove(held.id)
       await this.add(msg.observer, msg.revision, msg.namespace)
     })
   }
@@ -564,54 +582,92 @@ export class FunctionObservers {
     this.host.sendAck({ function_id: this.functionId, namespace, id: info.id, revision, ...(error ? { error } : {}) })
   }
 
-  /** Diffs the engine's full set against what this SDK holds. */
+  /**
+   * Diffs the engine's full set against what this SDK holds: the ones it no
+   * longer lists are removed, the ones it holds are acked again
+   * ({@link FunctionObservers.reack}), and the others are added.
+   */
   private async applySet(list: ObserverInfoWire[], revision: number, namespace: string): Promise<void> {
     const incoming = new Set(list.map((o) => o.id))
     for (const id of [...this.known.keys()]) {
       if (!incoming.has(id)) await this.remove(id)
     }
     for (const info of list) {
-      const existing = this.known.get(info.id)
-      if (existing && sameJson(existing.args, info.args)) {
-        await this.keep(existing, info, revision, namespace)
-      } else {
-        if (existing) await this.remove(info.id)
-        await this.add(info, revision, namespace)
-      }
+      const held = this.known.get(info.id)
+      if (held && this.reack(held, info, revision, namespace, true)) continue
+      // New, or with other args: removed, then added as a new observer.
+      if (held) await this.remove(info.id)
+      await this.add(info, revision, namespace)
     }
   }
 
   /**
-   * A kept observer: its hooks already ran; take the engine's filters and
-   * ack it again, or repeat the host's late rejection of it.
+   * Acks again, at `revision` and without running any hook, an observer this
+   * SDK holds that the engine announced again (decision 44): one with the
+   * same args, served from now on with the filters, target, capture and `on`
+   * it was announced with (its keys computed again when they changed), or,
+   * when `listed` by `functionregistered`, one rejected late, whose rejection
+   * is sent again. `false` for an observer to add as a new one after removing
+   * the one held: other args, a late rejection announced by `observeradded`,
+   * or a view this SDK cannot serve (filters that do not compile, keys that
+   * throw).
    */
-  private async keep(obs: ObserverImpl, info: ObserverInfoWire, revision: number, namespace: string): Promise<void> {
-    obs.revision = revision
-    if (obs.rejection) {
-      this.ack(info, revision, namespace, obs.rejection)
-      return
+  private reack(
+    held: ObserverImpl,
+    info: ObserverInfoWire,
+    revision: number,
+    namespace: string,
+    listed: boolean,
+  ): boolean {
+    if (held.rejection) {
+      if (!listed) return false
+      held.revision = revision
+      this.ack(info, revision, namespace, held.rejection)
+      return true
     }
-    let filter = obs.filter
-    if (!sameJson(obs.filters, info.filters)) {
-      try {
-        filter = compileFilter(info.filters, { trusted: true })
-      } catch (error) {
-        this.deactivate(obs)
-        this.ack(info, revision, namespace, { code: 'INVALID_FILTER', message: (error as Error).message })
-        return
+    if (!sameJson(held.args, info.args)) return false
+    if (!sameView(held, info)) {
+      let filter = held.filter
+      if (!sameJson(held.filters, info.filters)) {
+        try {
+          filter = compileFilter(info.filters, { trusted: true })
+        } catch {
+          return false
+        }
       }
+      const keys = this.viewKeys(held, info, filter)
+      if (keys === null) return false
+      // Filed again under the keys of the view it is served with.
+      if (held.active) this.unfile(held)
+      held.update(info, filter)
+      if (keys !== undefined) held.keys = keys
+      if (held.active) this.file(held)
     }
-    obs.update(info, filter)
-    const failure = this.prepareKeys(obs)
-    if (failure) {
-      obs.rejection = failure
-      this.deactivate(obs)
-      this.ack(info, revision, namespace, failure)
-      await this.tearDown(obs)
-      return
-    }
-    this.activate(obs)
+    held.revision = revision
     this.ack(info, revision, namespace)
+    return true
+  }
+
+  /**
+   * The keys `held` is filed under once it takes the view `info` (with
+   * `filter`), on a function matched by keys: computed on a copy, so a key
+   * function that throws (`null`) leaves `held` as it was. `undefined` when
+   * the function is not matched by keys.
+   */
+  private viewKeys(
+    held: ObserverImpl,
+    info: ObserverInfoWire,
+    filter: CompiledFilter,
+  ): readonly string[] | null | undefined {
+    const keys = this.matchKeys
+    if (!keys) return undefined
+    const view: ObserverImpl = Object.assign(Object.create(Object.getPrototypeOf(held)), held)
+    view.update(info, filter)
+    try {
+      return [...new Set(keyList(keys.observer(view)))]
+    } catch {
+      return null
+    }
   }
 
   /** handleAdded (§4.3): the hooks of both levels, then the active set, then the ack. */
@@ -619,11 +675,6 @@ export class FunctionObservers {
     // Refused or unregistered since this add was queued: nothing to add, nothing to ack.
     if (this.disposed || this.releasedEpoch !== undefined) return
     const releases = this.releases
-    const existing = this.known.get(info.id)
-    if (existing) {
-      await this.keep(existing, info, revision, namespace)
-      return
-    }
     let filter: CompiledFilter
     try {
       filter = compileFilter(info.filters, { trusted: true })

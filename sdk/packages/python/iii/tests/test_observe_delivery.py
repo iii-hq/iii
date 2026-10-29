@@ -275,6 +275,42 @@ def test_a_call_is_matched_against_the_active_set_it_started_with(engine: FakeEn
     assert [o.id for o in started.observers] == ["orders-insert", "orders-any", "every-insert", "other-db"]
 
 
+@pytest.mark.parametrize("hooked", [False, True])
+def test_an_observer_accepted_while_a_call_runs_does_not_match_it(
+    engine: FakeEngine, connect: Any, hooked: bool
+) -> None:
+    """Decision 20: a call matched by keys matches only the observers active
+    when it started. One accepted while the handler runs is neither delivered
+    the call nor handed to the deliver hook."""
+    client = connect(engine)
+    fid = "kd::fn"
+    gate = threading.Event()
+    entered = threading.Event()
+
+    async def handler(data: Any) -> Any:
+        entered.set()
+        while not gate.is_set():
+            await asyncio.sleep(0.005)
+        return data
+
+    client.on_observer_match(fid, observer=lambda obs: obs.args["kind"], call=lambda call: call.input["kind"])
+    if hooked:
+        client.on_observer_deliver(fid, lambda call, observers: [o.id for o in observers])
+    client.register_function(fid, handler)
+    _confirm(client, engine, fid, observer_info("a", "t", args={"kind": "x"}))
+    engine.deliver(invoke(fid, {"kind": "x"}, "r-during"))
+    assert entered.wait(5)
+    engine.deliver(observer_added(fid, 1, observer_info("b", "t", args={"kind": "x"})))
+    engine.wait_for(lambda: "b" in {a["id"] for a in acks(engine)}, what="b's ack")
+    assert sorted(o.id for o in client.observers(fid)) == ["a", "b"]
+    gate.set()
+    [answer] = engine.wait_for(lambda: answers(engine, "r-during"), what="the answer")
+    if hooked:
+        assert answer["result"] == ["a"]
+    else:
+        assert answer["observed"] == ["a"]
+
+
 def test_keys_set_while_observers_are_active_file_them_and_a_failing_key_rejects(
     engine: FakeEngine, connect: Any
 ) -> None:
@@ -855,13 +891,21 @@ def test_functions_that_need_observe_v2_wait_for_it_and_stay_out_of_a_v1_engine(
         client.register_function("sealed::fn", lambda d: d, observable=False)
         client.on_observer_deliver("hooked::fn", lambda call, observers: call.output)
         client.register_function("hooked::fn", lambda d: d)
+        client.on_observer_match("matched::fn", lambda obs, call: True)
+        client.register_function("matched::fn", lambda d: d)
         settle(client, engine)
         engine.drop()
         wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
         settle(client, engine)
     assert sorted(f["id"] for f in engine.frames_of("registerfunction")) == ["plain::fn", "plain::fn"]
     unsupported = [r.getMessage() for r in caplog.records if "UNSUPPORTED" in r.getMessage()]
-    assert sorted(m.split("'")[1] for m in unsupported) == ["args::fn", "hooked::fn", "private::fn", "sealed::fn"]
+    assert sorted(m.split("'")[1] for m in unsupported) == [
+        "args::fn",
+        "hooked::fn",
+        "matched::fn",
+        "private::fn",
+        "sealed::fn",
+    ]
     # calls and observe keep working; routed calls are the engine's to deliver
     client.register_function("observed::fn", lambda d: d)
     _confirm(client, engine, "observed::fn", observer_info("o", "t"))
@@ -914,16 +958,70 @@ def test_a_reconnect_to_an_engine_without_observe_v2_releases_a_function_that_ne
     assert ticks == []
 
 
-def test_a_deliver_hook_set_after_registering_on_a_v1_engine_unregisters_the_function(
-    engine_factory: Any, connect: Any
+@pytest.mark.parametrize("kind", ["deliver", "match"])
+def test_a_match_or_deliver_hook_set_after_registering_on_a_v1_engine_unregisters_the_function(
+    engine_factory: Any, connect: Any, caplog: pytest.LogCaptureFixture, kind: str
 ) -> None:
     engine = engine_factory(V1_FEATURES)
     client = connect(engine)
     ref = client.register_function("late-hook::fn", lambda d: d)
     engine.wait_for(lambda: engine.frames_of("registerfunction"), what="the plain registration")
-    ref.on_observer_deliver(lambda call, observers: call.output)
-    [frame] = engine.wait_for(lambda: engine.frames_of("unregisterfunction"), what="the unregistration")
+
+    def set_hook(on: bool) -> None:
+        if kind == "deliver":
+            ref.on_observer_deliver((lambda call, observers: call.output) if on else None)
+        else:
+            ref.on_observer_match((lambda obs, call: True) if on else None)
+
+    with caplog.at_level(logging.ERROR, logger="iii.iii"):
+        set_hook(True)
+        [frame] = engine.wait_for(lambda: engine.frames_of("unregisterfunction"), what="the unregistration")
     assert frame["id"] == "late-hook::fn"
+    assert len([r for r in caplog.records if "UNSUPPORTED" in r.getMessage()]) == 1
+    # removing the hook registers it again
+    set_hook(False)
+    engine.wait_for(lambda: len(engine.frames_of("registerfunction")) == 2, what="the registration again")
+
+
+def test_an_observer_announced_for_a_withdrawn_registration_runs_no_hook_and_gets_no_ack(
+    engine_factory: Any, connect: Any
+) -> None:
+    """An ``observeradded`` queued behind a slow added hook when the
+    registration is withdrawn, one the engine sent before it handled the
+    unregistration, and its answer to the withdrawn registration run no hook
+    and get no ack (decision 41), also once the function is registered again."""
+    engine = engine_factory(V1_FEATURES)
+    client = connect(engine)
+    gate = threading.Event()
+    ran: list[str] = []
+
+    def on_added(obs: Observer) -> None:
+        ran.append(obs.id)
+        if obs.id == "slow":
+            gate.wait(5)
+
+    client.on_observer_added("wq::fn", on_added)
+    ref = client.register_function("wq::fn", lambda d: d)
+    engine.wait_for(lambda: engine.frames_of("registerfunction"), what="the registration")
+    engine.deliver(function_registered("wq::fn", [observer_info("slow", "t")], revision=1))
+    wait_until(lambda: ran == ["slow"], what="the slow hook")
+    engine.deliver(observer_added("wq::fn", 2, observer_info("queued", "t")))
+    ref.on_observer_match(lambda obs, call: True)
+    engine.wait_for(lambda: engine.frames_of("unregisterfunction"), what="the withdrawal")
+    engine.deliver(observer_added("wq::fn", 3, observer_info("after", "t")))
+    engine.deliver(function_registered("wq::fn", [observer_info("late", "t")], revision=4))
+    # the client has read those frames: an invocation behind them is answered
+    engine.deliver(invoke("probe::fn", None, "r-probe"))
+    engine.wait_for(lambda: answers(engine, "r-probe"), what="the probe's answer")
+    # registered again (the hook is removed) before the queued add runs: it stays not added
+    ref.on_observer_match(None)
+    engine.wait_for(lambda: len(engine.frames_of("registerfunction")) == 2, what="the registration again")
+    engine.deliver(function_registered("wq::fn", [], revision=5))
+    gate.set()
+    settle(client, engine)
+    assert ran == ["slow"]
+    assert acks(engine) == []
+    assert ref.is_observed() is False
 
 
 # ── standby ────────────────────────────────────────────────────────────────

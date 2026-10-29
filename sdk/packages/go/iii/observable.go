@@ -78,6 +78,9 @@ type functionObservers struct {
 	revision int64
 	known    map[string]*Observer
 	disposed bool
+	// releases counts the releases (refusals, withdrawals, unregister): a message
+	// handled after one that followed it is not applied.
+	releases int
 	// wantMatch is the match hook last set; the hook queue installs it (applyMatch).
 	wantMatch *MatchHook
 }
@@ -156,6 +159,14 @@ func (f *functionObservers) setDeliver(hook DeliverHook) {
 	f.swapLocked(func(st *callState) { st.deliver = hook })
 }
 
+// heldOn: the function stays unregistered on connection epoch (it needs observe.v2, and
+// the engine lacks it), withdrawn there if its registration had gone out.
+func (f *functionObservers) heldOn(epoch uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unsupportedEpoch == int64(epoch)
+}
+
 // syncedOn: functionregistered arrived on connection epoch and its set was applied
 // and acked.
 func (f *functionObservers) syncedOn(epoch uint64) bool {
@@ -194,10 +205,11 @@ func (f *functionObservers) onFunctionRegistered(msg *FunctionRegisteredMessage,
 	f.swapLocked(func(st *callState) {
 		st.local, st.namespace = msg.LocalDispatch && f.localDispatchOption, msg.Namespace
 	})
+	releases := f.releases
 	f.mu.Unlock()
 	f.standingBy.Store(false)
 	list := slices.Clone(msg.Observers)
-	f.enqueue(func() { f.applySet(list, msg.Revision, msg.Namespace, epoch) })
+	f.enqueue(func() { f.applySet(list, msg.Revision, msg.Namespace, epoch, releases) })
 }
 
 func (f *functionObservers) onObserverAdded(msg *ObserverAddedMessage, epoch uint64) {
@@ -207,17 +219,26 @@ func (f *functionObservers) onObserverAdded(msg *ObserverAddedMessage, epoch uin
 		return
 	}
 	f.revision = int64(msg.Revision)
+	releases := f.releases
 	f.mu.Unlock()
 	info := msg.Observer
 	f.enqueue(func() {
-		// A fresh add of an observer this host rejected starts over: removed, then added.
 		f.mu.Lock()
-		rejected := f.known[info.ID] != nil && f.known[info.ID].rejection != nil
+		released, held := f.releasedSinceLocked(releases), f.known[info.ID]
 		f.mu.Unlock()
-		if rejected {
+		if released {
+			// announced before the function was released (refused, withdrawn,
+			// unregistered): it is not this worker's, so no hook runs and no ack goes out
+			return
+		}
+		if held != nil {
+			if f.reack(held, info, msg.Revision, msg.Namespace, epoch, releases, false) {
+				return
+			}
+			// other args, or rejected late: a fresh observer, after the one held is removed
 			f.remove(info.ID)
 		}
-		f.add(info, msg.Revision, msg.Namespace, epoch)
+		f.add(info, msg.Revision, msg.Namespace, epoch, releases)
 	})
 }
 
@@ -248,6 +269,7 @@ func (f *functionObservers) onRegistrationRejected(epoch uint64) {
 // queued or running when the release happens sees it and undoes its own hooks (add).
 func (f *functionObservers) release() {
 	f.mu.Lock()
+	f.releases++
 	f.confirmedEpoch = -1
 	f.syncedEpoch = -1
 	f.swapLocked(func(st *callState) {
@@ -275,6 +297,13 @@ func (f *functionObservers) release() {
 // are not to be activated or acked.
 func (f *functionObservers) releasedLocked() bool {
 	return f.disposed || f.confirmedEpoch < 0
+}
+
+// releasedSinceLocked: released now, or since the release count was releases (when the
+// message being applied arrived), even if a later registration was confirmed since.
+// The caller holds mu.
+func (f *functionObservers) releasedSinceLocked(releases int) bool {
+	return f.releasedLocked() || f.releases != releases
 }
 
 // dispose: the function was unregistered (a later registration of the same id has
@@ -374,10 +403,17 @@ func (f *functionObservers) ack(id string, revision uint64, namespace string, ep
 }
 
 // applySet diffs the engine's full set against what this SDK holds: removed ->
-// removed hooks; new -> added hooks; kept -> acked again without the hooks (the engine
-// marks a replayed set pending until acked). A kept observer that differs in any field
-// is removed, then added.
-func (f *functionObservers) applySet(list []ObserverInfo, revision uint64, namespace string, epoch uint64) {
+// removed hooks; new -> added hooks; held -> acked again without the hooks (reack; the
+// engine marks a replayed set pending until acked). A held observer with other args is
+// removed, then added. Nothing is applied once the function was released after the
+// set arrived (releases is the release count then).
+func (f *functionObservers) applySet(list []ObserverInfo, revision uint64, namespace string, epoch uint64, releases int) {
+	f.mu.Lock()
+	released := f.releasedSinceLocked(releases)
+	f.mu.Unlock()
+	if released {
+		return // the function is not this worker's
+	}
 	incoming := make(map[string]bool, len(list))
 	for _, info := range list {
 		incoming[info.ID] = true
@@ -395,7 +431,16 @@ func (f *functionObservers) applySet(list []ObserverInfo, revision uint64, names
 		f.remove(id)
 	}
 	for _, info := range list {
-		f.add(info, revision, namespace, epoch)
+		f.mu.Lock()
+		held := f.known[info.ID]
+		f.mu.Unlock()
+		if held != nil {
+			if f.reack(held, info, revision, namespace, epoch, releases, true) {
+				continue
+			}
+			f.remove(info.ID)
+		}
+		f.add(info, revision, namespace, epoch, releases)
 	}
 	f.mu.Lock()
 	synced := f.confirmedEpoch == int64(epoch)
@@ -412,23 +457,21 @@ func (f *functionObservers) applySet(list []ObserverInfo, revision uint64, names
 // add runs the added hooks of both levels, the worker's then the function's, computes
 // the observer's match keys when the function is matched by keys, then activates the
 // observer and acks it. A hook that fails, or keys that panic, reject the observer, and
-// the removed hook of each level whose added hook resolved runs. A kept observer is
-// acked again (with its late rejection, if the host rejected it).
-func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace string, epoch uint64) {
-	if f.isDisposed() {
+// the removed hook of each level whose added hook resolved runs. Nothing runs for a
+// function released (refused, withdrawn, unregistered) since the message that announced
+// the observer arrived (releases is the release count then), and an add whose hooks
+// span a release is undone.
+func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace string, epoch uint64, releases int) {
+	f.mu.Lock()
+	released, existing := f.releasedSinceLocked(releases), f.known[info.ID]
+	f.mu.Unlock()
+	if released {
 		return
 	}
-	obs, compileErr := newObserver(f, info, revision)
-	f.mu.Lock()
-	existing := f.known[info.ID]
-	f.mu.Unlock()
 	if existing != nil {
-		if compileErr == nil && existing.sameAs(obs) {
-			f.keep(existing, revision, namespace, epoch)
-			return
-		}
 		f.remove(info.ID)
 	}
+	obs, compileErr := newObserver(f, info, revision)
 	if compileErr != nil {
 		f.ack(info.ID, revision, namespace, epoch, &ErrorBody{Code: string(filter.CodeInvalidFilter), Message: compileErr.Error()})
 		return
@@ -475,8 +518,9 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 	// below or finds the observer known.
 	f.mu.Lock()
 	obs.adding = false
-	if f.releasedLocked() {
-		// released (a conflict, an unregister) while its hooks ran: as removed, no ack
+	if f.releasedSinceLocked(releases) {
+		// released (a conflict, a withdrawal, an unregister) while its hooks ran, even
+		// if registered again since: as removed, no ack
 		f.mu.Unlock()
 		obs.settle(errObserverRemoved)
 		f.callRemoved(obs, resolved)
@@ -510,21 +554,83 @@ func (f *functionObservers) refuse(obs *Observer, revision uint64, namespace str
 	f.callRemoved(obs, resolved)
 }
 
-// keep acks an observer the hooks already ran for, again. A late rejection stays in
-// force until a fresh observeradded starts the observer over.
-func (f *functionObservers) keep(obs *Observer, revision uint64, namespace string, epoch uint64) {
+// reack acks again, at revision and without running any hook, an observer this SDK
+// holds that the engine announced again as info (decision 44): one with the same args,
+// served from the ack on with the filters, target, capture and on it was announced with,
+// or, when listed by functionregistered, one rejected late, whose rejection is sent
+// again (it stays in force until a fresh observeradded starts the observer over). A
+// changed view is a new *Observer sharing held's state, in held's place and filed under
+// its own keys. It reports false for an observer to add as a new one after removing the
+// one held: other args, a late rejection announced by observeradded, or a view this SDK
+// cannot serve (filters that do not compile, keys that panic).
+func (f *functionObservers) reack(held *Observer, info ObserverInfo, revision uint64, namespace string, epoch uint64, releases int, listed bool) bool {
+	argsKey, viewKey := viewKeysOf(info)
+	sameArgs := argsKey == held.argsKey
+	// A changed view, prepared outside mu: key functions are the worker's code.
+	var next *Observer
+	served := true
+	if sameArgs && viewKey != held.viewKey {
+		next, served = f.nextView(held, info)
+	}
 	f.mu.Lock()
-	if f.releasedLocked() {
+	if f.releasedSinceLocked(releases) {
 		f.mu.Unlock()
-		return // the release's own task removes it
+		return true // released meanwhile: the release's own task removes it
 	}
-	obs.revision = revision
-	rejection := obs.rejection
-	if rejection == nil {
-		f.activateLocked(obs)
+	if f.known[held.id] != held {
+		f.mu.Unlock()
+		return false
 	}
+	rejection := held.rejection
+	switch {
+	case rejection != nil:
+		if !listed {
+			f.mu.Unlock()
+			return false
+		}
+	case !sameArgs, !served:
+		f.mu.Unlock()
+		return false
+	case next != nil:
+		f.known[held.id] = next
+		if held.active.Load() {
+			f.swapLocked(func(st *callState) {
+				observers := slices.Clone(st.observers)
+				for i, obs := range observers {
+					if obs == held {
+						observers[i] = next
+					}
+				}
+				st.observers = observers
+				if st.index != nil {
+					st.index = st.index.without(held, held.keys).with(next, next.keys)
+				}
+			})
+		}
+	}
+	held.revision = revision
 	f.mu.Unlock()
-	f.ack(obs.id, revision, namespace, epoch, rejection)
+	f.ack(held.id, revision, namespace, epoch, rejection)
+	return true
+}
+
+// nextView is held with the view info, sharing its state, and filed under the keys of
+// that view on a function matched by keys; false when this SDK cannot serve the view.
+// It runs on the hook queue, where the match hook is installed.
+func (f *functionObservers) nextView(held *Observer, info ObserverInfo) (*Observer, bool) {
+	next, err := observerView(f, info)
+	if err != nil {
+		return nil, false
+	}
+	next.observerState = held.observerState
+	if match := f.state.Load().match; match.byKeys() {
+		keys, rejection := f.observerKeys(match, next)
+		if rejection != nil {
+			return nil, false
+		}
+		next.keys = keys
+	}
+	return next, true
 }
 
 func (f *functionObservers) remove(id string) {
@@ -668,8 +774,15 @@ func (f *functionObservers) currentNamespace() string {
 // its hooks and in [Client.Observers]): its args, filters, target, capture and on.
 // Never its metadata, policy or the observing worker. Its fields are set when it is
 // added; the SDK keeps its own copy of what it reads, so changing them changes nothing
-// but the host's view. The pointer is stable while the observer exists, so hosts keep
-// it in their own index (expression -> observers, route table).
+// but the host's view. The pointer is stable while the engine announces the same view
+// of the observer, so hosts keep it in their own index (expression -> observers, route
+// table).
+//
+// The engine may announce an observer again with the same args and other filters,
+// target, capture or on (a replay): it stays the same observer and no hook runs. From
+// then on it is served, and listed by [Client.Observers], as a new *Observer with that
+// view; Reject and Accepted act on the observer through either pointer, and pointers
+// handed out earlier keep the view they were made with.
 type Observer struct {
 	ID string
 	// FunctionID is the observed function (the one this worker hosts).
@@ -694,13 +807,19 @@ type Observer struct {
 	on      On
 	argsRaw json.RawMessage
 	filter  *filter.Filter
-	// key identifies the engine's view of the observer, to tell a kept one from a
-	// changed one.
-	key    string
-	active atomic.Bool
-	// keys are what it is filed under on a function matched by keys (guarded by
-	// owner.mu).
+	// argsKey and viewKey identify the engine's view of the observer (viewKeysOf): its
+	// args, and the rest, to tell a replay with the same args and a changed view.
+	argsKey, viewKey string
+	// keys are what this view of it is filed under on a function matched by keys
+	// (guarded by owner.mu).
 	keys []string
+	// observerState is where the observer stands, shared by every view of it.
+	*observerState
+}
+
+// observerState is where an observer stands, whatever view of it an *Observer holds.
+type observerState struct {
+	active atomic.Bool
 	// addedGen is, per level, the generation of the added hook it was accepted or
 	// caught up with (read and written on the function's queue only).
 	addedGen [2]uint64
@@ -717,30 +836,33 @@ type Observer struct {
 	settleErr  error
 }
 
+// newObserver is a new observer with the view info, announced at revision.
 func newObserver(f *functionObservers, info ObserverInfo, revision uint64) (*Observer, error) {
+	obs, err := observerView(f, info)
+	if err != nil {
+		return nil, err
+	}
+	obs.observerState = &observerState{revision: revision, settled: make(chan struct{})}
+	return obs, nil
+}
+
+// observerView is the view info of an observer of f, without its state.
+func observerView(f *functionObservers, info ObserverInfo) (*Observer, error) {
+	capture, on := viewDefaults(info)
 	obs := &Observer{
 		ID:         info.ID,
 		FunctionID: f.functionID,
 		Target:     info.Target,
-		Capture:    slices.Clone(info.Capture),
-		On:         info.On,
+		Capture:    capture,
+		On:         on,
 		owner:      f,
-		revision:   revision,
-		settled:    make(chan struct{}),
 	}
-	if obs.Capture == nil {
-		obs.Capture = slices.Clone(defaultCapture)
-	}
-	if obs.On == "" {
-		obs.On = OnSuccess
-	}
-	obs.id, obs.target, obs.capture, obs.on = info.ID, info.Target, slices.Clone(obs.Capture), obs.On
+	obs.id, obs.target, obs.capture, obs.on = info.ID, info.Target, slices.Clone(capture), on
 	obs.argsRaw = objectOrEmpty(info.Args)
 	_ = json.Unmarshal(obs.argsRaw, &obs.Args)
 	filtersRaw := objectOrEmpty(info.Filters)
 	_ = json.Unmarshal(filtersRaw, &obs.Filters)
-	obs.key = canonicalJSON(obs.argsRaw) + "\x00" + canonicalJSON(filtersRaw) + "\x00" + obs.target + "\x00" +
-		fmt.Sprint(obs.capture) + "\x00" + string(obs.on)
+	obs.argsKey, obs.viewKey = viewKeysOf(info)
 	// the engine pushes the normal form, compiled without the size limit
 	flt, err := filter.ParseNormalized(filtersRaw)
 	if err != nil {
@@ -750,7 +872,25 @@ func newObserver(f *functionObservers, info ObserverInfo, revision uint64) (*Obs
 	return obs, nil
 }
 
-func (o *Observer) sameAs(other *Observer) bool { return o.key == other.key }
+// viewDefaults is the capture (a copy) and on of info, an absent one the default.
+func viewDefaults(info ObserverInfo) ([]Capture, On) {
+	capture, on := slices.Clone(info.Capture), info.On
+	if capture == nil {
+		capture = slices.Clone(defaultCapture)
+	}
+	if on == "" {
+		on = OnSuccess
+	}
+	return capture, on
+}
+
+// viewKeysOf identifies the view info announces: its args, and its filters, target,
+// capture and on.
+func viewKeysOf(info ObserverInfo) (argsKey, viewKey string) {
+	capture, on := viewDefaults(info)
+	return canonicalJSON(objectOrEmpty(info.Args)),
+		canonicalJSON(objectOrEmpty(info.Filters)) + "\x00" + info.Target + "\x00" + fmt.Sprint(capture) + "\x00" + string(on)
+}
 
 // settle resolves Accepted, once.
 func (o *Observer) settle(err error) {
@@ -796,7 +936,7 @@ func (o *Observer) Matches(call *Call) bool {
 // Called with the ctx of the observer's own added hook (or one derived from it), which
 // ends when the hook returns, it returns an error at once.
 func (o *Observer) Accepted(ctx context.Context) error {
-	if o.settled == nil {
+	if o.observerState == nil || o.settled == nil {
 		return errors.New("iii: Accepted on an observer not handed out by the client")
 	}
 	if ctx.Value(addingKey{}) == o {
@@ -831,12 +971,14 @@ func (o *Observer) Reject(code, message string) {
 		f.mu.Unlock()
 		return
 	}
-	if f.known[o.id] != o {
+	// o, or the view of the same observer it is served with now
+	current := f.known[o.id]
+	if current == nil || current.observerState != o.observerState {
 		f.mu.Unlock()
 		return
 	}
 	o.rejection = &ErrorBody{Code: code, Message: message}
-	f.deactivateLocked(o)
+	f.deactivateLocked(current)
 	revision, namespace, epoch := o.revision, f.namespace, f.confirmedEpoch
 	f.mu.Unlock()
 	if epoch >= 0 {
