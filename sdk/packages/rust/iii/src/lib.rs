@@ -1,10 +1,10 @@
-pub mod builtin_triggers;
 pub mod channels;
 pub mod context;
 mod dispatch;
 pub mod engine;
 pub mod error;
 pub mod helpers;
+pub mod hooks;
 pub mod iii;
 pub mod observable;
 pub mod observe;
@@ -14,21 +14,14 @@ mod reporter;
 pub mod stream_provider;
 pub mod structs;
 mod transport;
-pub mod triggers;
 pub mod types;
 
 /// Public runtime/worker types. (Stage 1 submodule grouping.)
 pub mod runtime {
     pub use crate::iii::{
-        FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef,
-        WorkerIdentityMode, WorkerInfo, WorkerMetadata,
+        FunctionInfo, FunctionRef, IIIConnectionState, WorkerIdentityMode, WorkerInfo,
+        WorkerMetadata,
     };
-}
-
-/// Public trigger types. (Stage 1 submodule grouping.)
-pub mod trigger {
-    pub use crate::builtin_triggers::IIITrigger;
-    pub use crate::triggers::{Trigger, TriggerConfig, TriggerHandler};
 }
 
 /// Public channel types. (Stage 1 submodule grouping.)
@@ -54,20 +47,21 @@ pub mod errors {
 
 pub use context::{InvocationCtx, current_invocation, scope};
 pub use error::{Error, InvocationError};
+pub use hooks::{AddedHook, Call, DeliverHook, Keyed, Keys, Next, RemovedHook};
 pub use iii::TelemetryOptions;
-pub use iii::{
-    IIIClient, ObserveSupportListener, RegisterFunction, RegisterTriggerType, WorkerIdentityMode,
-};
+pub use iii::{IIIClient, ObserveSupportListener, RegisterFunction, WorkerIdentityMode};
 pub use iii_filter::{Doc, Filter};
 pub use iii_helpers::queue::EnqueueResult;
-pub use observable::{Observe, ObserveHandler, ObserveRejection, Observer};
+pub use observable::{ObserveRejection, Observer};
 pub use observe::{
     Observed, ObservedError, ObserverHandle, ObserverOptions, ObserverReason, ObserverStatus,
     Source, StateListener, Target,
 };
+#[allow(deprecated)]
+pub use protocol::TriggerAction;
 pub use protocol::{
-    Activation, Caller, Capture, Deliver, Delivery, Dispatch, InvocationStatus, LegacyTrigger,
-    Message, ObserverState, On, ParentCaller, TriggerAction,
+    Activation, CallAction, CallRequest, CallRequestWithMetadata, Caller, Capture, Deliver,
+    Dispatch, InvocationStatus, Message, ObserverState, On, ParentCaller,
 };
 #[allow(deprecated)]
 pub use stream_provider::IStream;
@@ -99,8 +93,8 @@ pub struct InitOptions {
     ///
     /// It scopes more than the registration. The worker and its functions
     /// register here, and everything the worker does afterwards follows it: a
-    /// [`IIIClient::trigger`] resolves its target here and a
-    /// [`IIIClient::register_trigger`] binds here, unless the call names
+    /// [`IIIClient::call`] resolves its target here and an
+    /// [`IIIClient::observe`] its source and target, unless they name
     /// another namespace.
     pub namespace: Option<String>,
     /// Selects whether process-wide managed identity variables can override
@@ -251,8 +245,7 @@ fn _ensure_create_channel_not_on_instance() {}
 
 /// ```rust,no_run
 /// use iii_sdk::runtime::{
-///     FunctionInfo, FunctionRef, IIIConnectionState, TriggerInfo, TriggerTypeRef, WorkerInfo,
-///     WorkerMetadata,
+///     FunctionInfo, FunctionRef, IIIConnectionState, WorkerInfo, WorkerMetadata,
 /// };
 /// ```
 #[allow(dead_code)]
@@ -263,17 +256,6 @@ fn _ensure_runtime_submodule_path() {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_connection_state_not_top_level() {}
-
-// ---------------------------------------------------------------------------
-// Stage 1 trigger submodule: trigger types are reachable at their new
-// canonical path `iii_sdk::trigger`.
-// ---------------------------------------------------------------------------
-
-/// ```rust,no_run
-/// use iii_sdk::trigger::{IIITrigger, Trigger, TriggerConfig, TriggerHandler};
-/// ```
-#[allow(dead_code)]
-fn _ensure_trigger_submodule_path() {}
 
 // ---------------------------------------------------------------------------
 // Stage 1 channel submodule: channel types are reachable at their new
@@ -312,13 +294,7 @@ fn _ensure_errors_submodule_path() {}
 fn _ensure_channel_types_not_top_level() {}
 
 /// ```compile_fail
-/// use iii_sdk::{IIITrigger, Trigger, TriggerConfig, TriggerHandler};
-/// ```
-#[allow(dead_code)]
-fn _ensure_trigger_types_not_top_level() {}
-
-/// ```compile_fail
-/// use iii_sdk::{FunctionInfo, FunctionRef, TriggerInfo, TriggerTypeRef, WorkerInfo, WorkerMetadata};
+/// use iii_sdk::{FunctionInfo, FunctionRef, WorkerInfo, WorkerMetadata};
 /// ```
 #[allow(dead_code)]
 fn _ensure_runtime_types_not_top_level() {}
@@ -380,15 +356,15 @@ fn _ensure_stream_events_helpers_path() {}
 // ---------------------------------------------------------------------------
 
 /// ```rust,no_run
-/// use iii_sdk::engine::{EngineFunctions, EngineTriggers, RemoteFunctionHandler};
-/// let _ = (EngineFunctions::LIST_FUNCTIONS, EngineTriggers::LOG);
+/// use iii_sdk::engine::{EngineFunctions, EngineSources, RemoteFunctionHandler};
+/// let _ = (EngineFunctions::LIST_FUNCTIONS, EngineSources::LOG);
 /// fn _takes(_h: RemoteFunctionHandler) {}
 /// ```
 #[allow(dead_code)]
 fn _ensure_engine_submodule_path() {}
 
 /// ```compile_fail
-/// use iii_sdk::{EngineFunctions, EngineTriggers};
+/// use iii_sdk::{EngineFunctions, EngineSources};
 /// ```
 #[allow(dead_code)]
 fn _ensure_engine_constants_not_top_level() {}
@@ -414,26 +390,29 @@ fn _ensure_stream_request_response_path() {}
 // ---------------------------------------------------------------------------
 
 /// ```rust,no_run
+/// # #![allow(deprecated)]
 /// use iii_sdk::protocol::{
-///     ErrorBody, FunctionMessage, RegisterFunctionMessage, RegisterTriggerInput,
-///     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerRequest,
+///     CallRequest, ErrorBody, FunctionMessage, RegisterFunctionMessage, TriggerRequest,
 /// };
 /// ```
 #[allow(dead_code)]
 fn _ensure_protocol_submodule_path() {}
 
 /// ```compile_fail
-/// use iii_sdk::{
-///     ErrorBody, FunctionMessage, RegisterFunctionMessage, RegisterTriggerInput,
-///     RegisterTriggerMessage, RegisterTriggerTypeMessage, TriggerRequest,
-/// };
+/// use iii_sdk::{ErrorBody, FunctionMessage, RegisterFunctionMessage};
 /// ```
 #[allow(dead_code)]
 fn _ensure_protocol_types_not_top_level() {}
 
+/// ```compile_fail
+/// use iii_sdk::TriggerRequest;
+/// ```
+#[allow(dead_code)]
+fn _ensure_trigger_request_not_top_level() {}
+
 // ---------------------------------------------------------------------------
 // EnqueueResult is re-exported at the crate root for convenience alongside
-// `TriggerAction`, mirroring its canonical home in `iii_helpers::queue`.
+// `CallAction`, mirroring its canonical home in `iii_helpers::queue`.
 // ---------------------------------------------------------------------------
 
 /// ```rust,no_run
@@ -443,17 +422,32 @@ fn _ensure_protocol_types_not_top_level() {}
 fn _ensure_enqueue_result_at_root() {}
 
 // ---------------------------------------------------------------------------
-// observe (0.25): the observer and owner APIs are reachable at the crate root.
+// observe: the call, observer and hook APIs are reachable at the crate root.
 // ---------------------------------------------------------------------------
 
 /// ```rust,no_run
+/// # #![allow(deprecated)]
 /// use iii_sdk::{
-///     Caller, Capture, Deliver, Delivery, Dispatch, Doc, Filter, InvocationCtx, Observe,
-///     ObserveHandler, ObserveRejection, Observed, Observer, ObserverHandle, ObserverOptions,
-///     ObserverState, On, Source, Target, current_invocation, scope,
+///     AddedHook, Call, CallAction, CallRequest, Caller, Capture, DeliverHook, Deliver, Dispatch,
+///     Doc, Filter, InvocationCtx, Keyed, Keys, Next, ObserveRejection, Observed, Observer,
+///     ObserverHandle, ObserverOptions, ObserverState, On, RemovedHook, Source, Target,
+///     TriggerAction, current_invocation, scope,
 /// };
 /// use iii_sdk::protocol::observe_codes::UNSUPPORTED;
 /// let _ = (Source::function("a::b"), ObserverOptions::default(), Target::function("c::d"));
 /// ```
 #[allow(dead_code)]
 fn _ensure_observe_root_paths() {}
+
+/// ```compile_fail
+/// use iii_sdk::{Observe, ObserveHandler};
+/// ```
+#[allow(dead_code)]
+fn _ensure_owner_delivery_api_removed() {}
+
+/// ```compile_fail
+/// let iii = iii_sdk::IIIClient::new("ws://x");
+/// let _ = iii.register_trigger;
+/// ```
+#[allow(dead_code)]
+fn _ensure_register_trigger_removed() {}
