@@ -3962,7 +3962,7 @@ impl IIIClient {
             .lock_or_recover()
             .insert(entry.id.clone(), entry.clone());
         match self.inner.engine_features.load(Ordering::SeqCst) {
-            ENGINE_WITH_OBSERVE => self.send_observe(&entry),
+            ENGINE_WITH_OBSERVE | ENGINE_WITH_OBSERVE_V2 => self.send_observe(&entry),
             ENGINE_WITHOUT_OBSERVE => Self::fail_unsupported(&entry),
             _ => {}
         }

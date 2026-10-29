@@ -135,13 +135,18 @@ async fn hosted(
     function
 }
 
+/// The engine's hello on the worker's new connection, processed by the
+/// worker when this returns.
 async fn connected(mock: &MockEngine, iii: &IIIClient, observe: bool) {
     frame(mock, |m| {
         m["type"] == "invokefunction" && m["function_id"] == "engine::workers::register"
     })
     .await;
     hello(mock, observe);
-    let _ = iii;
+    until("the hello", || {
+        iii.engine_supports_observe() == Some(observe)
+    })
+    .await;
 }
 
 fn echo() -> RegisterFunction {
@@ -344,6 +349,26 @@ async fn observe_frames_match_the_fixtures() {
     let err = minimal.ready().await.unwrap_err();
     assert_eq!(err.invocation_error().unwrap().code, "UNOBSERVED");
     iii.shutdown_async().await;
+}
+
+/// An observer made once the engine's hello was processed goes out at once,
+/// to an `observe.v2` engine as to a 0.25 one.
+#[tokio::test]
+async fn an_observer_made_after_the_hello_is_sent_at_once() {
+    for features in [
+        json!(["observe.v1", "observe.v2", "local-dispatch.v1"]),
+        fixture("workerregistered-v1.json")["features"].clone(),
+    ] {
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "observer");
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(&mock, features.clone());
+        until("the hello", || iii.engine_supports_observe() == Some(true)).await;
+        let handle = iii.observe("a::b", "c::d");
+        frame(&mock, |m| m["type"] == "observe" && m["id"] == handle.id()).await;
+        assert_eq!(frames(&mock, "observe").len(), 1, "features {features}");
+        iii.shutdown_async().await;
+    }
 }
 
 #[tokio::test]
