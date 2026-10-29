@@ -11,8 +11,7 @@ differ, this file wins, and the spec is updated to match.
    (`NOT_OWNER_DELIVERED`, `TARGET_MISMATCH`). A `registerfunction` whose
    `observe` object says `delivery: owner` is refused with
    `registrationrejected { code: UNSUPPORTED }`. The 0.25 `observe` object is
-   otherwise read for `allow: false` (→ `observable: false`) from `observe.v1`
-   connections.
+   otherwise read as decision 37 says, from any connection.
 2. **Features.** The engine advertises `observe.v1`, `observe.v2`,
    `local-dispatch.v1`. v2 SDKs declare `observe.v1` and `observe.v2`. `v2`
    is a superset: owner sync, `caller`, `observe_depth` and `activation` work
@@ -103,6 +102,35 @@ differ, this file wins, and the spec is updated to match.
     `legacy_trigger_type` are ignored; `allow: false` means `observable:
     false`; `delivery: owner` or an unknown value is refused with
     `UNSUPPORTED`.
+
+38. **Caller on host-reported routed items.** For an `invocationsobserved`
+    item that reports a routed invocation (decision 36), the engine stamps
+    `caller.worker_id` and `caller.worker_name` from the caller it recorded
+    when it forwarded the call. The host flushes that item before it sends the
+    call's `invocationresult`; an item whose `invocation_id` the engine no
+    longer holds is dropped as `INVALID_REPORT`.
+39. **Errors on routed answers.** `observed` may ride an `invocationresult`
+    that carries `error` when that error is the one the handler threw (iii's
+    delivery rethrows it, or the hook rethrows it unchanged). The envelope's
+    `status` and `error` come from the answer. When the hook turns a handler
+    error into a result or a result into an error, the host reports the
+    matches as decision 36 says.
+40. **`_caller_worker_id`.** The engine removes `_caller_worker_id` from every
+    input it puts into an envelope, whether it kept the input itself or a host
+    reported it.
+41. **Holding registrations.** An SDK sends a `registerfunction` that needs
+    `observe.v2` (decision 18) only after the current connection's
+    `workerregistered` advertised `observe.v2`, and decides again on every
+    reconnect.
+42. **Engine-hosted source caller.** The `caller` of a call to an
+    engine-hosted source is `{ worker_name: "iii-engine" }`, as for
+    activations.
+43. **HTTP-invoked functions.** The engine evaluates the calls of a function
+    registered with `invocation` (an HTTP endpoint) itself, as for
+    engine-hosted functions, whatever the registering connection declared.
+44. **Re-acks.** As in 0.25: an SDK re-acks every `functionregistered` entry,
+    runs `onObserverAdded` only for observers it does not already hold, and
+    treats an observer whose `args` changed as removed and then added.
 
 ## SDKs (all five)
 

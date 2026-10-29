@@ -587,7 +587,7 @@ and for engine-hosted sources.
 
 `private: false` and `observable: true` are the defaults and are omitted.
 Hooks and `standby` stay in the SDK. The 0.25 `observe` object is decoded from
-`observe.v1` connections.
+any connection (decisions 1, 37).
 
 ### 8.4 Observer messages
 
