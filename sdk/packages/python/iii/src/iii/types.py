@@ -90,6 +90,7 @@ class IIIClient(Protocol):
         self,
         function_id: str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
+        **options: Any,
     ) -> Any: ...
 
     def call(self, request: dict[str, Any] | CallRequest) -> Any: ...
