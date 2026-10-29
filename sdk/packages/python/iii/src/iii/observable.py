@@ -404,6 +404,7 @@ class FunctionObservers:
                 try:
                     obs._keys = keyed.observer_keys(obs)
                 except Exception as error:
+                    obs._keys = ()
                     failed.append((obs, error))
                     continue
                 for key in obs._keys:
@@ -671,6 +672,8 @@ class FunctionObservers:
                 await self._unwind(obs, setup)
                 return
             setup.append(level)
+            if self._released_since(releases):
+                break  # no further hook runs for a released function
         released = self._released_since(releases)
         with self._lock:
             # Known before it stops being "adding": a `reject()` from another

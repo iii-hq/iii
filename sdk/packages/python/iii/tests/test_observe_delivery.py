@@ -529,6 +529,14 @@ def test_a_refused_call_through_an_observer_raises_the_engines_code(engine: Fake
     with pytest.raises(InvocationError) as raised:
         client.call({"observer": obs, "payload": {}})
     assert raised.value.code == "OVERFLOW"
+    # raised in the deliver hook: the function's caller gets the same code, local or routed
+    request = {"path": "/users", "tenant": "acme"}
+    with pytest.raises(InvocationError) as raised:
+        client.call({"function_id": "http::on-request", "payload": request})
+    assert (raised.value.code, raised.value.function_id) == ("OVERFLOW", "http::on-request")
+    engine.deliver(invoke("http::on-request", request, "r-overflow"))
+    [answer] = engine.wait_for(lambda: answers(engine, "r-overflow"), what="the answer")
+    assert answer["error"] == {"code": "OVERFLOW", "message": "max_in_flight reached"}
 
 
 def test_a_call_through_an_observer_takes_no_function_id_namespace_metadata_or_enqueue(
@@ -598,6 +606,21 @@ def test_accepted_resolves_once_the_observer_is_acked_and_raises_when_it_is_reje
 
 
 # ── private and output_is_input ────────────────────────────────────────────
+
+
+def test_channel_refs_are_resolved_and_the_rest_of_the_value_is_kept(engine: FakeEngine, connect: Any) -> None:
+    from iii.channels import ChannelReader
+
+    client = connect(engine)
+    plain = {"a": [1, {"b": 2}], "c": (3,)}
+    assert client._resolve_channels(plain) is plain
+    ref = {"channel_id": "ch-1", "access_key": "k", "direction": "read"}
+    keep = {"x": 1}
+    value = {"body": {"stream": ref}, "keep": keep, "list": [ref, 2]}
+    resolved = client._resolve_channels(value)
+    assert resolved is not value and value["body"]["stream"] is ref  # the caller's value is untouched
+    assert isinstance(resolved["body"]["stream"], ChannelReader) and isinstance(resolved["list"][0], ChannelReader)
+    assert resolved["keep"] is keep and resolved["list"][1] == 2
 
 
 def test_a_private_function_passes_input_and_result_by_reference(engine: FakeEngine, connect: Any) -> None:
