@@ -311,6 +311,29 @@ fn real_update_producer_preserves_panel_and_isolates_old_events() {
     assert!(!text.contains('\u{1b}'), "{text}");
 }
 
+/// The observer `artifact_update_fixture`'s engine announces on the progress
+/// source.
+const FIXTURE_OBSERVER: &str = "fixture-progress";
+
+/// The daemon called its progress source with an event `matches` accepts, and
+/// the host's delivery of that call selected the fixture's observer.
+fn progress_delivered(
+    frames: &[serde_json::Value],
+    matches: impl Fn(&serde_json::Value) -> bool,
+) -> bool {
+    let progress = crate::operation::PROGRESS_FUNCTION_ID;
+    frames.iter().any(|frame| {
+        frame["type"] == "invokefunction"
+            && frame["function_id"] == progress
+            && matches(&frame["data"])
+    }) && frames.iter().any(|frame| {
+        frame["type"] == "invocationresult"
+            && frame["function_id"] == progress
+            && frame["observed"] == serde_json::json!([FIXTURE_OBSERVER])
+            && matches(&frame["result"])
+    })
+}
+
 #[tokio::test]
 #[ignore = "subprocess fixture for metadata-before-download and wire delivery"]
 async fn artifact_update_fixture() {
@@ -328,16 +351,53 @@ async fn artifact_update_fixture() {
     let ready_marker = state_root.path().join("ready");
     let marker_for_engine = ready_marker.clone();
     let transport = tokio::spawn(async move {
+        use tokio_tungstenite::tungstenite::Message as Frame;
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-        let mut subscribed = false;
+        // Progress calls the engine routed to their host: the id it sent the
+        // host -> the caller's invocation id.
+        let mut routed = std::collections::HashMap::<String, serde_json::Value>::new();
         while let Some(Ok(frame)) = socket.next().await {
             if let Ok(text) = frame.to_text() {
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
                     continue;
                 };
                 received.lock().unwrap().push(value.clone());
-                if value["type"] == "invokefunction" && value["invocation_id"].is_string() {
+                let reply = |frame: serde_json::Value| Frame::Text(frame.to_string().into());
+                if value["type"] == "invokefunction"
+                    && value["function_id"] == "engine::workers::register"
+                {
+                    // An observe.v2 engine: the daemon registers its private
+                    // progress source and delivers its own calls.
+                    socket
+                        .send(reply(serde_json::json!({
+                            "type": "workerregistered", "worker_id": "artifact-fixture-worker",
+                            "features": ["observe.v1", "observe.v2"]
+                        })))
+                        .await
+                        .unwrap();
+                } else if value["type"] == "registerfunction"
+                    && value["id"] == crate::operation::PROGRESS_FUNCTION_ID
+                {
+                    assert_eq!(value["private"], true, "{value}");
+                    // A client already observes the progress source.
+                    socket.send(reply(serde_json::json!({
+                        "type": "functionregistered", "id": crate::operation::PROGRESS_FUNCTION_ID,
+                        "namespace": "artifact-fixture", "revision": 1, "local_dispatch": false,
+                        "observers": [{ "id": FIXTURE_OBSERVER, "target": "fixture::progress" }]
+                    }))).await.unwrap();
+                } else if value["type"] == "invokefunction"
+                    && value["function_id"] == crate::operation::PROGRESS_FUNCTION_ID
+                {
+                    // Route the call to its host through the registered SDK
+                    // handler, the normal span path.
+                    let host_invocation = uuid::Uuid::new_v4().to_string();
+                    routed.insert(host_invocation.clone(), value["invocation_id"].clone());
+                    socket.send(reply(serde_json::json!({
+                        "type": "invokefunction", "invocation_id": host_invocation,
+                        "function_id": crate::operation::PROGRESS_FUNCTION_ID, "data": value["data"]
+                    }))).await.unwrap();
+                } else if value["type"] == "invokefunction" && value["invocation_id"].is_string() {
                     let function = value["function_id"].as_str().unwrap();
                     let result = match function {
                         "engine::workers::list" => {
@@ -354,23 +414,20 @@ async fn artifact_update_fixture() {
                         "configuration::migrate" => serde_json::json!({"action": "missing"}),
                         _ => serde_json::json!({"value": {}}),
                     };
-                    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({
+                    socket.send(reply(serde_json::json!({
                         "type": "invocationresult", "invocation_id": value["invocation_id"], "function_id": function, "result": result
-                    }).to_string().into())).await.unwrap();
-                }
-                if value["type"] == "invokefunction"
-                    && value["function_id"] == "compose::operation-progress"
+                    }))).await.unwrap();
+                } else if value["type"] == "invocationresult"
+                    && let Some(caller) = value["invocation_id"]
+                        .as_str()
+                        .and_then(|id| routed.remove(id))
+                        .filter(serde_json::Value::is_string)
                 {
-                    // Route through the registered SDK handler, the normal span path.
-                    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({
-                        "type": "invokefunction", "invocation_id": uuid::Uuid::new_v4(), "function_id": "compose::operation-progress", "data": value["data"]
-                    }).to_string().into())).await.unwrap();
-                }
-                if !subscribed && value["function_id"] == "compose::operation-progress" {
-                    subscribed = true;
-                    socket.send(tokio_tungstenite::tungstenite::Message::Text(serde_json::json!({
-                        "type": "registertrigger", "id": "fixture-progress", "trigger_type": "compose-operation", "function_id": "fixture::progress", "config": {}, "namespace": "default"
-                    }).to_string().into())).await.unwrap();
+                    // Answer a caller that waits; the engine strips `observed`.
+                    socket.send(reply(serde_json::json!({
+                        "type": "invocationresult", "invocation_id": caller,
+                        "function_id": crate::operation::PROGRESS_FUNCTION_ID, "result": value["result"]
+                    }))).await.unwrap();
                 }
             }
         }
@@ -529,18 +586,15 @@ async fn artifact_update_fixture() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     {
         let frames = messages.lock().unwrap();
-        for function in ["compose::operation-progress", "fixture::progress"] {
-            assert!(
-                frames.iter().any(|frame| frame["function_id"] == function
-                    && frame["data"]["operation_id"] == "artifact-update"
-                    && frame["data"]["container"] == "api"
-                    && frame["data"]["detail"] == "Updating 1.0.0 → 2.0.0"),
-                "missing delivery to {function}: {frames:?}"
-            );
-            assert!(frames.iter().any(|frame| frame["function_id"] == function
-                && frame["data"]["container"] == "dependency"
-                && frame["data"]["detail"] == "Updating to 2.0.0"));
-        }
+        assert!(
+            progress_delivered(&frames, |event| event["operation_id"] == "artifact-update"
+                && event["container"] == "api"
+                && event["detail"] == "Updating 1.0.0 → 2.0.0"),
+            "missing progress delivery: {frames:?}"
+        );
+        assert!(progress_delivered(&frames, |event| event["container"]
+            == "dependency"
+            && event["detail"] == "Updating to 2.0.0"));
     }
     operation.cancel();
     assert!(
@@ -592,12 +646,11 @@ async fn artifact_update_fixture() {
         );
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(messages.lock().unwrap().iter().any(|frame| {
-        frame["function_id"] == "fixture::progress"
-            && frame["data"]["operation_id"] == "artifact-failure"
-            && frame["data"]["container"] == "api"
-            && frame["data"]["phase"] == "failed"
-            && frame["data"]["detail"]
+    assert!(progress_delivered(&messages.lock().unwrap(), |event| {
+        event["operation_id"] == "artifact-failure"
+            && event["container"] == "api"
+            && event["phase"] == "failed"
+            && event["detail"]
                 .as_str()
                 .is_some_and(|text| text.contains("1.0.0 → 2.0.0"))
     }));
@@ -664,11 +717,10 @@ async fn artifact_update_fixture() {
             );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(messages.lock().unwrap().iter().any(|frame| {
-            frame["function_id"] == "fixture::progress"
-                && frame["data"]["operation_id"] == "real-restart-failure"
-                && frame["data"]["phase"] == "failed"
-                && frame["data"]["detail"]
+        assert!(progress_delivered(&messages.lock().unwrap(), |event| {
+            event["operation_id"] == "real-restart-failure"
+                && event["phase"] == "failed"
+                && event["detail"]
                     .as_str()
                     .is_some_and(|text| text.contains("1.0.0 → 2.0.0"))
         }));
@@ -732,28 +784,12 @@ async fn artifact_update_fixture() {
             );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            messages
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|frame| frame["type"] == "invocationresult"
-                    && frame["function_id"] == "compose::operation-progress"
-                    && frame["result"]["detail"] == "Updated 2.0.0 → 3.0.0")
-        );
-        for function in ["compose::operation-progress", "fixture::progress"] {
-            assert!(
-                messages
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|frame| frame["function_id"] == function
-                        && frame["data"]["operation_id"] == "real-restart-success"
-                        && frame["data"]["container"] == "api"
-                        && frame["data"]["phase"] == "updated"
-                        && frame["data"]["detail"] == "Updated 2.0.0 → 3.0.0")
-            );
-        }
+        assert!(progress_delivered(&messages.lock().unwrap(), |event| {
+            event["operation_id"] == "real-restart-success"
+                && event["container"] == "api"
+                && event["phase"] == "updated"
+                && event["detail"] == "Updated 2.0.0 → 3.0.0"
+        }));
         daemon
             .up(Some(&path), None, "after-update-up".into())
             .await
