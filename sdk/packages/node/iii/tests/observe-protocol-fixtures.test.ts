@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Call, Observer } from '../src/observe-types'
+import type { Observer } from '../src/observe-types'
 import type { IIIClient } from '../src/types'
 
 /**
@@ -74,8 +74,6 @@ const HANDLED = {
     'observerack-error.json',
     'invocationsobserved.json',
     'invocationsobserved-event-source.json',
-    'invocationsobserved-routed.json',
-    'invocationsobserved-routed-items.json',
     'localinvocationstats.json',
     'registerfunction.json',
     'registerfunction-private.json',
@@ -113,6 +111,16 @@ const HANDLED = {
   /** The 0.25 `observe` object: no v2 SDK builds or decodes it (README, engine-only). */
   engineOnly: ['registerfunction-v1-owner.json', 'registerfunction-v1-not-observable.json'],
 }
+
+/**
+ * Report items for routed calls, which observe v2 has none of (decision 38,
+ * acceptance E11): no SDK builds them, and they leave the fixture set. The
+ * coverage test accepts them, present or not.
+ */
+const OBSOLETE: ReadonlySet<string> = new Set([
+  'invocationsobserved-routed.json',
+  'invocationsobserved-routed-items.json',
+])
 
 describe('worker → engine: what the SDK builds equals the fixture', () => {
   it.each([
@@ -295,32 +303,6 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(item).not.toHaveProperty('output')
   })
 
-  it.each([
-    'invocationsobserved-routed.json',
-    'invocationsobserved-routed-items.json',
-  ])('%s (the item shape: encodes from its values)', (name) => {
-    // Decision 38 (a93643b29): a host reports a routed call only through
-    // `invocationresult.observed`, so the SDK builds these items for no call;
-    // their shape is the one every local report item has.
-    const expected = fixture(name)
-    const items = (expected.items as Json[]).map((item) =>
-      encodeReportItem({
-        function_id: item.function_id as string,
-        namespace: item.namespace as string,
-        invocation_id: item.invocation_id as string,
-        matched: item.matched as string[],
-        status: item.status as 'success',
-        values: { input: item.input, output: item.output, caller: item.caller as never },
-        captures: ['input', 'output', 'caller'],
-        started_at_ms: item.started_at_ms as number,
-        duration_ms: item.duration_ms as number,
-        observe_depth: item.observe_depth as number,
-        traceparent: item.traceparent as string,
-      }),
-    )
-    expect(JSON.parse(`{"type":"invocationsobserved","items":[${items.join(',')}]}`)).toEqual(expected)
-  })
-
   it('invocationresult-hook-result.json (a routed call answered by onObserverDeliver: its value, no observed)', async () => {
     const expected = fixture('invocationresult-hook-result.json')
     const { sdk, socket } = connect({ workerName: 'orders' })
@@ -378,17 +360,23 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
   })
 
   it('localinvocationstats.json', () => {
+    const expected = fixture('localinvocationstats.json')
     const stats = new Map([
       ['database::on-row-changed', { count: 48211, errors: 0, duration_ms_sum: 190.2 }],
       ['database::query', { count: 37, errors: 2, duration_ms_sum: 15.5 }],
     ])
-    const drops = new Map([
-      ['database::on-row-changed', new Map([['BUFFER_FULL', 12]])],
-      ['database::execute', new Map([['LATE_DELIVERY', 1]])],
-    ])
-    expect({ type: 'localinvocationstats', ...buildLocalInvocationStats(10000, stats, drops) }).toEqual(
-      fixture('localinvocationstats.json'),
-    )
+    // The drops the fixture lists, by function and reason, as the reporter counts them.
+    const drops = new Map<string, Map<string, number>>()
+    for (const { function_id, reason, count } of expected.dropped_reports as {
+      function_id: string
+      reason: string
+      count: number
+    }[]) {
+      const counts = drops.get(function_id) ?? new Map<string, number>()
+      counts.set(reason, count)
+      drops.set(function_id, counts)
+    }
+    expect({ type: 'localinvocationstats', ...buildLocalInvocationStats(10000, stats, drops) }).toEqual(expected)
   })
 
   it.each([
@@ -610,7 +598,7 @@ describe('fixture coverage', () => {
   it('every fixture file is exercised above', () => {
     const files = readdirSync(DIR).filter((f) => f.endsWith('.json'))
     const handled = new Set([...HANDLED.workerToEngine, ...HANDLED.engineToWorker, ...HANDLED.engineOnly])
-    expect(files.filter((f) => !handled.has(f))).toEqual([])
+    expect(files.filter((f) => !handled.has(f) && !OBSOLETE.has(f))).toEqual([])
     expect([...handled].filter((f) => !files.includes(f))).toEqual([])
   })
 })
