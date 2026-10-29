@@ -2,7 +2,7 @@
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
 
-//! Tier-C end-to-end tests for the sandbox::* trigger surface.
+//! Tier-C end-to-end tests for the sandbox::* functions.
 //!
 //! Sister to `sandbox_lifecycle_integration.rs` (tier-A, hermetic) and
 //! `sandbox_workflow_integration.rs` (tier-A workflow). This file boots
@@ -45,7 +45,7 @@ fn integration_rootfs() -> Option<PathBuf> {
     }
 }
 
-/// Full-surface E2E: walk all 14 sandbox::* triggers in one workflow.
+/// Full-surface E2E: walk all 14 sandbox::* functions in one workflow.
 ///
 /// 1.  sandbox::create with image=alpine, network=false
 /// 2.  sandbox::fs::mkdir /work
@@ -68,12 +68,12 @@ fn integration_rootfs() -> Option<PathBuf> {
 /// a single panicking test cascades into CI-host resource exhaustion.
 #[test]
 #[ignore = "sandbox-e2e: requires KVM + guest rootfs (integration-vm CI lane)"]
-fn full_surface_e2e_walks_all_14_triggers() {
+fn full_surface_e2e_walks_all_14_functions() {
     let Some(rootfs) = integration_rootfs() else {
         return;
     };
     eprintln!(
-        "[todo] sandbox_integration_e2e: full_surface_e2e_walks_all_14_triggers \
+        "[todo] sandbox_integration_e2e: full_surface_e2e_walks_all_14_functions \
          has a rootfs at {} but the driver body is not yet implemented. \
          Build out using IiiWorkerLauncher + ShellProtoRunner + SignalStopper, \
          install a SandboxGuard RAII helper for panic-safe teardown.",

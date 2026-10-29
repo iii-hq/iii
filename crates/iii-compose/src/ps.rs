@@ -540,6 +540,7 @@ mod tests {
         for other in [
             "iii compose logs",
             "iii compose build",
+            "iii call x::y",
             "iii trigger x::y",
             "iii ps",
         ] {

@@ -2947,7 +2947,7 @@ mod tests {
         let _dirs = isolated_state_dirs();
         reset_telemetry_globals();
         collector::take_cli_commands();
-        collector::track_cli_command("trigger");
+        collector::track_cli_command("call");
 
         let module = build_manual_module(make_test_engine(), 6 * 60 * 60);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -2986,7 +2986,7 @@ mod tests {
         let _dirs = isolated_state_dirs();
         reset_telemetry_globals();
         collector::take_cli_commands();
-        collector::track_cli_command("trigger");
+        collector::track_cli_command("call");
 
         let module = build_manual_module(make_test_engine(), 6 * 60 * 60);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

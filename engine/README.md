@@ -51,7 +51,7 @@ If you prefer a custom filename (for example `iii-config.yaml`), pass it explici
 Open the console: add the ADE worker to your project, then open `http://127.0.0.1:3113`:
 
 ```bash
-iii trigger compose::add worker=ade
+iii call compose::add worker=ade
 ```
 
 Your engine is running at `ws://localhost:49134` with HTTP API at `http://localhost:3111`.

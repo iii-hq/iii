@@ -16,7 +16,7 @@ are mounted on every listener at `/ws/channels/{channel_id}`.
 
 ## When to Use
 
-- Exposing the engine to an untrusted network — RBAC is mandatory, never open the engine port itself. Use the standalone [`rbac-proxy` worker](https://workers.iii.dev/workers/rbac-proxy) (`iii trigger compose::add worker=rbac-proxy`), which applies these RBAC rules on its own port out of process. A second `#instance` listener with an `rbac` block and an `auth_function_id` is the in-engine alternative.
+- Exposing the engine to an untrusted network — RBAC is mandatory, never open the engine port itself. Use the standalone [`rbac-proxy` worker](https://workers.iii.dev/workers/rbac-proxy) (`iii call compose::add worker=rbac-proxy`), which applies these RBAC rules on its own port out of process. A second `#instance` listener with an `rbac` block and an `auth_function_id` is the in-engine alternative.
 - Restricting which functions a connected worker can invoke — combine `expose_functions` filters (operator-side) with `forbidden_functions` from `AuthResult` (per-session, hard deny).
 - Auditing, rate-limiting, or enriching every invocation — set `middleware_function_id` on the listener; the middleware decides whether to call the target and what to return.
 - Per-tenant or per-session namespace isolation — return `function_registration_prefix` from the auth function so every function this session registers (and every observer target it names) is transparently prefixed without the worker code knowing.

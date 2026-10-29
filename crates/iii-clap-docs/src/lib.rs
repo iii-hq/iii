@@ -42,7 +42,7 @@ pub struct PageMeta {
     pub intro: String,
     /// Subcommand name -> external documentation target.
     pub delegated: BTreeMap<String, Delegated>,
-    /// Full command path ("iii trigger") -> raw MDX appended to that
+    /// Full command path ("iii call") -> raw MDX appended to that
     /// command's section. Docs-only prose that has no place in terminal
     /// help; for text that should show in BOTH `--help` and the docs, set
     /// clap's `after_long_help`/`after_help` on the command instead (the
@@ -549,8 +549,9 @@ mod tests {
                     .action(ArgAction::SetTrue),
             )
             .subcommand(
-                Command::new("trigger")
-                    .about("Invoke a function on a running iii engine")
+                Command::new("call")
+                    .about("Call a function on a running iii engine")
+                    .visible_aliases(["trigger", "t"])
                     .arg(
                         Arg::new("function")
                             .value_name("FUNCTION")
@@ -582,7 +583,8 @@ mod tests {
     fn renders_nested_sections_with_full_paths() {
         let mdx = render_mdx(sample_cli(), &meta());
         assert!(mdx.contains("## `iii`\n"));
-        assert!(mdx.contains("### `iii trigger`\n"));
+        assert!(mdx.contains("### `iii call`\n"));
+        assert!(mdx.contains("Alias: `trigger`, `t`"), "{mdx}");
         assert!(mdx.contains("### `iii project`\n"));
         assert!(mdx.contains("#### `iii project init`\n"));
         // Usage lines carry the full command path.
@@ -606,12 +608,12 @@ mod tests {
         let cmd = Command::new("iii")
             .subcommand(Command::new("update").about("u"))
             .subcommand(Command::new("console").about("c"))
-            .subcommand(Command::new("trigger").about("t"))
+            .subcommand(Command::new("call").about("t"))
             .subcommand(Command::new("cloud").about("k"));
         let mdx = render_mdx(cmd, &meta());
         assert!(mdx.contains("**Subcommands:**\n\n| Command |"));
         // Table rows sorted a-z regardless of declaration order.
-        let rows: Vec<usize> = ["[`cloud`]", "[`console`]", "[`trigger`]", "[`update`]"]
+        let rows: Vec<usize> = ["[`call`]", "[`cloud`]", "[`console`]", "[`update`]"]
             .iter()
             .map(|n| mdx.find(*n).unwrap())
             .collect();
@@ -621,9 +623,9 @@ mod tests {
         );
         // Child sections follow the same order.
         let sections: Vec<usize> = [
+            "### `iii call`",
             "### `iii cloud`",
             "### `iii console`",
-            "### `iii trigger`",
             "### `iii update`",
         ]
         .iter()
@@ -639,7 +641,7 @@ mod tests {
     fn subcommand_table_only_on_root_section() {
         let mdx = render_mdx(sample_cli(), &meta());
         // Root table links to section anchors.
-        assert!(mdx.contains("[`trigger`](#iii-trigger)"));
+        assert!(mdx.contains("[`call`](#iii-call)"));
         assert!(mdx.contains("[`project`](#iii-project)"));
         // Nested commands get no table (their child sections follow
         // directly), but the child sections still render.
@@ -764,13 +766,13 @@ mod tests {
     #[test]
     fn after_help_renders_as_note_on_both_surfaces() {
         let cmd = Command::new("iii").subcommand(
-            Command::new("trigger")
-                .about("Invoke a function")
+            Command::new("call")
+                .about("Call a function")
                 .after_help("Schemas come from <workers>; output varies."),
         );
         let mdx = render_mdx(cmd, &meta());
         // Wrapped in a Note callout, MDX-escaped, inside the right section.
-        let section = mdx.split("### `iii trigger`").nth(1).unwrap();
+        let section = mdx.split("### `iii call`").nth(1).unwrap();
         assert!(
             section.contains("<Note>\n  Schemas come from \\<workers>; output varies.\n</Note>"),
             "after_help missing or mangled:\n{mdx}"

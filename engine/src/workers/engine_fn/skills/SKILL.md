@@ -80,7 +80,7 @@ If a registered function fits, just call it: `iii.call({ function_id, payload })
 When one fits, add it through the project's Compose daemon:
 
 ```bash
-iii trigger -n <compose-namespace> compose::add worker=<worker>
+iii call -n <compose-namespace> compose::add worker=<worker>
 ```
 
 `iii-directory` is itself a registry worker, so confirm it is connected before calling `directory::*`:
@@ -220,12 +220,12 @@ Project workers live in `worker-compose.yaml`. The Compose daemon owns their ins
 restart, update, and shutdown lifecycle:
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::status file=worker-compose.yaml
-iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
-iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
-iii trigger -n dev compose::update file=worker-compose.yaml worker=state
-iii trigger -n dev compose::down file=worker-compose.yaml
+iii call -n dev compose::add worker=state
+iii call -n dev compose::status file=worker-compose.yaml
+iii call -n dev compose::logs file=worker-compose.yaml worker=state tail=100
+iii call -n dev compose::restart file=worker-compose.yaml worker=state
+iii call -n dev compose::update file=worker-compose.yaml worker=state
+iii call -n dev compose::down file=worker-compose.yaml
 ```
 
 `iii worker` and `worker::*` were removed. Use `engine::workers::list` for live registrations and

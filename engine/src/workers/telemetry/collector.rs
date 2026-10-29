@@ -136,7 +136,7 @@ pub fn mark_user_function_invoked() {
 
 /// Prefix a CLI invocation puts on the worker name it registers with, so the
 /// engine can tell a CLI command apart from a real worker and count which
-/// command connected. `iii trigger` is the only command that connects today.
+/// command connected. `iii call` is the only command that connects today.
 pub const CLI_WORKER_NAME_PREFIX: &str = "iii-cli:";
 
 /// Most distinct command paths one heartbeat reports. The name arrives from a
@@ -159,7 +159,7 @@ fn sanitize_cli_command(path: &str) -> Option<String> {
 
 /// Count one CLI invocation. Recording is in-process, so it only reaches a
 /// heartbeat when the caller shares the engine's process (`serve`) or when the
-/// engine records it on behalf of a connecting CLI (`trigger`). A short-lived
+/// engine records it on behalf of a connecting CLI (`call`). A short-lived
 /// CLI process that never reaches an engine counts nothing, by design: the
 /// commands that matter without an engine already send their own lifecycle
 /// events (`project_init_*`, `cli_update_*`, `install_*`).
@@ -702,12 +702,12 @@ mod tests {
     fn test_take_cli_commands_counts_and_then_clears() {
         take_cli_commands();
 
-        track_cli_command("trigger");
-        track_cli_command("trigger");
+        track_cli_command("call");
+        track_cli_command("call");
         track_cli_command("worker add");
 
         let counts = take_cli_commands();
-        assert_eq!(counts.get("trigger"), Some(&2));
+        assert_eq!(counts.get("call"), Some(&2));
         assert_eq!(counts.get("worker add"), Some(&1));
 
         assert!(
@@ -727,8 +727,8 @@ mod tests {
         // The name arrives from a client, so none of this is trusted input.
         track_cli_command("  WORKER Add  ");
         track_cli_command("worker paper-sources::list");
-        track_cli_command("trigger; rm -rf /");
-        track_cli_command("worker add\ntrigger");
+        track_cli_command("call; rm -rf /");
+        track_cli_command("worker add\ncall");
         track_cli_command(&"x".repeat(200));
         track_cli_command("   ");
         track_cli_command("!!!");
@@ -736,13 +736,9 @@ mod tests {
         let counts = take_cli_commands();
         assert_eq!(counts.get("worker add"), Some(&1), "trimmed and lowercased");
         assert_eq!(counts.get("worker paper-sources::list"), Some(&1));
+        assert_eq!(counts.get("call rm -rf"), Some(&1), "punctuation dropped");
         assert_eq!(
-            counts.get("trigger rm -rf"),
-            Some(&1),
-            "punctuation dropped"
-        );
-        assert_eq!(
-            counts.get("worker addtrigger"),
+            counts.get("worker addcall"),
             Some(&1),
             "a newline cannot forge a second key"
         );
@@ -772,8 +768,8 @@ mod tests {
         // worker, so it has to stay distinctive.
         assert!(CLI_WORKER_NAME_PREFIX.ends_with(':'));
         assert_eq!(
-            "iii-cli:trigger".strip_prefix(CLI_WORKER_NAME_PREFIX),
-            Some("trigger")
+            "iii-cli:call".strip_prefix(CLI_WORKER_NAME_PREFIX),
+            Some("call")
         );
         assert_eq!("my-worker".strip_prefix(CLI_WORKER_NAME_PREFIX), None);
     }

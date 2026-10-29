@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Error, RegisterFunction, Source};
 use serde_json::{Value, json};
 
@@ -78,7 +78,7 @@ pub async fn run(env: &Env) -> Result<()> {
                 let callers = callers.clone();
                 async move {
                     let load = closed_loop(&callers, concurrency, deadline, move |_, s| {
-                        TriggerRequest::new("bench::echo-0", payload(s, &pad))
+                        CallRequest::new("bench::echo-0", payload(s, &pad))
                     })
                     .await;
                     let ended = Instant::now();

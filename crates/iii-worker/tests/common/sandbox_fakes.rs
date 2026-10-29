@@ -2,7 +2,7 @@
 // contributor license agreements. Licensed under the Elastic License 2.0;
 // you may not use this file except in compliance with the Elastic License 2.0.
 
-//! Shared fakes for the sandbox::* trigger handlers.
+//! Shared fakes for the sandbox::* function handlers.
 //!
 //! Three trait impls used by `sandbox_lifecycle_integration.rs` and
 //! `sandbox_workflow_integration.rs`:

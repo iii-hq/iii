@@ -241,6 +241,23 @@ pub(crate) fn error_body(error: Error, stacktrace: Option<String>) -> ErrorBody 
     }
 }
 
+/// The wire error of a failed deliver hook, as Node and Python answer it: a
+/// call the hook made that failed, rethrown, keeps its code (`Remote`, and
+/// [`Error::Timeout`] as `TIMEOUT`); anything else is `invocation_failed`.
+pub(crate) fn deliver_error_body(error: Error) -> ErrorBody {
+    match error {
+        Error::Timeout => ErrorBody {
+            code: TIMEOUT.to_string(),
+            message: Error::Timeout.to_string(),
+            stacktrace: None,
+        },
+        other => error_body(other, None),
+    }
+}
+
+/// The code of a call that got no answer in time.
+const TIMEOUT: &str = "TIMEOUT";
+
 /// Who delivers a call of a function this worker hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Route {
@@ -677,7 +694,7 @@ impl IIIClient {
             {
                 body.clone()
             }
-            _ => error_body(error, None),
+            _ => deliver_error_body(error),
         });
         Answer {
             result,

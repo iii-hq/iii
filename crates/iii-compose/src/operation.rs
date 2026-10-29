@@ -3,10 +3,12 @@
 
 //! Observable operations for long Compose mutations.
 //!
-//! Compose is a trigger provider. Clients bind `compose-operation` before
-//! submitting an add, update, or remove and receive structured mutation
-//! transitions. A compact snapshot remains available for reconnect/recovery
-//! only; normal progress delivery never polls.
+//! Every progress event is a call of [`PROGRESS_FUNCTION_ID`], a private
+//! function whose handler returns the event. Clients observe it before
+//! submitting an add, update, or remove, with filters on `input.operation_id`
+//! and `input.terminal`, and receive structured mutation transitions. A
+//! compact snapshot remains available for reconnect/recovery only; normal
+//! progress delivery never polls.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,22 +17,16 @@ use std::{
 };
 
 use iii_sdk::{
-    Error, IIIClient, RegisterFunction, RegisterTriggerType,
-    protocol::{TriggerAction, TriggerRequest},
-    trigger::{TriggerConfig, TriggerHandler},
+    CallAction, Error, IIIClient, RegisterFunction, protocol::CallRequest, runtime::FunctionRef,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, watch};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ProgressSubscription {
-    /// Operation to follow. Omit to receive every operation from this daemon.
-    pub operation_id: Option<String>,
-    /// Deliver only the terminal success/failure event for the operation.
-    #[serde(default)]
-    pub terminal_only: bool,
-}
+/// The function every progress event is a call of. Observers filter on
+/// `input.operation_id` to follow one operation and on `input.terminal` for
+/// its final success or failure.
+pub const PROGRESS_FUNCTION_ID: &str = "compose::on-operation-progress";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ProgressEvent {
@@ -47,123 +43,45 @@ pub struct ProgressEvent {
     pub elapsed_ms: u64,
     pub terminal: bool,
 }
-#[derive(Default)]
-struct ProgressTriggers {
-    bindings: Arc<Mutex<BTreeMap<String, TriggerConfig>>>,
-}
-
-#[async_trait::async_trait]
-impl TriggerHandler for ProgressTriggers {
-    async fn register_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(config.id.clone(), config);
-        Ok(())
-    }
-
-    async fn unregister_trigger(&self, config: TriggerConfig) -> Result<(), Error> {
-        self.bindings
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&config.id);
-        Ok(())
-    }
-}
 
 #[derive(Clone)]
 pub struct ProgressEmitter {
     client: IIIClient,
-    bindings: Arc<Mutex<BTreeMap<String, TriggerConfig>>>,
+    source: FunctionRef,
 }
 
 impl ProgressEmitter {
     pub fn register(client: &IIIClient) -> Self {
-        // Invoke a daemon-owned sink so progress has an ordinary engine trace
-        // even when no client subscribes to compose-operation.
-        client.register_function(
-            "compose::operation-progress",
-            RegisterFunction::new_async(|event: ProgressEvent| async move {
-                Ok::<_, Error>(serde_json::to_value(event).unwrap_or_default())
-            })
-            .description("Compose operation component progress (internal trace sink)"),
-        );
-        let handler = ProgressTriggers::default();
-        let bindings = Arc::clone(&handler.bindings);
-        // `compose-operation` stays a trigger type until its subscribers move to
-        // observers; the deprecation (and its runtime warning) is for user code.
-        #[allow(deprecated)]
-        client.register_trigger_type_without_warning(
-            RegisterTriggerType::new(
-                "compose-operation",
-                "Streams structured progress for Compose dependency-tree operations",
-                handler,
-            )
-            .trigger_request_format::<ProgressSubscription>()
-            .call_request_format::<ProgressEvent>(),
+        // An event source: the handler returns the event it is called with,
+        // and only this daemon calls it. Each call is traced whether or not
+        // anything observes it.
+        let source = client.register_function(
+            PROGRESS_FUNCTION_ID,
+            RegisterFunction::new(|event: ProgressEvent| Ok::<_, Error>(event))
+                .description(
+                    "Structured progress of Compose dependency-tree operations. Observe it \
+                     with filters on input.operation_id and input.terminal.",
+                )
+                .private(),
         );
         Self {
             client: client.clone(),
-            bindings,
+            source,
         }
     }
 
     async fn publish(&self, event: &ProgressEvent) {
-        let _ = self
-            .client
-            .trigger(TriggerRequest {
-                function_id: "compose::operation-progress".into(),
-                payload: serde_json::to_value(event).unwrap_or_default(),
-                action: Some(TriggerAction::Void),
-                timeout_ms: Some(5_000),
-            })
-            .await;
-        let bindings: Vec<TriggerConfig> = self
-            .bindings
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .values()
-            .filter(|binding| {
-                serde_json::from_value::<ProgressSubscription>(binding.config.clone())
-                    .ok()
-                    .is_none_or(|config| {
-                        config
-                            .operation_id
-                            .is_none_or(|id| id == event.operation_id)
-                            && (!config.terminal_only || event.terminal)
-                    })
-            })
-            .cloned()
-            .collect();
-        let deliveries = bindings.into_iter().map(|binding| {
-            let client = self.client.clone();
-            let event = event.clone();
-            async move {
-                let function_id = binding.function_id.clone();
-                let request = TriggerRequest {
-                    function_id: function_id.clone(),
-                    payload: serde_json::to_value(event).unwrap_or_default(),
-                    action: Some(TriggerAction::Void),
-                    timeout_ms: Some(5_000),
-                };
-                let request = match binding.metadata {
-                    Some(metadata) => request.metadata(metadata),
-                    None => request.into(),
-                };
-                let request = if let Some(namespace) = binding.namespace {
-                    request.namespace(namespace)
-                } else {
-                    request
-                };
-                if let Err(error) = client.trigger(request).await {
-                    eprintln!(
-                        "compose-operation delivery failed for trigger {} ({}): {}",
-                        binding.id, function_id, error
-                    );
-                }
-            }
-        });
-        futures::future::join_all(deliveries).await;
+        // An in-process call runs inline, so its observers see events in
+        // order. A call through the engine is fire-and-forget: a slow or
+        // unreachable engine never holds up the operation.
+        let action = (!self.source.local_dispatch_active()).then_some(CallAction::Void);
+        let request = CallRequest {
+            function_id: PROGRESS_FUNCTION_ID.into(),
+            payload: serde_json::to_value(event).unwrap_or_default(),
+            action,
+            timeout_ms: Some(5_000),
+        };
+        let _ = self.client.call(request).await;
     }
 }
 
@@ -446,10 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn alias_warnings_are_emitted_once_per_operation_even_with_concurrent_installs() {
-        let emitter = ProgressEmitter {
-            client: IIIClient::new("ws://127.0.0.1:1/ws"),
-            bindings: Arc::new(Mutex::new(BTreeMap::new())),
-        };
+        let emitter = ProgressEmitter::register(&IIIClient::new("ws://127.0.0.1:1/ws"));
         let operation = Operation::new("compose:alias-warning".into(), 1, emitter.clone());
         tokio::join!(
             crate::registry::warn_alias("shell", "console", Some("shell"), Some(&operation)),
@@ -475,10 +390,7 @@ mod tests {
     #[test]
     fn lifecycle_suffixes_resolve_to_the_root_operation() {
         let client = IIIClient::new("ws://127.0.0.1:1/ws");
-        let emitter = ProgressEmitter {
-            client,
-            bindings: Arc::new(Mutex::new(BTreeMap::new())),
-        };
+        let emitter = ProgressEmitter::register(&client);
         let root = Operation::new("compose:test-root".into(), 1, emitter);
         active_operations()
             .lock()
@@ -518,12 +430,12 @@ mod tests {
     }
 
     #[test]
-    fn terminal_only_subscription_filters_progress_events() {
-        let config: ProgressSubscription = serde_json::from_value(serde_json::json!({
-            "operation_id": "compose:test",
-            "terminal_only": true,
+    fn observer_filters_select_one_operation_and_its_terminal_event() {
+        let filter = iii_sdk::Filter::parse(&serde_json::json!({
+            "input.operation_id": { "$eq": "compose:test" },
+            "input.terminal": { "$eq": true },
         }))
-        .expect("subscription should deserialize");
+        .expect("filters should parse");
 
         let progress = ProgressEvent {
             sequence: 1,
@@ -543,24 +455,14 @@ mod tests {
             detail: "done".into(),
             ..progress.clone()
         };
-
-        let matches = |event: &ProgressEvent| {
-            config
-                .operation_id
-                .as_ref()
-                .is_none_or(|id| id == &event.operation_id)
-                && (!config.terminal_only || event.terminal)
+        let other = ProgressEvent {
+            operation_id: "compose:other".into(),
+            ..terminal.clone()
         };
-        assert!(!matches(&progress));
-        assert!(matches(&terminal));
-    }
 
-    #[test]
-    fn subscription_defaults_to_all_events() {
-        let config: ProgressSubscription = serde_json::from_value(serde_json::json!({
-            "operation_id": "compose:test"
-        }))
-        .expect("subscription should deserialize");
-        assert!(!config.terminal_only);
+        let call = |event: &ProgressEvent| serde_json::json!({ "input": event, "output": event });
+        assert!(!filter.matches_value(&call(&progress)));
+        assert!(filter.matches_value(&call(&terminal)));
+        assert!(!filter.matches_value(&call(&other)));
     }
 }

@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 /// Progress events emitted during long-running ops. CLI binds this to
-/// stderr; the daemon binds this to the `worker` SDK trigger type.
+/// stderr; the daemon binds this to its `worker::*` observers.
 #[derive(Debug, Clone)]
 pub enum WorkerOpEvent {
     Started {

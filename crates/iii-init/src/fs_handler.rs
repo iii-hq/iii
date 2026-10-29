@@ -33,7 +33,7 @@ pub type FsCallResult = Result<FsResult, FsError>;
 
 /// Error payload returned by each handler. `code` is the S21x wire
 /// string, matching `SandboxError::code().as_str()` on the worker
-/// side so the trigger response serializes identically.
+/// side so the call's response serializes identically.
 #[derive(Debug, Clone)]
 pub struct FsError {
     pub code: &'static str,

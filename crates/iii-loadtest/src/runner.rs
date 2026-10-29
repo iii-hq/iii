@@ -312,7 +312,10 @@ fn spawn_engine(args: &RunArgs, cpus: &[usize], cgroup: Option<&Path>) -> Result
     }
     std::fs::write(
         dir.join("config.yaml"),
-        engine_config(args.port, &args.settings.observers),
+        engine_config(
+            args.port,
+            &scenarios::observer_settings(&args.scenario, &args.settings.observers),
+        ),
     )?;
     if let Some(entry) = observability_entry(&args.settings) {
         std::fs::create_dir_all(dir.join("config"))?;
@@ -584,6 +587,23 @@ mod tests {
         assert_eq!(yaml["workers"][0]["name"], "iii-worker-manager");
         assert_eq!(yaml["workers"][0]["config"]["port"], 28101);
         assert_eq!(yaml["observers"]["max_per_connection"], 4096);
+    }
+
+    #[test]
+    fn a_scenario_raises_the_caps_it_needs_unless_the_run_sets_them() {
+        let config = |run: &[&str]| -> serde_json::Value {
+            let run: Vec<String> = run.iter().map(|kv| kv.to_string()).collect();
+            serde_yaml::from_str(&engine_config(
+                28101,
+                &scenarios::observer_settings("match-keys", &run),
+            ))
+            .unwrap()
+        };
+        assert_eq!(config(&[])["observers"]["max_per_function"], 10240);
+        let own = config(&["max_per_function=20000", "max_per_connection=4096"]);
+        assert_eq!(own["observers"]["max_per_function"], 20000);
+        assert_eq!(own["observers"]["max_per_connection"], 4096);
+        assert!(scenarios::observer_settings("rpc", &[]).is_empty());
     }
 
     #[test]

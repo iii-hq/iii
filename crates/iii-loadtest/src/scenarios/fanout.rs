@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 //! `fanout`: the `rpc` load at a fixed concurrency while every called
-//! function gains auto observers (no filters), 0 → 64 each. Every successful
+//! function gains observers without filters, 0 → 64 each. Every successful
 //! call then activates that many targets, fire-and-forget: what it costs the
 //! engine per activation, whether the observed call itself slows down, and
 //! when activations start being dropped instead of delivered.
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use iii_sdk::Source;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::json;
 
 use super::{
@@ -53,7 +53,7 @@ pub async fn run(env: &Env) -> Result<()> {
         let ids = ids.clone();
         let pad = "x".repeat(64);
         move |task: usize, seq: u64| {
-            TriggerRequest::new(ids[task % ids.len()].as_str(), payload(seq, &pad))
+            CallRequest::new(ids[task % ids.len()].as_str(), payload(seq, &pad))
         }
     };
     let calls = Arc::new(calls);

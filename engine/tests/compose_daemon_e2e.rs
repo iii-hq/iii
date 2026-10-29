@@ -21,8 +21,8 @@ use iii_compose::{
     daemon::{Daemon, EnginePolicy},
     remote,
 };
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Deliver, InitOptions, RegisterFunction, Source, register_worker};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -133,15 +133,15 @@ async fn call_in(
         },
     );
 
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: function.to_string(),
         payload,
         action: None,
         timeout_ms: Some(30_000),
     };
     let result = match namespace {
-        Some(namespace) => client.trigger(request.namespace(namespace)).await,
-        None => client.trigger(request).await,
+        Some(namespace) => client.call(request.namespace(namespace)).await,
+        None => client.call(request).await,
     };
     client.shutdown_async().await;
 
@@ -360,7 +360,7 @@ async fn the_daemon_serves_compose_functions_in_the_default_namespace() {
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
 
-    // `default` is where an operator's `iii trigger` lands with no namespace
+    // `default` is where an operator's `iii call` lands with no namespace
     // flag, which is the whole point of moving the control surface here: the
     // namespace goes back to being the workers' address.
     let listed = call(port, "compose::list", json!({}))
@@ -909,6 +909,92 @@ containers:
     assert_eq!(operation["status"], "succeeded", "{operation}");
     assert_eq!(operation["requested"], 2, "{operation}");
 
+    daemon.shutdown().await;
+}
+
+/// A client follows an operation by observing `compose::on-operation-progress`
+/// with filters on the operation id and on terminal events.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_observer_filtered_on_one_operation_receives_its_terminal_progress() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let follower = register_worker(
+        &format!("ws://127.0.0.1:{port}"),
+        InitOptions {
+            metadata: Some(iii_sdk::iii::WorkerMetadata {
+                name: format!("progress-follower-{}", uuid::Uuid::new_v4()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    follower.register_function(
+        "test::operation-progress",
+        RegisterFunction::new(move |event: Value| {
+            let _ = events_tx.send(event);
+            Ok::<_, iii_sdk::Error>(Value::Null)
+        }),
+    );
+    let operation_id = format!("compose:progress-test:00000000-0000-0000-0000-{port}");
+    let observer = follower.observe(
+        Source::function(iii_compose::operation::PROGRESS_FUNCTION_ID)
+            .filters(json!({
+                "input.operation_id": { "$eq": operation_id },
+                "input.terminal": { "$eq": true },
+            }))
+            .deliver(Deliver::Input),
+        "test::operation-progress",
+    );
+    tokio::time::timeout(Duration::from_secs(5), observer.ready())
+        .await
+        .expect("observer should become active in time")
+        .expect("compose::on-operation-progress should be observable");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: progress
+containers:
+  state:
+    worker: package://api.workers.iii.dev/state
+    version: "1.2.3"
+"#,
+        &[],
+    );
+    let result = call(
+        port,
+        "compose::update",
+        json!({
+            "file": file.to_str().unwrap(),
+            "workers": ["state@1.2.3"],
+            "operation_id": operation_id,
+        }),
+    )
+    .await
+    .expect("compose::update should answer");
+    assert_eq!(result["status"], "accepted", "{result}");
+
+    let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .expect("the terminal progress event should be delivered")
+        .expect("progress channel open");
+    assert_eq!(event["operation_id"], operation_id, "{event}");
+    assert_eq!(event["terminal"], true, "{event}");
+    assert_eq!(event["phase"], "complete", "{event}");
+    let operation = wait_for_operation(port, None, &operation_id).await;
+    assert_eq!(operation["last_sequence"], event["sequence"], "{operation}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        events.try_recv().is_err(),
+        "the filters deliver only this operation's terminal event"
+    );
+
+    observer.dispose().await.expect("dispose observer");
+    follower.shutdown_async().await;
     daemon.shutdown().await;
 }
 

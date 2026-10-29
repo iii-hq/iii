@@ -867,7 +867,7 @@ pub async fn watch_until_ready(
     // also tightens reaction time on phase transitions.
     let poll_interval = Duration::from_millis(200);
     // One held engine connection for the whole watch session (connecting per
-    // tick would fire the engine's workers-available triggers 5×/s). The
+    // tick would fire the engine's `engine::on-workers-changed` observers 5×/s). The
     // snapshot refreshes every 5th tick (~1s); in between, the last snapshot
     // still applies — registration state doesn't flap at 200ms granularity.
     let mut engine_probe: Option<super::host_shim::EngineProbe> = None;

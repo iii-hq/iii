@@ -11,13 +11,13 @@ pub mod payload;
 use clap::Parser;
 use iii::workers::worker::DEFAULT_PORT;
 
-/// Errors surfaced by `iii trigger`.
+/// Errors surfaced by `iii call`.
 ///
 /// `RemoteAlreadyReported` carries no message because `exec::invoke` has
 /// already printed a structured JSON error to stderr; main.rs translates
 /// this variant into a silent exit-code-1 to avoid double-printing.
 #[derive(Debug, thiserror::Error)]
-pub enum TriggerCliError {
+pub enum CallCliError {
     #[error("remote function returned an error")]
     RemoteAlreadyReported,
     #[error(transparent)]
@@ -26,7 +26,7 @@ pub enum TriggerCliError {
 
 #[derive(Parser, Debug, Clone)]
 #[command(disable_help_flag = true)]
-pub struct TriggerArgs {
+pub struct CallArgs {
     /// Function path (e.g. `my::fn`, `sandbox::create`). Positional.
     #[arg(value_name = "FUNCTION_PATH")]
     pub function_path: Option<String>,
@@ -219,7 +219,7 @@ fn explicit_port(raw: &str) -> Option<u16> {
 /// Reads `engine.url` from the compose file in the working directory.
 ///
 /// Returns `None` when there is no file to read or it declares no engine
-/// address. `iii trigger` has to keep working outside any project, so the
+/// address. `iii call` has to keep working outside any project, so the
 /// absence of a compose file is never an error.
 ///
 /// A file that does name an address but cannot be read for one is a different
@@ -301,7 +301,7 @@ fn resolve_endpoint(
     ))
 }
 
-impl TriggerArgs {
+impl CallArgs {
     /// The engine this invocation talks to.
     fn endpoint(&self) -> anyhow::Result<(String, u16)> {
         let engine_url = std::env::var("III_URL").ok();
@@ -317,7 +317,7 @@ impl TriggerArgs {
 
     /// Warns once when the call used the superseded flags.
     ///
-    /// Written to stderr: `iii trigger` prints the invocation result to
+    /// Written to stderr: `iii call` prints the invocation result to
     /// stdout, and a notice about a flag must not end up inside output a
     /// script is parsing.
     fn warn_deprecated_endpoint_flags(&self) {
@@ -331,7 +331,7 @@ impl TriggerArgs {
     }
 }
 
-pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
+pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     args.warn_deprecated_endpoint_flags();
     let (address, port) = args.endpoint()?;
     if args.help {
@@ -346,12 +346,12 @@ pub async fn run_trigger(args: &TriggerArgs) -> Result<(), TriggerCliError> {
         return Ok(());
     }
     let function_path = args.function_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("iii trigger: missing FUNCTION_PATH. Try: `iii trigger <fn-path> [args]`")
+        anyhow::anyhow!("iii call: missing FUNCTION_PATH. Try: `iii call <fn-path> [args]`")
     })?;
     // `compose::add` has a list in its JSON contract, while the shell form
     // repeats the readable singular key: `worker=database worker=web`.
     // Keep this adaptation scoped to that function so repeated keys for every
-    // other trigger retain their established last-value-wins behaviour.
+    // other function retain their established last-value-wins behaviour.
     let payload = if function_path == "compose::add" {
         payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")?
     } else {
@@ -766,8 +766,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_trigger_missing_fn_path_errors() {
-        let args = TriggerArgs {
+    async fn run_call_missing_fn_path_errors() {
+        let args = CallArgs {
             function_path: None,
             kv: vec![],
             json: None,
@@ -778,7 +778,7 @@ mod tests {
             help: false,
             namespace: None,
         };
-        let err = run_trigger(&args).await.unwrap_err().to_string();
+        let err = run_call(&args).await.unwrap_err().to_string();
         assert!(
             err.contains("missing FUNCTION_PATH"),
             "expected missing fn-path error, got: {}",
@@ -787,8 +787,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_trigger_unreachable_engine_times_out() {
-        let args = TriggerArgs {
+    async fn run_call_unreachable_engine_times_out() {
+        let args = CallArgs {
             function_path: Some("test::fn".to_string()),
             kv: vec![],
             json: None,
@@ -799,7 +799,7 @@ mod tests {
             help: false,
             namespace: None,
         };
-        let err = run_trigger(&args).await.unwrap_err().to_string();
+        let err = run_call(&args).await.unwrap_err().to_string();
         // The OS may immediately return ECONNREFUSED on closed ports, in which
         // case the application-level timeout never fires. Accept either the
         // application timeout message OR the underlying connection error.
@@ -815,8 +815,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_trigger_rejects_invalid_json() {
-        let args = TriggerArgs {
+    async fn run_call_rejects_invalid_json() {
+        let args = CallArgs {
             function_path: Some("test::fn".to_string()),
             kv: vec![],
             json: Some("not-json".to_string()),
@@ -827,7 +827,7 @@ mod tests {
             help: false,
             namespace: None,
         };
-        let err = run_trigger(&args).await.unwrap_err().to_string();
+        let err = run_call(&args).await.unwrap_err().to_string();
         assert!(
             err.contains("--json: invalid JSON"),
             "expected json validation error, got: {}",

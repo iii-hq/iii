@@ -1787,7 +1787,7 @@ impl Engine {
                                                      `CallAction::Enqueue` routes through the \
                                                      `{}` provider, which the standalone queue \
                                                      worker registers. Add it with \
-                                                     `iii trigger -n <compose-daemon-namespace> \
+                                                     `iii call -n <compose-daemon-namespace> \
                                                      compose::add worker=queue`. \
                                                      (underlying: {})",
                                                     ENQUEUE_PROVIDER_FUNCTION_ID, err.message
@@ -5487,13 +5487,13 @@ mod tests {
                 // DX: the fail-closed error must tell the user how to fix it.
                 assert!(
                     error.message.contains(
-                        "iii trigger -n <compose-daemon-namespace> compose::add worker=queue"
+                        "iii call -n <compose-daemon-namespace> compose::add worker=queue"
                     ),
                     "expected install guidance, got: {}",
                     error.message
                 );
                 assert!(
-                    !error.message.contains("iii trigger -n default"),
+                    !error.message.contains("iii call -n default"),
                     "target function namespace must not be presented as the Compose daemon namespace: {}",
                     error.message
                 );

@@ -48,7 +48,7 @@ pub struct SuiteArgs {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "rpc,fanout,filters,observers,emit,local,overload,connections"
+        default_value = "rpc,fanout,filters,observers,source,match-keys,local,overload,connections"
     )]
     pub scenarios: Vec<String>,
 
