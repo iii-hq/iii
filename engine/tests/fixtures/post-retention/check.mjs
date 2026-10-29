@@ -19,7 +19,7 @@ assert.equal(await sse.text(), Array.from({length:5}, (_,i)=>`data: ${i}\n\n`).j
 console.log('SSE: five intact events');
 const url = 'ws://127.0.0.1:49734';
 const iii = registerWorker(url, { workerName: 'post-retention-channel-check' });
-const channel = await iii.trigger({ function_id: 'engine::channels::create', payload: { buffer_size: 8 } });
+const channel = await iii.call({ function_id: 'engine::channels::create', payload: { buffer_size: 8 } });
 const writer = new ChannelWriter(url, channel.writer);
 writer.sendMessage('control');
 writer.stream.end(Buffer.from('late reader'));
