@@ -478,8 +478,13 @@ pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
 /// Engine feature: SDKs may run their own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
-/// What this engine advertises in [`Message::WorkerRegistered`].
-pub const ENGINE_FEATURES: [&str; 2] = [FEATURE_OBSERVE_V1, FEATURE_LOCAL_DISPATCH_V1];
+/// What this engine advertises in [`Message::WorkerRegistered`], in this
+/// order.
+pub const ENGINE_FEATURES: [&str; 3] = [
+    FEATURE_OBSERVE_V1,
+    FEATURE_OBSERVE_V2,
+    FEATURE_LOCAL_DISPATCH_V1,
+];
 /// Worker feature, declared on `engine::workers::register` and never
 /// advertised by the engine: the connection receives JSON messages up to
 /// 64 MiB, so the engine sends it messages of that size whatever `version` it
@@ -1989,10 +1994,14 @@ mod tests {
     }
 
     #[test]
-    fn engine_advertises_observe_and_local_dispatch() {
+    fn engine_advertises_observe_v1_v2_and_local_dispatch() {
         assert_eq!(
             super::engine_features(),
-            vec!["observe.v1".to_string(), "local-dispatch.v1".to_string()]
+            vec![
+                "observe.v1".to_string(),
+                "observe.v2".to_string(),
+                "local-dispatch.v1".to_string()
+            ]
         );
     }
 

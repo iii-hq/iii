@@ -18,7 +18,7 @@ use crate::telemetry::SpanExt;
 
 use crate::{
     function::{Function, FunctionResult, HandlerFn},
-    observer::{InvocationCtx, ObserverRegistry},
+    observer::{HostDelivery, InvocationCtx, ObserverRegistry},
     protocol::ErrorBody,
     worker_connections::WorkerConnection,
     workers::observability::metrics::get_engine_metrics,
@@ -44,11 +44,31 @@ async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
     (handler.as_ref())(invocation_id, data, session, metadata).await
 }
 
+/// How a routed call ended: the executor's answer and, from a host that
+/// declared `observe.v2`, the observers its delivery matched.
+#[derive(Debug)]
+pub struct Completion {
+    pub result: Result<Option<Value>, ErrorBody>,
+    /// Set when the answering connection declared `observe.v2`: it delivered
+    /// the call itself, and the engine evaluates none of its observers.
+    pub delivered: Option<HostDelivery>,
+}
+
+impl From<Result<Option<Value>, ErrorBody>> for Completion {
+    /// An answer nobody delivered: the engine evaluates the call's observers.
+    fn from(result: Result<Option<Value>, ErrorBody>) -> Self {
+        Self {
+            result,
+            delivered: None,
+        }
+    }
+}
+
 pub struct Invocation {
     pub id: Uuid,
     pub function_id: String,
     pub worker_id: Option<Uuid>,
-    pub sender: oneshot::Sender<Result<Option<Value>, ErrorBody>>,
+    pub sender: oneshot::Sender<Completion>,
     /// W3C traceparent for distributed tracing context
     pub traceparent: Option<String>,
     /// W3C baggage for cross-cutting context propagation
@@ -94,15 +114,23 @@ impl InvocationHandler {
             .map(|(_, sender)| sender)
     }
 
+    /// Whether the engine waits for the answer to `invocation_id`, a call of
+    /// `function_id`.
+    pub(crate) fn is_pending(&self, invocation_id: &Uuid, function_id: &str) -> bool {
+        self.invocations
+            .get(invocation_id)
+            .is_some_and(|invocation| invocation.function_id == function_id)
+    }
+
     pub fn halt_invocation(&self, invocation_id: &Uuid) {
         let invocation = self.remove(invocation_id);
 
         if let Some(invocation) = invocation {
-            let _ = invocation.sender.send(Err(ErrorBody {
+            let _ = invocation.sender.send(Completion::from(Err(ErrorBody {
                 code: "invocation_stopped".into(),
                 message: "Invocation stopped".into(),
                 stacktrace: None,
-            }));
+            })));
         }
     }
 
@@ -199,7 +227,7 @@ impl InvocationHandler {
         let observed = observers.and_then(|registry| {
             registry
                 .watch(namespace, &function_id)
-                .map(|set| registry.begin(set, &body, &metadata, &traceparent, &baggage, &ctx))
+                .map(|set| registry.begin(set, &body, &metadata, &traceparent, &baggage))
         });
         // The context goes in scope around the handler (and is kept for the
         // hook) unless there is nothing in it: engine orchestration at depth 0,
@@ -295,7 +323,9 @@ impl InvocationHandler {
 
         let invocation_fut = async {
             let invocation_id = invocation_id.unwrap_or_else(Uuid::new_v4);
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = oneshot::channel::<Completion>();
+            // What an `observe.v2` host's answer says it delivered.
+            let mut delivered = None;
             // A worker can reply or disconnect before its handler returns Deferred.
             self.invocations.insert(invocation_id, Invocation {
                 id: invocation_id,
@@ -451,7 +481,10 @@ impl InvocationHandler {
                     acc.invocations_deferred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
 
-                    receiver.await
+                    receiver.await.map(|completion| {
+                        delivered = completion.delivered;
+                        completion.result
+                    })
                 }
             };
             match &result {
@@ -462,8 +495,30 @@ impl InvocationHandler {
                     tracing::Span::current().record("otel.status_code", "ERROR");
                 }
             };
-            if let (Some(registry), Some(observed), Some(ctx)) = (observers, observed, &ctx) {
-                registry.complete(observed, namespace, &function_id, invocation_id, &result, ctx);
+            if let Some(registry) = observers {
+                match observed {
+                    // An observed call always keeps its context.
+                    Some(observed) => {
+                        if let Some(ctx) = &ctx {
+                            registry.complete(
+                                observed,
+                                namespace,
+                                &function_id,
+                                invocation_id,
+                                &result,
+                                delivered,
+                                ctx,
+                            );
+                        }
+                    }
+                    // Unobserved when it began: what its host listed is
+                    // counted, not activated.
+                    None => {
+                        if let Some(delivered) = delivered {
+                            registry.not_held(namespace, &function_id, &delivered.observed);
+                        }
+                    }
+                }
             }
             result
         }
@@ -606,12 +661,12 @@ mod tests {
         // The invocation should have been removed.
         assert!(handler.invocations.is_empty());
 
-        // The receiver should get an error result.
+        // The receiver should get an error result, which nobody delivered.
         let result = receiver.try_recv();
         assert!(result.is_ok());
-        let inner = result.unwrap();
-        assert!(inner.is_err());
-        let error = inner.unwrap_err();
+        let completion = result.unwrap();
+        assert!(completion.delivered.is_none());
+        let error = completion.result.unwrap_err();
         assert_eq!(error.code, "invocation_stopped");
         assert_eq!(error.message, "Invocation stopped");
     }

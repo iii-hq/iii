@@ -19,6 +19,14 @@
 //! stay in engine arrival order while different functions are evaluated in
 //! parallel.
 //!
+//! Who matches a call's observers (v2 §8.2): a host that declared `observe.v2`
+//! delivers its own calls, listing the observers its delivery matched on each
+//! routed answer (`invocationresult.observed`) and reporting its local calls
+//! (`invocationsobserved`); the engine activates those. It evaluates the
+//! observers' `on` and filters itself for every other call: to a host without
+//! `observe.v2`, to an engine-hosted or HTTP-invoked function, and for a call
+//! that ended without its host's answer.
+//!
 //! A matched event is shared, not copied, by the observers it activates: a
 //! queued activation holds a pointer to it, and the target's argument is built
 //! when the activation starts.
@@ -250,6 +258,68 @@ const HOST_DELIVERY: &str = "host";
 /// `delivery` label: a call through an observer.
 const OBSERVER_CALL_DELIVERY: &str = "observer_call";
 
+/// The `function_id` label of a drop that names no observer the engine
+/// knows, so no observed function.
+const UNKNOWN_FUNCTION: &str = "<unknown>";
+
+/// The stamp the engine adds to the payload of every call a worker makes:
+/// the calling connection's id.
+const CALLER_STAMP: &str = "_caller_worker_id";
+
+/// `value` as observers receive it: without the engine's top-level
+/// `_caller_worker_id` stamp (decision 40). The caller is in `caller`.
+fn unstamped(mut value: Value) -> Value {
+    if let Value::Object(map) = &mut value {
+        map.remove(CALLER_STAMP);
+    }
+    value
+}
+
+/// What a host that declared `observe.v2` answered a routed call with besides
+/// its result (`invocationresult.observed`, v2 §8.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostDelivery {
+    /// The connection that answered.
+    pub host: Uuid,
+    /// The observers its delivery matched, as listed: empty when it matched
+    /// none, or when the function delivers its calls itself.
+    pub observed: Vec<String>,
+}
+
+/// Which of a completion's active observers it activates.
+enum Matching {
+    /// Those whose `on` and filters match it: the engine evaluates the call.
+    Filters,
+    /// Those the call's host listed (sorted, each once) whose `on` takes its
+    /// status: the host evaluated the call.
+    Listed(Vec<String>),
+}
+
+impl Matching {
+    /// The `delivery` label of the activations it starts.
+    fn delivery(&self) -> &'static str {
+        match self {
+            Self::Filters => ENGINE_DELIVERY,
+            Self::Listed(_) => HOST_DELIVERY,
+        }
+    }
+
+    /// Whether the completion may activate `observer`: what a drop of the
+    /// whole completion is charged to.
+    fn concerns(&self, observer: &Observer) -> bool {
+        match self {
+            Self::Filters => true,
+            Self::Listed(ids) => is_listed(ids, &observer.id),
+        }
+    }
+}
+
+/// Whether the sorted `ids` hold `id`.
+fn is_listed(ids: &[String], id: &str) -> bool {
+    ids.binary_search_by(|listed| listed.as_str().cmp(id))
+        .is_ok()
+}
+
 /// A completed observed invocation (or a reported one), as its activations
 /// see it. Payloads are shared: each activation clones what it ships.
 pub(crate) struct Completed {
@@ -312,11 +382,22 @@ pub(crate) struct Evaluation {
     /// byte budget.
     bytes: usize,
     set: Arc<ActiveSet>,
+    matching: Matching,
     completed: Completed,
     /// Turned into the document's `error` only when an observer needs it.
     error: Option<ErrorBody>,
     /// Resolved into the document's `caller` only when an observer needs it.
     ctx: Arc<InvocationCtx>,
+}
+
+impl Evaluation {
+    /// The active observers it may activate.
+    fn concerned(&self) -> impl Iterator<Item = &Arc<Observer>> {
+        self.set
+            .observers
+            .iter()
+            .filter(|observer| self.matching.concerns(observer))
+    }
 }
 
 /// An observer's in-flight slot. Released on drop unless handed on, so a
@@ -424,6 +505,7 @@ impl ObserverRegistry {
                 charged: AtomicUsize::new(0),
             },
             set,
+            matching: Matching::Filters,
             error: None,
             ctx: Arc::new(InvocationCtx::engine_source(depth)),
         };
@@ -433,11 +515,13 @@ impl ObserverRegistry {
     /// Starts tracking an observed invocation: copies the input and metadata
     /// only when an active observer needs them, and only when the evaluator
     /// has room (otherwise the call counts an `OVERFLOW` drop when it
-    /// completes, without having copied anything).
+    /// completes, without having copied anything). The input is kept whoever
+    /// will match the call's observers: the envelope of an observer its host
+    /// lists is built from it too.
     ///
-    /// Observers see the payload as the caller sent it: a call routed from a
-    /// worker connection carries the engine's `_caller_worker_id` stamp, which
-    /// the copy leaves out (the caller is `caller.worker_id`).
+    /// Observers see the payload as the caller sent it: a call a worker makes
+    /// carries the engine's `_caller_worker_id` stamp, which the copy leaves
+    /// out (the caller is `caller.worker_id`).
     pub fn begin(
         &self,
         set: Arc<ActiveSet>,
@@ -445,18 +529,11 @@ impl ObserverRegistry {
         metadata: &Option<Value>,
         traceparent: &Option<String>,
         baggage: &Option<String>,
-        ctx: &InvocationCtx,
     ) -> ObservedCall {
         let admitted = self.evaluator_has_room(&set);
         let input = (admitted && set.needs.input).then(|| {
             self.payload_copies.fetch_add(1, Ordering::Relaxed);
-            let mut input = body.clone();
-            if ctx.is_from_connection()
-                && let Value::Object(map) = &mut input
-            {
-                map.remove("_caller_worker_id");
-            }
-            Arc::new(input)
+            Arc::new(unstamped(body.clone()))
         });
         let metadata = if admitted && set.needs.metadata {
             metadata.clone().map(Arc::new)
@@ -497,7 +574,8 @@ impl ObserverRegistry {
         self.events_built.load(Ordering::Relaxed)
     }
 
-    /// Observed routed invocations evaluated so far.
+    /// Observed routed invocations the evaluators handled so far: evaluated,
+    /// or activated from the observers their host listed.
     pub fn evaluated(&self) -> u64 {
         self.evaluated.load(Ordering::Acquire)
     }
@@ -511,6 +589,14 @@ impl ObserverRegistry {
     /// Hands the completed invocation to the evaluator: the caller's reply
     /// goes out without waiting for filters or activations. Keeps the output
     /// only when an active observer needs it.
+    ///
+    /// `delivered` is what an `observe.v2` host answered besides the result:
+    /// the call's observers are then the ones it listed, each activated once
+    /// it is checked to be an active observer of the function (decisions 3,
+    /// 36). Its result is their `output`, and its `error` their `error`. An
+    /// answer from a connection that does not host the function activates
+    /// nothing it lists (`REPORTER_NOT_OWNER`). Without `delivered`, the
+    /// engine evaluates the call's observers itself.
     #[allow(clippy::too_many_arguments)]
     pub fn complete(
         self: &Arc<Self>,
@@ -519,13 +605,31 @@ impl ObserverRegistry {
         function_id: &str,
         invocation_id: Uuid,
         result: &Result<Result<Option<Value>, ErrorBody>, RecvError>,
+        delivered: Option<HostDelivery>,
         ctx: &Arc<InvocationCtx>,
     ) {
         let Some(call) = call.inner.take() else {
             return;
         };
+        let matching = match delivered {
+            None => Matching::Filters,
+            Some(HostDelivery { host, observed }) => {
+                if observed.is_empty() {
+                    return;
+                }
+                if !self.hosts(host, namespace, function_id) {
+                    let key = (namespace.to_string(), function_id.to_string());
+                    self.drop_matched(&key, &observed, observe_codes::REPORTER_NOT_OWNER);
+                    return;
+                }
+                let mut ids = observed;
+                ids.sort_unstable();
+                ids.dedup();
+                Matching::Listed(ids)
+            }
+        };
         if !call.admitted || !self.evaluator_has_room(&call.set) {
-            for observer in &call.set.observers {
+            for observer in call.set.observers.iter().filter(|o| matching.concerns(o)) {
                 drop_event(observer, observe_codes::OVERFLOW);
             }
             return;
@@ -535,7 +639,7 @@ impl ObserverRegistry {
             Ok(Ok(output)) => (
                 true,
                 if needs.output {
-                    output.clone().map(Arc::new)
+                    output.clone().map(|output| Arc::new(unstamped(output)))
                 } else {
                     None
                 },
@@ -555,7 +659,7 @@ impl ObserverRegistry {
         let evaluation = Evaluation {
             bytes,
             completed: Completed {
-                delivery: ENGINE_DELIVERY,
+                delivery: matching.delivery(),
                 namespace: namespace.to_string(),
                 function_id: function_id.to_string(),
                 invocation_id: invocation_id.to_string(),
@@ -574,10 +678,43 @@ impl ObserverRegistry {
                 charged: AtomicUsize::new(0),
             },
             set: call.set,
+            matching,
             error,
             ctx: ctx.clone(),
         };
         self.enqueue(evaluation);
+    }
+
+    /// Whether `connection` hosts `(namespace, function_id)` now.
+    fn hosts(&self, connection: Uuid, namespace: &str, function_id: &str) -> bool {
+        self.deps.get().is_some_and(|deps| {
+            deps.function_owners
+                .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+                .is_some_and(|owner| owner.0 == connection)
+        })
+    }
+
+    /// The observers a host listed for a call of `(namespace, function_id)`
+    /// that had no active observer when it began: the engine kept nothing to
+    /// build their events from, so each is counted as `INACTIVE`.
+    pub(crate) fn not_held(&self, namespace: &str, function_id: &str, observed: &[String]) {
+        for id in observed {
+            self.drop_not_held(namespace, function_id, id);
+        }
+    }
+
+    /// One id a host listed that the call cannot activate: an observer of the
+    /// function that was not active when the call began, or no observer of
+    /// it (gone since, or another function's). `INACTIVE`, as for a report
+    /// item naming one.
+    fn drop_not_held(&self, namespace: &str, function_id: &str, id: &str) {
+        match self
+            .get(id)
+            .filter(|o| o.function.0 == namespace && o.function.1 == function_id)
+        {
+            Some(observer) => drop_event(&observer, observe_codes::INACTIVE),
+            None => count_function_drop(function_id, observe_codes::INACTIVE, 1),
+        }
     }
 
     /// Whether `set`'s evaluator can take one more completion: under both
@@ -604,7 +741,7 @@ impl ObserverRegistry {
         let bytes = evaluation.bytes;
         let budget = self.evaluator_bytes.load(Ordering::Relaxed);
         if bytes > budget {
-            for observer in &evaluation.set.observers {
+            for observer in evaluation.concerned() {
                 drop_too_large(observer, bytes, budget, TooLarge::Held);
             }
             return;
@@ -618,7 +755,7 @@ impl ObserverRegistry {
             })
             .is_ok();
         if !reserved {
-            for observer in &evaluation.set.observers {
+            for observer in evaluation.concerned() {
                 drop_event(observer, observe_codes::OVERFLOW);
             }
             return;
@@ -627,7 +764,7 @@ impl ObserverRegistry {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(evaluation)) => {
                 self.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
-                for observer in &evaluation.set.observers {
+                for observer in evaluation.concerned() {
                     drop_event(observer, observe_codes::OVERFLOW);
                 }
             }
@@ -669,11 +806,13 @@ impl ObserverRegistry {
         self.evaluators.get().map(Vec::as_slice)
     }
 
-    /// Evaluates the active observers' `on` and filters against one completed
-    /// invocation and activates the matches.
+    /// Activates the observers one completed invocation matched: evaluating
+    /// the active observers' `on` and filters, or taking the ones its host
+    /// listed.
     fn evaluate(self: &Arc<Self>, evaluation: Evaluation) {
         let Evaluation {
             set,
+            matching,
             mut completed,
             error,
             ctx,
@@ -690,16 +829,37 @@ impl ObserverRegistry {
                 .map(Arc::new);
         }
         let completed = Arc::new(completed);
-        let doc = Doc {
-            input: completed.input.as_deref(),
-            output: completed.output.as_deref(),
-            error: completed.error.as_deref(),
-            caller: completed.caller.as_deref(),
-            metadata: completed.metadata.as_deref(),
-        };
-        for observer in &set.observers {
-            if accepts(&observer.on, completed.success) && observer.filter.matches(&doc) {
-                self.activate(observer, &completed);
+        match matching {
+            Matching::Filters => {
+                let doc = Doc {
+                    input: completed.input.as_deref(),
+                    output: completed.output.as_deref(),
+                    error: completed.error.as_deref(),
+                    caller: completed.caller.as_deref(),
+                    metadata: completed.metadata.as_deref(),
+                };
+                for observer in &set.observers {
+                    if accepts(&observer.on, completed.success) && observer.filter.matches(&doc) {
+                        self.activate(observer, &completed);
+                    }
+                }
+            }
+            Matching::Listed(ids) => {
+                let mut held = vec![false; ids.len()];
+                for observer in &set.observers {
+                    let Ok(at) = ids.binary_search_by(|id| id.as_str().cmp(&observer.id)) else {
+                        continue;
+                    };
+                    held[at] = true;
+                    if accepts(&observer.on, completed.success) {
+                        self.activate(observer, &completed);
+                    }
+                }
+                for (id, held) in ids.iter().zip(held) {
+                    if !held {
+                        self.drop_not_held(&completed.namespace, &completed.function_id, id);
+                    }
+                }
             }
         }
         self.evaluated.fetch_add(1, Ordering::AcqRel);
@@ -955,13 +1115,20 @@ impl ObserverRegistry {
         }
     }
 
-    /// `invocationsobserved` from `connection` (protocol.md §3.4): calls of
-    /// the functions it hosts, with the observers its delivery matched. The
-    /// reporter must host each item's function; each `matched` id must be an
-    /// active observer of it whose `on` takes the call's status. The engine
-    /// does not re-evaluate filters: the host is authoritative for its own
-    /// function's calls. An item with `output_is_input` carries its value
-    /// once, as `input`, which is also its `output`.
+    /// `invocationsobserved` from `connection` (protocol.md §3.4): local
+    /// calls of the functions it hosts, with the observers its delivery
+    /// matched. The reporter must host each item's function; each `matched`
+    /// id must be an active observer of it whose `on` takes the call's
+    /// status. The engine does not re-evaluate filters: the host is
+    /// authoritative for its own function's calls. An item with
+    /// `output_is_input` carries its value once, as `input`, which is also
+    /// its `output`. Observers receive `input` and `output` without the
+    /// engine's `_caller_worker_id` stamp.
+    ///
+    /// A routed call's host reports its matches on the call's answer
+    /// (`invocationresult.observed`) only: an item for a call the engine
+    /// routed to the reporting connection and waits on is dropped as
+    /// `INVALID_REPORT` (decision 38).
     ///
     /// Returns the observers whose queue was full for some item, for the
     /// connection's reader to wait on ([`Self::wait_for_room`]); not those
@@ -994,6 +1161,7 @@ impl ObserverRegistry {
             .deps
             .get()
             .and_then(|deps| deps.workers.get_worker_name(&connection));
+        let invocations = self.deps.get().and_then(|deps| deps.invocations.upgrade());
 
         for item in items.items {
             let ObservedItem {
@@ -1027,6 +1195,13 @@ impl ObserverRegistry {
                 self.drop_matched(&key, &matched, observe_codes::REPORTER_NOT_OWNER);
                 continue;
             }
+            let routed = invocations.as_ref().is_some_and(|invocations| {
+                Uuid::parse_str(&invocation_id).is_ok_and(|id| invocations.is_pending(&id, &key.1))
+            });
+            if routed {
+                self.drop_matched(&key, &matched, INVALID_REPORT);
+                continue;
+            }
             let success = match status {
                 InvocationStatus::Success => true,
                 InvocationStatus::Error => false,
@@ -1045,11 +1220,11 @@ impl ObserverRegistry {
             let mut caller = caller.unwrap_or_default();
             caller.worker_id = Some(connection.to_string());
             caller.worker_name = worker_name.clone();
-            let input = input.map(Arc::new);
+            let input = input.map(|input| Arc::new(unstamped(input)));
             let output = if output_is_input {
                 input.clone()
             } else {
-                output.map(Arc::new)
+                output.map(|output| Arc::new(unstamped(output)))
             };
             let completed = Arc::new(Completed {
                 delivery: HOST_DELIVERY,
@@ -1164,24 +1339,76 @@ impl ObserverRegistry {
     /// `function_id` and `namespace` are not read) with the observer's
     /// metadata, a fresh `activation_id` and depth + 1. The payload goes as
     /// given. The result, or the refusal code, goes back to the host.
+    ///
+    /// A refusal by policy counts a drop as it does for an activation
+    /// (`LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`, `INACTIVE` once expired). A
+    /// fire-and-forget call nobody waits on is also counted when the checks
+    /// refuse it, under the refusal's code, and every refusal of one is
+    /// logged at `debug` (decision 13).
     pub async fn observer_call(
         self: &Arc<Self>,
         worker: &WorkerConnection,
         call: ObserverCall,
     ) -> Result<Option<Value>, ErrorBody> {
-        let reject = |code: &str, message: String| Err(ErrorBody::new(code, message));
-        let Some(observer) = self.get(&call.activation.observer_id) else {
-            return reject(
+        let admitted = self
+            .check_observer_call(worker.id, &call)
+            .and_then(|observer| {
+                let depth = call.observe_depth.unwrap_or(0);
+                self.admit_observer_call(&observer, depth)
+                    .map(|slot| (observer, slot, depth))
+            });
+        let (observer, _slot, depth) = match admitted {
+            Ok(admitted) => admitted,
+            Err(refusal) => {
+                if call.fire_and_forget {
+                    tracing::debug!(
+                        worker_id = %worker.id,
+                        observer_id = %call.activation.observer_id,
+                        code = %refusal.code,
+                        reason = %refusal.message,
+                        "fire-and-forget call through an observer refused; dropped"
+                    );
+                }
+                return Err(refusal);
+            }
+        };
+        self.route_observer_call(worker, &observer, call, depth)
+            .await
+    }
+
+    /// The checks before policy: the observer exists, `worker` hosts its
+    /// function and it is active. A refused fire-and-forget call counts a
+    /// drop under the refusal's code: in the observer's counters, or, for
+    /// an observer the engine does not know, in the metric alone.
+    fn check_observer_call(
+        &self,
+        worker: Uuid,
+        call: &ObserverCall,
+    ) -> Result<Arc<Observer>, ErrorBody> {
+        let observer_id = &call.activation.observer_id;
+        let refuse = |observer: Option<&Observer>, code: &str, message: String| {
+            if call.fire_and_forget {
+                match observer {
+                    Some(observer) => drop_event(observer, code),
+                    None => count_function_drop(UNKNOWN_FUNCTION, code, 1),
+                }
+            }
+            Err(ErrorBody::new(code, message))
+        };
+        let Some(observer) = self.get(observer_id) else {
+            return refuse(
+                None,
                 observe_codes::OBSERVER_NOT_FOUND,
-                format!("no observer `{}`", call.activation.observer_id),
+                format!("no observer `{observer_id}`"),
             );
         };
         if self
             .owner_of(&observer.function)
             .map(|owner| owner.connection)
-            != Some(worker.id)
+            != Some(worker)
         {
-            return reject(
+            return refuse(
+                Some(&observer),
                 observe_codes::NOT_FUNCTION_OWNER,
                 format!(
                     "only the worker hosting `{}` calls through its observers",
@@ -1190,19 +1417,28 @@ impl ObserverRegistry {
             );
         }
         if !observer.is_active() {
-            return reject(
+            return refuse(
+                Some(&observer),
                 observe_codes::OBSERVER_NOT_ACTIVE,
                 format!("observer `{}` is not active", observer.id),
             );
         }
+        Ok(observer)
+    }
 
-        // Policy, in order: depth, expiry, max_fires, max_in_flight (no
-        // queue: the host is waiting for the result).
-        let depth = call.observe_depth.unwrap_or(0);
+    /// Policy for a call through `observer`, in order: depth, expiry,
+    /// `max_fires`, `max_in_flight` (no queue: the host is waiting for the
+    /// result). Returns the in-flight slot the call holds.
+    fn admit_observer_call(
+        self: &Arc<Self>,
+        observer: &Arc<Observer>,
+        depth: u32,
+    ) -> Result<Slot, ErrorBody> {
+        let reject = |code: &str, message: String| Err(ErrorBody::new(code, message));
         let max_depth = self.config().max_observe_depth;
         if depth.saturating_add(1) > max_depth {
-            drop_event(&observer, observe_codes::LOOP_GUARD);
-            warn_loop_guard(&observer, depth, max_depth);
+            drop_event(observer, observe_codes::LOOP_GUARD);
+            warn_loop_guard(observer, depth, max_depth);
             return reject(
                 observe_codes::LOOP_GUARD,
                 format!("the chain of observers is deeper than {max_depth}"),
@@ -1210,17 +1446,17 @@ impl ObserverRegistry {
         }
         if observer.is_expired() {
             self.dispose(
-                &observer,
+                observer,
                 observe_codes::EXPIRED,
                 "the observer's expires_in_ms elapsed",
             );
-            drop_event(&observer, observe_codes::INACTIVE);
+            drop_event(observer, observe_codes::INACTIVE);
             return reject(
                 observe_codes::OBSERVER_NOT_ACTIVE,
                 format!("observer `{}` expired", observer.id),
             );
         }
-        let Some(fired) = take_fire(&observer) else {
+        let Some(fired) = take_fire(observer) else {
             return reject(
                 observe_codes::OBSERVER_NOT_ACTIVE,
                 format!("observer `{}` reached its max_fires", observer.id),
@@ -1231,7 +1467,7 @@ impl ObserverRegistry {
             if flow.running >= observer.policy.max_in_flight {
                 drop(flow);
                 observer.fires.fetch_sub(1, Ordering::AcqRel);
-                drop_event(&observer, observe_codes::OVERFLOW);
+                drop_event(observer, observe_codes::OVERFLOW);
                 return reject(
                     observe_codes::OVERFLOW,
                     format!(
@@ -1242,20 +1478,19 @@ impl ObserverRegistry {
             }
             flow.running += 1;
         }
-        let _slot = Slot {
+        let slot = Slot {
             registry: self.clone(),
             observer: observer.clone(),
             held: true,
         };
         if observer.policy.max_fires == Some(fired) {
             self.dispose(
-                &observer,
+                observer,
                 observe_codes::MAX_FIRES,
                 format!("the observer fired {fired} times, its max_fires"),
             );
         }
-        self.route_observer_call(worker, &observer, call, depth)
-            .await
+        Ok(slot)
     }
 
     async fn route_observer_call(
@@ -1425,6 +1660,8 @@ pub struct ObserverCall {
     pub activation: Activation,
     pub traceparent: Option<String>,
     pub baggage: Option<String>,
+    /// Nobody waits for the answer (`action: void`, or no `invocation_id`).
+    pub fire_and_forget: bool,
 }
 
 /// Whether `on` takes an invocation that ended in success (or not).
@@ -1624,6 +1861,8 @@ fn drop_event(observer: &Observer, reason: &str) {
         CANCELLED => &observer.drops.cancelled,
         INVALID_REPORT => &observer.drops.invalid_report,
         observe_codes::TOO_LARGE => &observer.drops.too_large,
+        observe_codes::NOT_FUNCTION_OWNER => &observer.drops.not_function_owner,
+        observe_codes::OBSERVER_NOT_ACTIVE => &observer.drops.observer_not_active,
         _ => &observer.drops.inactive,
     };
     counter.fetch_add(1, Ordering::Relaxed);
@@ -1777,8 +2016,8 @@ mod tests {
         let set = registry
             .watch(DEFAULT_NAMESPACE, "test::src")
             .expect("observed");
-        let ctx = InvocationCtx::engine_internal_at(0);
-        let call = registry.begin(set, &json!({ "n": 1 }), &None, &None, &None, &ctx);
+        let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
+        let call = registry.begin(set, &json!({ "n": 1 }), &None, &None, &None);
         let before = registry.evaluated();
         registry.complete(
             call,
@@ -1786,7 +2025,8 @@ mod tests {
             "test::src",
             Uuid::new_v4(),
             &Ok(Ok(Some(json!(true)))),
-            &Arc::new(ctx),
+            None,
+            &ctx,
         );
         assert_eq!(registry.evaluated(), before, "not evaluated inline");
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1810,12 +2050,7 @@ mod tests {
             .observers
             .watch(DEFAULT_NAMESPACE, "test::src")
             .expect("observed");
-        let ctx = InvocationCtx::engine_internal_at(0);
-        drop(
-            engine
-                .observers
-                .begin(set, &json!({}), &None, &None, &None, &ctx),
-        );
+        drop(engine.observers.begin(set, &json!({}), &None, &None, &None));
         let info = engine.observers.get_info(&engine, None, "obs").unwrap();
         assert_eq!(info.dropped.get("CANCELLED"), Some(&1));
     }
@@ -1905,13 +2140,14 @@ mod tests {
         // No yield in between: the evaluator task cannot drain the queue.
         for n in 0..2 {
             let set = registry.watch(DEFAULT_NAMESPACE, "test::src").unwrap();
-            let call = registry.begin(set, &json!({ "n": n }), &None, &None, &None, &ctx);
+            let call = registry.begin(set, &json!({ "n": n }), &None, &None, &None);
             registry.complete(
                 call,
                 DEFAULT_NAMESPACE,
                 "test::src",
                 Uuid::new_v4(),
                 &Ok(Ok(None)),
+                None,
                 &ctx,
             );
         }
@@ -1929,13 +2165,14 @@ mod tests {
         let registry = &engine.observers;
         let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
         let set = registry.watch(DEFAULT_NAMESPACE, "test::src").unwrap();
-        let call = registry.begin(set, &body, &None, &None, &None, &ctx);
+        let call = registry.begin(set, &body, &None, &None, &None);
         registry.complete(
             call,
             DEFAULT_NAMESPACE,
             "test::src",
             Uuid::new_v4(),
             &Ok(Ok(None)),
+            None,
             &ctx,
         );
     }

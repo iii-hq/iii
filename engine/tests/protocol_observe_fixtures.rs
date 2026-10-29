@@ -49,9 +49,17 @@ fn message(name: &str) -> Message {
     serde_json::from_value(fixture(name)).unwrap_or_else(|err| panic!("{name}: {err}"))
 }
 
+/// Fixtures of frames no party sends: `invocationsobserved-routed-items.json`
+/// reports a routed call's matches in items of its own, which a host never
+/// sends (decision 38: a routed call's matches ride its answer).
+const NOT_SENT: &[&str] = &["invocationsobserved-routed-items"];
+
 #[test]
 fn every_observe_fixture_round_trips_through_message() {
     for (name, value) in fixtures() {
+        if NOT_SENT.contains(&name.as_str()) {
+            continue;
+        }
         let msg: Message = serde_json::from_value(value.clone())
             .unwrap_or_else(|err| panic!("{name}.json does not decode as Message: {err}"));
         let encoded = serde_json::to_value(&msg).expect("encodes");
@@ -545,10 +553,15 @@ fn fixtures_carry_the_documented_variants() {
             FEATURE_LOCAL_DISPATCH_V1
         ]
     );
+    assert_eq!(features, engine_features(), "what this engine advertises");
     let Message::WorkerRegistered { features, .. } = message("workerregistered-v1") else {
         panic!("workerregistered-v1");
     };
-    assert_eq!(features, engine_features(), "what this engine advertises");
+    assert_eq!(
+        features,
+        [FEATURE_OBSERVE_V1, FEATURE_LOCAL_DISPATCH_V1],
+        "a 0.25 engine: no observe.v2"
+    );
     let Message::WorkerRegistered { features, .. } = message("workerregistered-legacy") else {
         panic!("workerregistered-legacy");
     };

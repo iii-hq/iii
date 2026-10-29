@@ -150,18 +150,12 @@ impl InvocationCtx {
         }
     }
 
-    /// Whether the call came from a worker connection, whose payload the
-    /// engine stamped with `_caller_worker_id`.
     /// Engine orchestration at depth 0, outside any activation: nothing to
     /// carry.
     pub fn is_blank(&self) -> bool {
         matches!(self.origin, CallerOrigin::None)
             && self.observe_depth == 0
             && self.activation.is_none()
-    }
-
-    pub fn is_from_connection(&self) -> bool {
-        matches!(self.origin, CallerOrigin::Connection { .. })
     }
 
     /// The caller as the engine reports it: the connection's `worker_id` and

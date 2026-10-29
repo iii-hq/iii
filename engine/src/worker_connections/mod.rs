@@ -28,7 +28,7 @@ use crate::{
     engine::Outbound,
     protocol::{
         DEFAULT_NAMESPACE, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1,
-        FEATURE_OBSERVE_V1, effective_namespace,
+        FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, effective_namespace,
     },
     workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
@@ -289,6 +289,7 @@ pub struct WorkerFeatures {
 struct DeclaredFeatures {
     list: Vec<String>,
     observe_v1: bool,
+    observe_v2: bool,
     local_dispatch_v1: bool,
     large_messages_v1: bool,
 }
@@ -314,8 +315,10 @@ impl WorkerFeatures {
             return false;
         }
         let has = |name: &str| list.iter().any(|feature| feature == name);
+        let observe_v2 = has(FEATURE_OBSERVE_V2);
         let declared = DeclaredFeatures {
-            observe_v1: has(FEATURE_OBSERVE_V1),
+            observe_v1: observe_v2 || has(FEATURE_OBSERVE_V1),
+            observe_v2,
             local_dispatch_v1: has(FEATURE_LOCAL_DISPATCH_V1),
             large_messages_v1: has(FEATURE_LARGE_MESSAGES_V1),
             list,
@@ -324,9 +327,16 @@ impl WorkerFeatures {
     }
 
     /// The connection speaks observe: the engine may push the observe
-    /// messages to it (CONTRACT D2).
+    /// messages to it (CONTRACT D2). `observe.v2` includes it.
     pub fn observe_v1(&self) -> bool {
         self.declared.get().is_some_and(|d| d.observe_v1)
+    }
+
+    /// The connection delivers the calls of the functions it hosts: it lists
+    /// the observers its delivery matched on each `invocationresult`, and the
+    /// engine evaluates none of those calls itself.
+    pub fn observe_v2(&self) -> bool {
+        self.declared.get().is_some_and(|d| d.observe_v2)
     }
 
     pub fn local_dispatch_v1(&self) -> bool {
@@ -642,6 +652,18 @@ mod tests {
     }
 
     #[test]
+    fn observe_v2_includes_observe_v1() {
+        let worker = make_worker();
+        assert!(!worker.features.observe_v2());
+        assert!(worker.features.set(&["observe.v2".to_string()]));
+        assert!(worker.features.observe_v1() && worker.features.observe_v2());
+
+        let v1 = make_worker();
+        assert!(v1.features.set(&["observe.v1".to_string()]));
+        assert!(v1.features.observe_v1() && !v1.features.observe_v2());
+    }
+
+    #[test]
     fn worker_features_are_bounded() {
         let worker = make_worker();
         let mut features: Vec<String> = (0..40).map(|i| format!("feature.{i}")).collect();
@@ -672,9 +694,13 @@ mod tests {
         let snapshot = worker.clone();
         registry.register_worker(worker);
 
-        registry.set_worker_features(&snapshot.id, &["observe.v1".to_string()]);
+        registry.set_worker_features(
+            &snapshot.id,
+            &["observe.v1".to_string(), "observe.v2".to_string()],
+        );
 
         assert!(snapshot.features.observe_v1());
+        assert!(snapshot.features.observe_v2());
     }
 
     #[test]

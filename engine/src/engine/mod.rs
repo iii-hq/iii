@@ -721,7 +721,9 @@ impl Engine {
                     self.observers.refused_send(invocation_id, size, limit);
                     let _ = invocation
                         .sender
-                        .send(Err(payload_too_large_error(size, limit, upgrade)));
+                        .send(crate::invocation::Completion::from(Err(
+                            payload_too_large_error(size, limit, upgrade),
+                        )));
                 }
                 worker.remove_invocation(&invocation_id).await;
                 None
@@ -1388,6 +1390,10 @@ impl Engine {
                             serde_json::json!(worker.id.to_string()),
                         );
                     }
+                    // Nobody waits for the answer to a `void` call, or to one
+                    // without an id: the engine drops a refusal of it.
+                    let answer = (*invocation_id)
+                        .filter(|_| !matches!(action, Some(crate::protocol::CallAction::Void)));
                     let call = crate::observer::ObserverCall {
                         invocation_id: *invocation_id,
                         data,
@@ -1396,12 +1402,12 @@ impl Engine {
                         activation: activation.clone(),
                         traceparent: traceparent.clone(),
                         baggage: baggage.clone(),
+                        fire_and_forget: answer.is_none(),
                     };
-                    let answer = !matches!(action, Some(crate::protocol::CallAction::Void));
-                    let (invocation_id, function_id) = (*invocation_id, function_id.clone());
+                    let function_id = function_id.clone();
                     tokio::spawn(async move {
                         let outcome = engine.observers.observer_call(&worker, call).await;
-                        if let (true, Some(invocation_id)) = (answer, invocation_id) {
+                        if let Some(invocation_id) = answer {
                             let (result, error) = match outcome {
                                 Ok(result) => (result, None),
                                 Err(error) => (None, Some(error)),
@@ -1857,36 +1863,56 @@ impl Engine {
                 error,
                 traceparent: _,
                 baggage: _,
-                observed: _,
+                observed,
             } => {
                 tracing::debug!(
                     function_id = %function_id,
                     invocation_id = %invocation_id,
                     result = ?result,
                     error = ?error,
+                    observed = observed.len(),
                     "InvocationResult"
                 );
 
                 worker.remove_invocation(invocation_id).await;
 
                 if let Some(invocation) = self.invocations.remove(invocation_id) {
-                    let Message::InvocationResult { result, error, .. } = msg.into_owned() else {
+                    let Message::InvocationResult {
+                        result,
+                        error,
+                        observed,
+                        ..
+                    } = msg.into_owned()
+                    else {
                         unreachable!("matched InvocationResult above");
                     };
-                    if let Some(err) = error {
-                        let _ = invocation.sender.send(Err(err));
-                    } else {
-                        let _ = invocation.sender.send(Ok(result));
+                    // An `observe.v2` host delivered the call itself: the
+                    // routed hook activates the observers it lists (v2
+                    // §8.2). The list is read from no other connection, and
+                    // never reaches the caller.
+                    let delivered =
+                        worker
+                            .features
+                            .observe_v2()
+                            .then(|| crate::observer::HostDelivery {
+                                host: worker.id,
+                                observed,
+                            });
+                    let result = match error {
+                        Some(err) => Err(err),
+                        None => Ok(result),
                     };
+                    let _ = invocation
+                        .sender
+                        .send(crate::invocation::Completion { result, delivered });
                     return Ok(());
                 } else {
                     // Expected when the caller disconnected before the
                     // executor finished (client-side call timeout,
                     // Ctrl-C, etc). `cleanup_worker` already halted the
                     // invocation, so the late result has nowhere to go.
-                    // Kept at debug to avoid log noise for a normal
-                    // condition — previously this was warn and produced
-                    // a pair of scary lines on every slow sandbox::exec.
+                    // Logged at debug: it is a normal condition, and a
+                    // slow call such as sandbox::exec meets it routinely.
                     tracing::debug!(
                         invocation_id = %invocation_id,
                         "Did not find caller for invocation (caller already disconnected)"

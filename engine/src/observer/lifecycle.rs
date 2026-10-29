@@ -248,19 +248,24 @@ pub(crate) struct DropCounters {
     /// timeout) before its result could be evaluated.
     pub cancelled: AtomicU64,
     /// A report item naming the observer was malformed (an unknown
-    /// `status`).
+    /// `status`), or reported a routed call.
     pub invalid_report: AtomicU64,
     /// The event alone was larger than a limit it must fit in whole: what
     /// the engine holds for observers, or what the target worker receives.
     /// No amount of waiting makes room for it, unlike `OVERFLOW`.
     pub too_large: AtomicU64,
+    /// A fire-and-forget call through the observer from a connection that
+    /// does not host its function.
+    pub not_function_owner: AtomicU64,
+    /// A fire-and-forget call through the observer while it was not active.
+    pub observer_not_active: AtomicU64,
     /// Each counter's value when it last went to the metric, in
     /// [`Self::counters`] order (see [`Self::unexported`]).
-    exported: [AtomicU64; 8],
+    exported: [AtomicU64; 10],
 }
 
 impl DropCounters {
-    fn counters(&self) -> [(&'static str, &AtomicU64); 8] {
+    fn counters(&self) -> [(&'static str, &AtomicU64); 10] {
         [
             (observe_codes::INACTIVE, &self.inactive),
             (observe_codes::LOOP_GUARD, &self.loop_guard),
@@ -270,6 +275,11 @@ impl DropCounters {
             (CANCELLED, &self.cancelled),
             (INVALID_REPORT, &self.invalid_report),
             (observe_codes::TOO_LARGE, &self.too_large),
+            (observe_codes::NOT_FUNCTION_OWNER, &self.not_function_owner),
+            (
+                observe_codes::OBSERVER_NOT_ACTIVE,
+                &self.observer_not_active,
+            ),
         ]
     }
 
@@ -300,9 +310,8 @@ impl DropCounters {
 /// known (not in protocol.md §4, which has no such case).
 pub(crate) const CANCELLED: &str = "CANCELLED";
 
-/// Drop reason for report items that do not decode or carry a `status` this
-/// engine does not know. Not in protocol.md §4's list, which has no reason
-/// for a malformed report.
+/// Drop reason for report items that do not decode, carry a `status` this
+/// engine does not know, or report a routed call (decision 38).
 pub(crate) const INVALID_REPORT: &str = "INVALID_REPORT";
 
 /// Activations that started and did not complete, by reason. Not drops: the

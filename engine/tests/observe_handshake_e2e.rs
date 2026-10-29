@@ -83,6 +83,10 @@ async fn the_engine_advertises_its_features_and_records_the_workers() {
         json!(ENGINE_FEATURES),
         "workerregistered lists what the engine supports"
     );
+    assert_eq!(
+        registered["features"],
+        json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
+    );
     let worker_id: Uuid = registered["worker_id"]
         .as_str()
         .expect("worker_id")
@@ -104,6 +108,45 @@ async fn the_engine_advertises_its_features_and_records_the_workers() {
         })
         .await,
         "the declared features are recorded on the connection"
+    );
+    assert!(
+        !engine
+            .worker_registry
+            .get_worker(&worker_id)
+            .unwrap()
+            .features
+            .observe_v2(),
+        "observe.v1 alone: the engine evaluates this host's routed calls"
+    );
+}
+
+/// A v2 SDK declares `observe.v1` and `observe.v2`: it delivers the calls of
+/// the functions it hosts.
+#[tokio::test]
+async fn a_worker_declaring_observe_v2_delivers_its_own_calls() {
+    let (port, engine) = spawn_engine().await;
+    let (mut ws, registered) = connect(port).await;
+    let worker_id: Uuid = registered["worker_id"].as_str().unwrap().parse().unwrap();
+
+    send(
+        &mut ws,
+        workers_register(Some(json!([
+            "observe.v1",
+            "observe.v2",
+            "local-dispatch.v1",
+            "large-messages.v1"
+        ]))),
+    )
+    .await;
+
+    assert!(
+        eventually(|| {
+            engine
+                .worker_registry
+                .get_worker(&worker_id)
+                .is_some_and(|w| w.features.observe_v1() && w.features.observe_v2())
+        })
+        .await
     );
 }
 
