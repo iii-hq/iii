@@ -1,5 +1,6 @@
-"""Observable functions against the real engine (README §7 phase 2): local
-dispatch, the reporter, the owner hooks and owner delivery (sdk.md §7)."""
+"""Observable functions against the real engine: local dispatch, the reporter,
+the observer hooks, matching by keys, deliver hooks that call through an
+observer, event sources and private functions."""
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from observe_e2e_utils import (
     wait_for,
 )
 
-from iii import InvocationError, ObserveHooks, Observer, ObserveRejection
+from iii import Call, InvocationError, Observer, ObserveRejection
 from iii.iii import III
 
 ALL = ["input", "output", "error", "caller", "metadata"]
@@ -42,7 +43,7 @@ def test_equivalence_dispatch_auto_and_remote_give_identical_envelopes(worker: A
         return {"total": data["qty"] * 10, "sku": data["sku"]}
 
     def checkout(data: dict[str, Any]) -> Any:
-        return owner.trigger(
+        return owner.call(
             {
                 "function_id": fid("py-eq::price"),
                 "payload": {"sku": "A-1", "qty": 3, "fail": data.get("fail")},
@@ -72,7 +73,7 @@ def test_equivalence_dispatch_auto_and_remote_give_identical_envelopes(worker: A
     def run(dispatch: str, fail: bool) -> Activation:
         before = len(got)
         try:
-            owner.trigger(
+            owner.call(
                 {
                     "function_id": fid("py-eq::checkout"),
                     "payload": {"dispatch": dispatch, "fail": fail},
@@ -116,11 +117,11 @@ def test_zero_wire_unobserved_local_calls_send_zero_frames(worker: Any, fid: Any
     wait_for(lambda: owner._functions[fid("py-zw::control")].observe.is_observed(), "the control observer")
     frames = FrameCounter(owner)
     for i in range(ZERO_WIRE_CALLS):
-        owner.trigger({"function_id": fid("py-zw::inc"), "payload": i})
+        owner.call({"function_id": fid("py-zw::inc"), "payload": i})
     flush_client(owner)  # anything a call put on the wire is written by now
     assert [t for t in frames.types if t != "localinvocationstats"] == []
     # positive control: the counter does see an observed call's report
-    owner.trigger({"function_id": fid("py-zw::control"), "payload": 1})
+    owner.call({"function_id": fid("py-zw::control"), "payload": 1})
     wait_for(lambda: "invocationsobserved" in frames.types, "the control's report")
 
 
@@ -137,7 +138,7 @@ def test_activation_race_after_ready_every_local_invocation_is_reported(worker: 
     handle.ready(timeout=10)
     frames = FrameCounter(owner)
     for i in range(n):
-        owner.trigger({"function_id": fid("py-race::fn"), "payload": i})
+        owner.call({"function_id": fid("py-race::fn"), "payload": i})
     flush_client(owner)
     sent = list(frames.types)  # before the barrier below, which makes calls of its own
     exactly(got, n, f"{n} activations", timeout=10)
@@ -147,26 +148,24 @@ def test_activation_race_after_ready_every_local_invocation_is_reported(worker: 
 
 
 class Cron:
-    """A cron-like owner: one index entry per expression, ticks emitted to that expression's observers."""
+    """A cron-like source: its handler returns the tick, its hooks keep one index entry per expression, and its
+    match keys give each tick to that expression's observers."""
 
     def __init__(self, client: III) -> None:
         self.client = client
         # One id per test: observers of an earlier test stay attached (suspended)
-        # for the engine's grace period, and would be pushed to this owner too.
+        # for the engine's grace period, and would be pushed to this worker too.
         self.fn = f"py-cron-{uuid.uuid4().hex[:8]}::on-tick"
         self.index: dict[str, list[Observer]] = {}
         self.added: list[Observer] = []
         self.removed: list[Observer] = []
-        self.emitted: list[bool] = []
         #: What happened, in order (hooks returning, the test's own steps).
         self.events: list[str] = []
         self.reject_expression: str | None = None
         self.add_delay = 0.0
 
-        def on_tick(tick: dict[str, Any]) -> None:
-            for obs in list(self.index.get(tick["expression"], [])):
-                self.emitted.append(obs.emit(tick))
-
+        # by id, before registering: the hooks run for every observer
+        @client.on_observer_added(self.fn)
         def on_added(obs: Observer) -> None:
             self.added.append(obs)
             if self.add_delay:
@@ -176,25 +175,25 @@ class Cron:
             self.index.setdefault(obs.args["expression"], []).append(obs)
             self.events.append(f"hook returned {obs.id}")
 
+        @client.on_observer_removed(self.fn)
         def on_removed(obs: Observer) -> None:
             self.removed.append(obs)
             if obs in self.index.get(obs.args["expression"], []):
                 self.index[obs.args["expression"]].remove(obs)
 
+        client.on_observer_match(
+            self.fn, observer=lambda obs: obs.args["expression"], call=lambda call: call.input["expression"]
+        )
         self.ref = client.register_function(
             self.fn,
-            on_tick,
-            observe=ObserveHooks(
-                delivery="owner",
-                args_format={
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["expression"],
-                    "properties": {"expression": {"type": "string"}},
-                },
-                on_observer_added=on_added,
-                on_observer_removed=on_removed,
-            ),
+            lambda tick: tick,
+            args_format={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["expression"],
+                "properties": {"expression": {"type": "string"}},
+            },
+            private=True,
         )
 
 
@@ -219,9 +218,7 @@ def test_args_are_what_the_observer_sent_and_bad_args_are_invalid_args_before_an
     assert len(cron.added) == 1
 
 
-def test_routing_observers_only_receive_what_the_owner_emits_to_them_even_right_after_ready(
-    worker: Any, fid: Any
-) -> None:
+def test_observers_matched_by_keys_only_receive_their_keys_calls_even_right_after_ready(worker: Any, fid: Any) -> None:
     cron = Cron(worker("cron-owner"))
     watcher = worker("routing-watcher")
     five = collector(watcher, fid("py-routing::five"))
@@ -231,10 +228,10 @@ def test_routing_observers_only_receive_what_the_owner_emits_to_them_even_right_
     a.ready(timeout=10)
     b.ready(timeout=10)
     local_dispatch_ready(cron.client, cron.fn)
-    # right after ready(): the owner indexed the observer before acking it
-    cron.client.trigger({"function_id": cron.fn, "payload": {"expression": "*/10", "n": 1}})
-    cron.client.trigger({"function_id": cron.fn, "payload": {"expression": "*/5", "n": 2}})
-    cron.client.trigger({"function_id": cron.fn, "payload": {"expression": "* * *", "n": 3}})
+    # right after ready(): the source filed the observer before acking it
+    cron.client.call({"function_id": cron.fn, "payload": {"expression": "*/10", "n": 1}})
+    cron.client.call({"function_id": cron.fn, "payload": {"expression": "*/5", "n": 2}})
+    cron.client.call({"function_id": cron.fn, "payload": {"expression": "* * *", "n": 3}})
     exactly(ten, 1, "the */10 activation")
     exactly(five, 1, "the */5 activation")
     assert ten[0].data["observer_id"] == b.id and ten[0].data["input"]["n"] == 1
@@ -261,7 +258,7 @@ def test_hooks_once_per_add_before_the_ack_a_raise_rejects_ready_the_engine_keep
     assert cron.events == [f"hook returned {ok.id}", f"ready {ok.id}"]
     assert len([o for o in cron.added if o.id == ok.id]) == 1
     assert cron.added[0].filters == {"$and": [{"input.n": {"$gte": 2}}]}
-    got = watcher.trigger({"function_id": "engine::observers::get", "payload": {"id": ok.id}})
+    got = watcher.call({"function_id": "engine::observers::get", "payload": {"id": ok.id}})
     assert '"input.n"' in __import__("json").dumps(got)
 
     bad = watcher.observe({"function_id": cron.fn, "args": {"expression": "bad"}}, fid("py-hooks::target"))
@@ -275,13 +272,13 @@ def test_hooks_once_per_add_before_the_ack_a_raise_rejects_ready_the_engine_keep
     assert ok.id not in [o.id for o in cron.ref.observers()]
 
 
-def test_emit_false_and_no_frame_when_filtered_and_the_target_sees_the_envelope_and_the_metadata_sidecar(
+def test_a_call_no_filter_matches_sends_no_frame_and_the_target_sees_the_envelope_and_the_metadata_sidecar(
     worker: Any,
     fid: Any,
 ) -> None:
     cron = Cron(worker("cron-owner"))
-    watcher = worker("emit-watcher")
-    got = collector(watcher, fid("py-emit::target"))
+    watcher = worker("filtered-watcher")
+    got = collector(watcher, fid("py-filtered::target"))
     handle = watcher.observe(
         {
             "function_id": cron.fn,
@@ -289,18 +286,17 @@ def test_emit_false_and_no_frame_when_filtered_and_the_target_sees_the_envelope_
             "filters": {"input.n": {"$gt": 10}},
             "capture": ["input", "caller"],
         },
-        fid("py-emit::target"),
+        fid("py-filtered::target"),
         {"metadata": {"__binding": "digest"}},
     )
     handle.ready(timeout=10)
     local_dispatch_ready(cron.client, cron.fn)
     frames = FrameCounter(cron.client)
-    cron.client.trigger({"function_id": cron.fn, "payload": {"expression": "*/5", "n": 1}})
+    cron.client.call({"function_id": cron.fn, "payload": {"expression": "*/5", "n": 1}})
     flush_client(cron.client)
-    assert cron.emitted == [False]
     assert frames.count == 0
-    cron.client.trigger({"function_id": cron.fn, "payload": {"expression": "*/5", "n": 11}})
-    exactly(got, 1, "the emitted activation")
+    cron.client.call({"function_id": cron.fn, "payload": {"expression": "*/5", "n": 11}})
+    exactly(got, 1, "the activation")
     data = got[0].data
     assert (data["observer_id"], data["status"]) == (handle.id, "success")
     assert data["input"] == {"expression": "*/5", "n": 11}
@@ -308,31 +304,30 @@ def test_emit_false_and_no_frame_when_filtered_and_the_target_sees_the_envelope_
     assert got[0].metadata == {"__binding": "digest"}
 
 
-def test_call_returns_the_targets_result_filters_not_matched_observer_not_active_not_owner_delivered(
+def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_disposed_one_is_refused(
     worker: Any,
     fid: Any,
 ) -> None:
     owner = worker("http-owner")
     on_request_id = f"py-http-{uuid.uuid4().hex[:8]}::on-request"
     routes: dict[str, Observer] = {}
-    auto_obs: list[Observer] = []
+    owner.on_observer_added(on_request_id, lambda obs: routes.__setitem__(obs.args["path"], obs))
+    owner.on_observer_removed(on_request_id, lambda obs: routes.pop(obs.args["path"], None))
 
-    def on_request(req: dict[str, Any]) -> Any:
-        obs = routes.get(req["path"])
-        return obs.call(req) if obs else {"status": 404}
+    @owner.on_observer_deliver(on_request_id)
+    def route(call: Call[Any, Any], observers: Any) -> Any:
+        obs = routes.get(call.input["path"])
+        if obs is None:
+            return {"status": 404}
+        if not obs.matches(call):
+            return {"status": 422}
+        return owner.call({"observer": obs, "payload": call.input})
 
     owner.register_function(
         on_request_id,
-        on_request,
-        observe=ObserveHooks(
-            delivery="owner",
-            args_format={"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}}},
-            on_observer_added=lambda obs: routes.__setitem__(obs.args["path"], obs),
-            on_observer_removed=lambda obs: routes.pop(obs.args["path"], None),
-        ),
-    )
-    owner.register_function(
-        fid("py-http::auto"), lambda d: None, observe=ObserveHooks(on_observer_added=auto_obs.append)
+        lambda request: request,
+        args_format={"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}}},
+        private=True,
     )
     app = worker("http-app")
     metadata_seen: list[Any] = []
@@ -341,42 +336,51 @@ def test_call_returns_the_targets_result_filters_not_matched_observer_not_active
         metadata_seen.append(metadata)
         return {"status": 200, "body": {"path": req["path"]}}
 
-    app.register_function("users::get", users_get)
-    route = app.observe(
+    users_get_id = fid("py-http::users-get")
+    app.register_function(users_get_id, users_get)
+    route_handle = app.observe(
         {"function_id": on_request_id, "args": {"path": "/users"}, "filters": {"input.tenant": {"$eq": "acme"}}},
-        "users::get",
+        users_get_id,
         {"metadata": {"route": "users"}},
     )
-    on_auto = app.observe({"function_id": fid("py-http::auto")}, "users::get")
-    route.ready(timeout=10)
-    on_auto.ready(timeout=10)
+    route_handle.ready(timeout=10)
     local_dispatch_ready(owner, on_request_id)
 
-    assert owner.trigger({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "acme"}}) == {
+    assert owner.call({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "acme"}}) == {
         "status": 200,
         "body": {"path": "/users"},
     }
-    assert metadata_seen == [{"route": "users"}]
+    assert metadata_seen == [{"route": "users"}]  # the observer's metadata sidecar
+    assert owner.call({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "x"}}) == {"status": 422}
+    assert owner.call({"function_id": on_request_id, "payload": {"path": "/nope"}}) == {"status": 404}
+
+    # only the worker that hosts the observed function may call through the observer
+    with pytest.raises(InvocationError) as raised:
+        app.call({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "acme"}})
+    assert raised.value.code == "FORBIDDEN"  # private: no other worker calls it
 
     obs = routes["/users"]
-    frames = FrameCounter(owner)
-    with pytest.raises(InvocationError) as raised:
-        obs.call({"path": "/users", "tenant": "other"})
-    assert raised.value.code == "FILTERS_NOT_MATCHED"
-    assert frames.count == 0
-
-    with pytest.raises(InvocationError) as raised:
-        auto_obs[0].emit({})
-    assert raised.value.code == "NOT_OWNER_DELIVERED"
-    with pytest.raises(InvocationError) as raised:
-        auto_obs[0].call({})
-    assert raised.value.code == "NOT_OWNER_DELIVERED"
-
-    route.dispose()
+    route_handle.dispose()
     wait_for(lambda: "/users" not in routes, "on_observer_removed")
     with pytest.raises(InvocationError) as raised:
-        obs.call({"path": "/users", "tenant": "acme"})
-    assert raised.value.code == "OBSERVER_NOT_ACTIVE"
+        owner.call({"observer": obs, "payload": {"path": "/users", "tenant": "acme"}})
+    assert raised.value.code in ("OBSERVER_NOT_FOUND", "OBSERVER_NOT_ACTIVE")
+
+
+def test_an_event_source_sends_each_event_once_and_its_observers_observe_the_event(worker: Any, fid: Any) -> None:
+    source = worker("source")
+    watcher = worker("source-watcher")
+    source.register_function(fid("py-src::on-thing"), lambda event: event, private=True)
+    got = collector(watcher, fid("py-src::target"))
+    handle = watcher.observe(fid("py-src::on-thing"), fid("py-src::target"))
+    handle.ready(timeout=10)
+    local_dispatch_ready(source, fid("py-src::on-thing"))
+    frames = FrameCounter(source)
+    event = {"kind": "thing", "n": 7}
+    assert source.call({"function_id": fid("py-src::on-thing"), "payload": event}) is event  # by reference
+    exactly(got, 1, "the activation")
+    assert got[0].data["input"] == got[0].data["output"] == event
+    assert frames.items[0].get("output_is_input") is True and "output" not in frames.items[0]
 
 
 def test_reconnect_local_dispatch_keeps_serving_reports_flush_after_and_the_diff_calls_the_right_hooks(
@@ -394,7 +398,7 @@ def test_reconnect_local_dispatch_keeps_serving_reports_flush_after_and_the_diff
 
     drop_connection(owner)
     wait_for(lambda: owner.get_connection_state() != "connected", "the disconnect")
-    assert owner.trigger({"function_id": fid("py-rc::fn"), "payload": 21}) == 42  # still local
+    assert owner.call({"function_id": fid("py-rc::fn"), "payload": 21}) == 42  # still local
     wait_for(lambda: owner._registered_on_connection, "the reconnect", timeout=10)
     exactly(got, 1, "the activation reported after the reconnect", timeout=10)
     assert got[0].data["input"] == 21
@@ -402,13 +406,9 @@ def test_reconnect_local_dispatch_keeps_serving_reports_flush_after_and_the_diff
     # the diff: an observer removed while the owner was away
     added: list[str] = []
     removed: list[str] = []
-    owner.register_function(
-        fid("py-rc::source"),
-        lambda d: None,
-        observe=ObserveHooks(
-            on_observer_added=lambda o: added.append(o.id), on_observer_removed=lambda o: removed.append(o.id)
-        ),
-    )
+    source = owner.register_function(fid("py-rc::source"), lambda d: None)
+    source.on_observer_added(lambda o: added.append(o.id))
+    source.on_observer_removed(lambda o: removed.append(o.id))
     gone = watcher.observe({"function_id": fid("py-rc::source")}, fid("py-rc::target"))
     stays = watcher.observe({"function_id": fid("py-rc::source")}, fid("py-rc::target"))
     gone.ready(timeout=10)

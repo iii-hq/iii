@@ -9,10 +9,6 @@ __all__ = [
     "AuthResult",
     "OnFunctionRegistrationInput",
     "OnFunctionRegistrationResult",
-    "OnTriggerRegistrationInput",
-    "OnTriggerRegistrationResult",
-    "OnTriggerTypeRegistrationInput",
-    "OnTriggerTypeRegistrationResult",
 ]
 
 
@@ -51,9 +47,6 @@ class AuthResult(BaseModel):
         allowed_functions: Additional function IDs to allow beyond ``expose_functions``,
             in the ``default`` namespace only. Put per-namespace grants in ``namespaces``.
         forbidden_functions: Function IDs to deny even if they match ``expose_functions``.
-        allowed_trigger_types: Trigger type IDs the worker may register triggers for.
-            When ``None``, all types are allowed.
-        allow_trigger_type_registration: Whether the worker may register new trigger types.
         allow_function_registration: Whether the worker may register new functions. Defaults to ``True`` if omitted.
         function_registration_prefix: Optional prefix applied to all function IDs registered
             by this worker.
@@ -81,14 +74,6 @@ class AuthResult(BaseModel):
         default_factory=list,
         description="Function IDs to deny even if they match ``expose_functions``.",
     )
-    allowed_trigger_types: list[str] | None = Field(
-        default=None,
-        description="Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed.",
-    )
-    allow_trigger_type_registration: bool = Field(
-        default=False,
-        description="Whether the worker may register new trigger types. Defaults to ``False``.",
-    )
     allow_function_registration: bool = Field(
         default=True,
         description="Whether the worker may register new functions. Defaults to ``True``.",
@@ -103,83 +88,6 @@ class AuthResult(BaseModel):
     )
 
 
-class OnTriggerTypeRegistrationInput(BaseModel):
-    """Input passed to the ``on_trigger_type_registration_function_id`` hook
-    when a worker attempts to register a new trigger type through the RBAC port.
-    Return an ``OnTriggerTypeRegistrationResult`` with the (possibly mapped)
-    fields, or raise an exception to deny the registration.
-
-    Attributes:
-        trigger_type_id: ID of the trigger type being registered.
-        description: Human-readable description of the trigger type.
-        context: Auth context from ``AuthResult.context`` for this session.
-    """
-
-    trigger_type_id: str = Field(description="ID of the trigger type being registered.")
-    description: str = Field(description="Human-readable description of the trigger type.")
-    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
-
-
-class OnTriggerTypeRegistrationResult(BaseModel):
-    """Result returned from the ``on_trigger_type_registration_function_id`` hook.
-    Omitted fields keep the original value from the registration request.
-
-    Attributes:
-        trigger_type_id: Mapped trigger type ID.
-        description: Mapped description.
-    """
-
-    trigger_type_id: str | None = Field(default=None, description="Mapped trigger type ID.")
-    description: str | None = Field(default=None, description="Mapped description.")
-
-
-class OnTriggerRegistrationInput(BaseModel):
-    """Input passed to the ``on_trigger_registration_function_id`` hook
-    when a worker attempts to register a trigger through the RBAC port.
-    Return an ``OnTriggerRegistrationResult`` with the (possibly mapped)
-    fields, or raise an exception to deny the registration.
-
-    Attributes:
-        trigger_id: ID of the trigger being registered.
-        trigger_type: Trigger type identifier.
-        function_id: ID of the function this trigger is bound to.
-        config: Trigger-specific configuration.
-        metadata: Arbitrary metadata attached to the trigger.
-        namespace: Namespace the trigger target resolves in. It is the explicit
-            registration value, or ``default`` when the registration omitted it.
-        context: Auth context from ``AuthResult.context`` for this session.
-    """
-
-    trigger_id: str = Field(description="ID of the trigger being registered.")
-    trigger_type: str = Field(description="Trigger type identifier.")
-    function_id: str = Field(description="ID of the function this trigger is bound to.")
-    config: Any = Field(default=None, description="Trigger-specific configuration.")
-    metadata: dict[str, Any] | None = Field(default=None, description="Arbitrary metadata attached to the trigger.")
-    namespace: str = Field(
-        default="default",
-        description="Namespace the trigger's target resolves in (explicit, or `default` when absent); "
-        "the same id can exist in several namespaces, so the hook needs this to authorize per namespace.",
-    )
-    context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
-
-
-class OnTriggerRegistrationResult(BaseModel):
-    """Result returned from the ``on_trigger_registration_function_id`` hook.
-    Omitted fields keep the original value from the registration request.
-
-    Attributes:
-        trigger_id: Mapped trigger ID.
-        trigger_type: Mapped trigger type.
-        function_id: Mapped function ID.
-        config: Mapped trigger configuration.
-    """
-
-    trigger_id: str | None = Field(default=None, description="Mapped trigger ID.")
-    trigger_type: str | None = Field(default=None, description="Mapped trigger type.")
-    function_id: str | None = Field(default=None, description="Mapped function ID.")
-    config: Any = Field(default=None, description="Mapped trigger configuration.")
-
-
 class OnFunctionRegistrationInput(BaseModel):
     """Input passed to the ``on_function_registration_function_id`` hook
     when a worker attempts to register a function through the RBAC port.
@@ -192,6 +100,9 @@ class OnFunctionRegistrationInput(BaseModel):
         metadata: Arbitrary metadata attached to the function.
         namespace: Namespace the function registers in. It is the explicit
             registration value, or ``default`` when the registration omitted it.
+        private: Whether only the registering worker may call the function.
+        observable: Whether other workers may observe the function.
+        args_format: JSON Schema of the observers' ``args``, when the registration sets one.
         context: Auth context from ``AuthResult.context`` for this session.
     """
 
@@ -203,19 +114,31 @@ class OnFunctionRegistrationInput(BaseModel):
         description="Namespace the function registers in; the same id can exist in several namespaces, "
         "so the hook needs this to authorize per namespace.",
     )
+    private: bool = Field(default=False, description="Whether only the registering worker may call the function.")
+    observable: bool = Field(default=True, description="Whether other workers may observe the function.")
+    args_format: Any = Field(
+        default=None, description="JSON Schema of the observers' ``args``, when the registration sets one."
+    )
     context: dict[str, Any] = Field(description="Auth context from ``AuthResult.context`` for this session.")
 
 
 class OnFunctionRegistrationResult(BaseModel):
     """Result returned from the ``on_function_registration_function_id`` hook.
-    Omitted fields keep the original value from the registration request.
+    Omitted fields keep the original value from the registration request:
+    return ``model_dump(exclude_none=True)``.
 
     Attributes:
         function_id: Mapped function ID.
         description: Mapped description.
         metadata: Mapped metadata.
+        private: Replaces the registration's ``private``.
+        observable: Replaces the registration's ``observable``.
+        args_format: Replaces the registration's ``args_format``.
     """
 
     function_id: str | None = Field(default=None, description="Mapped function ID.")
     description: str | None = Field(default=None, description="Mapped description.")
     metadata: dict[str, Any] | None = Field(default=None, description="Mapped metadata.")
+    private: bool | None = Field(default=None, description="Replaces the registration's ``private``.")
+    observable: bool | None = Field(default=None, description="Replaces the registration's ``observable``.")
+    args_format: Any = Field(default=None, description="Replaces the registration's ``args_format``.")

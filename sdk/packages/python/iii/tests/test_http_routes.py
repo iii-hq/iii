@@ -1,8 +1,7 @@
-"""Integration tests for HTTP API trigger endpoints."""
+"""Integration tests for HTTP routes: observers of ``http::on-request``."""
 
 import asyncio
 import json
-import time
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -10,6 +9,7 @@ import aiohttp
 import pytest
 from iii_helpers.http import http
 
+from iii import ObserveRejection
 from iii.iii import III
 from iii.types import StreamRequest, StreamResponse
 
@@ -28,18 +28,11 @@ async def test_get_endpoint(engine_http_url, iii_client: III):
         return {"status_code": 200, "body": {"message": "Hello from GET"}}
 
     fn_ref = iii_client.register_function("test.api.get.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.get.py",
-            "config": {
-                "api_path": "test/py/hello",
-                "http_method": "GET",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/hello"}},
+        "test.api.get.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/hello") as resp:
@@ -48,7 +41,7 @@ async def test_get_endpoint(engine_http_url, iii_client: III):
             assert data["message"] == "Hello from GET"
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -63,18 +56,11 @@ async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
         }
 
     fn_ref = iii_client.register_function("test.api.post.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.post.py",
-            "config": {
-                "api_path": "test/py/items",
-                "http_method": "POST",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/test/py/items"}},
+        "test.api.post.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -87,7 +73,7 @@ async def test_post_endpoint_with_body(engine_http_url, iii_client: III):
             assert data["received"]["name"] == "test item"
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -111,18 +97,11 @@ async def test_raw_json_request_body(engine_http_url, iii_client: III):
         await response.writer.close_async()
 
     fn_ref = iii_client.register_function(function_id, handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": function_id,
-            "config": {
-                "api_path": "/test/py/json/raw",
-                "http_method": "POST",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/test/py/json/raw"}},
+        function_id,
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -136,47 +115,42 @@ async def test_raw_json_request_body(engine_http_url, iii_client: III):
             assert data["raw_body"] == raw_json
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
-async def test_conflicting_route_structure_is_rejected(engine_http_url, iii_client: III, caplog):
+async def test_conflicting_route_structure_is_rejected(engine_http_url, iii_client: III):
     """Two routes with identical structure but swapped path-param names must not
-    crash the engine: the first keeps serving and the second is rejected with a
-    logged registration error."""
-    caplog.set_level("ERROR", logger="iii")
+    crash the engine: the first keeps serving and the second observer is
+    rejected with ``HTTP_ROUTE_CONFLICT``."""
 
     def handler(input_data):
         return {"status_code": 200, "body": {"ok": True}}
 
     # First route registers normally.
     fn_a = iii_client.register_function("test.api.conflict.a.py", handler)
-    trig_a = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.conflict.a.py",
-            "config": {
-                "api_path": "test/py/conflict/:listId/:userId",
-                "http_method": "GET",
-            },
-        }
+    route_a = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/conflict/:listId/:userId"}},
+        "test.api.conflict.a.py",
     )
 
     # Second route has the same axum shape with swapped param names -> conflict.
     fn_b = iii_client.register_function("test.api.conflict.b.py", handler)
-    trig_b = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.conflict.b.py",
-            "config": {
-                "api_path": "test/py/conflict/:userId/:listId",
-                "http_method": "GET",
-            },
-        }
+    route_b = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/conflict/:userId/:listId"}},
+        "test.api.conflict.b.py",
     )
 
-    # Give the engine time to process both registrations and reply.
-    time.sleep(0.5)
+    # The http worker rejects whichever route it processes second (wire order is
+    # not guaranteed): one observer is active, the other in error.
+    outcomes = []
+    for route in (route_a, route_b):
+        try:
+            route.ready(timeout=10)
+            outcomes.append("active")
+        except ObserveRejection as rejection:
+            outcomes.append(rejection.code)
+    assert sorted(outcomes) == ["HTTP_ROUTE_CONFLICT", "active"]
 
     # Engine stayed alive and the first route still serves — no panic.
     async with aiohttp.ClientSession() as session:
@@ -185,16 +159,10 @@ async def test_conflicting_route_structure_is_rejected(engine_http_url, iii_clie
             data = await resp.json()
             assert data["ok"] is True
 
-    # The conflicting registration was surfaced as an error. The engine rejects
-    # whichever route it processes second (wire order is not guaranteed), so assert on
-    # the conflict message rather than a specific route or the random trigger id.
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("conflicts with already-registered route" in m for m in messages), messages
-
     fn_a.unregister()
-    trig_a.unregister()
+    route_a.dispose()
     fn_b.unregister()
-    trig_b.unregister()
+    route_b.dispose()
 
 
 @pytest.mark.asyncio
@@ -208,18 +176,11 @@ async def test_path_parameters(engine_http_url, iii_client: III):
         }
 
     fn_ref = iii_client.register_function("test.api.getbyid.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.getbyid.py",
-            "config": {
-                "api_path": "test/py/items/:id",
-                "http_method": "GET",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/items/:id"}},
+        "test.api.getbyid.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/items/abc123") as resp:
@@ -228,7 +189,7 @@ async def test_path_parameters(engine_http_url, iii_client: III):
             assert data["id"] == "abc123"
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -249,18 +210,11 @@ async def test_query_parameters(engine_http_url, iii_client: III):
         }
 
     fn_ref = iii_client.register_function("test.api.search.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.search.py",
-            "config": {
-                "api_path": "test/py/search",
-                "http_method": "GET",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/search"}},
+        "test.api.search.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/search?q=hello&limit=10") as resp:
@@ -270,7 +224,7 @@ async def test_query_parameters(engine_http_url, iii_client: III):
             assert data["limit"] == "10"
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -281,18 +235,11 @@ async def test_custom_status_code(engine_http_url, iii_client: III):
         return {"status_code": 404, "body": {"error": "Not found"}}
 
     fn_ref = iii_client.register_function("test.api.notfound.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.notfound.py",
-            "config": {
-                "api_path": "test/py/missing",
-                "http_method": "GET",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/missing"}},
+        "test.api.notfound.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/missing") as resp:
@@ -301,7 +248,7 @@ async def test_custom_status_code(engine_http_url, iii_client: III):
             assert data == {"error": "Not found"}
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -317,18 +264,11 @@ async def test_content_type_on_api_response_return(engine_http_url, iii_client: 
         }
 
     fn_ref = iii_client.register_function("test.api.xml.return.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.xml.return.py",
-            "config": {
-                "api_path": "test/py/xml-return",
-                "http_method": "POST",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/test/py/xml-return"}},
+        "test.api.xml.return.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(f"{engine_http_url}/test/py/xml-return") as resp:
@@ -337,7 +277,7 @@ async def test_content_type_on_api_response_return(engine_http_url, iii_client: 
             assert await resp.text() == xml_body
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -356,18 +296,11 @@ async def test_download_pdf_streaming(engine_http_url, iii_client: III):
         await response.writer.close_async()
 
     fn_ref = iii_client.register_function("test.api.download.pdf.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.download.pdf.py",
-            "config": {
-                "api_path": "test/py/download/pdf",
-                "http_method": "GET",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/download/pdf"}},
+        "test.api.download.pdf.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/download/pdf") as resp:
@@ -378,7 +311,7 @@ async def test_download_pdf_streaming(engine_http_url, iii_client: III):
             assert downloaded == original_pdf
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -407,18 +340,11 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
         await response.writer.close_async()
 
     fn_ref = iii_client.register_function("test.api.upload.pdf.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.upload.pdf.py",
-            "config": {
-                "api_path": "test/py/upload/pdf",
-                "http_method": "POST",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/test/py/upload/pdf"}},
+        "test.api.upload.pdf.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
@@ -432,7 +358,7 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
             assert bytes(received_data) == original_pdf
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -470,18 +396,11 @@ async def test_sse_streaming(engine_http_url, iii_client: III):
         await response.writer.close_async()
 
     fn_ref = iii_client.register_function("test.api.sse.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.sse.py",
-            "config": {
-                "api_path": "test/py/sse",
-                "http_method": "GET",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/test/py/sse"}},
+        "test.api.sse.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{engine_http_url}/test/py/sse") as resp:
@@ -516,7 +435,7 @@ async def test_sse_streaming(engine_http_url, iii_client: III):
                 assert received_events[i]["data"] == expected["data"]
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -545,18 +464,11 @@ async def test_urlencoded_form_data(engine_http_url, iii_client: III):
         await response.writer.close_async()
 
     fn_ref = iii_client.register_function("test.api.form.urlencoded.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.form.urlencoded.py",
-            "config": {
-                "api_path": "test/py/form/urlencoded",
-                "http_method": "POST",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/test/py/form/urlencoded"}},
+        "test.api.form.urlencoded.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     form_body = urlencode({"name": "John Doe", "email": "john@example.com", "age": "30"})
 
@@ -573,7 +485,7 @@ async def test_urlencoded_form_data(engine_http_url, iii_client: III):
             assert data["age"] == "30"
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()
 
 
 @pytest.mark.asyncio
@@ -615,18 +527,11 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
         await response.writer.close_async()
 
     fn_ref = iii_client.register_function("test.api.form.multipart.py", handler)
-    trigger = iii_client.register_trigger(
-        {
-            "type": "http",
-            "function_id": "test.api.form.multipart.py",
-            "config": {
-                "api_path": "test/py/form/multipart",
-                "http_method": "POST",
-            },
-        }
+    route = iii_client.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/test/py/form/multipart"}},
+        "test.api.form.multipart.py",
     )
-
-    time.sleep(0.3)
+    route.ready(timeout=10)
 
     form_data = aiohttp.FormData()
     form_data.add_field("title", "Test Document")
@@ -647,4 +552,4 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
             assert data["body_size"] > len(original_pdf)
 
     fn_ref.unregister()
-    trigger.unregister()
+    route.dispose()

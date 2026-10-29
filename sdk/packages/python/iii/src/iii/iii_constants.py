@@ -1,6 +1,6 @@
 """Constants and configuration types for the III SDK (mirrors iii-constants.ts)."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Final, Literal
 
 from iii_helpers.observability import OtelConfig, ReconnectionConfig
@@ -19,38 +19,6 @@ DEFAULT_ENGINE_URL = "ws://127.0.0.1:49134"
 
 
 DEFAULT_RECONNECTION_CONFIG = ReconnectionConfig()
-
-
-def _not_observed() -> bool:
-    return False
-
-
-def _no_observers() -> list[Any]:
-    return []
-
-
-@dataclass
-class FunctionRef:
-    """Reference to a registered function, allowing programmatic unregistration.
-
-    Attributes:
-        id: The unique function identifier.
-        unregister: Removes this function from the engine.
-    """
-
-    id: str
-    unregister: Callable[[], None]
-    _is_observed: Callable[[], bool] = field(default=_not_observed, repr=False, compare=False)
-    _observers: Callable[[], list[Any]] = field(default=_no_observers, repr=False, compare=False)
-
-    def is_observed(self) -> bool:
-        """Whether any observer is active on this function (one load, for the
-        emit fast path: skip building an event nobody receives)."""
-        return self._is_observed()
-
-    def observers(self) -> list[Any]:
-        """The active observers (``iii.Observer``), as this owner sees them."""
-        return self._observers()
 
 
 @dataclass
@@ -81,11 +49,11 @@ class InitOptions:
             ``III_NAMESPACE`` env var; when neither is set the engine applies
             ``default``. It scopes more than the registration: the worker and
             its functions register here, and everything the worker does
-            afterwards follows it: ``trigger`` resolves its target here and
-            ``register_trigger`` binds here, unless the call names another
-            namespace.
+            afterwards follows it: ``call`` resolves its target here and
+            ``observe`` resolves its source and target here, unless the call
+            names another namespace.
         enable_metrics_reporting: Enable worker metrics via OpenTelemetry. Default ``True``.
-        invocation_timeout_ms: Default timeout for ``worker.trigger()`` invocations in milliseconds. Default ``30000``.
+        invocation_timeout_ms: Default timeout for ``worker.call()`` invocations in milliseconds. Default ``30000``.
         reconnection_config: WebSocket reconnection behavior.
         otel: OpenTelemetry configuration. Enabled by default.
             Set ``{'enabled': False}`` or env ``OTEL_ENABLED=false`` to disable.
@@ -113,15 +81,20 @@ class EngineFunctions:
     INFO_FUNCTIONS: Final[str] = "engine::functions::info"
     LIST_WORKERS: Final[str] = "engine::workers::list"
     INFO_WORKERS: Final[str] = "engine::workers::info"
-    LIST_TRIGGERS: Final[str] = "engine::triggers::list"
-    INFO_TRIGGERS: Final[str] = "engine::triggers::info"
-    LIST_REGISTERED_TRIGGERS: Final[str] = "engine::registered-triggers::list"
-    INFO_REGISTERED_TRIGGERS: Final[str] = "engine::registered-triggers::info"
     REGISTER_WORKER: Final[str] = "engine::workers::register"
 
 
-class EngineTriggers:
-    """Engine trigger ids (parity with the Node SDK)."""
+class EngineSources:
+    """Ids of the engine-hosted functions that are called once per event:
+    observe them with ``iii.observe(EngineSources.FUNCTIONS_CHANGED, target)``
+    (parity with the Node SDK)."""
 
-    FUNCTIONS_AVAILABLE: Final[str] = "engine::functions-available"
-    LOG: Final[str] = "log"
+    FUNCTIONS_CHANGED: Final[str] = "engine::on-functions-changed"
+    WORKERS_CHANGED: Final[str] = "engine::on-workers-changed"
+    OBSERVERS_CHANGED: Final[str] = "engine::on-observers-changed"
+    LOG: Final[str] = "observability::on-log"
+    SPAN: Final[str] = "observability::on-span"
+    CONFIGURATION_UPDATED: Final[str] = "configuration::on-updated"
+    STREAM_CHANGED: Final[str] = "stream::on-changed"
+    STREAM_JOIN: Final[str] = "stream::on-join"
+    STREAM_LEAVE: Final[str] = "stream::on-leave"

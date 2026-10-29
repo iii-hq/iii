@@ -1,5 +1,5 @@
-"""The observing side of observe (sdk.md §2): the handle ``iii.observe``
-returns, kept for replay until it is disposed."""
+"""The observing side of observe: the handle ``iii.observe`` returns, kept for
+replay until it is disposed."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ class ObserverHandle:
         Raises:
             ObserveRejection: The observer turned ``error`` or ``disposed``
                 first; ``code`` is the engine's (``INVALID_ARGS``, ``FORBIDDEN``,
-                an owner's rejection, ``UNSUPPORTED``, ...).
+                the rejection of the observed function's worker, ``UNSUPPORTED``, ...).
             TimeoutError: ``timeout`` elapsed first.
             RuntimeError: Called from the SDK's event-loop thread.
         """
