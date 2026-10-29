@@ -5,6 +5,12 @@
 //! - a local `call()` with no observers (`call_local/no_observers`), and of a
 //!   private function (`call_local/private`): the handler's own cost (compare
 //!   with `handler_alone`), no copy of input or result;
+//! - a local call of a private function with a deliver hook and no observers
+//!   (`call_local/private_deliver_hook`, the shape of `http::on-request`
+//!   with no routes), against the same function without the hook
+//!   (`call_local/private_event`): the hook's `Call` carries the input and the
+//!   handler's output as two values, so the input is copied once before the
+//!   handler takes it;
 //! - a local call with 10 observers, none matching: < 5 µs;
 //! - a local call with 1 matching observer: 1 report item, batched;
 //! - a function matched by keys whose 10,000 observers are filed under other
@@ -39,8 +45,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
-    Call, CallRequest, Error, IIIClient, InitOptions, Match, RegisterFunction, WorkerIdentityMode,
-    register_worker,
+    Call, CallRequest, Error, IIIClient, InitOptions, Match, Observer, RegisterFunction,
+    WorkerIdentityMode, register_worker,
 };
 
 /// Observers filed under keys no benchmark call has, plus one under `hit`.
@@ -214,7 +220,15 @@ fn host() -> Host {
     );
     let keyed = iii.register_function("bench::keyed", echo().private());
     let source = iii.register_function("bench::source", echo().private());
-    for function in [&plain, &private, &ten_none, &one_match, &keyed, &source] {
+    let event = iii.register_function("bench::private-event", echo().private());
+    iii.on_observer_deliver_for(
+        "bench::private-deliver",
+        |call: Call, _observers: Vec<Observer>| async move { Ok(call.output.unwrap_or_default()) },
+    );
+    let delivered = iii.register_function("bench::private-deliver", echo().private());
+    for function in [
+        &plain, &private, &ten_none, &one_match, &keyed, &source, &event, &delivered,
+    ] {
         wait_for("local dispatch", || function.local_dispatch_active());
     }
     wait_for("the observers", || {
@@ -329,13 +343,28 @@ fn observe_benches(c: &mut Criterion) {
         "bench::keyed",
         |i| json!({ "expression": "hit", "n": i }),
     );
+    let event = |i: u64| json!({ "table": "invoices", "op": "update", "row": { "id": i, "status": "paid" } });
+    bench_call(
+        c,
+        "call_local/private_event",
+        &host.iii,
+        "bench::private-event",
+        event,
+    );
+    bench_call(
+        c,
+        "call_local/private_deliver_hook",
+        &host.iii,
+        "bench::private-deliver",
+        event,
+    );
     let before = host.received.once.load(Ordering::Relaxed);
     bench_call(
         c,
         "call_local/event_source_observed",
         &host.iii,
         "bench::source",
-        |i| json!({ "table": "invoices", "op": "update", "row": { "id": i, "status": "paid" } }),
+        event,
     );
     // the reports of the source carried each event once
     wait_for("the source's reports", || {
