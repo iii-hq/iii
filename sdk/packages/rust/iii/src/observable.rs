@@ -711,9 +711,10 @@ impl FunctionEntry {
     }
 
     /// Needs an engine that advertised `observe.v2`: it declares
-    /// `args_format`, `private` or `observable: false`, or has a deliver hook.
+    /// `args_format`, `private` or `observable: false`, or has a deliver or
+    /// match hook.
     pub(crate) fn needs_v2(&self) -> bool {
-        self.declares_v2 || self.has_deliver()
+        self.declares_v2 || self.has_deliver() || self.matcher.load().is_some()
     }
 
     /// Records that its `registerfunction` goes out on connection `epoch`;
@@ -1016,6 +1017,12 @@ async fn run_hooks(
             } => {
                 if rev <= revision {
                     tracing::debug!(function_id = %entry.id, revision = rev, held = revision, "stale observeradded ignored");
+                    continue;
+                }
+                if entry.is_revoked() {
+                    // Announced before the release: the function is not
+                    // this worker's, and nothing undoes an add now.
+                    tracing::debug!(function_id = %entry.id, observer_id = %observer.id, "observeradded for a released function ignored");
                     continue;
                 }
                 if let Some(observer) = ack_held(
@@ -1584,6 +1591,8 @@ mod tests {
         iii.register_function("o::plain", echo());
         iii.on_observer_deliver_for("o::hooked", answer_with_count);
         iii.register_function("o::hooked", echo());
+        iii.on_observer_match_for("o::matched", kind_keys());
+        iii.register_function("o::matched", echo());
         let registered = |frames: &[Value]| -> Vec<String> {
             frames
                 .iter()
@@ -1618,10 +1627,11 @@ mod tests {
             match (
                 named("o::private"),
                 named("o::hooked"),
+                named("o::matched"),
                 named("o::late"),
                 named("o::plain"),
             ) {
-                (1, 1, 1, 0) => Ok(()),
+                (1, 1, 1, 1, 0) => Ok(()),
                 other => Err(format!("expected one line each, got {other:?}")),
             }
         };
@@ -1638,6 +1648,14 @@ mod tests {
         // and registered again once its deliver hook is removed
         iii.clear_observer_deliver_for("o::plain");
         assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
+        // a match hook withdraws it too, until it is removed
+        iii.on_observer_match_for("o::plain", kind_keys());
+        assert_eq!(
+            sent(&mut rx),
+            vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
+        );
+        iii.clear_observer_match_for("o::plain");
+        assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
         iii.on_observer_deliver_for("o::plain", answer_with_count);
         assert_eq!(
             sent(&mut rx),
@@ -1652,7 +1670,16 @@ mod tests {
         );
         let mut ids = registered(&sent(&mut rx));
         ids.sort();
-        assert_eq!(ids, vec!["o::hooked", "o::late", "o::plain", "o::private"]);
+        assert_eq!(
+            ids,
+            vec![
+                "o::hooked",
+                "o::late",
+                "o::matched",
+                "o::plain",
+                "o::private"
+            ]
+        );
         let private = iii
             .functions()
             .get("o::private")
@@ -2225,6 +2252,64 @@ mod tests {
                 _ => assert_eq!(answer["result"], json!(["a"])),
             }
         }
+    }
+
+    /// An `observeradded` queued behind a slow added hook when the function's
+    /// registration is withdrawn runs no hook and gets no ack.
+    #[tokio::test]
+    async fn an_observer_announced_before_a_withdrawal_is_not_added() {
+        let (iii, mut rx) = client();
+        feed(
+            &iii,
+            json!({ "type": "workerregistered", "worker_id": "w",
+                    "features": ["observe.v1", "local-dispatch.v1"] }),
+        );
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let ran = Arc::new(Mutex::new(Vec::<String>::new()));
+        iii.on_observer_added_for("wq::f", {
+            let (gate, ran) = (gate.clone(), ran.clone());
+            move |obs: Observer| {
+                let (gate, ran) = (gate.clone(), ran.clone());
+                async move {
+                    ran.lock().unwrap().push(obs.id().to_string());
+                    if obs.id() == "slow" {
+                        gate.notified().await;
+                    }
+                    Ok(())
+                }
+            }
+        });
+        let function = iii.register_function("wq::f", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "wq::f", "revision": 1,
+                    "local_dispatch": true, "observers": [view_with_args("slow", json!({}))] }),
+        );
+        while ran.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "wq::f", "revision": 2,
+                    "observer": view_with_args("late", json!({})) }),
+        );
+        iii.on_observer_deliver_for("wq::f", answer_with_count);
+        gate.notify_one();
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(*ran.lock().unwrap(), vec!["slow"], "late's hook never ran");
+        let frames = sent(&mut rx);
+        assert!(
+            frames.iter().all(|m| m["type"] != "observerack"),
+            "{frames:#?}"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|m| m["type"] == "unregisterfunction" && m["id"] == "wq::f")
+        );
+        assert!(!function.is_observed());
     }
 
     /// No observer is acked before `register_function` returned: the hook

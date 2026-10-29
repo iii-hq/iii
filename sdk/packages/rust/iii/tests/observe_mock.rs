@@ -3246,8 +3246,9 @@ async fn a_withdrawn_registration_is_released() {
     })
     .await;
 
-    // the engine's answer to the withdrawn registration changes nothing;
-    // the answer to a later call shows it was read
+    // the engine's answer to the withdrawn registration, and an observer it
+    // announced before the withdrawal reached it, change nothing; the answer
+    // to a later call shows they were read
     mock.clear();
     confirm(
         &mock,
@@ -3256,6 +3257,7 @@ async fn a_withdrawn_registration_is_released() {
         true,
         json!([view("o2", json!({}), json!(["input"]), "success")]),
     );
+    mock.send_to_client(added("wd::f", 3, "o3", json!({})));
     let in_flight = tokio::spawn({
         let iii = iii.clone();
         async move { iii.call(CallRequest::new("remote::f", json!({}))).await }
@@ -3289,7 +3291,7 @@ async fn a_withdrawn_registration_is_released() {
     assert_eq!(ran.load(Ordering::SeqCst), 0, "no call runs here");
     assert!(!function.local_dispatch_active());
     assert!(!function.is_observed());
-    assert!(acks(&mock).is_empty(), "o2 is not acked");
+    assert!(acks(&mock).is_empty(), "o2 and o3 are not acked");
     assert_eq!(
         *recorder.events.lock().unwrap(),
         vec!["add o", "remove o"],

@@ -845,6 +845,7 @@ impl IIIClient {
                 format!("on_observer_match key function panicked: {panic}"),
             );
         }
+        self.reconcile_registration(&entry);
     }
 
     /// The function entries a hook set for `function_id` (every function
@@ -950,6 +951,10 @@ impl IIIClient {
 
     /// Says which calls of `function_id` each observer wants; see [`Match`].
     /// Set while observers are active, a key index is rebuilt from them.
+    ///
+    /// A function with a match hook needs an engine that advertised
+    /// `observe.v2`: against an older one it stays unregistered, and the SDK
+    /// logs `UNSUPPORTED` once.
     pub fn on_observer_match_for(&self, function_id: &str, rule: Match) -> &Self {
         self.set_match_hook(function_id, Some(rule));
         self

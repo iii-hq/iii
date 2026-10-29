@@ -249,9 +249,9 @@ iii.on_observer_deliver_for("http::on-request", {
 });
 ```
 
-Functions with `args_format`, `private`, `observable(false)` or a deliver
-hook need an engine that advertises `observe.v2`; against an older one they
-stay unregistered and the SDK logs `UNSUPPORTED` once.
+Functions with `args_format`, `private`, `observable(false)`, a match hook or
+a deliver hook need an engine that advertises `observe.v2`; against an older
+one they stay unregistered and the SDK logs `UNSUPPORTED` once.
 
 ### Stream Operations
 

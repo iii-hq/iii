@@ -2286,10 +2286,10 @@ impl IIIClient {
         }
     }
 
-    /// A deliver hook was just set on a registered function, or removed: a
-    /// function that needs `observe.v2` and whose registration went to an
-    /// engine without it is withdrawn there and released here, and an
-    /// unregistered one that does not need it is registered. Until this
+    /// A deliver or match hook was just set on a registered function, or
+    /// removed: a function that needs `observe.v2` and whose registration
+    /// went to an engine without it is withdrawn there and released here, and
+    /// an unregistered one that does not need it is registered. Until this
     /// connection's engine said what it supports, its `workerregistered`
     /// decides.
     pub(crate) fn reconcile_registration(&self, entry: &Arc<FunctionEntry>) {
@@ -3433,6 +3433,11 @@ impl IIIClient {
                 revision,
                 observer,
             } => match self.function_entry(&function_id) {
+                // An observer of a registration this connection withdrew:
+                // the function stays unregistered.
+                Some(entry) if !entry.sent_on(self.connection_epoch()) => {
+                    tracing::debug!(function_id = %function_id, "observeradded for a withdrawn registration ignored")
+                }
                 Some(entry) => entry.enqueue(
                     self,
                     HookOp::Added {
@@ -3972,9 +3977,9 @@ impl IIIClient {
             tracing::warn!(
                 function_id = %function_id,
                 code = observe_codes::UNSUPPORTED,
-                "{}: {function_id} needs `observe.v2` (args_format, private, observable: false \
-                 or a deliver hook), which the engine does not advertise; it stays unregistered \
-                 until the worker connects to an engine with it",
+                "{}: {function_id} needs `observe.v2` (args_format, private, observable: false, \
+                 a deliver hook or a match hook), which the engine does not advertise; it stays \
+                 unregistered until the worker connects to an engine with it",
                 observe_codes::UNSUPPORTED
             );
         }
