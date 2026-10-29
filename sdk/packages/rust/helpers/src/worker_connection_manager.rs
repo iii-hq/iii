@@ -157,7 +157,10 @@ mod tests {
         }))
         .unwrap();
         assert!(input.private && input.observable);
-        assert_eq!(input.args_format, Some(serde_json::json!({ "type": "object" })));
+        assert_eq!(
+            input.args_format,
+            Some(serde_json::json!({ "type": "object" }))
+        );
 
         // an older engine sends none of them
         let input: OnFunctionRegistrationInput = serde_json::from_value(serde_json::json!({

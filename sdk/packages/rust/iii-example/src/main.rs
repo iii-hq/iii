@@ -2,8 +2,7 @@ use std::{thread::sleep, time::Duration};
 
 use iii_helpers::observability::OtelConfig;
 use iii_helpers::stream::UpdateOp;
-use iii_sdk::protocol::TriggerRequest;
-use iii_sdk::{Error, InitOptions, RegisterFunction, register_worker};
+use iii_sdk::{CallRequest, Error, InitOptions, RegisterFunction, register_worker};
 use serde_json::json;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
@@ -36,11 +35,11 @@ async fn delay_echo(input: DelayEchoInput) -> Result<serde_json::Value, Error> {
     )
 }
 
-mod cron_trigger_example;
-mod custom_trigger_example;
+mod custom_source_example;
 mod http_example;
 mod logger_example;
-mod trigger_type_example;
+mod sources_example;
+mod webhook_example;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,22 +55,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Logger demo (all log levels with structured data)
     logger_example::setup(&iii);
 
-    // Register HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation)
+    // HTTP fetch API handlers (GET & POST http-fetch with OTel instrumentation),
+    // routed by observing http::on-request
     http_example::setup(&iii);
 
-    // A worker-owned event source: an observable function routing webhooks to
-    // its observers by their args (was a custom trigger type)
-    trigger_type_example::setup(&iii);
+    // A worker-hosted event source whose deliver hook answers each webhook
+    // with the result of its URL's handler
+    webhook_example::setup(&iii);
 
-    // Built-in trigger types: cron, state, http, ... (deprecated register_trigger)
-    cron_trigger_example::setup(&iii);
+    // Observers of the workers' sources: cron, state, http, pubsub, queue,
+    // logs and streams
+    sources_example::setup(&iii);
 
-    // More sources: schedule, file-watch (owner-delivered, typed args), and an
-    // auto function observed with filters
-    custom_trigger_example::setup(&iii);
+    // More sources: schedule and file-watch (typed args, hooks, keyed
+    // delivery), and a function observed with filters
+    custom_source_example::setup(&iii);
 
-    // List all registered trigger types with their schemas
-    trigger_type_example::print_trigger_type_catalog(&iii).await;
+    // List the functions and how many observers each has
+    webhook_example::print_function_catalog(&iii).await;
 
     iii.register_function(
         "example::echo",
@@ -85,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "example::echo".to_string(),
             payload: json!({"message": "hello", "repeat": 2, "uppercase": false, "prefix": "> "}),
             action: None,
@@ -96,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Invoke logger demo to exercise all log levels
     let logger_result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "example::logger_demo".to_string(),
             payload: json!({"test": true}),
             action: None,
@@ -112,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 1: Using UpdateOp directly
     println!("\n--- Example 1: Direct UpdateOp ---");
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -133,7 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 2: Atomic increment
     println!("\n--- Example 2: Atomic Increment ---");
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -150,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 3: Multiple atomic operations in one call
     println!("\n--- Example 3: Multiple Operations ---");
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -177,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -194,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 5: Merge operation
     println!("\n--- Example 5: Merge Operation ---");
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -214,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 6: Remove a field
     println!("\n--- Example 6: Remove Field ---");
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -231,7 +232,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Example 7: Decrement
     println!("\n--- Example 7: Decrement ---");
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",
@@ -249,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n--- Example 8: Concurrent Updates ---");
 
     // Initialize
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "stream::update".to_string(),
         payload: json!({
             "stream_name": "example",
@@ -269,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let handle = tokio::spawn(async move {
             for _ in 0..10 {
                 let _ = iii_clone
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "stream::update".to_string(),
                         payload: json!({
                             "stream_name": "example",
@@ -294,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check final value (should be 100 with atomic updates)
     let final_result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "stream::update".to_string(),
             payload: json!({
                 "stream_name": "example",

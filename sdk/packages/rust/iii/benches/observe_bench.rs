@@ -1,19 +1,31 @@
-//! observe hot paths on a Rust host (README §8 performance budget).
+//! observe hot paths on a Rust host: the rows of the observe v2 performance
+//! budget (spec §13) that run in-process.
 //!
 //! - `is_observed()` with nobody observing: one atomic load, no allocation;
-//! - a local call through `trigger()` with no observers: < 2 µs SDK overhead
-//!   on top of the handler (compare with `handler_alone`);
+//! - a local `call()` with no observers (`call_local/no_observers`), and of a
+//!   private function (`call_local/private`): the handler's own cost (compare
+//!   with `handler_alone`), no copy of input or result;
 //! - a local call with 10 observers, none matching: < 5 µs;
-//! - a local call with 1 matching observer: 1 report item, batched.
+//! - a local call with 1 matching observer: 1 report item, batched;
+//! - a keyed function whose 10,000 observers are filed under other keys:
+//!   `is_observed_for(call)` is one hash lookup per call key, no allocation;
+//! - keyed delivery to 1 matching observer among 10,000;
+//! - an event source (the handler returns its input) observed with input and
+//!   output captured: each report item carries the event once.
 //!
 //! A local call needs the engine's `functionregistered`, so a small in-process
-//! fake engine confirms the functions with the observers each case needs.
+//! fake engine confirms the functions with the observers each case needs, and
+//! counts the report items it receives.
 //!
 //! `cargo bench -p iii-sdk --bench observe_bench`
 
 use std::{
     hint::black_box,
     net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -24,11 +36,14 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
-    Error, IIIClient, InitOptions, RegisterFunction, WorkerIdentityMode, register_worker,
+    Call, CallRequest, Error, IIIClient, InitOptions, Keyed, RegisterFunction, WorkerIdentityMode,
+    register_worker,
 };
+
+/// Observers filed under keys no benchmark call has, plus one under `hit`.
+const KEYED_OBSERVERS: usize = 10_000;
 
 /// Observers the fake engine sends with each function's `functionregistered`.
 fn observers_for(function_id: &str) -> Value {
@@ -49,13 +64,41 @@ fn observers_for(function_id: &str) -> Value {
             "filters": { "$and": [{ "input.n": { "$gte": 0 } }] },
             "capture": ["input", "output"], "on": "success"
         }]),
+        "bench::keyed" => Value::Array(
+            (0..KEYED_OBSERVERS)
+                .map(|i| {
+                    let expression = if i == 0 {
+                        "hit".to_string()
+                    } else {
+                        format!("expr-{i}")
+                    };
+                    json!({
+                        "id": format!("keyed-{i}"), "args": { "expression": expression },
+                        "target": "bench::target", "filters": {},
+                        "capture": ["input"], "on": "success"
+                    })
+                })
+                .collect(),
+        ),
+        "bench::source" => json!([{
+            "id": "obs-source", "args": {}, "target": "bench::target", "filters": {},
+            "capture": ["input", "output"], "on": "success"
+        }]),
         _ => json!([]),
     }
 }
 
-/// Accepts the worker, advertises observe, and confirms every function it
-/// registers. Frames from the worker (reports included) are read and dropped.
-fn spawn_fake_engine() -> SocketAddr {
+/// Report items the fake engine received, and how many of them carried the
+/// value once (`output_is_input`).
+#[derive(Clone, Default)]
+struct Received {
+    items: Arc<AtomicUsize>,
+    once: Arc<AtomicUsize>,
+}
+
+/// Accepts the worker, advertises `observe.v2`, and confirms every function
+/// it registers. Report frames are counted; other frames are dropped.
+fn spawn_fake_engine(received: Received) -> SocketAddr {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -69,16 +112,13 @@ fn spawn_fake_engine() -> SocketAddr {
                 let Ok((socket, _)) = listener.accept().await else {
                     return;
                 };
+                let received = received.clone();
                 tokio::spawn(async move {
                     let Ok(ws) = tokio_tungstenite::accept_async(socket).await else {
                         return;
                     };
                     let (mut out, mut inbound) = ws.split();
-                    let hello = json!({
-                        "type": "workerregistered", "worker_id": "bench-worker",
-                        "features": ["observe.v1", "local-dispatch.v1"]
-                    });
-                    let _ = out.send(WsMessage::Text(hello.to_string().into())).await;
+                    let mut hello_sent = false;
                     while let Some(Ok(frame)) = inbound.next().await {
                         let WsMessage::Text(text) = frame else {
                             continue;
@@ -86,6 +126,14 @@ fn spawn_fake_engine() -> SocketAddr {
                         let Ok(message) = serde_json::from_str::<Value>(text.as_str()) else {
                             continue;
                         };
+                        if !hello_sent && message["function_id"] == "engine::workers::register" {
+                            hello_sent = true;
+                            let hello = json!({
+                                "type": "workerregistered", "worker_id": "bench-worker",
+                                "features": ["observe.v1", "observe.v2", "local-dispatch.v1"]
+                            });
+                            let _ = out.send(WsMessage::Text(hello.to_string().into())).await;
+                        }
                         if message["type"] == "registerfunction" {
                             let id = message["id"].as_str().unwrap_or_default();
                             let confirm = json!({
@@ -94,6 +142,14 @@ fn spawn_fake_engine() -> SocketAddr {
                                 "observers": observers_for(id),
                             });
                             let _ = out.send(WsMessage::Text(confirm.to_string().into())).await;
+                        }
+                        if message["type"] == "invocationsobserved" {
+                            for item in message["items"].as_array().into_iter().flatten() {
+                                received.items.fetch_add(1, Ordering::Relaxed);
+                                if item["output_is_input"] == true && item.get("output").is_none() {
+                                    received.once.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
                         }
                     }
                 });
@@ -108,7 +164,7 @@ fn echo() -> RegisterFunction {
 }
 
 fn wait_for(what: &str, cond: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !cond() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(5));
@@ -118,12 +174,14 @@ fn wait_for(what: &str, cond: impl Fn() -> bool) {
 struct Host {
     iii: IIIClient,
     plain: FunctionRef,
-    ten_none: FunctionRef,
     one_match: FunctionRef,
+    keyed: FunctionRef,
+    received: Received,
 }
 
 fn host() -> Host {
-    let address = spawn_fake_engine();
+    let received = Received::default();
+    let address = spawn_fake_engine(received.clone());
     let iii = register_worker(
         &format!("ws://{address}"),
         InitOptions {
@@ -139,25 +197,49 @@ fn host() -> Host {
             ..InitOptions::default()
         },
     );
+    iii.on_observer_deliver_for(
+        "bench::keyed",
+        Keyed::new(
+            |obs| obs.args_value()["expression"].as_str().into(),
+            |call| call.input["expression"].as_str().into(),
+        ),
+    );
     let plain = iii.register_function("bench::plain", echo());
+    let private = iii.register_function("bench::private", echo().private());
     let ten_none = iii.register_function("bench::ten-none", echo());
-    let one_match = iii.register_function("bench::one-match", echo());
-    for function in [&plain, &ten_none, &one_match] {
+    let one_match = iii.register_function(
+        "bench::one-match",
+        RegisterFunction::new(|input: Value| Ok::<_, Error>(json!({ "seen": input["n"] }))),
+    );
+    let keyed = iii.register_function("bench::keyed", echo().private());
+    let source = iii.register_function("bench::source", echo().private());
+    for function in [&plain, &private, &ten_none, &one_match, &keyed, &source] {
         wait_for("local dispatch", || function.local_dispatch_active());
     }
     wait_for("the observers", || {
-        ten_none.observers().len() == 10 && one_match.observers().len() == 1
+        ten_none.observers().len() == 10
+            && one_match.observers().len() == 1
+            && keyed.observers().len() == KEYED_OBSERVERS
+            && source.observers().len() == 1
     });
     Host {
         iii,
         plain,
-        ten_none,
         one_match,
+        keyed,
+        received,
     }
 }
 
-/// Mean time of one `trigger()` of `function_id`, on a current-thread runtime.
-fn bench_trigger(c: &mut Criterion, name: &str, iii: &IIIClient, function_id: &'static str) {
+/// Mean time of one `call()` of `function_id` with `input(i)`, on a
+/// current-thread runtime.
+fn bench_call(
+    c: &mut Criterion,
+    name: &str,
+    iii: &IIIClient,
+    function_id: &'static str,
+    input: impl Fn(u64) -> Value,
+) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -168,7 +250,7 @@ fn bench_trigger(c: &mut Criterion, name: &str, iii: &IIIClient, function_id: &'
                 let start = Instant::now();
                 for i in 0..iters {
                     let out = iii
-                        .trigger(TriggerRequest::new(function_id, json!({ "n": i })))
+                        .call(CallRequest::new(function_id, input(i)))
                         .await
                         .unwrap();
                     black_box(out);
@@ -181,6 +263,7 @@ fn bench_trigger(c: &mut Criterion, name: &str, iii: &IIIClient, function_id: &'
 
 fn observe_benches(c: &mut Criterion) {
     let host = host();
+    let numbered = |i: u64| json!({ "n": i });
 
     c.bench_function("is_observed/false", |b| {
         b.iter(|| black_box(&host.plain).is_observed())
@@ -188,6 +271,15 @@ fn observe_benches(c: &mut Criterion) {
     assert!(!host.plain.is_observed());
     c.bench_function("is_observed/true", |b| {
         b.iter(|| black_box(&host.one_match).is_observed())
+    });
+
+    let miss = Call {
+        input: json!({ "expression": "never-filed" }),
+        ..Call::default()
+    };
+    assert!(!host.keyed.is_observed_for(&miss));
+    c.bench_function("is_observed_for/keyed_miss_of_10000", |b| {
+        b.iter(|| black_box(&host.keyed).is_observed_for(black_box(&miss)))
     });
 
     // What the echo handler costs by itself: the sync wrapper deserializes the
@@ -201,20 +293,58 @@ fn observe_benches(c: &mut Criterion) {
         })
     });
 
-    bench_trigger(c, "trigger_local/no_observers", &host.iii, "bench::plain");
-    bench_trigger(
+    bench_call(
         c,
-        "trigger_local/10_observers_none_matching",
+        "call_local/no_observers",
+        &host.iii,
+        "bench::plain",
+        numbered,
+    );
+    bench_call(
+        c,
+        "call_local/private",
+        &host.iii,
+        "bench::private",
+        numbered,
+    );
+    bench_call(
+        c,
+        "call_local/10_observers_none_matching",
         &host.iii,
         "bench::ten-none",
+        numbered,
     );
-    bench_trigger(
+    bench_call(
         c,
-        "trigger_local/1_observer_matching",
+        "call_local/1_observer_matching",
         &host.iii,
         "bench::one-match",
+        numbered,
     );
-    let _ = (&host.ten_none, &host.one_match);
+    bench_call(
+        c,
+        "call_local/keyed_1_of_10000",
+        &host.iii,
+        "bench::keyed",
+        |i| json!({ "expression": "hit", "n": i }),
+    );
+    let before = host.received.once.load(Ordering::Relaxed);
+    bench_call(
+        c,
+        "call_local/event_source_observed",
+        &host.iii,
+        "bench::source",
+        |i| json!({ "table": "invoices", "op": "update", "row": { "id": i, "status": "paid" } }),
+    );
+    // the reports of the source carried each event once
+    wait_for("the source's reports", || {
+        host.received.once.load(Ordering::Relaxed) > before
+    });
+    eprintln!(
+        "fake engine: {} report items, {} carrying the value once (output_is_input)",
+        host.received.items.load(Ordering::Relaxed),
+        host.received.once.load(Ordering::Relaxed)
+    );
     host.iii.shutdown();
 }
 
