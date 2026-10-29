@@ -192,6 +192,10 @@ pub struct CallRequestWithMetadata {
     pub(crate) observer: Option<String>,
 }
 
+/// [`CallRequestWithMetadata`] under its 0.25 name.
+#[deprecated(since = "0.26.0", note = "use CallRequestWithMetadata")]
+pub type TriggerRequestWithMetadata = CallRequestWithMetadata;
+
 impl CallRequestWithMetadata {
     /// Attach per-invocation metadata.
     pub fn metadata(mut self, metadata: Value) -> Self {

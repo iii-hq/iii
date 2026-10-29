@@ -386,7 +386,8 @@ fn _ensure_stream_request_response_path() {}
 /// ```rust,no_run
 /// # #![allow(deprecated)]
 /// use iii_sdk::protocol::{
-///     CallRequest, ErrorBody, FunctionMessage, RegisterFunctionMessage, TriggerRequest,
+///     CallRequest, CallRequestWithMetadata, ErrorBody, FunctionMessage, RegisterFunctionMessage,
+///     TriggerRequest, TriggerRequestWithMetadata,
 /// };
 /// ```
 #[allow(dead_code)]
@@ -449,8 +450,16 @@ fn _ensure_register_trigger_removed() {}
 /// ```rust,no_run
 /// # #![allow(deprecated)]
 /// # async fn demo(iii: &iii_sdk::IIIClient) -> Result<(), iii_sdk::Error> {
-/// use iii_sdk::protocol::TriggerRequest;
+/// use iii_sdk::protocol::{TriggerAction, TriggerRequest, TriggerRequestWithMetadata};
 /// iii.trigger(TriggerRequest::new("orders::create", serde_json::json!({}))).await?;
+/// let request: TriggerRequestWithMetadata = TriggerRequest {
+///     function_id: "audit::log".into(),
+///     payload: serde_json::json!({}),
+///     action: Some(TriggerAction::Void),
+///     timeout_ms: None,
+/// }
+/// .into();
+/// iii.trigger(request.metadata(serde_json::json!({ "tenant": "acme" }))).await?;
 /// # Ok(()) }
 /// ```
 #[allow(dead_code)]
