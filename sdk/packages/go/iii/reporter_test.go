@@ -81,14 +81,12 @@ func TestReporterIsBoundedAndCountsDrops(t *testing.T) {
 			t.Errorf("push %d: %v", i, ok)
 		}
 	}
-	if r.size() != 3 || r.items[2].wire.InvocationID != "inv-2" {
+	if r.size() != 3 || r.items[2].invocationID != "inv-2" {
 		t.Fatalf("kept %d items (the newest are dropped)", r.size())
 	}
 
 	limits = defaultReporterLimits
-	one := newReportItem(testItem("f", 0))
-	one.capture([]Capture{CaptureInput})
-	_ = one.render(true)
+	one, _ := newReportItem(testItem("f", 0), []Capture{CaptureInput}, true)
 	limits.maxBytes = len(one.json)*2 + 1
 	rb := newReporter(host, limits)
 	rb.push(testItem("f", 1), []Capture{CaptureInput})
@@ -116,9 +114,7 @@ func TestReporterIsBoundedAndCountsDrops(t *testing.T) {
 func TestReporterSplitsAFlushUnderTheFrameLimit(t *testing.T) {
 	host := &fakeReportHost{online: true, status: reportReady}
 	limits := defaultReporterLimits
-	one := newReportItem(testItem("f", 10))
-	one.capture([]Capture{CaptureInput})
-	_ = one.render(true)
+	one, _ := newReportItem(testItem("f", 10), []Capture{CaptureInput}, true)
 	limits.maxFrameBytes = reportFrameOverhead + 3*len(one.json) + 2
 	r := newReporter(host, limits)
 	for i := 10; i < 17; i++ {
@@ -247,7 +243,7 @@ func TestReporterDiscardsTheHeldItemsOfAConflictedFunction(t *testing.T) {
 	r.push(testItem("conflicted", 2), []Capture{CaptureInput})
 	r.push(testItem("other", 3), []Capture{CaptureInput})
 	r.discardFunction("conflicted")
-	if r.size() != 1 || r.items[0].wire.FunctionID != "other" {
+	if r.size() != 1 || r.items[0].functionID != "other" {
 		t.Fatalf("kept %d items", r.size())
 	}
 	r.sendStats(time.Now())
@@ -284,7 +280,7 @@ func TestReporterPutsBackItemsOfAFrameThatCouldNotBeSent(t *testing.T) {
 		r.push(testItem("f", i), []Capture{CaptureInput})
 	}
 	r.flush()
-	if r.size() != 3 || r.items[0].wire.InvocationID != "inv-0" {
+	if r.size() != 3 || r.items[0].invocationID != "inv-0" {
 		t.Fatalf("after a failed send: %d items", r.size())
 	}
 	host.mu.Lock()
@@ -311,15 +307,51 @@ func (h *failingReportHost) sendReport(epoch uint64, frame []byte) bool {
 	return h.fakeReportHost.sendReport(epoch, frame)
 }
 
-// A buffered item flushed to an engine without observe.v2 carries its output.
-func TestReporterFlushRendersForTheEngine(t *testing.T) {
-	host := &fakeReportHost{online: true, status: reportReady, v1: true}
-	r := newReporter(host, defaultReporterLimits)
-	same := testItem("f", 1)
-	same.values.output = same.values.input
-	r.push(same, []Capture{CaptureInput, CaptureOutput})
-	r.flush()
-	if got := decodeBatch(t, host.sentFrames()[0])[0]; got.OutputIsInput || string(got.Output) != `{"i":1}` {
-		t.Errorf("item %+v", got)
+// An item is encoded once, when it is pushed, in the form for the current engine (for
+// one with observe.v2 while offline), and a flush to an engine of the other kind
+// encodes it again from its own JSON. Changing the call's values after the push
+// changes nothing.
+func TestReporterRendersItemsForTheEngine(t *testing.T) {
+	flushed := func(host *fakeReportHost, r *reporter) ObservedItem {
+		t.Helper()
+		r.flush()
+		frames := host.sentFrames()
+		return decodeBatch(t, frames[len(frames)-1])[0]
+	}
+	same := func() reportInit {
+		init := testItem("f", 1)
+		init.values.output = init.values.input
+		return init
+	}
+	both := []Capture{CaptureInput, CaptureOutput}
+
+	v1 := &fakeReportHost{online: true, status: reportReady, v1: true}
+	r := newReporter(v1, defaultReporterLimits)
+	init := same()
+	r.push(init, both)
+	if r.items[0].v2 {
+		t.Error("an item pushed with an engine without observe.v2 was encoded with output_is_input")
+	}
+	init.values.input[2] = 'j' // the caller edits its result in place
+	if got := flushed(v1, r); got.OutputIsInput || string(got.Output) != `{"i":1}` || string(got.Input) != `{"i":1}` {
+		t.Errorf("to an engine without observe.v2: %+v", got)
+	}
+
+	offline := &fakeReportHost{status: reportReady, v1: true}
+	r = newReporter(offline, defaultReporterLimits)
+	r.push(same(), both)
+	offline.set(true, reportReady)
+	if got := flushed(offline, r); got.OutputIsInput || string(got.Output) != `{"i":1}` {
+		t.Errorf("pushed offline, flushed to an engine without observe.v2: %+v", got)
+	}
+
+	switched := &fakeReportHost{online: true, status: reportReady, v1: true}
+	r = newReporter(switched, defaultReporterLimits)
+	r.push(same(), both)
+	switched.mu.Lock()
+	switched.v1 = false
+	switched.mu.Unlock()
+	if got := flushed(switched, r); !got.OutputIsInput || got.Output != nil || string(got.Input) != `{"i":1}` {
+		t.Errorf("pushed for an engine without observe.v2, flushed to one with it: %+v", got)
 	}
 }

@@ -102,88 +102,86 @@ type reportInit struct {
 	trace        traceContext
 }
 
+// reportItem is the JSON of one delivery, encoded when it is built: it keeps no value
+// of the call, so what the call's caller does with its result does not change it.
 type reportItem struct {
-	wire     ObservedItem
-	values   reportValues
-	captured map[Capture]bool
-	json     []byte
-	// v2 is the form json is rendered in: for an engine with observe.v2, an item that
-	// captures an output equal to its input (as bytes) carries the input once, with
+	functionID   string
+	invocationID string
+	json         []byte
+	// v2 is the form json is in: for an engine with observe.v2, an item that carries an
+	// output equal to its input (as bytes) carries the input once, with
 	// output_is_input.
 	v2 bool
 }
 
-func newReportItem(init reportInit) *reportItem {
-	// Numbers no double can hold become null, as the evaluator reads them: the engine's
-	// decoder refuses them, which would fail the whole frame (SDK-PARITY decision 31).
-	init.values.input = overflowToNull(init.values.input)
-	init.values.output = overflowToNull(init.values.output)
-	init.values.metadata = overflowToNull(init.values.metadata)
+// newReportItem encodes the delivery init, with the parts captures asks for, for an
+// engine with (v2) or without observe.v2.
+func newReportItem(init reportInit, captures []Capture, v2 bool) (*reportItem, error) {
 	durationMs := init.durationMs
 	if math.IsNaN(durationMs) || math.IsInf(durationMs, 0) || durationMs < 0 {
 		durationMs = 0
 	}
-	return &reportItem{
-		wire: ObservedItem{
-			FunctionID:   init.functionID,
-			Namespace:    init.namespace,
-			InvocationID: init.invocationID,
-			Matched:      append([]string(nil), init.matched...),
-			Status:       init.status,
-			StartedAtMs:  init.startedAtMs,
-			DurationMs:   durationMs,
-			ObserveDepth: init.observeDepth,
-			Traceparent:  init.trace.traceparent,
-			Baggage:      init.trace.baggage,
-		},
-		values:   init.values,
-		captured: map[Capture]bool{},
+	wire := ObservedItem{
+		FunctionID:   init.functionID,
+		Namespace:    init.namespace,
+		InvocationID: init.invocationID,
+		Matched:      init.matched,
+		Status:       init.status,
+		StartedAtMs:  init.startedAtMs,
+		DurationMs:   durationMs,
+		ObserveDepth: init.observeDepth,
+		Traceparent:  init.trace.traceparent,
+		Baggage:      init.trace.baggage,
 	}
-}
-
-// capture adds the parts captures asks for that are not in the item yet.
-func (it *reportItem) capture(captures []Capture) {
+	// Numbers no double can hold become null, as the evaluator reads them: the engine's
+	// decoder refuses them, which would fail the whole frame (SDK-PARITY decision 31).
+	values := init.values
 	for _, c := range captures {
-		if it.captured[c] {
-			continue
-		}
-		it.captured[c] = true
 		switch c {
 		case CaptureInput:
-			it.wire.Input = it.values.input
+			wire.Input = overflowToNull(values.input)
 		case CaptureOutput:
-			it.wire.Output = it.values.output
+			wire.Output = overflowToNull(values.output)
 		case CaptureError:
-			it.wire.Error = it.values.errBody
+			wire.Error = values.errBody
 		case CaptureCaller:
-			it.wire.Caller = it.values.caller
+			wire.Caller = values.caller
 		case CaptureMetadata:
-			it.wire.Metadata = it.values.metadata
+			wire.Metadata = overflowToNull(values.metadata)
 		}
 	}
+	it := &reportItem{functionID: init.functionID, invocationID: init.invocationID}
+	if err := it.encode(&wire, v2); err != nil {
+		return nil, err
+	}
+	return it, nil
 }
 
-// sameIO: the item captures both input and output, and they are the same bytes.
-func (it *reportItem) sameIO() bool {
-	return it.captured[CaptureInput] && it.captured[CaptureOutput] && it.values.output != nil &&
-		bytes.Equal(it.values.input, it.values.output)
-}
-
-// render encodes the item for an engine with (v2) or without observe.v2.
-func (it *reportItem) render(v2 bool) error {
-	it.wire.OutputIsInput = false
-	if it.captured[CaptureOutput] {
-		it.wire.Output = it.values.output
+// encode sets the item's JSON to wire in the form for an engine with (v2) or without
+// observe.v2.
+func (it *reportItem) encode(wire *ObservedItem, v2 bool) error {
+	switch {
+	case !v2 && wire.OutputIsInput:
+		wire.Output, wire.OutputIsInput = wire.Input, false
+	case v2 && wire.Input != nil && wire.Output != nil && bytes.Equal(wire.Input, wire.Output):
+		wire.Output, wire.OutputIsInput = nil, true
 	}
-	if v2 && it.sameIO() {
-		it.wire.Output, it.wire.OutputIsInput = nil, true
-	}
-	data, err := encodeCompact(&it.wire)
+	data, err := encodeCompact(wire)
 	if err != nil {
 		return err
 	}
 	it.json, it.v2 = data, v2
 	return nil
+}
+
+// render encodes the item again, from its own JSON, for an engine with (v2) or without
+// observe.v2.
+func (it *reportItem) render(v2 bool) error {
+	var wire ObservedItem
+	if err := json.Unmarshal(it.json, &wire); err != nil {
+		return err
+	}
+	return it.encode(&wire, v2)
 }
 
 // overflowToNull rewrites the number tokens of raw JSON whose value overflows a
@@ -349,12 +347,13 @@ func (r *reporter) size() int {
 	return len(r.items)
 }
 
-// build makes the item of one delivery, rendered for an engine with observe.v2 (the
-// flush renders it again for one without), or nil when it cannot be encoded.
+// build makes the item of one delivery, in the form for the current engine (with
+// observe.v2 while offline: the flush renders it again for an engine without), or nil
+// when it cannot be encoded.
 func (r *reporter) build(init reportInit, captures []Capture) *reportItem {
-	item := newReportItem(init)
-	item.capture(captures)
-	if err := item.render(true); err != nil {
+	_, online, v2 := r.host.reportOnline()
+	item, err := newReportItem(init, captures, v2 || !online)
+	if err != nil {
 		r.logUnencodable(init.functionID, err)
 		return nil
 	}
@@ -383,7 +382,7 @@ func (r *reporter) logUnencodable(functionID string, err error) {
 }
 
 func (r *reporter) enqueueLocked(item *reportItem) bool {
-	fn := item.wire.FunctionID
+	fn := item.functionID
 	size := len(item.json)
 	if size > r.limits.maxBytes || size+reportFrameOverhead > r.limits.maxFrameBytes {
 		r.dropLocked(fn, dropTooLarge, 1)
@@ -458,7 +457,7 @@ func (r *reporter) discardFunction(functionID string) {
 	var dropped uint64
 	r.bytes = 0
 	for _, it := range r.items {
-		if it.wire.FunctionID == functionID {
+		if it.functionID == functionID {
 			dropped++
 			continue
 		}
@@ -504,7 +503,7 @@ func (r *reporter) flush() {
 	var ready, held []*reportItem
 	gone := false
 	for _, it := range r.items {
-		fn := it.wire.FunctionID
+		fn := it.functionID
 		st, ok := statuses[fn]
 		if !ok {
 			st = r.host.reportStatus(fn, epoch)
@@ -553,7 +552,7 @@ func (r *reporter) flush() {
 			continue
 		}
 		if len(it.json)+reportFrameOverhead > r.limits.maxFrameBytes {
-			r.dropLocked(it.wire.FunctionID, dropTooLarge, 1)
+			r.dropLocked(it.functionID, dropTooLarge, 1)
 			continue
 		}
 		if cur.data != nil && len(cur.data)+1+len(it.json)+len(reportFrameTail) > r.limits.maxFrameBytes {

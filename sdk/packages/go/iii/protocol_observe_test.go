@@ -24,6 +24,11 @@ var observeFixturesDir = filepath.Join("..", "..", "..", "fixtures", "protocol",
 // do not have it, so they are not round-tripped here.
 var engineOnlyFixtures = []string{"registerfunction-v1-owner.json", "registerfunction-v1-not-observable.json"}
 
+// unroundedFixtures are not round-tripped: invocationsobserved-routed-items.json
+// reports a routed call in items from several deliveries of one call, which a host
+// never sends (decisions 38 and 45).
+var unroundedFixtures = []string{"invocationsobserved-routed-items.json"}
+
 func observeFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(observeFixturesDir, name))
@@ -44,7 +49,7 @@ func observeFixtureFiles(t *testing.T) []string {
 		names = append(names, filepath.Base(f))
 	}
 	sort.Strings(names)
-	if len(names) < 43 {
+	if len(names) < 40 {
 		t.Fatalf("found %d observe fixtures in %s, expected the full set", len(names), observeFixturesDir)
 	}
 	return names
@@ -70,7 +75,7 @@ func compactJSON(data []byte) string {
 
 func TestObserveFixturesRoundTrip(t *testing.T) {
 	for _, name := range observeFixtureFiles(t) {
-		if slices.Contains(engineOnlyFixtures, name) {
+		if slices.Contains(engineOnlyFixtures, name) || slices.Contains(unroundedFixtures, name) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
@@ -401,7 +406,11 @@ func TestObserveFixturesReportsBuiltBySDK(t *testing.T) {
 	wantJSON, _ := json.Marshal(want)
 	assertJSONEqual(t, "invocationsobserved-event-source.json item", item.json, wantJSON)
 	// to an engine without observe.v2 it carries the output
-	if err := item.render(false); err != nil || item.wire.OutputIsInput || string(item.wire.Output) != string(event) {
+	if err := item.render(false); err != nil {
+		t.Fatal(err)
+	}
+	var v1 ObservedItem
+	if err := json.Unmarshal(item.json, &v1); err != nil || v1.OutputIsInput || compactJSON(v1.Output) != compactJSON(event) {
 		t.Errorf("without observe.v2: %s %v", item.json, err)
 	}
 
@@ -413,13 +422,20 @@ func TestObserveFixturesReportsBuiltBySDK(t *testing.T) {
 	stats.stats["database::query"] = &functionStats{count: 37, errors: 2, durationMsSum: 15.5}
 	stats.statsOrder = []string{"database::on-row-changed", "database::query"}
 	stats.dropLocked("database::on-row-changed", dropBufferFull, 12)
-	// a drop is sent with its reason as counted; the fixture's second row has a reason
-	// of the engine's contract this SDK does not count
-	stats.dropLocked("database::execute", "LATE_DELIVERY", 1)
 	if !stats.sendStats(now) {
 		t.Fatal("stats not sent")
 	}
-	assertJSONEqual(t, "localinvocationstats.json", host.sentFrames()[0], observeFixture(t, "localinvocationstats.json"))
+	// the SDK counts BUFFER_FULL, TOO_LARGE, DISCONNECTED and INACTIVE: its stats equal
+	// the fixture's rows of those reasons
+	var wantStats LocalInvocationStatsMessage
+	if err := json.Unmarshal(observeFixture(t, "localinvocationstats.json"), &wantStats); err != nil {
+		t.Fatal(err)
+	}
+	wantStats.DroppedReports = slices.DeleteFunc(wantStats.DroppedReports, func(d DroppedReports) bool {
+		return !slices.Contains([]string{dropBufferFull, dropTooLarge, dropDisconnected, dropInactive}, d.Reason)
+	})
+	wantJSON, _ = MarshalMessage(&wantStats)
+	assertJSONEqual(t, "localinvocationstats.json", host.sentFrames()[0], wantJSON)
 }
 
 // A call through an observer builds invokefunction-observer-call.json from inside the

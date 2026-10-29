@@ -291,7 +291,7 @@ func TestTeardownWithABlockedReportSend(t *testing.T) {
 	if n := c.reporter.drops[dropKey{"w::fn", dropDisconnected}]; n != 1 {
 		t.Errorf("DISCONNECTED %d, want 1 (the frame left in the channel, once)", n)
 	}
-	if len(c.reporter.items) != 1 || c.reporter.items[0].wire.InvocationID != "inv-7" || c.reporter.sending != 0 {
+	if len(c.reporter.items) != 1 || c.reporter.items[0].invocationID != "inv-7" || c.reporter.sending != 0 {
 		t.Errorf("the blocked item: %d items buffered, sending %d", len(c.reporter.items), c.reporter.sending)
 	}
 }

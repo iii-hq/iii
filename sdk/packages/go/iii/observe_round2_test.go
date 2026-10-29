@@ -105,9 +105,7 @@ func TestObserveIsNotSentOnAConnectionThatIsNotRegistered(t *testing.T) {
 // the writer took them.
 func TestReporterCountsBatchesInHandOff(t *testing.T) {
 	host := &blockingReportHost{fakeReportHost: fakeReportHost{online: true, status: reportReady}, release: make(chan struct{}), entered: make(chan struct{}, 1)}
-	one := newReportItem(testItem("f", 1))
-	one.capture([]Capture{CaptureInput})
-	_ = one.render(true)
+	one, _ := newReportItem(testItem("f", 1), []Capture{CaptureInput}, true)
 	limits := defaultReporterLimits
 	limits.maxBytes = 2*len(one.json) + reportFrameOverhead + len(one.json)/2
 	r := newReporter(host, limits)
