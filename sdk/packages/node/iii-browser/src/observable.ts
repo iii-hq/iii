@@ -5,7 +5,7 @@
  * handed to them, matching (the key index), and the delivery of each call of
  * a hosted function.
  */
-import { handlerErrorBody, ObserveRejection } from './errors'
+import { deliverErrorBody, ObserveRejection } from './errors'
 import { type CompiledFilter, compileFilter, type FilterDoc } from './filter'
 import type { CallerWire, ErrorBody, ObserverInfoWire } from './iii-types'
 import type {
@@ -62,7 +62,8 @@ type Level = 'worker' | 'fn'
  * Where an observer stands at one level: `none` (not set up there, or torn
  * down), `bare` (set up while the level had no `onObserverAdded`), `hooked`
  * (its `onObserverAdded` resolved). A level that is set up is torn down
- * exactly once, by its `onObserverRemoved`.
+ * exactly once, by its `onObserverRemoved`; for an observer that is not
+ * accepted, only its `hooked` levels are (`unwind`).
  */
 type LevelState = 'none' | 'bare' | 'hooked'
 
@@ -126,6 +127,8 @@ export class ObserverImpl implements Observer {
   revision: number
   /** @internal In the active set: delivery reaches it. */
   active = false
+  /** @internal When it last joined the active set (`FunctionObservers.activations`). */
+  activatedSeq = 0
   /**
    * @internal The host's late rejection (`obs.reject`). It survives a
    * reconnect: a replayed set that lists the observer is acked with it again,
@@ -230,6 +233,12 @@ export class FunctionObservers {
   private readonly known = new Map<string, ObserverImpl>()
   /** The active observers: one reference, swapped on change; `isObserved()` reads its length. */
   compiled: readonly ObserverImpl[] = []
+  /**
+   * Bumped each time an observer joins the active set. A call reads it with
+   * `compiled` when it starts, so matching by keys, which reads the live
+   * index, skips the observers that joined after the call started.
+   */
+  activations = 0
   private queue: Promise<void> = Promise.resolve()
   private disposed = false
   /** Bumped on every release (conflict, unregister): an add whose hooks span one is undone. */
@@ -285,12 +294,13 @@ export class FunctionObservers {
   }
 
   /**
-   * The observers in `snapshot` that want `call` (`onObserverMatch`): all of
-   * them without a match hook, those the predicate accepts, or those filed
-   * under one of the call's keys, each once. A match hook that throws matches
-   * nothing.
+   * The observers of the call's snapshot that want `call` (`onObserverMatch`):
+   * all of `snapshot` without a match hook, those of it the predicate accepts,
+   * or those filed under one of the call's keys that joined the active set no
+   * later than `activations` (the count when the call started), each once. A
+   * match hook that throws matches nothing.
    */
-  matching(call: Call, snapshot: readonly ObserverImpl[]): readonly ObserverImpl[] {
+  matching(call: Call, snapshot: readonly ObserverImpl[], activations: number): readonly ObserverImpl[] {
     const hook = this.host.hooks(this.functionId).match
     if (hook === undefined) return snapshot
     if (typeof hook === 'function') {
@@ -308,7 +318,8 @@ export class FunctionObservers {
     const found = new Set<ObserverImpl>()
     for (const key of this.callKeys(hook, call)) {
       const filed = index.get(key)
-      if (filed) for (const obs of filed) found.add(obs)
+      if (!filed) continue
+      for (const obs of filed) if (obs.activatedSeq <= activations) found.add(obs)
     }
     return [...found]
   }
@@ -475,6 +486,7 @@ export class FunctionObservers {
   private activate(obs: ObserverImpl): void {
     if (obs.active) return
     obs.active = true
+    obs.activatedSeq = ++this.activations
     this.compiled = [...this.compiled, obs]
     this.file(obs)
   }
@@ -604,7 +616,7 @@ export class FunctionObservers {
     }
     // Released while the hooks ran: undo what they did; no success ack, not active.
     if (this.disposed || this.releases !== releases) {
-      await this.tearDown(obs)
+      await this.unwind(obs)
       obs.settleAcceptance({
         code: 'OBSERVER_NOT_ACTIVE',
         message: `${this.functionId} was released before observer ${obs.id} was accepted`,
@@ -618,7 +630,7 @@ export class FunctionObservers {
       obs.rejection = rejection
       this.ack(info, revision, namespace, rejection)
       obs.settleAcceptance(rejection)
-      await this.tearDown(obs)
+      await this.unwind(obs)
       return
     }
     // In the active set before the ack: the first call after `active` is delivered to it.
@@ -629,8 +641,8 @@ export class FunctionObservers {
 
   /**
    * Runs `onObserverAdded` of the worker, then of the function. When one
-   * fails, the levels already set up are torn down, and the rejection is
-   * returned.
+   * fails, the levels whose `onObserverAdded` resolved are torn down, and the
+   * rejection is returned.
    */
   private async setUp(obs: ObserverImpl): Promise<ObserveReason | undefined> {
     for (const level of ['worker', 'fn'] as const) {
@@ -642,12 +654,24 @@ export class FunctionObservers {
       const outcome = await this.runHook(() => hook(obs))
       if (!outcome.ok) {
         if (outcome.timedOut) this.undoLate(outcome.late, obs, level)
-        await this.tearDown(obs)
+        await this.unwind(obs)
         return { code: outcome.code, message: outcome.message }
       }
       obs.levels[level] = 'hooked'
     }
     return undefined
+  }
+
+  /**
+   * Undoes the setup of an observer that is not accepted: `onObserverRemoved`
+   * runs only at the levels whose `onObserverAdded` resolved (§4.3), never at
+   * a level set up without one.
+   */
+  private async unwind(obs: ObserverImpl): Promise<void> {
+    for (const level of ['worker', 'fn'] as const) {
+      if (obs.levels[level] === 'bare') obs.levels[level] = 'none'
+    }
+    await this.tearDown(obs)
   }
 
   /** Runs `onObserverRemoved` of the function, then of the worker, for each level set up, once. */
@@ -742,6 +766,8 @@ export type DeliveryInit = {
   thrown?: unknown
   /** The function's active observers when the call started. */
   snapshot: readonly ObserverImpl[]
+  /** The function's `activations` when the call started, read with `snapshot`. */
+  activations: number
   started_at_ms: number
   /** How long the handler ran. */
   duration_ms: number
@@ -770,8 +796,8 @@ export class Delivery {
 
   /** Resolves to what the caller gets back, or rejects with what it gets thrown. */
   async run(deliver: DeliverHook | undefined): Promise<unknown> {
-    const { call, snapshot, thrown, routed } = this.init
-    const matched = this.owner.matching(call, snapshot)
+    const { call, snapshot, activations, thrown, routed } = this.init
+    const matched = this.owner.matching(call, snapshot, activations)
     if (deliver !== undefined) return deliver(call, matched)
     const selected = this.select(call, matched)
     if (selected.length > 0) {
@@ -782,10 +808,13 @@ export class Delivery {
     return call.output
   }
 
-  /** The error body an answer carries for `error`: the handler's own, or what the deliver hook threw. */
+  /**
+   * The error body a call answers with for `error`: the handler's own, or
+   * what the deliver hook threw ({@link deliverErrorBody}).
+   */
   errorBody(error: unknown): ErrorBody {
     const { call, thrown } = this.init
-    return error === thrown && call.error ? call.error : handlerErrorBody(error)
+    return error === thrown && call.error ? call.error : deliverErrorBody(error)
   }
 
   /** The matched observers whose `on` and filters accept `call`. */

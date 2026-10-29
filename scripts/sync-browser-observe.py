@@ -118,11 +118,17 @@ MODULES = {
             1,
         ),
         ('timer.unref?.()', 'unrefTimer(timer)', 1),
-        # The browser's error body of a failure (src/errors.ts): an `Error` from
-        # any realm, an engine error body rethrown, anything else; it never throws.
-        ("import { ObserveRejection } from './errors'\n", "import { handlerErrorBody, ObserveRejection } from './errors'\n", 1),
+        # The browser's error bodies of a failure (src/errors.ts). A handler's:
+        # an `Error` from any realm, an engine error body rethrown, anything
+        # else; it never throws. A deliver hook's also keeps the code of the
+        # browser's own rejections: an engine error body and a timed-out call.
         (
-            """/** The error a handler's (or a deliver hook's) failure becomes, the same on the local and the remote path. */
+            "import { InvocationError, ObserveRejection } from './errors'\n",
+            "import { deliverErrorBody, ObserveRejection } from './errors'\n",
+            1,
+        ),
+        (
+            """/** The error a handler's failure becomes, the same on the local and the remote path. */
 export function handlerErrorBody(error: unknown): ErrorBody {
   const isError = error instanceof Error
   return {
@@ -130,6 +136,24 @@ export function handlerErrorBody(error: unknown): ErrorBody {
     message: isError ? error.message : String(error),
     stacktrace: isError ? error.stack : undefined,
   }
+}
+
+/**
+ * The error a deliver hook's failure becomes: an {@link ObserveRejection} or
+ * an {@link InvocationError} (a call it made that failed, rethrown) keeps its
+ * code and message; anything else is a handler failure (`invocation_failed`).
+ */
+export function deliverErrorBody(error: unknown): ErrorBody {
+  if (error instanceof ObserveRejection) return { code: error.code, message: error.message }
+  if (error instanceof InvocationError) {
+    const prefix = `${error.code}: `
+    return {
+      code: error.code,
+      message: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message,
+      stacktrace: error.stacktrace,
+    }
+  }
+  return handlerErrorBody(error)
 }
 
 """,
@@ -315,6 +339,25 @@ DELIVER = UNIT + [
       message: 'no route',
       stacktrace: expect.any(String),
     })""",
+        1,
+    ),
+    (
+        """    await expect(response).rejects.toMatchObject({
+      code: 'OBSERVER_NOT_ACTIVE',
+      message: 'OBSERVER_NOT_ACTIVE: observer users is not active',
+      function_id: 'http::on-request',
+    })""",
+        """    // The browser SDK rejects with the error body the remote path gives.
+    await expect(response).rejects.toEqual({ code: 'OBSERVER_NOT_ACTIVE', message: 'observer users is not active' })""",
+        1,
+    ),
+    (
+        """    ).rejects.toMatchObject({
+      code: 'OBSERVER_NOT_ACTIVE',
+      message: 'OBSERVER_NOT_ACTIVE: subscriber removed',
+      function_id: 'queue::on-message',
+    })""",
+        """    ).rejects.toEqual({ code: 'OBSERVER_NOT_ACTIVE', message: 'subscriber removed' }) // the remote path's error body""",
         1,
     ),
     (

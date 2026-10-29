@@ -522,6 +522,54 @@ describe('both levels: the worker hooks and the function hooks', () => {
     expect(calls).toHaveLength(4)
   })
 
+  it('an observer that is not accepted runs no onObserverRemoved at a level that had no onObserverAdded', async () => {
+    const { sdk, socket } = worker()
+    const workerRemoved = vi.fn()
+    const gate = deferred()
+    sdk.onObserverRemoved(workerRemoved)
+    sdk
+      .registerFunction('a::source', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        if (obs.id === 'refused') throw new ObserveRejection('NO_SOURCE', 'refused by the function')
+      })
+    sdk
+      .registerFunction('b::keyed', (e: unknown) => e)
+      .onObserverMatch({
+        observer: (obs) => {
+          if (typeof obs.args.key !== 'string') throw new Error('no key')
+          return obs.args.key
+        },
+        call: () => 'k',
+      })
+    sdk.registerFunction('c::slow', (e: unknown) => e).onObserverAdded(() => gate.promise)
+    socket.open()
+    socket.deliver(functionRegistered('a::source', [observerInfo('refused', 't::a'), observerInfo('kept', 't::b')]))
+    socket.deliver(functionRegistered('b::keyed', [observerInfo('keyless', 't::c', { args: {} })]))
+    socket.deliver(functionRegistered('c::slow', [observerInfo('released', 't::d')]))
+    await settle()
+    socket.deliver({
+      type: 'registrationrejected',
+      code: 'FUNCTION_NAMESPACE_CONFLICT',
+      namespace: 'default',
+      function_id: 'c::slow',
+      owner_worker_id: 'other',
+    })
+    gate.resolve()
+    await settle()
+    expect(
+      Object.fromEntries(acks(socket).map((a) => [a.id, (a.error as { code?: string } | undefined)?.code])),
+    ).toEqual({
+      refused: 'NO_SOURCE',
+      kept: undefined,
+      keyless: 'OBSERVE_REJECTED',
+    })
+    expect(workerRemoved).not.toHaveBeenCalled()
+    // an accepted observer is torn down at the worker level, which had no onObserverAdded
+    socket.deliver(observerRemoved('a::source', 1, 'kept'))
+    await settle()
+    expect(workerRemoved.mock.calls.map(([obs]) => obs.id)).toEqual(['kept'])
+  })
+
   it('runs onObserverRemoved once per accepted observer: late rejection, then its removal', async () => {
     const { sdk, socket } = worker()
     const removed = vi.fn()

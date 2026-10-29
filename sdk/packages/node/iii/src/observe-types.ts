@@ -223,8 +223,10 @@ export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKe
 /**
  * Delivers each call of a function itself (`onObserverDeliver`): it receives
  * the call and the observers that matched it (a snapshot taken when the call
- * started), and what it returns (or throws) is what the caller gets back. iii
- * delivers nothing for that function; the hook calls through observers
+ * started), and what it returns (or throws) is what the caller gets back. A
+ * thrown {@link ObserveRejection}, or the error of a call it made, reaches the
+ * caller with its code; any other error as `invocation_failed`. iii delivers
+ * nothing for that function; the hook calls through observers
  * (`iii.call({ observer, payload })`) and applies their filters with
  * `obs.matches(call)`. It runs inside the function's invocation, so the calls
  * it makes have that invocation as their caller.

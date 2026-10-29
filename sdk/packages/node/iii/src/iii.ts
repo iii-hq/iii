@@ -1239,6 +1239,7 @@ class Sdk implements IIIClient {
 
     // The observers the call is delivered from: those active when it started.
     const snapshot = observe.compiled
+    const activations = observe.activations
     const hook = this.functionHooks.get(function_id)?.deliver
     const delivering = hook !== undefined || snapshot.length > 0
     const byReference = fn.message.private === true
@@ -1274,6 +1275,7 @@ class Sdk implements IIIClient {
 
     const startedAt = Date.now()
     const t0 = performance.now()
+    let delivery: Delivery | undefined
     const settle = (outcome: HandlerOutcome): unknown => {
       const duration = performance.now() - t0
       this.reporter.recordLocal(function_id, outcome.ok, duration)
@@ -1281,10 +1283,11 @@ class Sdk implements IIIClient {
         if (outcome.ok) return outcome.value
         throw outcome.error
       }
-      const delivery = new Delivery(observe, {
+      delivery = new Delivery(observe, {
         call: this.callOf(function_id, ctx.invocation_id, outcome, callInput, ctx.caller, callMetadata),
         thrown: outcome.ok ? undefined : outcome.error,
         snapshot,
+        activations,
         started_at_ms: startedAt,
         duration_ms: duration,
         observe_depth: ctx.observe_depth,
@@ -1298,7 +1301,7 @@ class Sdk implements IIIClient {
     const done = runInContext(ctx, () => handler(input, metadata as JsonValue, traceparent, baggage, settle)).then(
       (output) => output,
       (error) => {
-        throw new InvocationError({ ...handlerErrorBody(error), function_id })
+        throw new InvocationError({ ...(delivery ? delivery.errorBody(error) : handlerErrorBody(error)), function_id })
       },
     )
 
@@ -2045,6 +2048,7 @@ class Sdk implements IIIClient {
       // sees the input as it arrived (channel refs unresolved), and what iii's
       // delivery selects rides the answer (`observed`).
       const snapshot: readonly ObserverImpl[] = fn.observe.compiled
+      const activations = fn.observe.activations
       const hook = this.functionHooks.get(function_id)?.deliver
       const delivering = this.engineFeatures.has(FEATURE_OBSERVE_V2) && (hook !== undefined || snapshot.length > 0)
       const startedAt = Date.now()
@@ -2056,6 +2060,7 @@ class Sdk implements IIIClient {
               call: this.callOf(function_id, ctx.invocation_id, outcome, input, ctx.caller, metadata),
               thrown: outcome.ok ? undefined : outcome.error,
               snapshot,
+              activations,
               started_at_ms: startedAt,
               duration_ms: performance.now() - t0,
               observe_depth: ctx.observe_depth,

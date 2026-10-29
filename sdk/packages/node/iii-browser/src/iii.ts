@@ -1,5 +1,5 @@
 import { ChannelReader, ChannelWriter } from './channels'
-import { handlerErrorBody, InvocationError, RegistrationRejectedError } from './errors'
+import { handlerErrorBody, InvocationError, InvocationTimeoutError, RegistrationRejectedError } from './errors'
 import { compileFilter, FilterError } from './filter'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -251,18 +251,6 @@ function cloneValue<T>(value: T): T {
 const UNSUPPORTED_REASON = {
   code: 'UNSUPPORTED',
   message: 'the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later',
-}
-
-/**
- * The error a call that timed out rejects with, on the remote and the local
- * path: an `Error` (its message unchanged from earlier releases) that also
- * carries `code: 'TIMEOUT'` and the `function_id`, like the Node SDK's.
- */
-function timeoutError(ms: number, functionId: string): Error & { code: 'TIMEOUT'; function_id: string } {
-  return Object.assign(new Error(`Invocation timeout after ${ms}ms: ${functionId}`), {
-    code: 'TIMEOUT' as const,
-    function_id: functionId,
-  })
 }
 
 /** What an outgoing `invokefunction` carries from the invocation it is made in. */
@@ -1066,7 +1054,7 @@ class Sdk implements ISdk {
         const invocation = this.invocations.get(invocation_id)
         if (invocation) {
           this.invocations.delete(invocation_id)
-          reject(timeoutError(effectiveTimeout, function_id))
+          reject(new InvocationTimeoutError(effectiveTimeout, function_id))
         }
       }, effectiveTimeout)
 
@@ -1161,6 +1149,7 @@ class Sdk implements ISdk {
 
     // The observers the call is delivered from: those active when it started.
     const snapshot = observe.compiled
+    const activations = observe.activations
     const hook = this.functionHooks.get(function_id)?.deliver
     const delivering = hook !== undefined || snapshot.length > 0
     const byReference = fn.message.private === true
@@ -1192,6 +1181,7 @@ class Sdk implements ISdk {
 
     const startedAt = Date.now()
     const t0 = performance.now()
+    let delivery: Delivery | undefined
     const settle = (outcome: HandlerOutcome): unknown => {
       const duration = performance.now() - t0
       this.reporter.recordLocal(function_id, outcome.ok, duration)
@@ -1199,10 +1189,11 @@ class Sdk implements ISdk {
         if (outcome.ok) return outcome.value
         throw outcome.error
       }
-      const delivery = new Delivery(observe, {
+      delivery = new Delivery(observe, {
         call: this.callOf(function_id, ctx.invocation_id, outcome, callInput, ctx.caller, callMetadata),
         thrown: outcome.ok ? undefined : outcome.error,
         snapshot,
+        activations,
         started_at_ms: startedAt,
         duration_ms: duration,
         observe_depth: ctx.observe_depth,
@@ -1236,7 +1227,7 @@ class Sdk implements ISdk {
         (error) => {
           untrack()
           // What the remote path rejects with: the error body, as the engine forwards it.
-          throw handlerErrorBody(error)
+          throw delivery ? delivery.errorBody(error) : handlerErrorBody(error)
         },
       )
 
@@ -1264,7 +1255,7 @@ class Sdk implements ISdk {
         },
       )
       timeout = setTimeout(() => {
-        reject(timeoutError(effectiveTimeout, function_id))
+        reject(new InvocationTimeoutError(effectiveTimeout, function_id))
       }, effectiveTimeout)
     })
   }
@@ -1708,6 +1699,7 @@ class Sdk implements ISdk {
       // sees the input as it arrived (channel refs unresolved), and what iii's
       // delivery selects rides the answer (`observed`).
       const snapshot: readonly ObserverImpl[] = fn.observe.compiled
+      const activations = fn.observe.activations
       const hook = this.functionHooks.get(function_id)?.deliver
       const delivering = this.engineFeatures.has(FEATURE_OBSERVE_V2) && (hook !== undefined || snapshot.length > 0)
       const startedAt = Date.now()
@@ -1732,6 +1724,7 @@ class Sdk implements ISdk {
             call: this.callOf(function_id, ctx.invocation_id, outcome, input, ctx.caller, metadata),
             thrown: outcome.ok ? undefined : outcome.error,
             snapshot,
+            activations,
             started_at_ms: startedAt,
             duration_ms: performance.now() - t0,
             observe_depth: ctx.observe_depth,

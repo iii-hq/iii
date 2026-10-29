@@ -213,6 +213,48 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     expect(ref.isObserved({ input: { expression: '*/9', n: 0 } })).toBe(true)
   })
 
+  it('a call matches the observers active when it started: one filed under its key while it runs gets nothing', async () => {
+    const { sdk, socket } = worker()
+    let release: () => void = () => undefined
+    const ref = sdk
+      .registerFunction('database::on-row-changed', async (change: Change) => {
+        await new Promise<void>((resolve) => {
+          release = resolve
+        })
+        return change
+      })
+      .onObserverMatch(byRow)
+    socket.deliver(
+      functionRegistered('database::on-row-changed', [row('before', { db: 'primary', table: 'orders' })], {
+        revision: 1,
+      }),
+    )
+    await settle()
+    socket.clear()
+    const orders = { db: 'primary', table: 'orders', op: 'insert' }
+    const during = async (revision: number, id: string) => {
+      const call = sdk.call({ function_id: 'database::on-row-changed', payload: orders })
+      await settle()
+      socket.deliver(observerAdded('database::on-row-changed', revision, row(id, { db: 'primary', table: 'orders' })))
+      await settle()
+      expect(ref.observers().map((o) => o.id)).toContain(id)
+      release()
+      await call
+    }
+
+    await during(2, 'added-during-call')
+    await flushed()
+    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['before']])
+
+    const delivered: string[][] = []
+    ref.onObserverDeliver((call, observers) => {
+      delivered.push(observers.map((o) => o.id).sort())
+      return call.output
+    })
+    await during(3, 'added-during-hooked-call')
+    expect(delivered).toEqual([['added-during-call', 'before']])
+  })
+
   it('call keys that throw match nothing', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { sdk, socket } = await database([row('any', { db: 'primary' })])
@@ -257,6 +299,36 @@ describe('onObserverDeliver', () => {
     })
     await flushed()
     expect(socket.sent).toHaveLength(0)
+  })
+
+  it('an ObserveRejection the hook throws reaches the caller with its code and message: local and routed', async () => {
+    const { sdk, socket } = worker()
+    sdk
+      .registerFunction('queue::on-message', (message: { n: number }) => message)
+      .onObserverMatch({ observer: (obs) => obs.id, call: (call) => (call.metadata?.subscriber as string) ?? '' })
+      .onObserverDeliver(async (call, [obs]) => {
+        if (!obs) throw new ObserveRejection('OBSERVER_NOT_ACTIVE', 'subscriber removed')
+        return call.output
+      })
+    socket.deliver(functionRegistered('queue::on-message', [observerInfo('sub-1', 'billing::on-message')]))
+    await settle()
+    socket.clear()
+    await expect(
+      sdk.call({ function_id: 'queue::on-message', payload: { n: 1 }, metadata: { subscriber: 'sub-1' } }),
+    ).resolves.toEqual({ n: 1 })
+    await expect(
+      sdk.call({ function_id: 'queue::on-message', payload: { n: 2 }, metadata: { subscriber: 'sub-2' } }),
+    ).rejects.toEqual({ code: 'OBSERVER_NOT_ACTIVE', message: 'subscriber removed' }) // the remote path's error body
+    socket.deliver(
+      invokeFunction('queue::on-message', { n: 3 }, { invocation_id: 'routed', metadata: { subscriber: 'sub-2' } }),
+    )
+    await settle()
+    expect(fake.resultOf(socket, 'routed')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'routed',
+      function_id: 'queue::on-message',
+      error: { code: 'OBSERVER_NOT_ACTIVE', message: 'subscriber removed' },
+    })
   })
 
   it('runs with no observers too, and receives only the observers that matched', async () => {
@@ -485,18 +557,42 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
     expect(socket.framesOf('invokefunction')).toEqual([])
   })
 
-  it("the engine's refusal reaches the caller as an error", async () => {
+  it("the engine's refusal, rethrown by the hook, reaches the caller with its code: local and routed", async () => {
     const { sdk, socket } = await http()
+    const refuse = (frame: Json) =>
+      socket.deliver({
+        type: 'invocationresult',
+        invocation_id: frame.invocation_id,
+        function_id: 'users::get',
+        error: { code: 'OBSERVER_NOT_ACTIVE', message: 'observer users is not active' },
+      })
     const response = sdk.call({ function_id: 'http::on-request', payload: { path: '/users' } })
     await settle()
-    const [frame] = socket.framesOf('invokefunction')
-    socket.deliver({
+    refuse(socket.framesOf('invokefunction')[0])
+    // The browser SDK rejects with the error body the remote path gives.
+    await expect(response).rejects.toEqual({ code: 'OBSERVER_NOT_ACTIVE', message: 'observer users is not active' })
+    socket.clear()
+    socket.deliver(invokeFunction('http::on-request', { path: '/users' }, { invocation_id: 'routed' }))
+    await settle()
+    refuse(socket.framesOf('invokefunction')[0])
+    await settle()
+    expect(fake.resultOf(socket, 'routed')).toEqual({
       type: 'invocationresult',
-      invocation_id: frame.invocation_id,
-      function_id: 'users::get',
+      invocation_id: 'routed',
+      function_id: 'http::on-request',
       error: { code: 'OBSERVER_NOT_ACTIVE', message: 'observer users is not active' },
     })
-    await expect(response).rejects.toMatchObject({ code: 'invocation_failed' })
+  })
+
+  it('a call through the observer that times out, rethrown by the hook, reaches the caller as TIMEOUT', async () => {
+    const { sdk } = await http()
+    sdk.onObserverDeliver('http::on-request', async (call, [obs]) =>
+      sdk.call({ observer: obs, payload: call.input, timeoutMs: 20 }),
+    )
+    const response = sdk.call({ function_id: 'http::on-request', payload: { path: '/users' } })
+    const outcome = expect(response).rejects.toMatchObject({ code: 'TIMEOUT' })
+    await fake.elapse(25)
+    await outcome
   })
 
   it('accepted() resolves after the ack: a call through the observer sent then follows it on the wire', async () => {

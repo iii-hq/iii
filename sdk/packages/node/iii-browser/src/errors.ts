@@ -65,6 +65,21 @@ export class InvocationError extends Error {
   }
 }
 
+/**
+ * The error a call that timed out rejects with, on the remote and the local
+ * path: an `Error` (its message unchanged from earlier releases) that also
+ * carries `code: 'TIMEOUT'` and the `function_id`, like the Node SDK's.
+ */
+export class InvocationTimeoutError extends Error {
+  public readonly code = 'TIMEOUT'
+  public readonly function_id: string
+
+  constructor(ms: number, functionId: string) {
+    super(`Invocation timeout after ${ms}ms: ${functionId}`)
+    this.function_id = functionId
+  }
+}
+
 /** What a failure reports when the thrown value cannot even be read (a getter or `toString` that throws). */
 const UNREADABLE_FAILURE = 'the handler failed with a value that cannot be read'
 
@@ -95,8 +110,8 @@ function isEngineErrorBody(value: unknown): value is { code: string; message: st
 }
 
 /**
- * The error a handler's (or a deliver hook's) failure becomes, the same on the
- * local and the remote path (code `invocation_failed`):
+ * The error a handler's failure becomes, the same on the local and the remote
+ * path (code `invocation_failed`):
  * - an `Error`, from any realm (an iframe's too): its message and stack;
  * - an engine error body (a failed call's rejection, rethrown): its message and stacktrace;
  * - anything else: `String(value)`.
@@ -120,6 +135,32 @@ export function handlerErrorBody(error: unknown): ErrorBody {
   } catch {
     return { code: 'invocation_failed', message: safeString(error), stacktrace: undefined }
   }
+}
+
+/**
+ * The error a deliver hook's failure becomes: an {@link ObserveRejection}, an
+ * {@link InvocationError}, a call that timed out ({@link InvocationTimeoutError})
+ * or an engine error body (a failed call's rejection, rethrown) keeps its code
+ * and message; anything else is a handler failure ({@link handlerErrorBody}).
+ * Never throws.
+ */
+export function deliverErrorBody(error: unknown): ErrorBody {
+  try {
+    if (error instanceof ObserveRejection) return { code: error.code, message: error.message }
+    if (error instanceof InvocationError) {
+      const prefix = `${error.code}: `
+      return {
+        code: error.code,
+        message: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message,
+        stacktrace: error.stacktrace,
+      }
+    }
+    if (error instanceof InvocationTimeoutError) return { code: error.code, message: error.message }
+    if (isEngineErrorBody(error)) return { code: error.code, message: error.message, stacktrace: error.stacktrace }
+  } catch {
+    // reading the value threw: reported as a handler failure
+  }
+  return handlerErrorBody(error)
 }
 
 /**
