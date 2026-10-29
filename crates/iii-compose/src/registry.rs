@@ -189,56 +189,72 @@ pub(crate) async fn warn_alias(
 /// The rust target triple this daemon is running on, which is the one its
 /// children have to run on too.
 pub fn host_target() -> &'static str {
-    // `cfg!` rather than a runtime probe: the daemon and its children share a
-    // machine, so the triple compose was built for is the triple it needs.
-    if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "musl"
-    )) {
-        "x86_64-unknown-linux-musl"
-    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
-        "aarch64-apple-darwin"
-    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(all(target_arch = "aarch64", target_os = "windows")) {
-        "aarch64-pc-windows-msvc"
-    } else {
-        "unknown"
+    // Build constants rather than a runtime probe: the daemon and its children
+    // share a machine, so the triple compose was built for is the triple it
+    // needs.
+    target_triple(
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        cfg!(target_env = "musl"),
+    )
+}
+
+/// The triple of a build for `arch` and `os`; `musl` marks a static Linux
+/// build. `unknown` for a platform the registry publishes no builds for.
+fn target_triple(arch: &str, os: &str, musl: bool) -> &'static str {
+    match (arch, os, musl) {
+        ("x86_64", "linux", true) => "x86_64-unknown-linux-musl",
+        ("x86_64", "linux", false) => "x86_64-unknown-linux-gnu",
+        ("aarch64", "linux", true) => "aarch64-unknown-linux-musl",
+        ("aarch64", "linux", false) => "aarch64-unknown-linux-gnu",
+        ("x86_64", "macos", _) => "x86_64-apple-darwin",
+        ("aarch64", "macos", _) => "aarch64-apple-darwin",
+        ("x86_64", "windows", _) => "x86_64-pc-windows-msvc",
+        ("aarch64", "windows", _) => "aarch64-pc-windows-msvc",
+        _ => "unknown",
     }
 }
 
-/// The x86_64 glibc and musl dynamic loaders. A glibc distribution has the
-/// first. A musl one (Alpine) has the second, and may have the first too as a
-/// compatibility link to itself (libc6-compat, gcompat), so the musl loader
-/// decides, as it does for `iii-worker`'s own binary and the installer.
-const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
-const MUSL_LOADER: &str = "/lib/ld-musl-x86_64.so.1";
+/// The glibc and musl dynamic loaders of a Linux `arch`. A glibc distribution
+/// has the first. A musl one (Alpine) has the second, and may have the first
+/// too as a compatibility link to itself (libc6-compat, gcompat), so the musl
+/// loader decides, as it does for `iii-worker`'s own binary and the installer.
+fn linux_loaders(arch: &str) -> Option<(&'static str, &'static str)> {
+    match arch {
+        "x86_64" => Some(("/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1")),
+        "aarch64" => Some(("/lib/ld-linux-aarch64.so.1", "/lib/ld-musl-aarch64.so.1")),
+        _ => None,
+    }
+}
 
 /// Every triple this host can run, preferred first: [`host_target`], then,
-/// for the static musl build on a glibc machine, the glibc one. That machine
+/// for a static musl build on a glibc machine, the glibc one. That machine
 /// runs both, and some workers publish only glibc builds (a C++ dependency
 /// with no musl toolchain, or backends loaded as shared libraries).
 pub fn host_targets() -> &'static [&'static str] {
     static TARGETS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     TARGETS.get_or_init(|| {
-        let glibc_host = Path::new(GLIBC_LOADER).exists() && !Path::new(MUSL_LOADER).exists();
+        let glibc_host = linux_loaders(std::env::consts::ARCH)
+            .is_some_and(|(glibc, musl)| Path::new(glibc).exists() && !Path::new(musl).exists());
         runnable_targets(host_target(), glibc_host)
     })
 }
 
 fn runnable_targets(native: &'static str, glibc_host: bool) -> Vec<&'static str> {
     let mut targets = vec![native];
-    if native == "x86_64-unknown-linux-musl" && glibc_host {
-        targets.push("x86_64-unknown-linux-gnu");
+    if glibc_host && let Some(glibc) = glibc_counterpart(native) {
+        targets.push(glibc);
     }
     targets
+}
+
+/// The glibc build of the same machine as a static musl `native` build.
+fn glibc_counterpart(native: &str) -> Option<&'static str> {
+    match native {
+        "x86_64-unknown-linux-musl" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64-unknown-linux-musl" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
 }
 
 /// The first of `candidates` that `artifacts` has a build for.
@@ -1933,6 +1949,65 @@ mod tests {
             runnable_targets("aarch64-apple-darwin", true),
             ["aarch64-apple-darwin"]
         );
+    }
+
+    #[test]
+    fn an_arm_musl_build_on_a_glibc_machine_also_runs_glibc_builds() {
+        const MUSL: &str = "aarch64-unknown-linux-musl";
+        const GNU: &str = "aarch64-unknown-linux-gnu";
+        assert_eq!(runnable_targets(MUSL, true), [MUSL, GNU]);
+        assert_eq!(runnable_targets(MUSL, false), [MUSL]);
+        assert_eq!(runnable_targets(GNU, true), [GNU]);
+    }
+
+    #[test]
+    fn a_static_linux_build_names_its_musl_triple_on_every_architecture() {
+        assert_eq!(
+            target_triple("x86_64", "linux", true),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_triple("x86_64", "linux", false),
+            "x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            target_triple("aarch64", "linux", true),
+            "aarch64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_triple("aarch64", "linux", false),
+            "aarch64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            target_triple("aarch64", "macos", false),
+            "aarch64-apple-darwin"
+        );
+        assert_eq!(
+            target_triple("x86_64", "macos", false),
+            "x86_64-apple-darwin"
+        );
+        assert_eq!(
+            target_triple("x86_64", "windows", false),
+            "x86_64-pc-windows-msvc"
+        );
+        assert_eq!(
+            target_triple("aarch64", "windows", false),
+            "aarch64-pc-windows-msvc"
+        );
+        assert_eq!(target_triple("riscv64", "linux", false), "unknown");
+    }
+
+    #[test]
+    fn the_glibc_probe_reads_the_loaders_of_the_host_architecture() {
+        assert_eq!(
+            linux_loaders("x86_64"),
+            Some(("/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"))
+        );
+        assert_eq!(
+            linux_loaders("aarch64"),
+            Some(("/lib/ld-linux-aarch64.so.1", "/lib/ld-musl-aarch64.so.1"))
+        );
+        assert_eq!(linux_loaders("riscv64"), None);
     }
 
     #[test]
