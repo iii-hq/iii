@@ -507,26 +507,36 @@ impl ObserverRegistry {
         emission: Emission,
         build: impl FnOnce() -> Option<Value>,
     ) {
-        let Some(set) = self.watch(namespace, function_id) else {
-            return;
-        };
+        if let Some(evaluation) = self.emission(namespace, function_id, emission, build) {
+            self.enqueue(evaluation);
+        }
+    }
+
+    /// The evaluation of one call of the engine-hosted source `(namespace,
+    /// function_id)` (see [`Self::emit_with`]), when it has active observers
+    /// and the evaluator has room.
+    pub(super) fn emission(
+        &self,
+        namespace: &str,
+        function_id: &str,
+        emission: Emission,
+        build: impl FnOnce() -> Option<Value>,
+    ) -> Option<Evaluation> {
+        let set = self.watch(namespace, function_id)?;
         if !self.evaluator_has_room(&set) {
             for observer in &set.observers {
                 drop_event(observer, observe_codes::OVERFLOW);
             }
-            return;
+            return None;
         }
         let event = if set.needs.input || set.needs.output {
             self.events_built.fetch_add(1, Ordering::Relaxed);
-            match build() {
-                Some(event) => Some(Arc::new(event)),
-                None => return,
-            }
+            Some(Arc::new(build()?))
         } else {
             None
         };
         let depth = emission.depth.unwrap_or_else(InvocationCtx::current_depth);
-        let evaluation = Evaluation {
+        Some(Evaluation {
             bytes: event.as_deref().map_or(0, approx_size),
             completed: Completed {
                 delivery: ENGINE_DELIVERY,
@@ -551,8 +561,7 @@ impl ObserverRegistry {
             matching: Matching::Filters,
             error: None,
             ctx: Arc::new(InvocationCtx::engine_source(depth)),
-        };
-        self.enqueue(evaluation);
+        })
     }
 
     /// Starts tracking an observed invocation: copies the input and metadata
@@ -776,9 +785,19 @@ impl ObserverRegistry {
     /// `OVERFLOW` for each active observer of the function; larger than the
     /// whole byte budget, as `TOO_LARGE`.
     fn enqueue(self: &Arc<Self>, evaluation: Evaluation) {
-        let Some(evaluators) = self.evaluators() else {
+        if let Some(evaluation) = self.try_enqueue(evaluation) {
             self.evaluate(evaluation);
-            return;
+        }
+    }
+
+    /// [`Self::enqueue`], except that an evaluation no evaluator task can
+    /// take is returned, for the caller to evaluate (see
+    /// [`ObserverRegistry::evaluate`]) once it holds no lock an activation
+    /// may take. A function's evaluations reach its evaluator in the order
+    /// they are handed over.
+    pub(super) fn try_enqueue(self: &Arc<Self>, evaluation: Evaluation) -> Option<Evaluation> {
+        let Some(evaluators) = self.evaluators() else {
+            return Some(evaluation);
         };
         let evaluator = evaluator_of(evaluators, &evaluation.set);
         let bytes = evaluation.bytes;
@@ -787,7 +806,7 @@ impl ObserverRegistry {
             for observer in evaluation.concerned() {
                 drop_too_large(observer, bytes, budget, TooLarge::Held);
             }
-            return;
+            return None;
         }
         // Reserved, not checked then added: concurrent completions cannot
         // overshoot the budget together.
@@ -801,19 +820,20 @@ impl ObserverRegistry {
             for observer in evaluation.concerned() {
                 drop_event(observer, observe_codes::OVERFLOW);
             }
-            return;
+            return None;
         }
         match evaluator.try_send(evaluation) {
-            Ok(()) => {}
+            Ok(()) => None,
             Err(mpsc::error::TrySendError::Full(evaluation)) => {
                 self.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
                 for observer in evaluation.concerned() {
                     drop_event(observer, observe_codes::OVERFLOW);
                 }
+                None
             }
             Err(mpsc::error::TrySendError::Closed(evaluation)) => {
                 self.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
-                self.evaluate(evaluation);
+                Some(evaluation)
             }
         }
     }
@@ -852,7 +872,7 @@ impl ObserverRegistry {
     /// Activates the observers one completed invocation matched: evaluating
     /// the active observers' `on` and filters, or taking the ones its host
     /// listed.
-    fn evaluate(self: &Arc<Self>, evaluation: Evaluation) {
+    pub(super) fn evaluate(self: &Arc<Self>, evaluation: Evaluation) {
         let Evaluation {
             set,
             matching,

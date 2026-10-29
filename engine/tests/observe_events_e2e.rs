@@ -86,9 +86,9 @@ async fn next_change(sink: &mut Client) -> Value {
     activation
 }
 
-/// One call of `engine::on-observers-changed` per state change of an
-/// observer (decision 6), with the `reason` when there is one; the engine is
-/// its caller.
+/// One call of `engine::on-observers-changed` per observer creation, with
+/// the state it starts in, and per state change after it (decision 6), with
+/// the `reason` when there is one; the engine is its caller.
 #[tokio::test]
 async fn on_observers_changed_reports_each_state_change() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -113,6 +113,10 @@ async fn on_observers_changed_reports_each_state_change() {
         ))
         .await;
 
+    // Created pending: its host has not acked it yet.
+    let created = next_change(&mut sink).await;
+    assert_eq!(created["data"]["state"], "pending");
+    assert!(created["data"].get("reason").is_none(), "{created}");
     let active = next_change(&mut sink).await;
     assert_eq!(
         active["data"],

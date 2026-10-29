@@ -11,7 +11,7 @@
 //! |---|---|
 //! | `engine::on-functions-changed` | `{ event: "functions_changed", functions: [...] }`, one call per burst of registrations (~100ms) |
 //! | `engine::on-workers-changed` | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated` |
-//! | `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one call per observer state change |
+//! | `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one call per observer creation (its first state) and per state change |
 //! | `configuration::on-updated` | a configuration entry registered, updated or deleted |
 //! | `observability::on-log` | one ingested log record |
 //! | `observability::on-span` | `{ trace_ids }`, one coalesced window of span activity |
@@ -26,10 +26,14 @@
 //! observer's `input.*` and `output.*` filter paths are checked. A call from
 //! anyone else, the engine included, is refused with `FORBIDDEN`.
 
+use std::sync::Arc;
+
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use super::{FunctionOptions, ObserverRegistry, lifecycle::Observer};
+use super::{
+    Emission, FunctionOptions, ObserverRegistry, dispatch::Evaluation, lifecycle::Observer,
+};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     event_formats::{
@@ -50,29 +54,56 @@ pub const STREAM_ON_JOIN: &str = "stream::on-join";
 pub const STREAM_ON_LEAVE: &str = "stream::on-leave";
 
 impl ObserverRegistry {
-    /// One call of `engine::on-observers-changed`: `observer` became `state`.
-    pub(super) fn emit_observer_changed(
+    /// One call of `engine::on-observers-changed`: `observer` became `state`
+    /// (or was created in it). Handed to the evaluator at once, so a caller
+    /// holding `observer`'s status lock hands its changes over in the order
+    /// they happened. Returned when no evaluator task runs, for the caller to
+    /// evaluate once it let go of that lock: an activation may take it.
+    #[must_use = "an event no evaluator task took is evaluated by the caller"]
+    pub(super) fn observer_changed(
         &self,
         observer: &Observer,
         state: &ObserverState,
         reason: Option<ErrorBody>,
-    ) {
-        let Some(registry) = self.this() else {
-            return;
-        };
-        registry.emit(DEFAULT_NAMESPACE, ON_OBSERVERS_CHANGED, || {
-            payload_built();
-            let mut event = json!({
-                "observer_id": observer.id,
-                "function_id": observer.function.1,
-                "target": observer.target.1,
-                "state": state.as_str(),
-            });
-            if let Some(reason) = reason {
-                event["reason"] = json!({ "code": reason.code, "message": reason.message });
-            }
-            Some(event)
-        });
+    ) -> Option<UnqueuedEvent> {
+        let registry = self.this()?;
+        let evaluation = registry.emission(
+            DEFAULT_NAMESPACE,
+            ON_OBSERVERS_CHANGED,
+            Emission::default(),
+            || {
+                payload_built();
+                let mut event = json!({
+                    "observer_id": observer.id,
+                    "function_id": observer.function.1,
+                    "target": observer.target.1,
+                    "state": state.as_str(),
+                });
+                if let Some(reason) = reason {
+                    event["reason"] = json!({ "code": reason.code, "message": reason.message });
+                }
+                Some(event)
+            },
+        )?;
+        let evaluation = registry.try_enqueue(evaluation)?;
+        Some(UnqueuedEvent {
+            registry,
+            evaluation,
+        })
+    }
+}
+
+/// An event of an engine-hosted source no evaluator task took (see
+/// [`ObserverRegistry::observer_changed`]).
+pub(super) struct UnqueuedEvent {
+    registry: Arc<ObserverRegistry>,
+    evaluation: Evaluation,
+}
+
+impl UnqueuedEvent {
+    /// Evaluates it here: the caller holds no lock an activation may take.
+    pub(super) fn evaluate(self) {
+        self.registry.evaluate(self.evaluation);
     }
 }
 
@@ -144,8 +175,9 @@ pub fn register_engine_event_sources(engine: &Engine) {
     register_event_source(
         engine,
         ON_OBSERVERS_CHANGED,
-        "Engine-hosted source: an observer changed state. One call per state change; \
-         `reason` says why, when there is one.",
+        "Engine-hosted source: an observer was created or changed state. One call per \
+         creation, with the state it starts in, and one per state change; `reason` says why, \
+         when there is one.",
         observers_changed_format(),
     );
 }
@@ -488,8 +520,8 @@ mod tests {
         assert_eq!(envelope["caller"], json!({ "worker_name": "iii-engine" }));
     }
 
-    /// Every observer state change is one call of
-    /// `engine::on-observers-changed`.
+    /// Every observer's creation, in the state it was created in, and every
+    /// state change after it is one call of `engine::on-observers-changed`.
     #[tokio::test]
     async fn observer_state_changes_are_an_engine_hosted_source() {
         let engine = std::sync::Arc::new(Engine::new());
@@ -513,7 +545,10 @@ mod tests {
                 test_support::request("watched", "test::source", "test::target", None),
             )
             .await;
-        // Created pending (its target is missing): a creation is no change.
+        // Created pending: its target is missing.
+        let created = test_support::next(&mut changes).await;
+        assert_eq!(created["state"], "pending");
+        assert_eq!(created["reason"]["code"], "TARGET_UNAVAILABLE");
         let _target = test_support::capture(&engine, "test::target");
         assert_eq!(
             test_support::next(&mut changes).await,
@@ -532,6 +567,23 @@ mod tests {
         let disposed = test_support::next(&mut changes).await;
         assert_eq!(disposed["state"], "disposed");
         assert_eq!(disposed["reason"]["code"], "UNOBSERVED");
+
+        // Created active, its function and target registered: no change
+        // follows, and its creation is still called.
+        let (other, _other_socket) = test_support::worker(&engine);
+        engine
+            .observers
+            .observe(
+                &engine,
+                &other,
+                test_support::request("watched", "test::source", "test::target", None),
+            )
+            .await;
+        assert_eq!(
+            test_support::next(&mut changes).await["state"],
+            "active",
+            "the creation"
+        );
     }
 
     #[test]

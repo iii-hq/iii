@@ -490,34 +490,43 @@ impl ObserverRegistry {
         Ok(())
     }
 
-    /// Makes `observer` visible to every index and queues its
-    /// `observeresult`, before any transition can be reported.
+    /// Makes `observer` visible to every index, queues its `observeresult`
+    /// and calls `engine::on-observers-changed` with the state it was created
+    /// in, before any transition can be reported.
     pub(super) fn publish(
         self: &Arc<Self>,
         observer: &Arc<Observer>,
         connection: Uuid,
         warnings: Vec<String>,
     ) -> bool {
-        let state = observer.state();
-        match self.by_id.entry(observer.id.clone()) {
-            dashmap::mapref::entry::Entry::Occupied(_) => return false,
-            dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                vacant.insert(observer.clone());
+        // Under the status lock, which a transition takes: it is reported
+        // after these.
+        let published = observer.with_state(|state, reason| {
+            match self.by_id.entry(observer.id.clone()) {
+                dashmap::mapref::entry::Entry::Occupied(_) => return None,
+                dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                    vacant.insert(observer.clone());
+                }
             }
+            self.state_counts.enter(state);
+            self.notify(
+                connection,
+                Message::ObserveResult {
+                    id: observer.id.clone(),
+                    state: state.clone(),
+                    error: None,
+                    warnings,
+                },
+            );
+            let unqueued = self.observer_changed(observer, state, reason.cloned());
+            Some((state.clone(), unqueued))
+        });
+        let Some((state, unqueued)) = published else {
+            return false;
+        };
+        if let Some(event) = unqueued {
+            event.evaluate();
         }
-        self.state_counts.enter(&state);
-        // Queued before the observer is reachable from the function and target
-        // indexes, which are what a concurrent registry change goes through:
-        // any transition it causes is reported after this.
-        self.notify(
-            connection,
-            Message::ObserveResult {
-                id: observer.id.clone(),
-                state: state.clone(),
-                error: None,
-                warnings,
-            },
-        );
         self.by_connection
             .entry(connection)
             .or_default()

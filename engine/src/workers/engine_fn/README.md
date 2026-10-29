@@ -88,7 +88,7 @@ Owned by `iii-engine-functions`. Each is a private function: only the engine cal
 |---|---|
 | `engine::on-functions-changed` | Functions are registered or unregistered, driven by the registry itself (no polling); a burst is coalesced over ~100ms into one call. Event: `{ event: "functions_changed", functions: [...] }`. |
 | `engine::on-workers-changed` | A worker connects, disconnects, or updates its metadata through `engine::workers::register`. Event: `{ event, worker_id }`. |
-| `engine::on-observers-changed` | An observer changes state. Event: `{ observer_id, function_id, target, state, reason? }`. |
+| `engine::on-observers-changed` | An observer is created (with the state it starts in) or changes state. Event: `{ observer_id, function_id, target, state, reason? }`. |
 
 ## Before you build
 

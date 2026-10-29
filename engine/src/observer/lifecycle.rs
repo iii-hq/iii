@@ -539,6 +539,16 @@ impl Observer {
         lock(&self.status).state == ObserverState::Active
     }
 
+    /// Runs `f` with the state and reason, holding the status lock: no
+    /// transition happens meanwhile.
+    pub(crate) fn with_state<R>(
+        &self,
+        f: impl FnOnce(&ObserverState, Option<&ErrorBody>) -> R,
+    ) -> R {
+        let status = lock(&self.status);
+        f(&status.state, status.reason.as_ref())
+    }
+
     /// State and reason read together.
     pub fn snapshot_state(&self) -> (ObserverState, Option<ErrorBody>) {
         let status = lock(&self.status);
@@ -673,7 +683,7 @@ impl ObserverRegistry {
     /// `engine::on-observers-changed` is called, the function's active set is
     /// rebuilt when activeness changed, and a disposed observer is forgotten.
     pub(crate) fn update(&self, observer: &Arc<Observer>, change: impl FnOnce(&mut Flags)) {
-        let (became, reason, activeness_changed) = {
+        let (became, unqueued, activeness_changed) = {
             let mut status = lock(&observer.status);
             change(&mut status.flags);
             let (state, reason) = status.flags.state(observer);
@@ -691,7 +701,8 @@ impl ObserverRegistry {
             status.state = state.clone();
             status.reason = reason.clone();
             // Under the status lock, so one observer's transitions reach its
-            // observing worker in the order they happened.
+            // observing worker, and `engine::on-observers-changed`, in the
+            // order they happened.
             self.notify(
                 observer.observing().connection,
                 Message::ObserverStateChanged {
@@ -701,14 +712,17 @@ impl ObserverRegistry {
                     fires: observer.fires(),
                 },
             );
+            let unqueued = self.observer_changed(observer, &state, reason);
             (
                 state,
-                reason,
+                unqueued,
                 was_active != (status.state == ObserverState::Active),
             )
         };
         tracing::debug!(observer_id = %observer.id, state = %became, "observer state changed");
-        self.emit_observer_changed(observer, &became, reason);
+        if let Some(event) = unqueued {
+            event.evaluate();
+        }
 
         if became == ObserverState::Disposed || became == ObserverState::Error {
             // Out of the owner's set: it hears `observerremoved`.
