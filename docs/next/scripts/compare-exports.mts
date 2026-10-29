@@ -93,7 +93,7 @@ function extractTypedoc(jsonPath: string, pkg: string): Export[] {
 // griffe dumps the whole package; the public import paths are the root barrel
 // plus this fixed set of submodules (the rest are backing/impl modules).
 const PY_PUBLIC_SUBMODULES = new Set([
-  'channel', 'errors', 'trigger', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state', 'helpers',
+  'channel', 'errors', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state', 'helpers',
 ])
 function griffeResolve(obj: any, index: Map<string, any>, depth = 0): any {
   if (!obj || depth > 10) return obj

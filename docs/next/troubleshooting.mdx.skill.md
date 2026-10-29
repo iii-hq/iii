@@ -39,10 +39,10 @@ Find yours by its `target` and read its `state`:
   - Only calls that start after the observer turned `active`, end with the outcome its `on` asks for
     (`success` by default), and pass its filters run the target. A call already running when the
     observer turned `active` does not, so call the function again.
-  - A function whose worker chooses observers for each call (with `onObserverDeliver`) gives a call
-    only to the observers its `args` select. Compare the observer's `args` with that function's
-    documentation, for example the `method` and `path` of an `http::on-request` observer or the
-    `expression` of a `cron::on-tick` observer. See
+  - A function whose worker matches observers to calls (with `onObserverMatch` or
+    `onObserverDeliver`) gives a call only to the observers its `args` select. Compare the
+    observer's `args` with that function's documentation, for example the `method` and `path` of an
+    `http::on-request` observer or the `expression` of a `cron::on-tick` observer. See
     [Observable functions](./creating-workers/observable-functions).
 - `dropped` or `activation_failures` above 0: calls reached it and were dropped or failed, counted
   by reason (`OVERFLOW`, `LOOP_GUARD`, ...).

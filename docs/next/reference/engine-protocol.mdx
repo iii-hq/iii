@@ -431,8 +431,8 @@ It checks, in order:
    observer's `max_in_flight` fails at once with `OVERFLOW`.
 
 It then adds the observer's metadata, an `activation_id`, and `observe_depth + 1`, and routes the
-call. The payload goes as given: the host applies the observer's filters when it chooses observers
-(`next` does, and a hook that calls targets itself uses `obs.matches(call)`).
+call. The payload goes as given: the deliver hook applies the observer's `on` and filters with
+`obs.matches(call)` before it calls.
 
 ```json
 {
@@ -546,14 +546,14 @@ An `observe.v2` host answers a routed call with the observers its delivery match
 }
 ```
 
-- The host lists ids in `observed` when `result` is the handler's return value and `next` was given
-  the call unchanged. Otherwise it leaves `observed` out and reports the matches in an
-  [`InvocationsObserved`](#invocationsobserved) item for the same `invocation_id`, for example when
-  an `onObserverDeliver` hook returns its own value to the caller.
-- An answer that carries `error` keeps `observed` when that error is the one the handler threw: an
-  observer with `on: "error"` matched a call that threw. When an `onObserverDeliver` hook turns a
-  result into an error, or throws an error of its own, the host leaves `observed` out and reports
-  the matches in an `InvocationsObserved` item.
+- The host lists the observers iii's delivery selected: those its `onObserverMatch` matched (every
+  active observer by default) whose `on` and filters match the call. `result` is the handler's
+  return value. A function with an `onObserverDeliver` hook lists none: its hook calls through
+  observers itself.
+- `observed` may ride an answer that carries `error`: iii's delivery rethrows the handler's error,
+  and the envelope's `status` and `error` come from the answer.
+- The host reports the matches of a routed call in `observed` only. An
+  [`InvocationsObserved`](#invocationsobserved) item reports a local call.
 - The engine reads `observed` only from `observe.v2` connections, on every routed answer, a target's
   answer to an activation or to a call through an observer included. It activates each listed id
   after checking that it is an active observer of the invoked function, drops any other id, and
@@ -701,16 +701,16 @@ function runs, the target runs. The **observing worker** is the connection that 
 ### Who delivers
 
 The connection that hosts a function delivers its calls when it declared `observe.v2`. Its SDK runs
-the handler, then picks the observers that get the call. By default, iii's delivery selects every
-observer whose `on` and filters match. A function's `onObserverDeliver` hook may pass a subset of
-the observers to `next`, which is iii's delivery for the observers it is given, or call one target
-itself. The host reports what it picked:
+the handler, then matches observers to the call: every active observer by default, or those the
+function's `onObserverMatch` hook selects by predicate or by keys. iii's delivery then selects the
+matching observers whose `on` and filters match the call. A function's `onObserverDeliver` hook
+takes delivery over: it receives the matching observers and calls through them itself, and the host
+reports nothing for it. Otherwise the host reports what iii's delivery selected:
 
 - **Local call.** The host called its own function. Matches go to the engine in a batched
   [`InvocationsObserved`](#invocationsobserved) report. Nothing is sent when nothing matches.
 - **Routed call.** The engine routed the call to the host with an `invocation_id`. The host lists
-  the matches in [`InvocationResult.observed`](#observed), or, when its answer is not the handler's
-  return value, in an `InvocationsObserved` item for the same `invocation_id`.
+  the matches in [`InvocationResult.observed`](#observed).
 - **Through an observer.** The host runs one observer's target itself with an `InvokeFunction` that
   carries `activation.observer_id` (see [Calls through an observer](#calls-through-an-observer)).
 
@@ -960,9 +960,9 @@ the hook threw any other error, or `OWNER_TIMEOUT` for a hook that ran past 30 s
 
 ### `InvocationsObserved`
 
-Host -> engine. Batched reports of the calls the host delivered: its local calls, and routed calls
-whose matches do not ride the `InvocationResult`. SDKs flush at 256 items or after 5 ms, whichever
-comes first, and split a flush to stay under the 16 MiB frame limit.
+Host -> engine. Batched reports of the host's local calls: calls of its own functions that it made
+itself. SDKs flush at 256 items or after 5 ms, whichever comes first, and split a flush to stay
+under the 16 MiB frame limit.
 
 ```json
 {
@@ -1016,22 +1016,23 @@ comes first, and split a flush to stay under the 16 MiB frame limit.
 }
 ```
 
-| Item field                                | Meaning                                                                                                                                                                                                                                                                                                                                                                          |
-| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `function_id`, `invocation_id`            | The observed function and call. For a routed call, the `invocation_id` the engine routed it with.                                                                                                                                                                                                                                                                                |
-| `namespace`                               | Optional; absent means the reporting connection's namespace.                                                                                                                                                                                                                                                                                                                     |
-| `matched`                                 | The observers `next` was given whose `on` and filters matched the call. When a deliver hook calls `next` more than once, the union, each id once.                                                                                                                                                                                                                                |
-| `status`                                  | `success` or `error`.                                                                                                                                                                                                                                                                                                                                                            |
-| `input`, `output`, `error`, `metadata`    | The union of what the matched observers capture.                                                                                                                                                                                                                                                                                                                                 |
-| `output_is_input`                         | `true` when the handler returned its input, as an event source does: the item carries `input` once and the engine fills `output` from it. Sent only to an engine that advertised `observe.v2`.                                                                                                                                                                                   |
-| `caller`                                  | Who caused the call. The SDK sends the `function_id`, `invocation_id`, and `parent` of the call's context, and sends no `caller` for a call made outside any handler. The engine sets `worker_id` and `worker_name` on every item, overwriting any that were sent: for a local call from the reporting connection, for a routed call from the caller it forwarded the call with. |
-| `started_at_ms`, `duration_ms`            | Timing; `duration_ms` is a float.                                                                                                                                                                                                                                                                                                                                                |
-| `observe_depth`, `traceparent`, `baggage` | `observe_depth` is always sent; the others are optional. All three carry into the activation.                                                                                                                                                                                                                                                                                    |
+| Item field                                | Meaning                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `function_id`, `invocation_id`            | The observed function and its local call.                                                                                                                                                                                                                                                        |
+| `namespace`                               | Optional; absent means the reporting connection's namespace.                                                                                                                                                                                                                                     |
+| `matched`                                 | The observers iii's delivery selected: those the function's match hook matched (every active observer by default) whose `on` and filters matched the call.                                                                                                                                       |
+| `status`                                  | `success` or `error`.                                                                                                                                                                                                                                                                            |
+| `input`, `output`, `error`, `metadata`    | The union of what the matched observers capture.                                                                                                                                                                                                                                                 |
+| `output_is_input`                         | `true` when the handler returned its input, as an event source does: the item carries `input` once and the engine fills `output` from it. Sent only to an engine that advertised `observe.v2`.                                                                                                   |
+| `caller`                                  | Who caused the call. The SDK sends the `function_id`, `invocation_id`, and `parent` of the call's context, and sends no `caller` for a call made outside any handler. The engine sets `worker_id` and `worker_name` on every item from the reporting connection, overwriting any that were sent. |
+| `started_at_ms`, `duration_ms`            | Timing; `duration_ms` is a float.                                                                                                                                                                                                                                                                |
+| `observe_depth`, `traceparent`, `baggage` | `observe_depth` is always sent; the others are optional. All three carry into the activation.                                                                                                                                                                                                    |
 
 The engine checks the items one by one:
 
 - The reporting connection must host the function, else the item is dropped as `REPORTER_NOT_OWNER`.
-- An item that does not decode, or whose `status` is neither `success` nor `error`, is dropped alone
+- An item that does not decode, whose `status` is neither `success` nor `error`, or whose
+  `invocation_id` is a routed call the engine forwarded to that connection, is dropped alone
   (counted as `INVALID_REPORT`), and the rest of the batch is applied.
 - `matched` ids that are not active observers of that function are dropped as `INACTIVE`.
 - The engine does not evaluate filters on reports: the host is authoritative for its own function's
@@ -1123,7 +1124,7 @@ metric is updated once a second):
 | `OVERFLOW`           | `max_in_flight` and the observer's queue (`observers.max_queue_per_observer`) are full, or the queues of all observers together hold 64 MiB of calls.                                                                                                                                                                                                                                                                     |
 | `REPORTER_NOT_OWNER` | A report came from a connection that does not host the function.                                                                                                                                                                                                                                                                                                                                                          |
 | `CANCELLED`          | An observed invocation ended without a result (its caller gave up); counted for each observer that was waiting for it.                                                                                                                                                                                                                                                                                                    |
-| `INVALID_REPORT`     | An `InvocationsObserved` item did not decode or had an unknown `status`.                                                                                                                                                                                                                                                                                                                                                  |
+| `INVALID_REPORT`     | An `InvocationsObserved` item did not decode, had an unknown `status`, or reported a routed call.                                                                                                                                                                                                                                                                                                                         |
 | `BUFFER_FULL`        | SDK-side: the reporter's buffer was full (via `LocalInvocationStats`).                                                                                                                                                                                                                                                                                                                                                    |
 | `TOO_LARGE`          | One call too large on its own, whatever the load: what its observers capture or filter on is over the 64 MiB the engine keeps for a call, the activation is larger than the target worker accepts (a refused activation is a drop, not an activation failure), or, SDK-side, one report item was larger than the 8 MiB buffer (via `LocalInvocationStats`). The engine logs a warning at most once a minute per observer. |
 | `OTHER`              | An SDK-side reason the engine does not know.                                                                                                                                                                                                                                                                                                                                                                              |

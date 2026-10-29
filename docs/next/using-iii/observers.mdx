@@ -190,15 +190,15 @@ same `observe` API as Node.
 The first argument is the id of the function to observe, or an object with these fields. All fields
 are optional except `function_id`:
 
-| Field         | Default                                                                                           | Meaning                                                                                                                        |
-| ------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `function_id` | required                                                                                          | The function to observe.                                                                                                       |
-| `namespace`   | `default` for `engine::*` and `configuration::*` functions; the worker's namespace for all others | The namespace of the function.                                                                                                 |
-| `args`        | none                                                                                              | Arguments for the worker that hosts the function, for functions that document them. See [Args and filters](#args-and-filters). |
-| `filters`     | `{}` (every call)                                                                                 | Which calls reach the target. See [Filters](#filters).                                                                         |
-| `on`          | `success`                                                                                         | Which calls run the target: `success`, `error`, or `complete` (both). See [`on`](#on).                                         |
-| `capture`     | `["input", "output", "caller"]`                                                                   | Which fields the envelope has: any of `input`, `output`, `error`, `caller`, `metadata`. See [`capture`](#capture).             |
-| `deliver`     | `envelope`                                                                                        | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone. See [`deliver`](#deliver).     |
+| Field         | Default                                                                                           | Meaning                                                                                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `function_id` | required                                                                                          | The function to observe.                                                                                                          |
+| `namespace`   | `default` for `engine::*` and `configuration::*` functions; the worker's namespace for all others | The namespace of the function.                                                                                                    |
+| `args`        | none                                                                                              | Arguments for the worker that hosts the function, for functions that document them. See [Args and filters](#args-and-filters).    |
+| `filters`     | `{}` (every call)                                                                                 | Which calls reach the target. See [Filters](#filters).                                                                            |
+| `on`          | `success`                                                                                         | Which calls run the target: `success`, `error`, or `complete` (both). See [`on`](#on).                                            |
+| `capture`     | `["input", "output", "caller"]`                                                                   | Which parts of the call the envelope carries: any of `input`, `output`, `error`, `caller`, `metadata`. See [`capture`](#capture). |
+| `deliver`     | `envelope`                                                                                        | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone. See [`deliver`](#deliver).        |
 
 The target is the id of a registered function. It can be any function except the observed function
 itself and [private functions](#built-in-event-sources). To name a target in another namespace, pass
@@ -517,9 +517,13 @@ the function documents (`http::on-request` targets receive the HTTP request).
 
 ### `capture`
 
-`capture` sets which fields the envelope has: any of `input`, `output`, `error`, `caller`, and
-`metadata`. The default is `["input", "output", "caller"]`. With `[]`, the envelope has only the
-ids, `status`, and the timings.
+`capture` sets which parts of the call the envelope carries: any of `input`, `output`, `error`,
+`caller`, and `metadata`. The default is `["input", "output", "caller"]`. The ids, `status`, and the
+timings are always there.
+
+An observer that only counts calls, or only notes that they failed (`on: "error"`), uses
+`capture: []`. Its envelope has the ids, `status`, and the timings, and no payload moves to its
+target.
 
 `capture` sets only what the target receives. A [filter](#filters) can read any field of the call.
 To keep observed calls small, capture only what the target reads. See

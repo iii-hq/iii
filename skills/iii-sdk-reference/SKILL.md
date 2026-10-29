@@ -55,9 +55,9 @@ the helpers package, installed alongside the SDK: `@iii-dev/helpers` (Node, with
 | Fire and forget | `CallAction.Void()` | `{"type": "void"}` | `CallAction::Void` | `iii.VoidAction()` |
 | Observe a function | `observe(source, target, options?)`; `observe('fn::id', target)` | `observe(source, target, options)` | `observe(Source::function(id)..., target)` / `observe_with(.., ObserverOptions)` | `client.Observe(iii.Source{...}, target, opts...)` / `client.ObserveFunction(id, target)` |
 | Function options for observers | `{ args_format, private, observable, standby }` | `args_format=`, `private=`, `observable=`, `standby=` | `.args_format::<T>().private().observable(false).standby()` | `iii.FunctionOptions{ArgsFormat, Private, ...}` |
-| Observer hooks, one function | `iii.onObserverAdded(id, h)`, `onObserverRemoved(id, h)`, `onObserverDeliver(id, h)`, or the same on the `FunctionRef` | `@iii.on_observer_added(id)`, `@ref.on_observer_removed`, `ref.on_observer_deliver(h)` | `on_observer_added_for(id, h)`, `on_observer_removed_for(id, h)`, `on_observer_deliver_for(id, h)`, or `function.on_observer_added(h)` | `client.OnObserverAddedFor(id, h)`, `OnObserverRemovedFor`, `OnObserverDeliverFor`, or `ref.OnObserverAdded(h)` |
+| Observer hooks, one function | `iii.onObserverAdded(id, h)`, `onObserverRemoved(id, h)`, `onObserverMatch(id, m)`, `onObserverDeliver(id, h)`, or the same on the `FunctionRef` | `@iii.on_observer_added(id)`, `@ref.on_observer_removed`, `ref.on_observer_match(m)`, `ref.on_observer_deliver(h)` | `on_observer_added_for(id, h)`, `on_observer_removed_for(id, h)`, `on_observer_match_for(id, m)`, `on_observer_deliver_for(id, h)`, or `function.on_observer_added(h)` | `client.OnObserverAddedFor(id, h)`, `OnObserverRemovedFor`, `OnObserverMatchFor`, `OnObserverDeliverFor`, or `ref.OnObserverAdded(h)` |
 | Observer hooks, every function | `iii.onObserverAdded(h)`, `iii.onObserverRemoved(h)` | `@iii.on_observer_added`, `@iii.on_observer_removed` | `on_observer_added(h)`, `on_observer_removed(h)` | `client.OnObserverAdded(h)`, `client.OnObserverRemoved(h)` |
-| Keyed delivery | `keyed({ observer, call })` | `keyed(observer=, call=)` | `Keyed::new(observer_keys, call_keys)` | `iii.Keyed(observerKeys, callKeys)` |
+| Match observers to calls | `onObserverMatch(id, (obs, call) => boolean)` or `onObserverMatch(id, { observer, call })` | `on_observer_match(id, predicate)` or `on_observer_match(id, observer=, call=)` | `Match::predicate(f)` or `Match::keys(observer_keys, call_keys)` | `iii.MatchFunc(f)` or `iii.MatchKeys(observerKeys, callKeys)` |
 | Call through an observer | `call({ observer: obs, payload })` | `call_async({"observer": obs, "payload": p})` | `call(CallRequest::observer(&obs, payload))` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: p})` |
 | Current invocation | `currentInvocation()` | `current_invocation()` | `iii_sdk::current_invocation()` | `iii.InvocationFromContext(ctx)` |
 | Channels | `createChannel(iii)` (`iii-sdk/helpers`) | `create_channel(iii)` / `create_channel_async(iii)` (`iii.helpers`) | `iii_sdk::helpers::create_channel(&iii, None).await` | `client.CreateChannel(ctx, nil)` |
@@ -81,7 +81,7 @@ iii.registerFunction("users::lookup", async (input) => {
 
 Node supports custom WebSocket headers, `Logger`, OpenTelemetry options, HTTP-invoked function
 registration, call and observer metadata, channels, observers, and observer hooks. `CallRequest`,
-`CallAction`, `keyed`, `ObserveRejection`, and `EngineSources` are exported from the package root.
+`CallAction`, `ObserveRejection`, and `EngineSources` are exported from the package root.
 
 ## Browser
 
@@ -182,8 +182,9 @@ sources.
   runs. HTTP routes, cron schedules, and queue topics are observers of `http::on-request`,
   `cron::on-tick`, and `queue::on-message`. Details and examples per language: `iii-observe`.
 - `registerFunction` returns a `FunctionRef` with the hook methods, `isObserved(call?)` and
-  `observers()` (Python `is_observed()`, Rust `is_observed()` / `is_observed_for(&call)`, Go
-  `ref.IsObserved()`).
+  `observers()` (Python `is_observed(call=None)`, Rust `is_observed()` / `is_observed_for(&call)`,
+  Go `ref.IsObserved()` / `ref.IsObservedFor(call)`). With a call, on a function whose
+  `onObserverMatch` uses keys, `isObserved` looks up the call's keys.
 - A call to a function the same worker registered runs in-process once the engine confirmed it.
   Force the engine path per call with `dispatch: 'remote'` (Node, browser, Python
   `"dispatch": "remote"`), Rust `CallRequest::new(..).dispatch(Dispatch::Remote)`, Go
@@ -192,8 +193,10 @@ sources.
 - Against an engine without `observe.v2`, a function that declares `args_format`, `private`, or
   `observable: false`, or sets `onObserverDeliver`, stays unregistered and the SDK logs
   `UNSUPPORTED` once; everything else works.
-- `trigger` is an alias of `call` in every SDK and the CLI (`trigger_async`, `Trigger`,
-  `TriggerRequest`, `TriggerAction`, `iii trigger`), so code written for 0.25 keeps compiling.
+- `trigger` is a deprecated alias of `call` in every SDK and the CLI (`trigger_async`, `Trigger`,
+  `TriggerRequest`, `TriggerAction`, `iii trigger`): the same function or type, marked deprecated
+  in types (JSDoc `@deprecated`, Rust `#[deprecated]`, Go `// Deprecated:`, Python docstring) with
+  no runtime warning, so code written for 0.25 keeps compiling. Use `call`.
 
 ## Channels
 

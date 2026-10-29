@@ -204,9 +204,8 @@ iii.registerFunction('files::on-change', (change: FileChange) => change, {
 })
   .onObserverAdded((obs) => watcher.retain(obs.args.path as string))
   .onObserverRemoved((obs) => watcher.release(obs.args.path as string))
-  .onObserverDeliver(
-    keyed({ observer: (o) => o.args.path as string, call: (c) => c.input.path }),
-  );
+  // each change goes to the observers of its path: keys that iii indexes
+  .onObserverMatch({ observer: (obs) => obs.args.path as string, call: (call) => call.input.path });
 
 watcher.on('change', (change) => iii.call({ function_id: 'files::on-change', payload: change }));
 ```

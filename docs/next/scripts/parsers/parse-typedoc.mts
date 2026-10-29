@@ -500,7 +500,7 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
 const HELPERS_MODULE_DESCRIPTIONS: Record<string, string> = {
   http: 'HTTP request/response types, auth config, and the `http` helper.',
   queue: 'Queue enqueue result types.',
-  stream: 'Stream trigger configs, change events, IO inputs, and update operations.',
+  stream: 'Stream change events, IO inputs, and update operations.',
   'worker-connection-manager': 'RBAC auth and registration callback types.',
   observability: 'Logger, OpenTelemetry config, and span helpers.',
 }

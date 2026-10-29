@@ -6,32 +6,36 @@ type: "reference"
 ---
 
 <Update label="0.26.0" description="Upcoming">
-  ## Functions, observers, and three hooks
+  ## Functions, observers, and four hooks
 
   iii has workers, functions, and observers. `iii.observe(a, b)` means: when `a` runs, `b` runs.
   Triggers are removed: every trigger type is an observable function (`cron` is `cron::on-tick`),
   and every trigger is an observer of it. See
   [Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
 
-  - The worker that hosts a function changes what observing it means with three hooks.
+  - The worker that hosts a function changes what observing it means with four hooks.
     `onObserverAdded` and `onObserverRemoved` set up and tear down what an observer's `args` ask
     for: a cron job, an HTTP route, a database trigger. Set them for one function or for every
     function the worker hosts. Both levels run, the worker's hook first when an observer is added
     and last when it is removed. Throwing `ObserveRejection` from `onObserverAdded` rejects the
     observer with your code.
-  - `onObserverDeliver(call, observers, next)` decides which observers get each call of one
-    function and what its caller gets back. `next` is iii's delivery for the observers it is given.
-    `keyed({ observer, call })` files observers under keys from their args, so a call reaches its
-    observers in a few hash lookups, and `isObserved(call)` tells a source whether anyone would get
-    a call before it builds the event.
-  - `iii.call({ observer, payload })` runs one observer's target from a deliver hook and resolves to
-    the target's result, such as an HTTP route's response or a queue message's acknowledgement.
+  - `onObserverMatch` says which observers want each call of one function: a predicate
+    `(obs, call) => boolean`, or `{ observer, call }` keys that iii indexes, so a call finds its
+    observers with one hash lookup per key, whatever the number of observers. iii's delivery then
+    applies each matched observer's `on`, filters, policy, and `deliver`. `isObserved(call)` tells
+    a source whether anyone would get a call before it builds the event.
+  - `onObserverDeliver(call, observers)` delivers each call of one function itself: it receives the
+    observers that matched, and what it returns or throws is what the caller gets back.
+    `iii.call({ observer, payload })` runs one observer's target from the hook and resolves to the
+    target's result, such as an HTTP route's response or a queue message's acknowledgement.
     `obs.accepted()` resolves once the SDK has acknowledged the observer; a call through it made
     afterwards reaches an active observer, so a provider can send it initial state.
   - Hooks are methods on the client, by function id, and on the `FunctionRef` that
-    `registerFunction` returns. Rust names the by-id forms with `_for` (`on_observer_added_for`),
-    Python hooks also work as decorators, and Go has `OnObserverAddedFor` and
-    `OnObserverDeliverFor`.
+    `registerFunction` returns. Rust names the by-id forms with `_for` (`on_observer_added_for`,
+    `on_observer_match_for`) and builds a match hook with `Match::predicate` or `Match::keys`.
+    Python hooks also work as decorators, and `on_observer_match` takes a predicate or `observer=`
+    and `call=` key functions. Go has `OnObserverAddedFor`, `OnObserverMatchFor` (with
+    `iii.MatchFunc` or `iii.MatchKeys`), and `OnObserverDeliverFor`.
   - `iii.observe("fn::id", target)` is the short form of
     `iii.observe({ function_id: "fn::id" }, target)`. Go adds `client.ObserveFunction`.
 

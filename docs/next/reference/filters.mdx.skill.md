@@ -8,8 +8,8 @@ observed function reaches one observer's target. The language is declarative JSO
 small, total, without side effects or regular expressions, so the same filter gives the same answer
 wherever it runs:
 
-- in the SDK of the worker that hosts the function, for every call it delivers: inside `next` (iii's
-  delivery) and in `obs.matches(call)`;
+- in the SDK of the worker that hosts the function, for every call it delivers: in iii's delivery
+  and in `obs.matches(call)`;
 - in the engine, for routed calls to hosts that did not declare `observe.v2`, for engine-hosted
   functions, and for functions registered with `invocation` (HTTP-invoked).
 

@@ -325,10 +325,8 @@ function extractMethodsFromStruct(structId: number, index: Record<string, RustDo
     for (const methodId of getImplItems(implItem)) {
       const method = index[methodId]
       if (!method || method.visibility !== 'public') continue
-      // Deprecated methods stay, with a deprecation callout: in 0.25
-      // `register_trigger` is still how a worker binds to providers that have
-      // not moved to observable functions. `#[doc(hidden)]` ones never reach
-      // the rustdoc JSON.
+      // Deprecated methods stay, with a deprecation callout (`trigger`, the
+      // alias of `call`). `#[doc(hidden)]` ones never reach the rustdoc JSON.
       if (exclude && exclude.has(method.name ?? '')) continue
       if (getItemKind(method) !== 'function') continue
       const doc = buildMethodDoc(method)
@@ -339,7 +337,7 @@ function extractMethodsFromStruct(structId: number, index: Record<string, RustDo
 }
 
 /** Public inherent-impl methods of a struct/enum, as callable-typed rows so
- * handles like `FunctionRef::unregister` and `TriggerTypeRef::register_trigger`
+ * handles like `FunctionRef::unregister` and `FunctionRef::on_observer_added`
  * are documented with their parameters. */
 function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>): ParamDoc[] {
   const rows: ParamDoc[] = []
@@ -444,7 +442,7 @@ function extractEnumType(item: RustDocItem, index: Record<string, RustDocItem>):
 }
 
 /** A trait documents as one row per method; implementing the required ones is
- * the contract (e.g. `TriggerHandler` for `register_trigger_type`). */
+ * the contract (e.g. `AddedHook` for `on_observer_added`). */
 function extractTraitType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
   const fields: ParamDoc[] = []
   for (const mid of item.inner.trait?.items ?? []) {
@@ -515,12 +513,12 @@ function collectCrateTypes(
  * The crate's curated public facade modules (`pub mod channel { pub use ... }`,
  * etc.) are the blessed import paths; the flat crate-root re-exports of the same
  * types are `#[deprecated]`. rustdoc attributes each type to its *definition*
- * module (`channels`, `error`, `triggers`, ...), so we read the facade modules'
+ * module (`channels`, `error`, ...), so we read the facade modules'
  * re-export (`use`) items and remap each type to the facade that exposes it.
- * This aligns Rust's channel/trigger/runtime/errors subpaths with the Node and
+ * This aligns Rust's channel/runtime/errors subpaths with the Node and
  * Python SDKs. Derived from the rustdoc index, not hardcoded.
  */
-const FACADE_MODULES = new Set(['channel', 'trigger', 'runtime', 'errors'])
+const FACADE_MODULES = new Set(['channel', 'runtime', 'errors'])
 function collectFacadeMap(data: RustDocIndex): Map<string, string> {
   const map = new Map<string, string>()
   for (const item of Object.values(data.index)) {
@@ -699,7 +697,7 @@ function collectRootFunctions(data: RustDocIndex, exclude: Set<string>): Functio
 const HELPERS_MODULE_DESCRIPTIONS: Record<string, string> = {
   http: 'HTTP request/response types, auth config, and the `http` helper.',
   queue: 'Queue enqueue result types.',
-  stream: 'Stream trigger configs, change events, IO inputs, and update operations.',
+  stream: 'Stream change events, IO inputs, and update operations.',
   worker_connection_manager: 'RBAC auth and registration callback types.',
   observability: 'Logger, OpenTelemetry config, and span helpers.',
 }
