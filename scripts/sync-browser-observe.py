@@ -7,7 +7,7 @@
 The browser SDK (`sdk/packages/node/iii-browser`) imports the Node SDK's
 filter evaluator (`src/filter`) directly. The rest of observe cannot be
 imported: it uses Node APIs (`Buffer`, `timer.unref()`, `AsyncLocalStorage`) and
-Node's types. So the browser's copies of the owner side, the reporter, the wire
+Node's types. So the browser's copies of the host side, the reporter, the wire
 format, the observer handle and the public types, and of the observe unit and
 integration tests, are *derived*: each one is the Node file plus the short,
 declared list of patches below, under a one-line header saying so. To change
