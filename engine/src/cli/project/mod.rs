@@ -705,7 +705,7 @@ async fn project_progress(
     compose_path: &Path,
     namespace: &str,
 ) -> Option<Progress> {
-    let request = iii_sdk::protocol::TriggerRequest {
+    let request = iii_sdk::protocol::CallRequest {
         function_id: "compose::status".to_string(),
         payload: serde_json::json!({ "file": compose_path }),
         action: None,
@@ -713,7 +713,7 @@ async fn project_progress(
     }
     .namespace(namespace);
 
-    let value = client.client().trigger(request).await.ok()?;
+    let value = client.client().call(request).await.ok()?;
     let containers = value.get("containers")?.as_array()?;
     read_progress(containers)
 }

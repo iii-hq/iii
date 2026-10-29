@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use colored::Colorize;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{InitOptions, register_worker};
 use serde_json::{Value, json};
 
@@ -37,7 +37,7 @@ pub async fn print(
                         fn_path
                     );
                     eprintln!(
-                        "  {} run `iii trigger engine::functions::list` to see registered functions.",
+                        "  {} run `iii call engine::functions::list` to see registered functions.",
                         "hint:".dimmed()
                     );
                 }
@@ -81,7 +81,7 @@ async fn fetch_fn_meta(
     }
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::functions::info".to_string(),
             payload,
             action: None,
@@ -162,18 +162,18 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
 
     // Drive sections individually via print_template so we can place the
     // schema-driven Parameters table BEFORE the generic Options table that
-    // clap-help builds from the trigger flags.
-    let Some(trigger) = crate::cli_subcommand("trigger") else {
+    // clap-help builds from the call flags.
+    let Some(call) = crate::cli_subcommand("call") else {
         return;
     };
 
     let usage_template = "\n**Usage: ** `${name} [key=value ...] [--json '<obj>']`\n".to_string();
     let parameters_md = parameters_md(meta);
 
-    let mut printer = clap_help::Printer::new(trigger);
+    let mut printer = clap_help::Printer::new(call);
     printer
         .expander_mut()
-        .set("name", format!("iii trigger {}", fn_path));
+        .set("name", format!("iii call {}", fn_path));
     if !description.is_empty() {
         printer.expander_mut().set("about", description.to_string());
     }
@@ -193,7 +193,7 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
     } else {
         printer.print_template("\n**Parameters:**\n\n  *(no request schema published)*\n");
     }
-    // Options (clap-help default table for the trigger flags).
+    // Options (clap-help default table for the call flags).
     printer.print_template(clap_help::TEMPLATE_OPTIONS);
 }
 
@@ -263,11 +263,11 @@ fn schema_type(schema: &Value) -> String {
 }
 
 fn print_static_help() {
-    if let Some(trigger) = crate::cli_subcommand("trigger") {
-        crate::render_clap_help(trigger);
+    if let Some(call) = crate::cli_subcommand("call") {
+        crate::render_clap_help(call);
     }
     println!(
-        "{} `iii trigger <fn-path> --help` queries a running engine for the",
+        "{} `iii call <fn-path> --help` queries a running engine for the",
         "Tip:".bold()
     );
     println!("  function's description and request schema.");

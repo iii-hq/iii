@@ -7,7 +7,7 @@
 //! The daemon's own connection to the engine.
 //!
 //! The daemon is an ordinary worker: it connects with the SDK, registers in
-//! `default` as `compose`, and exposes `compose::*` there — where a trigger
+//! `default` as `compose`, and exposes `compose::*` there — where a call
 //! with no namespace flag lands. One connection serves every project it holds,
 //! whatever namespaces those declare.
 //!
@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use iii_sdk::{IIIClient, InitOptions, protocol::TriggerRequest, register_worker};
+use iii_sdk::{IIIClient, InitOptions, protocol::CallRequest, register_worker};
 
 use serde_json::{Value, json};
 
@@ -82,7 +82,7 @@ fn log_tail(log_dir: &std::path::Path, container: &str) -> Option<String> {
     )
 }
 
-/// Whether a trigger failure is the configuration worker reporting an
+/// Whether a call failure is the configuration worker reporting an
 /// unregistered id, as opposed to anything that went wrong reaching it.
 ///
 /// The distinction is the whole of fetch-or-fail: one means "nothing stored
@@ -179,8 +179,8 @@ impl EngineClient {
     pub async fn fetch_config(&self, name: &str) -> Result<Option<serde_yaml::Value>> {
         let response = match self
             .client
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "configuration::get".to_string(),
                     // Use the current configuration, preserving raw env placeholders.
                     payload: json!({ "id": name, "raw": true }),
@@ -219,8 +219,8 @@ impl EngineClient {
             message: err.to_string(),
         })?;
         self.client
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "configuration::set".into(),
                     payload: json!({"id": name, "value": value, "flush": false}),
                     action: None,
@@ -240,7 +240,7 @@ impl EngineClient {
     /// Returns true only when both source and destination are missing.
     /// A missing function is an upgrade error, never permission to reset defaults.
     pub async fn migrate_config(&self, from_id: &str, to_id: &str) -> Result<bool> {
-        let capabilities = self.client.trigger(TriggerRequest {
+        let capabilities = self.client.call(CallRequest {
             function_id: "configuration::migration-capabilities".into(),
             payload: json!({}),
             action: None,
@@ -261,8 +261,8 @@ impl EngineClient {
         }
         let response = self
             .client
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "configuration::migrate".to_string(),
                     payload: json!({ "from_id": from_id, "to_id": to_id }),
                     action: None,
@@ -490,7 +490,7 @@ impl EngineClient {
     /// `namespace`, if there is one.
     ///
     /// A worker with no functions at all answers `None`: exporting nothing is
-    /// legitimate for a worker that only registers triggers.
+    /// legitimate for a worker that only calls and observes functions.
     async fn misplaced_function(
         &self,
         container: &str,
@@ -506,8 +506,8 @@ impl EngineClient {
     async fn functions_of(&self, worker_name: &str) -> Result<Vec<(String, String)>> {
         let response = self
             .client
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "engine::functions::list".to_string(),
                     payload: json!({ "include_internal": true }),
                     action: None,
@@ -545,8 +545,8 @@ impl EngineClient {
     async fn list_workers(&self) -> Result<Vec<(String, String)>> {
         let response = self
             .client
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "engine::workers::list".to_string(),
                     payload: json!({}),
                     action: None,
@@ -660,7 +660,7 @@ mod tests {
 
     #[test]
     fn a_worker_with_no_functions_is_fine() {
-        // Registering only triggers is legitimate; silence is not a symptom.
+        // Registering no functions is legitimate; silence is not a symptom.
         assert_eq!(first_misplaced(&[], "orders", &[], &[]), None);
     }
 

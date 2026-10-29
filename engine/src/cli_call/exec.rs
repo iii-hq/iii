@@ -5,13 +5,13 @@
 // See LICENSE and PATENTS files for details.
 
 use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Error, InitOptions, register_worker};
 use serde_json::Value;
 
-use super::TriggerCliError;
+use super::CallCliError;
 
-/// Metadata for the trigger connection. Registering under a marked name is how
+/// Metadata for the call connection. Registering under a marked name is how
 /// the engine counts this command in the heartbeat's CLI aggregate: the CLI
 /// process is too short-lived to report anything itself, and the connection it
 /// already opens carries the name.
@@ -21,7 +21,7 @@ use super::TriggerCliError;
 /// telemetry enabled record commands from a CLI that opted out.
 fn cli_worker_metadata() -> Option<iii_sdk::iii::WorkerMetadata> {
     (!crate::cli::telemetry::is_telemetry_disabled()).then(|| iii_sdk::iii::WorkerMetadata {
-        name: format!("{CLI_WORKER_NAME_PREFIX}trigger"),
+        name: format!("{CLI_WORKER_NAME_PREFIX}call"),
         ..Default::default()
     })
 }
@@ -33,7 +33,7 @@ pub async fn invoke(
     port: u16,
     timeout_ms: u64,
     namespace: Option<&str>,
-) -> Result<(), TriggerCliError> {
+) -> Result<(), CallCliError> {
     let url = format!("ws://{}:{}", address, port);
     let iii = register_worker(
         &url,
@@ -43,7 +43,7 @@ pub async fn invoke(
         },
     );
 
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: function_path.to_string(),
         payload,
         action: None,
@@ -53,8 +53,8 @@ pub async fn invoke(
     // Omitted when absent so the engine keeps resolving in `default`: the
     // caller's own namespace never influences routing.
     let result = match namespace {
-        Some(namespace) => iii.trigger(request.namespace(namespace)).await,
-        None => iii.trigger(request).await,
+        Some(namespace) => iii.call(request.namespace(namespace)).await,
+        None => iii.call(request).await,
     };
 
     iii.shutdown_async().await;
@@ -86,13 +86,13 @@ pub async fn invoke(
                 serde_json::to_string_pretty(&err_obj)
                     .unwrap_or_else(|_| "(unserializable error body)".to_string())
             );
-            Err(TriggerCliError::RemoteAlreadyReported)
+            Err(CallCliError::RemoteAlreadyReported)
         }
-        Err(e) => Err(TriggerCliError::Other(map_trigger_error(e))),
+        Err(e) => Err(CallCliError::Other(map_call_error(e))),
     }
 }
 
-fn map_trigger_error(e: Error) -> anyhow::Error {
+fn map_call_error(e: Error) -> anyhow::Error {
     match e {
         Error::Timeout => anyhow::anyhow!(
             "Timed out waiting for the engine (no response within the timeout). Is the engine running at the given address and port?"
@@ -131,7 +131,7 @@ mod tests {
     fn cli_worker_metadata_marks_the_name_when_telemetry_is_enabled() {
         as_developer_machine("true", || {
             let metadata = cli_worker_metadata().expect("metadata when enabled");
-            assert_eq!(metadata.name, "iii-cli:trigger");
+            assert_eq!(metadata.name, "iii-cli:call");
         });
     }
 

@@ -68,12 +68,12 @@ Project workers are declared in `worker-compose.yaml` and supervised by a Compos
 that daemon with its namespace:
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::status file=worker-compose.yaml
-iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
-iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
-iii trigger -n dev compose::update file=worker-compose.yaml worker=state
-iii trigger -n dev compose::down file=worker-compose.yaml
+iii call -n dev compose::add worker=state
+iii call -n dev compose::status file=worker-compose.yaml
+iii call -n dev compose::logs file=worker-compose.yaml worker=state tail=100
+iii call -n dev compose::restart file=worker-compose.yaml worker=state
+iii call -n dev compose::update file=worker-compose.yaml worker=state
+iii call -n dev compose::down file=worker-compose.yaml
 ```
 
 `iii worker` and `worker::*` no longer exist. Use `engine::workers::list` for live registrations and

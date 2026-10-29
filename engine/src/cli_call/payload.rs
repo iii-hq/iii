@@ -17,7 +17,7 @@ fn decode_value(value: &str) -> Value {
 /// 1. If neither is provided, return an empty object `{}`. This matches the
 ///    old `--payload='{}'` default and lets engine functions whose input is
 ///    a struct (with all-optional fields) deserialize from a bare
-///    `iii trigger <fn-path>` invocation.
+///    `iii call <fn-path>` invocation.
 /// 2. If only `--json` is provided, parse it and return as-is (any JSON value).
 /// 3. If only kv pairs are provided, build an object from them.
 /// 4. If both are provided: `--json` must be an object. kv pairs override

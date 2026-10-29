@@ -415,7 +415,7 @@ impl ComposeFile {
         }
 
         // At load time, before a container starts: this is the namespace every
-        // trigger against the project has to spell, so a value it cannot be is
+        // call against the project has to spell, so a value it cannot be is
         // a value nothing else should be built on.
         if let Some(name) = raw
             .namespace
@@ -1003,8 +1003,8 @@ struct RawComposeFile {
     /// same rule the rest of the engine follows.
     ///
     /// Spelled `namespace:` rather than `name:` because that is what it sets.
-    /// The value is typed back into `iii trigger --namespace` and into every
-    /// `worker.trigger` call, so the field is named after the coordinate it
+    /// The value is typed back into `iii call --namespace` and into every
+    /// `worker.call`, so the field is named after the coordinate it
     /// feeds rather than read as a display label the project happens to carry.
     #[serde(default)]
     namespace: Option<String>,
