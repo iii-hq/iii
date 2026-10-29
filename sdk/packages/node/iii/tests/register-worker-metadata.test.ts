@@ -2,11 +2,11 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { registerWorker, TriggerAction } from '../src/iii'
+import { CallAction, registerWorker } from '../src/iii'
 import { MessageType } from '../src/iii-types'
 
 type InternalSdk = {
-  trigger: ReturnType<typeof vi.fn>
+  call: ReturnType<typeof vi.fn>
   registerWorkerMetadata: () => void
 }
 
@@ -28,36 +28,36 @@ describe('registerWorkerMetadata — isolation field', () => {
 
   it('sets isolation to null when III_ISOLATION is unset', () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    expect(sdk.trigger).toHaveBeenCalledOnce()
-    const call = sdk.trigger.mock.calls[0][0]
+    expect(sdk.call).toHaveBeenCalledOnce()
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.isolation).toBeNull()
   })
 
   it('forwards the III_ISOLATION value into the payload', () => {
     process.env.III_ISOLATION = 'kubernetes'
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    expect(sdk.trigger).toHaveBeenCalledOnce()
-    const call = sdk.trigger.mock.calls[0][0]
+    expect(sdk.call).toHaveBeenCalledOnce()
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.isolation).toBe('kubernetes')
   })
 
   it('maps empty-string III_ISOLATION to null', () => {
     process.env.III_ISOLATION = ''
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    expect(sdk.trigger).toHaveBeenCalledOnce()
-    const call = sdk.trigger.mock.calls[0][0]
+    expect(sdk.call).toHaveBeenCalledOnce()
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.isolation).toBeNull()
   })
 })
@@ -81,11 +81,11 @@ describe('registerWorkerMetadata — worker name', () => {
   it('defaults the name from III_WORKER_NAME when no workerName option is set', () => {
     process.env.III_WORKER_NAME = 'managed-worker'
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.name).toBe('managed-worker')
   })
 
@@ -94,11 +94,11 @@ describe('registerWorkerMetadata — worker name', () => {
     const sdk = registerWorker('ws://127.0.0.1:0', {
       workerName: 'explicit-name',
     }) as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.name).toBe('managed-worker')
   })
 
@@ -106,32 +106,32 @@ describe('registerWorkerMetadata — worker name', () => {
     const sdk = registerWorker('ws://127.0.0.1:0', {
       workerName: 'explicit-name',
     }) as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.name).toBe('explicit-name')
   })
 
   it('falls back to hostname:pid when III_WORKER_NAME is unset', () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.name).toBe(`${os.hostname()}:${process.pid}`)
   })
 
   it('ignores an empty III_WORKER_NAME', () => {
     process.env.III_WORKER_NAME = ''
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.name).toBe(`${os.hostname()}:${process.pid}`)
   })
 })
@@ -154,43 +154,43 @@ describe('registerWorkerMetadata — project_name auto-detection', () => {
   it('reads project_name from package.json in cwd', () => {
     fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ name: '@scope/my-app' }))
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.telemetry.project_name).toBe('@scope/my-app')
   })
 
   it('falls back to cwd basename when package.json is absent', () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.telemetry.project_name).toBe(path.basename(tmpDir))
   })
 
   it('falls back to cwd basename when package.json has no name field', () => {
     fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({ version: '1.0.0' }))
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.telemetry.project_name).toBe(path.basename(tmpDir))
   })
 
   it('falls back to cwd basename when package.json is malformed', () => {
     fs.writeFileSync(path.join(tmpDir, 'package.json'), '{ not json')
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.telemetry.project_name).toBe(path.basename(tmpDir))
   })
 
@@ -199,11 +199,11 @@ describe('registerWorkerMetadata — project_name auto-detection', () => {
     const sdk = registerWorker('ws://127.0.0.1:0', {
       telemetry: { project_name: 'explicit-override' },
     }) as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.telemetry.project_name).toBe('explicit-override')
   })
 })
@@ -227,11 +227,11 @@ describe('registerWorkerMetadata — namespace', () => {
   it('forwards the III_NAMESPACE value into the payload', () => {
     process.env.III_NAMESPACE = 'orders'
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.namespace).toBe('orders')
   })
 
@@ -240,54 +240,49 @@ describe('registerWorkerMetadata — namespace', () => {
     const sdk = registerWorker('ws://127.0.0.1:0', {
       namespace: 'payments',
     }) as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect(call.payload.namespace).toBe('payments')
   })
 
   it('omits namespace when neither option nor III_NAMESPACE is set', () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect('namespace' in call.payload).toBe(false)
   })
 
   it('ignores an empty III_NAMESPACE', () => {
     process.env.III_NAMESPACE = ''
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as InternalSdk
-    sdk.trigger = vi.fn()
+    sdk.call = vi.fn()
 
     sdk.registerWorkerMetadata()
 
-    const call = sdk.trigger.mock.calls[0][0]
+    const call = sdk.call.mock.calls[0][0]
     expect('namespace' in call.payload).toBe(false)
   })
 })
 
-describe('trigger — namespace targeting', () => {
-  type TriggerSdk = {
-    trigger: (req: {
-      function_id: string
-      payload: unknown
-      action?: unknown
-      namespace?: string
-    }) => Promise<unknown>
+describe('call — namespace targeting', () => {
+  type CallSdk = {
+    call: (req: { function_id: string; payload: unknown; action?: unknown; namespace?: string }) => Promise<unknown>
     messagesToSend: Record<string, unknown>[]
   }
 
   it('serializes namespace into the InvokeFunction message', () => {
-    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as TriggerSdk
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as CallSdk
 
-    sdk.trigger({
+    sdk.call({
       function_id: 'orders::get',
       payload: { id: 1 },
-      action: TriggerAction.Void(),
+      action: CallAction.Void(),
       namespace: 'orders',
     })
 
@@ -296,12 +291,12 @@ describe('trigger — namespace targeting', () => {
   })
 
   it('omits namespace from the InvokeFunction message when not provided', () => {
-    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as TriggerSdk
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as CallSdk
 
-    sdk.trigger({
+    sdk.call({
       function_id: 'orders::get',
       payload: { id: 1 },
-      action: TriggerAction.Void(),
+      action: CallAction.Void(),
     })
 
     const invoke = sdk.messagesToSend.find((m) => m.type === MessageType.InvokeFunction)
@@ -312,7 +307,7 @@ describe('trigger — namespace targeting', () => {
 
 describe('registrationrejected — code decides severity', () => {
   type RejectableSdk = {
-    trigger: (req: { function_id: string; payload: unknown; timeoutMs?: number }) => Promise<unknown>
+    call: (req: { function_id: string; payload: unknown; timeoutMs?: number }) => Promise<unknown>
     onMessage: (data: string) => void
     isShuttingDown: boolean
     connectionState: string
@@ -321,7 +316,7 @@ describe('registrationrejected — code decides severity', () => {
   it('WORKER_NAMESPACE_CONFLICT is fatal: rejects pending invocations, stops, no reconnect', async () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as RejectableSdk
 
-    const pending = sdk.trigger({ function_id: 'orders::get', payload: {}, timeoutMs: 5000 })
+    const pending = sdk.call({ function_id: 'orders::get', payload: {}, timeoutMs: 5000 })
 
     sdk.onMessage(
       JSON.stringify({
@@ -342,7 +337,7 @@ describe('registrationrejected — code decides severity', () => {
     const sdk = registerWorker('ws://127.0.0.1:0') as unknown as RejectableSdk
 
     // An in-flight invocation for a *different*, valid function.
-    const pending = sdk.trigger({ function_id: 'orders::list', payload: {}, timeoutMs: 5000 })
+    const pending = sdk.call({ function_id: 'orders::list', payload: {}, timeoutMs: 5000 })
     let settled = false
     void pending.then(
       () => {

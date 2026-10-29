@@ -1,5 +1,5 @@
 import type { EnqueueResult } from '@iii-dev/helpers/queue'
-import { Logger, TriggerAction } from 'iii-sdk'
+import { Logger, CallAction } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
@@ -15,10 +15,10 @@ useApi(
   async (req, logger) => {
     logger.info('Enqueuing job', { body: req.body })
 
-    const receipt = await iii.trigger<unknown, EnqueueResult>({
+    const receipt = await iii.call<unknown, EnqueueResult>({
       function_id: 'queue::process-job',
       payload: req.body,
-      action: TriggerAction.Enqueue({ queue: 'default' }),
+      action: CallAction.Enqueue({ queue: 'default' }),
     })
 
     logger.info('Job enqueued', { receiptId: receipt.messageReceiptId })
@@ -44,10 +44,10 @@ useApi(
     logger.info('Enqueuing job (safe)', { body: req.body })
 
     try {
-      const receipt = await iii.trigger<unknown, EnqueueResult>({
+      const receipt = await iii.call<unknown, EnqueueResult>({
         function_id: 'queue::process-job',
         payload: req.body,
-        action: TriggerAction.Enqueue({ queue: 'default' }),
+        action: CallAction.Enqueue({ queue: 'default' }),
       })
 
       logger.info('Job enqueued', { receiptId: receipt.messageReceiptId })
@@ -81,10 +81,10 @@ useApi(
   async (req, logger) => {
     logger.info('Firing and forgetting', { body: req.body })
 
-    await iii.trigger({
+    await iii.call({
       function_id: 'queue::process-job',
       payload: req.body,
-      action: TriggerAction.Void(),
+      action: CallAction.Void(),
     })
 
     return {

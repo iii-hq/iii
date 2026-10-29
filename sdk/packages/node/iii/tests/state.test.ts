@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { StateEventType, type StateEventData, type StateSetResult } from '../src/state'
 import type { UpdateAppend, UpdateOp } from '@iii-dev/helpers/stream'
-import type { FunctionRef, Trigger } from '../src/types'
+import { beforeEach, describe, expect, it } from 'vitest'
+import type { ObserverHandle } from '../src/observe-types'
+import { type StateEventData, StateEventType, type StateSetResult } from '../src/state'
+import type { FunctionRef } from '../src/types'
 import { execute, iii, logger } from './utils'
 
 type TestData = {
@@ -15,7 +16,7 @@ describe('State Operations', () => {
   const key = 'test-item'
 
   beforeEach(async () => {
-    await iii.trigger({ function_id: 'state::delete', payload: { scope, key } }).catch(() => void 0)
+    await iii.call({ function_id: 'state::delete', payload: { scope, key } }).catch(() => void 0)
   })
 
   describe('state::set', () => {
@@ -26,7 +27,7 @@ describe('State Operations', () => {
         metadata: { created: new Date().toISOString() },
       }
 
-      const result = await iii.trigger({
+      const result = await iii.call({
         function_id: 'state::set',
         payload: {
           scope,
@@ -43,9 +44,9 @@ describe('State Operations', () => {
       const initialData: TestData = { value: 1 }
       const updatedData: TestData = { value: 2, updated: true }
 
-      await iii.trigger({ function_id: 'state::set', payload: { scope, key, value: initialData } })
+      await iii.call({ function_id: 'state::set', payload: { scope, key, value: initialData } })
 
-      const result: StateSetResult<TestData> = await iii.trigger({
+      const result: StateSetResult<TestData> = await iii.call({
         function_id: 'state::set',
         payload: {
           scope,
@@ -63,9 +64,9 @@ describe('State Operations', () => {
     it('should get an existing state item', async () => {
       const data: TestData = { name: 'Test', value: 100 }
 
-      await iii.trigger({ function_id: 'state::set', payload: { scope, key, value: data } })
+      await iii.call({ function_id: 'state::set', payload: { scope, key, value: data } })
 
-      const result: TestData = await iii.trigger({
+      const result: TestData = await iii.call({
         function_id: 'state::get',
         payload: { scope, key },
       })
@@ -75,7 +76,7 @@ describe('State Operations', () => {
     })
 
     it('should return null for non-existent item', async () => {
-      const result = await iii.trigger({
+      const result = await iii.call({
         function_id: 'state::get',
         payload: { scope, key: 'non-existent-item' },
       })
@@ -87,19 +88,17 @@ describe('State Operations', () => {
 
   describe('state::delete', () => {
     it('should delete an existing state item', async () => {
-      await iii.trigger({
+      await iii.call({
         function_id: 'state::set',
         payload: { scope, key, value: { test: true } },
       })
-      await iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
-      await expect(
-        iii.trigger({ function_id: 'state::get', payload: { scope, key } }),
-      ).resolves.toBeNull()
+      await iii.call({ function_id: 'state::delete', payload: { scope, key } })
+      await expect(iii.call({ function_id: 'state::get', payload: { scope, key } })).resolves.toBeNull()
     })
 
     it('should handle deleting non-existent item gracefully', async () => {
       await expect(
-        iii.trigger({ function_id: 'state::delete', payload: { scope, key: 'non-existent' } }),
+        iii.call({ function_id: 'state::delete', payload: { scope, key: 'non-existent' } }),
       ).resolves.not.toThrow()
     })
   })
@@ -117,13 +116,13 @@ describe('State Operations', () => {
 
       // Set multiple items
       for (const item of items) {
-        await iii.trigger({
+        await iii.call({
           function_id: 'state::set',
           payload: { scope, key: item.id, value: item },
         })
       }
 
-      const result: TestDataWithId[] = await iii.trigger({
+      const result: TestDataWithId[] = await iii.call({
         function_id: 'state::list',
         payload: { scope },
       })
@@ -139,20 +138,18 @@ describe('State Operations', () => {
     it('should return available scopes', async () => {
       // Ported from motia-js integration test: state#listGroups returns available scopes
       const scope = `list-groups-scope-${Date.now()}`
-      await iii.trigger({
+      await iii.call({
         function_id: 'state::set',
         payload: { scope, key: 'anchor', value: { present: true } },
       })
 
-      const result = await iii.trigger({ function_id: 'state::list_groups', payload: {} })
-      const groups = Array.isArray(result)
-        ? result
-        : ((result as { groups?: string[] })?.groups ?? [])
+      const result = await iii.call({ function_id: 'state::list_groups', payload: {} })
+      const groups = Array.isArray(result) ? result : ((result as { groups?: string[] })?.groups ?? [])
 
       expect(Array.isArray(groups)).toBe(true)
       expect(groups).toContain(scope)
 
-      await iii.trigger({ function_id: 'state::delete', payload: { scope, key: 'anchor' } })
+      await iii.call({ function_id: 'state::delete', payload: { scope, key: 'anchor' } })
     })
   })
 
@@ -169,12 +166,12 @@ describe('State Operations', () => {
       const scope = `update-scope-${Date.now()}`
       const key = `update-key-${Date.now()}`
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'state::set',
         payload: { scope, key, value: { count: 0, name: 'initial' } },
       })
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'state::update',
         payload: {
           scope,
@@ -183,7 +180,7 @@ describe('State Operations', () => {
         },
       })
 
-      const result = await iii.trigger<unknown, { count?: number; name?: string }>({
+      const result = await iii.call<unknown, { count?: number; name?: string }>({
         function_id: 'state::get',
         payload: { scope, key },
       })
@@ -191,19 +188,19 @@ describe('State Operations', () => {
       expect(result?.count).toBe(5)
       expect(result?.name).toBe('initial')
 
-      await iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
+      await iii.call({ function_id: 'state::delete', payload: { scope, key } })
     })
 
     it('should append array elements and concatenate strings via ops array', async () => {
       const scope = `append-scope-${Date.now()}`
       const key = `append-key-${Date.now()}`
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'state::set',
         payload: { scope, key, value: { events: [], transcript: 'hello' } },
       })
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'state::update',
         payload: {
           scope,
@@ -215,7 +212,7 @@ describe('State Operations', () => {
         },
       })
 
-      const result = await iii.trigger<unknown, { events?: unknown[]; transcript?: string }>({
+      const result = await iii.call<unknown, { events?: unknown[]; transcript?: string }>({
         function_id: 'state::get',
         payload: { scope, key },
       })
@@ -223,7 +220,7 @@ describe('State Operations', () => {
       expect(result?.events).toEqual([{ kind: 'chunk' }])
       expect(result?.transcript).toBe('hello world')
 
-      await iii.trigger({ function_id: 'state::delete', payload: { scope, key } })
+      await iii.call({ function_id: 'state::delete', payload: { scope, key } })
     })
   })
 
@@ -233,31 +230,32 @@ describe('State Operations', () => {
       const updatedData: TestData = { name: 'New Test Data', value: 200 }
       const reactiveResult: { data?: TestData; called: boolean } = { called: false }
 
-      await iii.trigger({ function_id: 'state::set', payload: { scope, key, value: data } })
+      await iii.call({ function_id: 'state::set', payload: { scope, key, value: data } })
 
-      let trigger: Trigger | undefined
+      let observer: ObserverHandle | undefined
       let stateUpdatedFunction: FunctionRef | undefined
 
       try {
-        stateUpdatedFunction = iii.registerFunction(
-          'state.updated',
-          async (event: StateEventData<TestData>) => {
-            logger.info('State updated', { event })
+        stateUpdatedFunction = iii.registerFunction('state.updated', async (event: StateEventData<TestData>) => {
+          logger.info('State updated', { event })
 
-            if (event.type === 'state' && event.event_type === StateEventType.Updated) {
-              reactiveResult.data = event.new_value
-              reactiveResult.called = true
-            }
-          },
-        )
-
-        trigger = iii.registerTrigger({
-          type: 'state',
-          function_id: stateUpdatedFunction.id,
-          config: { scope, key },
+          if (event.type === 'state' && event.event_type === StateEventType.Updated) {
+            reactiveResult.data = event.new_value
+            reactiveResult.called = true
+          }
         })
 
-        await iii.trigger({
+        observer = iii.observe(
+          {
+            function_id: 'state::on-changed',
+            filters: { 'input.scope': { $eq: scope }, 'input.key': { $eq: key } },
+            deliver: 'input',
+          },
+          stateUpdatedFunction.id,
+        )
+        await observer.ready()
+
+        await iii.call({
           function_id: 'state::set',
           payload: { scope, key, value: updatedData },
         })
@@ -266,7 +264,7 @@ describe('State Operations', () => {
           expect(reactiveResult.data).toEqual(updatedData)
         })
       } finally {
-        trigger?.unregister()
+        await observer?.dispose()
         stateUpdatedFunction?.unregister()
       }
     })

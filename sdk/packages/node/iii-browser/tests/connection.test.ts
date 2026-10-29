@@ -96,7 +96,7 @@ describe('RegistrationRejected handling', () => {
 
     // A pending invocation must be rejected by the fatal rejection, not left to
     // time out.
-    const pending = sdk.trigger({ function_id: 'orders::get', payload: { id: '1' } })
+    const pending = sdk.call({ function_id: 'orders::get', payload: { id: '1' } })
     const rejection = expect(pending).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
 
     engine.socket.simulateMessage(
@@ -124,6 +124,30 @@ describe('RegistrationRejected handling', () => {
     expect(states).not.toContain('reconnecting')
     // Exactly one socket was ever created — no reconnect attempt.
     expect(engine.sockets.length).toBe(1)
+  })
+
+  it('an unknown rejection code is fatal, like WORKER_NAMESPACE_CONFLICT', async () => {
+    const states: IIIConnectionState[] = []
+    sdk.addConnectionStateListener((s) => states.push(s))
+    await engine.waitForOpen()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    engine.socket.simulateMessage(
+      JSON.stringify({
+        type: 'registrationrejected',
+        code: 'SOMETHING_NEW',
+        namespace: 'default',
+        owner_worker_id: '',
+      }),
+    )
+    engine.socket.simulateClose()
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(states[states.length - 1]).toBe('failed')
+    expect(sdk.getFatalError()).toMatchObject({ code: 'SOMETHING_NEW' })
+    expect(errors.mock.calls.some((c) => String(c[0]).includes('unknown code "SOMETHING_NEW"'))).toBe(true)
+    expect(engine.sockets.length).toBe(1)
+    errors.mockRestore()
   })
 
   it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: stays connected', async () => {
@@ -165,9 +189,7 @@ describe('namespace', () => {
     const sdk = registerWorker('ws://test:49135', { namespace: 'orders' })
     await engine.waitForOpen()
 
-    const announce = engine
-      .findAllSent('invokefunction')
-      .find((m) => m.function_id === EngineFunctions.REGISTER_WORKER)
+    const announce = engine.findAllSent('invokefunction').find((m) => m.function_id === EngineFunctions.REGISTER_WORKER)
     expect(announce).toBeDefined()
     expect((announce?.data as { namespace?: string }).namespace).toBe('orders')
 
@@ -178,11 +200,9 @@ describe('namespace', () => {
     const sdk = registerWorker('ws://test:49135')
     await engine.waitForOpen()
 
-    const announce = engine
-      .findAllSent('invokefunction')
-      .find((m) => m.function_id === EngineFunctions.REGISTER_WORKER)
+    const announce = engine.findAllSent('invokefunction').find((m) => m.function_id === EngineFunctions.REGISTER_WORKER)
     expect(announce).toBeDefined()
-    expect((announce?.data as Record<string, unknown>)).not.toHaveProperty('namespace')
+    expect(announce?.data as Record<string, unknown>).not.toHaveProperty('namespace')
 
     await sdk.shutdown()
   })
@@ -192,7 +212,7 @@ describe('namespace', () => {
     await engine.waitForOpen()
 
     // Fire-and-forget so no response is needed; the wire message is what matters.
-    await sdk.trigger({ function_id: 'orders::get', payload: { id: '1' }, namespace: 'orders', action: { type: 'void' } })
+    await sdk.call({ function_id: 'orders::get', payload: { id: '1' }, namespace: 'orders', action: { type: 'void' } })
 
     const invoke = engine.findAllSent('invokefunction').find((m) => m.function_id === 'orders::get')
     expect(invoke).toBeDefined()
