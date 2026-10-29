@@ -38,10 +38,14 @@ differ, this file wins, and the spec is updated to match.
    The generic undecodable-frame warning is not logged for these.
 6. **Builtins.** Removed: `engine::register_trigger`,
    `engine::unregister_trigger`, `engine::triggers::list|info`,
-   `engine::registered-triggers::list|info`. `engine::functions::list|info`
-   report `args_format`, `private`, `observable` and `observer_count` in place
-   of `registered_triggers`. `engine::workers::info` reports
-   `functions` and `observers` (ids it created) in place of `trigger_types`.
+   `engine::registered-triggers::list|info`. Every function row (in
+   `engine::functions::list`, `engine::functions::info` and the
+   `engine::on-functions-changed` event) carries `observer_count` always,
+   `args_format` when set, `private: true` when private and
+   `observable: false` when not observable; `registered_triggers` is removed.
+   `engine::workers::info` carries `functions` and `observers` (ids of the
+   observers the worker created); `trigger_types` and `registered_triggers`
+   are removed.
    New engine-hosted source `engine::on-observers-changed`
    (`{ observer_id, function_id, target, state, reason? }`, one call per state
    change).
@@ -64,7 +68,9 @@ differ, this file wins, and the spec is updated to match.
     `on_trigger_type_registration_function_id` are removed. When present in a
     config they are ignored with one `warn` at load naming the observe
     equivalent. The `on_function_registration_function_id` hook input gains
-    `args_format`, `private` and `observable`; its result may rewrite them.
+    top-level `private` and `observable` (always sent) and `args_format`
+    (when set); a result object may carry any of the three keys, and each one
+    present replaces the registration's value.
 11. **Codes.** An invalid `args_format` is `registrationrejected
     { code: INVALID_ARGS_FORMAT }`. Retired: `NOT_OWNER_DELIVERED`,
     `TARGET_MISMATCH`, `FILTERS_NOT_MATCHED`, `INVALID_OBSERVE_DESCRIPTOR`.
@@ -90,8 +96,10 @@ differ, this file wins, and the spec is updated to match.
 36. **What routed observers observe.** The engine takes a routed call's
     `output` from `invocationresult.result`. A host lists ids in `observed`
     only when that result is the handler's output and `next` was given the
-    call unchanged (identity in Node, browser and Python; serialized bytes in
-    Rust and Go). Otherwise it reports those matches in an
+    call unchanged. Unchanged means the same `input`, `status`, `output`,
+    `error`, `caller` and `metadata`, compared field by field: by identity in
+    Node, browser and Python (a copied `Call` whose fields hold the same
+    references is unchanged), by serialized bytes in Rust and Go. Otherwise it reports those matches in an
     `invocationsobserved` item for the same `invocation_id`, carrying the call
     `next` was given. The engine strips `observed` before forwarding a result,
     and activates the `observed` ids on every routed answer from an
@@ -106,18 +114,23 @@ differ, this file wins, and the spec is updated to match.
 38. **Caller on host-reported routed items.** For an `invocationsobserved`
     item that reports a routed invocation (decision 36), the engine stamps
     `caller.worker_id` and `caller.worker_name` from the caller it recorded
-    when it forwarded the call. The host flushes that item before it sends the
-    call's `invocationresult`; an item whose `invocation_id` the engine no
-    longer holds is dropped as `INVALID_REPORT`.
+    when it forwarded the call: exactly the forwarded `worker_id` and
+    `worker_name`, leaving out `worker_id` when the forwarded caller had none
+    (an activation's caller). The engine holds a routed call from forwarding
+    until it processes the call's `invocationresult`. The host sends the items
+    before the answer (decision 20); an item whose `invocation_id` the engine
+    does not hold, and that is not a local call of the reporting host, is
+    dropped as `INVALID_REPORT`.
 39. **Errors on routed answers.** `observed` may ride an `invocationresult`
     that carries `error` when that error is the one the handler threw (iii's
     delivery rethrows it, or the hook rethrows it unchanged). The envelope's
     `status` and `error` come from the answer. When the hook turns a handler
     error into a result or a result into an error, the host reports the
     matches as decision 36 says.
-40. **`_caller_worker_id`.** The engine removes `_caller_worker_id` from every
-    input it puts into an envelope, whether it kept the input itself or a host
-    reported it.
+40. **`_caller_worker_id`.** The engine removes the top-level
+    `_caller_worker_id` from every observed `input` and `output` it delivers:
+    the envelope's fields, and the bare value under `deliver: input` or
+    `deliver: output`, whether it kept the value itself or a host reported it.
 41. **Holding registrations.** An SDK sends a `registerfunction` that needs
     `observe.v2` (decision 18) only after the current connection's
     `workerregistered` advertised `observe.v2`, and decides again on every
@@ -159,10 +172,19 @@ differ, this file wins, and the spec is updated to match.
     Calls through the observer sent after it resolves reach an active observer
     (frames are processed in order). Providers send initial state this way
     (ADE asset sync, ring-on-bind).
-20. **Deliver hook context.** `onObserverDeliver` runs inside the function's
-    invocation context and span, so calls it makes have the function's
-    invocation as caller. Calling `next` more than once delivers each observer
-    at most once per call; `observed` is the union.
+20. **Deliver hook context and `next`.** `onObserverDeliver` runs inside the
+    function's invocation context and span, so calls it makes have the
+    function's invocation as caller. Each observer is delivered at most once
+    per call, however many times `next` runs. For a routed call, the ids
+    matched by `next` calls given the unchanged call (decision 36) are pooled
+    into `observed`; each `next` call given a changed call sends its own
+    `invocationsobserved` item for the same `invocation_id`. Items and
+    `observed` can coexist for one invocation. The SDK collects the matches of
+    every `next` call made before the hook settles, sends the items, then the
+    answer. A `next` call on a routed call after the hook settled delivers
+    nothing; the SDK counts it in `localinvocationstats.dropped_reports` with
+    reason `LATE_DELIVERY`. Items lost to a closed connection count as
+    `DISCONNECTED`.
 21. **`standby`.** On `FUNCTION_NAMESPACE_CONFLICT` the SDK retries the
     registration every second (±20 % jitter) until it succeeds or the function
     is unregistered; hooks run when `functionregistered` arrives.
