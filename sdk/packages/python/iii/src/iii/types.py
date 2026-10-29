@@ -22,22 +22,13 @@ from pydantic import BaseModel, ConfigDict
 
 from . import _wire_json
 from .iii_constants import ConnectionStateCallback
-from .iii_types import (
-    RegisterFunctionMessage,
-    RegisterTriggerInput,
-    RegisterTriggerTypeInput,
-    RegisterTriggerTypeMessage,
-    StreamChannelRef,
-    TriggerRequest,
-)
-from .triggers import Trigger, TriggerHandler
+from .iii_types import CallRequest, RegisterFunctionMessage, StreamChannelRef
 
 if TYPE_CHECKING:
     from .channels import ChannelReader, ChannelWriter, WritableStream
 
 TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
-TConfig = TypeVar("TConfig")
 
 
 RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
@@ -51,20 +42,15 @@ class RemoteFunctionData(BaseModel):
     message: RegisterFunctionMessage
     handler: RemoteFunctionHandler | None = None
     #: Observers of this function as the engine pushed them, local dispatch
-    #: state and hooks (an ``iii.observable.FunctionObservers``).
+    #: state and the deliver hook (an ``iii.observable.FunctionObservers``).
     observe: Any = None
-    #: A sync handler, called in-process on the caller's thread by a local
-    #: ``trigger()`` (``None`` for async handlers).
+    #: A sync handler, called in-process on a thread of its own by a local
+    #: ``call()`` (``None`` for async handlers).
     call_sync: Callable[[Any, Any], Any] | None = None
-
-
-class RemoteTriggerTypeData(BaseModel):
-    """Data for a remote trigger type."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    message: RegisterTriggerTypeMessage
-    handler: TriggerHandler[Any]
+    #: Holds back ``registerfunction`` until the engine advertised ``observe.v2``.
+    needs_v2: bool = False
+    #: Retries a ``FUNCTION_NAMESPACE_CONFLICT`` until the id is free.
+    standby: bool = False
 
 
 class Invocation(Generic[TOutput]):
@@ -100,27 +86,31 @@ class IIIClient(Protocol):
     :func:`iii.helpers.create_channel` and :func:`iii.helpers.create_stream`.
     """
 
-    def register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any]) -> Trigger: ...
-
     def register_function(
         self,
         function_id: str,
         handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig,
     ) -> Any: ...
 
-    def trigger(self, request: dict[str, Any] | TriggerRequest) -> Any: ...
+    def call(self, request: dict[str, Any] | CallRequest) -> Any: ...
+
+    async def call_async(self, request: dict[str, Any] | CallRequest) -> Any: ...
+
+    def trigger(self, request: dict[str, Any] | CallRequest) -> Any: ...
 
     def observe(self, source: Any, target: Any, options: Any = None) -> Any: ...
 
+    def on_observer_added(self, function_id_or_hook: Any, hook: Any = ...) -> Any: ...
+
+    def on_observer_removed(self, function_id_or_hook: Any, hook: Any = ...) -> Any: ...
+
+    def on_observer_deliver(self, function_id: str, hook: Any = ...) -> Any: ...
+
+    def observers(self, function_id: str) -> list[Any]: ...
+
+    def is_observed(self, function_id: str, call: Any = None) -> bool: ...
+
     def current_invocation(self) -> Any: ...
-
-    def register_trigger_type(
-        self,
-        trigger_type: RegisterTriggerTypeInput | dict[str, Any],
-        handler: TriggerHandler[Any],
-    ) -> Any: ...
-
-    def unregister_trigger_type(self, trigger_type: RegisterTriggerTypeInput | dict[str, Any]) -> None: ...
 
     def add_connection_state_listener(self, handler: ConnectionStateCallback) -> Callable[[], None]: ...
 
@@ -179,7 +169,7 @@ class StreamResponse:
 
 @dataclass
 class StreamRequest:
-    """Incoming streaming request received by a function registered with a stream trigger."""
+    """Incoming streaming request received by a function that serves a streaming HTTP route."""
 
     path_params: dict[str, str]
     query_params: dict[str, str | list[str]]

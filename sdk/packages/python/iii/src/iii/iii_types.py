@@ -15,11 +15,6 @@ class MessageType(str, Enum):
     REGISTER_SERVICE = "registerservice"
     INVOKE_FUNCTION = "invokefunction"
     INVOCATION_RESULT = "invocationresult"
-    REGISTER_TRIGGER_TYPE = "registertriggertype"
-    REGISTER_TRIGGER = "registertrigger"
-    UNREGISTER_TRIGGER = "unregistertrigger"
-    UNREGISTER_TRIGGER_TYPE = "unregistertriggertype"
-    TRIGGER_REGISTRATION_RESULT = "triggerregistrationresult"
     WORKER_REGISTERED = "workerregistered"
     REGISTRATION_REJECTED = "registrationrejected"
     REATTACH = "reattach"
@@ -38,13 +33,22 @@ class MessageType(str, Enum):
 
 #: The engine supports observers (``WorkerRegistered.features``).
 FEATURE_OBSERVE_V1 = "observe.v1"
+#: The host delivers the calls of the functions it hosts, local and routed: ``observed`` on
+#: ``invocationresult``, ``output_is_input`` on report items, and the top-level ``args_format``,
+#: ``private`` and ``observable`` of ``registerfunction``.
+FEATURE_OBSERVE_V2 = "observe.v2"
 #: The engine confirms functions for in-process calls (``functionregistered.local_dispatch``).
 FEATURE_LOCAL_DISPATCH_V1 = "local-dispatch.v1"
 #: Declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it
 #: messages of that size whatever version it reports.
 FEATURE_LARGE_MESSAGES_V1 = "large-messages.v1"
 #: What this SDK declares in the ``engine::workers::register`` payload.
-SDK_FEATURES: tuple[str, ...] = (FEATURE_OBSERVE_V1, FEATURE_LOCAL_DISPATCH_V1, FEATURE_LARGE_MESSAGES_V1)
+SDK_FEATURES: tuple[str, ...] = (
+    FEATURE_OBSERVE_V1,
+    FEATURE_OBSERVE_V2,
+    FEATURE_LOCAL_DISPATCH_V1,
+    FEATURE_LARGE_MESSAGES_V1,
+)
 
 #: What an absent ``capture`` means (CONTRACT D1).
 DEFAULT_CAPTURE: tuple[str, ...] = ("input", "output", "caller")
@@ -71,132 +75,6 @@ class _WireModel(BaseModel):
         if isinstance(data, dict):
             return {k: v for k, v in data.items() if v is not None or k in cls._keep_null}
         return data
-
-
-class RegisterTriggerTypeMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    description: str
-    trigger_request_format: Any | None = Field(default=None)
-    call_request_format: Any | None = Field(default=None)
-    #: Namespace this provider serves. ``None`` lets the engine use this
-    #: connection's own, which is what a worker providing a trigger type for
-    #: its own project wants.
-    namespace: str | None = Field(default=None)
-    message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER_TYPE, alias="type")
-
-
-class UnregisterTriggerTypeMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    #: The namespace the trigger type was registered in; ``None`` is this connection's.
-    namespace: str | None = Field(default=None)
-    message_type: MessageType = Field(default=MessageType.UNREGISTER_TRIGGER_TYPE, alias="type")
-
-
-class UnregisterTriggerMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    message_type: MessageType = Field(default=MessageType.UNREGISTER_TRIGGER, alias="type")
-    trigger_type: str | None = Field(default=None, alias="trigger_type")
-
-
-class TriggerRegistrationResultMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    trigger_type: str = Field(alias="trigger_type")
-    function_id: str = Field()
-    result: Any = None
-    error: Any = None
-    message_type: MessageType = Field(default=MessageType.TRIGGER_REGISTRATION_RESULT, alias="type")
-
-
-class RegisterTriggerTypeInput(BaseModel):
-    """Input for registering a trigger type.
-
-    Attributes:
-        id: Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``).
-        description: Human-readable description of what this trigger type does.
-        trigger_request_format: JSON Schema describing the expected trigger config.
-        call_request_format: JSON Schema describing the payload sent to functions.
-    """
-
-    id: str = Field(description="Unique identifier for the trigger type (e.g. ``state``, ``durable:subscriber``).")
-    description: str = Field(description="Human-readable description of what this trigger type does.")
-    trigger_request_format: Any | None = Field(
-        default=None, description="JSON Schema for trigger configuration."
-    )
-    call_request_format: Any | None = Field(
-        default=None, description="JSON Schema for the call request payload."
-    )
-
-
-class RegisterTriggerInput(BaseModel):
-    """Input for registering a trigger (matches Node SDK's RegisterTriggerInput).
-
-    Attributes:
-        type: Identifier of the registered trigger type this trigger uses (e.g. ``storage::object-created``, ``http``).
-        function_id: ID of the function this trigger invokes when it fires.
-        config: Trigger-type-specific configuration, matching the shape the trigger type expects.
-        metadata: Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
-        namespace: Namespace the target function resolves in.
-        trigger_namespace: Namespace the trigger type's provider is found in.
-    """
-
-    type: str = Field(
-        description=(
-            "Identifier of the registered trigger type this trigger uses "
-            "(e.g. ``storage::object-created``, ``http``)."
-        )
-    )
-    function_id: str = Field(description="ID of the function this trigger invokes when it fires.")
-    config: Any = Field(
-        default=None, description="Trigger-type-specific configuration, matching the shape the trigger type expects."
-    )
-    metadata: Any | None = Field(
-        default=None,
-        description=(
-            "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
-        ),
-    )
-    namespace: str | None = Field(
-        default=None,
-        description=(
-            "Namespace the trigger's target function resolves in. Omitting it does not "
-            "bind in the engine's default: ``register_trigger`` fills it from this "
-            "worker's namespace, because the function a trigger names is one this worker "
-            "registered, and that landed in the worker's namespace. Name another "
-            "namespace, ``default`` included, to bind elsewhere."
-        ),
-    )
-    trigger_namespace: str | None = Field(
-        default=None,
-        description=(
-            "Namespace to find the trigger type's provider in. Omitting it is not the "
-            "same as 'default': it asks the engine to resolve, taking this worker's "
-            "namespace first and the engine's own second. Naming one is strict."
-        ),
-    )
-
-
-class RegisterTriggerMessage(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    id: str
-    trigger_type: str = Field(alias="trigger_type")
-    function_id: str = Field()
-    config: Any
-    metadata: Any | None = Field(default=None)
-    namespace: str | None = Field(default=None)
-    #: Namespace to find the trigger type's provider in. ``None`` is not
-    #: ``"default"``: it asks the engine to resolve, taking this worker's
-    #: namespace first and the engine's own second. Naming one is strict.
-    trigger_namespace: str | None = Field(default=None)
-    message_type: MessageType = Field(default=MessageType.REGISTER_TRIGGER, alias="type")
 
 
 class RegisterFunctionFormat(BaseModel):
@@ -294,19 +172,11 @@ class CallerWire(CallerParent):
 
 class ActivationWire(_WireModel):
     """``invokefunction.activation``: present on every activation (engine → worker)
-    and on an owner delivery (``obs.call``, worker → engine)."""
+    and on a call through an observer (``call({"observer": obs, ...})``, worker
+    → engine, with ``observer_id`` only)."""
 
     observer_id: str
     activation_id: str | None = None
-
-
-class ObserveDescriptor(_WireModel):
-    """``registerfunction.observe``: the four fields that travel (the hooks never do)."""
-
-    delivery: str | None = None
-    args_format: Any | None = None
-    legacy_trigger_type: str | None = None
-    allow: bool | None = None
 
 
 class ObserveSourceWire(_WireModel):
@@ -366,17 +236,8 @@ class ObserverStateChangedMessage(_WireModel):
     message_type: MessageType = Field(default=MessageType.OBSERVER_STATE_CHANGED, alias="type")
 
 
-class LegacyTriggerWire(_WireModel):
-    """``observer.legacy``: the old trigger an observer of the legacy shim came from."""
-
-    _keep_null: ClassVar[frozenset[str]] = frozenset({"config"})
-
-    trigger_type: str
-    config: Any = None
-
-
 class ObserverInfoWire(_WireModel):
-    """An observer as its owner sees it (``observeradded.observer``,
+    """An observer as the host of its function sees it (``observeradded.observer``,
     ``functionregistered.observers[]``): never its metadata, policy or worker."""
 
     id: str = ""
@@ -388,7 +249,6 @@ class ObserverInfoWire(_WireModel):
     target: str = ""
     capture: list[str] = Field(default_factory=lambda: list(DEFAULT_CAPTURE))
     on: str = "success"
-    legacy: LegacyTriggerWire | None = None
 
     @field_validator("args", mode="before")
     @classmethod
@@ -399,11 +259,6 @@ class ObserverInfoWire(_WireModel):
     @classmethod
     def _strings(cls, v: Any) -> Any:
         return [c for c in v if isinstance(c, str)] if isinstance(v, list) else list(DEFAULT_CAPTURE)
-
-    @field_validator("legacy", mode="before")
-    @classmethod
-    def _legacy(cls, v: Any) -> Any:
-        return v if isinstance(v, dict) and isinstance(v.get("trigger_type"), str) else None
 
 
 class FunctionRegisteredMessage(_WireModel):
@@ -436,7 +291,7 @@ class ObserverRemovedMessage(_WireModel):
 
 
 class ObserverAckMessage(_WireModel):
-    """The owner accepts (or, with ``error``, rejects) an added observer."""
+    """The host accepts (or, with ``error``, rejects) an added observer."""
 
     function_id: str
     namespace: str | None = None
@@ -447,12 +302,14 @@ class ObserverAckMessage(_WireModel):
 
 
 class ObservedInvocationWire(_WireModel):
-    """One ``invocationsobserved`` item: a matched local call of an auto
-    function, or an ``obs.emit`` event of an owner function.
+    """One ``invocationsobserved`` item: the observers one ``next`` call of a
+    call delivered (``matched``), with the call it was given.
 
     ``input``, ``output``, ``error`` and ``metadata`` keep ``null`` apart from
     absent (``"output": null`` is a function that returned ``None``); check
-    ``model_fields_set``. The reporter writes items itself.
+    ``model_fields_set``. ``output_is_input`` (sent only when ``true``) means
+    the handler returned its input: the engine fills ``output`` from ``input``.
+    The reporter writes items itself.
     """
 
     _keep_null: ClassVar[frozenset[str]] = frozenset({"input", "output", "error", "metadata"})
@@ -472,6 +329,7 @@ class ObservedInvocationWire(_WireModel):
     observe_depth: int = 0
     traceparent: str | None = None
     baggage: str | None = None
+    output_is_input: bool | None = None
 
 
 class InvocationsObservedMessage(_WireModel):
@@ -488,7 +346,7 @@ class LocalInvocationCount(_WireModel):
 
 class DroppedReportCount(_WireModel):
     function_id: str
-    #: ``BUFFER_FULL`` or ``TOO_LARGE`` (protocol.md §4).
+    #: ``BUFFER_FULL``, ``TOO_LARGE``, ``LATE_DELIVERY``, ``DISCONNECTED`` or ``INACTIVE``.
     reason: str
     count: int = 0
 
@@ -511,17 +369,33 @@ class RegisterFunctionMessage(BaseModel):
     response_format: RegisterFunctionFormat | dict[str, Any] | None = Field(default=None)
     metadata: Any | None = None
     invocation: HttpInvocationConfig | None = None
-    #: How the function's observers are delivered (``registerfunction.observe``).
-    observe: ObserveDescriptor | None = None
+    #: JSON Schema of the observers' ``args``; the engine validates them (``INVALID_ARGS``).
+    args_format: Any | None = None
+    #: ``True``: only this connection may call the function. Left out when ``False``.
+    private: bool | None = None
+    #: ``False``: nobody may observe the function (``NOT_OBSERVABLE``). Left out when ``True``.
+    observable: bool | None = None
     message_type: MessageType = Field(default=MessageType.REGISTER_FUNCTION, alias="type")
 
 
-class TriggerActionEnqueue(BaseModel):
-    """Routes the invocation through a named queue for async processing.
+class RegistrationRejectedMessage(_WireModel):
+    """The engine refused a registration: one function (``function_id`` set) or
+    the whole worker (``WORKER_NAMESPACE_CONFLICT``)."""
+
+    code: str = ""
+    namespace: str = ""
+    worker_name: str | None = None
+    function_id: str | None = None
+    owner_worker_id: str = ""
+    message_type: MessageType = Field(default=MessageType.REGISTRATION_REJECTED, alias="type")
+
+
+class CallActionEnqueue(BaseModel):
+    """Routes the call through a named queue for async processing.
 
     Requires the ``queue`` worker in ``worker-compose.yaml`` and a matching
     entry under that worker's ``queue_configs``.
-    Without it the trigger rejects with ``enqueue_error`` (no queue provider).
+    Without it the call rejects with ``enqueue_error`` (no queue provider).
 
     Attributes:
         type: Always ``'enqueue'``.
@@ -532,7 +406,7 @@ class TriggerActionEnqueue(BaseModel):
     queue: str
 
 
-class TriggerActionVoid(BaseModel):
+class CallActionVoid(BaseModel):
     """Fire-and-forget routing. No response is returned.
 
     Attributes:
@@ -542,8 +416,14 @@ class TriggerActionVoid(BaseModel):
     type: Literal["void"] = "void"
 
 
-TriggerAction = TriggerActionEnqueue | TriggerActionVoid
-"""Routing action for trigger requests."""
+CallAction = CallActionEnqueue | CallActionVoid
+"""Routing action for call requests."""
+
+TriggerActionEnqueue = CallActionEnqueue
+"""Deprecated alias of :class:`CallActionEnqueue`."""
+
+TriggerActionVoid = CallActionVoid
+"""Deprecated alias of :class:`CallActionVoid`."""
 
 
 class MiddlewareFunctionInput(BaseModel):
@@ -562,7 +442,7 @@ class MiddlewareFunctionInput(BaseModel):
 
     function_id: str = Field(description="ID of the function being invoked.")
     payload: dict[str, Any] = Field(description="Payload sent by the caller.")
-    action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
+    action: CallActionEnqueue | CallActionVoid | None = Field(
         default=None, description="Routing action, if any.",
     )
     context: dict[str, Any] = Field(
@@ -578,17 +458,25 @@ class MiddlewareFunctionInput(BaseModel):
     )
 
 
-class TriggerRequest(BaseModel):
-    """Request object for ``trigger()``.
+class CallRequest(BaseModel):
+    """Request object for ``call()`` / ``call_async()``.
+
+    Name the function to call with ``function_id``, or call through an
+    observer with ``observer``: the call runs the observer's target, and only
+    the worker that hosts the observed function may make it.
 
     Attributes:
-        function_id: ID of the function to invoke.
+        function_id: ID of the function to call.
+        observer: An :class:`~iii.Observer` of a function this worker hosts:
+            the call runs its target, with its policy and metadata sidecar.
+            Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue
+            action.
         payload: Input data passed to the function.
-        action: Sets how the trigger is routed. Omit for a synchronous
+        action: Sets how the call is routed. Omit for a synchronous
             request/response. Specify for a specific routing scheme (e.g.
-            ``TriggerAction.Enqueue(...)``, ``TriggerAction.Void()``).
+            ``CallAction.Enqueue(...)``, ``CallAction.Void()``).
         timeout_ms: Override the default invocation timeout, in milliseconds.
-        metadata: Arbitrary user-specifiable metadata supplied to the triggered
+        metadata: Arbitrary user-specifiable metadata supplied to the called
             handler function on every invocation.
         namespace: Target namespace for routing. Omit to inherit this worker's;
             say ``default`` to reach the engine's from a namespaced worker.
@@ -597,14 +485,23 @@ class TriggerRequest(BaseModel):
             through the engine.
     """
 
-    function_id: str = Field(description="ID of the function to invoke.")
-    payload: Any = Field(default=None, description="Input data passed to the function.")
-    action: TriggerActionEnqueue | TriggerActionVoid | None = Field(
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    function_id: str | None = Field(default=None, description="ID of the function to call.")
+    observer: Any = Field(
         default=None,
         description=(
-            "Sets how the trigger is routed. Omit for a synchronous request/response. "
-            "Specify for a specific routing scheme (e.g. ``TriggerAction.Enqueue(...)``, "
-            "``TriggerAction.Void()``)."
+            "An Observer of a function this worker hosts: the call runs its target. "
+            "Takes no function_id, namespace, metadata or enqueue action."
+        ),
+    )
+    payload: Any = Field(default=None, description="Input data passed to the function.")
+    action: CallActionEnqueue | CallActionVoid | None = Field(
+        default=None,
+        description=(
+            "Sets how the call is routed. Omit for a synchronous request/response. "
+            "Specify for a specific routing scheme (e.g. ``CallAction.Enqueue(...)``, "
+            "``CallAction.Void()``)."
         ),
     )
     timeout_ms: int | None = Field(
@@ -613,7 +510,7 @@ class TriggerRequest(BaseModel):
     metadata: Any | None = Field(
         default=None,
         description=(
-            "Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation."
+            "Arbitrary user-specifiable metadata supplied to the called handler function on every invocation."
         ),
     )
     namespace: str | None = Field(
@@ -632,6 +529,16 @@ class TriggerRequest(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _one_target(self) -> "CallRequest":
+        if (self.function_id is None) == (self.observer is None):
+            raise ValueError("a call names a function_id or an observer, not both")
+        return self
+
+
+TriggerRequest = CallRequest
+"""Deprecated alias of :class:`CallRequest`."""
+
 
 class InvokeFunctionMessage(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -642,14 +549,15 @@ class InvokeFunctionMessage(BaseModel):
     invocation_id: str | None = Field(default=None)
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
-    action: TriggerActionEnqueue | TriggerActionVoid | None = Field(default=None)
+    action: CallActionEnqueue | CallActionVoid | None = Field(default=None)
     namespace: str | None = Field(default=None)
     #: The handler the call is made from (worker → engine), or who started it,
     #: stamped by the engine (engine → worker).
     caller: CallerWire | None = Field(default=None)
     #: Depth of the causal chain in observe hops; left out when 0.
     observe_depth: int | None = Field(default=None)
-    #: Present on every activation; marks an owner delivery (``obs.call``) worker → engine.
+    #: Present on every activation (engine → worker) and on a call through an
+    #: observer (worker → engine).
     activation: ActivationWire | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.INVOKE_FUNCTION, alias="type")
 
@@ -663,13 +571,17 @@ class InvocationResultMessage(BaseModel):
     error: Any = None
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
+    #: The observers this host's delivery of a routed call matched, when the
+    #: answer is the handler's own outcome; left out when empty.
+    observed: list[str] | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.INVOCATION_RESULT, alias="type")
 
 
 class WorkerRegisteredMessage(_WireModel):
     worker_id: str = Field(default="")
     reattach_token: str | None = Field(default=None)
-    #: What the engine supports (``observe.v1``, ``local-dispatch.v1``); absent on a pre-0.25 engine.
+    #: What the engine supports (``observe.v1``, ``observe.v2``, ``local-dispatch.v1``); absent on a
+    #: pre-0.25 engine.
     features: list[str] | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.WORKER_REGISTERED, alias="type")
 
@@ -717,12 +629,8 @@ IIIMessage = (
     | UnregisterFunctionMessage
     | InvokeFunctionMessage
     | InvocationResultMessage
-    | RegisterTriggerMessage
-    | RegisterTriggerTypeMessage
-    | UnregisterTriggerMessage
-    | UnregisterTriggerTypeMessage
-    | TriggerRegistrationResultMessage
     | WorkerRegisteredMessage
+    | RegistrationRejectedMessage
     | ObserveMessage
     | UnobserveMessage
     | ObserveResultMessage

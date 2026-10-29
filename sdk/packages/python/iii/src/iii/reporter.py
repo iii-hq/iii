@@ -1,12 +1,13 @@
-"""The reporter (sdk.md §4.4, CONTRACT D12): one bounded buffer for matched
-local invocations of auto functions and ``obs.emit`` events of owner
-functions, flushed as ``invocationsobserved`` batches; plus the periodic
+"""The reporter: one bounded buffer for what the local calls of this worker's
+functions delivered, flushed as ``invocationsobserved`` batches; the items of a
+routed call, sent ahead of its answer; and the periodic
 ``localinvocationstats``.
 
 It never blocks a call: when the buffer is full the newest item is dropped
 and counted (``BUFFER_FULL``), and an item too large on its own is dropped and
 counted (``TOO_LARGE``). Items stay buffered while disconnected and are
-flushed once the engine confirmed their function on the new connection.
+flushed once the engine confirmed their function on the new connection; a
+flushed frame whose write fails counts its items as ``DISCONNECTED``.
 
 Items are pushed from any thread (handlers run on the SDK loop, on the
 caller's loop or on their own thread); the buffer is guarded by a lock, and
@@ -83,7 +84,7 @@ class ReporterHost(Protocol):
 
 @dataclass
 class ReportInit:
-    """One observed invocation or emitted event, before encoding."""
+    """What one ``next`` call delivered, before encoding."""
 
     function_id: str
     invocation_id: str
@@ -97,6 +98,9 @@ class ReportInit:
     namespace: str | None = None
     traceparent: str | None = None
     baggage: str | None = None
+    #: The handler returned its input: an item that captures both carries
+    #: ``input`` and ``"output_is_input": true`` instead of ``output``.
+    output_is_input: bool = False
 
 
 #: An integer literal no double can hold has at least 309 digits.
@@ -149,26 +153,24 @@ def _byte_length(s: str) -> int:
 
 
 class _ReportItem:
-    __slots__ = ("bytes", "captured", "context", "event", "init", "json", "parts")
+    __slots__ = ("bytes", "init", "json", "output_is_input", "parts")
 
-    def __init__(self, init: ReportInit, event: Any = ABSENT, context: Any = None) -> None:
+    def __init__(self, init: ReportInit) -> None:
         self.init = init
         self.parts: dict[str, str] = {}
-        self.captured: set[str] = set()
         self.json = ""
         self.bytes = 0
-        #: ``obs.emit``: the event value (held, so its identity cannot be reused while buffered).
-        self.event = event
-        #: ``obs.emit``: the invocation context it was emitted from.
-        self.context = context
+        self.output_is_input = False
 
     def capture(self, captures: Iterable[str]) -> None:
-        """Adds the parts ``captures`` asks for that are not in the item yet."""
-        for c in captures:
-            if c in self.captured:
+        """Encodes the parts ``captures`` asks for. ``output`` is left out for
+        a handler that returned its input when ``input`` travels too."""
+        wanted = set(captures)
+        self.output_is_input = self.init.output_is_input and "input" in wanted and "output" in wanted
+        for c in PARTS:
+            if c not in wanted or c not in self.init.values:
                 continue
-            self.captured.add(c)
-            if c not in PARTS or c not in self.init.values:
+            if c == "output" and self.output_is_input:
                 continue
             self.parts[c] = encode_json(self.init.values[c])
 
@@ -190,6 +192,8 @@ class _ReportItem:
             out.append(f',"traceparent":{dumps(i.traceparent)}')
         if i.baggage is not None:
             out.append(f',"baggage":{dumps(i.baggage)}')
+        if self.output_is_input:
+            out.append(',"output_is_input":true')
         out.append("}")
         self.json = "".join(out)
         self.bytes = _byte_length(self.json)
@@ -220,8 +224,6 @@ class Reporter:
         self._lock = threading.Lock()
         self._items: list[_ReportItem] = []
         self._bytes = 0
-        #: Emitted events still in the buffer, by event identity: one event to N observers is one item.
-        self._open_emits: dict[int, list[_ReportItem]] = {}
         self._counters = _Counters()
         self._window_start = time.monotonic()
         self._linger_scheduled = False
@@ -262,57 +264,36 @@ class Reporter:
     # ── items ──────────────────────────────────────────────────────────────
 
     def push(self, init: ReportInit, captures: Iterable[str]) -> bool:
-        """A matched local invocation of an auto function."""
+        """What a ``next`` call of a local call delivered. The item is encoded
+        here, so the values it carries are serialized when the call matches."""
         item = _ReportItem(init)
         if not self._build(item, captures):
             return False
         return self._enqueue(item)
 
-    def push_emit(self, init: ReportInit, observer_id: str, event: Any, context: Any, captures: Iterable[str]) -> bool:
-        """An ``obs.emit`` event. The same event value emitted to several
-        observers from the same invocation context, before the buffer is
-        flushed, becomes one item whose ``matched`` lists them all."""
-        with self._lock:
-            for item in self._open_emits.get(id(event), ()):
-                if (
-                    item.event is event
-                    and item.context is context
-                    and item.init.function_id == init.function_id
-                    and observer_id not in item.init.matched
-                ):
-                    return self._merge_locked(item, observer_id, captures)
-        init.matched = [observer_id]
-        item = _ReportItem(init, event, context)
-        if not self._build(item, captures):
-            return False
-        return self._enqueue(item, emit=True)
-
-    def _merge_locked(self, item: _ReportItem, observer_id: str, captures: Iterable[str]) -> bool:
-        """Adds an observer (and the parts it captures) to a buffered emit
-        item. The grown item is held to the same bounds as a new one: on a
-        violation it is restored and the emit is dropped and counted."""
-        saved = (list(item.init.matched), dict(item.parts), set(item.captured), item.json, item.bytes)
-        fn = item.init.function_id
-        reason: str | None = None
-        try:
-            item.init.matched.append(observer_id)
-            item.capture(captures)
-            item.render()
-        except (TypeError, ValueError, RecursionError) as error:
-            self._log_unencodable(fn, error)
-            reason = "unencodable"
-        if reason is None:
-            if item.bytes > self.limits.max_bytes or item.bytes + _FRAME_OVERHEAD > self.limits.max_frame_bytes:
-                reason = "TOO_LARGE"
-            elif self._bytes - saved[4] + item.bytes + self._host.unsent_bytes() > self.limits.max_bytes:
-                reason = "BUFFER_FULL"
-        if reason is None:
-            self._bytes += item.bytes - saved[4]
-            return True
-        item.init.matched, item.parts, item.captured, item.json, item.bytes = saved
-        if reason != "unencodable":
-            self._drop_locked(fn, reason)
-        return False
+    def frames(self, items: Iterable[tuple[ReportInit, Iterable[str]]]) -> list[tuple[str, int]]:
+        """The ``invocationsobserved`` frames of a routed call's items, each
+        under the frame limit and with its item count, for the client to send
+        ahead of the call's answer. An item too large on its own is dropped
+        and counted (``TOO_LARGE``)."""
+        frames: list[tuple[str, int]] = []
+        batch: list[str] = []
+        batch_bytes = _FRAME_OVERHEAD
+        for init, captures in items:
+            item = _ReportItem(init)
+            if not self._build(item, captures):
+                continue
+            if item.bytes + _FRAME_OVERHEAD > self.limits.max_frame_bytes:
+                self.drop(init.function_id, "TOO_LARGE")
+                continue
+            if batch and batch_bytes + 1 + item.bytes > self.limits.max_frame_bytes:
+                frames.append((f"{_FRAME_HEAD}{','.join(batch)}{_FRAME_TAIL}", len(batch)))
+                batch, batch_bytes = [], _FRAME_OVERHEAD
+            batch_bytes += (1 if batch else 0) + item.bytes
+            batch.append(item.json)
+        if batch:
+            frames.append((f"{_FRAME_HEAD}{','.join(batch)}{_FRAME_TAIL}", len(batch)))
+        return frames
 
     def _build(self, item: _ReportItem, captures: Iterable[str]) -> bool:
         try:
@@ -329,7 +310,7 @@ class Reporter:
         self._unencodable.add(function_id)
         log.error("Cannot encode an observed invocation of %s as JSON; it is not reported: %s", function_id, error)
 
-    def _enqueue(self, item: _ReportItem, emit: bool = False) -> bool:
+    def _enqueue(self, item: _ReportItem) -> bool:
         fn = item.init.function_id
         flush_now = False
         linger = False
@@ -345,8 +326,6 @@ class Reporter:
                 return False
             self._items.append(item)
             self._bytes += item.bytes
-            if emit:
-                self._open_emits.setdefault(id(item.event), []).append(item)
             if len(self._items) >= self.limits.batch_items:
                 flush_now = True
             elif not self._linger_scheduled:
@@ -370,7 +349,8 @@ class Reporter:
         by_reason[reason] = by_reason.get(reason, 0) + count
 
     def drop(self, function_id: str, reason: str, count: int = 1) -> None:
-        """Counts a report the SDK dropped (``BUFFER_FULL``, ``TOO_LARGE``)."""
+        """Counts a report the SDK dropped (``BUFFER_FULL``, ``TOO_LARGE``,
+        ``LATE_DELIVERY``, ``DISCONNECTED``)."""
         with self._lock:
             self._drop_locked(function_id, reason, count)
 
@@ -411,10 +391,6 @@ class Reporter:
                 return
             self._items = held
             self._bytes = sum(it.bytes for it in held)
-            self._open_emits = {}
-            for item in held:
-                if item.event is not ABSENT:
-                    self._open_emits.setdefault(id(item.event), []).append(item)
 
         frame: list[_ReportItem] = []
         frame_bytes = _FRAME_OVERHEAD
@@ -454,10 +430,6 @@ class Reporter:
                     self._drop_locked(newest.init.function_id, "BUFFER_FULL")
                 self._items = items
                 self._bytes = total
-                self._open_emits = {}
-                for item in items:
-                    if item.event is not ABSENT:
-                        self._open_emits.setdefault(id(item.event), []).append(item)
 
     def _lost(self, batch: list[_ReportItem], error: BaseException) -> None:
         """A flushed frame whose write failed: its items are counted, not lost silently."""
@@ -466,7 +438,7 @@ class Reporter:
         for item in batch:
             counts[item.init.function_id] = counts.get(item.init.function_id, 0) + 1
         for function_id, count in counts.items():
-            self.drop(function_id, "BUFFER_FULL", count)
+            self.drop(function_id, "DISCONNECTED", count)
 
     def send_stats(self, now: float | None = None) -> bool:
         """Sends ``localinvocationstats`` when there is anything to report;
@@ -520,10 +492,6 @@ class Reporter:
                 return
             self._items = kept
             self._bytes = sum(it.bytes for it in kept)
-            self._open_emits = {}
-            for item in kept:
-                if item.event is not ABSENT:
-                    self._open_emits.setdefault(id(item.event), []).append(item)
             self._drop_locked(function_id, "INACTIVE", dropped)
 
     def clear(self) -> None:
@@ -531,7 +499,6 @@ class Reporter:
         with self._lock:
             self._items = []
             self._bytes = 0
-            self._open_emits = {}
 
 
 def build_local_invocation_stats(

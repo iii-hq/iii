@@ -2,8 +2,9 @@
 that records every frame the SDK sends and lets a test push engine frames.
 
 It answers the SDK's ``engine::workers::register`` call with
-``workerregistered`` (with ``features``, without them for a pre-0.25 engine,
-or not at all), the way the engine does once a connection said who it is.
+``workerregistered`` (with the ``features`` of an observe v2 engine, of a 0.25
+engine, none for a pre-0.25 engine, or not at all), the way the engine does
+once a connection said who it is.
 """
 
 from __future__ import annotations
@@ -25,12 +26,15 @@ from iii.iii_constants import InitOptions
 
 Frame = dict[str, Any]
 
-ENGINE_FEATURES = ["observe.v1", "local-dispatch.v1"]
+ENGINE_FEATURES = ["observe.v1", "observe.v2", "local-dispatch.v1"]
+#: A 0.25 engine: observe, without observe.v2.
+V1_FEATURES = ["observe.v1", "local-dispatch.v1"]
 
 
 class FakeEngine:
     def __init__(self, features: list[str] | str | None = None, worker_id: str = "worker-1") -> None:
-        #: ``ENGINE_FEATURES`` (default), ``"legacy"`` (no features: a pre-0.25 engine), or ``"silent"``.
+        #: ``ENGINE_FEATURES`` (default), ``V1_FEATURES``, ``"legacy"`` (no features: a
+        #: pre-0.25 engine), or ``"silent"``.
         self.features: list[str] | str = ENGINE_FEATURES if features is None else features
         self.worker_id = worker_id
         self.connections: list[list[Frame]] = []
@@ -268,6 +272,29 @@ def observer_removed(function_id: str, revision: int, observer_id: str, namespac
         "namespace": namespace,
         "revision": revision,
         "id": observer_id,
+    }
+
+
+def invoke(function_id: str, data: Any, invocation_id: str | None = None, **fields: Any) -> Frame:
+    """A routed call as the engine forwards it (an ``invocation_id`` unless ``None`` is asked for)."""
+    frame: Frame = {"type": "invokefunction", "function_id": function_id, "data": data, **fields}
+    if invocation_id is not None:
+        frame["invocation_id"] = invocation_id
+    return frame
+
+
+def answers(engine: FakeEngine, invocation_id: str) -> list[Frame]:
+    """The ``invocationresult`` frames the SDK sent for one invocation."""
+    return [f for f in engine.frames_of("invocationresult") if f.get("invocation_id") == invocation_id]
+
+
+def rejected(function_id: str, code: str = "FUNCTION_NAMESPACE_CONFLICT", owner: str = "other") -> Frame:
+    return {
+        "type": "registrationrejected",
+        "code": code,
+        "namespace": "default",
+        "function_id": function_id,
+        "owner_worker_id": owner,
     }
 
 
