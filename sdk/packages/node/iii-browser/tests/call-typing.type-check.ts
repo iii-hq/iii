@@ -32,7 +32,7 @@ async function callTypingAssertions() {
   })
   void typed.message
 
-  // Input type alone now also works (output defaults to any).
+  // Input type alone works too (output defaults to any).
   const { observers } = await worker.call<{ include_internal: boolean }>({
     function_id: 'engine::observers::list',
     payload: { include_internal: false },

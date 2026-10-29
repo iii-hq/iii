@@ -117,6 +117,13 @@ target is a registered function; it receives the `Observed` envelope (`input`,
 `output` or `error`, `caller`, ...).
 
 ```typescript
+import type { Observed } from 'iii-browser-sdk'
+
+iii.registerFunction('ui::refresh-orders', async () => {
+  await ordersTable.reload()
+  return null
+})
+
 iii.registerFunction('ui::order-shipped', async ({ input }: Observed<{ order_id: string }>) => {
   showToast(`Order ${input?.order_id} shipped`)
   return null
