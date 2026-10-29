@@ -89,22 +89,22 @@ def setup(iii: IIIClient) -> None:
 
     jobs: dict[str, ScheduleArgs] = {}
 
+    @iii.on_observer_added("example::on-schedule")
     def start_job(obs: Observer) -> None:
         jobs[obs.id] = ScheduleArgs(**obs.args)
         print(f"[schedule] {obs.target} at {obs.args['at']}")
 
+    @iii.on_observer_removed("example::on-schedule")
     def stop_job(obs: Observer) -> None:
         jobs.pop(obs.id, None)
 
-    schedule = iii.register_function(
+    iii.register_function(
         "example::on-schedule",
         lambda fired: fired,
         description="One call per scheduled time. Observe it with args { at, timezone?, repeat_daily? }.",
         args_format=ScheduleArgs,
         private=True,
     )
-    schedule.on_observer_added(start_job)
-    schedule.on_observer_removed(stop_job)
 
     async def handle_schedule(envelope: dict[str, Any]) -> dict[str, Any]:
         return {"sent": True, "scheduled_at": envelope["input"]["scheduled_at"]}

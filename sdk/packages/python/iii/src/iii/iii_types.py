@@ -302,8 +302,8 @@ class ObserverAckMessage(_WireModel):
 
 
 class ObservedInvocationWire(_WireModel):
-    """One ``invocationsobserved`` item: the observers one ``next`` call of a
-    call delivered (``matched``), with the call it was given.
+    """One ``invocationsobserved`` item: a local call of this worker's
+    function and the observers iii's delivery matched (``matched``).
 
     ``input``, ``output``, ``error`` and ``metadata`` keep ``null`` apart from
     absent (``"output": null`` is a function that returned ``None``); check

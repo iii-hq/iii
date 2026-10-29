@@ -28,14 +28,20 @@ class FunctionRef:
     function id, so they stay in place across ``unregister()`` and a later
     registration of the same id.
 
+    The SDK loop runs on a thread of its own, so the engine may announce an
+    observer before a hook set here is in place: ``on_observer_added`` then
+    runs for that observer after it became active, and a warning says so.
+    For ``on_observer_added`` and ``on_observer_removed`` to run for every
+    observer, set them on the client by id before ``register_function``.
+
     Attributes:
         id: The function's id.
 
     Examples:
-        >>> on_tick = iii.register_function("cron::on-tick", lambda tick: tick, private=True)
-        >>> @on_tick.on_observer_added
+        >>> @iii.on_observer_added("cron::on-tick")
         ... def start(obs):
         ...     scheduler.retain(obs.args["expression"])
+        >>> on_tick = iii.register_function("cron::on-tick", lambda tick: tick, private=True)
         >>> on_tick.on_observer_match(lambda obs, call: obs.args["expression"] == call.input["expression"])
     """
 

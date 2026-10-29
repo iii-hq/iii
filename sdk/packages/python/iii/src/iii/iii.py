@@ -2069,8 +2069,11 @@ class III:
         An event source's handler returns the event it is called with. What
         this worker does when the function is observed is set with the hook
         methods (``on_observer_added``, ``on_observer_removed``,
-        ``on_observer_match``, ``on_observer_deliver``) on the returned
-        ``FunctionRef`` or on the client by id.
+        ``on_observer_match``, ``on_observer_deliver``) on the client by id or
+        on the returned ``FunctionRef``. Set ``on_observer_added`` and
+        ``on_observer_removed`` by id before registering so they run for every
+        observer: the engine may announce an observer before a hook set on the
+        ``FunctionRef`` is in place.
 
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when omitted or passed as ``None``
@@ -2605,7 +2608,8 @@ class III:
         with its policy (``max_fires``, expiry, ``max_in_flight``), metadata
         sidecar and loop guard, and the call resolves to the target's result.
         The payload goes as given: filters are applied where the worker
-        chooses observers (``next``, or ``obs.matches(call)``).
+        chooses observers: iii's delivery, or ``obs.matches(call)`` in an
+        ``on_observer_deliver``.
 
         Args:
             request: A ``CallRequest`` or dict with ``function_id`` (or
@@ -3129,9 +3133,11 @@ class III:
     ) -> ObserverHandle:
         """Observes a function: when ``source`` runs, ``target`` runs. Every
         call of the source function that passes ``source["filters"]`` invokes
-        ``target``, a registered function, with what the source's handler
-        returned (unless the worker that hosts the source decides otherwise in
-        its ``on_observer_deliver``).
+        ``target``, a registered function, with the ``Observed`` envelope
+        (``input``, ``output`` or ``error``, ``caller``, ...);
+        ``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
+        value instead. The worker that hosts the source can decide otherwise
+        in its ``on_observer_deliver``.
 
         Returns synchronously, also before the connection is up; the observer
         is replayed with the same id on every reconnect. Errors

@@ -30,18 +30,18 @@ print(result)  # {"message": "Hello, world!"}
 
 ## API
 
-| Operation                | Signature                                                                        | Description                                         |
-| ------------------------ | -------------------------------------------------------------------------------- | --------------------------------------------------- |
-| Initialize               | `register_worker(url, options?)`                                                 | Create an SDK instance and auto-connect             |
-| Register function        | `iii.register_function(id, handler, **options)`                                  | Register a function that can be called by name      |
-| Call (await result)      | `iii.call({"function_id": id, "payload": data})`                                 | Call a function and wait for the result             |
-| Call (fire-and-forget)   | `iii.call({"function_id": id, ..., "action": CallAction.Void()})`                | Fire-and-forget                                     |
-| Call (enqueue)           | `iii.call({"function_id": id, ..., "action": CallAction.Enqueue(queue="name")})` | Route the call through a named queue                |
-| Call through an observer | `iii.call({"observer": obs, "payload": data})`                                   | Run an observer's target with its policy            |
-| Observe                  | `iii.observe("fn::id", target, options?)`                                        | Run `target` when the function runs                 |
-| Observer hooks           | `iii.on_observer_added`, `on_observer_removed`, `on_observer_deliver`            | Decide what observing a function this worker hosts means |
-| Current invocation       | `iii.current_invocation()`                                                       | The invocation the running handler serves           |
-| Shutdown                 | `iii.shutdown()`                                                                 | Disconnect and stop background thread               |
+| Operation                | Signature                                                                                  | Description                                              |
+| ------------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| Initialize               | `register_worker(url, options?)`                                                           | Create an SDK instance and auto-connect                  |
+| Register function        | `iii.register_function(id, handler, **options)`                                            | Register a function that can be called by name           |
+| Call (await result)      | `iii.call({"function_id": id, "payload": data})`                                           | Call a function and wait for the result                  |
+| Call (fire-and-forget)   | `iii.call({"function_id": id, ..., "action": CallAction.Void()})`                          | Fire-and-forget                                          |
+| Call (enqueue)           | `iii.call({"function_id": id, ..., "action": CallAction.Enqueue(queue="name")})`           | Route the call through a named queue                     |
+| Call through an observer | `iii.call({"observer": obs, "payload": data})`                                             | Run an observer's target with its policy                 |
+| Observe                  | `iii.observe("fn::id", target, options?)`                                                  | Run `target` when the function runs                      |
+| Observer hooks           | `iii.on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` | Decide what observing a function this worker hosts means |
+| Current invocation       | `iii.current_invocation()`                                                                 | The invocation the running handler serves                |
+| Shutdown                 | `iii.shutdown()`                                                                           | Disconnect and stop background thread                    |
 
 `register_worker()` creates the SDK instance and auto-connects to the engine.
 `trigger` and `trigger_async` are `call` and `call_async` under their 0.25
