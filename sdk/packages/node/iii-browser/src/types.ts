@@ -100,10 +100,11 @@ export interface ISdk {
    * session. HTTP invocation configs are a Node.js SDK feature. The handler's
    * return value is what the function's observers observe.
    *
-   * A function that sets `args_format`, `private: true`, `observable: false`
-   * or an `onObserverDeliver` hook needs an engine with `observe.v2`: it is
-   * registered once the connection's engine advertised it, and against an
-   * older engine it stays unregistered (logged once, `UNSUPPORTED`).
+   * A function that sets `args_format`, `private: true`, `observable: false`,
+   * an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+   * with `observe.v2`: it is registered once the connection's engine
+   * advertised it, and against an older engine it stays unregistered (logged
+   * once, `UNSUPPORTED`).
    *
    * @param functionId - Unique function identifier
    * @param handler - Handler executed when the function is invoked
@@ -254,6 +255,9 @@ export interface ISdk {
    * while observers are active rebuilds the index from them. `null` removes
    * the hook.
    *
+   * A function with a match hook needs an engine with `observe.v2`: against
+   * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+   *
    * @example
    * ```typescript
    * // an observer of selector X gets the clicks on X
@@ -281,6 +285,9 @@ export interface ISdk {
    * their filters with `obs.matches(call)`. Without it, iii delivers every
    * call to the matching observers whose `on` and filters accept it, and the
    * caller gets the handler's result. `null` removes the hook.
+   *
+   * A function with a deliver hook needs an engine with `observe.v2`: against
+   * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
    *
    * The hook runs in the function's invocation: up to its first `await` in
    * its scope, and after it as the invocation the page falls back to while it

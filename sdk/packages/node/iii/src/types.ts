@@ -289,6 +289,9 @@ export interface IIIClient {
    * while observers are active rebuilds the index from them. `null` removes
    * the hook.
    *
+   * A function with a match hook needs an engine with `observe.v2`: against
+   * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+   *
    * @example
    * ```typescript
    * // an observer of expression X gets the ticks of expression X
@@ -316,6 +319,9 @@ export interface IIIClient {
    * their filters with `obs.matches(call)`. Without it, iii delivers every
    * call to the matching observers whose `on` and filters accept it, and the
    * caller gets the handler's result. `null` removes the hook.
+   *
+   * A function with a deliver hook needs an engine with `observe.v2`: against
+   * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
    *
    * @example
    * ```typescript

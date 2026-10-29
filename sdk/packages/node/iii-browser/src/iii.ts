@@ -394,10 +394,11 @@ class Sdk implements ISdk {
    * in-process once the engine confirmed it, unless `options.localDispatch`
    * is `false`.
    *
-   * A function that sets `args_format`, `private: true`, `observable: false`
-   * or an `onObserverDeliver` hook needs an engine with `observe.v2`: it is
-   * registered once the connection's engine advertised it, and against an
-   * older engine it stays unregistered (logged once, `UNSUPPORTED`).
+   * A function that sets `args_format`, `private: true`, `observable: false`,
+   * an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+   * with `observe.v2`: it is registered once the connection's engine
+   * advertised it, and against an older engine it stays unregistered (logged
+   * once, `UNSUPPORTED`).
    *
    * @param functionId - Unique function identifier.
    * @param handler - Handler executed when the function is invoked.
@@ -496,14 +497,19 @@ class Sdk implements ISdk {
     return ref
   }
 
-  /** What a function needs `observe.v2` for (decision 18): `args_format`, `private`, `observable: false`, a deliver hook. */
+  /**
+   * What a function needs `observe.v2` for (decision 18): `args_format`,
+   * `private`, `observable: false`, a match hook or a deliver hook.
+   */
   private needsObserveV2(functionId: string, fn: RemoteFunctionData): boolean {
     const { message } = fn
+    const hooks = this.functionHooks.get(functionId)
     return (
       message.args_format !== undefined ||
       message.private === true ||
       message.observable === false ||
-      this.functionHooks.get(functionId)?.deliver !== undefined
+      hooks?.match !== undefined ||
+      hooks?.deliver !== undefined
     )
   }
 
@@ -544,11 +550,11 @@ class Sdk implements ISdk {
   }
 
   /**
-   * Decides the registration again once a deliver hook may have changed
-   * whether the function needs `observe.v2` (set or removed, or set before
-   * `WorkerRegistered`): against an engine without it, a registered function
-   * is unregistered (and one held back is registered once it no longer needs
-   * it).
+   * Decides the registration again once a match or deliver hook may have
+   * changed whether the function needs `observe.v2` (set or removed, or set
+   * before `WorkerRegistered`): against an engine without it, a registered
+   * function is unregistered (and one held back is registered once it no
+   * longer needs it).
    */
   private reconcileRegistration(functionId: string): void {
     const fn = this.functions.get(functionId)
@@ -569,7 +575,7 @@ class Sdk implements ISdk {
     if (this.unsupportedWarned.has(functionId)) return
     this.unsupportedWarned.add(functionId)
     this.logWarn(
-      `UNSUPPORTED: function "${functionId}" needs observe.v2 (args_format, private, observable: false or onObserverDeliver), which this engine does not advertise; it stays unregistered until the worker connects to an engine with observe.v2.`,
+      `UNSUPPORTED: function "${functionId}" needs observe.v2 (args_format, private, observable: false, onObserverMatch or onObserverDeliver), which this engine does not advertise; it stays unregistered until the worker connects to an engine with observe.v2.`,
     )
   }
 
@@ -626,7 +632,8 @@ class Sdk implements ISdk {
     if (!fn) return
     if (kind === 'added' && hook) fn.observe.catchUp('fn')
     if (kind === 'match') fn.observe.matchChanged()
-    if (kind === 'deliver') this.reconcileRegistration(functionId)
+    // A match or deliver hook decides whether the function needs observe.v2.
+    if (kind === 'match' || kind === 'deliver') this.reconcileRegistration(functionId)
   }
 
   private setWorkerHook<K extends 'added' | 'removed'>(
@@ -1835,7 +1842,7 @@ class Sdk implements ISdk {
       const msg = decodeFunctionRegistered(message)
       const fn = this.functions.get(msg.id)
       // Only a registration sent on this connection is confirmed: not one
-      // unregistered since (a deliver hook against an engine without observe.v2).
+      // unregistered since (a match or deliver hook against an engine without observe.v2).
       if (fn && fn.sentEpoch === this.connectionEpoch) {
         // A standby function took over the id: its hooks run for every observer in the set.
         this.stopStandby(msg.id)
@@ -1845,7 +1852,10 @@ class Sdk implements ISdk {
       }
     } else if (msgType === MessageType.ObserverAdded) {
       const msg = decodeObserverAdded(message)
-      this.functions.get(msg.function_id)?.observe.onObserverAdded(msg)
+      const fn = this.functions.get(msg.function_id)
+      // An observer of a registration this connection withdrew (or never
+      // sent) is ignored, as its functionregistered is: no hook, no ack.
+      if (fn && fn.sentEpoch === this.connectionEpoch) fn.observe.onObserverAdded(msg)
     } else if (msgType === MessageType.ObserverRemoved) {
       const msg = decodeObserverRemoved(message)
       this.functions.get(msg.function_id)?.observe.onObserverRemoved(msg)
@@ -1872,7 +1882,7 @@ class Sdk implements ISdk {
    * `WorkerRegistered` told this connection what the engine supports. The
    * functions that need `observe.v2` go out now, or stay unregistered without
    * it; without it, one sent earlier on this connection that has gained a
-   * deliver hook since is unregistered. With `observe.v1` the observers are
+   * match or deliver hook since is unregistered. With `observe.v1` the observers are
    * replayed (after the functions) and held reports flushed; without it
    * `observe()` fails with `UNSUPPORTED` and observer hooks are inactive.
    */
