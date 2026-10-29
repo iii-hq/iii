@@ -1215,8 +1215,8 @@ impl Project {
             None
         };
         file.containers
-            .keys()
-            .map(|key| {
+            .iter()
+            .map(|(key, container)| {
                 let record = inner
                     .as_ref()
                     .and_then(|inner| inner.state.containers.get(key))
@@ -1234,10 +1234,8 @@ impl Project {
                 ContainerStatus {
                     container: key.clone(),
                     state,
-                    version: file
-                        .containers
-                        .get(key)
-                        .and_then(|container| container.version_label()),
+                    version: container.version_label(),
+                    requested: container.requested().map(str::to_owned),
                     pid: record.filter(|_| running).map(|record| record.pid),
                     owned: inner
                         .as_ref()
@@ -1338,6 +1336,13 @@ pub struct ContainerStatus {
     /// Locked package version, or `local` for a `path://` worker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Registry selector of a `package://` worker as the project declares it
+    /// in `worker-compose.yaml`: a tag such as `latest`, a semver range, or an
+    /// exact version. `compose::update worker=<name>` resolves it again, and
+    /// `version` is present only while the lock holds a result for this
+    /// selector. Absent for a `path://` worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Whether this daemon owns the process (started it and can stop it).

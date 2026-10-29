@@ -158,10 +158,10 @@ with it and making basic changes to the `worker-compose.yaml` file.
 | ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `compose::up`       | `file`, `container`, `frozen`                               | An operation result.                                                       |
 | `compose::down`     | `file`, `container`                                         | An operation result.                                                       |
-| `compose::status`   | `file`                                                      | The project's namespace, file, state directory, daemon pid, worker states. |
+| `compose::status`   | `file`                                                      | Namespace, file, state directory, daemon pid, host targets, worker states. |
 | `compose::ps`       | `file`                                                      | The daemon pid and the operating-system processes of its projects.        |
 | `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
-| `compose::list`     | nothing                                                     | The daemon name, its namespace, its pid, and every project it holds.       |
+| `compose::list`     | nothing                                                     | The daemon name, namespace, pid, host targets, and every project it holds. |
 | `compose::validate` | `file`                                                      | A validation report.                                                       |
 | `compose::add`      | `file`, `workers`                                           | What the edit did, changed workers restarted, and new workers started.     |
 | `compose::remove`   | `file`, `worker`                                            | The worker removed, its targeted stop, and the idempotent `up`.            |
@@ -472,10 +472,55 @@ the next time the worker is restarted.
 ### Checking status
 
 `compose::status` reports each declared worker with its `state`, its `version` (the locked package
-version, or `local` for a `path://` worker), the active process `pid` when one exists, an `owned`
-flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
+version, or `local` for a `path://` worker), its `requested` selector, the active process `pid` when
+one exists, an `owned` flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
 `false` for a worker this daemon has knowledge of but does not manage (ie. was not started by the
 compose daemon).
+
+`requested` is the `version` a `package://` worker declares in `worker-compose.yaml`, after variable
+expansion: a tag such as `latest`, a semver range, or an exact version. It is the selector that
+`compose::update worker=<name>` resolves again, so the release it selects now is the version a plain
+update moves to; a release outside it needs `worker=<name>@<selector>`. `version` is present only
+while the lock holds a result for that selector, so a worker whose selector changed in the file
+reports no `version` until Compose resolves it. A `path://` worker reports no `requested`.
+
+The response also carries the platform Compose resolves packages for. `target` is the target triple
+the daemon sends first as `target` to the registry's `POST /resolve`. `targets` lists every triple
+the host runs, preferred first: a static musl build of iii on a glibc Linux host lists
+`x86_64-unknown-linux-musl`, then `x86_64-unknown-linux-gnu`, and Compose resolves for the second
+only when the registry answers `unsupported_platform` and lists it as available. A client that
+checks the registry for updates itself can follow the same order to find a build Compose would
+install.
+
+```json
+{
+  "namespace": "default",
+  "file": "/srv/app/worker-compose.yaml",
+  "state_dir": "/srv/app/.iii/compose/default",
+  "daemon_pid": 4242,
+  "target": "x86_64-unknown-linux-musl",
+  "targets": ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+  "containers": [
+    {
+      "container": "state",
+      "state": "ready",
+      "version": "0.22.8",
+      "requested": "latest",
+      "pid": 81234,
+      "owned": true,
+      "log_path": "/srv/app/.iii/compose/default/logs/state.log"
+    },
+    {
+      "container": "api",
+      "state": "ready",
+      "version": "local",
+      "pid": 81240,
+      "owned": true,
+      "log_path": "/srv/app/.iii/compose/default/logs/api.log"
+    }
+  ]
+}
+```
 
 #### Worker states
 
@@ -525,7 +570,8 @@ iii trigger compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
 
 ### Listing projects
 
-`compose::list` returns the daemon name, its namespace, its pid, and other project information.
+`compose::list` returns the daemon name, its namespace, its pid, the same `target` and `targets` as
+`compose::status`, and every project it holds with its namespace, file, and worker states.
 
 ### Validating a file
 
