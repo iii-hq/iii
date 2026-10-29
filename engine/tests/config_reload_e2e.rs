@@ -373,7 +373,6 @@ async fn first_seed_strips_config_block_and_moves_value_to_store() {
         name: fs
         config:
           directory: {store_dir}
-      ttl_seconds: 0
   - name: iii-worker-manager
     config:
       host: 127.0.0.1
@@ -471,7 +470,6 @@ async fn already_persisted_value_also_strips_stale_config_block() {
         name: fs
         config:
           directory: {store_dir}
-      ttl_seconds: 0
   - name: iii-worker-manager
     config:
       host: 127.0.0.1
@@ -553,7 +551,6 @@ async fn external_worker_block_stripped_from_store_value_alone() {
         name: fs
         config:
           directory: {store_dir}
-      ttl_seconds: 0
   - name: iii-worker-manager
     config:
       host: 127.0.0.1

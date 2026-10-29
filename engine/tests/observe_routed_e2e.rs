@@ -1320,16 +1320,18 @@ async fn a_re_registration_with_changed_formats_is_checked_again() {
     assert_eq!(error["reason"]["code"], "INVALID_FILTER_PATH");
 }
 
+/// A private function is observable: its observers receive the calls its
+/// host makes.
 #[tokio::test]
-async fn an_owner_delivered_function_is_not_evaluated_on_routed_calls() {
+async fn a_private_functions_own_calls_are_observed() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = connect(&t, "http", true).await;
     http.register_function_with(json!({
-        "type": "registerfunction", "id": "http::on-request", "observe": { "delivery": "owner" }
+        "type": "registerfunction", "id": "http::on-request", "private": true
     }))
     .await;
     registered(&t.engine, "default", "http::on-request").await;
-    let _users = host(&t, "users", true, &["users::get"]).await;
+    let mut users = host(&t, "users", true, &["users::get"]).await;
     let mut watcher = connect(&t, "watcher", true).await;
     watcher
         .observe_active(observer(
@@ -1339,54 +1341,83 @@ async fn an_owner_delivered_function_is_not_evaluated_on_routed_calls() {
         ))
         .await;
 
-    assert!(
-        t.engine
-            .observers
-            .watch("default", "http::on-request")
-            .is_none(),
-        "the owner picks this function's events"
-    );
-    // Only its owner invokes it (calling itself remotely); the routed hook
-    // leaves the call alone.
+    // Its host, calling itself remotely: the routed hook evaluates the call.
     let call = http.call("http::on-request", json!({ "path": "/" })).await;
-    http.serve("http::on-request", json!({})).await;
+    http.serve("http::on-request", json!({ "path": "/" })).await;
     http.result(call).await;
-    assert_eq!(t.engine.observers.evaluated(), 0);
-    assert_eq!(fires(&t, "route"), 0);
+    let activation = users.invoked("users::get").await;
+    assert_eq!(activation["data"]["input"]["path"], "/");
+    users.reply(&activation, Value::Null).await;
+    assert_eq!(fires(&t, "route"), 1);
 }
 
+/// A 0.25 `observe` object asking for a delivery other than `auto` refuses
+/// the registration with `UNSUPPORTED`, and an `args_format` that is not a
+/// JSON Schema with `INVALID_ARGS_FORMAT`. A 0.25 `args_format` beside
+/// `delivery: auto` is ignored.
 #[tokio::test]
-async fn an_invalid_observe_descriptor_refuses_the_registration() {
+async fn unsupported_and_invalid_registrations_are_refused() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut worker = connect(&t, "worker", true).await;
-    for (id, observe) in [
-        ("bad::delivery", json!({ "delivery": "broadcast" })),
+    for (id, fields, code) in [
+        (
+            "bad::delivery",
+            json!({ "observe": { "delivery": "broadcast" } }),
+            "UNSUPPORTED",
+        ),
+        (
+            "bad::owner",
+            json!({ "observe": { "delivery": "owner", "args_format": { "type": "object" } } }),
+            "UNSUPPORTED",
+        ),
         (
             "bad::args",
-            json!({ "delivery": "auto", "args_format": { "type": "object" } }),
+            json!({ "args_format": { "type": "not-a-type" } }),
+            "INVALID_ARGS_FORMAT",
         ),
     ] {
-        worker
-            .register_function_with(
-                json!({ "type": "registerfunction", "id": id, "observe": observe }),
-            )
-            .await;
+        let mut frame = json!({ "type": "registerfunction", "id": id });
+        for (key, value) in fields.as_object().unwrap() {
+            frame[key] = value.clone();
+        }
+        worker.register_function_with(frame).await;
         let rejected = worker
             .expect("registrationrejected", |f| {
                 f["type"] == "registrationrejected" && f["function_id"] == id
             })
             .await;
-        assert_eq!(rejected["code"], "INVALID_OBSERVE_DESCRIPTOR");
+        assert_eq!(rejected["code"], code, "{id}");
+        assert!(t.engine.functions.get("default", id).is_none(), "{id}");
     }
-    worker
-        .register_function_with(json!({
-            "type": "registerfunction", "id": "good::owner",
-            "observe": { "delivery": "owner", "args_format": { "type": "object" } }
-        }))
-        .await;
-    registered(&t.engine, "default", "good::owner").await;
-    assert!(t.engine.functions.get("default", "bad::delivery").is_none());
-    assert!(t.engine.functions.get("default", "bad::args").is_none());
+    for frame in [
+        json!({
+            "type": "registerfunction", "id": "good::auto",
+            "observe": { "delivery": "auto", "args_format": { "type": "object" } }
+        }),
+        json!({
+            "type": "registerfunction", "id": "good::args",
+            "args_format": { "type": "object" }
+        }),
+    ] {
+        let id = frame["id"].as_str().unwrap().to_string();
+        worker.register_function_with(frame).await;
+        registered(&t.engine, "default", &id).await;
+    }
+    assert!(
+        t.engine
+            .observers
+            .options("default", "good::auto")
+            .args_format
+            .is_none(),
+        "a 0.25 args_format is ignored"
+    );
+    assert!(
+        t.engine
+            .observers
+            .options("default", "good::args")
+            .args_format
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -1651,7 +1682,6 @@ async fn the_observers_builtins_list_get_and_dispose() {
     let info = &observers[0];
     assert_eq!(info["id"], "listed");
     assert_eq!(info["state"], "active");
-    assert_eq!(info["delivery"], "auto");
     assert_eq!(info["target"]["function_id"], "sink::orders");
     assert_eq!(info["worker"]["worker_name"], "sink");
     assert_eq!(

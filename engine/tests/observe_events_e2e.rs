@@ -1,7 +1,6 @@
-//! Engine-hosted event sources (README §9), over real WebSockets:
-//! `engine::on-functions-changed` and `engine::on-workers-changed` are
-//! observed like any function, and the engine emits their events where it
-//! fires `engine::functions-available` / `engine::workers-available`.
+//! Engine-hosted sources over real WebSockets: `engine::on-functions-changed`
+//! and `engine::on-workers-changed` are observed like any function, and the
+//! engine calls them once per change of its functions or workers.
 
 mod observe_support;
 
@@ -114,13 +113,6 @@ async fn an_event_source_is_observed_not_called() {
         t.engine.observers.fires("obs-every"),
         Some(0),
         "a call is not one of its events"
-    );
-    assert!(
-        t.engine
-            .observers
-            .watch_routed("default", "engine::on-workers-changed")
-            .is_none(),
-        "the routed hook leaves event sources alone"
     );
 }
 

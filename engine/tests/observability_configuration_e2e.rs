@@ -49,7 +49,7 @@ async fn build_harness(dir: &std::path::Path) -> Harness {
     ) as Arc<dyn ConfigurationAdapter>;
     let engine = Arc::new(Engine::new());
 
-    let configuration = ConfigurationWorker::for_test(engine.clone(), adapter, 0);
+    let configuration = ConfigurationWorker::for_test(engine.clone(), adapter);
     configuration
         .initialize()
         .await
@@ -113,8 +113,9 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
     }
 }
 
-/// Poll until `predicate` returns true or the deadline elapses. Trigger
-/// fan-out is spawned, so observable effects are eventually consistent.
+/// Poll until `predicate` returns true or the deadline elapses. The
+/// configuration listener spawns its apply, so observable effects are
+/// eventually consistent.
 async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
     // ponytail: 20s, not 5s — the happy path returns the moment `predicate`
     // holds (polled every 25ms), so this only bounds the failure case. 5s was
@@ -217,7 +218,7 @@ async fn disabled_boot_still_registers_the_configuration_entry() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    let _worker =
+    let worker =
         start_observability_worker(&harness, json!({ "enabled": false, "logs_max_count": 222 }))
             .await;
 
@@ -230,23 +231,18 @@ async fn disabled_boot_still_registers_the_configuration_entry() {
     assert_eq!(stored["value"]["enabled"], false);
     assert_eq!(stored["value"]["logs_max_count"], 222);
 
-    // The change handler is registered too, so a later edit is observable.
-    assert!(
-        harness
-            .engine
-            .functions
-            .get(
-                iii::protocol::DEFAULT_NAMESPACE,
-                "iii-observability::on-config-change"
-            )
-            .is_some(),
-        "the on-config-change handler must be registered on a disabled boot"
-    );
+    // The configuration listener is in place too, so a later edit applies.
+    set_value(&harness, json!({ "enabled": false, "logs_max_count": 333 })).await;
+    wait_for(
+        || worker.current_config().logs_max_count == Some(333),
+        "a later edit to apply on a disabled boot",
+    )
+    .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn live_field_hot_applies_through_the_trigger() {
+async fn live_field_hot_applies_through_the_configuration_listener() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
@@ -254,7 +250,7 @@ async fn live_field_hot_applies_through_the_trigger() {
 
     set_value(&harness, json!({ "logs_sampling_ratio": 0.25 })).await;
 
-    // Applied via the real configuration:updated fan-out, no manual driving.
+    // Applied by the real configuration listener, no manual driving.
     wait_for(
         || (worker.current_config().logs_sampling_ratio - 0.25).abs() < f64::EPSILON,
         "logs_sampling_ratio to hot-apply",
@@ -268,7 +264,7 @@ async fn alert_rules_hot_swap_and_prune() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
 
-    let _worker = start_observability_worker(&harness, json!({})).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
 
     set_value(
         &harness,
@@ -281,10 +277,10 @@ async fn alert_rules_hot_swap_and_prune() {
         }),
     )
     .await;
-    // Drive the handler synchronously so the assertion cannot time out waiting
-    // on async trigger fan-out (that 5s window flakes under slow coverage
+    // Apply synchronously so the assertion cannot time out waiting on the
+    // spawned listener (that 5s window flakes under slow coverage
     // instrumentation); the other config tests use the same pattern.
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     wait_for(
         || {
@@ -298,7 +294,7 @@ async fn alert_rules_hot_swap_and_prune() {
 
     // Removing every rule prunes them (and their states) again.
     set_value(&harness, json!({ "alerts": [] })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || {
             iii::workers::observability::metrics::get_alert_manager()
@@ -392,13 +388,9 @@ async fn restart_tier_change_applies_live_fields_and_reports_rest() {
     )
     .await;
 
-    // Drive the handler synchronously so the assertion cannot pass vacuously
-    // before the trigger fan-out ran.
-    harness
-        .engine
-        .call("iii-observability::on-config-change", json!({}))
-        .await
-        .expect("config-change handler is invocable");
+    // Apply synchronously so the assertion cannot pass vacuously before the
+    // configuration listener ran.
+    drive_apply(&worker).await;
 
     assert!(
         !worker.current_config().logs_console_output,
@@ -411,12 +403,13 @@ async fn restart_tier_change_applies_live_fields_and_reports_rest() {
     );
 }
 
-// ── Edge-case coverage: log-trigger reactivation, ingest gates, live store ──
+// ── Edge-case coverage: on-log reactivation, ingest gates, live store ──
 // limits, schema set-rejection, and concurrent-edit convergence. ────────────
 
-/// Register a `log` trigger that bumps a counter on each fan-out, filtered to
-/// `level`. Returns the hit counter. Call AFTER `start_observability_worker`
-/// (the worker registers the `log` trigger type in `initialize`).
+/// Observe `observability::on-log` with a function that bumps a counter on
+/// each record of severity `level` (`all` for every record). Returns the hit
+/// counter. Call AFTER `start_observability_worker` (the worker registers
+/// `observability::on-log` in `initialize`).
 async fn register_log_recorder(harness: &Harness, fn_id: &str, level: &str) -> Arc<AtomicUsize> {
     let hits = Arc::new(AtomicUsize::new(0));
     let counter = hits.clone();
@@ -436,23 +429,24 @@ async fn register_log_recorder(harness: &Harness, fn_id: &str, level: &str) -> A
             }
         }),
     );
+    let default = iii::protocol::DEFAULT_NAMESPACE.to_string();
     harness
         .engine
-        .trigger_registry
-        .register_trigger(iii::trigger::Trigger {
-            id: format!("{fn_id}-trigger"),
-            trigger_type: iii::workers::observability::LOG_TRIGGER_TYPE.to_string(),
-            function_id: fn_id.to_string(),
-            config: json!({ "level": level }),
-            worker_id: None,
+        .observers
+        .observe_as_engine(iii::observer::EngineObserver {
+            id: format!("{fn_id}-observer"),
+            function: (
+                default.clone(),
+                iii::observer::events::OBSERVABILITY_ON_LOG.to_string(),
+            ),
+            args: json!({}),
+            filters: (level != "all")
+                .then(|| json!({ "input.severity_text": { "$eq": level.to_uppercase() } })),
+            target: (default, fn_id.to_string()),
+            deliver: iii::protocol::Deliver::Input,
             metadata: None,
-            namespace: "default".to_string(),
-            trigger_namespace: None,
-            home_namespace: iii::protocol::default_namespace(),
-            provider_namespace: iii::protocol::default_namespace(),
         })
-        .await
-        .expect("register log trigger");
+        .expect("observe observability::on-log");
     hits
 }
 
@@ -479,21 +473,17 @@ async fn ingest_log(harness: &Harness, level_fn: &str, message: &str) {
         .expect("log ingest call");
 }
 
-/// Drive `apply_config` synchronously through the real handler, so an
-/// assertion cannot pass vacuously before the trigger fan-out ran.
-async fn drive_apply(harness: &Harness) {
-    harness
-        .engine
-        .call("iii-observability::on-config-change", json!({}))
-        .await
-        .expect("config-change handler is invocable");
+/// Apply the stored entry synchronously, as a change of it does, so an
+/// assertion cannot pass vacuously before the configuration listener ran.
+async fn drive_apply(worker: &ObservabilityWorker) {
+    worker.on_configuration_change().await;
 }
 
 #[tokio::test]
 #[serial]
-async fn logs_reenable_reactivates_the_log_trigger_pipeline() {
+async fn logs_reenable_reactivates_the_on_log_pipeline() {
     // Boot with logs disabled (observability itself stays enabled, so the
-    // background task set — including the parked log-trigger subscriber — runs).
+    // background task set — including the parked log subscriber — runs).
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
     let worker = start_observability_worker(&harness, json!({ "logs_enabled": false })).await;
@@ -501,56 +491,56 @@ async fn logs_reenable_reactivates_the_log_trigger_pipeline() {
     let hits = register_log_recorder(&harness, "test::reactivate-recorder", "all").await;
 
     // While disabled, the ingest gate drops the log before any broadcast, so
-    // the trigger never fires.
+    // the observer never runs.
     ingest_log(&harness, "engine::log::info", "while-disabled").await;
     assert_does_not_happen_for(
         || hits.load(Ordering::SeqCst) > 0,
         Duration::from_millis(150),
-        "log trigger fired while logs were disabled",
+        "the on-log observer ran while logs were disabled",
     )
     .await;
 
     // Enable logs at runtime; the F3 reactivation path revives the store in the
-    // LIMITS tier and respawns the log-trigger subscriber.
+    // LIMITS tier and respawns the log subscriber.
     set_value(&harness, json!({ "logs_enabled": true })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().logs_enabled == Some(true),
         "logs_enabled:true to apply",
     )
     .await;
 
-    // The reactivated subscriber now delivers ingested logs to the trigger —
-    // no engine restart required.
+    // The reactivated subscriber calls observability::on-log for ingested
+    // logs — no engine restart required.
     ingest_log(&harness, "engine::log::info", "after-enable").await;
     wait_for(
         || hits.load(Ordering::SeqCst) >= 1,
-        "log trigger to fire after reactivation",
+        "the on-log observer to run after reactivation",
     )
     .await;
 }
 
 #[tokio::test]
 #[serial]
-async fn logs_disable_after_enable_stops_trigger_delivery() {
+async fn logs_disable_after_enable_stops_on_log_delivery() {
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
     let worker = start_observability_worker(&harness, json!({ "logs_enabled": true })).await;
 
     let hits = register_log_recorder(&harness, "test::disable-recorder", "all").await;
 
-    // Enabled: the trigger fires.
+    // Enabled: the observer runs.
     ingest_log(&harness, "engine::log::info", "enabled-1").await;
     wait_for(
         || hits.load(Ordering::SeqCst) >= 1,
-        "log trigger to fire while enabled",
+        "the on-log observer to run while enabled",
     )
     .await;
     let after_enabled = hits.load(Ordering::SeqCst);
 
     // Disable at runtime: the per-call ingest gate drops subsequent logs.
     set_value(&harness, json!({ "logs_enabled": false })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().logs_enabled == Some(false),
         "logs_enabled:false to apply",
@@ -561,7 +551,7 @@ async fn logs_disable_after_enable_stops_trigger_delivery() {
     assert_does_not_happen_for(
         || hits.load(Ordering::SeqCst) > after_enabled,
         Duration::from_millis(150),
-        "log trigger fired after logs were disabled at runtime",
+        "the on-log observer ran after logs were disabled at runtime",
     )
     .await;
 }
@@ -575,7 +565,7 @@ async fn logs_max_count_retune_bounds_the_live_store() {
     clear_log_storage();
 
     set_value(&harness, json!({ "logs_max_count": 3 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().logs_max_count == Some(3),
         "logs_max_count to apply",
@@ -603,7 +593,7 @@ async fn logs_sampling_ratio_zero_drops_then_restores() {
     clear_log_storage();
 
     set_value(&harness, json!({ "logs_sampling_ratio": 0.0 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().logs_sampling_ratio == 0.0,
         "sampling_ratio 0 to apply",
@@ -622,7 +612,7 @@ async fn logs_sampling_ratio_zero_drops_then_restores() {
 
     // Restore full sampling -> logs flow again.
     set_value(&harness, json!({ "logs_sampling_ratio": 1.0 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || (worker.current_config().logs_sampling_ratio - 1.0).abs() < f64::EPSILON,
         "sampling_ratio 1 to apply",
@@ -656,7 +646,7 @@ async fn schema_rejects_out_of_range_log_bounds() {
         json!({ "logs_batch_size": 10_000, "logs_flush_interval_ms": 100 }),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().logs_batch_size == Some(10_000),
         "accepted boundary value to apply",
@@ -677,12 +667,9 @@ async fn concurrent_applies_converge_under_apply_lock() {
     set_value(&harness, json!({ "logs_max_count": 77 })).await;
     let mut handles = Vec::new();
     for _ in 0..5 {
-        let engine = harness.engine.clone();
+        let worker = worker.clone();
         handles.push(tokio::spawn(async move {
-            engine
-                .call("iii-observability::on-config-change", json!({}))
-                .await
-                .expect("concurrent on-config-change call must succeed");
+            worker.on_configuration_change().await;
         }));
     }
     for h in handles {
@@ -715,7 +702,7 @@ async fn failed_log_level_reload_is_not_advertised_and_keeps_retrying() {
     // EnvFilter parse in reload_log_level, so the install always fails —
     // deterministically, independent of whether a reload handle exists.
     set_value(&harness, json!({ "level": "engine=notalevel" })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     assert_eq!(
         worker.current_config().level,
         None,
@@ -723,7 +710,7 @@ async fn failed_log_level_reload_is_not_advertised_and_keeps_retrying() {
     );
 
     // Re-driving applies again: still reverted, never converged to the bad value.
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     assert_eq!(
         worker.current_config().level,
         None,
@@ -771,7 +758,7 @@ async fn memory_max_spans_retune_bounds_the_live_span_store() {
     storage.clear();
 
     set_value(&harness, json!({ "memory_max_spans": 2 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().memory_max_spans == Some(2),
         "memory_max_spans to apply",
@@ -800,7 +787,7 @@ async fn collapse_rules_hot_apply_through_config() {
         json!({ "collapse_spans": [{ "name": "wrapper *" }] }),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().collapse_spans.len() == 1,
         "collapse rule to hot-apply",
@@ -809,7 +796,7 @@ async fn collapse_rules_hot_apply_through_config() {
 
     // Clearing the rules recompiles the cache back to empty.
     set_value(&harness, json!({ "collapse_spans": [] })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().collapse_spans.is_empty(),
         "collapse rules to clear",
@@ -828,7 +815,7 @@ async fn sampler_rebuilds_on_trace_sampling_ratio_change() {
     // SWAP-tier otel::refresh_sampler() path; assert it applies and the worker
     // stays healthy.
     set_value(&harness, json!({ "sampling_ratio": 0.1 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().sampling_ratio == Some(0.1),
         "sampler rebuild to apply",
@@ -852,7 +839,7 @@ async fn logs_exporter_respawns_on_batch_size_change() {
     .await;
 
     set_value(&harness, json!({ "logs_batch_size": 200 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || worker.current_config().logs_batch_size == Some(200),
         "logs exporter respawn to apply the new batch size",
@@ -923,7 +910,7 @@ async fn trace_storage_enable_disable_and_reenable_hot_apply() {
     let archive_dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
     // Legacy seed: no trace_storage block, memory-only boot.
-    let _worker = start_observability_worker(&harness, json!({})).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
     let storage = ensure_span_storage();
     storage.clear();
 
@@ -941,7 +928,7 @@ async fn trace_storage_enable_disable_and_reenable_hot_apply() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     assert_eq!(trace_store::status()["archive"], "healthy");
     trace_store::flush().expect("flush newly enabled archive");
@@ -963,7 +950,7 @@ async fn trace_storage_enable_disable_and_reenable_hot_apply() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     assert_eq!(trace_store::status()["archive"], "disabled");
     assert!(trace_store::flush().is_err(), "no archive to flush");
     assert!(archive_dir.path().join("traces.sqlite3").is_file());
@@ -978,7 +965,7 @@ async fn trace_storage_enable_disable_and_reenable_hot_apply() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     assert_eq!(trace_store::status()["archive"], "healthy");
     assert_eq!(
         trace_store::status()["completeness"],
@@ -1004,7 +991,7 @@ async fn trace_storage_directory_change_swaps_archive_and_backfills() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
-    let _worker = start_observability_worker(&harness, json!({})).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
     let storage = ensure_span_storage();
     storage.clear();
 
@@ -1016,7 +1003,7 @@ async fn trace_storage_directory_change_swaps_archive_and_backfills() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     storage.add_spans(vec![trace_span("swap-trace", "s", 1_000)]);
     trace_store::flush().expect("persist into directory A");
 
@@ -1028,7 +1015,7 @@ async fn trace_storage_directory_change_swaps_archive_and_backfills() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     assert_eq!(trace_store::status()["archive"], "healthy");
     assert_eq!(
@@ -1062,7 +1049,7 @@ async fn trace_storage_limits_only_change_does_not_reopen_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let archive_dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
-    let _worker = start_observability_worker(&harness, json!({})).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
     let storage = ensure_span_storage();
     storage.clear();
 
@@ -1074,7 +1061,7 @@ async fn trace_storage_limits_only_change_does_not_reopen_the_store() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     let before = otel::get_trace_disk_storage().expect("archive installed");
 
     set_value(
@@ -1086,7 +1073,7 @@ async fn trace_storage_limits_only_change_does_not_reopen_the_store() {
         }}),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     let after = otel::get_trace_disk_storage().expect("archive still installed");
     assert!(
@@ -1105,12 +1092,12 @@ async fn legacy_config_without_trace_storage_stays_memory_only() {
     trace_store::reset();
     let dir = tempfile::tempdir().unwrap();
     let harness = build_harness(dir.path()).await;
-    let _worker = start_observability_worker(&harness, json!({})).await;
+    let worker = start_observability_worker(&harness, json!({})).await;
     let _storage = ensure_span_storage();
 
     // An unrelated edit on a legacy (no trace_storage block) config must not
     // conjure an archive.
     set_value(&harness, json!({ "logs_max_count": 256 })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     assert_eq!(trace_store::status()["archive"], "disabled");
 }

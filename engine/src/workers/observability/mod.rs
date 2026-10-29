@@ -1359,6 +1359,13 @@ impl ObservabilityWorker {
             .unwrap_or_else(|| self._config.clone())
     }
 
+    /// Re-applies the stored `iii-observability` entry now, as a change of it
+    /// does.
+    #[doc(hidden)]
+    pub async fn on_configuration_change(&self) {
+        configuration::on_config_change(self).await;
+    }
+
     /// True while the worker is started and has not been destroyed.
     ///
     /// `worker_shutdown_rx` is set at the top of `start_background_tasks`
@@ -4359,24 +4366,23 @@ mod tests {
         let all_payloads: Arc<std::sync::Mutex<Vec<Value>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        for (fid, sink) in [("test::trace-all", all_payloads.clone())] {
-            engine.register_function_handler(
-                crate::engine::RegisterFunctionRequest {
-                    function_id: fid.to_string(),
-                    description: None,
-                    request_format: None,
-                    response_format: None,
-                    metadata: None,
-                },
-                crate::engine::Handler::new(move |payload: Value| {
-                    let sink = sink.clone();
-                    async move {
-                        sink.lock().unwrap().push(payload);
-                        FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
-                    }
-                }),
-            );
-        }
+        let sink = all_payloads.clone();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                function_id: "test::trace-all".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            crate::engine::Handler::new(move |payload: Value| {
+                let sink = sink.clone();
+                async move {
+                    sink.lock().unwrap().push(payload);
+                    FunctionResult::Success(Some(serde_json::json!({ "ok": true })))
+                }
+            }),
+        );
 
         observe_spans(&engine, "test::trace-all");
 

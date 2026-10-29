@@ -196,8 +196,7 @@ async fn discovery_function_denied_under_restricted_expose() {
     );
 }
 
-/// The new `::info` and `registered-triggers::*` discovery IDs added in the
-/// engine_fn rework must be gated identically to the existing list IDs.
+/// The `::info` discovery IDs must be gated identically to the list IDs.
 #[tokio::test]
 async fn new_discovery_functions_denied_under_restricted_expose() {
     ensure_default_meter();
@@ -205,9 +204,7 @@ async fn new_discovery_functions_denied_under_restricted_expose() {
     let new_discovery_ids = [
         "engine::functions::info",
         "engine::workers::info",
-        "engine::triggers::info",
-        "engine::registered-triggers::list",
-        "engine::registered-triggers::info",
+        "engine::observers::get",
     ];
 
     for id in new_discovery_ids {
@@ -444,6 +441,9 @@ async fn middleware_runs_for_non_infrastructure_engine_prefix() {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                args_format: None,
+                private: false,
+                observable: true,
                 observe: None,
             },
         )

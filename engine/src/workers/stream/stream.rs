@@ -383,7 +383,8 @@ impl Worker for StreamWorker {
 
         // Store the receiver only once the server is live: `apply_config`
         // refuses to rebind/swap while this is `None`, so a stray
-        // on-config-change cannot act during (or instead of) the boot sequence.
+        // configuration change cannot act during (or instead of) the boot
+        // sequence.
         *self
             .shutdown_rx
             .lock()
@@ -514,6 +515,12 @@ impl StreamWorker {
             .unwrap_or_default();
         let adapter = Self::resolve_adapter(&engine, &parsed).await?;
         Ok(Self::build(engine, parsed, adapter))
+    }
+
+    /// Re-applies the stored `iii-stream` entry now, as a change of it does.
+    #[doc(hidden)]
+    pub async fn on_configuration_change(&self) {
+        super::configuration::on_config_change(self).await;
     }
 
     /// Spawn the axum WebSocket server for an already-bound listener and return

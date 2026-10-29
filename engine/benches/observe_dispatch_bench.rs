@@ -1,4 +1,6 @@
-//! What observing a function costs the engine per call (iii 0.25 observe).
+//! What observing a function costs the engine per call, for the calls the
+//! engine evaluates itself (engine-hosted functions, hosts without
+//! `observe.v2`).
 //!
 //! The observed function and the observers' target both run in-process, so
 //! the measurement is the engine's own work: the call, the routed-path hook
@@ -7,7 +9,7 @@
 //! so fan-out is paid for inside the measured time, not left as a backlog;
 //! calls go in batches that wait for the evaluator, so none is dropped.
 //!
-//! - `observe_dispatch/auto/<n>`: `n` observers without filters on the
+//! - `observe_dispatch/default/<n>`: `n` observers without filters on the
 //!   function: every call activates all of them (0 is the unobserved baseline).
 //! - `observe_dispatch/filtered/<n>`: `n` observers each filtering on its own
 //!   value of `input.k`: every call matches exactly one, so what grows with `n`
@@ -126,7 +128,7 @@ fn observe_dispatch(c: &mut Criterion) {
 
     for n in [0usize, 1, 8, 64] {
         let bench = rt.block_on(setup(n, false));
-        group.bench_with_input(BenchmarkId::new("auto", n), &n, |b, &n| {
+        group.bench_with_input(BenchmarkId::new("default", n), &n, |b, &n| {
             b.to_async(&rt)
                 .iter_custom(|iters| run(&bench, iters, n as u64, 0));
         });
