@@ -46,13 +46,6 @@ pub struct AuthResult {
     /// Takes precedence over allowed.
     #[serde(default)]
     pub forbidden_functions: Vec<String>,
-    /// Trigger type IDs the worker may register triggers for.
-    /// When `None`, all types are allowed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_trigger_types: Option<Vec<String>>,
-    /// Whether the worker may register new trigger types. Defaults to `false`.
-    #[serde(default)]
-    pub allow_trigger_type_registration: bool,
     /// Whether the worker may register new functions. Defaults to `true`.
     #[serde(default = "default_true")]
     pub allow_function_registration: bool,
@@ -73,80 +66,10 @@ fn default_context() -> Value {
     Value::Object(Default::default())
 }
 
-/// Input passed to the `on_trigger_type_registration_function_id` hook
-/// when a worker attempts to register a new trigger type through the RBAC port.
-/// Return an [`OnTriggerTypeRegistrationResult`] with the (possibly mapped)
-/// fields, or return an error to deny the registration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct OnTriggerTypeRegistrationInput {
-    /// ID of the trigger type being registered.
-    pub trigger_type_id: String,
-    /// Human-readable description of the trigger type.
-    pub description: String,
-    /// Auth context from `AuthResult.context` for this session.
-    pub context: Value,
-}
-
-/// Result returned from the `on_trigger_type_registration_function_id` hook.
-/// Omitted fields keep the original value from the registration request.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct OnTriggerTypeRegistrationResult {
-    /// Mapped trigger type ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_type_id: Option<String>,
-    /// Mapped description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// Wire-compat default for [`OnTriggerRegistrationInput::namespace`] when an
+/// Wire-compat default for [`OnFunctionRegistrationInput::namespace`] when an
 /// older engine omits the field.
 fn default_namespace_field() -> String {
     "default".to_string()
-}
-
-/// Input passed to the `on_trigger_registration_function_id` hook
-/// when a worker attempts to register a trigger through the RBAC port.
-/// Return an [`OnTriggerRegistrationResult`] with the (possibly mapped)
-/// fields, or return an error to deny the registration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct OnTriggerRegistrationInput {
-    /// ID of the trigger being registered.
-    pub trigger_id: String,
-    /// Trigger type identifier.
-    pub trigger_type: String,
-    /// ID of the function this trigger is bound to.
-    pub function_id: String,
-    /// Trigger-specific configuration.
-    pub config: Value,
-    /// Arbitrary metadata attached to the trigger.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-    /// Namespace the trigger's target resolves in (explicit, or `default` when
-    /// absent). The same function id can exist in several namespaces, so the hook
-    /// needs this to authorize per target namespace.
-    #[serde(default = "default_namespace_field")]
-    pub namespace: String,
-    /// Auth context from `AuthResult.context` for this session.
-    pub context: Value,
-}
-
-/// Result returned from the `on_trigger_registration_function_id` hook.
-/// Omitted fields keep the original value from the registration request.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct OnTriggerRegistrationResult {
-    /// Mapped trigger ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_id: Option<String>,
-    /// Mapped trigger type.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_type: Option<String>,
-    /// Mapped function ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub function_id: Option<String>,
-    /// Mapped trigger configuration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config: Option<Value>,
 }
 
 /// Input passed to the `on_function_registration_function_id` hook
@@ -167,6 +90,16 @@ pub struct OnFunctionRegistrationInput {
     /// namespaces, so the hook needs this to authorize per namespace.
     #[serde(default = "default_namespace_field")]
     pub namespace: String,
+    /// Only the registering worker may call the function.
+    #[serde(default)]
+    pub private: bool,
+    /// Whether the function may be observed. An older engine omits it:
+    /// `true`.
+    #[serde(default = "default_true")]
+    pub observable: bool,
+    /// JSON Schema of the function's observer args, when it takes any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_format: Option<Value>,
     /// Auth context from `AuthResult.context` for this session.
     pub context: Value,
 }
@@ -184,6 +117,15 @@ pub struct OnFunctionRegistrationResult {
     /// Mapped metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    /// Replaces the registration's `private`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private: Option<bool>,
+    /// Replaces the registration's `observable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observable: Option<bool>,
+    /// Replaces the registration's `args_format`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_format: Option<Value>,
 }
 
 #[cfg(test)]
@@ -198,10 +140,40 @@ mod tests {
         assert!(result.namespaces.is_empty());
         assert_eq!(result.allowed_functions, Vec::<String>::new());
         assert_eq!(result.forbidden_functions, Vec::<String>::new());
-        assert_eq!(result.allowed_trigger_types, None);
-        assert!(!result.allow_trigger_type_registration);
         assert!(result.allow_function_registration);
         assert_eq!(result.context, Value::Object(Default::default()));
         assert_eq!(result.function_registration_prefix, None);
+    }
+
+    #[test]
+    fn function_registration_input_carries_the_v2_fields() {
+        let input: OnFunctionRegistrationInput = serde_json::from_value(serde_json::json!({
+            "function_id": "cron::on-tick",
+            "namespace": "default",
+            "private": true,
+            "observable": true,
+            "args_format": { "type": "object" },
+            "context": {},
+        }))
+        .unwrap();
+        assert!(input.private && input.observable);
+        assert_eq!(input.args_format, Some(serde_json::json!({ "type": "object" })));
+
+        // an older engine sends none of them
+        let input: OnFunctionRegistrationInput = serde_json::from_value(serde_json::json!({
+            "function_id": "orders::create",
+            "context": {},
+        }))
+        .unwrap();
+        assert!(!input.private && input.observable && input.args_format.is_none());
+
+        let result = OnFunctionRegistrationResult {
+            observable: Some(false),
+            ..OnFunctionRegistrationResult::default()
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            serde_json::json!({ "observable": false })
+        );
     }
 }

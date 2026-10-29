@@ -329,12 +329,6 @@ fn _ensure_renamed_telemetry_alias_removed() {}
 fn _ensure_stream_events_not_top_level() {}
 
 /// ```compile_fail
-/// use iii_sdk::{StreamTriggerConfig, StreamJoinLeaveTriggerConfig};
-/// ```
-#[allow(dead_code)]
-fn _ensure_stream_trigger_configs_not_top_level() {}
-
-/// ```compile_fail
 /// use iii_sdk::{UpdateOp, StreamGetInput};
 /// ```
 #[allow(dead_code)]
