@@ -23,8 +23,8 @@ var (
 	ErrResponseClosed = errors.New("iii/helpers/http: the response is closed")
 )
 
-// HandlerFunc is an HTTP-style handler for a function behind an http trigger, the
-// callback of the Node http() helper. Adapt it with [Wrap].
+// HandlerFunc is an HTTP-style handler for the target of an http::on-request observer,
+// the callback of the Node http() helper. Adapt it with [Wrap].
 //
 // Write the response to res and return nil to stream it, or return a [Response] (any
 // non-nil value with status_code, headers and body) to answer buffered without touching
@@ -301,8 +301,8 @@ func abortWriter(w *iii.ChannelWriter) {
 	}
 }
 
-// Wrap adapts an HTTP-style handler into an [iii.Handler] for a function behind an http
-// trigger; it is the Go counterpart of the Node http() helper. Register the result with
+// Wrap adapts an HTTP-style handler into an [iii.Handler] for the target of an
+// http::on-request observer; it is the Go counterpart of the Node http() helper. Register the result with
 // [iii.Client.RegisterFunction].
 //
 // For each invocation Wrap decodes the [InternalRequest], opens the request body channel

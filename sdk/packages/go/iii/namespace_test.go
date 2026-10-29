@@ -66,14 +66,13 @@ func TestNamespaceResolution(t *testing.T) {
 	})
 }
 
-// TestTriggerSerializesNamespace verifies a TriggerRequest.Namespace reaches the
-// wire on the invokefunction frame, so the caller can route to a namespace (and a
-// provider can re-dispatch a namespaced TriggerConfig).
-func TestTriggerSerializesNamespace(t *testing.T) {
+// TestCallSerializesNamespace verifies a CallRequest.Namespace reaches the
+// wire on the invokefunction frame, so the caller can route to a namespace.
+func TestCallSerializesNamespace(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
-	_, _ = c.Trigger(context.Background(), TriggerRequest{
+	_, _ = c.Call(context.Background(), CallRequest{
 		FunctionID: "state::get",
 		Action:     VoidAction(),
 		Namespace:  "analytics",
@@ -96,13 +95,13 @@ func TestTriggerSerializesNamespace(t *testing.T) {
 	}
 }
 
-// TestTriggerOmitsNamespaceWhenAbsent keeps the default path wire-clean: no
+// TestCallOmitsNamespaceWhenAbsent keeps the default path wire-clean: no
 // namespace field when the request declares none.
-func TestTriggerOmitsNamespaceWhenAbsent(t *testing.T) {
+func TestCallOmitsNamespaceWhenAbsent(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
-	_, _ = c.Trigger(context.Background(), TriggerRequest{
+	_, _ = c.Call(context.Background(), CallRequest{
 		FunctionID: "state::get",
 		Action:     VoidAction(),
 	})
@@ -123,13 +122,13 @@ func TestTriggerOmitsNamespaceWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestEngineTriggerDefaultsToDefaultNamespace verifies that an engine-owned
+// TestEngineCallDefaultsToDefaultNamespace verifies that an engine-owned
 // builtin cannot inherit or otherwise leak into a project namespace.
-func TestEngineTriggerDefaultsToDefaultNamespace(t *testing.T) {
+func TestEngineCallDefaultsToDefaultNamespace(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m, WithNamespace("orders"))
 
-	_, _ = c.Trigger(context.Background(), TriggerRequest{
+	_, _ = c.Call(context.Background(), CallRequest{
 		FunctionID: FnCreateChannel,
 		Action:     VoidAction(),
 	})
@@ -151,13 +150,13 @@ func TestEngineTriggerDefaultsToDefaultNamespace(t *testing.T) {
 	}
 }
 
-// TestExplicitNamespaceWinsForEngineTrigger preserves strict explicit routing
+// TestExplicitNamespaceWinsForEngineCall preserves strict explicit routing
 // for callers that deliberately target a test or proxy namespace.
-func TestExplicitNamespaceWinsForEngineTrigger(t *testing.T) {
+func TestExplicitNamespaceWinsForEngineCall(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m, WithNamespace("orders"))
 
-	_, _ = c.Trigger(context.Background(), TriggerRequest{
+	_, _ = c.Call(context.Background(), CallRequest{
 		FunctionID: FnCreateChannel,
 		Action:     VoidAction(),
 		Namespace:  "sandbox",
@@ -182,7 +181,7 @@ func TestExplicitNamespaceWinsForEngineTrigger(t *testing.T) {
 
 // TestImplicitCallInheritsTheWorkerNamespace: absent means this worker's
 // namespace, as in the other SDKs. Engine-owned builtins stay in default (see
-// TestEngineTriggerDefaultsToDefaultNamespace), and so does configuration::*,
+// TestEngineCallDefaultsToDefaultNamespace), and so does configuration::*,
 // which belongs to the engine-owned configuration worker. Explicit always wins.
 func TestImplicitCallInheritsTheWorkerNamespace(t *testing.T) {
 	for _, tc := range []struct{ name, functionID, explicit, want string }{
@@ -195,7 +194,7 @@ func TestImplicitCallInheritsTheWorkerNamespace(t *testing.T) {
 			m := newMockEngine(t)
 			c := connectClient(t, m, WithNamespace("orders"))
 
-			_, _ = c.Trigger(context.Background(), TriggerRequest{
+			_, _ = c.Call(context.Background(), CallRequest{
 				FunctionID: tc.functionID,
 				Action:     VoidAction(),
 				Namespace:  tc.explicit,
@@ -212,28 +211,33 @@ func TestImplicitCallInheritsTheWorkerNamespace(t *testing.T) {
 	}
 }
 
-// TestTriggerRegistrationInheritsTheWorkerNamespace: a trigger names a function,
-// and the function a worker registers lands in the worker's namespace, so an
-// unset binding namespace must follow it. Naming another one stays possible.
-func TestTriggerRegistrationInheritsTheWorkerNamespace(t *testing.T) {
-	for _, tc := range []struct{ name, explicit, want string }{
-		{"unset inherits", "", "orders"},
-		{"explicit wins", "default", "default"},
+// TestObserverInheritsTheWorkerNamespace: an observer names two functions, and the
+// functions a worker registers land in the worker's namespace, so an unset source or
+// target namespace follows it. Naming another one stays possible.
+func TestObserverInheritsTheWorkerNamespace(t *testing.T) {
+	c := New("ws://unused.invalid", WithNamespace("orders"))
+	t.Cleanup(func() { _ = c.Close() })
+	for _, tc := range []struct {
+		name     string
+		source   Source
+		opts     ObserverOptions
+		wantFrom string
+		wantTo   string
+	}{
+		{"unset inherits", Source{FunctionID: "api::process"}, ObserverOptions{}, "orders", "orders"},
+		{"explicit wins", Source{FunctionID: "api::process", Namespace: "default"}, ObserverOptions{TargetNamespace: "default"}, "default", "default"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newMockEngine(t)
-			c := connectClient(t, m, WithNamespace("orders"))
-
-			if err := c.RegisterTriggerNamespaced("t1", "cron", "api::process", tc.explicit, nil); err != nil {
-				t.Fatalf("RegisterTriggerNamespaced: %v", err)
+			h, err := c.Observe(tc.source, "api::audit", tc.opts)
+			if err != nil {
+				t.Fatal(err)
 			}
-
-			got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
-				return countType(msgs, string(MsgRegisterTrigger)) >= 1
-			}, 2*time.Second)
-			reg := firstOfType(got, string(MsgRegisterTrigger))
-			if ns := stringField(reg, "namespace"); ns != tc.want {
-				t.Errorf("namespace = %q, want %q", ns, tc.want)
+			var msg ObserveMessage
+			if err := json.Unmarshal(h.frame, &msg); err != nil {
+				t.Fatal(err)
+			}
+			if msg.Source.Namespace != tc.wantFrom || msg.Target.Namespace != tc.wantTo {
+				t.Errorf("source namespace %q, target namespace %q, want %q and %q", msg.Source.Namespace, msg.Target.Namespace, tc.wantFrom, tc.wantTo)
 			}
 		})
 	}
@@ -397,15 +401,15 @@ func TestBlankCallNamespaceIsRefused(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
-	if err := c.RegisterTriggerNamespaced("t1", "cron", "api::process", "  ", nil); err == nil {
-		t.Fatal("a blank namespace on a binding must be refused")
+	if _, err := c.Observe(Source{FunctionID: "api::process", Namespace: "  "}, "api::audit"); err == nil {
+		t.Fatal("a blank namespace on an observer must be refused")
 	} else if !strings.Contains(err.Error(), "namespace is empty") {
 		t.Fatalf("unexpected reason: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "api::ping", Namespace: " "})
+	_, err := c.Call(ctx, CallRequest{FunctionID: "api::ping", Namespace: " "})
 	if err == nil {
 		t.Fatal("a blank namespace on a call must be refused")
 	}
@@ -420,7 +424,7 @@ func TestAbsentCallNamespaceIsNotRefused(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
-	if _, err := c.RegisterTrigger(RegisterTriggerInput{ID: "t1", Type: "cron", FunctionID: "api::process"}); err != nil {
+	if _, err := c.Observe(Source{FunctionID: "api::process"}, "api::audit"); err != nil {
 		t.Fatalf("no namespace given is not a mistake: %v", err)
 	}
 }

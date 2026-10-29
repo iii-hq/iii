@@ -134,7 +134,7 @@ func TestMultiValueJSON(t *testing.T) {
 func TestRequestDecodesWorkerPayload(t *testing.T) {
 	raw := `{"query_params":{"tag":["a","b"],"q":"go"},"path_params":{"id":"7"},` +
 		`"headers":{"accept":"*/*","x-multi":["1","2"]},"path":"/items/:id","method":"PUT",` +
-		`"body":{"name":"widget"},"trigger":{"type":"http","path":"/items/7","method":"PUT"},` +
+		`"body":{"name":"widget"},` +
 		`"request_body":{"channel_id":"c1","access_key":"k1","direction":"read"},` +
 		`"response":{"channel_id":"c2","access_key":"k2","direction":"write"}}`
 	var req Request[struct {

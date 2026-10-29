@@ -2,6 +2,7 @@ package iii
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,7 @@ func wedgedClient(t *testing.T) (*Client, *functionObservers) {
 	c.mu.Lock()
 	c.state, c.registeredOnConnection, c.epoch = StateConnected, true, 1
 	c.engineFeatures[FeatureObserveV1] = true
-	f := newFunctionObservers(c, "w::fn", nil, true)
+	f := newFunctionObservers(c, "w::fn", true, false)
 	f.confirmedEpoch, f.syncedEpoch = 1, 1
 	c.functions["w::fn"] = registeredFunction{message: &RegisterFunctionMessage{ID: "w::fn"}, handler: echoHandler, observe: f}
 	c.mu.Unlock()
@@ -104,9 +105,7 @@ func TestObserveIsNotSentOnAConnectionThatIsNotRegistered(t *testing.T) {
 // the writer took them.
 func TestReporterCountsBatchesInHandOff(t *testing.T) {
 	host := &blockingReportHost{fakeReportHost: fakeReportHost{online: true, status: reportReady}, release: make(chan struct{}), entered: make(chan struct{}, 1)}
-	one := newReportItem(testItem("f", 1))
-	one.capture([]Capture{CaptureInput})
-	_ = one.render()
+	one, _ := newReportItem(testItem("f", 1), []Capture{CaptureInput}, true)
 	limits := defaultReporterLimits
 	limits.maxBytes = 2*len(one.json) + reportFrameOverhead + len(one.json)/2
 	r := newReporter(host, limits)
@@ -147,22 +146,20 @@ func (h *blockingReportHost) sendReport(epoch uint64, frame []byte) bool {
 }
 
 // A FUNCTION_NAMESPACE_CONFLICT while an observer's add is running: once the hook
-// returns, the observer is treated as removed (OnObserverRemoved, no success ack).
+// returns, the observer is treated as removed (the removed hook, no success ack).
 func TestConflictDuringAnAddRemovesTheObserver(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var log hookLog
-	registerOwner(t, fe, c, "cf::fn", &ObserveHooks{
-		Delivery: DeliveryOwner,
-		OnObserverAdded: func(_ context.Context, obs *Observer) error {
-			log.add(obs.ID)
-			close(entered)
-			<-release
-			return nil
-		},
-		OnObserverRemoved: func(_ context.Context, obs *Observer) { log.remove(obs.ID) },
+	c.OnObserverAddedFor("cf::fn", func(_ context.Context, obs *Observer) error {
+		log.add(obs.ID)
+		close(entered)
+		<-release
+		return nil
 	})
+	c.OnObserverRemovedFor("cf::fn", func(_ context.Context, obs *Observer) { log.remove(obs.ID) })
+	registerHost(t, c, "cf::fn", echoHandler)
 	fe.add("cf::fn", observerInfo("o1", "x::y", "", ""))
 	<-entered
 	fe.send(&RegistrationRejectedMessage{Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: "cf::fn", OwnerWorkerID: "other"})
@@ -180,18 +177,16 @@ func TestConflictDuringAnAddRemovesTheObserver(t *testing.T) {
 	}
 }
 
-// A Reject racing the end of OnObserverAdded is never lost: the observer ends
+// A Reject racing the end of the added hook is never lost: the observer ends
 // inactive, rejected.
 func TestRejectRacingTheEndOfTheHookIsNotLost(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	registerOwner(t, fe, c, "rr2::fn", &ObserveHooks{
-		Delivery: DeliveryOwner,
-		OnObserverAdded: func(_ context.Context, obs *Observer) error {
-			go obs.Reject("GONE", "rejected right as the hook returns")
-			return nil
-		},
+	c.OnObserverAddedFor("rr2::fn", func(_ context.Context, obs *Observer) error {
+		go obs.Reject("GONE", "rejected right as the hook returns")
+		return nil
 	})
+	registerHost(t, c, "rr2::fn", echoHandler)
 	for i := 0; i < 30; i++ {
 		id := fmt.Sprintf("o%d", i)
 		fe.add("rr2::fn", observerInfo(id, "x::y", "", ""))
@@ -207,14 +202,14 @@ func TestRejectRacingTheEndOfTheHookIsNotLost(t *testing.T) {
 	waitUntil(t, "nothing active", func() bool { return !c.IsObserved("rr2::fn") })
 }
 
-// The SDK keeps its own copy of what it reads from an Observer: an owner changing the
+// The SDK keeps its own copy of what it reads from an Observer: a host changing the
 // exported fields (even concurrently) does not change delivery (go test -race).
-func TestOwnerMutatingObserverFieldsChangesNothing(t *testing.T) {
+func TestHostMutatingObserverFieldsChangesNothing(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	owner := newCronOwner(t, fe, c, "mut::fn")
-	addCronObserver(t, fe, "mut::fn", "o1", "x", "", CaptureInput)
-	obs := owner.observers("x")[0]
+	registerHost(t, c, "mut::fn", echoHandler)
+	addObserver(t, fe, "mut::fn", observerInfo("o1", "local::target", `{"expression":"x"}`, "", CaptureInput))
+	obs := c.Observers("mut::fn")[0]
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -227,15 +222,15 @@ func TestOwnerMutatingObserverFieldsChangesNothing(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 50; i++ {
-		if ok, err := obs.Emit(context.Background(), map[string]int{"n": i}); !ok || err != nil {
-			t.Fatalf("Emit: %v %v", ok, err)
+		if _, err := c.Call(context.Background(), CallRequest{FunctionID: "mut::fn", Payload: json.RawMessage(fmt.Sprintf(`{"n":%d}`, i))}); err != nil {
+			t.Fatalf("Call: %v", err)
 		}
 	}
 	wg.Wait()
 	items := fe.waitItems(1)
 	for _, it := range items {
 		if it.Matched[0] != "o1" || it.Input == nil {
-			t.Fatalf("item %+v: the owner's changes reached delivery", it)
+			t.Fatalf("item %+v: the host's changes reached delivery", it)
 		}
 	}
 }

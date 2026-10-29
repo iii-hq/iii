@@ -25,7 +25,7 @@ import "time"
 // worker gauges, and the observability helpers (which use the client started last),
 // always use the client's own providers, so they reach the engine either way. Spans the
 // application creates with its own provider are parented to the invocation span
-// through ctx and exported wherever that provider exports. Trigger and inbound
+// through ctx and exported wherever that provider exports. Call and inbound
 // invocations always propagate W3C Trace Context and Baggage, whatever the global
 // propagator.
 type OtelConfig struct {

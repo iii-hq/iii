@@ -43,8 +43,8 @@ func TestStaleObserveFramesAreDroppedAtWriteTime(t *testing.T) {
 	}
 }
 
-// Report frames handed to a writer that never wrote them are counted INACTIVE.
-func TestUnwrittenReportFramesAreCountedInactive(t *testing.T) {
+// Report frames handed to a writer that never wrote them are counted DISCONNECTED.
+func TestUnwrittenReportFramesAreCountedDisconnected(t *testing.T) {
 	host := &fakeReportHost{online: true, status: reportReady}
 	c := New("ws://unused.invalid")
 	t.Cleanup(func() { _ = c.Close() })
@@ -67,7 +67,7 @@ func TestUnwrittenReportFramesAreCountedInactive(t *testing.T) {
 	for _, d := range stats.DroppedReports {
 		got[d.FunctionID+"/"+d.Reason] = d.Count
 	}
-	if got["a::fn/INACTIVE"] != 2 || got["b::fn/INACTIVE"] != 1 {
+	if got["a::fn/DISCONNECTED"] != 2 || got["b::fn/DISCONNECTED"] != 1 {
 		t.Errorf("drops %+v", stats.DroppedReports)
 	}
 }
@@ -151,7 +151,7 @@ func TestHandlerMetadataEditsDoNotReachTheReport(t *testing.T) {
 		return nil, nil
 	})
 	fe.waitAck("md::fn", "o1", 1)
-	trigger(t, c, TriggerRequest{FunctionID: "md::fn", Metadata: json.RawMessage(`{"m":"original"}`)})
+	call(t, c, CallRequest{FunctionID: "md::fn", Metadata: json.RawMessage(`{"m":"original"}`)})
 	if it := fe.waitItems(1)[0]; string(it.Metadata) != `{"m":"original"}` {
 		t.Errorf("reported metadata %s", it.Metadata)
 	}
@@ -183,12 +183,12 @@ func TestOverflowingNumbersAreReportedAsNull(t *testing.T) {
 		return json.RawMessage(`{"out":-1e999}`), nil
 	})
 	fe.waitAck("big::fn", "o1", 1)
-	trigger(t, c, TriggerRequest{FunctionID: "big::fn", Payload: json.RawMessage(`{"in":` + huge + `}`), Metadata: json.RawMessage(`{"m":1E400}`)})
-	owner := newCronOwner(t, fe, c, "big::owner")
-	addCronObserver(t, fe, "big::owner", "e1", "x", "", CaptureInput)
-	if ok, err := owner.observers("x")[0].Emit(context.Background(), json.RawMessage(`{"event":1e400}`)); !ok || err != nil {
-		t.Fatalf("Emit: %v %v", ok, err)
-	}
+	call(t, c, CallRequest{FunctionID: "big::fn", Payload: json.RawMessage(`{"in":` + huge + `}`), Metadata: json.RawMessage(`{"m":1E400}`)})
+	// an event source: the event is reported once, as input
+	fe.setObservers("big::source", 1, observerInfo("e1", "x::y", "", "", CaptureInput, CaptureOutput))
+	registerLocal(t, c, "big::source", Identity)
+	fe.waitAck("big::source", "e1", 1)
+	call(t, c, CallRequest{FunctionID: "big::source", Payload: json.RawMessage(`{"event":1e400}`)})
 	items := fe.waitItems(2)
 	for _, d := range fe.frames(MsgInvocationsObserved) {
 		raw, _ := MarshalMessage(d.InvocationsObserved)
@@ -201,12 +201,12 @@ func TestOverflowingNumbersAreReportedAsNull(t *testing.T) {
 	for _, it := range items {
 		byFn[it.FunctionID] = it
 	}
-	local, emit := byFn["big::fn"], byFn["big::owner"]
+	local, source := byFn["big::fn"], byFn["big::source"]
 	if string(local.Input) != `{"in":null}` || string(local.Output) != `{"out":null}` || string(local.Metadata) != `{"m":null}` {
 		t.Errorf("local item: input %s output %s metadata %s", local.Input, local.Output, local.Metadata)
 	}
-	if string(emit.Input) != `{"event":null}` {
-		t.Errorf("emit item input %s", emit.Input)
+	if string(source.Input) != `{"event":null}` || source.Output != nil || !source.OutputIsInput {
+		t.Errorf("source item: input %s output %s output_is_input %v", source.Input, source.Output, source.OutputIsInput)
 	}
 }
 
@@ -248,7 +248,7 @@ func TestWriterDrainsOutboundBeforeAnObserve(t *testing.T) {
 
 // A teardown while a report send is blocked on the connection's full reply channel
 // returns, and every report is accounted for exactly once: the frame already in the
-// channel is counted INACTIVE, the blocked one goes back to the buffer.
+// channel is counted DISCONNECTED, the blocked one goes back to the buffer.
 func TestTeardownWithABlockedReportSend(t *testing.T) {
 	c, _ := wedgedClient(t)
 	t.Cleanup(func() { _ = c.Close() })
@@ -288,10 +288,10 @@ func TestTeardownWithABlockedReportSend(t *testing.T) {
 
 	c.reporter.mu.Lock()
 	defer c.reporter.mu.Unlock()
-	if n := c.reporter.drops[dropKey{"w::fn", dropInactive}]; n != 1 {
-		t.Errorf("INACTIVE %d, want 1 (the frame left in the channel, once)", n)
+	if n := c.reporter.drops[dropKey{"w::fn", dropDisconnected}]; n != 1 {
+		t.Errorf("DISCONNECTED %d, want 1 (the frame left in the channel, once)", n)
 	}
-	if len(c.reporter.items) != 1 || c.reporter.items[0].wire.InvocationID != "inv-7" || c.reporter.sending != 0 {
+	if len(c.reporter.items) != 1 || c.reporter.items[0].invocationID != "inv-7" || c.reporter.sending != 0 {
 		t.Errorf("the blocked item: %d items buffered, sending %d", len(c.reporter.items), c.reporter.sending)
 	}
 }

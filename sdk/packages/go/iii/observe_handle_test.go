@@ -300,7 +300,7 @@ func TestObserveRefusesBadRequests(t *testing.T) {
 }
 
 // SDK-PARITY decision 27: state listeners never run on the read loop: a listener that
-// blocks (or calls Trigger) does not hold up the engine's other messages, and changes
+// blocks (or calls Call) does not hold up the engine's other messages, and changes
 // reach a listener in order.
 func TestStateListenersDoNotRunOnTheReadLoop(t *testing.T) {
 	fe := newFakeEngine(t)

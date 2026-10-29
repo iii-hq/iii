@@ -168,7 +168,6 @@ func workerPayload(t *testing.T, withRefs bool) json.RawMessage {
 		"path":         "/upload/:id",
 		"method":       "POST",
 		"body":         nil,
-		"trigger":      map[string]string{"type": "http", "path": "/upload/42", "method": "POST"},
 	}
 	if withRefs {
 		m["request_body"] = iii.StreamChannelRef{ChannelID: "req-ch", AccessKey: "req key", Direction: iii.ChannelRead}

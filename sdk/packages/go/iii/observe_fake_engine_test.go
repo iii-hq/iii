@@ -11,13 +11,14 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
 
 // fakeEngine scripts the engine side of observe on top of mockEngine: it greets every
-// connection with workerregistered (with or without observe.v1), answers each
+// connection with workerregistered (observe.v1 and observe.v2 by default), answers each
 // registerfunction with functionregistered (the function's current observer set), and
-// lets a test push observeradded / observerremoved / observe results and reply to the
-// worker's calls.
+// lets a test push observeradded / observerremoved / observe results, route calls to
+// the worker and reply to the worker's calls.
 type fakeEngine struct {
 	t *testing.T
 	m *mockEngine
@@ -30,6 +31,9 @@ type fakeEngine struct {
 	revisions     map[string]uint64
 	connects      int
 	onFrame       func(msg map[string]json.RawMessage)
+	// conflicts is how many registrations of a function id to refuse with
+	// FUNCTION_NAMESPACE_CONFLICT before confirming one.
+	conflicts map[string]int
 	// gate, when set, holds workerregistered on the next connections until closed.
 	gate chan struct{}
 }
@@ -39,11 +43,12 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 	fe := &fakeEngine{
 		t:             t,
 		m:             newMockEngine(t),
-		features:      []string{FeatureObserveV1, FeatureLocalDispatchV1},
+		features:      []string{FeatureObserveV1, FeatureObserveV2, FeatureLocalDispatchV1},
 		confirm:       true,
 		localDispatch: true,
 		sets:          map[string][]ObserverInfo{},
 		revisions:     map[string]uint64{},
+		conflicts:     map[string]int{},
 	}
 	fe.m.mu.Lock()
 	fe.m.onConnect = fe.greet
@@ -59,6 +64,50 @@ func (fe *fakeEngine) oldEngine() *fakeEngine {
 	fe.confirm = false
 	fe.mu.Unlock()
 	return fe
+}
+
+// v1Engine makes the engine a 0.25 one: observe.v1 without observe.v2.
+func (fe *fakeEngine) v1Engine() *fakeEngine {
+	fe.setFeatures(FeatureObserveV1, FeatureLocalDispatchV1)
+	return fe
+}
+
+func (fe *fakeEngine) setFeatures(features ...string) {
+	fe.mu.Lock()
+	fe.features = features
+	fe.mu.Unlock()
+}
+
+// invoke routes a call of fn to the worker, with an invocation_id, and returns it.
+func (fe *fakeEngine) invoke(msg InvokeFunctionMessage) uuid.UUID {
+	fe.t.Helper()
+	if msg.InvocationID == nil {
+		id := uuid.New()
+		msg.InvocationID = &id
+	}
+	if msg.Data == nil {
+		msg.Data = json.RawMessage(`{}`)
+	}
+	fe.send(&msg)
+	return *msg.InvocationID
+}
+
+// waitResult waits for the worker's invocationresult of invocation id.
+func (fe *fakeEngine) waitResult(id uuid.UUID) *InvocationResultMessage {
+	fe.t.Helper()
+	got := fe.waitFrames(MsgInvocationResult, 1, func(d *DecodedMessage) bool { return d.InvocationResult.InvocationID == id })
+	return got[0].InvocationResult
+}
+
+// frameIndex is the position of the first recorded frame that pred accepts, or -1.
+func (fe *fakeEngine) frameIndex(pred func(*DecodedMessage) bool) int {
+	for i, raw := range fe.m.receivedMessages() {
+		data, _ := json.Marshal(raw)
+		if d, err := UnmarshalMessage(data); err == nil && pred(d) {
+			return i
+		}
+	}
+	return -1
 }
 
 func (fe *fakeEngine) setOnFrame(fn func(msg map[string]json.RawMessage)) {
@@ -83,7 +132,20 @@ func (fe *fakeEngine) receive(conn *websocket.Conn, msg map[string]json.RawMessa
 	confirm, localDispatch, hook := fe.confirm, fe.localDispatch, fe.onFrame
 	fe.mu.Unlock()
 	if confirm && messageType(msg) == string(MsgRegisterFunction) {
-		fe.confirmFunction(conn, messageID(msg), localDispatch)
+		id := messageID(msg)
+		fe.mu.Lock()
+		conflict := fe.conflicts[id] > 0
+		if conflict {
+			fe.conflicts[id]--
+		}
+		fe.mu.Unlock()
+		if conflict {
+			_ = fe.m.send(context.Background(), conn, &RegistrationRejectedMessage{
+				Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: id, OwnerWorkerID: "other-host",
+			})
+		} else {
+			fe.confirmFunction(conn, id, localDispatch)
+		}
 	}
 	if hook != nil {
 		hook(msg)
@@ -164,19 +226,33 @@ func (fe *fakeEngine) setObservers(fn string, rev uint64, set ...ObserverInfo) {
 // client connects a client and waits until WorkerRegistered was applied.
 func (fe *fakeEngine) client(opts ...Option) *Client {
 	fe.t.Helper()
+	c := fe.newClient(opts...)
+	fe.connect(c)
+	return c
+}
+
+// newClient is a client of this engine that is not connected yet, so a test can set
+// hooks and register functions first.
+func (fe *fakeEngine) newClient(opts ...Option) *Client {
+	fe.t.Helper()
 	opts = append([]Option{
 		WithName("observe-test"),
 		WithReconnectConfig(ReconnectConfig{InitialDelay: 5 * time.Millisecond, MaxDelay: 20 * time.Millisecond, BackoffMultiplier: 1, MaxRetries: -1}),
 	}, opts...)
 	c := New(fe.m.url, opts...)
+	fe.t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// connect connects c and waits until WorkerRegistered was applied.
+func (fe *fakeEngine) connect(c *Client) {
+	fe.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := c.Connect(ctx); err != nil {
 		fe.t.Fatalf("Connect: %v", err)
 	}
-	fe.t.Cleanup(func() { _ = c.Close() })
 	waitUntil(fe.t, "WorkerRegistered applied", c.registeredNow)
-	return c
 }
 
 func (c *Client) registeredNow() bool {
@@ -322,7 +398,7 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// observerInfo is an observer as the engine pushes it to the owner.
+// observerInfo is an observer as the engine pushes it to the host.
 func observerInfo(id, target string, args, filters string, capture ...Capture) ObserverInfo {
 	info := ObserverInfo{ID: id, Target: target, On: OnSuccess, Capture: capture}
 	if capture == nil {
