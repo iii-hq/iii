@@ -441,7 +441,17 @@ fn _ensure_owner_delivery_api_removed() {}
 
 /// ```compile_fail
 /// let iii = iii_sdk::IIIClient::new("ws://x");
-/// let _ = iii.register_trigger;
+/// let _ = iii.register_trigger(todo!());
+/// ```
+#[allow(dead_code, unreachable_code)]
+fn _ensure_register_trigger_removed() {}
+
+/// ```rust,no_run
+/// # #![allow(deprecated)]
+/// # async fn demo(iii: &iii_sdk::IIIClient) -> Result<(), iii_sdk::Error> {
+/// use iii_sdk::protocol::TriggerRequest;
+/// iii.trigger(TriggerRequest::new("orders::create", serde_json::json!({}))).await?;
+/// # Ok(()) }
 /// ```
 #[allow(dead_code)]
-fn _ensure_register_trigger_removed() {}
+fn _ensure_the_trigger_alias_compiles() {}

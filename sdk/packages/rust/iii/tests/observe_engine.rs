@@ -7,7 +7,6 @@
 mod common;
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };

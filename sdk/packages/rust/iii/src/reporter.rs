@@ -437,6 +437,10 @@ pub(crate) struct Reporter {
     pub(crate) wake: Notify,
 }
 
+/// One packed `invocationsobserved` frame: its JSON, and the function and
+/// [`PendingItem::seq`] of each item.
+type Packed = (String, Vec<String>, Vec<u64>);
+
 /// One `invocationsobserved` frame, with its bytes held against the bound.
 #[derive(Debug)]
 pub(crate) struct ReportFrame {
@@ -760,15 +764,11 @@ impl Reporter {
     }
 
     /// Packs `items` into frames of at most `batch_items` items and
-    /// `frame_bytes` bytes, in order: `(json, function of each item, seq of
-    /// each item)`. An item larger than a frame is dropped and listed apart.
-    fn pack(
-        &self,
-        items: Vec<PendingItem>,
-        v2: bool,
-    ) -> (Vec<(String, Vec<String>, Vec<u64>)>, Vec<String>) {
+    /// `frame_bytes` bytes, in order. An item larger than a frame is dropped,
+    /// and its function listed apart.
+    fn pack(&self, items: Vec<PendingItem>, v2: bool) -> (Vec<Packed>, Vec<String>) {
         let largest = self.largest_item();
-        let mut frames: Vec<(String, Vec<String>, Vec<u64>)> = Vec::new();
+        let mut frames: Vec<Packed> = Vec::new();
         let mut too_large = Vec::new();
         let mut frame = String::new();
         let mut functions = Vec::new();

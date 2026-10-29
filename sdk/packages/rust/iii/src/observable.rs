@@ -1,12 +1,12 @@
 //! The host's side of observe: the observers of the functions this worker
 //! hosts, and the task that runs their hooks.
 //!
-//! Each registered function has a [`FunctionEntry`]: its compiled set of
-//! active observers (read with one atomic load on every call), its deliver
-//! hook, and a hook task that applies the engine's announcements
+//! Each registered function has an entry: its compiled set of active
+//! observers (read with one atomic load on every call), its deliver hook,
+//! and a hook task that applies the engine's announcements
 //! (`functionregistered`, `observeradded`, `observerremoved`) one at a time,
-//! running the [`AddedHook`](crate::AddedHook)s and
-//! [`RemovedHook`](crate::RemovedHook)s set in [`hooks`](crate::hooks).
+//! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`]s set in
+//! [`hooks`](crate::hooks).
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -1555,9 +1555,10 @@ mod tests {
         assert_eq!(ran.load(Ordering::SeqCst), 2);
     }
 
-    fn deliver_and_keep_next(
-        kept: Arc<Mutex<Option<(Call, Vec<Observer>, crate::Next)>>>,
-    ) -> impl crate::DeliverHook {
+    /// What a deliver hook was given, kept past the call.
+    type Kept = Arc<Mutex<Option<(Call, Vec<Observer>, crate::Next)>>>;
+
+    fn deliver_and_keep_next(kept: Kept) -> impl crate::DeliverHook {
         move |call: Call, observers: Vec<Observer>, next: crate::Next| {
             let kept = kept.clone();
             async move {
