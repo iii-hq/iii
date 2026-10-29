@@ -28,7 +28,7 @@ differ, this file wins, and the spec is updated to match.
    `invocationresult` always carries the result, which the engine already uses
    as `output`. SDK detection: Node, browser and Python compare by identity
    (`output === input`, `output is input`); Rust and Go compare the serialized
-   bytes, and only when building a report item that captures both. An SDK sets
+   bytes, and only when building a report item that carries both. An SDK sets
    it only when the engine advertised `observe.v2`; to an older engine the item
    carries `output`.
 5. **Removed trigger frames** (`registertriggertype`, `unregistertriggertype`,
@@ -139,6 +139,14 @@ differ, this file wins, and the spec is updated to match.
     throws is rejected (`OBSERVE_REJECTED`). A match hook set while observers
     are active rebuilds the index from them. With `onObserverDeliver` also set,
     the deliver hook receives the matched observers.
+
+46. **No `capture`.** The consumer option `capture` is removed; `deliver`
+    (`envelope`, `input`, `output`) is the one choice of what a target
+    receives, and the envelope always carries `input`, `output` or `error`,
+    `caller` and `metadata`. The engine ignores a `capture` field from 0.25
+    SDKs. A host serializes what the matched observers' `deliver` needs.
+    `configuration::on-updated` carries `{ id, event_type }`; consumers that
+    need the value call `configuration::get`.
 
 ## SDKs (all five)
 

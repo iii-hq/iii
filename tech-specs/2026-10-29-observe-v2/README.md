@@ -53,12 +53,12 @@ iii.onObserverRemoved(async () => { await events.release() })
 
 // one function, by id
 iii.onObserverAdded('database::on-row-changed', async (obs) => {
-  await capture.install(obs.args.db, obs.args.table)
+  await changeFeed.watch(obs.args.db, obs.args.table)
 })
 
 // one function, chained off its registration
 iii.registerFunction('database::on-row-changed', (change: RowChange) => change, { private: true, args_format: RowChangedArgs })
-  .onObserverRemoved(async (obs) => { await capture.release(obs.args.db, obs.args.table) })
+  .onObserverRemoved(async (obs) => { await changeFeed.unwatch(obs.args.db, obs.args.table) })
 ```
 
 **Args and filters.** `args` belong to the worker that hosts the function.
@@ -86,6 +86,7 @@ engine.
 | CLI `iii trigger <fn>` | `iii call <fn>`; `iii trigger` is an alias |
 | `Observe::owner()`, `Observe::auto()`, `ObserveHandler` (Rust) | `on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` methods taking closures or types that implement the hook traits (§5.2) |
 | `observe({ function_id }, target)` | also `observe('fn::id', target)` |
+| consumer option `capture` | removed; `deliver` picks what the target receives |
 | the engine evaluates routed calls, the host evaluates local calls and emits | the host evaluates every call of its functions; the engine evaluates calls to hosts without `observe.v2` and to engine-hosted sources (§8.2) |
 | error codes `NOT_OWNER_DELIVERED`, `FILTERS_NOT_MATCHED`, `TARGET_MISMATCH`, `INVALID_OBSERVE_DESCRIPTOR` | retired |
 
@@ -101,7 +102,6 @@ iii.observe(
     function_id: 'database::on-row-changed',
     args: { db: 'primary', table: 'orders', ops: ['insert', 'update'] },  // for the database worker
     filters: { 'caller.parent.worker_name': { $ne: 'order-projector' } },   // for iii
-    capture: ['input', 'caller'],
     deliver: 'output',
   },
   'orders::project',
@@ -114,7 +114,8 @@ iii.observe(
   capture that table and to deliver only its changes.
 - **`filters`** select which calls reach the target, by anything in the call.
 - **`deliver`** is what the target receives when iii delivers: the `Observed`
-  envelope (default), the call's `input`, or its `output`. A function whose
+  envelope (default: ids, status, timing, `input`, `output` or `error`,
+  `caller` and `metadata`), the call's `input`, or its `output`. A function whose
   `onObserverDeliver` calls targets itself documents what they receive
   (`http::on-request` targets receive the `HttpRequest`).
 - The handle (`ready()`, `state`, `onStateChange`, `dispose()`) and the
@@ -389,7 +390,6 @@ interface Observer {
   readonly filters: Filter                    // normalized
   readonly target: string                     // function id
   readonly on: 'success' | 'error' | 'complete'
-  readonly capture: Capture[]
   matches(call: Partial<Call>): boolean       // `on` and filters
   accepted(): Promise<void>                   // resolves once the SDK has acked the observer
   reject(code: string, message: string): void // late rejection
@@ -459,8 +459,8 @@ impl Match {
 }
 
 // one function, by id: set before registering, so it sees every observer (§4.3)
-iii.on_observer_added_for("database::on-row-changed", capture.clone());   // NativeCapture: AddedHook
-iii.on_observer_removed_for("database::on-row-changed", capture.clone()); // NativeCapture: RemovedHook
+iii.on_observer_added_for("database::on-row-changed", change_feed.clone());   // ChangeFeed: AddedHook
+iii.on_observer_removed_for("database::on-row-changed", change_feed.clone()); // ChangeFeed: RemovedHook
 iii.on_observer_match_for("database::on-row-changed", Match::keys(observer_keys, call_keys));
 
 iii.register_function(
@@ -489,7 +489,7 @@ row_changed = iii.register_function("database::on-row-changed", lambda change: c
 
 @row_changed.on_observer_added
 async def install(obs):
-    await capture.install(obs.args["db"], obs.args.get("table"))
+    await change_feed.watch(obs.args["db"], obs.args.get("table"))
 
 @iii.on_observer_added("cron::on-tick")         # by function id
 async def start(obs): ...
@@ -512,7 +512,7 @@ rowChanged := client.RegisterFunction("database::on-row-changed", iii.Identity, 
     iii.FunctionOptions{ArgsFormat: rowChangedArgs, Private: true})
 
 rowChanged.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error {
-    return capture.Install(ctx, obs.Args)
+    return changeFeed.Watch(ctx, obs.Args)
 })
 client.OnObserverAddedFor("cron::on-tick", start)   // by function id
 client.OnObserverAdded(retain)                      // every function this worker hosts
@@ -594,7 +594,7 @@ The worker that hosts a function delivers its calls:
 input (the same value, as for every event source), an `invocationsobserved`
 item carries the value once and sets `"output_is_input": true`; the engine
 fills `output` from `input`. Event sources send each event once, whatever the
-observers capture. A routed call needs no flag: the engine takes `output` from
+observers' `deliver` asks for. A routed call needs no flag: the engine takes `output` from
 the `invocationresult` it already receives.
 
 The engine evaluates filters itself for calls to hosts without `observe.v2`
@@ -667,10 +667,10 @@ const rowChanged = iii.registerFunction('database::on-row-changed', (change: Row
   .onObserverAdded(async (obs) => {
     const { db, table } = obs.args as RowChangedArgs
     if (!config.has(db)) throw new ObserveRejection('UNKNOWN_DB', `no database '${db}'`)
-    if (config.native(db)) await capture.install(db, table)   // CREATE TRIGGER … pg_notify(…)
+    if (config.native(db)) await changeFeed.watch(db, table)   // CREATE TRIGGER … pg_notify(…)
   })
   .onObserverRemoved(async (obs) => {
-    await capture.release(obs.args.db, obs.args.table)        // drops the trigger with its last observer
+    await changeFeed.unwatch(obs.args.db, obs.args.table)        // drops the trigger with its last observer
   })
   .onObserverMatch({
     observer: ({ args }) => (args.ops ?? ['*']).map((op) => rowKey(args.db, args.table ?? '*', op)),
@@ -678,7 +678,7 @@ const rowChanged = iii.registerFunction('database::on-row-changed', (change: Row
   })
 
 // a notification from the database becomes a call
-capture.onNotification(async (n) => {
+changeFeed.onChange(async (n) => {
   const change = toRowChange(n)
   if (!rowChanged.isObserved({ input: change })) return
   await iii.call({ function_id: 'database::on-row-changed', payload: change })
@@ -833,7 +833,7 @@ Trigger types and the functions that replace them:
 | `subscribe` | `pubsub::publish`, observed with a filter on `input.topic` | none |
 | `state` | `state::on-changed` | none; filters on `input.scope`, `input.key` |
 | `log`, `trace` | `observability::on-log`, `observability::on-span` | none |
-| `configuration` | `configuration::on-updated` | none |
+| `configuration` | `configuration::on-updated` | none; the event carries `{ id, event_type }`, and `configuration::get` returns the value |
 | `engine::functions-available`, `engine::workers-available` | `engine::on-functions-changed`, `engine::on-workers-changed` | none |
 | `stream`, `stream:join`, `stream:leave` | `stream::on-changed`, `stream::on-join`, `stream::on-leave` | none; filters on `input.stream_name`, `input.group_id` |
 | — | `engine::on-observers-changed` (new) | none |
