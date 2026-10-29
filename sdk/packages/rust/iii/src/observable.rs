@@ -807,8 +807,8 @@ pub(crate) enum CatchUp {
     /// An added hook of this level was set: it runs for each active observer
     /// that did not run it.
     Added(Level),
-    /// A match hook was set: a key index is rebuilt from the active
-    /// observers.
+    /// A match hook was set: the active observers are filed in its key
+    /// index, the ones added since it was built included.
     Index,
 }
 
@@ -1223,25 +1223,19 @@ async fn run_removed(
     }
 }
 
-/// Files the active observers in the key index of a match hook set while
-/// they were active. One whose key function panics is rejected late.
+/// Files the active members in the key index of a match hook set while they
+/// were active, behind the adds that ran meanwhile. One whose key function
+/// panics is rejected late.
 fn rebuild_index(entry: &FunctionEntry, members: &BTreeMap<String, Member>) {
     let Some(matcher) = entry.matcher() else {
         return;
     };
-    for member in members
-        .values()
-        .filter(|member| member.observer.is_active())
-    {
-        match matcher.observer_keys(&member.observer) {
-            Some(Ok(keys)) => matcher.file(&member.observer, keys),
-            Some(Err(crate::hooks::KeysPanicked(panic))) => member.observer.reject(
-                observe_codes::OBSERVE_REJECTED,
-                format!("on_observer_match key function panicked: {panic}"),
-            ),
-            None => {}
-        }
-    }
+    matcher.file_all(
+        members
+            .values()
+            .map(|member| &member.observer)
+            .filter(|observer| observer.is_active()),
+    );
 }
 
 /// Runs the added hook of `level`, set once observers were already active,
@@ -1802,6 +1796,126 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(!late.is_observed_for(&call), "boom is filed nowhere");
+    }
+
+    /// Keys from a string array at `value[field]`.
+    fn keys_at<'a>(value: &'a Value, field: &str) -> crate::Keys<'a> {
+        value[field]
+            .as_array()
+            .map(|keys| keys.iter().filter_map(Value::as_str).collect::<Vec<&str>>())
+            .into()
+    }
+
+    /// The `observed` ids of the answer to a routed call of `function_id`
+    /// with `input`.
+    async fn routed_observed(
+        iii: &IIIClient,
+        rx: &mut UnboundedReceiver<Outbound>,
+        function_id: &str,
+        invocation_id: &str,
+        input: Value,
+    ) -> Value {
+        feed(
+            iii,
+            json!({ "type": "invokefunction", "invocation_id": invocation_id,
+                    "function_id": function_id, "data": input }),
+        );
+        let answer = next_frame(rx, "invocationresult").await;
+        answer.get("observed").cloned().unwrap_or(json!([]))
+    }
+
+    /// A match hook set while observers are active matches them from the
+    /// moment it is set, while the function's hook task is busy too.
+    #[tokio::test]
+    async fn a_match_hook_set_late_matches_at_once() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let function = hosted(
+            &iii,
+            &mut rx,
+            "ml::f",
+            json!([
+                view_with_args("a", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        // the hook task runs a late added hook that never finishes
+        function.on_observer_added(|_obs: Observer| async move {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        function.on_observer_match(crate::Match::keys(
+            |obs| obs.args_value()["kind"].as_str().into(),
+            |call| call.input["kind"].as_str().into(),
+        ));
+        let call = |kind: &str| Call {
+            input: json!({ "kind": kind }),
+            ..Call::default()
+        };
+        assert!(function.is_observed_for(&call("a")));
+        assert!(function.is_observed_for(&call("b")));
+        assert!(!function.is_observed_for(&call("c")));
+        sent(&mut rx);
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "ml::f",
+            "51111111-2222-4333-8444-555555555555",
+            json!({ "kind": "b" }),
+        )
+        .await;
+        assert_eq!(observed, json!(["b"]));
+    }
+
+    /// Matched by keys, an observer filed under several keys of a call is
+    /// matched once, and each observer under any of them is matched.
+    #[tokio::test]
+    async fn an_observer_under_several_keys_of_a_call_matches_once() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        iii.on_observer_match_for(
+            "mk::f",
+            crate::Match::keys(
+                |obs| keys_at(obs.args_value(), "keys"),
+                |call| keys_at(&call.input, "keys"),
+            ),
+        );
+        hosted(
+            &iii,
+            &mut rx,
+            "mk::f",
+            json!([
+                view_with_args("both", json!({ "keys": ["x", "*"] })),
+                view_with_args("star", json!({ "keys": ["*"] })),
+                view_with_args("y", json!({ "keys": ["y"] }))
+            ]),
+        )
+        .await;
+        sent(&mut rx);
+        let sorted = |observed: Value| {
+            let mut ids: Vec<String> = serde_json::from_value(observed).unwrap();
+            ids.sort();
+            ids
+        };
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "mk::f",
+            "61111111-2222-4333-8444-555555555555",
+            json!({ "keys": ["x", "*", "x", "y"] }),
+        )
+        .await;
+        assert_eq!(sorted(observed), vec!["both", "star", "y"]);
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "mk::f",
+            "71111111-2222-4333-8444-555555555555",
+            json!({ "keys": ["*"] }),
+        )
+        .await;
+        assert_eq!(sorted(observed), vec!["both", "star"]);
     }
 
     /// A peer that stops reading: flushed frames wait in the outbound channel,

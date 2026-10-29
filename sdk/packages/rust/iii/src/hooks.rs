@@ -77,7 +77,7 @@ use crate::{
     iii::{IIIClient, MutexExt},
     observable::{CatchUp, FunctionEntry, HookOp, ObserveRejection, Observer},
     observe::ObservedError,
-    protocol::{Caller, InvocationStatus},
+    protocol::{Caller, InvocationStatus, observe_codes},
 };
 
 /// Runs when an observer is added to a function this worker hosts, before
@@ -482,6 +482,21 @@ impl Matcher {
         index.keys_of.insert(obs.id().to_string(), keys);
     }
 
+    /// Files each of `observers` under its keys (again, if it was filed
+    /// already). One whose key function panics is rejected late.
+    pub(crate) fn file_all<'o>(&self, observers: impl IntoIterator<Item = &'o Observer>) {
+        for obs in observers {
+            match self.observer_keys(obs) {
+                Some(Ok(keys)) => self.file(obs, keys),
+                Some(Err(KeysPanicked(panic))) => obs.reject(
+                    observe_codes::OBSERVE_REJECTED,
+                    format!("on_observer_match key function panicked: {panic}"),
+                ),
+                None => {}
+            }
+        }
+    }
+
     /// Takes the observer with id `id` out of the index.
     pub(crate) fn unfile(&self, id: &str) {
         Self::unfile_locked(&mut self.write(), id);
@@ -538,10 +553,29 @@ impl Matcher {
                 let keys = self.keys_of_call(call, call_keys.as_ref(), function_id);
                 let index = self.read();
                 let mut found: Vec<Observer> = Vec::new();
+                // An observer is filed once per key: the first key's list
+                // needs no dedupe, and the ids taken so far are hashed only
+                // when a second key has observers.
+                let mut first: Option<&[Observer]> = None;
+                let mut taken: HashSet<&str> = HashSet::new();
                 keys.for_each(|key| {
-                    for obs in index.by_key.get(key).into_iter().flatten() {
-                        if obs.is_active() && !found.contains(obs) {
-                            found.push(obs.clone());
+                    let Some(list) = index.by_key.get(key) else {
+                        return false;
+                    };
+                    match first {
+                        None => {
+                            first = Some(list);
+                            found.extend(list.iter().filter(|obs| obs.is_active()).cloned());
+                        }
+                        Some(first) => {
+                            if taken.is_empty() {
+                                taken.extend(first.iter().map(Observer::id));
+                            }
+                            for obs in list {
+                                if obs.is_active() && taken.insert(obs.id()) {
+                                    found.push(obs.clone());
+                                }
+                            }
                         }
                     }
                     false
@@ -762,6 +796,16 @@ impl IIIClient {
     }
 
     fn set_match_hook(&self, function_id: &str, rule: Option<Match>) {
+        // The key index holds the observers already active before the
+        // matcher is published: no call in between matches by an empty
+        // index. Built outside the store lock, since key functions are the
+        // caller's code.
+        let current = self.function_entry(function_id);
+        let indexed = current.as_ref().zip(rule.clone()).map(|(entry, rule)| {
+            let matcher = Matcher::new(rule);
+            matcher.file_all(&entry.observers());
+            matcher
+        });
         let entry = {
             let mut store = self.inner.hooks.lock();
             store
@@ -772,11 +816,17 @@ impl IIIClient {
                 .matching = rule.clone();
             let entry = self.function_entry(function_id);
             if let Some(entry) = &entry {
-                entry.set_matcher(rule.map(Matcher::new));
+                let same = current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, entry));
+                entry.set_matcher(match indexed {
+                    Some(matcher) if same => Some(matcher),
+                    _ => rule.map(Matcher::new),
+                });
             }
             entry
         };
-        // a key index is rebuilt from the observers already active
+        // the observers added meanwhile are filed in order on the hook task
         if let Some(entry) = entry {
             entry.enqueue(self, HookOp::CatchUp(CatchUp::Index));
         }
