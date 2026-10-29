@@ -271,13 +271,13 @@ describe('registerWorkerMetadata — namespace', () => {
 })
 
 describe('call — namespace targeting', () => {
-  type TriggerSdk = {
+  type CallSdk = {
     call: (req: { function_id: string; payload: unknown; action?: unknown; namespace?: string }) => Promise<unknown>
     messagesToSend: Record<string, unknown>[]
   }
 
   it('serializes namespace into the InvokeFunction message', () => {
-    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as TriggerSdk
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as CallSdk
 
     sdk.call({
       function_id: 'orders::get',
@@ -291,7 +291,7 @@ describe('call — namespace targeting', () => {
   })
 
   it('omits namespace from the InvokeFunction message when not provided', () => {
-    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as TriggerSdk
+    const sdk = registerWorker('ws://127.0.0.1:0') as unknown as CallSdk
 
     sdk.call({
       function_id: 'orders::get',

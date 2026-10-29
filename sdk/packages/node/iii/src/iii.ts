@@ -624,7 +624,7 @@ class Sdk implements IIIClient {
       if (getTracer()) {
         const parentContext = extractContext(traceparent, baggage)
 
-        // INTERNAL and named `execute` (not `call`/`trigger`): the engine
+        // INTERNAL and named `execute` (not `call`): the engine
         // suppresses its own `call <fn>` span for worker-routed functions
         // (this span is the canonical one for the invocation) but still
         // emits engine-side wrappers like `call <fn>` for builtins. Reusing
@@ -768,7 +768,7 @@ class Sdk implements IIIClient {
    * {@link ObserveRejection} sets the code). `null` removes the hook.
    */
   onObserverAdded: IIIClient['onObserverAdded'] = (a: string | AddedHook | null, b?: AddedHook | null) => {
-    if (typeof a === 'string') this.setFunctionHook(a, 'added', b ?? null)
+    if (typeof a === 'string') this.setFunctionHook(a, 'added', b as AddedHook | null)
     else this.setWorkerHook('added', a)
     return this
   }
@@ -779,7 +779,7 @@ class Sdk implements IIIClient {
    * runs first. `null` removes the hook.
    */
   onObserverRemoved: IIIClient['onObserverRemoved'] = (a: string | RemovedHook | null, b?: RemovedHook | null) => {
-    if (typeof a === 'string') this.setFunctionHook(a, 'removed', b ?? null)
+    if (typeof a === 'string') this.setFunctionHook(a, 'removed', b as RemovedHook | null)
     else this.setWorkerHook('removed', a)
     return this
   }

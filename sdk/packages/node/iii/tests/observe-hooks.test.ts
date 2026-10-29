@@ -626,6 +626,7 @@ describe('hooks by function id', () => {
   it('refuses a hook that is neither a function nor null', () => {
     const { sdk } = worker()
     expect(() => sdk.onObserverAdded('a::b', 'nope' as never)).toThrow(TypeError)
+    expect(() => (sdk.onObserverAdded as (id: string) => unknown)('a::b')).toThrow(TypeError)
     expect(() => sdk.onObserverRemoved({} as never)).toThrow(TypeError)
     expect(() => sdk.onObserverDeliver('', () => null)).toThrow(TypeError)
   })
