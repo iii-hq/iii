@@ -1291,9 +1291,12 @@ impl Engine {
     ) -> anyhow::Result<()> {
         match msg {
             Message::InvocationsObserved { items } => {
-                let full =
-                    self.observers
-                        .report(worker.id, &self.connection_namespace(worker), items);
+                let full = self.observers.report(
+                    worker.id,
+                    &self.connection_namespace(worker),
+                    &worker.routed_answers,
+                    items,
+                );
                 // Backpressure: nothing more is read from this worker until
                 // the queues its report overflowed have room again, and at
                 // most four fifths of the time (`hold`).
@@ -1874,7 +1877,11 @@ impl Engine {
                     "InvocationResult"
                 );
 
-                worker.remove_invocation(invocation_id).await;
+                // A routed call an `observe.v2` host answered: its report
+                // items for it are refused after the answer too (decision 38).
+                if worker.remove_invocation(invocation_id).await && worker.features.observe_v2() {
+                    worker.routed_answers.record(*invocation_id);
+                }
 
                 if let Some(invocation) = self.invocations.remove(invocation_id) {
                     let Message::InvocationResult {
@@ -2482,6 +2489,7 @@ impl Engine {
                 let full = self.observers.report(
                     worker.id,
                     &self.connection_namespace(worker),
+                    &worker.routed_answers,
                     items.clone(),
                 );
                 // Not read from a socket: one hold at most.

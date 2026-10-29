@@ -136,6 +136,49 @@ pub struct ReportHold {
     not_before: Option<tokio::time::Instant>,
 }
 
+/// How many of an `observe.v2` host's last answered routed calls
+/// [`RoutedAnswers`] keeps: several report lingers' worth of answers (an SDK
+/// flushes its report at least every 5 ms) at any rate one connection
+/// answers.
+pub(crate) const ROUTED_ANSWERS_KEPT: usize = 4096;
+
+/// The routed calls an `observe.v2` host answered last, by invocation id,
+/// [`ROUTED_ANSWERS_KEPT`] at most, kept by its connection: a report item
+/// naming one is dropped as `INVALID_REPORT` after the answer as well as
+/// before it (decision 38).
+#[derive(Debug, Default)]
+pub struct RoutedAnswers {
+    kept: std::sync::Mutex<KeptIds>,
+}
+
+#[derive(Debug, Default)]
+struct KeptIds {
+    ids: HashSet<Uuid>,
+    /// `ids` in the order they were kept, oldest first.
+    order: std::collections::VecDeque<Uuid>,
+}
+
+impl RoutedAnswers {
+    /// Keeps `invocation_id`, forgetting the oldest past
+    /// [`ROUTED_ANSWERS_KEPT`].
+    pub fn record(&self, invocation_id: Uuid) {
+        let mut kept = lock(&self.kept);
+        if !kept.ids.insert(invocation_id) {
+            return;
+        }
+        kept.order.push_back(invocation_id);
+        if kept.order.len() > ROUTED_ANSWERS_KEPT
+            && let Some(oldest) = kept.order.pop_front()
+        {
+            kept.ids.remove(&oldest);
+        }
+    }
+
+    fn contains(&self, invocation_id: &Uuid) -> bool {
+        lock(&self.kept).ids.contains(invocation_id)
+    }
+}
+
 /// Queue slots an observer keeps once its queue drains; a burst that grew it
 /// past this gives the rest back.
 const QUEUE_KEPT: usize = 64;
@@ -1127,8 +1170,9 @@ impl ObserverRegistry {
     ///
     /// A routed call's host reports its matches on the call's answer
     /// (`invocationresult.observed`) only: an item for a call the engine
-    /// routed to the reporting connection and waits on is dropped as
-    /// `INVALID_REPORT` (decision 38).
+    /// routed to the reporting connection is dropped as `INVALID_REPORT`
+    /// (decision 38), while the engine waits on it and, once it is
+    /// answered, while `answered` (the connection's) keeps it.
     ///
     /// Returns the observers whose queue was full for some item, for the
     /// connection's reader to wait on ([`Self::wait_for_room`]); not those
@@ -1139,6 +1183,7 @@ impl ObserverRegistry {
         self: &Arc<Self>,
         connection: Uuid,
         connection_namespace: &str,
+        answered: &RoutedAnswers,
         items: ObservedItems,
     ) -> Vec<Arc<Observer>> {
         let mut full: Vec<Arc<Observer>> = Vec::new();
@@ -1195,8 +1240,11 @@ impl ObserverRegistry {
                 self.drop_matched(&key, &matched, observe_codes::REPORTER_NOT_OWNER);
                 continue;
             }
-            let routed = invocations.as_ref().is_some_and(|invocations| {
-                Uuid::parse_str(&invocation_id).is_ok_and(|id| invocations.is_pending(&id, &key.1))
+            let routed = Uuid::parse_str(&invocation_id).is_ok_and(|id| {
+                answered.contains(&id)
+                    || invocations
+                        .as_ref()
+                        .is_some_and(|invocations| invocations.is_pending(&id, &key.1))
             });
             if routed {
                 self.drop_matched(&key, &matched, INVALID_REPORT);
@@ -2517,6 +2565,7 @@ mod tests {
         let full = engine.observers.report(
             host,
             DEFAULT_NAMESPACE,
+            &super::RoutedAnswers::default(),
             vec![crate::protocol::ObservedItem {
                 function_id: "test::src".to_string(),
                 namespace: None,

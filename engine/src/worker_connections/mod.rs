@@ -422,6 +422,9 @@ pub struct WorkerConnection {
     /// without `observe.v1`, registrations, telemetry; see
     /// [`WorkerConnection::inflight_depth`]).
     pub inflight_depths: Arc<std::sync::Mutex<HashMap<Uuid, u32>>>,
+    /// The routed calls this connection answered last, when it declared
+    /// `observe.v2`: its report items for them are refused (decision 38).
+    pub routed_answers: Arc<crate::observer::RoutedAnswers>,
 }
 
 impl WorkerConnection {
@@ -458,6 +461,7 @@ impl WorkerConnection {
             features: Arc::new(WorkerFeatures::default()),
             removed_messages_warned: Arc::new(AtomicU8::new(0)),
             inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
     }
 
@@ -494,6 +498,7 @@ impl WorkerConnection {
             features: Arc::new(WorkerFeatures::default()),
             removed_messages_warned: Arc::new(AtomicU8::new(0)),
             inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
     }
 
@@ -559,9 +564,11 @@ impl WorkerConnection {
         self.invocations.write().await.insert(invocation_id);
     }
 
-    pub async fn remove_invocation(&self, invocation_id: &Uuid) {
-        self.invocations.write().await.remove(invocation_id);
+    /// Forgets `invocation_id`; `true` when it was this connection's.
+    pub async fn remove_invocation(&self, invocation_id: &Uuid) -> bool {
+        let removed = self.invocations.write().await.remove(invocation_id);
         self.forget_inflight_depth(invocation_id);
+        removed
     }
 
     /// Records that `invocation_id`, forwarded to this connection, runs at

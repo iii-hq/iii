@@ -364,9 +364,9 @@ async fn a_targets_answer_activates_the_observers_it_lists() {
 }
 
 /// A routed call's host reports its matches on the answer only: an
-/// `invocationsobserved` item for a call the engine routed to it and waits
-/// on is dropped as `INVALID_REPORT` (decision 38), while an item for a call
-/// of its own is applied.
+/// `invocationsobserved` item for a call the engine routed to it is dropped
+/// as `INVALID_REPORT` (decision 38), whether it arrives before the answer or
+/// after it, while an item for a call of its own is applied.
 #[tokio::test]
 async fn report_items_for_a_routed_call_are_dropped() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -404,6 +404,12 @@ async fn report_items_for_a_routed_call_are_dropped() {
         .await;
     checkout.result(call).await;
     assert!(eventually(|| dropped(&t, "watched", "INVALID_REPORT") == 1).await);
+    // The report linger sends items after the answer: the call is still
+    // known as routed.
+    orders
+        .send(json!({ "type": "invocationsobserved", "items": [item(&routed)] }))
+        .await;
+    assert!(eventually(|| dropped(&t, "watched", "INVALID_REPORT") == 2).await);
     assert_eq!(fires(&t, "watched"), 0);
 
     let local = Uuid::new_v4().to_string();
