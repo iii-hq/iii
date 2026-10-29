@@ -11,12 +11,15 @@
 //! [`ObservabilityWorkerConfig::default`] when auto-injected with no block)
 //! only when no value is stored yet, reads the live value (with
 //! `${VAR:default}` expansion), and hot-applies `configuration:updated`
-//! events per field tier (live globals, storage limits, sampler/alerts/
+//! events (through the engine's in-process configuration listeners) per
+//! field tier (live globals, storage limits, sampler/alerts/
 //! level/collapse swaps, log exporter task rebuilds). After first boot the
 //! configuration worker entry is the runtime source of truth; the
 //! config.yaml block is seed-only — restart-tier fields (trace exporter
 //! wiring, resource identity, log format) are read from the persisted
 //! entry at the next engine start.
+
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use serde_json::{Value, json};
@@ -24,13 +27,12 @@ use serde_json::{Value, json};
 use super::{ObservabilityWorker, config::ObservabilityWorkerConfig};
 use crate::{
     engine::{Engine, EngineTrait},
-    trigger::Trigger,
+    workers::configuration::structs::ConfigurationEventType,
 };
 
 pub const CONFIG_ID: &str = "iii-observability";
-pub const CONFIG_FN_ID: &str = "iii-observability::on-config-change";
-pub const CONFIG_TRIGGER_ID: &str = "iii-observability::config-watch";
-pub const CONFIG_TRIGGER_TYPE: &str = "configuration";
+/// The key of this worker's configuration listener.
+pub const CONFIG_LISTENER: &str = "iii-observability::config-watch";
 
 /// Upper bound on every `configuration::*` bus call made by this worker.
 /// Worker startup is awaited serially by the boot and reload pipelines, so a
@@ -120,18 +122,16 @@ async fn try_get_value(engine: &Engine) -> anyhow::Result<Option<Value>> {
     }
 }
 
-/// Handler body for `iii-observability::on-config-change`. Delegates to
+/// Applies a change of the `iii-observability` entry. Delegates to
 /// `apply_config`, which re-fetches the authoritative value under the apply
-/// lock instead of trusting the trigger payload — the handler is a
-/// discoverable bus function, and acting on a caller-supplied payload would
-/// let anyone repoint telemetry without updating persisted state. Any
-/// failure keeps the previous configuration.
+/// lock instead of trusting the event, so what is applied is always what is
+/// persisted. Any failure keeps the previous configuration.
 pub async fn on_config_change(worker: &ObservabilityWorker) {
     match worker.apply_config().await {
         Ok(()) => tracing::info!("iii-observability configuration re-applied after change"),
         // A timeout is transient: the stored value is valid but unapplied,
         // and the event will not fire again — so retry exactly once after a
-        // delay. The retry calls `apply_config` directly (not this handler),
+        // delay. The retry calls `apply_config` directly (not this function),
         // so it cannot loop. Other errors (malformed value) are
         // deterministic; retrying would just repeat the failure.
         Err(err) if err.downcast_ref::<tokio::time::error::Elapsed>().is_some() => {
@@ -172,30 +172,25 @@ pub async fn on_config_change(worker: &ObservabilityWorker) {
     }
 }
 
-/// Subscribe to `configuration:updated` events for the `iii-observability`
-/// entry. The deterministic trigger id means re-registration replaces rather
-/// than duplicates.
-pub async fn register_config_trigger(engine: &Engine) -> anyhow::Result<()> {
-    engine
-        .trigger_registry
-        .register_trigger(Trigger {
-            id: CONFIG_TRIGGER_ID.to_string(),
-            trigger_type: CONFIG_TRIGGER_TYPE.to_string(),
-            function_id: CONFIG_FN_ID.to_string(),
-            config: json!({
-                "configuration_id": CONFIG_ID,
-                "event_types": ["configuration:updated"],
-            }),
-            worker_id: None,
-            metadata: None,
-            namespace: crate::protocol::default_namespace(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        })
-        .await
-        .map_err(|err| anyhow!("failed to register configuration trigger: {err:?}"))?;
-    Ok(())
+/// Hot-applies `configuration:updated` events of the `iii-observability`
+/// entry, through the engine's in-process configuration listeners. Listening
+/// again replaces the listener rather than adding one.
+pub fn listen_for_changes(worker: &ObservabilityWorker) {
+    let listener = worker.clone();
+    worker.engine.configuration_listeners.listen(
+        CONFIG_LISTENER,
+        CONFIG_ID,
+        &[ConfigurationEventType::Updated],
+        Arc::new(move |_event| {
+            let worker = listener.clone();
+            tokio::spawn(async move { on_config_change(&worker).await });
+        }),
+    );
+}
+
+/// Stops [`listen_for_changes`].
+pub fn stop_listening(engine: &Engine) {
+    engine.configuration_listeners.unlisten(CONFIG_LISTENER);
 }
 
 #[cfg(test)]

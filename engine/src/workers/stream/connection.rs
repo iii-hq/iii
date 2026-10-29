@@ -16,23 +16,24 @@ use uuid::Uuid;
 use crate::{
     builtins::pubsub_lite::Subscriber,
     engine::Engine,
+    event_formats::StreamJoinLeaveEvent,
     function::FunctionResult,
+    observer::events::{STREAM_ON_JOIN, STREAM_ON_LEAVE, payload_built},
+    protocol::DEFAULT_NAMESPACE,
     workers::stream::{
         StreamIncomingMessage, StreamOutboundMessage, StreamWorker, StreamWrapperMessage,
         Subscription,
         adapters::StreamConnection,
         structs::{
-            StreamAuthContext, StreamGetInput, StreamIncomingMessageData, StreamJoinLeaveEvent,
-            StreamJoinResult, StreamListInput, StreamOutbound,
+            StreamAuthContext, StreamGetInput, StreamIncomingMessageData, StreamListInput,
+            StreamOutbound,
         },
-        trigger::{JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, StreamTriggers},
     },
 };
 
 pub struct SocketStreamConnection {
     pub id: String,
     pub sender: mpsc::Sender<StreamOutbound>,
-    pub triggers: Arc<StreamTriggers>,
     subscriptions: Arc<DashMap<String, Subscription>>,
     stream_module: Arc<StreamWorker>,
     context: Option<StreamAuthContext>,
@@ -45,7 +46,6 @@ impl SocketStreamConnection {
         context: Option<StreamAuthContext>,
         sender: mpsc::Sender<StreamOutbound>,
         engine: Arc<Engine>,
-        triggers: Arc<StreamTriggers>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
@@ -54,136 +54,31 @@ impl SocketStreamConnection {
             stream_module,
             context,
             engine,
-            triggers,
         }
     }
 
-    pub async fn handle_join_leave(&self, message: &StreamIncomingMessage) -> StreamJoinResult {
-        let (stream_name, group_id, id, subscription_id, event_type, triggers) = match message {
-            StreamIncomingMessage::Join { data } => {
-                let triggers: Vec<_> = self
-                    .triggers
-                    .join_triggers
-                    .read()
-                    .await
-                    .iter()
-                    .filter(|trigger| trigger.trigger_type == JOIN_TRIGGER_TYPE)
-                    .map(|trigger| {
-                        (
-                            trigger.function_id.clone(),
-                            trigger.namespace.clone(),
-                            trigger.metadata.clone(),
-                        )
-                    })
-                    .collect();
-                (
-                    data.stream_name.clone(),
-                    data.group_id.clone(),
-                    data.id.clone(),
-                    data.subscription_id.clone(),
-                    JOIN_TRIGGER_TYPE,
-                    triggers,
-                )
-            }
-            StreamIncomingMessage::Leave { data } => {
-                let triggers: Vec<_> = self
-                    .triggers
-                    .leave_triggers
-                    .read()
-                    .await
-                    .iter()
-                    .filter(|trigger| trigger.trigger_type == LEAVE_TRIGGER_TYPE)
-                    .map(|trigger| {
-                        (
-                            trigger.function_id.clone(),
-                            trigger.namespace.clone(),
-                            trigger.metadata.clone(),
-                        )
-                    })
-                    .collect();
-                (
-                    data.stream_name.clone(),
-                    data.group_id.clone(),
-                    data.id.clone(),
-                    data.subscription_id.clone(),
-                    LEAVE_TRIGGER_TYPE,
-                    triggers,
-                )
-            }
+    /// One call of `stream::on-join` or `stream::on-leave` for `message`, with
+    /// the client's auth context. Built only when something observes the
+    /// source.
+    fn emit_join_leave(&self, message: &StreamIncomingMessage) {
+        let (source, data) = match message {
+            StreamIncomingMessage::Join { data } => (STREAM_ON_JOIN, data),
+            StreamIncomingMessage::Leave { data } => (STREAM_ON_LEAVE, data),
         };
-
-        let event = StreamJoinLeaveEvent {
-            subscription_id,
-            stream_name,
-            group_id,
-            id,
-            context: self
-                .context
-                .as_ref()
-                .and_then(|context| context.context.clone()),
-        };
-        let mut result = StreamJoinResult {
-            unauthorized: false,
-        };
-
-        let mut event_value = match serde_json::to_value(event) {
-            Ok(event_value) => event_value,
-            Err(e) => {
-                tracing::error!(error = ?e, "Failed to convert event to value");
-                return result;
-            }
-        };
-
-        let trigger_count = triggers.len();
-        for (index, (function_id, namespace, metadata)) in triggers.into_iter().enumerate() {
-            tracing::debug!(function_id = %function_id, event_type = ?event_type, "Invoking trigger");
-
-            let call_result = self
-                .engine
-                .call_value_with_metadata_ns(
-                    &namespace,
-                    &function_id,
-                    if index + 1 == trigger_count {
-                        event_value.take()
-                    } else {
-                        event_value.clone()
-                    },
-                    metadata,
-                )
-                .await;
-
-            tracing::debug!(call_result = ?call_result, "Call result");
-
-            match call_result {
-                Ok(Some(call_result)) => {
-                    if event_type == JOIN_TRIGGER_TYPE {
-                        let unauthorized =
-                            match call_result.get("unauthorized").and_then(|v| v.as_bool()) {
-                                Some(unauthorized) => unauthorized,
-                                None => {
-                                    if event_type == JOIN_TRIGGER_TYPE {
-                                        tracing::error!(
-                                            error = "unauthorized must be a boolean",
-                                            "Failed to get unauthorized from result"
-                                        );
-                                    }
-                                    false
-                                }
-                            };
-
-                        if unauthorized {
-                            result = StreamJoinResult { unauthorized: true };
-                        }
-                    }
-                }
-                Err(e) if event_type == JOIN_TRIGGER_TYPE => {
-                    tracing::error!(error = ?e, "Failed to invoke trigger function");
-                }
-                _ => {}
-            }
-        }
-
-        result
+        self.engine.observers.emit(DEFAULT_NAMESPACE, source, || {
+            payload_built();
+            serde_json::to_value(StreamJoinLeaveEvent {
+                subscription_id: data.subscription_id.clone(),
+                stream_name: data.stream_name.clone(),
+                group_id: data.group_id.clone(),
+                id: data.id.clone(),
+                context: self
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.context.clone()),
+            })
+            .ok()
+        });
     }
 
     pub async fn handle_socket_message(&self, msg: &StreamIncomingMessage) -> anyhow::Result<()> {
@@ -193,24 +88,8 @@ impl SocketStreamConnection {
                 let group_id = data.group_id.clone();
                 let id = data.id.clone();
                 let subscription_id = data.subscription_id.clone();
-                let result = self.handle_join_leave(msg).await;
+                self.emit_join_leave(msg);
                 let timestamp = chrono::Utc::now().timestamp_millis();
-
-                if result.unauthorized {
-                    let event = StreamOutboundMessage::Unauthorized {};
-                    let message = StreamWrapperMessage {
-                        event_type: "stream".to_string(),
-                        timestamp,
-                        stream_name,
-                        group_id,
-                        id,
-                        event,
-                    };
-                    let outbound = StreamOutbound::Stream(message);
-                    self.sender.send(outbound).await?;
-
-                    return Ok(());
-                }
 
                 self.subscriptions.insert(
                     subscription_id.clone(),
@@ -300,7 +179,7 @@ impl SocketStreamConnection {
                 Ok(())
             }
             StreamIncomingMessage::Leave { data } => {
-                self.handle_join_leave(msg).await;
+                self.emit_join_leave(msg);
                 self.subscriptions.remove(&data.subscription_id);
                 Ok(())
             }
@@ -328,16 +207,14 @@ impl StreamConnection for SocketStreamConnection {
         for subscription in subscriptions {
             tracing::debug!(subscription_id = %subscription.subscription_id, "Cleaning up subscription");
 
-            let _ = self
-                .handle_join_leave(&StreamIncomingMessage::Leave {
-                    data: StreamIncomingMessageData {
-                        subscription_id: subscription.subscription_id.clone(),
-                        stream_name: subscription.stream_name.clone(),
-                        group_id: subscription.group_id.clone(),
-                        id: subscription.id.clone(),
-                    },
-                })
-                .await;
+            self.emit_join_leave(&StreamIncomingMessage::Leave {
+                data: StreamIncomingMessageData {
+                    subscription_id: subscription.subscription_id.clone(),
+                    stream_name: subscription.stream_name.clone(),
+                    group_id: subscription.group_id.clone(),
+                    id: subscription.id.clone(),
+                },
+            });
         }
     }
 
@@ -386,16 +263,13 @@ mod tests {
     use std::time::Duration;
 
     use serde_json::{Value, json};
-    use tokio::{
-        sync::{mpsc, oneshot},
-        time::timeout,
-    };
+    use tokio::{sync::mpsc, time::timeout};
 
     use crate::{
         engine::{EngineTrait, Handler, RegisterFunctionRequest},
         function::FunctionResult,
+        observer::events::{register_stream_event_sources, test_support},
         protocol::ErrorBody,
-        trigger::Trigger,
         workers::{
             observability::metrics::ensure_default_meter,
             stream::{
@@ -424,14 +298,9 @@ mod tests {
             StreamModuleConfig::default(),
             adapter,
         ));
+        register_stream_event_sources(&engine);
         let (tx, rx) = mpsc::channel(16);
-        let connection = SocketStreamConnection::new(
-            module.clone(),
-            context,
-            tx,
-            engine.clone(),
-            module.triggers.clone(),
-        );
+        let connection = SocketStreamConnection::new(module.clone(), context, tx, engine.clone());
 
         (engine, module, connection, rx)
     }
@@ -515,209 +384,61 @@ mod tests {
         );
     }
 
+    /// A join and a leave are calls of `stream::on-join` and
+    /// `stream::on-leave`, with the client's auth context.
     #[tokio::test]
-    async fn handle_join_leave_invokes_join_and_leave_triggers() {
+    async fn joins_and_leaves_are_engine_hosted_sources() {
         let context = StreamAuthContext {
             context: Some(json!({ "user": "alice" })),
         };
         let (engine, _module, connection, _rx) = build_connection(Some(context));
-
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel::<(String, Value)>();
-        let join_events_tx = events_tx.clone();
-        register_function(&engine, "test::join_guard", move |input| {
-            let join_events_tx = join_events_tx.clone();
-            async move {
-                join_events_tx
-                    .send(("join".to_string(), input))
-                    .expect("send join event");
-                FunctionResult::Success(Some(json!({ "unauthorized": true })))
-            }
-        });
-        register_function(&engine, "test::leave_handler", move |input| {
-            let events_tx = events_tx.clone();
-            async move {
-                events_tx
-                    .send(("leave".to_string(), input))
-                    .expect("send leave event");
-                FunctionResult::Success(None)
-            }
-        });
+        let mut joins = test_support::capture(&engine, "test::on-join");
+        let mut leaves = test_support::capture(&engine, "test::on-leave");
+        let _join_socket = test_support::observe(
+            &engine,
+            "obs-join",
+            STREAM_ON_JOIN,
+            "test::on-join",
+            Some(json!({ "input.stream_name": "orders" })),
+        )
+        .await;
+        let _leave_socket = test_support::observe(
+            &engine,
+            "obs-leave",
+            STREAM_ON_LEAVE,
+            "test::on-leave",
+            None,
+        )
+        .await;
 
         connection
-            .triggers
-            .join_triggers
-            .write()
+            .handle_socket_message(&join_message("sub-other", "invoices", "group-a", None))
             .await
-            .insert(Trigger {
-                id: "join-trigger".to_string(),
-                trigger_type: JOIN_TRIGGER_TYPE.to_string(),
-                function_id: "test::join_guard".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
+            .expect("join");
         connection
-            .triggers
-            .leave_triggers
-            .write()
+            .handle_socket_message(&join_message("sub-1", "orders", "group-a", None))
             .await
-            .insert(Trigger {
-                id: "leave-trigger".to_string(),
-                trigger_type: LEAVE_TRIGGER_TYPE.to_string(),
-                function_id: "test::leave_handler".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
-
-        let join_result = connection
-            .handle_join_leave(&join_message("sub-1", "orders", "group-a", Some("item-1")))
-            .await;
-        assert!(join_result.unauthorized);
-
-        let leave_result = connection
-            .handle_join_leave(&leave_message("sub-1", "orders", "group-a", Some("item-1")))
-            .await;
-        assert!(!leave_result.unauthorized);
-
-        let (join_kind, join_payload) = events_rx.recv().await.expect("join trigger payload");
-        assert_eq!(join_kind, "join");
-        assert_eq!(join_payload["subscription_id"], "sub-1");
-        assert_eq!(join_payload["stream_name"], "orders");
-        assert_eq!(join_payload["group_id"], "group-a");
-        assert_eq!(join_payload["id"], "item-1");
-        assert_eq!(join_payload["context"], json!({ "user": "alice" }));
-
-        let (leave_kind, leave_payload) = events_rx.recv().await.expect("leave trigger payload");
-        assert_eq!(leave_kind, "leave");
-        assert_eq!(leave_payload["subscription_id"], "sub-1");
-        assert_eq!(leave_payload["stream_name"], "orders");
-        assert_eq!(leave_payload["group_id"], "group-a");
-        assert_eq!(leave_payload["id"], "item-1");
-    }
-
-    /// BUG 1 (real-user path): a stream join trigger registered by a namespaced
-    /// worker must fire the target in that worker's namespace. `conn::react`
-    /// exists in both `orders` ("from-orders") and `default` ("from-default");
-    /// the `orders` join trigger must fire "from-orders". Drives the real
-    /// mechanism: `handle_join_leave`.
-    #[tokio::test]
-    async fn join_trigger_fires_target_in_registering_namespace() {
-        let (engine, _module, connection, _rx) = build_connection(None);
-        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-
-        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
-            let fired = fired.clone();
-            engine.register_function_handler_ns(
-                ns,
-                RegisterFunctionRequest {
-                    function_id: "conn::react".to_string(),
-                    description: None,
-                    request_format: None,
-                    response_format: None,
-                    metadata: None,
-                },
-                Handler::new(move |_input: Value| {
-                    let fired = fired.clone();
-                    async move {
-                        fired.lock().unwrap().push(tag.to_string());
-                        FunctionResult::Success(None)
-                    }
-                }),
-            );
-        }
-
-        connection
-            .triggers
-            .join_triggers
-            .write()
-            .await
-            .insert(Trigger {
-                id: "join-ns-trigger".to_string(),
-                trigger_type: JOIN_TRIGGER_TYPE.to_string(),
-                function_id: "conn::react".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "orders".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
-
-        connection
-            .handle_join_leave(&join_message("sub-1", "orders", "group-a", Some("item-1")))
-            .await;
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        let fired = fired.lock().unwrap().clone();
+            .expect("join");
         assert_eq!(
-            fired,
-            vec!["from-orders".to_string()],
-            "the orders join trigger must fire the orders target; got: {fired:?}"
+            test_support::next(&mut joins).await,
+            json!({
+                "subscription_id": "sub-1",
+                "stream_name": "orders",
+                "group_id": "group-a",
+                "id": null,
+                "context": { "user": "alice" }
+            }),
+            "the filter skipped the invoices join"
         );
-    }
-
-    #[tokio::test]
-    async fn handle_socket_message_unauthorized_join_emits_unauthorized() {
-        let (engine, _module, connection, mut rx) = build_connection(None);
-
-        register_function(&engine, "test::join_guard", |_input| async move {
-            FunctionResult::Success(Some(json!({ "unauthorized": true })))
-        });
-        connection
-            .triggers
-            .join_triggers
-            .write()
-            .await
-            .insert(Trigger {
-                id: "join-guard".to_string(),
-                trigger_type: JOIN_TRIGGER_TYPE.to_string(),
-                function_id: "test::join_guard".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
 
         connection
-            .handle_socket_message(&join_message("sub-1", "orders", "group-a", Some("item-1")))
+            .handle_socket_message(&leave_message("sub-1", "orders", "group-a", None))
             .await
-            .expect("unauthorized join should not fail");
-
-        let outbound = recv_stream_message(&mut rx).await;
-        assert_eq!(outbound.stream_name, "orders");
-        assert_eq!(outbound.group_id, "group-a");
-        assert_eq!(outbound.id.as_deref(), Some("item-1"));
-        assert!(matches!(
-            outbound.event,
-            StreamOutboundMessage::Unauthorized {}
-        ));
+            .expect("leave");
+        let leave = test_support::next(&mut leaves).await;
+        assert_eq!(leave["subscription_id"], "sub-1");
+        assert_eq!(leave["context"], json!({ "user": "alice" }));
         assert!(connection.subscriptions.is_empty());
-
-        connection
-            .handle_stream_message(&stream_message(
-                "orders",
-                "group-a",
-                Some("item-1"),
-                StreamOutboundMessage::Update {
-                    data: json!({ "ignored": true }),
-                },
-            ))
-            .await
-            .expect("fan-out without subscriptions should succeed");
-        assert!(timeout(Duration::from_millis(50), rx.recv()).await.is_err());
     }
 
     #[tokio::test]
@@ -795,38 +516,15 @@ mod tests {
             .await;
         assert!(matches!(set_result, FunctionResult::Success(_)));
 
-        let (leave_tx, mut leave_rx) = mpsc::unbounded_channel::<String>();
-        register_function(&engine, "test::leave_handler", move |input| {
-            let leave_tx = leave_tx.clone();
-            async move {
-                leave_tx
-                    .send(
-                        input["subscription_id"]
-                            .as_str()
-                            .expect("subscription_id in leave trigger")
-                            .to_string(),
-                    )
-                    .expect("send leave subscription id");
-                FunctionResult::Success(None)
-            }
-        });
-        connection
-            .triggers
-            .leave_triggers
-            .write()
-            .await
-            .insert(Trigger {
-                id: "leave-trigger".to_string(),
-                trigger_type: LEAVE_TRIGGER_TYPE.to_string(),
-                function_id: "test::leave_handler".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
+        let mut leaves = test_support::capture(&engine, "test::on-leave");
+        let _leave_socket = test_support::observe(
+            &engine,
+            "obs-leave",
+            STREAM_ON_LEAVE,
+            "test::on-leave",
+            None,
+        )
+        .await;
 
         connection
             .handle_socket_message(&join_message("sub-list", "orders", "group-a", None))
@@ -856,9 +554,12 @@ mod tests {
 
         connection.cleanup().await;
 
-        let first = leave_rx.recv().await.expect("first cleanup leave event");
-        let second = leave_rx.recv().await.expect("second cleanup leave event");
-        let mut received = vec![first, second];
+        let first = test_support::next(&mut leaves).await["subscription_id"].clone();
+        let second = test_support::next(&mut leaves).await["subscription_id"].clone();
+        let mut received = vec![
+            first.as_str().expect("a subscription id").to_string(),
+            second.as_str().expect("a subscription id").to_string(),
+        ];
         received.sort();
         assert_eq!(
             received,
@@ -948,84 +649,16 @@ mod tests {
             .expect("send failure should be swallowed");
     }
 
+    /// Unobserved, a join builds no event.
     #[tokio::test]
-    async fn handle_join_leave_ignores_trigger_errors() {
-        let (engine, _module, connection, _rx) = build_connection(None);
-        let (payload_tx, payload_rx) = oneshot::channel::<Value>();
-        let payload_tx = Arc::new(std::sync::Mutex::new(Some(payload_tx)));
-        let payload_tx_clone = payload_tx.clone();
-
-        register_function(&engine, "test::join_error", move |input| {
-            let payload_tx_clone = payload_tx_clone.clone();
-            async move {
-                if let Some(tx) = payload_tx_clone.lock().expect("lock oneshot").take() {
-                    let _ = tx.send(input);
-                }
-                FunctionResult::Failure(ErrorBody {
-                    code: "JOIN".to_string(),
-                    message: "boom".to_string(),
-                    stacktrace: None,
-                })
-            }
-        });
+    async fn an_unobserved_join_builds_nothing() {
+        let (_engine, _module, connection, _rx) = build_connection(None);
+        let before = crate::observer::events::payloads_built();
         connection
-            .triggers
-            .join_triggers
-            .write()
+            .handle_socket_message(&join_message("sub-quiet", "orders", "group-a", None))
             .await
-            .insert(Trigger {
-                id: "join-error".to_string(),
-                trigger_type: JOIN_TRIGGER_TYPE.to_string(),
-                function_id: "test::join_error".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
-
-        let result = connection
-            .handle_join_leave(&join_message("sub-err", "orders", "group-a", None))
-            .await;
-        assert!(!result.unauthorized);
-
-        let payload = payload_rx.await.expect("join payload from failing trigger");
-        assert_eq!(payload["subscription_id"], "sub-err");
-        assert_eq!(payload["stream_name"], "orders");
-        assert_eq!(payload["group_id"], "group-a");
-    }
-
-    #[tokio::test]
-    async fn handle_join_leave_ignores_non_boolean_unauthorized_values() {
-        let (engine, _module, connection, _rx) = build_connection(None);
-
-        register_function(&engine, "test::join_invalid_auth", |_input| async move {
-            FunctionResult::Success(Some(json!({ "unauthorized": "nope" })))
-        });
-        connection
-            .triggers
-            .join_triggers
-            .write()
-            .await
-            .insert(Trigger {
-                id: "join-invalid-auth".to_string(),
-                trigger_type: JOIN_TRIGGER_TYPE.to_string(),
-                function_id: "test::join_invalid_auth".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
-
-        let result = connection
-            .handle_join_leave(&join_message("sub-invalid", "orders", "group-a", None))
-            .await;
-        assert!(!result.unauthorized);
+            .expect("join");
+        assert_eq!(crate::observer::events::payloads_built(), before);
     }
 
     #[tokio::test]

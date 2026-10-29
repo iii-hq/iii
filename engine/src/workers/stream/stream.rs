@@ -27,15 +27,18 @@ use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResul
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::{net::TcpListener, task::AbortHandle};
-use tracing::Instrument;
 
 use crate::{
-    condition::check_condition,
     deprecation::{self, Caller},
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    event_formats::StreamChangedEvent,
     function::FunctionResult,
-    protocol::ErrorBody,
-    trigger::{Trigger, TriggerType},
+    observer::{
+        Emission,
+        events::{STREAM_ON_CHANGED, payload_built, register_stream_event_sources},
+    },
+    protocol::{DEFAULT_NAMESPACE, ErrorBody},
+    telemetry::inject_traceparent_from_context,
     workers::{
         stream::{
             StreamOutboundMessage, StreamSocketManager, StreamWrapperMessage,
@@ -45,10 +48,6 @@ use crate::{
                 EventData, StreamAuthContext, StreamAuthInput, StreamDeleteInput, StreamGetInput,
                 StreamListAllInput, StreamListAllResult, StreamListGroupsInput, StreamListInput,
                 StreamSendInput, StreamSetInput, StreamUpdateInput,
-            },
-            trigger::{
-                JOIN_TRIGGER_TYPE, LEAVE_TRIGGER_TYPE, STREAM_TRIGGER_TYPE, StreamTrigger,
-                StreamTriggers,
             },
             utils::{headers_to_map, query_to_multi_map},
         },
@@ -66,15 +65,13 @@ struct LiveState {
 
 #[derive(Clone)]
 pub struct StreamWorker {
-    engine: Arc<Engine>,
+    pub(super) engine: Arc<Engine>,
     /// Live config + adapter, swapped atomically by `apply_config`. Readers
     /// clone the inner `Arc`s via `config_snapshot`/`adapter_snapshot`.
     live: Arc<SyncRwLock<LiveState>>,
     /// The config.yaml block; used only for `register_config`'s initial value
     /// and the boot bind/adapter fallback.
     seed: Option<StreamModuleConfig>,
-
-    pub triggers: Arc<StreamTriggers>,
     /// Abort handle for the running axum server task (rebound on host/port
     /// change).
     server_abort: Arc<StdMutex<Option<AbortHandle>>>,
@@ -101,7 +98,7 @@ fn is_loopback_host(host: &str) -> bool {
             .unwrap_or(false)
 }
 
-/// Deprecation entry points that are not function ids or trigger types.
+/// Deprecation entry points that are not function ids.
 const WORKER_ENTRY: &str = "iii-stream worker";
 const WS_LISTENER_ENTRY: &str = "iii-stream WebSocket listener";
 const WS_CONNECTION_ENTRY: &str = "iii-stream WebSocket connection";
@@ -113,22 +110,6 @@ impl StreamWorker {
         deprecation::warn_stream_deprecated(
             entry,
             Caller::from_worker_id(caller_worker_id),
-            &self.engine.worker_registry,
-        );
-    }
-
-    /// Rate-limited deprecation warning for binding one of the iii-stream
-    /// trigger types. Called on bind only, never per delivered event.
-    pub(crate) fn warn_deprecated_trigger_bind(&self, trigger: &Trigger) {
-        let entry = match trigger.trigger_type.as_str() {
-            STREAM_TRIGGER_TYPE => "stream trigger type",
-            JOIN_TRIGGER_TYPE => "stream:join trigger type",
-            LEAVE_TRIGGER_TYPE => "stream:leave trigger type",
-            _ => return,
-        };
-        deprecation::warn_stream_deprecated(
-            entry,
-            Caller::from_worker_uuid(trigger.worker_id),
             &self.engine.worker_registry,
         );
     }
@@ -208,22 +189,14 @@ impl Worker for StreamWorker {
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
-        self.register_config_handler(&engine);
         self.register_functions(engine);
     }
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying StreamWorker");
-        // Best-effort: the trigger is registered outside the worker scope, so
-        // remove it explicitly to keep ReloadManager restarts duplicate-free.
-        let _ = self
-            .engine
-            .trigger_registry
-            .unregister_trigger(
-                super::configuration::CONFIG_TRIGGER_ID.to_string(),
-                Some(super::configuration::CONFIG_TRIGGER_TYPE.to_string()),
-            )
-            .await;
+        // The listener belongs to the engine, so it is stopped explicitly to
+        // keep ReloadManager restarts duplicate-free.
+        super::configuration::stop_listening(&self.engine);
 
         // Serialize with any in-flight `apply_config`, then block future
         // applies/rebinds: `destroyed` short-circuits apply, and clearing
@@ -260,35 +233,7 @@ impl Worker for StreamWorker {
         // Once per process: a reload re-runs initialize but must not repeat it.
         deprecation::warn_stream_deprecated_once(WORKER_ENTRY);
 
-        let _ = self
-            .engine
-            .register_trigger_type(TriggerType::new(
-                JOIN_TRIGGER_TYPE,
-                "Stream join trigger",
-                Box::new(self.clone()),
-                None,
-            ))
-            .await;
-
-        let _ = self
-            .engine
-            .register_trigger_type(TriggerType::new(
-                LEAVE_TRIGGER_TYPE,
-                "Stream leave trigger",
-                Box::new(self.clone()),
-                None,
-            ))
-            .await;
-
-        let _ = self
-            .engine
-            .register_trigger_type(TriggerType::new(
-                STREAM_TRIGGER_TYPE,
-                "Stream trigger",
-                Box::new(self.clone()),
-                None,
-            ))
-            .await;
+        register_stream_event_sources(&self.engine);
 
         Ok(())
     }
@@ -444,32 +389,11 @@ impl Worker for StreamWorker {
             .lock()
             .expect("stream shutdown_rx mutex poisoned") = Some(shutdown_rx);
 
-        // Register the handler before the trigger so an event can never fan out
-        // to a missing function. The `get` check keeps the initial-boot path
-        // (where `register_functions` already ran it) from logging a spurious
-        // overwrite.
-        if self
-            .engine
-            .functions
-            .get(
-                crate::protocol::DEFAULT_NAMESPACE,
-                super::configuration::CONFIG_FN_ID,
-            )
-            .is_none()
-        {
-            self.register_config_handler(&self.engine);
-        }
-        if let Err(err) = super::configuration::register_config_trigger(&self.engine).await {
-            tracing::warn!(
-                error = %err,
-                "iii-stream: failed to watch configuration changes; hot-reload disabled"
-            );
-        } else {
-            // Catch-up pass: replay any `configuration::set` that landed between
-            // the boot fetch above and the trigger subscription. Routed through
-            // `on_config_change` so a timed-out catch-up gets the one-shot retry.
-            super::configuration::on_config_change(self).await;
-        }
+        super::configuration::listen_for_changes(self);
+        // Catch-up pass: replay any `configuration::set` that landed between
+        // the boot fetch above and the subscription. Routed through
+        // `on_config_change` so a timed-out catch-up gets the one-shot retry.
+        super::configuration::on_config_change(self).await;
 
         Ok(())
     }
@@ -497,7 +421,6 @@ impl ConfigurableWorker for StreamWorker {
                 adapter,
             })),
             seed,
-            triggers: Arc::new(StreamTriggers::new()),
             server_abort: Arc::new(StdMutex::new(None)),
             watch_abort: Arc::new(StdMutex::new(None)),
             shutdown_rx: Arc::new(StdMutex::new(None)),
@@ -593,27 +516,6 @@ impl StreamWorker {
         Ok(Self::build(engine, parsed, adapter))
     }
 
-    /// Register the `iii-stream::on-config-change` handler (idempotent by id).
-    fn register_config_handler(&self, engine: &Arc<Engine>) {
-        let worker = self.clone();
-        engine.register_function_handler(
-            RegisterFunctionRequest {
-                function_id: super::configuration::CONFIG_FN_ID.to_string(),
-                description: Some("Apply iii-stream configuration changes".to_string()),
-                request_format: None,
-                response_format: None,
-                metadata: Some(serde_json::json!({ "internal": true })),
-            },
-            Handler::new(move |_input: Value| {
-                let worker = worker.clone();
-                async move {
-                    super::configuration::on_config_change(&worker).await;
-                    FunctionResult::Success(Some(serde_json::json!({})))
-                }
-            }),
-        );
-    }
-
     /// Spawn the axum WebSocket server for an already-bound listener and return
     /// its abort handle. The socket manager reads the worker's live config and
     /// adapter per connection, so `auth_function`/adapter edits apply without a
@@ -627,7 +529,6 @@ impl StreamWorker {
         let socket_manager = Arc::new(StreamSocketManager::new(
             self.engine.clone(),
             Arc::new(self.clone()),
-            self.triggers.clone(),
         ));
         let app = Router::new()
             .route("/", get(ws_handler))
@@ -864,172 +765,56 @@ impl StreamWorker {
 }
 
 impl StreamWorker {
-    /// Invoke triggers for a given event type with condition checks
-    async fn invoke_triggers(&self, event_data: StreamWrapperMessage) {
-        let engine = self.engine.clone();
-        let event_stream_name = event_data.stream_name.clone();
-
-        // Collect relevant trigger IDs and clone the triggers we need
-        // Only triggers with matching stream_name are registered, so we only need to look up by stream_name
-        let triggers_to_invoke: Vec<StreamTrigger> = {
-            let by_name = self.triggers.stream_triggers_by_name.read().await;
-            let triggers_map = self.triggers.stream_triggers.read().await;
-            let mut triggers = Vec::new();
-
-            // Get triggers for this specific stream_name
-            if let Some(ids_for_stream) = by_name.get(&event_stream_name) {
-                for trigger_id in ids_for_stream {
-                    if let Some(trigger) = triggers_map.get(trigger_id) {
-                        let group_id = trigger.config.group_id.clone().unwrap_or("".to_string());
-                        let item_id = trigger.config.item_id.clone().unwrap_or("".to_string());
-                        let event_item_id = event_data.id.clone().unwrap_or("".to_string());
-
-                        if (!group_id.is_empty() && group_id != event_data.group_id)
-                            || (!item_id.is_empty() && item_id != event_item_id)
-                        {
-                            continue;
-                        }
-
-                        triggers.push(trigger.clone());
-                    }
-                }
-            }
-
-            triggers
-        };
-
-        // No trigger matches this stream write (name index already filtered by
-        // stream_name/group_id/item_id) → skip the `stream_triggers` eval span
-        // and the spawn entirely. The engine fires one evaluation per stream
-        // write, so this avoids the span/CPU/export for the common no-match case.
-        if triggers_to_invoke.is_empty() {
+    /// One call of `stream::on-changed` for `message`, a write or a custom
+    /// event the stream's subscribers get too. Nothing is built while nothing
+    /// observes the source. A delivery on a devtools stream (`iii:devtools:*`,
+    /// e.g. the console's state feed) carries no trace context: a traced
+    /// delivery of observability-derived data would re-enter the span store it
+    /// was derived from, an endless loop. Every other one runs in the
+    /// writer's trace.
+    fn emit_changed(&self, message: &StreamWrapperMessage) {
+        let observers = &self.engine.observers;
+        if !observers.is_observed(DEFAULT_NAMESPACE, STREAM_ON_CHANGED) {
             return;
         }
-
-        // The observability pipeline must never observe itself: deliveries on
-        // devtools streams (`iii:devtools:*`, e.g. the console's state feed)
-        // get NO eval span and NO trace context. A traced delivery of
-        // observability-derived data re-enters the span store it was derived
-        // from — span stored → next push → new delivery spans → stored → … —
-        // an endless loop that floods storage (seen live with the since-
-        // removed trace feeds: `stream_triggers` + `call
-        // iii::console::all_spans::*` dominating storage). With an empty
-        // ambient context, `Engine::call_with_metadata` injects no
-        // traceparent, so the consumer-callback invocations emit no spans
-        // either (`telemetry::should_suppress_invocation_span`).
-        let observability_feed = event_stream_name.starts_with("iii:devtools:");
-
-        // For every other stream, attach the writer's OTel context (the engine
-        // carries it even for suppressed builtins — see
-        // invocation::handle_invocation), so the spawned trigger fan-out
-        // parents to the writer instead of orphaning `stream_triggers` into a
-        // brand-new, disconnected trace.
-        let parent_cx = if observability_feed {
-            opentelemetry::Context::new()
+        let traceparent = if message.stream_name.starts_with("iii:devtools:") {
+            None
         } else {
-            opentelemetry::Context::current()
+            inject_traceparent_from_context(&opentelemetry::Context::current())
         };
-
-        if let Ok(event_data) = serde_json::to_value(event_data) {
-            let trigger_span = if observability_feed {
-                tracing::Span::none()
-            } else {
-                let _guard = parent_cx.attach();
-                tracing::info_span!(
-                    "stream_triggers",
-                    "iii.function.kind" = "internal",
-                    otel.status_code = tracing::field::Empty
-                )
-            };
-            tokio::spawn(
-                async move {
-                    let mut has_error = false;
-
-                    for stream_trigger in triggers_to_invoke {
-                        let trigger = &stream_trigger.trigger;
-
-                        // Check condition if specified (using pre-parsed value)
-                        let condition_function_id =
-                            stream_trigger.config.condition_function_id.clone();
-
-                        if let Some(ref condition_id) = condition_function_id {
-                            tracing::debug!(
-                                condition_function_id = %condition_id,
-                                "Checking trigger conditions"
-                            );
-                            match check_condition(
-                                engine.as_ref(),
-                                &trigger.namespace,
-                                condition_id,
-                                event_data.clone(),
-                            )
-                            .await
-                            {
-                                Ok(true) => {}
-                                Ok(false) => {
-                                    tracing::debug!(
-                                        function_id = %trigger.function_id,
-                                        "Condition check failed, skipping handler"
-                                    );
-                                    continue;
-                                }
-                                Err(err) => {
-                                    tracing::error!(
-                                        condition_function_id = %condition_id,
-                                        error = ?err,
-                                        "Error invoking condition function"
-                                    );
-                                    has_error = true;
-                                    continue;
-                                }
-                            }
-                        }
-
-                        // Invoke the handler function
-                        tracing::debug!(
-                            function_id = %trigger.function_id,
-                            "Invoking trigger"
-                        );
-
-                        let call_result = engine
-                            .call_with_metadata_ns(
-                                &trigger.namespace,
-                                &trigger.function_id,
-                                event_data.clone(),
-                                trigger.metadata.clone(),
-                            )
-                            .await;
-
-                        match call_result {
-                            Ok(_) => {
-                                tracing::debug!(
-                                    function_id = %trigger.function_id,
-                                    "Trigger handler invoked successfully"
-                                );
-                            }
-                            Err(err) => {
-                                has_error = true;
-                                tracing::error!(
-                                    function_id = %trigger.function_id,
-                                    error = ?err,
-                                    "Error invoking trigger handler"
-                                );
-                            }
-                        }
-                    }
-
-                    if has_error {
-                        tracing::Span::current().record("otel.status_code", "ERROR");
-                    } else {
-                        tracing::Span::current().record("otel.status_code", "OK");
-                    }
-                }
-                .instrument(trigger_span),
-            );
-        } else {
-            tracing::error!("Failed to convert event data to value");
-        }
+        observers.emit_with(
+            DEFAULT_NAMESPACE,
+            STREAM_ON_CHANGED,
+            Emission {
+                depth: None,
+                traceparent,
+            },
+            || {
+                payload_built();
+                changed_event(message)
+            },
+        );
     }
+}
+
+/// The `stream::on-changed` event of `message`.
+fn changed_event(message: &StreamWrapperMessage) -> Option<Value> {
+    let event_type = match &message.event {
+        StreamOutboundMessage::Sync { .. } => "sync",
+        StreamOutboundMessage::Create { .. } => "create",
+        StreamOutboundMessage::Update { .. } => "update",
+        StreamOutboundMessage::Delete { .. } => "delete",
+        StreamOutboundMessage::Event { .. } => "event",
+    };
+    serde_json::to_value(StreamChangedEvent {
+        event_type: event_type.to_string(),
+        timestamp: message.timestamp,
+        stream_name: message.stream_name.clone(),
+        group_id: message.group_id.clone(),
+        id: message.id.clone(),
+        event: serde_json::to_value(&message.event).ok()?,
+    })
+    .ok()
 }
 
 #[service(name = "stream")]
@@ -1110,7 +895,7 @@ impl StreamWorker {
                     event,
                 };
 
-                self.invoke_triggers(message.clone()).await;
+                self.emit_changed(&message);
 
                 if let Err(e) = adapter.emit_event(message).await {
                     // The value is stored; only live subscribers miss this
@@ -1260,7 +1045,7 @@ impl StreamWorker {
                         event: StreamOutboundMessage::Delete { data: old_value },
                     };
 
-                    self.invoke_triggers(message.clone()).await;
+                    self.emit_changed(&message);
 
                     if let Err(e) = adapter.emit_event(message).await {
                         // The delete happened; only live subscribers miss
@@ -1445,7 +1230,7 @@ impl StreamWorker {
             },
         };
 
-        self.invoke_triggers(message.clone()).await;
+        self.emit_changed(&message);
 
         if let Err(e) = self.adapter_snapshot().emit_event(message).await {
             tracing::error!(error = %e, "Failed to emit stream send event");
@@ -1541,7 +1326,7 @@ impl StreamWorker {
                     event,
                 };
 
-                self.invoke_triggers(message.clone()).await;
+                self.emit_changed(&message);
 
                 if let Err(e) = adapter.emit_event(message).await {
                     // The value is stored; only live subscribers miss this
@@ -1587,13 +1372,12 @@ mod tests {
     use crate::{
         builtins::pubsub_lite::Subscriber,
         engine::{Engine, EngineTrait},
+        observer::events::test_support,
         protocol::ErrorBody,
-        trigger::Trigger,
         workers::stream::{
             StreamMetadata,
             adapters::{StreamAdapter, StreamConnection},
             config::StreamModuleConfig,
-            trigger::StreamTriggerConfig,
         },
     };
 
@@ -2520,346 +2304,58 @@ mod tests {
         ));
     }
 
+    /// A stream write is a call of `stream::on-changed`, filtered on the
+    /// stream name; unobserved, nothing is built.
     #[tokio::test]
-    async fn test_stream_invoke_triggers_covers_conditions_and_errors() {
+    async fn stream_writes_are_an_engine_hosted_source() {
         let module = create_test_module();
-        let handler_calls = Arc::new(AtomicUsize::new(0));
-        let handler_calls_clone = handler_calls.clone();
-
-        module.engine.register_function_handler(
-            RegisterFunctionRequest {
-                function_id: "test::stream_handler".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            Handler::new(move |_input| {
-                let handler_calls_clone = handler_calls_clone.clone();
-                async move {
-                    handler_calls_clone.fetch_add(1, Ordering::SeqCst);
-                    FunctionResult::Success(None)
-                }
-            }),
-        );
-        module.engine.register_function_handler(
-            RegisterFunctionRequest {
-                function_id: "test::stream_handler_fail".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            Handler::new(|_input| async move {
-                FunctionResult::Failure(ErrorBody {
-                    code: "HANDLER".to_string(),
-                    message: "handler failed".to_string(),
-                    stacktrace: None,
-                })
-            }),
-        );
-        module.engine.register_function_handler(
-            RegisterFunctionRequest {
-                function_id: "test::cond_false".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            Handler::new(|_input| async move {
-                FunctionResult::Success(Some(serde_json::json!(false)))
-            }),
-        );
-        module.engine.register_function_handler(
-            RegisterFunctionRequest {
-                function_id: "test::cond_none".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            Handler::new(|_input| async move { FunctionResult::Success(None) }),
-        );
-        module.engine.register_function_handler(
-            RegisterFunctionRequest {
-                function_id: "test::cond_error".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            Handler::new(|_input| async move {
-                FunctionResult::Failure(ErrorBody {
-                    code: "COND".to_string(),
-                    message: "condition failed".to_string(),
-                    stacktrace: None,
-                })
-            }),
-        );
-
-        let mut stream_triggers = module.triggers.stream_triggers.write().await;
-        stream_triggers.insert(
-            "ok".to_string(),
-            StreamTrigger {
-                trigger: Trigger {
-                    id: "ok".to_string(),
-                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
-                    function_id: "test::stream_handler".to_string(),
-                    config: serde_json::json!({}),
-                    worker_id: None,
-                    metadata: None,
-                    namespace: "default".to_string(),
-                    trigger_namespace: None,
-                    home_namespace: crate::protocol::default_namespace(),
-                    provider_namespace: crate::protocol::default_namespace(),
-                },
-                config: StreamTriggerConfig {
-                    stream_name: Some("events".to_string()),
-                    group_id: None,
-                    item_id: None,
-                    condition_function_id: None,
-                },
-            },
-        );
-        stream_triggers.insert(
-            "skip-false".to_string(),
-            StreamTrigger {
-                trigger: Trigger {
-                    id: "skip-false".to_string(),
-                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
-                    function_id: "test::stream_handler".to_string(),
-                    config: serde_json::json!({}),
-                    worker_id: None,
-                    metadata: None,
-                    namespace: "default".to_string(),
-                    trigger_namespace: None,
-                    home_namespace: crate::protocol::default_namespace(),
-                    provider_namespace: crate::protocol::default_namespace(),
-                },
-                config: StreamTriggerConfig {
-                    stream_name: Some("events".to_string()),
-                    group_id: None,
-                    item_id: None,
-                    condition_function_id: Some("test::cond_false".to_string()),
-                },
-            },
-        );
-        stream_triggers.insert(
-            "skip-none".to_string(),
-            StreamTrigger {
-                trigger: Trigger {
-                    id: "skip-none".to_string(),
-                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
-                    function_id: "test::stream_handler".to_string(),
-                    config: serde_json::json!({}),
-                    worker_id: None,
-                    metadata: None,
-                    namespace: "default".to_string(),
-                    trigger_namespace: None,
-                    home_namespace: crate::protocol::default_namespace(),
-                    provider_namespace: crate::protocol::default_namespace(),
-                },
-                config: StreamTriggerConfig {
-                    stream_name: Some("events".to_string()),
-                    group_id: None,
-                    item_id: None,
-                    condition_function_id: Some("test::cond_none".to_string()),
-                },
-            },
-        );
-        stream_triggers.insert(
-            "skip-error".to_string(),
-            StreamTrigger {
-                trigger: Trigger {
-                    id: "skip-error".to_string(),
-                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
-                    function_id: "test::stream_handler".to_string(),
-                    config: serde_json::json!({}),
-                    worker_id: None,
-                    metadata: None,
-                    namespace: "default".to_string(),
-                    trigger_namespace: None,
-                    home_namespace: crate::protocol::default_namespace(),
-                    provider_namespace: crate::protocol::default_namespace(),
-                },
-                config: StreamTriggerConfig {
-                    stream_name: Some("events".to_string()),
-                    group_id: None,
-                    item_id: None,
-                    condition_function_id: Some("test::cond_error".to_string()),
-                },
-            },
-        );
-        stream_triggers.insert(
-            "handler-error".to_string(),
-            StreamTrigger {
-                trigger: Trigger {
-                    id: "handler-error".to_string(),
-                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
-                    function_id: "test::stream_handler_fail".to_string(),
-                    config: serde_json::json!({}),
-                    worker_id: None,
-                    metadata: None,
-                    namespace: "default".to_string(),
-                    trigger_namespace: None,
-                    home_namespace: crate::protocol::default_namespace(),
-                    provider_namespace: crate::protocol::default_namespace(),
-                },
-                config: StreamTriggerConfig {
-                    stream_name: Some("events".to_string()),
-                    group_id: None,
-                    item_id: None,
-                    condition_function_id: None,
-                },
-            },
-        );
-        drop(stream_triggers);
-
-        module
-            .triggers
-            .stream_triggers_by_name
-            .write()
-            .await
-            .insert(
-                "events".to_string(),
-                vec![
-                    "ok".to_string(),
-                    "skip-false".to_string(),
-                    "skip-none".to_string(),
-                    "skip-error".to_string(),
-                    "handler-error".to_string(),
-                ],
-            );
-
-        module
-            .invoke_triggers(StreamWrapperMessage {
-                event_type: "stream".to_string(),
-                timestamp: Utc::now().timestamp_millis(),
-                stream_name: "events".to_string(),
-                group_id: "group".to_string(),
-                id: Some("item-1".to_string()),
-                event: StreamOutboundMessage::Create {
-                    data: serde_json::json!({ "x": 1 }),
-                },
-            })
+        let engine = module.engine.clone();
+        register_stream_event_sources(&engine);
+        let set = |stream_name: &str, data: Value| StreamSetInput {
+            stream_name: stream_name.to_string(),
+            group_id: "group-a".to_string(),
+            item_id: "item-1".to_string(),
+            data,
+            caller_worker_id: None,
+        };
+        let before = payload_built_count();
+        let _ = module
+            .set(set("orders", serde_json::json!({ "n": 0 })))
             .await;
+        assert_eq!(payload_built_count(), before, "unobserved: nothing built");
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        // Expected call count: 2
-        // - "ok":          no condition, handler called           -> +1
-        // - "skip-false":  condition returns false                -> skipped
-        // - "skip-none":   condition returns None => Ok(true)     -> +1 (check_condition treats None as pass)
-        // - "skip-error":  condition returns error                -> skipped
-        // - "handler-error": no condition, handler fails (no add) -> +0
-        assert_eq!(handler_calls.load(Ordering::SeqCst), 2);
-    }
-
-    /// BUG 1 (real-user path): a stream trigger registered by a namespaced
-    /// worker must fire the target — and evaluate its condition — in that
-    /// worker's namespace. `stream::react` exists in both `orders`
-    /// ("from-orders") and `default` ("from-default"); the `orders` trigger must
-    /// fire "from-orders". `stream::cond` exists ONLY in `orders`, so a
-    /// condition resolved in `default` is not-found → the handler is skipped
-    /// (also RED). Drives the real mechanism: `invoke_triggers`.
-    #[tokio::test]
-    async fn stream_trigger_fires_target_and_condition_in_registering_namespace() {
-        let module = create_test_module();
-        let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-
-        for (ns, tag) in [("orders", "from-orders"), ("default", "from-default")] {
-            let fired = fired.clone();
-            module.engine.register_function_handler_ns(
-                ns,
-                RegisterFunctionRequest {
-                    function_id: "stream::react".to_string(),
-                    description: None,
-                    request_format: None,
-                    response_format: None,
-                    metadata: None,
-                },
-                Handler::new(move |_input| {
-                    let fired = fired.clone();
-                    async move {
-                        fired.lock().unwrap().push(tag.to_string());
-                        FunctionResult::Success(None)
-                    }
-                }),
-            );
-        }
-        module.engine.register_function_handler_ns(
-            "orders",
-            RegisterFunctionRequest {
-                function_id: "stream::cond".to_string(),
-                description: None,
-                request_format: None,
-                response_format: None,
-                metadata: None,
-            },
-            Handler::new(
-                |_input| async move { FunctionResult::Success(Some(serde_json::json!(true))) },
-            ),
-        );
-
-        module.triggers.stream_triggers.write().await.insert(
-            "ns-trig".to_string(),
-            StreamTrigger {
-                trigger: Trigger {
-                    id: "ns-trig".to_string(),
-                    trigger_type: STREAM_TRIGGER_TYPE.to_string(),
-                    function_id: "stream::react".to_string(),
-                    config: serde_json::json!({}),
-                    worker_id: None,
-                    metadata: None,
-                    namespace: "orders".to_string(),
-                    trigger_namespace: None,
-                    home_namespace: crate::protocol::default_namespace(),
-                    provider_namespace: crate::protocol::default_namespace(),
-                },
-                config: StreamTriggerConfig {
-                    stream_name: Some("events".to_string()),
-                    group_id: None,
-                    item_id: None,
-                    condition_function_id: Some("stream::cond".to_string()),
-                },
-            },
-        );
-        module
-            .triggers
-            .stream_triggers_by_name
-            .write()
-            .await
-            .insert("events".to_string(), vec!["ns-trig".to_string()]);
-
-        module
-            .invoke_triggers(StreamWrapperMessage {
-                event_type: "stream".to_string(),
-                timestamp: Utc::now().timestamp_millis(),
-                stream_name: "events".to_string(),
-                group_id: "group".to_string(),
-                id: Some("item-1".to_string()),
-                event: StreamOutboundMessage::Create {
-                    data: serde_json::json!({ "x": 1 }),
-                },
-            })
+        let mut sink = test_support::capture(&engine, "test::on-changed");
+        let _socket = test_support::observe(
+            &engine,
+            "obs-changed",
+            STREAM_ON_CHANGED,
+            "test::on-changed",
+            Some(serde_json::json!({ "input.stream_name": "orders" })),
+        )
+        .await;
+        let _ = module
+            .set(set("invoices", serde_json::json!({ "n": 1 })))
             .await;
-
-        // Poll for the spawned trigger task instead of a fixed sleep, which can
-        // race the dispatch under load.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline && fired.lock().unwrap().is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        let fired = fired.lock().unwrap().clone();
+        let _ = module
+            .set(set("orders", serde_json::json!({ "n": 2 })))
+            .await;
+        let event = test_support::next(&mut sink).await;
         assert_eq!(
-            fired,
-            vec!["from-orders".to_string()],
-            "the orders stream trigger must fire the orders target via its orders condition; \
-             got: {fired:?}"
+            event["stream_name"], "orders",
+            "the filter skipped invoices"
         );
+        assert_eq!(event["group_id"], "group-a");
+        assert_eq!(event["id"], "item-1");
+        assert_eq!(event["event_type"], "update");
+        assert_eq!(event["event"]["data"], serde_json::json!({ "n": 2 }));
+    }
+
+    fn payload_built_count() -> usize {
+        crate::observer::events::payloads_built()
     }
 
     #[tokio::test]
-    async fn test_stream_initialize_registers_trigger_types_and_destroy_calls_adapter() {
+    async fn test_stream_initialize_registers_its_sources_and_destroy_calls_adapter() {
         let adapter = Arc::new(FakeStreamAdapter::default());
         let module = create_module_with_adapter(adapter.clone());
 
@@ -2885,15 +2381,20 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert!(module.engine.trigger_registry.trigger_types.contains_key(
-            &crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, JOIN_TRIGGER_TYPE)
-        ));
-        assert!(module.engine.trigger_registry.trigger_types.contains_key(
-            &crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, LEAVE_TRIGGER_TYPE)
-        ));
-        assert!(module.engine.trigger_registry.trigger_types.contains_key(
-            &crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, STREAM_TRIGGER_TYPE)
-        ));
+        for source in [
+            STREAM_ON_CHANGED,
+            crate::observer::events::STREAM_ON_JOIN,
+            crate::observer::events::STREAM_ON_LEAVE,
+        ] {
+            assert!(
+                module
+                    .engine
+                    .functions
+                    .get(crate::protocol::DEFAULT_NAMESPACE, source)
+                    .is_some(),
+                "{source}"
+            );
+        }
         assert!(adapter.watch_events_called.load(Ordering::SeqCst));
 
         module.destroy().await.expect("stream destroy should work");

@@ -40,7 +40,8 @@ pub struct InvocationCtx {
 }
 
 enum CallerOrigin {
-    /// Engine orchestration (hooks, middleware, trigger fires): no caller.
+    /// Engine orchestration (hooks, middleware, engine-hosted sources): no
+    /// caller.
     None,
     /// A call from a worker connection. `worker_id` / `worker_name` are
     /// stamped from the connection and cannot be forged; the rest is what the
@@ -62,9 +63,23 @@ impl InvocationCtx {
 
     /// Engine orchestration inside a chain of observers: no caller, the
     /// enclosing depth kept, so a chain that passes through an engine-hosted
-    /// function or a trigger fan-out keeps counting toward the loop guard.
+    /// function or an engine-hosted source keeps counting toward the loop
+    /// guard.
     pub fn engine_internal_at(observe_depth: u32) -> Self {
         Self::with_origin(CallerOrigin::None, observe_depth, None)
+    }
+
+    /// A call of an engine-hosted source: the engine is the caller
+    /// (`{ worker_name: "iii-engine" }`), at the depth of what caused it.
+    pub fn engine_source(observe_depth: u32) -> Self {
+        Self::with_origin(
+            CallerOrigin::Engine(Caller {
+                worker_name: Some(ENGINE_CALLER_NAME.to_string()),
+                ..Caller::default()
+            }),
+            observe_depth,
+            None,
+        )
     }
 
     /// The depth of the invocation whose handler is running; 0 outside one.
@@ -92,9 +107,10 @@ impl InvocationCtx {
         )
     }
 
-    /// An owner delivery (`obs.call`): the owner's connection is the caller,
-    /// as for any call it makes, and the call carries the activation.
-    pub fn owner_delivery(
+    /// A call through an observer (`iii.call({ observer, payload })`): the
+    /// host's connection is the caller, as for any call it makes, and the
+    /// call carries the activation.
+    pub fn observer_call(
         worker_id: Uuid,
         workers: Arc<WorkerConnectionRegistry>,
         asserted: Option<Box<Caller>>,

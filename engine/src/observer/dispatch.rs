@@ -4,8 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! The routed hook, reports, owner deliveries and activations (protocol.md
-//! §3.2, §3.4, §3.5).
+//! The routed hook, reports, calls through an observer and activations
+//! (protocol.md §3.2, §3.4; v2 §4.6).
 //!
 //! `InvocationHandler::handle_invocation_inner` asks [`ObserverRegistry::watch`]
 //! before running a handler: one atomic load and, only when some function is
@@ -48,7 +48,7 @@ use super::{
 };
 use crate::{
     protocol::{
-        Activation, Caller, Deliver, Delivery, DroppedReportStats, ErrorBody, InvocationStatus,
+        Activation, Caller, Deliver, DroppedReportStats, ErrorBody, InvocationStatus,
         LocalFunctionStats, ObservedItem, ObservedItems, On, observe_codes,
     },
     worker_connections::WorkerConnection,
@@ -122,7 +122,7 @@ pub(crate) const REPORT_HOLD_PER_READ: u32 = 4;
 /// [`REPORT_BACKPRESSURE_WAIT`] plus five times the time the engine takes to
 /// read the reports ahead of it, however long they keep overflowing. Reading
 /// meanwhile means decoding reports only to drop them: reading half the time
-/// cost a one-vCPU engine about a third of its activations in an emit flood.
+/// cost a one-vCPU engine about a third of its activations in a report flood.
 #[derive(Debug, Default)]
 pub struct ReportHold {
     not_before: Option<tokio::time::Instant>,
@@ -219,7 +219,7 @@ impl QueueBudget {
     }
 }
 
-/// How an event source's event is evaluated.
+/// How an engine-hosted source's event is evaluated.
 #[derive(Debug, Default, Clone)]
 pub struct Emission {
     /// The depth of what caused the event; `None`: the running invocation's.
@@ -243,9 +243,20 @@ fn approx_size(value: &Value) -> usize {
     }
 }
 
+/// `delivery` label: the engine evaluated the call.
+const ENGINE_DELIVERY: &str = "engine";
+/// `delivery` label: the call's host reported the match.
+const HOST_DELIVERY: &str = "host";
+/// `delivery` label: a call through an observer.
+const OBSERVER_CALL_DELIVERY: &str = "observer_call";
+
 /// A completed observed invocation (or a reported one), as its activations
 /// see it. Payloads are shared: each activation clones what it ships.
 pub(crate) struct Completed {
+    /// Who matched it, as the `delivery` label of
+    /// `iii.observer.activations.total`: [`ENGINE_DELIVERY`] or
+    /// [`HOST_DELIVERY`].
+    delivery: &'static str,
     namespace: String,
     function_id: String,
     invocation_id: String,
@@ -325,9 +336,9 @@ impl Drop for Slot {
 }
 
 impl ObserverRegistry {
-    /// The active observers of `(namespace, function_id)` when it is an auto
-    /// function with any. The routed hot path: when nothing is observed this
-    /// is one atomic load, and otherwise one more hash lookup.
+    /// The active observers of `(namespace, function_id)`, when it has any.
+    /// The routed hot path: when nothing is observed this is one atomic load,
+    /// and otherwise one more hash lookup.
     #[inline]
     pub fn watch(&self, namespace: &str, function_id: &str) -> Option<Arc<ActiveSet>> {
         let observed = self.observed.load();
@@ -339,14 +350,6 @@ impl ObserverRegistry {
             .cloned()
     }
 
-    /// [`Self::watch`] for the routed hook: an event source's own handler
-    /// only refuses direct calls, which are not its events.
-    #[inline]
-    pub fn watch_routed(&self, namespace: &str, function_id: &str) -> Option<Arc<ActiveSet>> {
-        self.watch(namespace, function_id)
-            .filter(|set| !set.event_source)
-    }
-
     /// Whether `(namespace, function_id)` has an active observer: what an
     /// event source checks before building an event.
     #[inline]
@@ -354,12 +357,13 @@ impl ObserverRegistry {
         self.watch(namespace, function_id).is_some()
     }
 
-    /// One event of an engine-hosted event source (see
-    /// [`super::events`]): evaluated like a successful invocation of
-    /// `(namespace, function_id)` whose input is the event, with the engine
-    /// as the caller and the depth of the invocation that caused it.
-    /// `build` runs only when an active observer needs the event and the
-    /// evaluator has room; unobserved, this costs what [`Self::watch`] costs.
+    /// One call of an engine-hosted source (see [`super::events`]): evaluated
+    /// like a successful invocation of `(namespace, function_id)` whose input
+    /// and output are both the event (the source's handler returns it), with
+    /// `{ worker_name: "iii-engine" }` as the caller and the depth of the
+    /// invocation that caused it. `build` runs only when an active observer
+    /// needs the event and the evaluator has room; unobserved, this costs what
+    /// [`Self::watch`] costs.
     pub fn emit(
         self: &Arc<Self>,
         namespace: &str,
@@ -388,7 +392,7 @@ impl ObserverRegistry {
             }
             return;
         }
-        let input = if set.needs.input {
+        let event = if set.needs.input || set.needs.output {
             self.events_built.fetch_add(1, Ordering::Relaxed);
             match build() {
                 Some(event) => Some(Arc::new(event)),
@@ -399,14 +403,15 @@ impl ObserverRegistry {
         };
         let depth = emission.depth.unwrap_or_else(InvocationCtx::current_depth);
         let evaluation = Evaluation {
-            bytes: input.as_deref().map_or(0, approx_size),
+            bytes: event.as_deref().map_or(0, approx_size),
             completed: Completed {
+                delivery: ENGINE_DELIVERY,
                 namespace: namespace.to_string(),
                 function_id: function_id.to_string(),
                 invocation_id: Uuid::new_v4().to_string(),
                 success: true,
-                input,
-                output: None,
+                input: event.clone().filter(|_| set.needs.input),
+                output: event.filter(|_| set.needs.output),
                 error: None,
                 caller: None,
                 metadata: None,
@@ -420,7 +425,7 @@ impl ObserverRegistry {
             },
             set,
             error: None,
-            ctx: Arc::new(InvocationCtx::engine_internal_at(depth)),
+            ctx: Arc::new(InvocationCtx::engine_source(depth)),
         };
         self.enqueue(evaluation);
     }
@@ -550,6 +555,7 @@ impl ObserverRegistry {
         let evaluation = Evaluation {
             bytes,
             completed: Completed {
+                delivery: ENGINE_DELIVERY,
                 namespace: namespace.to_string(),
                 function_id: function_id.to_string(),
                 invocation_id: invocation_id.to_string(),
@@ -793,7 +799,7 @@ impl ObserverRegistry {
                 1,
                 &[
                     KeyValue::new("function_id", observer.function.1.clone()),
-                    KeyValue::new("delivery", "auto"),
+                    KeyValue::new("delivery", pending.event.delivery),
                 ],
             );
         }
@@ -949,11 +955,13 @@ impl ObserverRegistry {
         }
     }
 
-    /// `invocationsobserved` from `connection` (protocol.md §3.4): matched
-    /// local invocations of auto functions and `obs.emit` events of owner
-    /// functions. The reporter must own each item's function; each `matched`
-    /// id must be an active observer of it. The engine does not re-evaluate
-    /// filters: the owner is authoritative for its own function's data.
+    /// `invocationsobserved` from `connection` (protocol.md §3.4): calls of
+    /// the functions it hosts, with the observers its delivery matched. The
+    /// reporter must host each item's function; each `matched` id must be an
+    /// active observer of it whose `on` takes the call's status. The engine
+    /// does not re-evaluate filters: the host is authoritative for its own
+    /// function's calls. An item with `output_is_input` carries its value
+    /// once, as `input`, which is also its `output`.
     ///
     /// Returns the observers whose queue was full for some item, for the
     /// connection's reader to wait on ([`Self::wait_for_room`]); not those
@@ -1004,6 +1012,7 @@ impl ObserverRegistry {
                 observe_depth,
                 traceparent,
                 baggage,
+                output_is_input,
             } = item;
             let key: FnKey = (
                 namespace.unwrap_or_else(|| connection_namespace.to_string()),
@@ -1036,13 +1045,20 @@ impl ObserverRegistry {
             let mut caller = caller.unwrap_or_default();
             caller.worker_id = Some(connection.to_string());
             caller.worker_name = worker_name.clone();
+            let input = input.map(Arc::new);
+            let output = if output_is_input {
+                input.clone()
+            } else {
+                output.map(Arc::new)
+            };
             let completed = Arc::new(Completed {
+                delivery: HOST_DELIVERY,
                 namespace: key.0.clone(),
                 function_id: key.1.clone(),
                 invocation_id,
                 success,
-                input: input.map(Arc::new),
-                output: output.map(Arc::new),
+                input,
+                output,
                 error: error.map(Arc::new),
                 caller: serde_json::to_value(&caller).ok().map(Arc::new),
                 metadata: metadata.map(Arc::new),
@@ -1054,15 +1070,9 @@ impl ObserverRegistry {
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
             });
-            // An auto function's report is an invocation: `on` applies to its
-            // status, as on the routed path. An owner function's is an event
-            // the owner picked; `on` does not apply (protocol.md §3.4).
-            let auto = self
-                .function_entry(&key)
-                .is_none_or(|entry| entry.is_auto());
             for id in &matched {
                 match self.get(id).filter(|o| o.function == key) {
-                    Some(observer) if auto && !accepts(&observer.on, success) => {}
+                    Some(observer) if !accepts(&observer.on, success) => {}
                     Some(observer) => {
                         if self.activate(&observer, &completed)
                             && !full.iter().any(|o| Arc::ptr_eq(o, &observer))
@@ -1092,7 +1102,7 @@ impl ObserverRegistry {
     /// down to half their limit (or the observer is no longer active), for
     /// [`REPORT_BACKPRESSURE_WAIT`] at most. Meanwhile
     /// the engine reads nothing more from that connection: a worker that
-    /// emits faster than the targets take is slowed by its own socket, and
+    /// reports faster than the targets take is slowed by its own socket, and
     /// its SDK drops the excess from its bounded report buffer
     /// (`BUFFER_FULL`), where it costs the engine nothing, instead of the
     /// engine decoding every report to drop it as `OVERFLOW`.
@@ -1147,16 +1157,17 @@ impl ObserverRegistry {
         }
     }
 
-    /// An owner delivery (`obs.call`, protocol.md §3.5): an `InvokeFunction`
-    /// from `worker` carrying `activation`. Validated against the observer,
-    /// then routed to the observer's stored target (D13: the request's
-    /// namespace is ignored) with the observer's metadata, a fresh
-    /// `activation_id` and depth + 1. The result, or the rejection code, goes
-    /// back to the owner.
-    pub async fn owner_call(
+    /// A call through an observer (v2 §4.6): an `InvokeFunction` from
+    /// `worker` carrying `activation`. The observer must exist, `worker` must
+    /// host its function and it must be active; then its policy applies and
+    /// the call is routed to the observer's stored target (the request's
+    /// `function_id` and `namespace` are not read) with the observer's
+    /// metadata, a fresh `activation_id` and depth + 1. The payload goes as
+    /// given. The result, or the refusal code, goes back to the host.
+    pub async fn observer_call(
         self: &Arc<Self>,
         worker: &WorkerConnection,
-        call: OwnerCall,
+        call: ObserverCall,
     ) -> Result<Option<Value>, ErrorBody> {
         let reject = |code: &str, message: String| Err(ErrorBody::new(code, message));
         let Some(observer) = self.get(&call.activation.observer_id) else {
@@ -1173,19 +1184,9 @@ impl ObserverRegistry {
             return reject(
                 observe_codes::NOT_FUNCTION_OWNER,
                 format!(
-                    "only the worker hosting `{}` delivers for its observers",
+                    "only the worker hosting `{}` calls through its observers",
                     observer.function.1
                 ),
-            );
-        }
-        let owner_delivered = self
-            .function_entry(&observer.function)
-            .and_then(|entry| entry.descriptor())
-            .is_some_and(|descriptor| descriptor.delivery() == Delivery::Owner);
-        if !owner_delivered {
-            return reject(
-                observe_codes::NOT_OWNER_DELIVERED,
-                format!("`{}` is not owner-delivered", observer.function.1),
             );
         }
         if !observer.is_active() {
@@ -1194,18 +1195,9 @@ impl ObserverRegistry {
                 format!("observer `{}` is not active", observer.id),
             );
         }
-        if call.function_id != observer.target.1 {
-            return reject(
-                observe_codes::TARGET_MISMATCH,
-                format!(
-                    "observer `{}` targets `{}`, not `{}`",
-                    observer.id, observer.target.1, call.function_id
-                ),
-            );
-        }
 
         // Policy, in order: depth, expiry, max_fires, max_in_flight (no
-        // queue: the owner is waiting for the result).
+        // queue: the host is waiting for the result).
         let depth = call.observe_depth.unwrap_or(0);
         let max_depth = self.config().max_observe_depth;
         if depth.saturating_add(1) > max_depth {
@@ -1243,7 +1235,7 @@ impl ObserverRegistry {
                 return reject(
                     observe_codes::OVERFLOW,
                     format!(
-                        "observer `{}` already has {} deliveries in flight",
+                        "observer `{}` already has {} calls in flight",
                         observer.id, observer.policy.max_in_flight
                     ),
                 );
@@ -1262,15 +1254,15 @@ impl ObserverRegistry {
                 format!("the observer fired {fired} times, its max_fires"),
             );
         }
-        self.deliver_owner_call(worker, &observer, call, depth)
+        self.route_observer_call(worker, &observer, call, depth)
             .await
     }
 
-    async fn deliver_owner_call(
+    async fn route_observer_call(
         &self,
         worker: &WorkerConnection,
         observer: &Arc<Observer>,
-        call: OwnerCall,
+        call: ObserverCall,
         depth: u32,
     ) -> Result<Option<Value>, ErrorBody> {
         let Some(deps) = self.deps.get() else {
@@ -1301,11 +1293,11 @@ impl ObserverRegistry {
                 1,
                 &[
                     KeyValue::new("function_id", observer.function.1.clone()),
-                    KeyValue::new("delivery", "owner"),
+                    KeyValue::new("delivery", OBSERVER_CALL_DELIVERY),
                 ],
             );
         }
-        let ctx = InvocationCtx::owner_delivery(
+        let ctx = InvocationCtx::observer_call(
             worker.id,
             deps.workers.clone(),
             call.caller,
@@ -1331,20 +1323,20 @@ impl ObserverRegistry {
         );
         let timeout = Duration::from_millis(self.config().activation_timeout_ms);
         let outcome = tokio::time::timeout(timeout, invocation).await;
-        // The owner going away halts its calls, this one included: that is
+        // The host going away halts its calls, this one included: that is
         // not the target's failure.
-        let owner_gone = worker
+        let host_gone = worker
             .cleanup_claimed
             .load(std::sync::atomic::Ordering::SeqCst);
-        if outcome.is_err() || owner_gone {
+        if outcome.is_err() || host_gone {
             self.abandon(&observer.target, invocation_id).await;
         }
-        // Tracked on the owner's connection whether or not it gets an answer
+        // Tracked on the host's connection whether or not it gets an answer
         // (an `action: void` call does not).
         worker.remove_invocation(&invocation_id).await;
         match failure_of(&outcome) {
-            Some(failure_reasons::TARGET_UNAVAILABLE) if owner_gone => {}
-            // Not sent: the observer counts a drop, and the owner still gets
+            Some(failure_reasons::TARGET_UNAVAILABLE) if host_gone => {}
+            // Not sent: the observer counts a drop, and the host still gets
             // the `payload_too_large` error below.
             Some(_) if self.not_sent_too_large(observer, invocation_id, &outcome) => {}
             Some(reason) => count_failure(observer, reason),
@@ -1424,10 +1416,9 @@ impl ObserverRegistry {
     }
 }
 
-/// An owner's `obs.call`, as it arrived.
-pub struct OwnerCall {
+/// A host's call through an observer, as it arrived.
+pub struct ObserverCall {
     pub invocation_id: Option<Uuid>,
-    pub function_id: String,
     pub data: Value,
     pub caller: Option<Box<Caller>>,
     pub observe_depth: Option<u32>,
@@ -1449,13 +1440,15 @@ fn accepts(on: &On, success: bool) -> bool {
 /// An SDK-side drop reason as a metric label: the reasons SDKs report
 /// (protocol.md §4), anything else as `OTHER`, so a peer cannot mint labels.
 fn sdk_drop_reason(reason: &str) -> &'static str {
-    if reason.eq_ignore_ascii_case(observe_codes::BUFFER_FULL) {
-        observe_codes::BUFFER_FULL
-    } else if reason.eq_ignore_ascii_case(observe_codes::TOO_LARGE) {
-        observe_codes::TOO_LARGE
-    } else {
-        "OTHER"
-    }
+    [
+        observe_codes::BUFFER_FULL,
+        observe_codes::TOO_LARGE,
+        observe_codes::LATE_DELIVERY,
+        observe_codes::DISCONNECTED,
+    ]
+    .into_iter()
+    .find(|known| reason.eq_ignore_ascii_case(known))
+    .unwrap_or("OTHER")
 }
 
 fn saturating_add(counter: &std::sync::atomic::AtomicU64, count: u64) {
@@ -1886,6 +1879,8 @@ mod tests {
     fn sdk_drop_reasons_are_bucketed_and_counts_saturate() {
         assert_eq!(super::sdk_drop_reason("buffer_full"), "BUFFER_FULL");
         assert_eq!(super::sdk_drop_reason("TOO_LARGE"), "TOO_LARGE");
+        assert_eq!(super::sdk_drop_reason("LATE_DELIVERY"), "LATE_DELIVERY");
+        assert_eq!(super::sdk_drop_reason("disconnected"), "DISCONNECTED");
         assert_eq!(super::sdk_drop_reason("a-label-of-my-own"), "OTHER");
         let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
         super::saturating_add(&counter, 5);

@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 //! The observed side: one [`FunctionEntry`] per function that has observers or
-//! an `observe` descriptor, kept in step with the function registry.
+//! options other than the defaults, kept in step with the function registry.
 //!
 //! Owner sync (protocol.md §2.3, §3.3): an owner that speaks `observe.v1`
 //! learns its function's observers from `functionregistered` (the full set,
@@ -39,16 +39,52 @@ use super::{
 use crate::{
     engine::{Engine, InvocationKind},
     function::FunctionChange,
-    protocol::{Delivery, ErrorBody, Message, ObserveDescriptor, ObserverView, observe_codes},
+    protocol::{ErrorBody, Message, ObserverView, observe_codes},
     worker_connections::WorkerConnection,
 };
 
-/// What the engine knows about one observed (or observable-with-a-descriptor)
-/// function.
+/// What a function's registration says about observing it: the
+/// `registerfunction` options `args_format`, `private` and `observable`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionOptions {
+    /// JSON Schema observers' `args` are validated against. `None`: the
+    /// function takes no args.
+    pub args_format: Option<Value>,
+    /// Only the connection that hosts the function invokes it.
+    pub private: bool,
+    /// `false`: every `observe` of the function fails with `NOT_OBSERVABLE`.
+    pub observable: bool,
+}
+
+impl Default for FunctionOptions {
+    fn default() -> Self {
+        Self {
+            args_format: None,
+            private: false,
+            observable: true,
+        }
+    }
+}
+
+impl FunctionOptions {
+    /// Private, with no args: an event source the engine or a worker hosts.
+    pub fn private() -> Self {
+        Self {
+            private: true,
+            ..Self::default()
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// What the engine knows about one observed function, or one registered with
+/// options other than the defaults.
 pub(crate) struct FunctionEntry {
-    /// From the current registration's `RegisterFunction.observe`. `None`:
-    /// `delivery: auto`, observable, no args.
-    descriptor: Mutex<Option<ObserveDescriptor>>,
+    /// From the current registration. `None`: the defaults.
+    options: Mutex<Option<FunctionOptions>>,
     /// Every live observer of the function, in any state but `disposed`.
     observers: Mutex<Vec<Arc<Observer>>>,
     /// What the current owner has been told. Every owner-sync message for the
@@ -91,8 +127,8 @@ pub(crate) struct Owner {
 }
 
 impl FunctionEntry {
-    pub fn descriptor(&self) -> Option<ObserveDescriptor> {
-        lock(&self.descriptor).clone()
+    pub fn options(&self) -> Option<FunctionOptions> {
+        lock(&self.options).clone()
     }
 
     pub fn observers(&self) -> Vec<Arc<Observer>> {
@@ -100,27 +136,19 @@ impl FunctionEntry {
     }
 
     /// Observers that count against `observers.max_per_function`: not the
-    /// ones the legacy shim made from old triggers.
+    /// ones the engine owns.
     pub fn limited_observer_count(&self) -> usize {
         lock(&self.observers)
             .iter()
-            .filter(|observer| observer.legacy.is_none())
+            .filter(|observer| !observer.is_engine_owned())
             .count()
-    }
-
-    /// The routed hook evaluates auto functions only; an owner-delivered
-    /// function's events are picked and filtered by its owner.
-    pub fn is_auto(&self) -> bool {
-        lock(&self.descriptor)
-            .as_ref()
-            .is_none_or(|d| d.delivery() == Delivery::Auto)
     }
 
     /// A new entry; `revision` continues the function's revisions from an
     /// earlier entry, so they never go back within an engine's lifetime.
     fn starting_at(revision: u64) -> Self {
         Self {
-            descriptor: Mutex::new(None),
+            options: Mutex::new(None),
             observers: Mutex::new(Vec::new()),
             sync: Mutex::new(OwnerSync {
                 revision,
@@ -133,19 +161,16 @@ impl FunctionEntry {
 
     fn is_unused(&self) -> bool {
         lock(&self.observers).is_empty()
-            && lock(&self.descriptor).is_none()
+            && lock(&self.options).is_none()
             && !self.announced.load(Ordering::Acquire)
     }
 }
 
-/// The active observers of one auto function, as the routed hook sees them,
-/// with the parts of an invocation any of them needs.
+/// The active observers of one function, as the routed hook sees them, with
+/// the parts of an invocation any of them needs.
 pub struct ActiveSet {
     pub(crate) observers: Vec<Arc<Observer>>,
     pub(crate) needs: Needs,
-    /// The function is an engine-hosted event source: its events come from
-    /// [`ObserverRegistry::emit`], never from routed calls.
-    pub(crate) event_source: bool,
     /// The function's hash: which evaluator shard takes its completions.
     pub(crate) shard: u64,
 }
@@ -162,7 +187,7 @@ pub(crate) struct Needs {
 }
 
 impl ActiveSet {
-    fn new(key: &FnKey, observers: Vec<Arc<Observer>>, event_source: bool) -> Self {
+    fn new(key: &FnKey, observers: Vec<Arc<Observer>>) -> Self {
         let mut needs = Needs::default();
         for observer in &observers {
             let roots = observer.filter.roots();
@@ -185,28 +210,27 @@ impl ActiveSet {
         Self {
             observers,
             needs,
-            event_source,
             shard,
         }
     }
 }
 
-/// Checks `args` against the function's descriptor: `NOT_OBSERVABLE` when it
-/// opted out, `INVALID_ARGS` when `args` fail its `args_format` (an absent
-/// `args` is `{}`, so a missing required argument fails too) or when a
-/// function without one receives any.
-pub(crate) fn check_descriptor(
-    descriptor: Option<&ObserveDescriptor>,
+/// Checks an observer against the function's options: `NOT_OBSERVABLE` when
+/// the function is not observable, `INVALID_ARGS` when `args` fail its
+/// `args_format` (an absent `args` is `{}`, so a missing required argument
+/// fails too) or when a function without one receives any.
+pub(crate) fn check_options(
+    options: Option<&FunctionOptions>,
     function: &FnKey,
     args: &Value,
 ) -> Result<(), ErrorBody> {
-    if descriptor.is_some_and(|d| !d.allow()) {
+    if options.is_some_and(|options| !options.observable) {
         return Err(ErrorBody::new(
             observe_codes::NOT_OBSERVABLE,
             format!("`{}` does not accept observers", function.1),
         ));
     }
-    match descriptor.and_then(|d| d.args_format.as_ref()) {
+    match options.and_then(|options| options.args_format.as_ref()) {
         Some(schema) => {
             let validator = jsonschema::Validator::new(schema).map_err(|err| {
                 ErrorBody::new(
@@ -231,10 +255,7 @@ pub(crate) fn check_descriptor(
         None if is_empty_args(args) => Ok(()),
         None => Err(ErrorBody::new(
             observe_codes::INVALID_ARGS,
-            format!(
-                "`{}` takes no args: only owner-delivered functions with an args_format do",
-                function.1
-            ),
+            format!("`{}` takes no args: it declares no args_format", function.1),
         )),
     }
 }
@@ -247,84 +268,63 @@ fn is_empty_args(args: &Value) -> bool {
     }
 }
 
-/// Validates a `RegisterFunction.observe` descriptor
-/// (`INVALID_OBSERVE_DESCRIPTOR`): a known delivery, and an `args_format` only
-/// with `delivery: owner`, compiling as a JSON Schema.
-pub fn validate_descriptor(descriptor: &ObserveDescriptor) -> Result<(), String> {
-    let delivery = descriptor.delivery();
-    if !delivery.is_known() {
-        return Err(format!("unknown observe.delivery `{delivery}`"));
-    }
-    if let Some(schema) = &descriptor.args_format {
-        if delivery != Delivery::Owner {
-            return Err(
-                "observe.args_format requires delivery `owner`: an auto function's events are its \
-                 invocations, offered to every observer, so there is nothing to route by"
-                    .to_string(),
-            );
-        }
-        jsonschema::Validator::new(schema)
-            .map_err(|err| format!("observe.args_format is not a valid JSON Schema: {err}"))?;
-    }
-    Ok(())
+/// Validates a registration's `args_format` (`INVALID_ARGS_FORMAT`): it must
+/// compile as a JSON Schema.
+pub fn validate_args_format(schema: &Value) -> Result<(), String> {
+    jsonschema::Validator::new(schema)
+        .map(|_| ())
+        .map_err(|err| format!("args_format is not a valid JSON Schema: {err}"))
 }
 
 impl ObserverRegistry {
-    /// Records the `observe` descriptor of the registration about to happen.
-    /// Called before the function lands in the registry, so the change it
-    /// causes already sees it.
-    pub fn set_descriptor(
-        &self,
-        namespace: &str,
-        function_id: &str,
-        descriptor: Option<ObserveDescriptor>,
-    ) {
+    /// Records the options of the registration about to happen. Called before
+    /// the function lands in the registry, so the change it causes already
+    /// sees them.
+    pub fn set_options(&self, namespace: &str, function_id: &str, options: FunctionOptions) {
         let key = (namespace.to_string(), function_id.to_string());
-        self.mark_owner_delivered(
-            &key,
-            descriptor
-                .as_ref()
-                .is_some_and(|descriptor| descriptor.delivery() == Delivery::Owner),
-        );
-        match descriptor {
-            Some(descriptor) => {
-                self.with_live_entry(&key, |entry, _| {
-                    *lock(&entry.descriptor) = Some(descriptor);
-                });
+        self.mark_private(&key, options.private);
+        if options.is_default() {
+            if let Some(entry) = self.by_function.get(&key) {
+                *lock(&entry.options) = None;
             }
-            None => {
-                if let Some(entry) = self.by_function.get(&key) {
-                    *lock(&entry.descriptor) = None;
-                }
-                self.drop_entry_if_unused(&key);
-            }
+            self.drop_entry_if_unused(&key);
+        } else {
+            self.with_live_entry(&key, |entry, _| {
+                *lock(&entry.options) = Some(options);
+            });
         }
     }
 
-    fn mark_owner_delivered(&self, key: &FnKey, owner_delivered: bool) {
-        let current = self.owner_delivered.load();
-        if current.contains(key) == owner_delivered {
+    /// The options `(namespace, function_id)` is registered with now.
+    pub fn options(&self, namespace: &str, function_id: &str) -> FunctionOptions {
+        let key = (namespace.to_string(), function_id.to_string());
+        self.function_entry(&key)
+            .and_then(|entry| entry.options())
+            .unwrap_or_default()
+    }
+
+    fn mark_private(&self, key: &FnKey, private: bool) {
+        let current = self.private.load();
+        if current.contains(key) == private {
             return;
         }
         let _serialized = lock(&self.rebuild);
-        let current = self.owner_delivered.load();
+        let current = self.private.load();
         let mut next: HashSet<FnKey> = HashSet::clone(&current);
-        if owner_delivered {
+        if private {
             next.insert(key.clone());
         } else {
             next.remove(key);
         }
-        self.owner_delivered.store(Arc::new(next));
+        self.private.store(Arc::new(next));
     }
 
     /// Whether `caller` (the calling connection, `None` for the engine
-    /// itself) may invoke `(namespace, function_id)`. An owner-delivered
-    /// function only by its owner (calling itself remotely, when it does not
-    /// dispatch locally): its events are what the owner reports, stamped with
-    /// the owner's identity, so a call from anyone else would let them forge
-    /// events that look like the owner's (README §4.2, protocol.md §5). Every
-    /// other function: no restriction here. One atomic load when no function
-    /// is owner-delivered.
+    /// itself) may invoke `(namespace, function_id)`. A private function only
+    /// by the connection that hosts it: its calls are what its observers
+    /// observe, so a call from anyone else, the engine included, would be one
+    /// it never made (v2 §6). Every other function: no restriction here. One
+    /// atomic load when no function is private.
     #[inline]
     pub fn may_invoke(
         &self,
@@ -332,35 +332,34 @@ impl ObserverRegistry {
         function_id: &str,
         caller: Option<Uuid>,
     ) -> Result<(), ErrorBody> {
-        let owner_delivered = self.owner_delivered.load();
-        if owner_delivered.is_empty()
-            || !owner_delivered
-                .contains(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+        let private = self.private.load();
+        if private.is_empty()
+            || !private.contains(&(namespace, function_id) as &dyn crate::function::FunctionKey)
         {
             return Ok(());
         }
         let key: FnKey = (namespace.to_string(), function_id.to_string());
-        let owner = self.owner_of(&key).map(|owner| owner.connection);
-        if owner.is_some() && owner == caller {
+        let host = self.owner_of(&key).map(|owner| owner.connection);
+        if host.is_some() && host == caller {
             return Ok(());
         }
         Err(ErrorBody::new(
             observe_codes::FORBIDDEN,
             format!(
-                "`{function_id}` is owner-delivered: only the worker that hosts it invokes it; \
-                 observe it instead"
+                "`{function_id}` is private: only the worker that hosts it calls it; observe it \
+                 instead"
             ),
         ))
     }
 
-    /// `FORBIDDEN` when `target` is owner-delivered: only its owner invokes
-    /// it, so every activation would be refused (protocol.md §5).
+    /// `FORBIDDEN` when `target` is private: only its host invokes it, so
+    /// every activation would be refused.
     pub(crate) fn check_target_invocable(&self, target: &FnKey) -> Result<(), ErrorBody> {
-        if self.owner_delivered.load().contains(target) {
+        if self.private.load().contains(target) {
             return Err(ErrorBody::new(
                 observe_codes::FORBIDDEN,
                 format!(
-                    "the target `{}` is owner-delivered: only the worker that hosts it invokes it",
+                    "the target `{}` is private: only the worker that hosts it calls it",
                     target.1
                 ),
             ));
@@ -510,17 +509,17 @@ impl ObserverRegistry {
     }
 
     /// Rebuilds the routed hook's view of `key`: its active observers, when it
-    /// is an auto function with any. Copy-on-write, so the hot path reads a
-    /// consistent snapshot with one atomic load.
+    /// has any. Copy-on-write, so the hot path reads a consistent snapshot
+    /// with one atomic load.
     pub(crate) fn refresh_active(&self, key: &FnKey) {
         let _serialized = lock(&self.rebuild);
         let active: Vec<Arc<Observer>> = match self.function_entry(key) {
-            Some(entry) if entry.is_auto() => entry
+            Some(entry) => entry
                 .observers()
                 .into_iter()
                 .filter(|o| o.is_active())
                 .collect(),
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         let current = self.observed.load();
         if active.is_empty() && !current.contains_key(key) {
@@ -530,11 +529,7 @@ impl ObserverRegistry {
         if active.is_empty() {
             next.remove(key);
         } else {
-            let event_source = self.event_sources.contains_key(key);
-            next.insert(
-                key.clone(),
-                Arc::new(ActiveSet::new(key, active, event_source)),
-            );
+            next.insert(key.clone(), Arc::new(ActiveSet::new(key, active)));
         }
         self.observed.store(Arc::new(next));
     }
@@ -545,16 +540,17 @@ impl ObserverRegistry {
     ///
     /// A registration starts a new owner relationship: until the owner (if it
     /// speaks observe) gets `functionregistered` and acks, its observers stay
-    /// `pending`.
+    /// `pending`. The engine's standing observers of the function are made in
+    /// its namespace.
     pub fn on_function_change(&self, change: FunctionChange, namespace: &str, function_id: &str) {
         let key = (namespace.to_string(), function_id.to_string());
         let registered = change == FunctionChange::Registered;
 
         if let Some(entry) = self.function_entry(&key) {
             if !registered {
-                // The descriptor belongs to the registration that just ended.
-                *lock(&entry.descriptor) = None;
-                self.mark_owner_delivered(&key, false);
+                // The options belong to the registration that just ended.
+                *lock(&entry.options) = None;
+                self.mark_private(&key, false);
             }
             // Only a registration reads `function_owners`: a release calls
             // this while holding the function's shard.
@@ -564,11 +560,11 @@ impl ObserverRegistry {
                 sync.announced_to = None;
                 entry.announced.store(false, Ordering::Release);
             }
-            let descriptor = entry.descriptor();
+            let options = entry.options();
             for observer in entry.observers() {
                 observer.cancel_ack_timer();
                 if registered
-                    && let Err(error) = self.check_on_registration(&observer, descriptor.as_ref())
+                    && let Err(error) = self.check_on_registration(&observer, options.as_ref())
                 {
                     self.fail(&observer, error);
                     continue;
@@ -580,7 +576,7 @@ impl ObserverRegistry {
                     flags.rejected_by_owner = false;
                 });
             }
-            // The delivery may have changed with the new registration.
+            // Activeness may have changed with the new registration.
             self.refresh_active(&key);
             self.drop_entry_if_unused(&key);
         }
@@ -594,8 +590,8 @@ impl ObserverRegistry {
             if let Some(observer) = self.by_id.get(&id).map(|o| o.clone()) {
                 // A different worker may now host the target: it gets the
                 // observed input, output and caller only if the observing
-                // worker may invoke it, and only if anyone but its owner may
-                // (an owner-delivered target refuses every activation).
+                // worker may invoke it, and only if anyone but its host may
+                // (a private target refuses every activation).
                 if registered
                     && let Err(error) = self
                         .check_session_allows(&observer, &key)
@@ -606,6 +602,9 @@ impl ObserverRegistry {
                 }
                 self.update(&observer, |flags| flags.target_available = registered);
             }
+        }
+        if registered {
+            self.standing_on_registration(namespace, function_id);
         }
     }
 
@@ -717,9 +716,9 @@ impl ObserverRegistry {
                     observers: observers.iter().map(|o| view(o)).collect(),
                 },
             );
-            Some((entry.clone(), revision, observers.len()))
+            Some((revision, observers.len()))
         });
-        let Some((entry, revision, observers)) = announced else {
+        let Some((revision, observers)) = announced else {
             // Not the owner (or announced already): an entry made just for
             // this call goes again.
             self.drop_entry_if_unused(&key);
@@ -734,14 +733,6 @@ impl ObserverRegistry {
             local_dispatch,
             "functionregistered"
         );
-        // A stand-in for a trigger type: bindings parked for it become its
-        // observers now (protocol.md §6).
-        if entry
-            .descriptor()
-            .is_some_and(|descriptor| descriptor.legacy_trigger_type.is_some())
-        {
-            self.convert_pending_triggers(engine);
-        }
     }
 
     /// Records that `owner` is being told about `observer` at `revision` (the
@@ -792,7 +783,6 @@ impl ObserverRegistry {
             })
         };
         let mut applied = false;
-        let rejected = error.is_some();
         match error {
             None => self.update(&observer, |flags| {
                 if answers(flags) && flags.failed.is_none() {
@@ -824,11 +814,6 @@ impl ObserverRegistry {
             return;
         }
         observer.cancel_ack_timer();
-        if !rejected {
-            // The registration is done even while the target is missing:
-            // like a trigger, the binding waits for it.
-            self.answer_legacy(&observer, None);
-        }
     }
 
     /// The observer left the owner's set (error, disposal): the owner hears
@@ -899,8 +884,8 @@ impl ObserverRegistry {
     }
 
     /// What `observe` could not check because the function was not registered
-    /// yet, and what a re-registration may have changed: the descriptor (opt-out,
-    /// args) and the filter paths against the formats.
+    /// yet, and what a re-registration may have changed: the options
+    /// (`observable`, args) and the filter paths against the formats.
     ///
     /// Every registration is checked afresh: the new registration may come
     /// from another worker, with other formats, under RBAC that sees it
@@ -908,25 +893,13 @@ impl ObserverRegistry {
     fn check_on_registration(
         &self,
         observer: &Arc<Observer>,
-        descriptor: Option<&ObserveDescriptor>,
+        options: Option<&FunctionOptions>,
     ) -> Result<(), ErrorBody> {
         if observer.flags().failed.is_some() {
             return Ok(());
         }
-        if observer.legacy.is_some() {
-            // The registrant named a trigger type, not this function, and
-            // its config is the owner's to validate (protocol.md §6): only
-            // an opt-out applies.
-            return match descriptor {
-                Some(descriptor) if !descriptor.allow() => Err(ErrorBody::new(
-                    observe_codes::NOT_OBSERVABLE,
-                    format!("`{}` does not accept observers", observer.function.1),
-                )),
-                _ => Ok(()),
-            };
-        }
         self.check_session_allows(observer, &observer.function)?;
-        check_descriptor(descriptor, &observer.function, &observer.args)?;
+        check_options(options, &observer.function, &observer.args)?;
         if let Some((request, response)) = self.function_formats(&observer.function) {
             observer
                 .filter
@@ -1018,10 +991,6 @@ pub(crate) fn view(observer: &Observer) -> ObserverView {
         target: observer.target.1.clone(),
         capture: observer.capture.to_list(),
         on: observer.on.clone(),
-        legacy: observer
-            .legacy
-            .as_ref()
-            .map(|binding| binding.trigger.clone()),
     }
 }
 
@@ -1035,76 +1004,90 @@ mod tests {
     }
 
     #[test]
-    fn auto_functions_take_no_args() {
-        assert!(check_descriptor(None, &key(), &json!({})).is_ok());
-        assert!(check_descriptor(None, &key(), &Value::Null).is_ok());
-        let err =
-            check_descriptor(None, &key(), &json!({ "expression": "* * * * * *" })).unwrap_err();
+    fn a_function_without_an_args_format_takes_no_args() {
+        assert!(check_options(None, &key(), &json!({})).is_ok());
+        assert!(check_options(None, &key(), &Value::Null).is_ok());
+        let options = FunctionOptions::private();
+        assert!(check_options(Some(&options), &key(), &json!({})).is_ok());
+        let err = check_options(None, &key(), &json!({ "expression": "* * * * * *" })).unwrap_err();
         assert_eq!(err.code, observe_codes::INVALID_ARGS);
     }
 
     #[test]
     fn args_are_validated_against_the_args_format_including_required_ones() {
-        let descriptor = ObserveDescriptor {
-            delivery: Some(Delivery::Owner),
+        let options = FunctionOptions {
             args_format: Some(json!({
                 "type": "object", "required": ["expression"],
                 "properties": { "expression": { "type": "string" } }
             })),
-            ..ObserveDescriptor::default()
+            ..FunctionOptions::default()
         };
-        assert!(check_descriptor(Some(&descriptor), &key(), &json!({ "expression": "x" })).is_ok());
-        let missing = check_descriptor(Some(&descriptor), &key(), &json!({})).unwrap_err();
+        assert!(check_options(Some(&options), &key(), &json!({ "expression": "x" })).is_ok());
+        let missing = check_options(Some(&options), &key(), &json!({})).unwrap_err();
         assert_eq!(missing.code, observe_codes::INVALID_ARGS);
-        let wrong =
-            check_descriptor(Some(&descriptor), &key(), &json!({ "expression": 5 })).unwrap_err();
+        let wrong = check_options(Some(&options), &key(), &json!({ "expression": 5 })).unwrap_err();
         assert_eq!(wrong.code, observe_codes::INVALID_ARGS);
     }
 
     #[test]
-    fn an_opted_out_function_is_not_observable() {
-        let descriptor = ObserveDescriptor {
-            allow: Some(false),
-            ..ObserveDescriptor::default()
+    fn a_function_that_is_not_observable_refuses_observers() {
+        let options = FunctionOptions {
+            observable: false,
+            ..FunctionOptions::default()
         };
-        let err = check_descriptor(Some(&descriptor), &key(), &json!({})).unwrap_err();
+        let err = check_options(Some(&options), &key(), &json!({})).unwrap_err();
         assert_eq!(err.code, observe_codes::NOT_OBSERVABLE);
     }
 
     #[test]
-    fn descriptors_are_validated_at_registration() {
-        assert!(validate_descriptor(&ObserveDescriptor::default()).is_ok());
-        assert!(
-            validate_descriptor(&ObserveDescriptor {
-                delivery: Some(Delivery::Unknown("broadcast".into())),
-                ..ObserveDescriptor::default()
-            })
-            .is_err()
+    fn an_args_format_must_compile() {
+        assert!(validate_args_format(&json!({ "type": "object" })).is_ok());
+        assert!(validate_args_format(&json!({ "type": "not-a-type" })).is_err());
+    }
+
+    /// Only the host calls a private function; the engine itself and every
+    /// other connection get `FORBIDDEN`, and it is no target. Its options
+    /// go with the registration that set them.
+    #[test]
+    fn a_private_function_is_called_by_its_host_only() {
+        let registry = ObserverRegistry::new();
+        let owners = Arc::new(dashmap::DashMap::new());
+        let host = Uuid::new_v4();
+        owners.insert(key(), (host, InvocationKind::Regular));
+        let invocations = Arc::new(crate::invocation::InvocationHandler::new());
+        let registry = Arc::new(registry);
+        registry.attach(
+            Arc::new(crate::function::FunctionsRegistry::new()),
+            Arc::new(crate::worker_connections::WorkerConnectionRegistry::new()),
+            Arc::downgrade(&invocations),
+            owners,
         );
+        let (namespace, function_id) = key();
+        assert!(registry.may_invoke(&namespace, &function_id, None).is_ok());
+
+        registry.set_options(&namespace, &function_id, FunctionOptions::private());
+        assert!(registry.options(&namespace, &function_id).private);
         assert!(
-            validate_descriptor(&ObserveDescriptor {
-                args_format: Some(json!({ "type": "object" })),
-                ..ObserveDescriptor::default()
-            })
-            .is_err(),
-            "args_format on an auto function"
+            registry
+                .may_invoke(&namespace, &function_id, Some(host))
+                .is_ok()
         );
-        assert!(
-            validate_descriptor(&ObserveDescriptor {
-                delivery: Some(Delivery::Owner),
-                args_format: Some(json!({ "type": "not-a-type" })),
-                ..ObserveDescriptor::default()
-            })
-            .is_err(),
-            "a schema that does not compile"
+        for caller in [None, Some(Uuid::new_v4())] {
+            let refused = registry
+                .may_invoke(&namespace, &function_id, caller)
+                .unwrap_err();
+            assert_eq!(refused.code, observe_codes::FORBIDDEN);
+        }
+        assert_eq!(
+            registry.check_target_invocable(&key()).unwrap_err().code,
+            observe_codes::FORBIDDEN
         );
-        assert!(
-            validate_descriptor(&ObserveDescriptor {
-                delivery: Some(Delivery::Owner),
-                args_format: Some(json!({ "type": "object" })),
-                ..ObserveDescriptor::default()
-            })
-            .is_ok()
+
+        registry.on_function_change(FunctionChange::Unregistered, &namespace, &function_id);
+        assert!(registry.may_invoke(&namespace, &function_id, None).is_ok());
+        assert_eq!(
+            registry.options(&namespace, &function_id),
+            FunctionOptions::default()
         );
     }
 

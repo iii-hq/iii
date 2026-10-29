@@ -51,8 +51,6 @@ pub struct Session {
     /// another would be a denial nobody can reason about, and deny-wins is the
     /// side to fail on.
     pub forbidden_functions: Vec<String>,
-    pub allowed_trigger_types: Option<Vec<String>>,
-    pub allow_trigger_type_registration: bool,
     pub allow_function_registration: bool,
     pub context: Value,
     pub function_registration_prefix: Option<String>,
@@ -66,16 +64,34 @@ pub(crate) struct AuthResult {
     allowed_functions: Vec<String>,
     #[serde(default)]
     forbidden_functions: Vec<String>,
-    #[serde(default)]
-    allowed_trigger_types: Option<Vec<String>>,
-    #[serde(default)]
-    allow_trigger_type_registration: bool,
     #[serde(default = "default_true")]
     allow_function_registration: bool,
     #[serde(default = "default_context")]
     context: Value,
     #[serde(default)]
     function_registration_prefix: Option<String>,
+}
+
+/// Auth result fields an earlier engine read and this one ignores.
+const REMOVED_FIELDS: [&str; 2] = ["allowed_trigger_types", "allow_trigger_type_registration"];
+
+/// Logs one `warn` per process when an auth function's result sets a removed
+/// field: registering an event source is registering a function, gated by
+/// `allow_function_registration` and the registration hook.
+fn warn_removed_fields(result: &Value) {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REMOVED_FIELDS
+        .iter()
+        .any(|field| result.get(field).is_some())
+        && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        tracing::warn!(
+            fields = ?REMOVED_FIELDS,
+            "the auth function's result sets fields this engine ignores; function registration \
+             (allow_function_registration, on_function_registration_function_id) gates event \
+             sources"
+        );
+    }
 }
 
 impl Session {
@@ -93,8 +109,6 @@ impl Session {
                 namespaces: HashMap::new(),
                 allowed_functions: vec![],
                 forbidden_functions: vec![],
-                allowed_trigger_types: None,
-                allow_trigger_type_registration: true,
                 allow_function_registration: true,
                 context: json!({}),
                 function_registration_prefix: None,
@@ -119,6 +133,7 @@ impl Session {
             ));
         };
 
+        warn_removed_fields(&value);
         serde_json::from_value(value).map_err(|e| ErrorBody::new("AUTH_ERROR", e.to_string()))
     }
 }
@@ -152,8 +167,6 @@ pub async fn handle_session(
         namespaces: auth.namespaces,
         allowed_functions: auth.allowed_functions,
         forbidden_functions: auth.forbidden_functions,
-        allowed_trigger_types: auth.allowed_trigger_types,
-        allow_trigger_type_registration: auth.allow_trigger_type_registration,
         allow_function_registration: auth.allow_function_registration,
         context: auth.context,
         function_registration_prefix: auth.function_registration_prefix,

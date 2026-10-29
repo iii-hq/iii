@@ -9,9 +9,12 @@
 //! The `iii-stream` worker registers its config schema under the id
 //! `iii-stream`, seeds it from the config.yaml block only when no value is
 //! stored yet, reads the live value (with `${VAR:default}` expansion) before
-//! binding, and hot-applies `configuration:updated` events. After first boot
+//! binding, and hot-applies `configuration:updated` events (through the
+//! engine's in-process configuration listeners). After first boot
 //! the configuration worker entry is the runtime source of truth; the
 //! config.yaml block is seed-only.
+
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use serde_json::{Value, json};
@@ -19,13 +22,12 @@ use serde_json::{Value, json};
 use super::{config::StreamModuleConfig, stream::StreamWorker};
 use crate::{
     engine::{Engine, EngineTrait},
-    trigger::Trigger,
+    workers::configuration::structs::ConfigurationEventType,
 };
 
 pub const CONFIG_ID: &str = "iii-stream";
-pub const CONFIG_FN_ID: &str = "iii-stream::on-config-change";
-pub const CONFIG_TRIGGER_ID: &str = "iii-stream::config-watch";
-pub const CONFIG_TRIGGER_TYPE: &str = "configuration";
+/// The key of this worker's configuration listener.
+pub const CONFIG_LISTENER: &str = "iii-stream::config-watch";
 
 /// Upper bound on every `configuration::*` bus call made by this worker.
 /// `configuration::get` is overwrite-by-id on the bus, so a hung provider
@@ -114,18 +116,16 @@ async fn try_get_value(engine: &Engine) -> anyhow::Result<Option<Value>> {
     }
 }
 
-/// Handler body for `iii-stream::on-config-change`. Delegates to `apply_config`,
+/// Applies a change of the `iii-stream` entry. Delegates to `apply_config`,
 /// which re-fetches the authoritative value under the apply lock instead of
-/// trusting the trigger payload — the handler is a discoverable bus function,
-/// and acting on a caller-supplied payload would let anyone repoint the
-/// listener or pub/sub backend without updating persisted state. Any failure
-/// keeps the previous config, server, and adapter.
+/// trusting the event, so what is applied is always what is persisted. Any
+/// failure keeps the previous config, server, and adapter.
 pub async fn on_config_change(worker: &StreamWorker) {
     match worker.apply_config().await {
         Ok(()) => tracing::info!("iii-stream configuration re-applied after change"),
         // A timeout is transient: the stored value is valid but unapplied, and
         // the event will not fire again — so retry exactly once after a delay.
-        // The retry calls `apply_config` directly (not this handler), so it
+        // The retry calls `apply_config` directly (not this function), so it
         // cannot loop. Other errors (malformed value, failed bind, unresolvable
         // adapter) are deterministic; retrying them would just repeat the
         // failure.
@@ -155,30 +155,25 @@ pub async fn on_config_change(worker: &StreamWorker) {
     }
 }
 
-/// Subscribe to `configuration:updated` events for the `iii-stream` entry. The
-/// deterministic trigger id means re-registration replaces rather than
-/// duplicates.
-pub async fn register_config_trigger(engine: &Engine) -> anyhow::Result<()> {
-    engine
-        .trigger_registry
-        .register_trigger(Trigger {
-            id: CONFIG_TRIGGER_ID.to_string(),
-            trigger_type: CONFIG_TRIGGER_TYPE.to_string(),
-            function_id: CONFIG_FN_ID.to_string(),
-            config: json!({
-                "configuration_id": CONFIG_ID,
-                "event_types": ["configuration:updated"],
-            }),
-            worker_id: None,
-            metadata: None,
-            namespace: crate::protocol::default_namespace(),
-            trigger_namespace: None,
-            home_namespace: crate::protocol::default_namespace(),
-            provider_namespace: crate::protocol::default_namespace(),
-        })
-        .await
-        .map_err(|err| anyhow!("failed to register configuration trigger: {err:?}"))?;
-    Ok(())
+/// Hot-applies `configuration:updated` events of the `iii-stream` entry,
+/// through the engine's in-process configuration listeners. Listening again
+/// replaces the listener rather than adding one.
+pub fn listen_for_changes(worker: &StreamWorker) {
+    let listener = worker.clone();
+    worker.engine.configuration_listeners.listen(
+        CONFIG_LISTENER,
+        CONFIG_ID,
+        &[ConfigurationEventType::Updated],
+        Arc::new(move |_event| {
+            let worker = listener.clone();
+            tokio::spawn(async move { on_config_change(&worker).await });
+        }),
+    );
+}
+
+/// Stops [`listen_for_changes`].
+pub fn stop_listening(engine: &Engine) {
+    engine.configuration_listeners.unlisten(CONFIG_LISTENER);
 }
 
 #[cfg(test)]

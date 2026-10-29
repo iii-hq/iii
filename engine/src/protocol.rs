@@ -59,7 +59,7 @@ pub const INVALID_NAMESPACE: &str = "INVALID_NAMESPACE";
 /// Absent and blank are opposite intents. Absent asks for [`DEFAULT_NAMESPACE`];
 /// blank names a namespace and gives nothing to name it with. Reading blank as
 /// absent puts the worker in `default` — somewhere it never asked for, where
-/// every call and trigger it makes then follows it, and the one place an
+/// every call and observer it makes then follows it, and the one place an
 /// operator cannot see by reading the declaration. Filing it under the empty
 /// string is worse still: a namespace nobody can address or type.
 ///
@@ -88,9 +88,11 @@ fn default_http_method() -> HttpMethod {
     HttpMethod::Post
 }
 
+/// How a caller wants an `InvokeFunction` handled: queued (`enqueue`) or
+/// fire-and-forget (`void`). Absent means request/response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum TriggerAction {
+pub enum CallAction {
     Enqueue { queue: String },
     Void,
 }
@@ -136,72 +138,48 @@ where
     Value::deserialize(deserializer).map(Some)
 }
 
+/// Reads `null` as `true`, like an absent field defaulting to `true`.
+fn deserialize_null_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<bool>::deserialize(deserializer).map(|flag| flag.unwrap_or(true))
+}
+
+/// Reads `invocationresult.observed` leniently: the string ids of an array,
+/// and nothing for any other value, so a malformed list never costs the
+/// caller its result.
+fn deserialize_observed<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Value::deserialize(deserializer)? {
+        Value::Array(ids) => ids
+            .into_iter()
+            .filter_map(|id| match id {
+                Value::String(id) => Some(id),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    })
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+fn is_true(flag: &bool) -> bool {
+    *flag
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
-    /// Worker→engine. Every SDK has always sent this when a provider retires a
-    /// trigger type; until 0.25 no engine decoded it and the frame was dropped
-    /// with a decode warning. The engine removes the type only when the sending
-    /// connection is its provider.
-    UnregisterTriggerType {
-        id: String,
-        /// Namespace the provider was registered in. Absent means the sending
-        /// connection's namespace, mirroring `RegisterTriggerType`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-    },
-    RegisterTriggerType {
-        id: String,
-        description: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger_request_format: Option<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        call_request_format: Option<Value>,
-        /// Namespace this provider serves. Absent means the registering
-        /// connection's namespace, which is what every SDK wants and what
-        /// keeps two projects providing the same type id from overwriting each
-        /// other. In-process engine providers register in
-        /// [`DEFAULT_NAMESPACE`], where the resolution in
-        /// [`crate::trigger::TriggerRegistry`] falls back to find them.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-    },
-    RegisterTrigger {
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        config: Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata: Option<Value>,
-        /// Namespace the trigger's target function resolves in. Optional and
-        /// additive: absent means the engine's default namespace, independent
-        /// of the registering connection's namespace. Older peers that never
-        /// send it stay wire-compatible.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-        /// Namespace to find `trigger_type`'s provider in.
-        ///
-        /// Absent is not "default": it asks the engine to resolve, taking the
-        /// registering connection's namespace first and [`DEFAULT_NAMESPACE`]
-        /// second. That is what lets a project ship its own provider for a
-        /// type id the engine also provides, while every worker that has not
-        /// been migrated keeps reaching the engine's one without saying so.
-        /// Naming a namespace here is strict: that namespace or nothing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        trigger_namespace: Option<String>,
-    },
-    TriggerRegistrationResult {
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<ErrorBody>,
-    },
-    UnregisterTrigger {
-        id: String,
-        #[serde(default)]
-        trigger_type: Option<String>,
-    },
     RegisterFunction {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,9 +192,28 @@ pub enum Message {
         metadata: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         invocation: Option<HttpInvocationRef>,
-        /// How observers of this function are delivered (protocol.md §2.2).
-        /// Absent means `delivery: auto`, observable, no args. The SDK-local
-        /// callbacks never travel. Boxed like `Observe.source`.
+        /// JSON Schema the engine validates observers' `args` against. A
+        /// function without one takes no args.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args_format: Option<Value>,
+        /// Only the connection that hosts the function may invoke it; anyone
+        /// may observe it, and it is never an observer's target.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_null_default",
+            skip_serializing_if = "is_false"
+        )]
+        private: bool,
+        /// `false`: every `observe` of the function fails with
+        /// `NOT_OBSERVABLE`.
+        #[serde(
+            default = "default_true",
+            deserialize_with = "deserialize_null_true",
+            skip_serializing_if = "is_true"
+        )]
+        observable: bool,
+        /// The 0.25 `observe` object, which 0.25 SDKs send and v2 SDKs never
+        /// do. Boxed like `Observe.source`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observe: Option<Box<ObserveDescriptor>>,
     },
@@ -237,7 +234,7 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        action: Option<TriggerAction>,
+        action: Option<CallAction>,
         /// Per-invocation metadata sidecar, delivered to the target handler as a
         /// distinct argument (not folded into `data`). Optional and additive:
         /// omitted when absent, so older peers that don't send/expect it stay
@@ -269,8 +266,9 @@ pub enum Message {
             skip_serializing_if = "Option::is_none"
         )]
         observe_depth: Option<u32>,
-        /// Engine→worker: present on every observer activation.
-        /// Worker→engine: marks an owner delivery (`obs.call`).
+        /// Engine→worker: present on every observer activation and on every
+        /// call through an observer. Worker→engine: a call through the
+        /// observer `observer_id` (`iii.call({ observer, payload })`).
         #[serde(
             default,
             deserialize_with = "deserialize_lenient",
@@ -298,6 +296,15 @@ pub enum Message {
         /// W3C baggage header for cross-cutting context propagation
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
+        /// Host→engine: the observers the host's delivery matched for this
+        /// routed call. Read leniently: a malformed list reads as empty. The
+        /// engine never forwards it.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_observed",
+            skip_serializing_if = "Vec::is_empty"
+        )]
+        observed: Vec<String>,
     },
     RegisterService {
         id: String,
@@ -363,7 +370,7 @@ pub enum Message {
         source: Box<ObserveSource>,
         /// The right side: the function each activation invokes.
         target: ObserveTarget,
-        /// The activation's metadata sidecar. Never shown to the owner.
+        /// The activation's metadata sidecar. Never shown to the host.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,7 +406,7 @@ pub enum Message {
         #[serde(default)]
         fires: u64,
     },
-    /// Engine → owner: the `RegisterFunction` success ack, with the full current
+    /// Engine → host: the `RegisterFunction` success ack, with the full current
     /// observer set. Sent once per registration (and after a re-registration).
     FunctionRegistered {
         id: String,
@@ -412,7 +419,7 @@ pub enum Message {
         #[serde(default)]
         observers: Vec<ObserverView>,
     },
-    /// Engine → owner: one observer attached to a function the connection
+    /// Engine → host: one observer attached to a function the connection
     /// hosts. Awaits `observerack`.
     ObserverAdded {
         function_id: String,
@@ -421,7 +428,7 @@ pub enum Message {
         revision: u64,
         observer: ObserverView,
     },
-    /// Engine → owner: one observer detached.
+    /// Engine → host: one observer detached.
     ObserverRemoved {
         function_id: String,
         #[serde(default = "default_namespace")]
@@ -429,7 +436,7 @@ pub enum Message {
         revision: u64,
         id: String,
     },
-    /// Owner → engine: acknowledges one added observer, or rejects it with
+    /// Host → engine: acknowledges one added observer, or rejects it with
     /// `error` (also later, for an active observer: a late rejection).
     ObserverAck {
         function_id: String,
@@ -442,15 +449,14 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
-    /// Owner → engine: matched local invocations of auto functions and
-    /// `obs.emit` events of owner functions, batched.
+    /// Host → engine: the matched calls of the functions it hosts, batched.
     InvocationsObserved {
         /// Decoded one by one: an item a newer or buggy SDK got wrong is set
         /// aside on its own instead of failing the whole batch.
         #[serde(default)]
         items: ObservedItems,
     },
-    /// Owner → engine: periodic local invocation counts and SDK-side drops,
+    /// Host → engine: periodic local invocation counts and SDK-side drops,
     /// sent only when non-zero.
     LocalInvocationStats {
         window_ms: u64,
@@ -465,6 +471,10 @@ pub enum Message {
 
 /// Engine feature: observers, `functionregistered` and the observe messages.
 pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
+/// Feature: `observe.v1`, plus a host that delivers its own functions' calls
+/// (`invocationresult.observed`, `output_is_input`) and the function options
+/// `args_format`, `private` and `observable`.
+pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
 /// Engine feature: SDKs may run their own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
@@ -508,7 +518,8 @@ pub mod observe_codes {
     // creation and registration
     pub const UNSUPPORTED: &str = "UNSUPPORTED";
     pub const INVALID_ARGS: &str = "INVALID_ARGS";
-    pub const INVALID_OBSERVE_DESCRIPTOR: &str = "INVALID_OBSERVE_DESCRIPTOR";
+    /// A registration whose `args_format` is not a valid JSON Schema.
+    pub const INVALID_ARGS_FORMAT: &str = "INVALID_ARGS_FORMAT";
     pub const INVALID_FILTER: &str = "INVALID_FILTER";
     pub const INVALID_FILTER_PATH: &str = "INVALID_FILTER_PATH";
     pub const NOT_OBSERVABLE: &str = "NOT_OBSERVABLE";
@@ -517,19 +528,15 @@ pub mod observe_codes {
     pub const LIMIT_EXCEEDED: &str = "LIMIT_EXCEEDED";
     pub const OBSERVER_ID_CONFLICT: &str = "OBSERVER_ID_CONFLICT";
     pub const OWNER_TIMEOUT: &str = "OWNER_TIMEOUT";
-    /// An owner's `onObserverAdded` threw a plain error.
+    /// A host's `onObserverAdded` threw a plain error.
     pub const OBSERVE_REJECTED: &str = "OBSERVE_REJECTED";
 
-    // owner delivery (protocol.md §3.5)
+    // calls through an observer (v2 §4.6)
     pub const OBSERVER_NOT_FOUND: &str = "OBSERVER_NOT_FOUND";
     pub const NOT_FUNCTION_OWNER: &str = "NOT_FUNCTION_OWNER";
-    pub const NOT_OWNER_DELIVERED: &str = "NOT_OWNER_DELIVERED";
     pub const OBSERVER_NOT_ACTIVE: &str = "OBSERVER_NOT_ACTIVE";
-    pub const TARGET_MISMATCH: &str = "TARGET_MISMATCH";
     pub const OVERFLOW: &str = "OVERFLOW";
     pub const LOOP_GUARD: &str = "LOOP_GUARD";
-    /// SDK-side: `obs.call` on a payload the observer's filters reject.
-    pub const FILTERS_NOT_MATCHED: &str = "FILTERS_NOT_MATCHED";
 
     // state reasons
     pub const OWNER_UNAVAILABLE: &str = "OWNER_UNAVAILABLE";
@@ -546,6 +553,12 @@ pub mod observe_codes {
     pub const BUFFER_FULL: &str = "BUFFER_FULL";
     /// SDK-side, reported through `localinvocationstats`.
     pub const TOO_LARGE: &str = "TOO_LARGE";
+    /// SDK-side: a deliver hook's `next` call on a routed call after the hook
+    /// settled, reported through `localinvocationstats`.
+    pub const LATE_DELIVERY: &str = "LATE_DELIVERY";
+    /// SDK-side: report items lost to a closed connection, reported through
+    /// `localinvocationstats`.
+    pub const DISCONNECTED: &str = "DISCONNECTED";
 }
 
 /// Declares a wire enum carried as a lowercase string, with an
@@ -612,20 +625,6 @@ macro_rules! wire_string_enum {
 }
 
 wire_string_enum! {
-    /// How a function's observers are delivered (README §4.2).
-    #[derive(Default)]
-    pub enum Delivery {
-        /// The function's invocations are the events; every observer is
-        /// offered every invocation.
-        #[default]
-        Auto => "auto",
-        /// The owner routes events to observers by their args
-        /// (`obs.emit` / `obs.call`).
-        Owner => "owner",
-    }
-}
-
-wire_string_enum! {
     /// What an activation ships to the target.
     pub enum Capture {
         Input => "input",
@@ -642,7 +641,7 @@ pub fn default_capture() -> Vec<Capture> {
 }
 
 wire_string_enum! {
-    /// Which outcomes of an auto function's invocation activate an observer.
+    /// Which outcomes of a function's invocation activate an observer.
     /// Defaults to `success` (CONTRACT D1).
     #[derive(Default)]
     pub enum On {
@@ -681,7 +680,7 @@ wire_string_enum! {
 }
 
 wire_string_enum! {
-    /// Outcome of a reported invocation. An emitted event is always `success`.
+    /// Outcome of a reported invocation.
     pub enum InvocationStatus {
         Success => "success",
         Error => "error",
@@ -692,30 +691,30 @@ fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
-/// `RegisterFunction.observe`: the wire half of a function's observe hooks.
-/// Every field is optional so an absent one is not re-encoded.
+/// `RegisterFunction.observe`: the object a 0.25 SDK sends to describe a
+/// function's observers. The engine reads `delivery` and `allow`; every other
+/// key is decoded, kept for re-encoding and ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ObserveDescriptor {
-    /// Absent means [`Delivery::Auto`].
+    /// `auto` (or absent) is the only delivery this engine accepts: any other
+    /// value refuses the registration with `UNSUPPORTED`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<Delivery>,
-    /// JSON Schema the engine validates observers' `args` against. Owner
-    /// delivery only; with `auto` the registration is rejected
-    /// (`INVALID_OBSERVE_DESCRIPTOR`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args_format: Option<Value>,
-    /// Phase 5 shim: old `RegisterTrigger { trigger_type }` binds to this
-    /// function when no live provider of that type exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_trigger_type: Option<String>,
-    /// Absent means `true`. `false` refuses observers (`NOT_OBSERVABLE`).
+    pub delivery: Option<String>,
+    /// Absent means `true`. `false` registers the function as
+    /// `observable: false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow: Option<bool>,
+    /// The keys this engine ignores, as they arrived.
+    #[serde(flatten)]
+    pub ignored: serde_json::Map<String, Value>,
 }
 
 impl ObserveDescriptor {
-    pub fn delivery(&self) -> Delivery {
-        self.delivery.clone().unwrap_or_default()
+    /// The delivery this engine accepts: `delivery` absent or `auto`.
+    pub fn is_supported(&self) -> bool {
+        self.delivery
+            .as_deref()
+            .is_none_or(|delivery| delivery == "auto")
     }
 
     pub fn allow(&self) -> bool {
@@ -732,7 +731,7 @@ pub struct ObserveSource {
     /// Same resolution as `InvokeFunction.namespace`: absent means `default`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// For the owner of an owner-delivered function, validated against its
+    /// For the worker that hosts the function, validated against its
     /// `args_format`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Value>,
@@ -770,7 +769,7 @@ pub struct ObserveTarget {
     pub namespace: Option<String>,
 }
 
-/// An observer as its function's owner sees it (`functionregistered`,
+/// An observer as its function's host sees it (`functionregistered`,
 /// `observeradded`; CONTRACT D15): never its `deliver`, metadata, policy or
 /// observing connection. The engine always sends `capture` and `on` resolved,
 /// so the defaults here only matter when decoding a sparse frame.
@@ -789,18 +788,6 @@ pub struct ObserverView {
     pub capture: Vec<Capture>,
     #[serde(default)]
     pub on: On,
-    /// Phase 5 shim: the old trigger's type and config. Absent otherwise; SDKs
-    /// must also accept `null`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy: Option<LegacyTrigger>,
-}
-
-/// The `RegisterTrigger` an observer was created from by the legacy shim
-/// (protocol.md §6). The owner reads `config` as the observer's args.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LegacyTrigger {
-    pub trigger_type: String,
-    pub config: Value,
 }
 
 /// Who made an invocation (README §4.3). Every field is optional on the wire:
@@ -840,13 +827,14 @@ pub struct ParentCaller {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Activation {
     pub observer_id: String,
-    /// Engine→worker: unique per activation. Absent on an owner's `obs.call`.
+    /// Engine→worker: unique per activation. Absent on a host's call through
+    /// an observer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_id: Option<String>,
 }
 
-/// One item of `invocationsobserved`: a matched local invocation of an auto
-/// function, or an `obs.emit` event of an owner function.
+/// One item of `invocationsobserved`: a call of a function the reporting
+/// connection hosts, with the observers its delivery matched.
 ///
 /// `input` / `output` / `error` / `metadata` keep `null` apart from absent: a
 /// function that returned `null` is not one whose output was not captured.
@@ -857,8 +845,7 @@ pub struct ObservedItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     pub invocation_id: String,
-    /// Auto: observer ids whose filters matched. Owner: the emitted-to
-    /// observers whose filters matched (one event, coalesced).
+    /// The observers the host's delivery matched.
     #[serde(default)]
     pub matched: Vec<String>,
     pub status: InvocationStatus,
@@ -897,6 +884,14 @@ pub struct ObservedItem {
     pub traceparent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baggage: Option<String>,
+    /// The handler returned its input: the item carries it once, as `input`,
+    /// and `output` is the same value.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "is_false"
+    )]
+    pub output_is_input: bool,
 }
 
 /// The items of one `invocationsobserved`. Each is decoded on its own, in one
@@ -1024,6 +1019,11 @@ impl ObservedItem {
         let traceparent =
             optional_string(map.remove("traceparent")).map_err(|_| reject("traceparent"))?;
         let baggage = optional_string(map.remove("baggage")).map_err(|_| reject("baggage"))?;
+        let output_is_input = match map.remove("output_is_input") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(flag)) => flag,
+            Some(_) => return Err(reject("output_is_input")),
+        };
 
         Ok(ObservedItem {
             function_id,
@@ -1041,6 +1041,7 @@ impl ObservedItem {
             observe_depth,
             traceparent,
             baggage,
+            output_is_input,
         })
     }
 }
@@ -1057,7 +1058,8 @@ pub struct LocalFunctionStats {
 }
 
 /// SDK-side report drops in `localinvocationstats`. `reason` is a drop reason
-/// from [`observe_codes`] (`BUFFER_FULL`, `TOO_LARGE`).
+/// from [`observe_codes`] (`BUFFER_FULL`, `TOO_LARGE`, `LATE_DELIVERY`,
+/// `DISCONNECTED`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DroppedReportStats {
     pub function_id: String,
@@ -1152,7 +1154,7 @@ pub struct StreamChannelRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_NAMESPACE, Message, TriggerAction, effective_namespace};
+    use super::{CallAction, DEFAULT_NAMESPACE, Message, effective_namespace};
     use crate::{
         invocation::{auth::HttpAuthConfig, method::HttpMethod},
         protocol::HttpInvocationRef,
@@ -1189,20 +1191,6 @@ mod tests {
             !wire.contains(r#""result""#),
             "absent must stay absent: {wire}"
         );
-    }
-
-    #[test]
-    fn deserialize_unregister_trigger_without_type() {
-        let raw = r#"{"type":"unregistertrigger","id":"abc"}"#;
-        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
-
-        match message {
-            Message::UnregisterTrigger { id, trigger_type } => {
-                assert_eq!(id, "abc");
-                assert_eq!(trigger_type, None);
-            }
-            _ => panic!("unexpected message variant"),
-        }
     }
 
     #[test]
@@ -1247,20 +1235,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn deserialize_unregister_trigger_with_type() {
-        let raw = r#"{"type":"unregistertrigger","id":"abc","trigger_type":"http"}"#;
-        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
-
-        match message {
-            Message::UnregisterTrigger { id, trigger_type } => {
-                assert_eq!(id, "abc");
-                assert_eq!(trigger_type.as_deref(), Some("http"));
-            }
-            _ => panic!("unexpected message variant"),
-        }
     }
 
     #[test]
@@ -1333,7 +1307,7 @@ mod tests {
             } => {
                 assert_eq!(function_id, "payment.process");
                 match action {
-                    Some(TriggerAction::Enqueue { queue }) => {
+                    Some(CallAction::Enqueue { queue }) => {
                         assert_eq!(queue, "payment");
                     }
                     other => panic!("expected Enqueue action, got {other:?}"),
@@ -1362,7 +1336,7 @@ mod tests {
             } => {
                 assert_eq!(function_id, "audit.log");
                 assert!(
-                    matches!(action, Some(TriggerAction::Void)),
+                    matches!(action, Some(CallAction::Void)),
                     "expected Void action, got {action:?}"
                 );
             }
@@ -1533,19 +1507,23 @@ mod tests {
     // ── observe (0.25) wire compatibility ─────────────────────────────────
 
     use super::{
-        Activation, Caller, Capture, Deliver, Delivery, InvocationStatus, ObserveDescriptor,
-        ObserverState, On, default_capture,
+        Activation, Caller, Capture, Deliver, InvocationStatus, ObserveDescriptor, ObserverState,
+        On, default_capture,
     };
     use serde_json::{Value, json};
 
-    /// Keys a 0.25 engine may add to existing variants. None of them may appear
-    /// on the wire unless set.
-    const NEW_KEYS: [&str; 5] = [
+    /// Keys observe adds to existing variants. None of them may appear on the
+    /// wire unless set.
+    const NEW_KEYS: [&str; 9] = [
         "observe",
+        "args_format",
+        "private",
+        "observable",
         "caller",
         "observe_depth",
         "activation",
         "features",
+        "observed",
     ];
 
     fn assert_no_new_keys(msg: &Message) {
@@ -1583,12 +1561,16 @@ mod tests {
             observe,
             request_format,
             response_format,
+            args_format,
+            private,
+            observable,
             ..
         } = register
         else {
             panic!("expected RegisterFunction");
         };
         assert!(observe.is_none() && request_format.is_none() && response_format.is_none());
+        assert!(args_format.is_none() && !private && observable);
 
         let registered: Message = serde_json::from_str(
             r#"{"type":"workerregistered","worker_id":"w-1","reattach_token":"t-1"}"#,
@@ -1622,7 +1604,19 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            args_format: None,
+            private: false,
+            observable: true,
             observe: None,
+        });
+        assert_no_new_keys(&Message::InvocationResult {
+            invocation_id: uuid::Uuid::new_v4(),
+            function_id: "orders::create".into(),
+            result: Some(json!({ "id": 1 })),
+            error: None,
+            traceparent: None,
+            baggage: None,
+            observed: Vec::new(),
         });
         assert_no_new_keys(&Message::WorkerRegistered {
             worker_id: "w-1".into(),
@@ -1639,7 +1633,7 @@ mod tests {
             data: json!({}),
             traceparent: None,
             baggage: None,
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             metadata: None,
             namespace: None,
             caller: None,
@@ -1744,16 +1738,71 @@ mod tests {
         );
     }
 
+    /// The 0.25 `observe` object: `auto` or no delivery is supported, `allow`
+    /// defaults to `true`, and the keys the engine ignores survive a round
+    /// trip.
     #[test]
-    fn observe_descriptor_defaults() {
+    fn the_025_observe_object_is_decoded() {
         let empty = ObserveDescriptor::default();
-        assert_eq!(empty.delivery(), Delivery::Auto);
-        assert!(empty.allow());
+        assert!(empty.is_supported() && empty.allow());
         assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
 
-        let refused: ObserveDescriptor = serde_json::from_value(json!({ "allow": false })).unwrap();
-        assert!(!refused.allow());
-        assert_eq!(refused.delivery(), Delivery::Auto);
+        let refused: ObserveDescriptor =
+            serde_json::from_value(json!({ "delivery": "auto", "allow": false })).unwrap();
+        assert!(refused.is_supported() && !refused.allow());
+
+        for delivery in ["owner", "broadcast"] {
+            let descriptor: ObserveDescriptor =
+                serde_json::from_value(json!({ "delivery": delivery })).unwrap();
+            assert!(!descriptor.is_supported(), "{delivery}");
+        }
+
+        let wire = json!({ "delivery": "owner", "args_format": { "type": "object" } });
+        let descriptor: ObserveDescriptor = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(descriptor.ignored.len(), 1);
+        assert_eq!(serde_json::to_value(&descriptor).unwrap(), wire);
+    }
+
+    /// `private: false`, `observable: true` and `observed: []` are the
+    /// defaults: left out on the wire, and `null` reads as the default.
+    #[test]
+    fn function_options_and_observed_ids_default_when_absent_or_null() {
+        let register: Message = serde_json::from_value(json!({
+            "type": "registerfunction", "id": "vault::read",
+            "args_format": null, "private": null, "observable": null
+        }))
+        .unwrap();
+        let Message::RegisterFunction {
+            args_format,
+            private,
+            observable,
+            ..
+        } = &register
+        else {
+            panic!("expected RegisterFunction");
+        };
+        assert!(args_format.is_none() && !private && *observable);
+        assert_no_new_keys(&register);
+
+        let id = "8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f";
+        let result: Message = serde_json::from_value(json!({
+            "type": "invocationresult", "invocation_id": id, "function_id": "orders::create",
+            "result": 1, "observed": ["o-1", 7, null, "o-2"]
+        }))
+        .unwrap();
+        let Message::InvocationResult { observed, .. } = &result else {
+            panic!("expected InvocationResult");
+        };
+        assert_eq!(observed, &["o-1", "o-2"], "a malformed id is skipped");
+        let malformed: Message = serde_json::from_value(json!({
+            "type": "invocationresult", "invocation_id": id, "function_id": "orders::create",
+            "result": 1, "observed": "o-1"
+        }))
+        .expect("a malformed list does not cost the result");
+        let Message::InvocationResult { observed, .. } = malformed else {
+            panic!("expected InvocationResult");
+        };
+        assert!(observed.is_empty());
     }
 
     /// A value added by a newer peer decodes as `Unknown`, keeps its spelling
@@ -1793,27 +1842,11 @@ mod tests {
         };
         assert_eq!(state, ObserverState::Unknown("paused".into()));
         assert_eq!(fires, 3);
-
-        let register: Message = serde_json::from_value(json!({
-            "type": "registerfunction",
-            "id": "events::on-broadcast",
-            "observe": { "delivery": "broadcast" }
-        }))
-        .unwrap();
-        let Message::RegisterFunction {
-            observe: Some(descriptor),
-            ..
-        } = register
-        else {
-            panic!("expected a descriptor");
-        };
-        assert_eq!(descriptor.delivery(), Delivery::Unknown("broadcast".into()));
     }
 
     #[test]
     fn wire_enums_spell_their_values_in_lowercase() {
         for (value, wire) in [
-            (serde_json::to_value(Delivery::Owner).unwrap(), "owner"),
             (serde_json::to_value(Capture::Metadata).unwrap(), "metadata"),
             (serde_json::to_value(On::Complete).unwrap(), "complete"),
             (serde_json::to_value(Deliver::Output).unwrap(), "output"),
@@ -1860,10 +1893,39 @@ mod tests {
         assert_eq!(item.metadata, None);
         assert_eq!(item.observe_depth, 0);
         assert_eq!(item.status, InvocationStatus::Success);
+        assert!(!item.output_is_input);
 
         let wire = serde_json::to_value(&msg).unwrap();
         assert_eq!(wire["items"][0]["output"], Value::Null);
         assert!(wire["items"][0].get("error").is_none());
+        assert!(wire["items"][0].get("output_is_input").is_none());
+    }
+
+    /// An event source's item carries its event once, as `input`, with
+    /// `output_is_input`; a value that is not a boolean sets the item aside.
+    #[test]
+    fn output_is_input_is_read_from_an_item() {
+        let item = |flag: Value| {
+            json!({
+                "function_id": "database::on-row-changed", "invocation_id": "i-1",
+                "matched": ["o-1"], "status": "success", "input": { "op": "insert" },
+                "output_is_input": flag, "started_at_ms": 1, "duration_ms": 0.5
+            })
+        };
+        let msg: Message = serde_json::from_value(json!({
+            "type": "invocationsobserved",
+            "items": [item(json!(true)), item(Value::Null), item(json!("yes"))]
+        }))
+        .unwrap();
+        let Message::InvocationsObserved { items } = &msg else {
+            panic!("expected InvocationsObserved");
+        };
+        assert!(items.items[0].output_is_input);
+        assert!(!items.items[1].output_is_input, "null reads as false");
+        assert_eq!(items.rejected.len(), 1);
+        let wire = serde_json::to_value(&msg).unwrap();
+        assert_eq!(wire["items"][0]["output_is_input"], json!(true));
+        assert!(wire["items"][1].get("output_is_input").is_none());
     }
 
     #[test]

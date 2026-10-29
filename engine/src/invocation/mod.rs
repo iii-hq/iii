@@ -190,7 +190,7 @@ impl InvocationHandler {
         // case — it costs one atomic load and copies nothing; observed, it
         // keeps only what the active observers need.
         let observers = self.observers.get();
-        // An owner-delivered function is invoked by its owner only.
+        // A private function is invoked by its host only.
         if let Some(registry) = observers
             && let Err(refused) = registry.may_invoke(namespace, &function_id, worker_id)
         {
@@ -198,7 +198,7 @@ impl InvocationHandler {
         }
         let observed = observers.and_then(|registry| {
             registry
-                .watch_routed(namespace, &function_id)
+                .watch(namespace, &function_id)
                 .map(|set| registry.begin(set, &body, &metadata, &traceparent, &baggage, &ctx))
         });
         // The context goes in scope around the handler (and is kept for the
@@ -272,11 +272,10 @@ impl InvocationHandler {
         //     descendants) nest under the caller's trace instead of orphaning
         //     into a new one. `WorkerConnection::handle_function` falls back to
         //     this ambient context (see `worker_connections/traits.rs`).
-        //   - Built-in: state/stream writes fire triggers in a spawned
-        //     `*_triggers` span. Without the caller context that span (and the
-        //     trigger handlers it invokes) would root a brand-new, disconnected
-        //     trace; attaching it nests the fan-out under the writer (e.g.
-        //     `approval::resolve` → state write → `turn::on_approval`).
+        //   - Built-in: a stream write calls `stream::on-changed`, whose
+        //     activations take the writer's trace context. Without the caller
+        //     context they would root a brand-new, disconnected trace;
+        //     attaching it nests them under the writer.
         let dispatch_cx = if traceparent.is_some() || baggage.is_some() {
             let cx = crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
             // The caller's baggage names the CALLER; rewrite `iii.function.id`

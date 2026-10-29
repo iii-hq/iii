@@ -4,10 +4,9 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::{collections::HashMap, pin::Pin, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use function_macros::{function, service};
-use futures::Future;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,25 +14,16 @@ use serde_json::Value;
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest, SessionHandler},
     function::FunctionResult,
+    observer::FunctionOptions,
     protocol::{ErrorBody, StreamChannelRef, WorkerMetrics},
-    trigger::{
-        Trigger, TriggerRegistrator, TriggerStore, TriggerType, known_trigger_type_provider,
-    },
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionTelemetryMeta},
     workers::traits::Worker,
     workers::worker::rbac_session::Session,
 };
 
-pub const TRIGGER_FUNCTIONS_AVAILABLE: &str = "engine::functions-available";
-
 /// Window after the first registry change during which further changes are
-/// folded into the same `engine::functions-available` event.
+/// folded into the same `engine::on-functions-changed` event.
 const FUNCTIONS_CHANGED_COALESCE: std::time::Duration = std::time::Duration::from_millis(100);
-pub const TRIGGER_WORKERS_AVAILABLE: &str = "engine::workers-available";
-
-/// Maximum length of `config_summary` strings produced by
-/// `engine::registered-triggers::list`.
-const CONFIG_SUMMARY_MAX_LEN: usize = 80;
 
 /// Self-reported worker descriptions are untrusted free text rendered by
 /// consoles, CLIs, and LLM agents — cap the length and strip control
@@ -152,71 +142,6 @@ pub struct FunctionInfoInput {
 const FUNCTION_INFO_BATCH_MAX: usize = 32;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
-pub struct TriggersListInput {
-    /// Case-insensitive substring matched against the trigger-type `id`
-    /// and `description`.
-    #[serde(default)]
-    pub search: Option<String>,
-    /// Exact prefix match on the trigger-type `id`.
-    #[serde(default)]
-    pub prefix: Option<String>,
-    /// Worker-name match (first `::` segment of the trigger-type `id`).
-    #[serde(default)]
-    pub worker: Option<String>,
-    /// Include internal engine trigger types (`engine::*` prefix).
-    /// Defaults to false.
-    #[serde(default)]
-    pub include_internal: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct TriggerInfoInput {
-    pub id: String,
-    /// Which provider of this id. `Some` is strict: that namespace or nothing.
-    /// Absent resolves the way a trigger registered by the caller would: the
-    /// caller's connection namespace first, then `default`, where every
-    /// in-process engine provider lives.
-    #[serde(default)]
-    pub namespace: Option<String>,
-    /// Injected by the engine from the calling worker. Absent for in-process
-    /// callers, whose home is `default`.
-    #[serde(rename = "_caller_worker_id", default)]
-    pub caller_worker_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
-pub struct RegisteredTriggersListInput {
-    /// Case-insensitive substring matched against `id`, `trigger_type`,
-    /// and `function_id`.
-    #[serde(default)]
-    pub search: Option<String>,
-    /// Exact trigger-type id match.
-    #[serde(default)]
-    pub trigger_type: Option<String>,
-    /// Exact function id match.
-    #[serde(default)]
-    pub function_id: Option<String>,
-    /// Worker-name match against the worker owning the target function.
-    #[serde(default)]
-    pub worker: Option<String>,
-    /// Include rows whose target function is internal (`engine::*`).
-    /// Defaults to false.
-    #[serde(default)]
-    pub include_internal: Option<bool>,
-    /// Include registrations parked in `pending_triggers` because their trigger
-    /// type has no provider yet (rows with `status: "pending"`). Defaults to
-    /// false: a bare list is the set of live bindings, which is what every
-    /// caller before `status` existed was counting on.
-    #[serde(default)]
-    pub include_pending: Option<bool>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct RegisteredTriggerInfoInput {
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default, JsonSchema)]
 pub struct WorkersListInput {
     /// Case-insensitive substring matched against the worker `name`.
     #[serde(default)]
@@ -263,6 +188,38 @@ pub struct FunctionSummary {
     /// hides (pass `include_internal: true` to see it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(flatten)]
+    pub observe: FunctionObserveInfo,
+}
+
+/// What a function row says about observing the function (decision 6): the
+/// registration's options, the defaults left out, and how many observers it
+/// has.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
+pub struct FunctionObserveInfo {
+    /// JSON Schema observers' `args` are validated against; absent when the
+    /// function takes no args.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args_format: Option<Value>,
+    /// `true`: only the worker that hosts the function calls it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub private: bool,
+    /// `false`: nobody may observe the function.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observable: Option<bool>,
+    /// Live observers of the function, in any state but `disposed`.
+    pub observer_count: usize,
+}
+
+impl FunctionObserveInfo {
+    fn new(options: FunctionOptions, observer_count: usize) -> Self {
+        Self {
+            args_format: options.args_format,
+            private: options.private,
+            observable: (!options.observable).then_some(false),
+            observer_count,
+        }
+    }
 }
 
 impl FunctionSummary {
@@ -277,15 +234,21 @@ impl FunctionSummary {
         if let Some(metadata) = self.metadata {
             fields.insert("metadata".to_string(), metadata);
         }
+        if let Some(args_format) = self.observe.args_format {
+            fields.insert("args_format".to_string(), args_format);
+        }
+        if self.observe.private {
+            fields.insert("private".to_string(), Value::Bool(true));
+        }
+        if let Some(observable) = self.observe.observable {
+            fields.insert("observable".to_string(), Value::Bool(observable));
+        }
+        fields.insert(
+            "observer_count".to_string(),
+            Value::from(self.observe.observer_count),
+        );
         Value::Object(fields)
     }
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct RegisteredTriggerRef {
-    pub id: String,
-    pub trigger_type: String,
-    pub config: Value,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -305,7 +268,8 @@ pub struct FunctionDetail {
     pub response_schema: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    pub registered_triggers: Vec<RegisteredTriggerRef>,
+    #[serde(flatten)]
+    pub observe: FunctionObserveInfo,
 }
 
 /// One `function_ids` batch entry: the detail, or a per-id marker mirroring
@@ -336,92 +300,6 @@ pub struct FunctionInfoBatch {
 pub enum FunctionInfoOutput {
     Single(Box<FunctionDetail>),
     Batch(FunctionInfoBatch),
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerTypeSummary {
-    pub id: String,
-    /// Namespace this provider serves. Two entries can share an id.
-    pub namespace: String,
-    pub worker_name: String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggerTypeDetail {
-    pub id: String,
-    /// Namespace this provider serves.
-    pub namespace: String,
-    pub worker_name: String,
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub configuration_schema: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub request_schema: Option<Value>,
-    /// Schema a bound handler must RETURN when the trigger fires (e.g. the HTTP
-    /// response envelope). Present only for trigger types with a fixed return
-    /// contract; absent otherwise.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_schema: Option<Value>,
-    pub instance_count: usize,
-}
-
-/// Whether a registered trigger is bound to a live provider or parked in
-/// `pending_triggers` waiting for one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum RegisteredTriggerStatus {
-    Active,
-    Pending,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct RegisteredTriggerSummary {
-    pub id: String,
-    pub trigger_type: String,
-    pub function_id: String,
-    pub worker_name: String,
-    pub status: RegisteredTriggerStatus,
-    /// Full trigger config (e.g. `{ "api_path": "...", "http_method": "GET" }`
-    /// for HTTP triggers, `{ "topic": "..." }` for events, etc.). Console
-    /// list views need this structured payload to render method/path/topic.
-    /// `config_summary` is a truncated display string and is kept for
-    /// backward compatibility — do not parse it.
-    pub config: Value,
-    pub config_summary: String,
-    /// Set for a binding the legacy shim serves (protocol.md §6): the
-    /// function standing in for the trigger type. Absent for a binding of an
-    /// old-style provider.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub served_by: Option<String>,
-    /// For a binding the legacy shim serves: its observer's state (`pending`
-    /// while the stand-in's owner has not acked it yet, then `active`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub observer_state: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct RegisteredTriggerDetail {
-    pub id: String,
-    pub trigger_type: String,
-    pub function_id: String,
-    pub worker_name: String,
-    pub status: RegisteredTriggerStatus,
-    pub config: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-    /// Full trigger-type detail; `None` if the type was unregistered after
-    /// the instance was created.
-    pub trigger: Option<TriggerTypeDetail>,
-    /// Full function detail; `None` if the target function was
-    /// unregistered after the instance was created.
-    pub function: Option<FunctionDetail>,
-    /// Set for a binding the legacy shim serves: the stand-in function.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub served_by: Option<String>,
-    /// For a binding the legacy shim serves: its observer's state.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub observer_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -483,23 +361,14 @@ pub struct WorkerDetailEnvelope {
 pub struct WorkerInfoOutput {
     pub worker: WorkerDetailEnvelope,
     pub functions: Vec<FunctionSummary>,
-    pub trigger_types: Vec<TriggerTypeSummary>,
-    pub registered_triggers: Vec<RegisteredTriggerSummary>,
+    /// Ids of the observers this worker created (see
+    /// `engine::observers::get`).
+    pub observers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FunctionsListResult {
     pub functions: Vec<FunctionSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct TriggersListResult {
-    pub triggers: Vec<TriggerTypeSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct RegisteredTriggersListResult {
-    pub registered_triggers: Vec<RegisteredTriggerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -543,64 +412,12 @@ pub struct RegisterWorkerInput {
     /// SDKs keep registering unchanged.
     #[serde(default)]
     pub namespace: Option<String>,
-    /// Protocol features the SDK supports (`observe.v1`,
+    /// Protocol features the SDK supports (`observe.v1`, `observe.v2`,
     /// `local-dispatch.v1`, `large-messages.v1`). Absent from SDKs older
-    /// than 0.25. Read
-    /// leniently: a malformed list declares nothing instead of failing the
-    /// registration.
+    /// than 0.25. Read leniently: a malformed list declares nothing instead
+    /// of failing the registration.
     #[serde(default, deserialize_with = "crate::protocol::deserialize_features")]
     pub features: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct RegisterTriggerInput {
-    /// Trigger type to bind (e.g. `cron`, `state`, `stream`, or a custom worker
-    /// trigger type).
-    pub trigger_type: String,
-    /// The function the fire is delivered to. The trigger binds directly to it;
-    /// `metadata` is delivered alongside the payload as a distinct argument.
-    pub function_id: String,
-    /// Trigger-type-specific configuration, passed through verbatim.
-    #[serde(default)]
-    pub config: Value,
-    /// Arbitrary metadata delivered to the target handler as a distinct argument
-    /// (not folded into the payload) so a (possibly shared) target function can
-    /// recover per-trigger context the engine routing otherwise drops.
-    #[serde(default)]
-    pub metadata: Option<Value>,
-    /// Injected by the engine from the calling worker. Its connection namespace
-    /// is where the binding is at home: the target `function_id` resolves there
-    /// and the provider lookup starts there. Not an owner — the binding outlives
-    /// the connection. Absent for in-process callers, whose home is `default`.
-    #[serde(rename = "_caller_worker_id", default)]
-    pub caller_worker_id: Option<String>,
-    /// Namespace to find the trigger type's provider in. Absent asks the engine
-    /// to resolve it: the caller's connection namespace first, then
-    /// [`crate::protocol::DEFAULT_NAMESPACE`].
-    #[serde(default)]
-    pub trigger_namespace: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct RegisterTriggerResult {
-    /// The id of the registered trigger; pass to `engine::unregister_trigger`.
-    pub id: String,
-}
-
-#[derive(Debug, Clone, Deserialize, JsonSchema)]
-pub struct UnregisterTriggerInput {
-    /// The trigger id returned by `engine::register_trigger`.
-    pub id: String,
-    /// Optional trigger-type hint; accepted for symmetry with the protocol
-    /// message but not required for the registry lookup.
-    #[serde(default)]
-    pub trigger_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct UnregisterTriggerResult {
-    /// Whether a trigger with this id existed and was removed.
-    pub removed: bool,
 }
 
 // ── Worker ──────────────────────────────────────────────────────────────
@@ -608,32 +425,11 @@ pub struct UnregisterTriggerResult {
 #[derive(Clone)]
 pub struct EngineFunctionsWorker {
     engine: Arc<Engine>,
-    triggers: Arc<TriggerStore>,
 }
 
 impl EngineFunctionsWorker {
     pub fn new(engine: Arc<Engine>) -> Self {
-        Self {
-            engine,
-            triggers: Arc::new(TriggerStore::new()),
-        }
-    }
-
-    pub async fn fire_triggers(&self, trigger_type: &str, mut data: Value) {
-        let triggers_to_fire = self.triggers.targets_for_type(trigger_type);
-
-        let trigger_count = triggers_to_fire.len();
-        for (index, trigger) in triggers_to_fire.into_iter().enumerate() {
-            let engine = self.engine.clone();
-            let data = if index + 1 == trigger_count {
-                data.take()
-            } else {
-                data.clone()
-            };
-            tokio::spawn(async move {
-                let _ = engine.call_trigger(trigger, data).await;
-            });
-        }
+        Self { engine }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
@@ -667,27 +463,6 @@ impl EngineFunctionsWorker {
         } else {
             2
         }
-    }
-
-    fn config_summary(config: &Value) -> String {
-        let raw = serde_json::to_string(config).unwrap_or_else(|_| "{}".to_string());
-        if raw.chars().count() <= CONFIG_SUMMARY_MAX_LEN {
-            raw
-        } else {
-            let mut out: String = raw.chars().take(CONFIG_SUMMARY_MAX_LEN).collect();
-            out.push('…');
-            out
-        }
-    }
-
-    /// The connection namespace of the worker behind an injected
-    /// `_caller_worker_id`. In-process callers carry none and are at home in
-    /// [`crate::protocol::DEFAULT_NAMESPACE`].
-    fn caller_namespace(&self, caller_worker_id: Option<&str>) -> String {
-        caller_worker_id
-            .and_then(|id| uuid::Uuid::parse_str(id).ok())
-            .map(|id| self.engine.worker_registry.get_namespace(&id))
-            .unwrap_or_else(crate::protocol::default_namespace)
     }
 
     /// Builds a `(namespace, function_id) -> worker_name` map by scanning both
@@ -897,67 +672,6 @@ impl EngineFunctionsWorker {
         }
     }
 
-    /// Resolves the worker name that owns a trigger type from an
-    /// already-fetched `TriggerType`. Tries, in order: the `worker_id` Uuid
-    /// (populated only by WebSocket-connected workers), the known provider
-    /// map (used for install guidance and in-process workers), and finally the
-    /// first `::` segment of the id.
-    ///
-    /// Takes the borrowed `TriggerType` instead of an id on purpose: callers
-    /// usually sit inside `trigger_types` iteration or a `.get()` guard, and
-    /// a by-id variant would re-enter the same DashMap — a re-entrant
-    /// same-shard read can deadlock against a queued writer (parking_lot
-    /// RwLocks are writer-fair). Only `worker_registry` (a different map) is
-    /// touched here.
-    fn owner_name_for_trigger_type(&self, tt: &crate::trigger::TriggerType) -> String {
-        if let Some(worker_id) = tt.worker_id
-            && let Some(name) = self.engine.worker_registry.get_worker_name(&worker_id)
-        {
-            return name;
-        }
-        if let Some(name) = known_trigger_type_provider(&tt.id) {
-            return name.to_string();
-        }
-        Self::first_segment(&tt.id)
-    }
-
-    fn instance_count_for_type(&self, tt_id: &str) -> usize {
-        self.engine
-            .trigger_registry
-            .triggers
-            .iter()
-            .filter(|entry| entry.value().trigger_type == tt_id)
-            .count()
-    }
-
-    /// Triggers bound to `(namespace, function_id)`. The namespace is part of
-    /// the key on purpose: the same `function_id` can be registered once per
-    /// namespace, so filtering by bare id would splice `analytics`'s triggers
-    /// onto the `orders` function detail.
-    fn registered_trigger_refs_for_function(
-        &self,
-        namespace: &str,
-        function_id: &str,
-    ) -> Vec<RegisteredTriggerRef> {
-        self.engine
-            .trigger_registry
-            .triggers
-            .iter()
-            .filter(|entry| {
-                let t = entry.value();
-                t.namespace == namespace && t.function_id == function_id
-            })
-            .map(|entry| {
-                let t = entry.value();
-                RegisteredTriggerRef {
-                    id: t.id.clone(),
-                    trigger_type: t.trigger_type.clone(),
-                    config: t.config.clone(),
-                }
-            })
-            .collect()
-    }
-
     // ── Listing primitives ──────────────────────────────────────────────
 
     async fn list_function_summaries(&self) -> Vec<FunctionSummary> {
@@ -973,34 +687,30 @@ impl EngineFunctionsWorker {
                 let f = entry.value();
                 let worker_name =
                     Self::worker_name_for_function_id(&index, &namespace, &f._function_id);
+                let observe = self.observe_info(&namespace, &f._function_id);
                 FunctionSummary {
                     function_id: f._function_id.clone(),
                     namespace,
                     worker_name,
                     description: f._description.clone(),
                     metadata: f.metadata.clone(),
+                    observe,
                 }
             })
             .collect()
     }
 
-    /// The `functions_changed` event, when anything listens: a
-    /// `engine::functions-available` trigger, or (`observed`) an observer of
-    /// `engine::on-functions-changed`.
-    async fn functions_changed_payload(&self, observed: bool) -> Option<Value> {
-        // Check after coalescing so a subscriber added during the delay still
-        // receives the change. Release registry guards before snapshot awaits.
-        if !observed
-            && !self
-                .engine
-                .trigger_registry
-                .triggers
-                .iter()
-                .any(|entry| entry.value().trigger_type == TRIGGER_FUNCTIONS_AVAILABLE)
-        {
-            return None;
-        }
+    /// What a function row says about observing `(namespace, function_id)`.
+    fn observe_info(&self, namespace: &str, function_id: &str) -> FunctionObserveInfo {
+        let observers = &self.engine.observers;
+        FunctionObserveInfo::new(
+            observers.options(namespace, function_id),
+            observers.observer_count(namespace, function_id),
+        )
+    }
 
+    /// The `functions_changed` event of `engine::on-functions-changed`.
+    async fn functions_changed_payload(&self) -> Value {
         let functions = self
             .list_function_summaries()
             .await
@@ -1009,167 +719,13 @@ impl EngineFunctionsWorker {
             .collect();
         // Move the snapshot metadata into the event instead of serializing a
         // borrowed snapshot into a second owned tree.
-        Some(Value::Object(serde_json::Map::from_iter([
+        Value::Object(serde_json::Map::from_iter([
             (
                 "event".to_string(),
                 Value::String("functions_changed".to_string()),
             ),
             ("functions".to_string(), Value::Array(functions)),
-        ])))
-    }
-
-    fn list_trigger_type_summaries(&self) -> Vec<TriggerTypeSummary> {
-        let mut summaries: Vec<TriggerTypeSummary> = self
-            .engine
-            .trigger_registry
-            .trigger_types
-            .iter()
-            .map(|entry| {
-                let tt = entry.value();
-                TriggerTypeSummary {
-                    id: tt.id.clone(),
-                    namespace: tt.namespace.clone(),
-                    // Guard-safe: we're inside `trigger_types.iter()`.
-                    worker_name: self.owner_name_for_trigger_type(tt),
-                    description: tt._description.clone(),
-                }
-            })
-            .collect();
-        // A trigger type a stand-in function serves is still listed (one
-        // entry per namespace; a live provider's entry wins).
-        for shim in self.engine.observers.shim_types() {
-            let listed = summaries
-                .iter()
-                .any(|t| t.id == shim.trigger_type && t.namespace == shim.function.0);
-            if !listed {
-                let detail = self.shim_type_detail(&shim);
-                summaries.push(TriggerTypeSummary {
-                    id: detail.id,
-                    namespace: detail.namespace,
-                    worker_name: detail.worker_name,
-                    description: detail.description,
-                });
-            }
-        }
-        summaries
-    }
-
-    fn registered_trigger_summary(
-        index: &HashMap<(String, String), String>,
-        t: &Trigger,
-        status: RegisteredTriggerStatus,
-    ) -> RegisteredTriggerSummary {
-        RegisteredTriggerSummary {
-            id: t.id.clone(),
-            trigger_type: t.trigger_type.clone(),
-            function_id: t.function_id.clone(),
-            worker_name: Self::worker_name_for_function_id(index, &t.namespace, &t.function_id),
-            status,
-            config: t.config.clone(),
-            config_summary: Self::config_summary(&t.config),
-            served_by: None,
-            observer_state: None,
-        }
-    }
-
-    fn shim_binding_summary(
-        index: &HashMap<(String, String), String>,
-        binding: &crate::observer::ShimBinding,
-    ) -> RegisteredTriggerSummary {
-        RegisteredTriggerSummary {
-            id: binding.id.clone(),
-            trigger_type: binding.trigger_type.clone(),
-            function_id: binding.target.1.clone(),
-            worker_name: Self::worker_name_for_function_id(
-                index,
-                &binding.target.0,
-                &binding.target.1,
-            ),
-            status: Self::shim_status(binding),
-            config: binding.config.clone(),
-            config_summary: Self::config_summary(&binding.config),
-            served_by: Some(binding.served_by.1.clone()),
-            observer_state: Some(binding.state.to_string()),
-        }
-    }
-
-    fn shim_status(binding: &crate::observer::ShimBinding) -> RegisteredTriggerStatus {
-        if binding.served {
-            RegisteredTriggerStatus::Active
-        } else {
-            RegisteredTriggerStatus::Pending
-        }
-    }
-
-    /// A trigger type a stand-in function serves, in the shape of a
-    /// provider's (protocol.md §6).
-    fn shim_type_detail(&self, shim: &crate::observer::ShimType) -> TriggerTypeDetail {
-        TriggerTypeDetail {
-            id: shim.trigger_type.clone(),
-            namespace: shim.function.0.clone(),
-            worker_name: shim
-                .owner
-                .and_then(|owner| self.engine.worker_registry.get_worker_name(&owner))
-                .unwrap_or_else(|| Self::first_segment(&shim.function.1)),
-            description: format!(
-                "Served by `{}`, which stands in for this trigger type (observe)",
-                shim.function.1
-            ),
-            configuration_schema: shim.config_format.clone(),
-            request_schema: shim.request_format.clone(),
-            response_schema: None,
-            instance_count: self
-                .engine
-                .observers
-                .shim_bindings()
-                .iter()
-                .filter(|binding| binding.served_by == shim.function)
-                .count(),
-        }
-    }
-
-    /// Live bindings, plus the parked ones when asked: a registration whose
-    /// provider has not shown up is still a registration, and the only way to
-    /// see why it never fires is to list it.
-    async fn list_registered_trigger_summaries(
-        &self,
-        include_pending: bool,
-    ) -> Vec<RegisteredTriggerSummary> {
-        let index = self.function_owner_index().await;
-        let registry = &self.engine.trigger_registry;
-        let mut rows: Vec<RegisteredTriggerSummary> = registry
-            .triggers
-            .iter()
-            .map(|entry| {
-                Self::registered_trigger_summary(
-                    &index,
-                    entry.value(),
-                    RegisteredTriggerStatus::Active,
-                )
-            })
-            .collect();
-        if include_pending {
-            rows.extend(registry.pending_triggers.iter().map(|entry| {
-                Self::registered_trigger_summary(
-                    &index,
-                    entry.value(),
-                    RegisteredTriggerStatus::Pending,
-                )
-            }));
-        }
-        // The bindings the legacy shim serves are registrations too, listed
-        // from the moment they are stored (as old triggers were), also while
-        // the owner's ack is in flight; parked (the stand-in away) only with
-        // the pending ones.
-        rows.extend(
-            self.engine
-                .observers
-                .shim_bindings()
-                .iter()
-                .filter(|binding| include_pending || binding.served)
-                .map(|binding| Self::shim_binding_summary(&index, binding)),
-        );
-        rows
+        ]))
     }
 
     async fn list_worker_summaries(&self, filter_worker_id: Option<&str>) -> Vec<WorkerSummary> {
@@ -1311,96 +867,7 @@ impl EngineFunctionsWorker {
             request_schema: function.request_format,
             response_schema: function.response_format,
             metadata: function.metadata,
-            registered_triggers: self.registered_trigger_refs_for_function(namespace, function_id),
-        })
-    }
-
-    fn build_trigger_type_detail(
-        &self,
-        key: &crate::trigger::TypeKey,
-    ) -> Option<TriggerTypeDetail> {
-        let tt = self.engine.trigger_registry.trigger_types.get(key)?;
-        Some(TriggerTypeDetail {
-            id: tt.id.clone(),
-            namespace: tt.namespace.clone(),
-            // Guard-safe: we hold the `.get()` guard on this entry.
-            worker_name: self.owner_name_for_trigger_type(tt.value()),
-            description: tt._description.clone(),
-            configuration_schema: tt.trigger_request_format.clone(),
-            request_schema: tt.call_request_format.clone(),
-            response_schema: tt.call_response_format.clone(),
-            instance_count: self.instance_count_for_type(&tt.id),
-        })
-    }
-
-    async fn build_registered_trigger_detail(&self, id: &str) -> Option<RegisteredTriggerDetail> {
-        let registry = &self.engine.trigger_registry;
-        let found = match registry.triggers.get(id) {
-            Some(entry) => Some((entry.value().clone(), RegisteredTriggerStatus::Active)),
-            None => registry
-                .pending_triggers
-                .get(id)
-                .map(|entry| (entry.value().clone(), RegisteredTriggerStatus::Pending)),
-        };
-        let Some((trigger, status)) = found else {
-            return self.build_shim_binding_detail(id).await;
-        };
-
-        let index = self.function_owner_index().await;
-        let worker_name =
-            Self::worker_name_for_function_id(&index, &trigger.namespace, &trigger.function_id);
-
-        let trigger_detail = self.build_trigger_type_detail(&trigger.provider_key());
-        let function_detail = self
-            .build_function_detail(&trigger.namespace, &trigger.function_id)
-            .await;
-
-        Some(RegisteredTriggerDetail {
-            id: trigger.id.clone(),
-            trigger_type: trigger.trigger_type.clone(),
-            function_id: trigger.function_id.clone(),
-            worker_name,
-            status,
-            config: trigger.config.clone(),
-            metadata: trigger.metadata.clone(),
-            trigger: trigger_detail,
-            function: function_detail,
-            served_by: None,
-            observer_state: None,
-        })
-    }
-
-    /// [`Self::build_registered_trigger_detail`] for a binding the legacy
-    /// shim serves.
-    async fn build_shim_binding_detail(&self, id: &str) -> Option<RegisteredTriggerDetail> {
-        let binding = self.engine.observers.shim_binding(id)?;
-        let index = self.function_owner_index().await;
-        let trigger = self
-            .engine
-            .observers
-            .shim_types()
-            .into_iter()
-            .find(|shim| shim.function == binding.served_by)
-            .map(|shim| self.shim_type_detail(&shim));
-        let function = self
-            .build_function_detail(&binding.target.0, &binding.target.1)
-            .await;
-        Some(RegisteredTriggerDetail {
-            id: binding.id.clone(),
-            trigger_type: binding.trigger_type.clone(),
-            function_id: binding.target.1.clone(),
-            worker_name: Self::worker_name_for_function_id(
-                &index,
-                &binding.target.0,
-                &binding.target.1,
-            ),
-            status: Self::shim_status(&binding),
-            config: binding.config.clone(),
-            metadata: binding.metadata.clone(),
-            trigger,
-            function,
-            served_by: Some(binding.served_by.1.clone()),
-            observer_state: Some(binding.state.to_string()),
+            observe: self.observe_info(namespace, function_id),
         })
     }
 
@@ -1474,8 +941,9 @@ impl EngineFunctionsWorker {
         let function_ids: Vec<String>;
         // The connection id of the resolved worker, when it is a WebSocket
         // worker. `None` for in-process runtime workers (which have no
-        // connection Uuid). This is what disambiguates same-named workers in
-        // different namespaces when scoping their trigger types below.
+        // connection Uuid, and create no observers). This is what
+        // disambiguates same-named workers in different namespaces when
+        // listing the observers they created below.
         let resolved_worker_id: Option<uuid::Uuid>;
         // The namespace this worker's functions live in. Its own namespace is
         // the only correct place to look them up: a `default` lookup finds
@@ -1521,7 +989,6 @@ impl EngineFunctionsWorker {
             function_ids = function_count_async;
         }
 
-        let worker_name = envelope.name.clone();
         let index = self.function_owner_index().await;
         let mut functions: Vec<FunctionSummary> = function_ids
             .into_iter()
@@ -1536,6 +1003,7 @@ impl EngineFunctionsWorker {
                         })?;
                 let worker_name =
                     Self::worker_name_for_function_id(&index, &worker_namespace, &fn_id);
+                let observe = self.observe_info(&worker_namespace, &fn_id);
                 Some(FunctionSummary {
                     function_id: fn_id,
                     // Mirrors the lookup directly above: this row *is* the
@@ -1544,97 +1012,20 @@ impl EngineFunctionsWorker {
                     worker_name,
                     description,
                     metadata,
+                    observe,
                 })
             })
             .collect();
         functions.sort_by(|a, b| a.function_id.cmp(&b.function_id));
 
-        let mut trigger_types: Vec<TriggerTypeSummary> = self
-            .engine
-            .trigger_registry
-            .trigger_types
-            .iter()
-            .filter_map(|entry| {
-                // Attribute by resolved owner NAME — the same index
-                // `engine::triggers::list` uses — so the two surfaces cannot
-                // disagree. Id-based attribution diverged whenever several
-                // connections shared one worker name (e.g. a stale worker
-                // reconnecting next to a fresh one):
-                // the name resolved to one connection's id while the trigger
-                // type stayed pinned to another, and the type silently
-                // vanished from `workers::info`.
-                //
-                // Trust caveat: worker names are self-reported, so a worker
-                // that adopts another worker's name will have its trigger
-                // types merged into that name's view here — exactly as
-                // `triggers::list` already behaves. The engine does not
-                // authenticate worker identity today (a connected worker can
-                // likewise shadow function ids); fixing that is identity/auth
-                // work, not attribution logic.
-                let tt = entry.value();
-                // Guard-safe resolution: we're inside `trigger_types.iter()`,
-                // and the owner is resolved exactly once per entry.
-                let owner = self.owner_name_for_trigger_type(tt);
-                if worker_name.as_deref() != Some(owner.as_str()) {
-                    return None;
-                }
-                // Namespace scoping. The owner-name match above is necessary
-                // but not sufficient: same-named workers across namespaces
-                // share an owner NAME while holding distinct connection ids, so
-                // name alone would splice another namespace's types in here.
-                // When we resolved a WebSocket worker (`Some`), only trigger
-                // types pinned to THIS exact connection are its own: internal /
-                // known-provider types (`worker_id == None`) and types pinned to
-                // a different connection must not splice in by name coincidence
-                // with a same-named worker in another namespace. When we
-                // resolved the in-process runtime worker (`None`, only ever in
-                // `default`), it has no connection id and its trigger types are
-                // attributed by owner NAME — matching `engine::triggers::list`,
-                // including the stale-daemon case where a same-named WS
-                // connection registered the type. The name check above already
-                // gated that, so only the WS case narrows further here.
-                if let Some(resolved_wid) = resolved_worker_id
-                    && tt.worker_id != Some(resolved_wid)
-                {
-                    return None;
-                }
-                Some(TriggerTypeSummary {
-                    id: tt.id.clone(),
-                    namespace: tt.namespace.clone(),
-                    worker_name: owner,
-                    description: tt._description.clone(),
-                })
-            })
-            .collect();
-        trigger_types.sort_by(|a, b| a.id.cmp(&b.id));
-
-        let function_id_set: std::collections::HashSet<String> =
-            functions.iter().map(|f| f.function_id.clone()).collect();
-
-        let mut registered_triggers: Vec<RegisteredTriggerSummary> = self
-            .engine
-            .trigger_registry
-            .triggers
-            .iter()
-            // Scope by `(namespace, function_id)`: a trigger bound to the same
-            // id in another namespace belongs to a different worker's function,
-            // not this one.
-            .filter(|entry| {
-                let t = entry.value();
-                t.namespace == worker_namespace && function_id_set.contains(&t.function_id)
-            })
-            .map(|entry| {
-                let t = entry.value();
-                Self::registered_trigger_summary(&index, t, RegisteredTriggerStatus::Active)
-            })
-            .collect();
-        registered_triggers.sort_by(|a, b| a.id.cmp(&b.id));
+        let observers = resolved_worker_id
+            .map(|connection| self.engine.observers.created_by(connection))
+            .unwrap_or_default();
 
         Some(WorkerInfoOutput {
             worker: envelope,
             functions,
-            trigger_types,
-            registered_triggers,
+            observers,
         })
     }
 
@@ -1693,37 +1084,6 @@ impl EngineFunctionsWorker {
     }
 }
 
-impl TriggerRegistrator for EngineFunctionsWorker {
-    fn register_trigger(
-        &self,
-        trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        let triggers = self.triggers.clone();
-        Box::pin(async move {
-            tracing::debug!(
-                trigger_id = %trigger.id,
-                trigger_type = %trigger.trigger_type,
-                function_id = %trigger.function_id,
-                "Registering engine trigger"
-            );
-            triggers.insert(trigger.id.clone(), trigger);
-            Ok(())
-        })
-    }
-
-    fn unregister_trigger(
-        &self,
-        trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        let triggers = self.triggers.clone();
-        Box::pin(async move {
-            tracing::debug!(trigger_id = %trigger.id, "Unregistering engine trigger");
-            triggers.remove(&trigger.id);
-            Ok(())
-        })
-    }
-}
-
 #[async_trait::async_trait]
 impl Worker for EngineFunctionsWorker {
     fn name(&self) -> &'static str {
@@ -1734,10 +1094,7 @@ impl Worker for EngineFunctionsWorker {
         engine: Arc<Engine>,
         _config: Option<Value>,
     ) -> anyhow::Result<Box<dyn Worker>> {
-        Ok(Box::new(EngineFunctionsWorker {
-            engine,
-            triggers: Arc::new(TriggerStore::new()),
-        }))
+        Ok(Box::new(EngineFunctionsWorker { engine }))
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
@@ -1747,15 +1104,9 @@ impl Worker for EngineFunctionsWorker {
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing EngineFunctionsWorker");
 
-        let functions_trigger = TriggerType::new(
-            TRIGGER_FUNCTIONS_AVAILABLE,
-            "Triggered when functions are registered/unregistered",
-            Box::new(self.clone()),
-            None,
-        );
-        let _ = self.engine.register_trigger_type(functions_trigger).await;
+        crate::observer::events::register_engine_event_sources(&self.engine);
 
-        // Fire `engine::functions-available` from the registry itself, with no
+        // Call `engine::on-functions-changed` from the registry itself, with no
         // polling task. A burst of changes (a worker registering its whole
         // surface on connect) is coalesced into one event: the first change
         // schedules a one-shot send, later ones ride along until it runs.
@@ -1799,16 +1150,17 @@ impl Worker for EngineFunctionsWorker {
                     let Some(engine) = engine.upgrade() else {
                         return;
                     };
-                    let observed = engine.observers.is_observed(
+                    // Checked after coalescing, so an observer added during the
+                    // delay still gets the change.
+                    if !engine.observers.is_observed(
                         crate::protocol::DEFAULT_NAMESPACE,
                         crate::observer::events::ON_FUNCTIONS_CHANGED,
-                    );
-                    let Some(payload) = EngineFunctionsWorker::new(engine.clone())
-                        .functions_changed_payload(observed)
-                        .await
-                    else {
+                    ) {
                         return;
-                    };
+                    }
+                    let payload = EngineFunctionsWorker::new(engine.clone())
+                        .functions_changed_payload()
+                        .await;
                     engine.observers.emit_with(
                         crate::protocol::DEFAULT_NAMESPACE,
                         crate::observer::events::ON_FUNCTIONS_CHANGED,
@@ -1816,25 +1168,11 @@ impl Worker for EngineFunctionsWorker {
                             depth: Some(depth),
                             traceparent: None,
                         },
-                        || Some(payload.clone()),
+                        || Some(payload),
                     );
-                    engine
-                        .fire_triggers(TRIGGER_FUNCTIONS_AVAILABLE, payload)
-                        .await;
                 });
             },
         ));
-
-        let workers_trigger = TriggerType::new(
-            TRIGGER_WORKERS_AVAILABLE,
-            "Triggered when workers connect/disconnect",
-            Box::new(self.clone()),
-            None,
-        );
-        let _ = self.engine.register_trigger_type(workers_trigger).await;
-
-        // The functions replacing both trigger types (README §9).
-        crate::observer::events::register_engine_event_sources(&self.engine);
 
         Ok(())
     }
@@ -1891,9 +1229,9 @@ impl EngineFunctionsWorker {
             // shelling out to the CLI to read traces `functions::info` would
             // happily describe.
             // Also hide any handler explicitly tagged `metadata.internal == true`
-            // (e.g. `iii-observability::on-config-change`,
-            // `iii-http::on-config-change`). These are configuration-trigger
-            // fan-out targets, invoked by id — never meant for discovery.
+            // (e.g. `iii-observability::ui-content`, `iii-http::on-config-change`).
+            // These are targets the engine and its workers invoke by id — never
+            // meant for discovery.
             functions.retain(|f| {
                 let is_engine_internal = f.function_id.starts_with("engine::")
                     && !f.function_id.starts_with("engine::queue::")
@@ -1964,9 +1302,9 @@ impl EngineFunctionsWorker {
 
     #[function(
         id = "engine::functions::info",
-        description = "Inspect functions: schemas, owner, and registered triggers. Single \
-                       `function_id`, or `function_ids: [...]` (max 32) to fetch several \
-                       contracts in one call."
+        description = "Inspect functions: schemas, owner, args_format, private, observable and \
+                       observer_count. Single `function_id`, or `function_ids: [...]` (max 32) \
+                       to fetch several contracts in one call."
     )]
     pub async fn functions_info(
         &self,
@@ -2077,155 +1415,6 @@ impl EngineFunctionsWorker {
     }
 
     #[function(
-        id = "engine::triggers::list",
-        description = "List trigger types registered with the engine."
-    )]
-    pub async fn triggers_list(
-        &self,
-        input: TriggersListInput,
-    ) -> FunctionResult<TriggersListResult, ErrorBody> {
-        let mut triggers = self.list_trigger_type_summaries();
-
-        if !input.include_internal.unwrap_or(false) {
-            triggers.retain(|t| !t.id.starts_with("engine::"));
-        }
-
-        if let Some(prefix) = input.prefix.as_deref() {
-            triggers.retain(|t| t.id.starts_with(prefix));
-        }
-
-        if let Some(worker) = input.worker.as_deref() {
-            triggers.retain(|t| t.worker_name == worker);
-        }
-
-        if let Some(search) = input.search.as_deref()
-            && !search.is_empty()
-        {
-            triggers
-                .retain(|t| Self::matches_search(search, &[t.id.as_str(), t.description.as_str()]));
-        }
-
-        triggers.sort_by(|a, b| a.id.cmp(&b.id));
-
-        FunctionResult::Success(TriggersListResult { triggers })
-    }
-
-    #[function(
-        id = "engine::triggers::info",
-        description = "Inspect one trigger type: schemas, owner, and live instance count."
-    )]
-    pub async fn triggers_info(
-        &self,
-        input: TriggerInfoInput,
-    ) -> FunctionResult<TriggerTypeDetail, ErrorBody> {
-        // Same order as `TriggerRegistry::resolve_provider_key`: an explicit
-        // namespace is strict; absent tries the caller's home, then `default`.
-        // Answering from `default` alone would report a namespaced worker's own
-        // provider as NOT_FOUND.
-        let mut candidates = match input.namespace.as_deref() {
-            Some(explicit) => vec![explicit.to_string()],
-            None => vec![
-                self.caller_namespace(input.caller_worker_id.as_deref()),
-                crate::protocol::default_namespace(),
-            ],
-        };
-        candidates.dedup();
-        // A live provider first, then a function standing in for the type.
-        let found = candidates
-            .iter()
-            .find_map(|ns| self.build_trigger_type_detail(&crate::trigger::type_key(ns, &input.id)))
-            .or_else(|| {
-                let shims = self.engine.observers.shim_types();
-                candidates.iter().find_map(|ns| {
-                    shims
-                        .iter()
-                        .find(|shim| shim.trigger_type == input.id && shim.function.0 == *ns)
-                        .map(|shim| self.shim_type_detail(shim))
-                })
-            });
-        match found {
-            Some(detail) => FunctionResult::Success(detail),
-            None => FunctionResult::Failure(ErrorBody {
-                code: "NOT_FOUND".into(),
-                message: format!(
-                    "Trigger type '{}' is not registered in namespace(s): {}.",
-                    input.id,
-                    candidates.join(", ")
-                ),
-                stacktrace: None,
-            }),
-        }
-    }
-
-    #[function(
-        id = "engine::registered-triggers::list",
-        description = "List registered trigger instances (subscriber rows)."
-    )]
-    pub async fn registered_triggers_list(
-        &self,
-        input: RegisteredTriggersListInput,
-    ) -> FunctionResult<RegisteredTriggersListResult, ErrorBody> {
-        let mut registered_triggers = self
-            .list_registered_trigger_summaries(input.include_pending.unwrap_or(false))
-            .await;
-
-        if !input.include_internal.unwrap_or(false) {
-            registered_triggers.retain(|t| !t.function_id.starts_with("engine::"));
-        }
-
-        if let Some(trigger_type) = input.trigger_type.as_deref() {
-            registered_triggers.retain(|t| t.trigger_type == trigger_type);
-        }
-
-        if let Some(function_id) = input.function_id.as_deref() {
-            registered_triggers.retain(|t| t.function_id == function_id);
-        }
-
-        if let Some(worker) = input.worker.as_deref() {
-            registered_triggers.retain(|t| t.worker_name == worker);
-        }
-
-        if let Some(search) = input.search.as_deref()
-            && !search.is_empty()
-        {
-            registered_triggers.retain(|t| {
-                Self::matches_search(
-                    search,
-                    &[
-                        t.id.as_str(),
-                        t.trigger_type.as_str(),
-                        t.function_id.as_str(),
-                    ],
-                )
-            });
-        }
-
-        registered_triggers.sort_by(|a, b| a.id.cmp(&b.id));
-
-        FunctionResult::Success(RegisteredTriggersListResult {
-            registered_triggers,
-        })
-    }
-
-    #[function(
-        id = "engine::registered-triggers::info",
-        description = "Inspect one registered trigger instance with denormalized trigger and function detail."
-    )]
-    pub async fn registered_triggers_info(
-        &self,
-        input: RegisteredTriggerInfoInput,
-    ) -> FunctionResult<RegisteredTriggerDetail, ErrorBody> {
-        match self.build_registered_trigger_detail(&input.id).await {
-            Some(detail) => FunctionResult::Success(detail),
-            None => FunctionResult::Failure(ErrorBody {
-                code: "NOT_FOUND".into(),
-                message: format!("Registered trigger '{}' was not found.", input.id),
-                stacktrace: None,
-            }),
-        }
-    }
-
-    #[function(
         id = "engine::workers::list",
         description = "List workers connected to the engine."
     )]
@@ -2254,7 +1443,7 @@ impl EngineFunctionsWorker {
 
     #[function(
         id = "engine::workers::info",
-        description = "Inspect one connected worker's full surface (functions, trigger types, registered triggers)."
+        description = "Inspect one connected worker's full surface (functions, and the ids of the observers it created)."
     )]
     pub async fn workers_info(
         &self,
@@ -2391,138 +1580,18 @@ impl EngineFunctionsWorker {
             self.engine.cancel_namespace_grace_timer(&uuid);
         }
 
-        let data = serde_json::json!({
-            "event": "worker_metadata_updated",
-            "worker_id": worker_id,
-        });
         self.engine.observers.emit(
             crate::protocol::DEFAULT_NAMESPACE,
             crate::observer::events::ON_WORKERS_CHANGED,
-            || Some(data.clone()),
+            || {
+                Some(serde_json::json!({
+                    "event": "worker_metadata_updated",
+                    "worker_id": worker_id,
+                }))
+            },
         );
-        self.engine
-            .fire_triggers(TRIGGER_WORKERS_AVAILABLE, data)
-            .await;
 
         FunctionResult::Success(RegisterWorkerResult { success: true })
-    }
-
-    #[function(
-        id = "engine::register_trigger",
-        description = "Register a trigger that fires `function_id` directly, with `metadata` delivered to the handler as a distinct argument (not folded into the payload). Returns the trigger id (pass it to engine::unregister_trigger)."
-    )]
-    pub async fn register_trigger_fn(
-        &self,
-        input: RegisterTriggerInput,
-        session: Option<Arc<Session>>,
-    ) -> FunctionResult<RegisterTriggerResult, ErrorBody> {
-        // RBAC parity with the `Message::RegisterTrigger` path: honor the
-        // session's allowed_trigger_types when a session is present. (The
-        // on_trigger_registration hook is Message-path only and intentionally
-        // not replicated here — session-less local deployments bypass RBAC.)
-        if let Some(session) = &session
-            && let Some(allowed) = &session.allowed_trigger_types
-            && !allowed.iter().any(|t| t == &input.trigger_type)
-        {
-            return FunctionResult::Failure(ErrorBody {
-                code: "FORBIDDEN".into(),
-                message: format!(
-                    "Trigger type '{}' is not allowed for this session.",
-                    input.trigger_type
-                ),
-                stacktrace: None,
-            });
-        }
-
-        let id = uuid::Uuid::new_v4().to_string();
-
-        // Prefix parity with the `Message::RegisterTrigger` path: a prefixed
-        // session's functions are stored under `prefix::id`, so the trigger
-        // must bind to the prefixed target or firing would miss the real
-        // function.
-        let mut function_id = input.function_id;
-        if let Some(prefix) = session
-            .as_ref()
-            .and_then(|s| s.function_registration_prefix.as_ref())
-        {
-            function_id = format!("{prefix}::{function_id}");
-        }
-
-        // Bind the trigger straight to the target function. `metadata` rides on
-        // the `Trigger` and is delivered to the handler as a distinct argument
-        // at fire time (see the trigger-fire paths) — no proxy function, so
-        // nothing to leak or GC, and the payload is left untouched.
-        //
-        // Ownership: deliberately NOT stamped with the caller's worker id.
-        // Function-path registrations are durable engine-side state ("when X
-        // happens, do Y"), removed only by explicit `engine::unregister_trigger`
-        // — a CLI's millisecond-lived connection or an agent proxy's restart
-        // must not reap them. A worker's own lifecycle bindings go through the
-        // `Message::RegisterTrigger` path, which keeps connection ownership and
-        // the disconnect GC.
-        //
-        // The binding is at home in the caller's connection namespace: that is
-        // where its target function lives and where the provider lookup starts
-        // (falling back to `default`, where the engine's own providers are).
-        // Hardcoding `default` here parked every registration from a namespaced
-        // worker in `pending_triggers` for good — its provider was never looked
-        // for at home, and a fire would have resolved the target in `default`
-        // anyway. In-process callers carry no worker id and stay in `default`.
-        let namespace = self.caller_namespace(input.caller_worker_id.as_deref());
-        let trigger = Trigger {
-            id: id.clone(),
-            trigger_type: input.trigger_type,
-            function_id,
-            config: input.config,
-            worker_id: None,
-            metadata: input.metadata,
-            namespace: namespace.clone(),
-            trigger_namespace: input.trigger_namespace,
-            home_namespace: namespace,
-            // Written by the registry once it resolves; only the starting value.
-            provider_namespace: crate::protocol::default_namespace(),
-        };
-
-        if let Err(err) = self.engine.trigger_registry.register_trigger(trigger).await {
-            return FunctionResult::Failure(ErrorBody {
-                code: "trigger_registration_failed".into(),
-                message: err.to_string(),
-                stacktrace: None,
-            });
-        }
-
-        FunctionResult::Success(RegisterTriggerResult { id })
-    }
-
-    #[function(
-        id = "engine::unregister_trigger",
-        description = "Unregister a trigger by id. Idempotent; reports whether it existed."
-    )]
-    pub async fn unregister_trigger_fn(
-        &self,
-        input: UnregisterTriggerInput,
-    ) -> FunctionResult<UnregisterTriggerResult, ErrorBody> {
-        // A trigger the legacy shim made into an observer (protocol.md §6).
-        let shim = self.engine.observers.unregister_legacy(&input.id);
-        let removed = match self
-            .engine
-            .trigger_registry
-            .unregister_trigger(input.id.clone(), input.trigger_type)
-            .await
-        {
-            Ok(removed) => removed,
-            Err(err) => {
-                return FunctionResult::Failure(ErrorBody {
-                    code: "unregister_failed".into(),
-                    message: err.to_string(),
-                    stacktrace: None,
-                });
-            }
-        };
-
-        FunctionResult::Success(UnregisterTriggerResult {
-            removed: removed || shim,
-        })
     }
 
     #[function(

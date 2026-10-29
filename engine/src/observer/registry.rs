@@ -21,7 +21,7 @@ use super::{
     lifecycle::{
         CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy, Tombstone,
     },
-    owner::check_descriptor,
+    owner::check_options,
 };
 use crate::{
     engine::Engine,
@@ -80,7 +80,6 @@ impl ObserveRequest {
             max_fires: self.max_fires,
             expires_in_ms: self.expires_in_ms,
             max_in_flight: self.max_in_flight.unwrap_or(default_max_in_flight),
-            legacy: None,
         }
     }
 }
@@ -269,7 +268,7 @@ impl ObserverRegistry {
             .namespace
             .clone()
             .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
-        // `null` is no args, stored (and shown to the owner) as `{}`.
+        // `null` is no args, stored (and shown to the host) as `{}`.
         let mut args = match &source.args {
             None | Some(Value::Null) => Value::Object(Map::new()),
             Some(args) => args.clone(),
@@ -278,8 +277,8 @@ impl ObserverRegistry {
         let mut activation_metadata = metadata;
 
         if let Some(session) = &worker.session {
-            // Same contract as `on_trigger_registration_function_id`: an
-            // object answer may rewrite the registration, anything else denies.
+            // An object answer may rewrite the registration, anything else
+            // denies.
             if let Some(hook) = session
                 .config
                 .rbac
@@ -336,8 +335,7 @@ impl ObserverRegistry {
                     }
                 }
             }
-            // A prefixed session's own functions live under `prefix::id`, as
-            // for a trigger's target.
+            // A prefixed session's own functions live under `prefix::id`.
             if let Some(prefix) = &session.function_registration_prefix {
                 target_id = format!("{prefix}::{target_id}");
             }
@@ -378,8 +376,8 @@ impl ObserverRegistry {
         let formats = self.function_formats(&function);
         match &formats {
             Some((request_format, response_format)) => {
-                let descriptor = self.function_entry(&function).and_then(|e| e.descriptor());
-                check_descriptor(descriptor.as_ref(), &function, &args)?;
+                let options = self.function_entry(&function).and_then(|e| e.options());
+                check_options(options.as_ref(), &function, &args)?;
                 warnings = filter
                     .check_schema_paths(request_format.as_ref(), response_format.as_ref())
                     .map_err(|err| reject(err.code.as_str(), err.message))?;
@@ -394,16 +392,10 @@ impl ObserverRegistry {
         }
 
         let config = self.config();
-        // Observers the legacy shim made from old triggers count against no
-        // limit (protocol.md §6).
         let owned = self
             .by_connection
             .get(&worker.id)
-            .map(|ids| {
-                ids.iter()
-                    .filter(|id| self.get(id).is_some_and(|o| o.legacy.is_none()))
-                    .count()
-            })
+            .map(|ids| ids.len())
             .unwrap_or(0);
         if owned >= config.max_per_connection {
             return Err(reject(
@@ -466,7 +458,6 @@ impl ObserverRegistry {
                 disposed: None,
             },
             function,
-            legacy: None,
         }));
 
         let inserted = self.publish(&observer, worker.id, warnings);
@@ -500,8 +491,7 @@ impl ObserverRegistry {
     }
 
     /// Makes `observer` visible to every index and queues its
-    /// `observeresult` (not for a legacy observer, whose registrant sent no
-    /// `observe`), before any transition can be reported.
+    /// `observeresult`, before any transition can be reported.
     pub(super) fn publish(
         self: &Arc<Self>,
         observer: &Arc<Observer>,
@@ -519,19 +509,15 @@ impl ObserverRegistry {
         // Queued before the observer is reachable from the function and target
         // indexes, which are what a concurrent registry change goes through:
         // any transition it causes is reported after this.
-        if observer.legacy.is_none() {
-            self.notify(
-                connection,
-                Message::ObserveResult {
-                    id: observer.id.clone(),
-                    state: state.clone(),
-                    error: None,
-                    warnings,
-                },
-            );
-        } else if state == ObserverState::Active {
-            self.answer_legacy(observer, None);
-        }
+        self.notify(
+            connection,
+            Message::ObserveResult {
+                id: observer.id.clone(),
+                state: state.clone(),
+                error: None,
+                warnings,
+            },
+        );
         self.by_connection
             .entry(connection)
             .or_default()

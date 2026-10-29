@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -32,9 +32,7 @@ use super::{
 };
 use crate::{
     engine::Outbound,
-    protocol::{
-        Capture, Deliver, ErrorBody, LegacyTrigger, Message, ObserverState, On, observe_codes,
-    },
+    protocol::{Capture, Deliver, ErrorBody, Message, ObserverState, On, observe_codes},
 };
 
 /// What an activation ships to the target, from the observer's `capture`.
@@ -95,20 +93,6 @@ pub(crate) struct ObserveSpec {
     pub max_fires: Option<u64>,
     pub expires_in_ms: Option<u64>,
     pub max_in_flight: u32,
-    /// The `RegisterTrigger` a legacy observer stands for; `None` for one
-    /// made by `observe`.
-    pub legacy: Option<LegacyTrigger>,
-}
-
-/// What makes an observer a legacy one (protocol.md §6): the shim made it
-/// from a `RegisterTrigger`. Its observing worker sent no `observe`, so it
-/// hears no `observeresult` / `observerstatechanged`; it gets one
-/// `TriggerRegistrationResult` instead, once the owner acked or rejected.
-pub(crate) struct LegacyBinding {
-    /// Forwarded to the owner in `observeradded` / `functionregistered`.
-    pub trigger: LegacyTrigger,
-    /// The registrant got its `TriggerRegistrationResult`.
-    pub answered: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -126,9 +110,9 @@ pub(crate) struct Flags {
     pub observing_connected: bool,
     pub function_available: bool,
     pub target_available: bool,
-    /// The function's owner has the observer: it acked it, or the owner does
-    /// not speak observe (legacy SDK, engine-hosted, HTTP-invoked), so there is
-    /// nothing to wait for. `active` needs it (protocol.md §3.3).
+    /// The function's host has the observer: it acked it, or the host does
+    /// not speak observe (an older SDK, engine-hosted, HTTP-invoked), so there
+    /// is nothing to wait for. `active` needs it (protocol.md §3.3).
     pub owner_acked: bool,
     /// How the current owner was told about the observer
     /// (`functionregistered` or `observeradded`); `None` while it was not.
@@ -465,8 +449,6 @@ pub struct Observer {
     /// When a `TOO_LARGE` drop was last logged (see
     /// [`super::dispatch::drop_too_large`]).
     pub(crate) last_too_large_warn_ms: AtomicU64,
-    /// Set for an observer the legacy shim made from a `RegisterTrigger`.
-    pub(crate) legacy: Option<LegacyBinding>,
 }
 
 impl Drop for Observer {
@@ -492,7 +474,6 @@ pub(crate) struct NewObserver {
     pub warnings: Vec<String>,
     pub observing: Observing,
     pub flags: Flags,
-    pub legacy: Option<LegacyTrigger>,
 }
 
 impl Observer {
@@ -524,10 +505,6 @@ impl Observer {
             timers: Mutex::new(Timers::default()),
             last_loop_warn_ms: AtomicU64::new(0),
             last_too_large_warn_ms: AtomicU64::new(0),
-            legacy: new.legacy.map(|trigger| LegacyBinding {
-                trigger,
-                answered: AtomicBool::new(false),
-            }),
         };
         {
             let mut status = lock(&observer.status);
@@ -684,10 +661,10 @@ fn record_state_gauge(state: &ObserverState, count: i64) {
 impl ObserverRegistry {
     /// Applies `change` to `observer`'s flags and re-derives its state. On a
     /// change, the observing worker hears about it (`observerstatechanged`),
-    /// the function's active set is rebuilt when activeness changed, and a
-    /// disposed observer is forgotten.
+    /// `engine::on-observers-changed` is called, the function's active set is
+    /// rebuilt when activeness changed, and a disposed observer is forgotten.
     pub(crate) fn update(&self, observer: &Arc<Observer>, change: impl FnOnce(&mut Flags)) {
-        let (became, activeness_changed) = {
+        let (became, reason, activeness_changed) = {
             let mut status = lock(&observer.status);
             change(&mut status.flags);
             let (state, reason) = status.flags.state(observer);
@@ -705,29 +682,24 @@ impl ObserverRegistry {
             status.state = state.clone();
             status.reason = reason.clone();
             // Under the status lock, so one observer's transitions reach its
-            // observing worker in the order they happened. A legacy
-            // observer's registrant asked for a trigger, not an observer: it
-            // hears how the registration ended, once.
-            if observer.legacy.is_some() {
-                match &state {
-                    ObserverState::Active => self.answer_legacy(observer, None),
-                    ObserverState::Error => self.answer_legacy(observer, reason),
-                    _ => {}
-                }
-            } else {
-                self.notify(
-                    observer.observing().connection,
-                    Message::ObserverStateChanged {
-                        id: observer.id.clone(),
-                        state: state.clone(),
-                        reason,
-                        fires: observer.fires(),
-                    },
-                );
-            }
-            (state, was_active != (status.state == ObserverState::Active))
+            // observing worker in the order they happened.
+            self.notify(
+                observer.observing().connection,
+                Message::ObserverStateChanged {
+                    id: observer.id.clone(),
+                    state: state.clone(),
+                    reason: reason.clone(),
+                    fires: observer.fires(),
+                },
+            );
+            (
+                state,
+                reason,
+                was_active != (status.state == ObserverState::Active),
+            )
         };
         tracing::debug!(observer_id = %observer.id, state = %became, "observer state changed");
+        self.emit_observer_changed(observer, &became, reason);
 
         if became == ObserverState::Disposed || became == ObserverState::Error {
             // Out of the owner's set: it hears `observerremoved`.
@@ -969,7 +941,7 @@ mod tests {
     /// queue is full, instead of the engine buffering for it without bound.
     #[tokio::test]
     async fn a_worker_that_stops_reading_its_notifications_is_evicted() {
-        let registry = ObserverRegistry::new();
+        let registry = Arc::new(ObserverRegistry::new());
         let workers = Arc::new(WorkerConnectionRegistry::new());
         let (tx, _never_drained) = mpsc::channel(1);
         let worker = WorkerConnection::new(tx);

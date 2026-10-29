@@ -48,7 +48,6 @@ pub struct EventData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamOutboundMessage {
-    Unauthorized {},
     Sync { data: Value },
     Create { data: Value },
     Update { data: Value },
@@ -167,20 +166,6 @@ pub struct StreamAuthInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamAuthContext {
     pub context: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamJoinLeaveEvent {
-    pub subscription_id: String,
-    pub stream_name: String,
-    pub group_id: String,
-    pub id: Option<String>,
-    pub context: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamJoinResult {
-    pub unauthorized: bool,
 }
 
 /// Input for atomic stream update operations

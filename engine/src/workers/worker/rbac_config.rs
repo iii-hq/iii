@@ -19,18 +19,41 @@ pub struct RbacConfig {
     pub auth_function_id: Option<String>,
     #[serde(default)]
     pub expose_functions: Vec<FunctionFilter>,
-    #[serde(default)]
-    pub on_trigger_registration_function_id: Option<String>,
-    #[serde(default)]
-    pub on_trigger_type_registration_function_id: Option<String>,
+    /// Called before a function is registered, with its `function_id`,
+    /// `description`, `metadata`, `namespace`, `private`, `observable`,
+    /// `args_format` (when set) and the session's `context`. An object answer
+    /// may rewrite `function_id`, `description`, `metadata`, `private`,
+    /// `observable` and `args_format`; anything else denies.
     #[serde(default)]
     pub on_function_registration_function_id: Option<String>,
-    /// Called before an observer is created, with the same contract as
-    /// `on_trigger_registration_function_id`: an object answer may rewrite
+    /// Called before an observer is created. An object answer may rewrite
     /// `function_id`, `target_function_id`, `args`, `filters` and `metadata`;
     /// anything else denies (`FORBIDDEN`).
     #[serde(default)]
     pub on_observer_registration_function_id: Option<String>,
+}
+
+/// `rbac` keys an earlier engine read and this one ignores, with what
+/// replaces each.
+const REMOVED_KEYS: [(&str, &str); 2] = [
+    (
+        "on_trigger_registration_function_id",
+        "use on_observer_registration_function_id, which gates every observer",
+    ),
+    (
+        "on_trigger_type_registration_function_id",
+        "use on_function_registration_function_id: an event source is a function \
+         registered with args_format and private",
+    ),
+];
+
+/// Logs one `warn` for each removed key the raw `rbac` section sets.
+pub(crate) fn warn_removed_keys(rbac: &Value) {
+    for (key, replacement) in REMOVED_KEYS {
+        if rbac.get(key).is_some() {
+            tracing::warn!(key = %key, "rbac.{key} is ignored: {replacement}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

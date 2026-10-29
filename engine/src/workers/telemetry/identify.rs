@@ -39,7 +39,7 @@ use crate::{
 /// Topic a worker publishes a captured address on.
 pub const IDENTIFY_TOPIC: &str = "email:signup";
 pub const IDENTIFY_FN_ID: &str = "iii-telemetry::on-identify";
-pub const IDENTIFY_TRIGGER_ID: &str = "iii-telemetry::identify-watch";
+pub const IDENTIFY_OBSERVER_ID: &str = "iii-telemetry::identify-watch";
 
 /// RFC 5321's ceiling for a whole address, the same bound the onboarding
 /// worker's signup box enforces.
@@ -151,22 +151,10 @@ pub(super) fn register_drain(engine: &Arc<Engine>) {
     );
 }
 
-/// Subscribe the handler to the identify topic in one namespace.
-pub(super) async fn register_trigger_in(engine: &Arc<Engine>, namespace: &str) {
-    let _ = engine
-        .trigger_registry
-        .register_trigger(super::topic_watch(
-            IDENTIFY_TRIGGER_ID,
-            IDENTIFY_FN_ID,
-            IDENTIFY_TOPIC,
-            namespace,
-        ))
-        .await;
-}
-
-/// Subscribe in the default namespace.
-pub(super) async fn register_trigger(engine: &Arc<Engine>) {
-    register_trigger_in(engine, crate::protocol::DEFAULT_NAMESPACE).await;
+/// Subscribe the handler to the identify topic, in every namespace the
+/// `queue` worker runs in.
+pub(super) fn watch_topic(engine: &Arc<Engine>) {
+    super::watch_topic(engine, IDENTIFY_OBSERVER_ID, IDENTIFY_TOPIC, IDENTIFY_FN_ID);
 }
 
 #[cfg(test)]

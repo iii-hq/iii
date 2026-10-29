@@ -33,11 +33,9 @@ use crate::{
         ingest_otlp_json, ingest_otlp_logs, ingest_otlp_metrics, inject_baggage_from_context,
         inject_traceparent_from_context,
     },
-    trigger::{Trigger, TriggerRegistry, TriggerType},
     worker_connections::{RuntimeWorkerInfo, WorkerConnection, WorkerConnectionRegistry},
     workers::worker::rbac_session::Session,
     workers::{
-        engine_fn::TRIGGER_WORKERS_AVAILABLE,
         http_functions::HttpFunctionsWorker,
         worker::{
             WorkerManagerConfig,
@@ -122,7 +120,7 @@ enum NamespaceState {
 }
 
 /// The refusal every blank-namespace guard sends back, naming the field so the
-/// caller knows which of the two on a trigger was the empty one.
+/// caller knows which namespace field was the empty one.
 fn blank_namespace_message(field: &str) -> String {
     format!(
         "`{field}` is empty: it was named and left blank. Give it a name, or omit it to use \
@@ -139,41 +137,45 @@ fn blank_namespace_message(field: &str) -> String {
 /// registry while the matching `RegisterFunction` still sits in the queue,
 /// inverting the pair and resurrecting a function the worker retired.
 ///
-/// `RegisterTriggerType` is buffered because a provider is filed under
-/// `(namespace, type_id)` taken from the connection. Handling one while the
-/// namespace is still `Pending` files it under `default` — where it replaces
-/// the engine's own provider for that id and is handed everyone's bindings.
-/// Whether that happens comes down to whether an SDK flushes its registrations
-/// before or after `engine::workers::register`, which is not something a worker
-/// author chooses.
-///
-/// `RegisterTrigger` is buffered too, to preserve arrival order relative to the
-/// same connection's `RegisterFunction`s. A trigger carries an explicit target
-/// namespace from the message (absent means `default`), not the connection's, so
-/// buffering is no longer about capturing the connection namespace. Instead it
-/// keeps an earlier-arrived `RegisterFunction` visible when the trigger's RBAC
-/// gate resolves its target: draining in order means the function this trigger
-/// exposes is already in the registry by the time the gate inspects it.
-///
-/// `UnregisterTriggerType` resolves its provider key from the connection's
-/// namespace, and must not overtake the `RegisterTriggerType` it retires.
-/// `Observe` / `Unobserve` are buffered for the same ordering reason as
-/// `RegisterTrigger` / `UnregisterTrigger`: an observer's target is often a
-/// function the same connection registered just before.
+/// `Observe` / `Unobserve` are buffered to preserve arrival order relative to
+/// the same connection's `RegisterFunction`s: an observer's target is often a
+/// function the same connection registered just before, and draining in order
+/// means it is already in the registry by the time the observer's RBAC gate
+/// inspects it.
 fn is_namespaced_registration(msg: &Message) -> bool {
     matches!(
         msg,
         Message::RegisterFunction { .. }
             | Message::RegisterService { .. }
             | Message::UnregisterFunction { .. }
-            | Message::RegisterTrigger { .. }
-            | Message::UnregisterTrigger { .. }
-            | Message::RegisterTriggerType { .. }
-            | Message::UnregisterTriggerType { .. }
             | Message::Observe { .. }
             | Message::Unobserve { .. }
     )
 }
+
+/// The 0.25 message types this engine no longer decodes, with what replaces
+/// each. A worker that sends one gets one `warn` per connection and type
+/// (`WorkerConnection::first_removed_message`), and the frame is dropped.
+pub(crate) const REMOVED_MESSAGES: [(&str, &str); 5] = [
+    (
+        "registertriggertype",
+        "register an observable function instead (`args_format` for its args, `private: true` \
+         for an event source)",
+    ),
+    (
+        "unregistertriggertype",
+        "unregister the observable function that replaces the type instead",
+    ),
+    (
+        "registertrigger",
+        "observe the function that replaces the type with iii.observe(source, target) instead",
+    ),
+    ("unregistertrigger", "dispose the observer instead"),
+    (
+        "triggerregistrationresult",
+        "acknowledge observers with `observerack` instead",
+    ),
+];
 
 /// Handles binary frames with OTEL telemetry prefixes.
 /// Returns true if the frame was handled (matched a known prefix), false otherwise.
@@ -334,7 +336,6 @@ pub trait EngineTrait: Send + Sync {
         input: impl Serialize + Send,
         metadata: Option<Value>,
     ) -> Result<Option<Value>, ErrorBody>;
-    async fn register_trigger_type(&self, trigger_type: TriggerType);
 
     /// Registers into [`DEFAULT_NAMESPACE`]. Convenience for builtin /
     /// engine-internal workers that are not namespace-aware.
@@ -402,12 +403,15 @@ pub struct Engine {
     pub worker_registry: Arc<WorkerConnectionRegistry>,
     pub runtime_workers: Arc<DashMap<String, RuntimeWorkerInfo>>,
     pub functions: Arc<FunctionsRegistry>,
-    pub trigger_registry: Arc<TriggerRegistry>,
     pub service_registry: Arc<ServicesRegistry>,
     pub invocations: Arc<InvocationHandler>,
     pub channel_manager: Arc<ChannelManager>,
     /// Observers (`iii.observe`): registry, routed hook and activations.
     pub observers: Arc<crate::observer::ObserverRegistry>,
+    /// The engine's own workers listening to their configuration entry
+    /// (`iii-observability`, `iii-stream`).
+    pub configuration_listeners:
+        Arc<crate::workers::configuration::listeners::ConfigurationListeners>,
     /// Records the current owning WS worker for each registered function,
     /// keyed by `(namespace, function_id)` to match `FunctionsRegistry`.
     /// Populated when a worker sends `Message::RegisterFunction`; used by
@@ -512,11 +516,11 @@ impl Engine {
             worker_registry,
             runtime_workers: Arc::new(DashMap::new()),
             functions,
-            trigger_registry: Arc::new(TriggerRegistry::new()),
             service_registry: Arc::new(ServicesRegistry::new()),
             invocations,
             channel_manager: Arc::new(ChannelManager::new()),
             observers,
+            configuration_listeners: Arc::new(Default::default()),
             function_owners,
             worker_name_owners: Arc::new(DashMap::new()),
             namespace_states: Arc::new(DashMap::new()),
@@ -736,6 +740,7 @@ impl Engine {
                     error: Some(payload_too_large_error(size, limit, upgrade)),
                     traceparent,
                     baggage,
+                    observed: Vec::new(),
                 };
                 let fallback_payload = serde_json::to_string(&fallback).ok()?;
                 (fallback_payload.len() <= limit).then_some((fallback, fallback_payload))
@@ -836,19 +841,6 @@ impl Engine {
     ) -> Result<T, ErrorBody> {
         let namespace = requested_ns.unwrap_or(DEFAULT_NAMESPACE);
         if let Some(function) = lookup(&self.functions, namespace, function_id) {
-            return Ok(function);
-        }
-
-        // Console releases published before namespace-aware trigger callbacks
-        // invoke injected UI content in the Console worker's project namespace,
-        // even when the binding targets `default`. This function serves only
-        // immutable embedded JS/CSS, so let that one legacy callback resolve to
-        // its canonical engine-owned registration without weakening namespace
-        // isolation for any other function.
-        if namespace != DEFAULT_NAMESPACE
-            && function_id == crate::workers::observability::ui::CONTENT_FUNCTION_ID
-            && let Some(function) = lookup(&self.functions, DEFAULT_NAMESPACE, function_id)
-        {
             return Ok(function);
         }
 
@@ -1033,6 +1025,7 @@ impl Engine {
                                             error: None,
                                             traceparent: response_traceparent,
                                             baggage: response_baggage,
+                                            observed: Vec::new(),
                                         },
                                     )
                                     .await;
@@ -1049,6 +1042,7 @@ impl Engine {
                                             error: Some(err),
                                             traceparent: response_traceparent,
                                             baggage: response_baggage,
+                                            observed: Vec::new(),
                                         },
                                     )
                                     .await;
@@ -1071,6 +1065,7 @@ impl Engine {
                                         }),
                                         traceparent: response_traceparent,
                                         baggage: response_baggage,
+                                        observed: Vec::new(),
                                     },
                                 )
                                 .await;
@@ -1384,529 +1379,6 @@ impl Engine {
         msg: Cow<'_, Message>,
     ) -> anyhow::Result<()> {
         match msg.as_ref() {
-            Message::TriggerRegistrationResult {
-                id,
-                trigger_type,
-                function_id,
-                error,
-            } => {
-                tracing::debug!(id = %id, trigger_type = %trigger_type, function_id = %function_id, error = ?error, "TriggerRegistrationResult");
-
-                // Synchronous-ack path: a function-path registration is
-                // awaiting this result inside the registrator proxy (see
-                // `TriggerRegistrator for WorkerConnection`), and the trigger
-                // is NOT in the registry yet — insertion happens only after
-                // the ack. The pending map lives on the acking worker's own
-                // connection, so another worker cannot spoof a result (its
-                // map has no entry for this id).
-                if let Some((_, tx)) = worker.pending_trigger_acks.remove(id) {
-                    let _ = tx.send(error.clone());
-                    return Ok(());
-                }
-
-                let Some(trigger_entry) = self.trigger_registry.triggers.get(id) else {
-                    tracing::debug!(
-                        trigger_id = %id,
-                        "TriggerRegistrationResult for unknown trigger; ignoring"
-                    );
-                    return Ok(());
-                };
-                let stored_trigger_type = trigger_entry.trigger_type.clone();
-                // The provider this binding actually resolved to: the result
-                // may only come from the worker serving *that* one.
-                let stored_provider = trigger_entry.provider_key();
-                let stored_function_id = trigger_entry.function_id.clone();
-                let originator_id = trigger_entry.worker_id;
-                drop(trigger_entry);
-
-                // Only the registrator worker that owns this trigger_type may
-                // report its result. Otherwise any connected worker could spoof
-                // a failure for somebody else's trigger and tear it out of the
-                // registry.
-                let registrator_worker_id = self
-                    .trigger_registry
-                    .trigger_types
-                    .get(&stored_provider)
-                    .and_then(|tt| tt.worker_id);
-                if registrator_worker_id != Some(worker.id) {
-                    tracing::warn!(
-                        trigger_id = %id,
-                        trigger_type = %stored_trigger_type,
-                        sender = %worker.id,
-                        registrator = ?registrator_worker_id,
-                        "TriggerRegistrationResult from non-registrator worker; ignoring"
-                    );
-                    return Ok(());
-                }
-
-                if error.is_none() {
-                    return Ok(());
-                }
-
-                // Re-park instead of dropping (no-op if a concurrent
-                // disconnect GC or unregister already reaped it). If the
-                // reporting provider was replaced while the rejection was in
-                // flight, the registry re-activates the intent through the
-                // replacement instead of stranding it.
-                self.trigger_registry
-                    .park_rejected_trigger(id, worker.id)
-                    .await;
-
-                let Some(originator_id) = originator_id else {
-                    tracing::debug!(
-                        trigger_id = %id,
-                        "TriggerRegistrationResult for trigger without originator; ignoring"
-                    );
-                    return Ok(());
-                };
-
-                let Some(originator) = self.worker_registry.get_worker(&originator_id) else {
-                    tracing::debug!(
-                        trigger_id = %id,
-                        originator = %originator_id,
-                        "TriggerRegistrationResult originator no longer connected; dropping"
-                    );
-                    return Ok(());
-                };
-
-                let forward = Message::TriggerRegistrationResult {
-                    id: id.clone(),
-                    trigger_type: stored_trigger_type,
-                    function_id: stored_function_id,
-                    error: error.clone(),
-                };
-                let _ = self.send_msg(&originator, forward).await;
-                Ok(())
-            }
-            Message::RegisterTriggerType {
-                id,
-                description,
-                trigger_request_format,
-                call_request_format,
-                namespace,
-            } => {
-                // No ack exists for this message, so a refusal can only be
-                // logged. It is logged loudly: the provider will never be
-                // reachable, and every binding meant for it parks.
-                if crate::protocol::is_blank_namespace(namespace) {
-                    tracing::error!(
-                        worker_id = %worker.id,
-                        trigger_type_id = %id,
-                        "{}",
-                        blank_namespace_message("namespace")
-                    );
-                    return Ok(());
-                }
-
-                // The connection's namespace unless the message overrides it.
-                // This is what stops two projects providing the same type id
-                // from overwriting each other — and what makes a provider
-                // shipped inside a project reachable from that project first.
-                let provider_namespace = namespace
-                    .clone()
-                    .unwrap_or_else(|| self.connection_namespace(worker));
-                tracing::debug!(
-                    worker_id = %worker.id,
-                    trigger_type_id = %id,
-                    namespace = %provider_namespace,
-                    description = %description,
-                    "RegisterTriggerType (deprecated: a provider becomes an observable function)"
-                );
-
-                let mut reg_id = id.clone();
-                let mut reg_description = description.clone();
-
-                if let Some(session) = &worker.session {
-                    if !session.allow_trigger_type_registration {
-                        tracing::warn!(
-                            worker_id = %worker.id,
-                            trigger_type_id = %id,
-                            "trigger type registration not allowed for this session"
-                        );
-                        return Ok(());
-                    }
-
-                    if let Some(hook_fn_id) = session
-                        .config
-                        .rbac
-                        .as_ref()
-                        .and_then(|c| c.on_trigger_type_registration_function_id.as_ref())
-                    {
-                        let hook_input = serde_json::json!({
-                            "trigger_type_id": id,
-                            "description": description,
-                            "context": session.context,
-                        });
-                        match self
-                            .call_value_with_metadata_ns(
-                                DEFAULT_NAMESPACE,
-                                hook_fn_id,
-                                hook_input,
-                                None,
-                            )
-                            .await
-                        {
-                            Ok(Some(v)) if v.is_object() => {
-                                if let Some(s) = v.get("trigger_type_id").and_then(|v| v.as_str()) {
-                                    reg_id = s.to_string();
-                                }
-                                if let Some(s) = v.get("description").and_then(|v| v.as_str()) {
-                                    reg_description = s.to_string();
-                                }
-                            }
-                            other => {
-                                tracing::warn!(
-                                    worker_id = %worker.id,
-                                    trigger_type_id = %id,
-                                    result = ?other,
-                                    "trigger type registration denied by hook"
-                                );
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-
-                // Built-in UI functions live in the engine's `default`
-                // namespace, but Console trigger providers live with their
-                // Compose project. Install one strict asset binding for this
-                // provider before publishing the type, so the pending drain
-                // below delivers it to the correct Console. Existing bindings
-                // are left alone and get replayed by register_trigger_type on
-                // reconnect.
-                if let Err(error) =
-                    crate::workers::observability::ui::register_trigger_for_provider(
-                        self,
-                        &reg_id,
-                        &provider_namespace,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        trigger_type_id = %reg_id,
-                        namespace = %provider_namespace,
-                        "failed to bind built-in observability UI to Console provider"
-                    );
-                }
-
-                worker
-                    .filed_trigger_types
-                    .insert((provider_namespace.clone(), id.clone()), reg_id.clone());
-                let mut trigger_type = TriggerType::new_ns(
-                    provider_namespace,
-                    reg_id,
-                    reg_description,
-                    Box::new(worker.clone()),
-                    Some(worker.id),
-                );
-                // Allow SDK workers to override formats from the protocol message
-                if let Some(fmt) = trigger_request_format {
-                    trigger_type.trigger_request_format = Some(fmt.clone());
-                }
-                if let Some(fmt) = call_request_format {
-                    trigger_type.call_request_format = Some(fmt.clone());
-                }
-
-                // Sweep intents whose owning worker is gone before the drain
-                // below can replay them. Concurrent disconnect cleanups can
-                // leak a dead worker's intent into `pending_triggers` (the
-                // provider's cleanup parks it after the owner's cleanup
-                // already purged its intents); this is the one moment such a
-                // leak becomes visible, so drop them here rather than deliver
-                // a binding nothing owns.
-                self.trigger_registry.pending_triggers.retain(|_, t| {
-                    t.worker_id
-                        .is_none_or(|id| self.worker_registry.get_worker(&id).is_some())
-                });
-
-                let _ = self
-                    .trigger_registry
-                    .register_trigger_type(trigger_type)
-                    .await;
-
-                Ok(())
-            }
-            Message::RegisterTrigger {
-                id,
-                trigger_type,
-                function_id,
-                config,
-                metadata,
-                namespace,
-                trigger_namespace,
-            } => {
-                tracing::debug!(
-                    worker_id = %worker.id,
-                    trigger_id = %id,
-                    trigger_type = %trigger_type,
-                    function_id = %function_id,
-                    config = ?config,
-                    "RegisterTrigger (deprecated: observe the function that replaces the trigger type)"
-                );
-
-                // Either namespace named and left empty is refused. They are
-                // different questions -- one locates the target, the other the
-                // provider -- and both are answerable to the caller here.
-                for (field, value) in [
-                    ("namespace", namespace),
-                    ("trigger_namespace", trigger_namespace),
-                ] {
-                    if crate::protocol::is_blank_namespace(value) {
-                        let _ = self
-                            .send_msg(
-                                worker,
-                                Message::TriggerRegistrationResult {
-                                    id: id.clone(),
-                                    trigger_type: trigger_type.clone(),
-                                    function_id: function_id.clone(),
-                                    error: Some(crate::protocol::ErrorBody::new(
-                                        crate::protocol::INVALID_NAMESPACE,
-                                        blank_namespace_message(field),
-                                    )),
-                                },
-                            )
-                            .await;
-                        return Ok(());
-                    }
-                }
-
-                let mut reg_trigger_id = id.clone();
-                let mut reg_trigger_type = trigger_type.clone();
-                let mut reg_function_id = function_id.clone();
-                let mut reg_config = config.clone();
-
-                if let Some(session) = &worker.session {
-                    if let Some(allowed_trigger_types) = &session.allowed_trigger_types
-                        && !allowed_trigger_types.iter().any(|t| t == trigger_type)
-                    {
-                        tracing::warn!(
-                            worker_id = %worker.id,
-                            trigger_type = %trigger_type,
-                            "trigger registration not allowed for type"
-                        );
-                        return Ok(());
-                    }
-
-                    if let Some(hook_fn_id) = session
-                        .config
-                        .rbac
-                        .as_ref()
-                        .and_then(|c| c.on_trigger_registration_function_id.as_ref())
-                    {
-                        let hook_input = serde_json::json!({
-                            "trigger_id": id,
-                            "trigger_type": trigger_type,
-                            "function_id": function_id,
-                            "config": config,
-                            "metadata": metadata,
-                            // The namespace the trigger's target will resolve in
-                            // (the message's, or `default` when absent), so the
-                            // hook can authorize per target namespace.
-                            "namespace": crate::protocol::effective_namespace(namespace),
-                            "context": session.context,
-                        });
-                        match self
-                            .call_value_with_metadata_ns(
-                                DEFAULT_NAMESPACE,
-                                hook_fn_id,
-                                hook_input,
-                                None,
-                            )
-                            .await
-                        {
-                            Ok(Some(v)) if v.is_object() => {
-                                if let Some(s) = v.get("trigger_id").and_then(|v| v.as_str()) {
-                                    reg_trigger_id = s.to_string();
-                                }
-                                if let Some(s) = v.get("trigger_type").and_then(|v| v.as_str()) {
-                                    reg_trigger_type = s.to_string();
-                                }
-                                if let Some(s) = v.get("function_id").and_then(|v| v.as_str()) {
-                                    reg_function_id = s.to_string();
-                                }
-                                if let Some(c) = v.get("config").cloned() {
-                                    reg_config = c;
-                                }
-                            }
-                            other => {
-                                tracing::warn!(
-                                    worker_id = %worker.id,
-                                    trigger_id = %id,
-                                    result = ?other,
-                                    "trigger registration denied by hook"
-                                );
-                                return Ok(());
-                            }
-                        }
-                    }
-                }
-
-                if let Some(prefix) = worker
-                    .session
-                    .as_ref()
-                    .and_then(|s| s.function_registration_prefix.as_ref())
-                {
-                    reg_function_id = format!("{prefix}::{reg_function_id}");
-                }
-
-                // The trigger's target namespace comes from the message, not the
-                // connection: absent means the engine's default namespace. A
-                // worker can therefore expose a function in any namespace, and
-                // must opt in explicitly to reach its own namespaced functions.
-                let target_namespace = namespace
-                    .clone()
-                    .unwrap_or_else(|| crate::protocol::DEFAULT_NAMESPACE.to_string());
-
-                // Where the binding looks for its provider, and where it looks
-                // first. `trigger_namespace` absent is not `default`: it asks
-                // the registry to try home before falling back, which is what
-                // carries an unmigrated worker onto the engine's provider while
-                // letting a project's own provider win when it has one.
-                let home_namespace = self.connection_namespace(worker);
-
-                // Gate the target the same way `InvokeFunction` does: RBAC is
-                // keyed by function id but inspects the `Function` this trigger
-                // would actually reach in `trigger_namespace`. Without this a
-                // worker could expose any namespace's function over a trigger.
-                if let Some(session) = &worker.session
-                    && !self.is_function_allowed(session, Some(&target_namespace), &reg_function_id)
-                {
-                    tracing::warn!(
-                        worker_id = %worker.id,
-                        trigger_id = %reg_trigger_id,
-                        function_id = %reg_function_id,
-                        namespace = %target_namespace,
-                        "trigger registration denied by RBAC"
-                    );
-                    // Name the id that was actually authorized (post-prefix),
-                    // matching the result's `function_id`; `reg_function_id`
-                    // is moved into the struct below, so build the text first.
-                    let denied_message = format!(
-                        "function '{}' not allowed in namespace '{}'",
-                        reg_function_id, target_namespace
-                    );
-                    let result_msg = Message::TriggerRegistrationResult {
-                        id: reg_trigger_id,
-                        trigger_type: reg_trigger_type,
-                        function_id: reg_function_id,
-                        error: Some(crate::protocol::ErrorBody::new("FORBIDDEN", denied_message)),
-                    };
-                    let _ = self.send_msg(worker, result_msg).await;
-                    return Ok(());
-                }
-
-                let trigger = Trigger {
-                    id: reg_trigger_id.clone(),
-                    trigger_type: reg_trigger_type.clone(),
-                    function_id: reg_function_id.clone(),
-                    config: reg_config,
-                    worker_id: Some(worker.id),
-                    metadata: metadata.clone(),
-                    namespace: target_namespace,
-                    trigger_namespace: trigger_namespace.clone(),
-                    home_namespace,
-                    // Written by the registry once it resolves; this is
-                    // only the value it starts from.
-                    provider_namespace: crate::protocol::default_namespace(),
-                };
-
-                // The legacy shim (protocol.md §6): with no live provider of
-                // the type, a function standing in for it takes the binding
-                // as an observer. A live provider always wins. RBAC is at
-                // parity with old triggers (decision): the registration was
-                // gated above by its trigger type, the registration hook and
-                // the target; the stand-in function, which the registrant did
-                // not name, is not checked against its session.
-                if self
-                    .trigger_registry
-                    .resolve_provider_key(&trigger)
-                    .is_none()
-                    && let Some(function) = self.observers.legacy_function(
-                        &trigger.trigger_type,
-                        trigger.trigger_namespace.as_deref(),
-                        &trigger.home_namespace,
-                    )
-                {
-                    let registration = crate::observer::LegacyRegistration {
-                        id: trigger.id.clone(),
-                        trigger_type: trigger.trigger_type.clone(),
-                        target: (trigger.namespace.clone(), trigger.function_id.clone()),
-                        config: trigger.config.clone(),
-                        metadata: trigger.metadata.clone(),
-                    };
-                    match self
-                        .observers
-                        .register_legacy(worker, function, registration)
-                    {
-                        Ok(()) => {
-                            // Accepted: an old-style binding with the same id
-                            // (parked, or left by a provider that went away)
-                            // is replaced.
-                            let _ = self
-                                .trigger_registry
-                                .unregister_trigger(trigger.id.clone(), None)
-                                .await;
-                            crate::workers::telemetry::collector::track_trigger_registered();
-                        }
-                        Err(error) => {
-                            let result_msg = Message::TriggerRegistrationResult {
-                                id: reg_trigger_id,
-                                trigger_type: reg_trigger_type,
-                                function_id: reg_function_id,
-                                error: Some(error),
-                            };
-                            let _ = self.send_msg(worker, result_msg).await;
-                        }
-                    }
-                    return Ok(());
-                }
-
-                let id = trigger.id.clone();
-                match self.trigger_registry.register_trigger(trigger).await {
-                    // A Deferred outcome is not an error: the intent is
-                    // parked engine-side and activates when the trigger type
-                    // registers, so no failure ack goes to the worker.
-                    Ok(_) => {
-                        // Accepted (or parked, which also replaces a live
-                        // binding): one the shim made under this id goes.
-                        self.observers.unregister_legacy(&id);
-                        crate::workers::telemetry::collector::track_trigger_registered();
-                    }
-                    Err(err) => {
-                        let error_body = crate::protocol::ErrorBody::new(
-                            "trigger_registration_failed",
-                            err.to_string(),
-                        );
-                        let result_msg = Message::TriggerRegistrationResult {
-                            id: reg_trigger_id,
-                            trigger_type: reg_trigger_type,
-                            function_id: reg_function_id,
-                            error: Some(error_body),
-                        };
-                        let _ = self.send_msg(worker, result_msg).await;
-                    }
-                }
-
-                Ok(())
-            }
-            Message::UnregisterTrigger { id, trigger_type } => {
-                tracing::debug!(
-                    trigger_id = %id,
-                    trigger_type = %trigger_type.as_deref().unwrap_or("<missing>"),
-                    "UnregisterTrigger"
-                );
-                // A trigger the legacy shim made into an observer.
-                self.observers.unregister_legacy(id);
-
-                let _ = self
-                    .trigger_registry
-                    .unregister_trigger(id.clone(), trigger_type.clone())
-                    .await;
-
-                Ok(())
-            }
-
             Message::InvokeFunction {
                 invocation_id,
                 function_id,
@@ -1920,11 +1392,11 @@ impl Engine {
                 observe_depth,
                 activation,
             } => {
-                // Owner delivery (`obs.call`, protocol.md §3.5): validated
-                // against the observer and routed to its stored target. It
-                // runs like an activation, with no session: creation-time RBAC
-                // on the observed function and the target is the gate, and
-                // the request's namespace is ignored (D13).
+                // A call through an observer (v2 §4.6): checked against the
+                // observer and routed to its stored target. It runs like an
+                // activation, with no session: creation-time RBAC on the
+                // observed function and the target is the gate, and the
+                // request's `function_id` and namespace are not read (D13).
                 if let Some(activation) = activation {
                     let engine = self.clone();
                     let worker = worker.clone();
@@ -1935,9 +1407,8 @@ impl Engine {
                             serde_json::json!(worker.id.to_string()),
                         );
                     }
-                    let call = crate::observer::OwnerCall {
+                    let call = crate::observer::ObserverCall {
                         invocation_id: *invocation_id,
-                        function_id: function_id.clone(),
                         data,
                         caller: caller.clone(),
                         observe_depth: *observe_depth,
@@ -1945,10 +1416,10 @@ impl Engine {
                         traceparent: traceparent.clone(),
                         baggage: baggage.clone(),
                     };
-                    let answer = !matches!(action, Some(crate::protocol::TriggerAction::Void));
+                    let answer = !matches!(action, Some(crate::protocol::CallAction::Void));
                     let (invocation_id, function_id) = (*invocation_id, function_id.clone());
                     tokio::spawn(async move {
-                        let outcome = engine.observers.owner_call(&worker, call).await;
+                        let outcome = engine.observers.observer_call(&worker, call).await;
                         if let (true, Some(invocation_id)) = (answer, invocation_id) {
                             let (result, error) = match outcome {
                                 Ok(result) => (result, None),
@@ -1964,6 +1435,7 @@ impl Engine {
                                         error,
                                         traceparent: None,
                                         baggage: None,
+                                        observed: Vec::new(),
                                     },
                                 )
                                 .await;
@@ -2003,6 +1475,7 @@ impl Engine {
                                     )),
                                     traceparent: None,
                                     baggage: None,
+                                    observed: Vec::new(),
                                 },
                             )
                             .await;
@@ -2047,6 +1520,7 @@ impl Engine {
                                 )),
                                 traceparent: traceparent.clone(),
                                 baggage: baggage.clone(),
+                                observed: Vec::new(),
                             },
                         )
                         .await;
@@ -2089,6 +1563,7 @@ impl Engine {
                                         )),
                                         traceparent: traceparent.clone(),
                                         baggage: baggage.clone(),
+                                        observed: Vec::new(),
                                     },
                                 )
                                 .await;
@@ -2172,6 +1647,7 @@ impl Engine {
                                     error: None,
                                     traceparent,
                                     baggage,
+                                    observed: Vec::new(),
                                 },
                                 Err(err) => Message::InvocationResult {
                                     invocation_id: inv_id,
@@ -2180,6 +1656,7 @@ impl Engine {
                                     error: Some(err),
                                     traceparent,
                                     baggage,
+                                    observed: Vec::new(),
                                 },
                             };
                             engine.send_msg(&w, response).await;
@@ -2189,7 +1666,7 @@ impl Engine {
                 }
 
                 match action {
-                    Some(crate::protocol::TriggerAction::Enqueue { queue }) => {
+                    Some(crate::protocol::CallAction::Enqueue { queue }) => {
                         let engine = self.clone();
                         let worker = worker.clone();
                         let invocation_id = *invocation_id;
@@ -2303,6 +1780,7 @@ impl Engine {
                                                         error: None,
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
+                                                        observed: Vec::new(),
                                                     },
                                                 )
                                                 .await;
@@ -2316,10 +1794,10 @@ impl Engine {
                                             let message = if err.code == "function_not_found" {
                                                 format!(
                                                     "No queue provider is installed. \
-                                                     `TriggerAction::Enqueue` routes through the \
+                                                     `CallAction::Enqueue` routes through the \
                                                      `{}` provider, which the standalone queue \
                                                      worker registers. Add it with \
-                                                     `iii trigger -n <compose-daemon-namespace> \
+                                                     `iii call -n <compose-daemon-namespace> \
                                                      compose::add worker=queue`. \
                                                      (underlying: {})",
                                                     ENQUEUE_PROVIDER_FUNCTION_ID, err.message
@@ -2340,6 +1818,7 @@ impl Engine {
                                                         )),
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
+                                                        observed: Vec::new(),
                                                     },
                                                 )
                                                 .await;
@@ -2353,7 +1832,7 @@ impl Engine {
                         Ok(())
                     }
 
-                    Some(crate::protocol::TriggerAction::Void) | None => {
+                    Some(crate::protocol::CallAction::Void) | None => {
                         // Void never sends a result, even if the caller supplied an ID.
                         let invocation_id = if action.is_none() {
                             *invocation_id
@@ -2397,6 +1876,7 @@ impl Engine {
                 error,
                 traceparent: _,
                 baggage: _,
+                observed: _,
             } => {
                 tracing::debug!(
                     function_id = %function_id,
@@ -2420,7 +1900,7 @@ impl Engine {
                     return Ok(());
                 } else {
                     // Expected when the caller disconnected before the
-                    // executor finished (client-side trigger timeout,
+                    // executor finished (client-side call timeout,
                     // Ctrl-C, etc). `cleanup_worker` already halted the
                     // invocation, so the late result has nowhere to go.
                     // Kept at debug to avoid log noise for a normal
@@ -2499,6 +1979,9 @@ impl Engine {
                 response_format: res,
                 metadata,
                 invocation,
+                args_format,
+                private,
+                observable,
                 observe,
             } => {
                 tracing::debug!(
@@ -2511,6 +1994,13 @@ impl Engine {
                 let mut reg_id = id.clone();
                 let mut reg_description = description.clone();
                 let mut reg_metadata = metadata.clone();
+                // A 0.25 SDK says `observable: false` as `observe.allow: false`.
+                let mut options = crate::observer::FunctionOptions {
+                    args_format: args_format.clone(),
+                    private: *private,
+                    observable: *observable
+                        && observe.as_ref().is_none_or(|descriptor| descriptor.allow()),
+                };
 
                 if let Some(session) = &worker.session {
                     if !session.allow_function_registration {
@@ -2528,7 +2018,7 @@ impl Engine {
                         .as_ref()
                         .and_then(|c| c.on_function_registration_function_id.as_ref())
                     {
-                        let hook_input = serde_json::json!({
+                        let mut hook_input = serde_json::json!({
                             "function_id": id,
                             "description": description,
                             "metadata": metadata,
@@ -2537,8 +2027,13 @@ impl Engine {
                             // this is the real one), letting the hook authorize per
                             // namespace since the same id can exist in several.
                             "namespace": self.connection_namespace(worker),
+                            "private": options.private,
+                            "observable": options.observable,
                             "context": session.context,
                         });
+                        if let Some(schema) = &options.args_format {
+                            hook_input["args_format"] = schema.clone();
+                        }
                         match self
                             .call_value_with_metadata_ns(
                                 DEFAULT_NAMESPACE,
@@ -2557,6 +2052,16 @@ impl Engine {
                                 }
                                 if let Some(m) = v.get("metadata").cloned() {
                                     reg_metadata = Some(m);
+                                }
+                                if let Some(b) = v.get("private").and_then(|v| v.as_bool()) {
+                                    options.private = b;
+                                }
+                                if let Some(b) = v.get("observable").and_then(|v| v.as_bool()) {
+                                    options.observable = b;
+                                }
+                                if let Some(schema) = v.get("args_format") {
+                                    options.args_format =
+                                        (!schema.is_null()).then(|| schema.clone());
                                 }
                             }
                             other => {
@@ -2614,22 +2119,42 @@ impl Engine {
                     return Ok(());
                 }
 
-                // A descriptor the engine cannot honour refuses this one
-                // registration, before anything is claimed.
-                if let Some(descriptor) = observe
-                    && let Err(reason) = crate::observer::validate_descriptor(descriptor)
+                // Options the engine cannot honour refuse this one
+                // registration, before anything is claimed: a 0.25 `observe`
+                // object asking for a delivery other than `auto`, and an
+                // `args_format` that is not a JSON Schema.
+                let refusal = if observe
+                    .as_ref()
+                    .is_some_and(|descriptor| !descriptor.is_supported())
                 {
+                    Some((
+                        crate::protocol::observe_codes::UNSUPPORTED,
+                        "`observe.delivery` other than `auto`: this engine delivers every \
+                         function's calls one way; register the function with \
+                         `args_format` and `private` instead"
+                            .to_string(),
+                    ))
+                } else {
+                    options.args_format.as_ref().and_then(|schema| {
+                        crate::observer::validate_args_format(schema)
+                            .err()
+                            .map(|reason| {
+                                (crate::protocol::observe_codes::INVALID_ARGS_FORMAT, reason)
+                            })
+                    })
+                };
+                if let Some((code, reason)) = refusal {
                     tracing::warn!(
                         worker_id = %worker.id,
                         function_id = %reg_id,
+                        code = %code,
                         reason = %reason,
-                        "refusing a registration with an invalid observe descriptor"
+                        "refusing a registration"
                     );
                     self.send_msg(
                         worker,
                         Message::RegistrationRejected {
-                            code: crate::protocol::observe_codes::INVALID_OBSERVE_DESCRIPTOR
-                                .to_string(),
+                            code: code.to_string(),
                             namespace: namespace.clone(),
                             worker_name: None,
                             function_id: Some(reg_id.clone()),
@@ -2676,9 +2201,8 @@ impl Engine {
                     .register_service_from_function_id(&namespace, &reg_id);
 
                 // Before the function lands in the registry: the observers
-                // that registration activates must see this descriptor.
-                self.observers
-                    .set_descriptor(&namespace, &reg_id, observe.as_deref().cloned());
+                // that registration activates must see these options.
+                self.observers.set_options(&namespace, &reg_id, options);
 
                 if let Some(invocation) = invocation {
                     let Some(http_module) = self
@@ -2691,8 +2215,12 @@ impl Engine {
                             "HTTP functions module not loaded"
                         );
                         self.release_external_function_if_owner(&worker.id, &namespace, &reg_id);
-                        // Nothing was registered: neither is its descriptor.
-                        self.observers.set_descriptor(&namespace, &reg_id, None);
+                        // Nothing was registered: neither are its options.
+                        self.observers.set_options(
+                            &namespace,
+                            &reg_id,
+                            crate::observer::FunctionOptions::default(),
+                        );
                         return Ok(());
                     };
 
@@ -2719,7 +2247,11 @@ impl Engine {
                             "Failed to register HTTP invocation function"
                         );
                         self.release_external_function_if_owner(&worker.id, &namespace, &reg_id);
-                        self.observers.set_descriptor(&namespace, &reg_id, None);
+                        self.observers.set_options(
+                            &namespace,
+                            &reg_id,
+                            crate::observer::FunctionOptions::default(),
+                        );
                         return Ok(());
                     }
 
@@ -2810,8 +2342,8 @@ impl Engine {
                         .reattach(prev, reattach_token.as_deref(), worker);
                     return Ok(());
                 };
-                // Worker ids are public (engine::workers::list, the
-                // workers-available trigger), so the id alone must never be
+                // Worker ids are public (engine::workers::list,
+                // engine::on-workers-changed), so the id alone must never be
                 // able to evict a live worker. The token was only ever sent
                 // over the previous connection's own socket — presenting it
                 // proves this is the same worker reconnecting.
@@ -2872,64 +2404,6 @@ impl Engine {
             Message::RegistrationRejected { .. } => {
                 // This message is sent from engine to worker, not the other way around
                 // If we receive it here, just ignore it
-                Ok(())
-            }
-            Message::UnregisterTriggerType { id, namespace } => {
-                if crate::protocol::is_blank_namespace(namespace) {
-                    tracing::error!(
-                        worker_id = %worker.id,
-                        trigger_type_id = %id,
-                        "{}",
-                        blank_namespace_message("namespace")
-                    );
-                    return Ok(());
-                }
-                // Same key `RegisterTriggerType` filed the provider under,
-                // including an id its registration hook renamed.
-                let provider_namespace = namespace
-                    .clone()
-                    .unwrap_or_else(|| self.connection_namespace(worker));
-                let filed_id = worker
-                    .filed_trigger_types
-                    .remove(&(provider_namespace.clone(), id.clone()))
-                    .map(|(_, filed)| filed)
-                    .unwrap_or_else(|| id.clone());
-                let key = crate::trigger::type_key(&provider_namespace, &filed_id);
-                // Only the provider may retire its type. Anyone else (another
-                // worker, or a provider that was already replaced by its own
-                // restart) is ignored: removing it would orphan bindings a live
-                // provider still serves.
-                if let Some(orphans) = self
-                    .trigger_registry
-                    .take_trigger_type_if_provider(&key, &worker.id)
-                {
-                    // The bindings it served move off the read loop: their
-                    // new provider may be slow, and this connection's other
-                    // frames (its invocation results) must keep flowing. They
-                    // were claimed above, synchronously: the same connection
-                    // registering the type again right away (a hot reload)
-                    // does not replay them too.
-                    // Bindings left with no provider at all may be taken by
-                    // a function standing in for the type (protocol.md §6).
-                    let engine = self.clone();
-                    tokio::spawn(async move {
-                        engine.trigger_registry.fail_over_orphans(orphans).await;
-                        engine.observers.convert_pending_triggers(&engine);
-                    });
-                    tracing::info!(
-                        worker_id = %worker.id,
-                        trigger_type_id = %id,
-                        namespace = %provider_namespace,
-                        "Trigger type unregistered by its provider"
-                    );
-                } else {
-                    tracing::debug!(
-                        worker_id = %worker.id,
-                        trigger_type_id = %id,
-                        namespace = %provider_namespace,
-                        "UnregisterTriggerType from a connection that does not provide the type; ignoring"
-                    );
-                }
                 Ok(())
             }
             // Observe messages from workers (protocol.md §2.2).
@@ -3070,21 +2544,6 @@ impl Engine {
             })
     }
 
-    pub(crate) async fn call_trigger(
-        &self,
-        trigger: Arc<Trigger>,
-        input: Value,
-    ) -> Result<Option<Value>, ErrorBody> {
-        let function = self.internal_function_handler(&trigger.namespace, &trigger.function_id)?;
-        let function_id = trigger.function_id.clone();
-        let namespace = trigger.namespace.clone();
-        let metadata = trigger.metadata.clone();
-        // Pending invocations must not retain a removed trigger's config and metadata.
-        drop(trigger);
-        self.call_handler_with_metadata(&namespace, function_id, function, input, metadata)
-            .await
-    }
-
     fn call_handler_with_metadata<'a>(
         &'a self,
         namespace: &'a str,
@@ -3125,58 +2584,6 @@ impl Engine {
                 stacktrace: None,
             }),
         })
-    }
-
-    pub async fn fire_triggers(&self, trigger_type: &str, mut data: Value) {
-        let triggers = self
-            .trigger_registry
-            .triggers
-            .targets_for_type(trigger_type);
-        if triggers.is_empty() {
-            return;
-        }
-
-        let current_span = tracing::Span::current();
-        // Fired from inside an observed chain (a state write made by an
-        // activation's handler): the fan-out keeps the chain's depth.
-        let depth = crate::observer::InvocationCtx::current_depth();
-
-        let trigger_count = triggers.len();
-        for (index, trigger) in triggers.into_iter().enumerate() {
-            let engine = self.clone();
-            // Only additional destinations need a copy; the last takes the original.
-            let data = if index + 1 == trigger_count {
-                data.take()
-            } else {
-                data.clone()
-            };
-            let span = tracing::info_span!(
-                parent: &current_span,
-                "trigger",
-                otel.name = %format!("trigger {}", trigger.function_id),
-                function_id = %trigger.function_id,
-                otel.status_code = tracing::field::Empty,
-            );
-            tokio::spawn(
-                async move {
-                    let call = engine.call_trigger(trigger, data);
-                    match crate::observer::InvocationCtx::scope(
-                        Arc::new(crate::observer::InvocationCtx::engine_internal_at(depth)),
-                        call,
-                    )
-                    .await
-                    {
-                        Ok(_) => {
-                            tracing::Span::current().record("otel.status_code", "OK");
-                        }
-                        Err(_) => {
-                            tracing::Span::current().record("otel.status_code", "ERROR");
-                        }
-                    }
-                }
-                .instrument(span),
-            );
-        }
     }
 
     pub(crate) async fn handle_worker(
@@ -3273,17 +2680,16 @@ impl Engine {
         )
         .await;
 
-        let workers_data = serde_json::json!({
-            "event": "worker_connected",
-            "worker_id": worker.id.to_string(),
-        });
         self.observers.emit(
             DEFAULT_NAMESPACE,
             crate::observer::events::ON_WORKERS_CHANGED,
-            || Some(workers_data.clone()),
+            || {
+                Some(serde_json::json!({
+                    "event": "worker_connected",
+                    "worker_id": worker.id.to_string(),
+                }))
+            },
         );
-        self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
-            .await;
 
         let mut oversized_warnings = OversizedWarnings::default();
         let mut report_hold = crate::observer::ReportHold::default();
@@ -3322,8 +2728,8 @@ impl Engine {
                             match serde_json::from_str::<Message>(&text) {
                                 Ok(msg) => self.route_frame(&worker, msg, &mut report_hold).await?,
                                 Err(err) => {
-                                    tracing::warn!(peer = %peer, error = ?err, "json decode error");
-                                    self.answer_undecodable(&worker, text.as_bytes(), &err).await;
+                                    self.undecodable_frame(&worker, peer, text.as_bytes(), &err)
+                                        .await;
                                 }
                             }
                         }
@@ -3351,8 +2757,7 @@ impl Engine {
                                 match serde_json::from_slice::<Message>(&bytes) {
                                     Ok(msg) => self.route_frame(&worker, msg, &mut report_hold).await?,
                                     Err(err) => {
-                                        tracing::warn!(peer = %peer, error = ?err, "binary decode error");
-                                        self.answer_undecodable(&worker, &bytes, &err).await;
+                                        self.undecodable_frame(&worker, peer, &bytes, &err).await;
                                     }
                                 }
                             }
@@ -3416,6 +2821,7 @@ impl Engine {
                         error: Some(error),
                         traceparent: None,
                         baggage: None,
+                        observed: Vec::new(),
                     },
                 )
                 .await;
@@ -3429,6 +2835,7 @@ impl Engine {
                     error: Some(error),
                     traceparent: None,
                     baggage: None,
+                    observed: Vec::new(),
                 };
                 // A result never waits on report backpressure, so it takes a
                 // hold of its own.
@@ -3456,20 +2863,46 @@ impl Engine {
         }
     }
 
-    /// Answers a frame that is JSON but not a valid `Message`, when it is a
-    /// request whose sender is waiting: an `observe` with an `id` gets an
-    /// `observeresult` error, an `invokefunction` with an `invocation_id` an
-    /// `InvocationResult` error. Anything else stays a logged drop, as before.
-    async fn answer_undecodable(
+    /// A frame that is not a valid `Message`. A removed message type (see
+    /// [`REMOVED_MESSAGES`]) is dropped with one `warn` per connection and
+    /// type, naming what replaces it. Anything else is logged, and answered
+    /// when it is a request whose sender is waiting: an `observe` with an `id`
+    /// gets an `observeresult` error, an `invokefunction` with an
+    /// `invocation_id` an `InvocationResult` error.
+    async fn undecodable_frame(
         &self,
         worker: &WorkerConnection,
+        peer: SocketAddr,
         frame: &[u8],
         error: &serde_json::Error,
     ) {
-        let Ok(Value::Object(frame)) = serde_json::from_slice::<Value>(frame) else {
-            return;
+        let frame = match serde_json::from_slice::<Value>(frame) {
+            Ok(Value::Object(frame)) => frame,
+            _ => {
+                tracing::warn!(peer = %peer, error = ?error, "frame decode error");
+                return;
+            }
         };
-        match frame.get("type").and_then(Value::as_str) {
+        let message_type = frame.get("type").and_then(Value::as_str);
+        if let Some((index, (removed, replacement))) = message_type.and_then(|message_type| {
+            REMOVED_MESSAGES
+                .iter()
+                .enumerate()
+                .find(|(_, (removed, _))| *removed == message_type)
+        }) {
+            if worker.first_removed_message(index) {
+                tracing::warn!(
+                    worker_id = %worker.id,
+                    peer = %peer,
+                    message_type = %removed,
+                    "dropping `{removed}` frames from this worker: this engine has no such \
+                     message; {replacement}"
+                );
+            }
+            return;
+        }
+        tracing::warn!(peer = %peer, error = ?error, "frame decode error");
+        match message_type {
             Some("observe") => {
                 if let Some(id) = frame.get("id").and_then(Value::as_str) {
                     self.observers.notify(
@@ -3509,6 +2942,7 @@ impl Engine {
                             )),
                             traceparent: None,
                             baggage: None,
+                            observed: Vec::new(),
                         },
                     )
                     .await;
@@ -3603,7 +3037,7 @@ impl Engine {
         // returned while a concurrent exit-path teardown was still mid-flight
         // would let the successor's replay race the remaining removals, which
         // is exactly the bug this path exists to close. No double
-        // worker_disconnected trigger, no double death metrics.
+        // worker_disconnected event, no double death metrics.
         if worker
             .cleanup_claimed
             .swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -3656,8 +3090,7 @@ impl Engine {
                 // The ownership check and the removal happen under the owner
                 // entry's lock (as `release_function_if_owner`): a racing
                 // `RegisterFunction` claim waits for it, so the new owner's
-                // registration — and its observe descriptor — is never what
-                // goes. Ownership itself is kept through the rest of the
+                // registration — and its options — is never what goes. Ownership itself is kept through the rest of the
                 // teardown and CAS-released at the end, so a claim landing
                 // after this aborts the remaining steps.
                 if !self.remove_external_function_if_owner(
@@ -3698,10 +3131,6 @@ impl Engine {
             }
         }
 
-        self.trigger_registry.unregister_worker(&worker.id).await;
-        // Bindings its trigger types leave with no provider may be taken by a
-        // function standing in for the type (protocol.md §6).
-        self.observers.convert_pending_triggers(self);
         self.channel_manager
             .remove_channels_by_worker(&worker.id)
             .await;
@@ -3727,20 +3156,19 @@ impl Engine {
         // worker is gone, so there is nothing to register.
         self.namespace_states.remove(&worker.id);
 
-        let workers_data = serde_json::json!({
-            "event": "worker_disconnected",
-            "worker_id": worker.id.to_string(),
-        });
         self.observers.emit(
             DEFAULT_NAMESPACE,
             crate::observer::events::ON_WORKERS_CHANGED,
-            || Some(workers_data.clone()),
+            || {
+                Some(serde_json::json!({
+                    "event": "worker_disconnected",
+                    "worker_id": worker.id.to_string(),
+                }))
+            },
         );
-        self.fire_triggers(TRIGGER_WORKERS_AVAILABLE, workers_data)
-            .await;
 
         worker.cleanup_done.send_replace(true);
-        tracing::debug!(worker_id = %worker.id, "Worker triggers unregistered");
+        tracing::debug!(worker_id = %worker.id, "Worker cleaned up");
     }
 
     /// Takes the ownership lease on `(namespace, function_id)` for `worker_id`.
@@ -4058,18 +3486,15 @@ impl Engine {
 }
 
 impl EngineTrait for Engine {
-    /// Internal call path used by hooks, middleware, and fire_triggers — not direct
-    /// user invocations over WebSocket. We intentionally skip
+    /// Internal call path used by hooks and middleware — not direct user
+    /// invocations over WebSocket. We intentionally skip
     /// `mark_user_function_invoked` here because this path serves engine
     /// orchestration; the heartbeat should only count actual user-initiated
     /// invocations arriving via `remember_invocation` and not things the engine
     /// can fire itself without user involvement, such as cron.
     ///
     /// `namespace` is the namespace the target function is resolved in. Hooks
-    /// and middleware pass [`DEFAULT_NAMESPACE`] (via `call_with_metadata`);
-    /// `fire_triggers` passes the trigger's own namespace so a trigger runs the
-    /// function of the worker that registered it, not a same-named function in
-    /// `default`.
+    /// and middleware pass [`DEFAULT_NAMESPACE`] (via `call_with_metadata`).
     async fn call_with_metadata_ns(
         &self,
         namespace: &str,
@@ -4084,35 +3509,6 @@ impl EngineTrait for Engine {
         })?;
         self.call_value_with_metadata_ns(namespace, function_id, input, metadata)
             .await
-    }
-
-    async fn register_trigger_type(&self, trigger_type: TriggerType) {
-        // Re-registration is a REPLACE, never a skip: a reloaded in-process
-        // worker re-runs `initialize()` (reload.rs) and a reconnected SDK
-        // worker replays its trigger types, and each must swap in its LIVE
-        // registrator — the registry then re-delivers the type's existing
-        // registrations to it. Keeping the old registrator strands new (and
-        // replayed) bindings on a destroyed instance or dead connection:
-        // `engine::register_trigger` succeeds but the binding lands where the
-        // live fire path never reads, so it "lands but never fires". This
-        // matches the WS `Message::RegisterTriggerType` path, which has always
-        // replaced.
-        if self
-            .trigger_registry
-            .trigger_types
-            .contains_key(&trigger_type.key())
-        {
-            tracing::info!(
-                trigger_type_id = %trigger_type.id,
-                namespace = %trigger_type.namespace,
-                "Trigger type re-registered; replacing registrator and re-delivering its registrations"
-            );
-        }
-
-        let _ = self
-            .trigger_registry
-            .register_trigger_type(trigger_type)
-            .await;
     }
 
     fn register_function_ns(
@@ -4273,7 +3669,6 @@ fn protocol_message_type(message: &Message) -> &'static str {
         Message::InvokeFunction { .. } => "InvokeFunction",
         Message::InvocationResult { .. } => "InvocationResult",
         Message::RegisterFunction { .. } => "RegisterFunction",
-        Message::RegisterTrigger { .. } => "RegisterTrigger",
         Message::RegisterService { .. } => "RegisterService",
         _ => "other",
     }
@@ -5771,7 +5166,7 @@ mod tests {
                     data: json!(["first", "second"]),
                     traceparent: None,
                     baggage: None,
-                    action: Some(crate::protocol::TriggerAction::Void),
+                    action: Some(crate::protocol::CallAction::Void),
                     metadata: None,
                     namespace: None,
                     caller: None,
@@ -5895,7 +5290,7 @@ mod tests {
                         "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01".to_string(),
                     ),
                     baggage: Some("iii.session.id=s1,iii.function.id=harness::send".to_string()),
-                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                    action: Some(crate::protocol::CallAction::Enqueue {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
@@ -5989,7 +5384,7 @@ mod tests {
                     data: json!({"session_id": "s1"}),
                     traceparent: None,
                     baggage: None,
-                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                    action: Some(crate::protocol::CallAction::Enqueue {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
@@ -6053,7 +5448,7 @@ mod tests {
                     data: json!({"session_id": "s1"}),
                     traceparent: None,
                     baggage: None,
-                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                    action: Some(crate::protocol::CallAction::Enqueue {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,
@@ -6103,7 +5498,7 @@ mod tests {
                     data: json!({"session_id": "s1"}),
                     traceparent: None,
                     baggage: None,
-                    action: Some(crate::protocol::TriggerAction::Enqueue {
+                    action: Some(crate::protocol::CallAction::Enqueue {
                         queue: "harness-turn".to_string(),
                     }),
                     metadata: None,

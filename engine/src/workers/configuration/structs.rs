@@ -200,7 +200,7 @@ pub struct ConfigurationListResult {
     pub configurations: Vec<ConfigurationSchemaView>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ConfigurationEventType {
     #[serde(rename = "configuration:registered")]
     Registered,
@@ -210,9 +210,9 @@ pub enum ConfigurationEventType {
     Deleted,
 }
 
-/// Trigger event payload. Mirrors [`crate::trigger_formats::ConfigurationCallRequest`]
-/// but lives next to the worker so the in-process invoker doesn't depend on
-/// the schema-only struct.
+/// The `configuration::on-updated` event. Mirrors
+/// [`crate::event_formats::ConfigurationEvent`] but lives next to the worker
+/// so the in-process listeners don't depend on the schema-only struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigurationEventData {
     #[serde(rename = "type")]

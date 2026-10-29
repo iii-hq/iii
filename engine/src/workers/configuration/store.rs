@@ -673,6 +673,7 @@ impl ConfigurationStore {
     }
 
     /// Delete from storage before removing the cache entry under the mutation lock.
+    #[cfg(test)]
     pub async fn delete(&self, id: &str) -> Result<Option<ConfigurationEntry>, StoreError> {
         let _write = self.write_lock.lock().await;
         let removed = self.adapter.delete(id).await?;
