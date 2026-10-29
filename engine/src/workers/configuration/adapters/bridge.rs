@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
 use serde::Serialize;
 use serde_json::Value;
@@ -73,7 +73,7 @@ impl BridgeAdapter {
         let payload =
             serde_json::to_value(input).map_err(|e| anyhow::anyhow!("encode payload: {}", e))?;
         self.bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,
@@ -323,7 +323,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                                 Value::Null
                             } else {
                                 match raw_reader
-                                    .trigger(TriggerRequest {
+                                    .call(CallRequest {
                                         function_id: "configuration::get".into(),
                                         payload: serde_json::json!({ "id": event.id, "raw": true }),
                                         action: None,

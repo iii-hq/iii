@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Deliver, IIIClient, Source, register_worker};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -89,7 +89,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::update".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -117,7 +117,7 @@ impl StreamAdapter for BridgeAdapter {
         tracing::debug!(data = ?data.clone(), "Emitting event");
 
         self.bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: PUBLISH_FUNCTION_ID.to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -144,7 +144,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::set".to_string(),
                 payload: serde_json::to_value(input).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -171,7 +171,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::get".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -198,7 +198,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::delete".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -220,7 +220,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::list".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -240,7 +240,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::list_groups".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
