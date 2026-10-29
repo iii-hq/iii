@@ -2952,6 +2952,60 @@ async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
     iii.shutdown_async().await;
 }
 
+/// A call a deliver hook makes that times out, rethrown, keeps `TIMEOUT` as
+/// the caller's error, as in Node and Python: on a routed call's answer and
+/// on a local call.
+#[tokio::test]
+async fn a_deliver_hooks_rethrown_timeout_keeps_its_code() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "http");
+    connected(&mock, &iii, true).await;
+    iii.on_observer_deliver_for("http::on-request", {
+        let iii = iii.clone();
+        move |call: Call, observers: Vec<Observer>| {
+            let iii = iii.clone();
+            async move {
+                let route = observers.first().expect("one route");
+                // The engine never answers: the call times out.
+                iii.call(
+                    CallRequest::observer(route, call.input.clone())
+                        .timeout(Duration::from_millis(50)),
+                )
+                .await
+            }
+        }
+    });
+    hosted(
+        &mock,
+        &iii,
+        "http::on-request",
+        echo().private(),
+        json!([observer_with_args("route-a", json!({ "path": "/a" }))]),
+    )
+    .await;
+    acked(&mock, &[("route-a", 1)]).await;
+
+    route_call(
+        &mock,
+        "http::on-request",
+        "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        json!({ "path": "/a" }),
+    );
+    let answer = answer_to(&mock, "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(answer["error"]["code"], "TIMEOUT", "{answer:#}");
+    assert!(answer.get("observed").is_none());
+
+    let err = iii
+        .call(CallRequest::new(
+            "http::on-request",
+            json!({ "path": "/a" }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.invocation_error().unwrap().code, "TIMEOUT", "{err}");
+    iii.shutdown_async().await;
+}
+
 /// A match hook narrows a routed call's observers; the matches ride its
 /// answer.
 #[tokio::test]
