@@ -261,10 +261,10 @@ iii.onObserverAdded('cron::on-tick', start)
 
 **When hooks take effect.** The SDK acks no observer of a function before the
 call that registered it has returned. So a hook set by id before
-`registerFunction`, or chained on its result, runs for every observer. In Node
-and the browser this also covers a hook set later in the same synchronous
-block, since inbound messages run on the event loop. In Rust and Go set hooks
-by id before registering (§5.2).
+`registerFunction` runs for every observer. In Node and the browser a hook
+chained on `registerFunction`, or set later in the same synchronous block, does
+too, since inbound messages run on the event loop. In Python, Rust and Go set
+hooks by id before registering (§5.2–§5.4).
 
 A hook set once a function already has active observers is **caught up**: the
 SDK runs it for each of them at once, a throw late-rejects that observer, and
@@ -451,16 +451,16 @@ pub trait DeliverHook: Send + Sync + 'static {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error>;
 }
 
-// onObserverMatch: a predicate, or keys that iii indexes
-pub enum Match {
-    Predicate(Arc<dyn Fn(&Observer, &Call) -> bool + Send + Sync>),
-    Keys { observer: Arc<dyn Fn(&Observer) -> Vec<String> + Send + Sync>,
-           call: Arc<dyn Fn(&Call) -> Vec<String> + Send + Sync> },
-}
+// onObserverMatch: a predicate, or keys that iii indexes. Key functions borrow
+// from their argument, so looking a call up allocates nothing.
 impl Match {
     pub fn predicate(f: impl Fn(&Observer, &Call) -> bool + Send + Sync + 'static) -> Self;
-    pub fn keys(observer: impl Fn(&Observer) -> Vec<String> + …, call: impl Fn(&Call) -> Vec<String> + …) -> Self;
+    pub fn keys(
+        observer: impl for<'a> Fn(&'a Observer) -> Keys<'a> + Send + Sync + 'static,
+        call: impl for<'a> Fn(&'a Call) -> Keys<'a> + Send + Sync + 'static,
+    ) -> Self;
 }
+// Keys<'a> converts from &str, String, Option<…> and Vec<…> of them
 
 // one function, by id: set before registering, so it sees every observer (§4.3)
 iii.on_observer_added_for("database::on-row-changed", change_feed.clone());   // ChangeFeed: AddedHook
@@ -810,7 +810,7 @@ connection and message type, naming the replacement, and drops the frame.
 | | 0.25 engine | v2 engine |
 |---|---|---|
 | **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. |
-| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, or `onObserverDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
+| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObserverMatch` or `onObserverDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
 
 Migrating:
 
@@ -876,7 +876,7 @@ phase 2 baseline.
 | iii's delivery, 10 observers, none matching | < 5 µs (compiled filters) |
 | Routed call, observed | 0 extra frames (ids on `invocationresult`) |
 | Event source (handler returns its input), observed | the event serialized once |
-| Local call to a private function | no copy of input or result |
+| Local call to a private function | no copy of input or result when nothing reads the input after the handler; one copy of the input when a match or deliver hook, a filter or a `capture` reads it |
 | Call through an observer | one routed invocation |
 
 ## 14. Execution plan

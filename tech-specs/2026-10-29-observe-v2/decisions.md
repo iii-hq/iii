@@ -159,7 +159,7 @@ differ, this file wins, and the spec is updated to match.
     `STREAM_LEAVE`).
 18. **Older engines.** Against an engine without `observe.v2`, functions that
     declare `args_format`, `private` or `observable: false`, or set
-    `onObserverDeliver`, stay unregistered and the SDK logs `UNSUPPORTED` once
+    `onObserverMatch` or `onObserverDeliver`, stay unregistered and the SDK logs `UNSUPPORTED` once
     per function. Everything else works, with the engine evaluating routed
     calls: the SDK delivers local calls only, sends no `observed` and no
     `output_is_input`.
