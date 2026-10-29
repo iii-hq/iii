@@ -297,8 +297,9 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
         /// Host→engine: the observers the host's delivery matched for this
-        /// routed call. Read leniently: a malformed list reads as empty. The
-        /// engine never forwards it.
+        /// routed call. Read from a connection that declared `observe.v2`
+        /// only, and leniently: a malformed list reads as empty. The engine
+        /// never forwards it.
         #[serde(
             default,
             deserialize_with = "deserialize_observed",

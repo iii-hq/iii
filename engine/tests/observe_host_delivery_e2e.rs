@@ -138,6 +138,38 @@ async fn a_hosts_routed_answer_activates_the_observers_it_lists() {
     assert!(!invoked_already(&mut sink, "sink::foreign"));
 }
 
+/// The engine sends every call it routes to a host with an invocation id,
+/// a fire-and-forget one included, so every routed call has an answer that
+/// can list its observers.
+#[tokio::test]
+async fn a_fire_and_forget_call_is_answered_and_delivered_too() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut audit = host(&t, "audit", &["audit::log"]).await;
+    let mut sink = host(&t, "sink", &["sink::logs"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    sink.observe_active(observer(
+        "logs",
+        json!({ "function_id": "audit::log", "deliver": "input" }),
+        "sink::logs",
+    ))
+    .await;
+
+    checkout
+        .send(json!({
+            "type": "invokefunction",
+            "function_id": "audit::log",
+            "data": { "entry": 1 },
+            "action": { "type": "void" },
+        }))
+        .await;
+    let invoke = audit.invoked("audit::log").await;
+    assert!(invoke["invocation_id"].is_string(), "{invoke}");
+    audit.reply_observed(&invoke, Value::Null, &["logs"]).await;
+    let activation = sink.invoked("sink::logs").await;
+    assert_eq!(activation["data"], json!({ "entry": 1 }));
+    sink.reply(&activation, Value::Null).await;
+}
+
 /// `observed` may ride an answer that carries `error`: the listed observer's
 /// envelope says `status: error` with the host's error (decision 39), and the
 /// caller gets the error alone.

@@ -1894,7 +1894,7 @@ impl Engine {
                         worker
                             .features
                             .observe_v2()
-                            .then(|| crate::observer::HostDelivery {
+                            .then_some(crate::observer::HostDelivery {
                                 host: worker.id,
                                 observed,
                             });

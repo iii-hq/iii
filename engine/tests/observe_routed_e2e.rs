@@ -1,6 +1,8 @@
 //! Observers on the routed path (README §7 phase 1), over real WebSockets:
 //! every call here goes caller → engine → host, and the engine evaluates the
-//! observers' filters itself.
+//! observers' filters itself: the hosts here declare `observe.v1`, not
+//! `observe.v2` (`observe_host_delivery_e2e` covers hosts that deliver their
+//! own calls).
 //!
 //! Hosts that declare `observe.v1` ack their observers (the test client does
 //! it like an SDK whose hooks accept everything), so an observer goes
@@ -1097,7 +1099,15 @@ async fn observe_rejections() {
             "observe": { "allow": false }
         }))
         .await;
+    orders
+        .register_function_with(json!({
+            "type": "registerfunction",
+            "id": "vault::secret",
+            "observable": false
+        }))
+        .await;
     registered(&t.engine, "default", "vault::read").await;
+    registered(&t.engine, "default", "vault::secret").await;
     let mut watcher = connect(&t, "watcher", true).await;
 
     let source = |extra: Value| {
@@ -1151,6 +1161,10 @@ async fn observe_rejections() {
         (
             "NOT_OBSERVABLE",
             json!({ "source": { "function_id": "vault::read" }, "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "NOT_OBSERVABLE",
+            json!({ "source": { "function_id": "vault::secret" }, "target": { "function_id": "sink::x" } }),
         ),
     ];
     for (n, (code, frame)) in cases.into_iter().enumerate() {
