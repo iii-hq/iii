@@ -74,8 +74,10 @@ does not expand variables or chain commands; use `sandbox::run` with `lang=shell
 
 The adapter caps the `stdout` and `stderr` that `sandbox::exec` and `sandbox::run` return. When it
 cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. A contract 1.0 adapter
-sends neither key: the router passes its reply through unchanged, so a missing key means unknown,
-not `false`. The adapter's contract version is `info.contract` in the `sandbox::adapter::info`
+sends neither key, and the router passes its reply through unchanged, so a missing key means
+unknown. A client that parses replies with the `iii-sandbox-contract` types reads a missing key as
+`false`, so it should trust a `false` only from an adapter whose contract minor is 1 or later. The
+adapter's contract version is `info.contract` in the `sandbox::adapter::info`
 reply; the top-level `contract` there is the router's own. For large output, write it to a file in
 the sandbox and fetch it with `sandbox::fs::read`.
 
@@ -156,8 +158,9 @@ larger payloads when called through an SDK.
 ## Error codes
 
 A failed `sandbox::*` call returns the same error shape whichever sandbox adapter serves it: a stable
-`code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract:
-the router returns S301-S304 and every adapter returns the rest. The `docs_url` in the error payload
+`code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract,
+not to any one worker: they are part of the public `sandbox::*` API that every caller sees, the
+router returns S301-S304, and every adapter returns the rest. The `docs_url` in the error payload
 links to the matching entry below.
 
 - <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed sandbox_id)
