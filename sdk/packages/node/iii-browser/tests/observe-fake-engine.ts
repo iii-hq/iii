@@ -6,9 +6,13 @@
  * test); {@link installFakeEngine} installs it again by hand.
  */
 import { beforeEach, vi } from 'vitest'
+import type { IIIConnectionState } from '../src/iii-constants'
+import type { ISdk } from '../src/types'
 import { MockWebSocket } from './mock-websocket'
 
-export const ENGINE_FEATURES = ['observe.v1', 'local-dispatch.v1']
+export const ENGINE_FEATURES = ['observe.v1', 'observe.v2', 'local-dispatch.v1']
+/** What a 0.25 engine advertises: observe without `observe.v2`. */
+export const ENGINE_FEATURES_V1 = ['observe.v1', 'local-dispatch.v1']
 
 export type Frame = Record<string, unknown>
 
@@ -133,7 +137,7 @@ export function functionRegistered(
   }
 }
 
-/** An observer as the engine pushes it to the owner. */
+/** An observer as the engine pushes it to its function's host. */
 export function observerInfo(
   id: string,
   target: string,
@@ -165,4 +169,34 @@ export function reportedItems(socket: FakeSocket): Frame[] {
 /** Outbound `invokefunction` frames, without the `engine::workers::register` announce. */
 export function invokes(socket: FakeSocket): Frame[] {
   return socket.framesOf('invokefunction').filter((f) => f.function_id !== 'engine::workers::register')
+}
+
+/** A routed call of a function the worker hosts, as the engine forwards it. */
+export function invokeFunction(
+  functionId: string,
+  data: unknown,
+  opts: {
+    invocation_id?: string
+    traceparent?: string
+    caller?: Frame
+    metadata?: Frame
+    observe_depth?: number
+    activation?: Frame
+  } = {},
+): Frame {
+  return { type: 'invokefunction', function_id: functionId, data, ...opts }
+}
+
+/** The `invocationresult` the worker answered `invocationId` with. */
+export function resultOf(socket: FakeSocket, invocationId: string): Frame | undefined {
+  return socket.framesOf('invocationresult').find((f) => f.invocation_id === invocationId)
+}
+
+/** The worker's connection state (the browser client reports it to listeners only). */
+export function connectionState(sdk: ISdk): IIIConnectionState {
+  let state: IIIConnectionState = 'disconnected'
+  sdk.addConnectionStateListener((s) => {
+    state = s
+  })()
+  return state
 }

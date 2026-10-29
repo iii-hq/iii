@@ -5,6 +5,7 @@ import {
   collector,
   connectionState,
   dropConnection,
+  frameCounter,
   sleep,
   traceId,
   waitFor,
@@ -12,8 +13,9 @@ import {
 } from './observe-utils'
 
 /**
- * `iii.observe` against the real engine, on the routed path (README §7 phase 1):
- * every call goes through the engine, which evaluates the filters.
+ * `iii.observe` against the real engine, on the routed path: every call goes
+ * through the engine, and the worker that hosts the function delivers it
+ * (observe.v2): it evaluates the filters, and the matched ids ride its answer.
  */
 afterEach(closeWorkers)
 
@@ -22,14 +24,14 @@ const RUN = crypto.randomUUID().slice(0, 8)
 
 const ALL = ['input', 'output', 'error', 'caller', 'metadata'] as const
 
-describe('observe: routed invocations (engine-evaluated)', () => {
+describe('observe: routed invocations (delivered by the host)', () => {
   it('activates the target with the envelope when the filters on input, output and caller match', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
     owner.registerFunction(`e2e::charge-${RUN}`, async (input: { amount: number }) => ({ charged: input.amount }))
     const got = collector(watcher, `e2e::on-big-charge-${RUN}`)
     watcher.registerFunction(`e2e::checkout-${RUN}`, async (amount: number) =>
-      watcher.trigger({ function_id: `e2e::charge-${RUN}`, payload: { amount } }),
+      watcher.call({ function_id: `e2e::charge-${RUN}`, payload: { amount } }),
     )
     const handle = watcher.observe(
       {
@@ -47,9 +49,9 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     await handle.ready()
     expect(handle.state).toBe('active')
 
-    await watcher.trigger({ function_id: `e2e::checkout-${RUN}`, payload: 750 })
-    await watcher.trigger({ function_id: `e2e::checkout-${RUN}`, payload: 10 }) // filtered out by input
-    await watcher.trigger({ function_id: `e2e::charge-${RUN}`, payload: { amount: 900 } }) // no caller.function_id
+    await watcher.call({ function_id: `e2e::checkout-${RUN}`, payload: 750 })
+    await watcher.call({ function_id: `e2e::checkout-${RUN}`, payload: 10 }) // filtered out by input
+    await watcher.call({ function_id: `e2e::charge-${RUN}`, payload: { amount: 900 } }) // no caller.function_id
     await waitFor(() => got.length >= 1, 'one activation')
     await sleep(200)
     expect(got).toHaveLength(1)
@@ -76,6 +78,22 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     })
   })
 
+  it('the host lists the matched observers on its answer, and sends no report for them', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner.registerFunction(`e2e::quote-${RUN}`, async (qty: number) => ({ total: qty * 3 }))
+    const got = collector(watcher, `e2e::on-quote-${RUN}`)
+    const handle = watcher.observe({ function_id: `e2e::quote-${RUN}` }, `e2e::on-quote-${RUN}`)
+    await handle.ready()
+    const frames = frameCounter(owner)
+    await expect(watcher.call({ function_id: `e2e::quote-${RUN}`, payload: 2 })).resolves.toEqual({ total: 6 })
+    await waitFor(() => got.length === 1, 'the activation')
+    const answer = frames.frames.find((f) => f.type === 'invocationresult')
+    expect(answer?.observed).toEqual([handle.id])
+    expect(frames.types).not.toContain('invocationsobserved')
+    expect(got[0].data).toMatchObject({ input: 2, output: { total: 6 } })
+  })
+
   it("on: 'error' sees failures only; capture limits what travels; deliver: 'input' sends the input alone", async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
@@ -95,8 +113,8 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     )
     await Promise.all([a.ready(), b.ready()])
 
-    await watcher.trigger({ function_id: `e2e::flaky-${RUN}`, payload: { fail: false, n: 1 } })
-    await watcher.trigger({ function_id: `e2e::flaky-${RUN}`, payload: { fail: true, n: 2 } }).catch(() => undefined)
+    await watcher.call({ function_id: `e2e::flaky-${RUN}`, payload: { fail: false, n: 1 } })
+    await watcher.call({ function_id: `e2e::flaky-${RUN}`, payload: { fail: true, n: 2 } }).catch(() => undefined)
     await waitFor(() => errors.length >= 1 && inputs.length >= 2, 'the activations')
     await sleep(200)
     expect(errors).toHaveLength(1)
@@ -120,7 +138,7 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     expect(handle.state).toBe('pending')
     const got = collector(watcher, `e2e::late-target-${RUN}`)
     await handle.ready()
-    await watcher.trigger({ function_id: `e2e::tick-${RUN}`, payload: {} })
+    await watcher.call({ function_id: `e2e::tick-${RUN}`, payload: {} })
     await waitFor(() => got.length === 1, 'the activation')
   })
 
@@ -149,8 +167,8 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     await Promise.all([a.ready(), b.ready()])
     await a.dispose()
     expect(a.state).toBe('disposed')
-    await watcher.trigger({ function_id: `e2e::ping-${RUN}`, payload: {} })
-    await watcher.trigger({ function_id: `e2e::ping-${RUN}`, payload: {} })
+    await watcher.call({ function_id: `e2e::ping-${RUN}`, payload: {} })
+    await watcher.call({ function_id: `e2e::ping-${RUN}`, payload: {} })
     await waitFor(() => b.state === 'disposed', 'max_fires to dispose the observer')
     await sleep(200)
     expect(disposed).toHaveLength(0)
@@ -168,7 +186,7 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     dropConnection(watcher)
     await waitFor(() => connectionState(watcher) === 'connected', 'the reconnect')
     await sleep(500)
-    await owner.trigger({ function_id: `e2e::work-${RUN}`, payload: {} })
+    await owner.call({ function_id: `e2e::work-${RUN}`, payload: {} })
     await waitFor(() => got.length === 1, 'an activation after the reconnect')
     expect(got[0].data.observer_id).toBe(handle.id)
     expect(handle.state).toBe('active')
@@ -182,7 +200,7 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     const handle = watcher.observe({ function_id: `e2e::lease-${RUN}` }, `e2e::on-lease-${RUN}`, { expires_in_ms: 300 })
     await handle.ready()
     await sleep(500)
-    await owner.trigger({ function_id: `e2e::lease-${RUN}`, payload: {} })
+    await owner.call({ function_id: `e2e::lease-${RUN}`, payload: {} })
     await waitFor(() => handle.state === 'disposed', 'the expiry')
     await sleep(200)
     expect(got).toHaveLength(0)
@@ -199,12 +217,12 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     const depths: number[] = []
     watcher.registerFunction(`e2e::on-loop-${RUN}`, async (envelope: { input: number }) => {
       depths.push(watcher.currentInvocation()?.observe_depth ?? -1)
-      await watcher.trigger({ function_id: `e2e::loop-${RUN}`, payload: envelope.input + 1 })
+      await watcher.call({ function_id: `e2e::loop-${RUN}`, payload: envelope.input + 1 })
       return null
     })
     const handle = watcher.observe({ function_id: `e2e::loop-${RUN}`, capture: ['input'] }, `e2e::on-loop-${RUN}`)
     await handle.ready()
-    await watcher.trigger({ function_id: `e2e::loop-${RUN}`, payload: 0 })
+    await watcher.call({ function_id: `e2e::loop-${RUN}`, payload: 0 })
     await waitFor(() => depths.length >= 8, 'eight hops')
     await sleep(500)
     expect(depths).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
@@ -221,7 +239,7 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     watcher.registerFunction(`e2e::on-await-loop-${RUN}`, async (envelope: { input: number }) => {
       depths.push(watcher.currentInvocation()?.observe_depth ?? -1)
       await sleep(5)
-      await watcher.trigger({ function_id: `e2e::await-loop-${RUN}`, payload: envelope.input + 1 })
+      await watcher.call({ function_id: `e2e::await-loop-${RUN}`, payload: envelope.input + 1 })
       return null
     })
     const handle = watcher.observe(
@@ -229,14 +247,14 @@ describe('observe: routed invocations (engine-evaluated)', () => {
       `e2e::on-await-loop-${RUN}`,
     )
     await handle.ready()
-    await watcher.trigger({ function_id: `e2e::await-loop-${RUN}`, payload: 0 })
+    await watcher.call({ function_id: `e2e::await-loop-${RUN}`, payload: 0 })
     await waitFor(() => depths.length >= 8, 'eight hops')
     await sleep(1000)
     expect(depths).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
   })
 
-  it('trigger sends metadata and traceparent: filters read metadata.*, and the activation continues the trace', async () => {
-    // Browser SDK: there is no OpenTelemetry, so the trace context is what trigger() is given.
+  it('call sends metadata and traceparent: filters read metadata.*, and the activation continues the trace', async () => {
+    // Browser SDK: there is no OpenTelemetry, so the trace context is what call() is given.
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
     owner.registerFunction(`e2e::tag-${RUN}`, async (input: { n: number }) => input.n)
@@ -251,13 +269,13 @@ describe('observe: routed invocations (engine-evaluated)', () => {
     )
     await handle.ready()
     const traceparent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
-    await watcher.trigger({
+    await watcher.call({
       function_id: `e2e::tag-${RUN}`,
       payload: { n: 1 },
       metadata: { tenant: 'acme' },
       traceparent,
     })
-    await watcher.trigger({ function_id: `e2e::tag-${RUN}`, payload: { n: 2 }, metadata: { tenant: 'other' } })
+    await watcher.call({ function_id: `e2e::tag-${RUN}`, payload: { n: 2 }, metadata: { tenant: 'other' } })
     await waitFor(() => got.length >= 1, 'the activation')
     await sleep(200)
     expect(got).toHaveLength(1)

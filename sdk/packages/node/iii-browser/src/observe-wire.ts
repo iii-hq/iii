@@ -7,12 +7,13 @@
  */
 import type {
   ActivationWire,
+  CallAction,
   CallerWire,
   CaptureWire,
   ErrorBody,
   FunctionRegisteredMessage,
+  InvocationResultMessage,
   InvokeFunctionMessage,
-  ObserveDescriptorWire,
   ObserveMessage,
   ObserveResultMessage,
   ObserverAckMessage,
@@ -20,10 +21,10 @@ import type {
   ObserverInfoWire,
   ObserverRemovedMessage,
   ObserverStateChangedMessage,
-  TriggerAction,
+  RegistrationRejectedMessage,
   WorkerRegisteredMessage,
 } from './iii-types'
-import type { ObserveHooks, ObserverOptions, ObserveSource, Target } from './observe-types'
+import type { ObserverOptions, ObserveSource, Target } from './observe-types'
 
 /** CONTRACT D1: what an absent `capture` means. */
 export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller']
@@ -71,7 +72,7 @@ function decodeActivation(v: unknown): ActivationWire | undefined {
   return activation
 }
 
-/** An observer as the owner sees it (`observeradded.observer`, `functionregistered.observers[]`). */
+/** An observer as its host sees it (`observeradded.observer`, `functionregistered.observers[]`). */
 export function decodeObserverInfo(v: unknown): ObserverInfoWire {
   const raw = isRecord(v) ? v : {}
   const info: ObserverInfoWire = {
@@ -85,9 +86,6 @@ export function decodeObserverInfo(v: unknown): ObserverInfoWire {
       ? raw.capture.filter((c): c is string => typeof c === 'string')
       : [...DEFAULT_CAPTURE],
     on: str(raw.on) ?? 'success',
-  }
-  if (isRecord(raw.legacy) && typeof raw.legacy.trigger_type === 'string') {
-    info.legacy = { trigger_type: raw.legacy.trigger_type, config: raw.legacy.config ?? null }
   }
   return info
 }
@@ -155,7 +153,7 @@ export function decodeInvokeFunction(v: Raw): Omit<InvokeFunctionMessage, 'messa
   if (typeof v.invocation_id === 'string') msg.invocation_id = v.invocation_id
   if (typeof v.traceparent === 'string') msg.traceparent = v.traceparent
   if (typeof v.baggage === 'string') msg.baggage = v.baggage
-  if (isRecord(v.action)) msg.action = v.action as TriggerAction
+  if (isRecord(v.action)) msg.action = v.action as CallAction
   if (v.metadata !== undefined && v.metadata !== null) msg.metadata = v.metadata
   if (typeof v.namespace === 'string') msg.namespace = v.namespace
   const caller = decodeCaller(v.caller)
@@ -164,6 +162,39 @@ export function decodeInvokeFunction(v: Raw): Omit<InvokeFunctionMessage, 'messa
   if (depth !== undefined && depth > 0) msg.observe_depth = depth
   const activation = decodeActivation(v.activation)
   if (activation) msg.activation = activation
+  return msg
+}
+
+/**
+ * An `invocationresult`. `result: null` is a value; an absent one is a
+ * function that returned nothing. An empty `observed` is left out, and a
+ * non-array one is read as absent.
+ */
+export function decodeInvocationResult(v: Raw): Omit<InvocationResultMessage, 'message_type'> {
+  const msg: Omit<InvocationResultMessage, 'message_type'> = {
+    invocation_id: String(v.invocation_id ?? ''),
+    function_id: String(v.function_id ?? ''),
+  }
+  if (v.result !== undefined) msg.result = v.result
+  const error = errorBody(v.error)
+  if (error) msg.error = error
+  if (typeof v.traceparent === 'string') msg.traceparent = v.traceparent
+  if (typeof v.baggage === 'string') msg.baggage = v.baggage
+  if (Array.isArray(v.observed)) {
+    const observed = v.observed.filter((id): id is string => typeof id === 'string')
+    if (observed.length > 0) msg.observed = observed
+  }
+  return msg
+}
+
+export function decodeRegistrationRejected(v: Raw): Omit<RegistrationRejectedMessage, 'message_type'> {
+  const msg: Omit<RegistrationRejectedMessage, 'message_type'> = {
+    code: String(v.code ?? ''),
+    namespace: String(v.namespace ?? ''),
+    owner_worker_id: String(v.owner_worker_id ?? ''),
+  }
+  if (typeof v.worker_name === 'string') msg.worker_name = v.worker_name
+  if (typeof v.function_id === 'string') msg.function_id = v.function_id
   return msg
 }
 
@@ -214,18 +245,6 @@ export function buildObserveMessage(
   })
 }
 
-/** `registerfunction.observe`: the four fields that travel, or `undefined` when none is set. */
-export function observeDescriptor(hooks: ObserveHooks | undefined): ObserveDescriptorWire | undefined {
-  if (!hooks) return undefined
-  const descriptor: ObserveDescriptorWire = snapshot({
-    delivery: hooks.delivery,
-    args_format: hooks.args_format,
-    legacy_trigger_type: hooks.legacy_trigger_type,
-    allow: hooks.allow,
-  })
-  return Object.keys(descriptor).length > 0 ? descriptor : undefined
-}
-
 export function buildObserverAck(ack: {
   function_id: string
   namespace?: string
@@ -253,7 +272,7 @@ export function buildInvokeFunction(init: {
   data: unknown
   traceparent?: string
   baggage?: string
-  action?: TriggerAction
+  action?: CallAction
   metadata?: unknown
   namespace?: string
   caller?: CallerWire
@@ -272,6 +291,28 @@ export function buildInvokeFunction(init: {
   if (init.caller !== undefined) msg.caller = init.caller
   if (init.observe_depth !== undefined && init.observe_depth > 0) msg.observe_depth = init.observe_depth
   if (init.activation !== undefined) msg.activation = init.activation
+  return msg
+}
+
+/**
+ * An outbound `invocationresult`: `result` is left out when the function
+ * returned nothing (`undefined`), `observed` when empty.
+ */
+export function buildInvocationResult(init: {
+  invocation_id: string
+  function_id: string
+  result?: unknown
+  error?: ErrorBody
+  traceparent?: string
+  baggage?: string
+  observed?: readonly string[]
+}): Record<string, unknown> {
+  const msg: Record<string, unknown> = { invocation_id: init.invocation_id, function_id: init.function_id }
+  if (init.result !== undefined) msg.result = init.result
+  if (init.error !== undefined) msg.error = init.error
+  if (init.traceparent !== undefined) msg.traceparent = init.traceparent
+  if (init.baggage !== undefined) msg.baggage = init.baggage
+  if (init.observed !== undefined && init.observed.length > 0) msg.observed = [...init.observed]
   return msg
 }
 

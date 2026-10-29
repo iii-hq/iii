@@ -1,4 +1,6 @@
 import { ChannelReader, ChannelWriter } from './channels'
+import { handlerErrorBody, InvocationError, RegistrationRejectedError } from './errors'
+import { compileFilter, FilterError } from './filter'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
   DEFAULT_INVOCATION_TIMEOUT_MS,
@@ -6,23 +8,20 @@ import {
   type IIIConnectionState,
   type IIIReconnectionConfig,
 } from './iii-constants'
-import { InvocationError, RegistrationRejectedError } from './errors'
-import { compileFilter, FilterError } from './filter'
 import {
   type ActivationWire,
+  type CallAction as CallActionType,
   type CallerWire,
+  type CallRequest,
   type ErrorBody,
   FEATURE_OBSERVE_V1,
+  FEATURE_OBSERVE_V2,
   type IIIMessage,
   type InvocationResultMessage,
   MessageType,
   type RegisterFunctionMessage,
-  type RegisterTriggerMessage,
-  type RegisterTriggerTypeMessage,
   SDK_FEATURES,
   type StreamChannelRef,
-  type TriggerRegistrationResultMessage,
-  type TriggerRequest,
 } from './iii-types'
 import {
   type ActiveInvocation,
@@ -37,18 +36,32 @@ import {
   MAX_RUNNING_INVOCATION_MS,
   publicContext,
   runInContext,
+  trackDelivering,
   trackRunning,
 } from './invocation-context'
-import { FunctionObservers, OBSERVE_HOOK_TIMEOUT_MS, type ObserveHost } from './observable'
+import {
+  Delivery,
+  type FunctionHooks,
+  FunctionObservers,
+  OBSERVE_HOOK_TIMEOUT_MS,
+  type ObserveHost,
+  type ObserverImpl,
+} from './observable'
 import type {
+  AddedHook,
+  Call,
+  DeliverHook,
   InvocationContext,
-  ObserveHooks,
+  MatchHook,
+  Observer,
   ObserverHandle,
   ObserverOptions,
   ObserveSource,
+  RemovedHook,
   Target,
 } from './observe-types'
 import {
+  buildInvocationResult,
   buildInvokeFunction,
   buildObserveMessage,
   buildObserverAck,
@@ -59,14 +72,13 @@ import {
   decodeObserverAdded,
   decodeObserverRemoved,
   decodeObserverStateChanged,
+  decodeRegistrationRejected,
   decodeWorkerRegistered,
-  observeDescriptor,
   stripCaller,
 } from './observe-wire'
 import { ObserverHandleImpl, toObserverState } from './observer-handle'
 import { Reporter, type ReporterLimits } from './reporter'
 import type { IStream } from './stream'
-import type { TriggerHandler } from './triggers'
 import type {
   FunctionRef,
   Invocation,
@@ -74,11 +86,8 @@ import type {
   RegisterFunctionOptions,
   RemoteFunctionData,
   RemoteFunctionHandler,
-  RemoteTriggerTypeData,
-  Trigger,
-  TriggerTypeRef,
 } from './types'
-import { isChannelRef, randomUUID } from './utils'
+import { isChannelRef, randomUUID, unrefTimer } from './utils'
 
 /** @internal */
 export type TelemetryOptions = {
@@ -110,6 +119,31 @@ function createPayloadTooLargeError(
 function isPayloadTooLargeError(error: unknown): error is Error & { code: string } {
   return error instanceof Error && 'code' in error && error.code === 'payload_too_large'
 }
+
+/**
+ * `registrationrejected` code (engine `protocol.rs`): another live worker
+ * already holds this `(namespace, worker_name)`. The engine closes the
+ * connection -- fatal.
+ */
+const WORKER_NAMESPACE_CONFLICT = 'WORKER_NAMESPACE_CONFLICT'
+
+/**
+ * `registrationrejected` code (engine `protocol.rs`): another live worker in
+ * this namespace already exports this one function id. The connection stays
+ * open -- non-fatal.
+ */
+const FUNCTION_NAMESPACE_CONFLICT = 'FUNCTION_NAMESPACE_CONFLICT'
+
+/**
+ * `registrationrejected` codes that refuse one function only (decisions 1,
+ * 11): its `args_format` is not a valid JSON Schema, or the engine does not
+ * support what it declares. The connection stays open -- non-fatal.
+ */
+const FUNCTION_REJECTIONS: ReadonlySet<string> = new Set(['INVALID_ARGS_FORMAT', 'UNSUPPORTED'])
+
+/** A standby function retries its registration this often (decision 21), ±20 %. */
+const STANDBY_RETRY_MS = 1000
+
 /**
  * Configuration options passed to {@link registerWorker}.
  *
@@ -137,7 +171,7 @@ export type InitOptions = {
    * option explicitly.
    */
   namespace?: string
-  /** Default timeout for `worker.trigger()` invocations in milliseconds. Defaults to `30000`. */
+  /** Default timeout for `worker.call()` invocations in milliseconds. Defaults to `30000`. */
   invocationTimeoutMs?: number
   /**
    * WebSocket reconnection behavior.
@@ -166,20 +200,6 @@ function randomId(): string {
 }
 
 /**
- * The worker's namespace, refusing one that was named and left blank.
- *
- * Absent and blank mean opposite things. Absent asks for the engine's
- * `default`; blank names a namespace and gives nothing to name it with. Read as
- * absent, the worker registers in `default`, and since a worker's calls and
- * triggers follow its namespace, the whole project quietly serves from a place
- * its declaration never named -- the one thing an operator cannot see by
- * reading the declaration.
- *
- * The browser has no `III_NAMESPACE` to fall back to, so unlike the other SDKs
- * there is only the option here, and an option that was written and left empty
- * is never what someone meant.
- */
-/**
  * The namespace one call or one binding resolves in.
  *
  * `undefined` inherits the worker's. A blank one is refused: named and left
@@ -206,23 +226,13 @@ function invocationNamespace(
   explicit: string | undefined,
   worker: string | undefined,
   functionId: string,
-  source = 'TriggerRequest.namespace',
+  source = 'CallRequest.namespace',
 ): string | undefined {
   const namespace = callNamespace(explicit, worker, source)
   return explicit === undefined && (functionId.startsWith('engine::') || functionId.startsWith('configuration::'))
     ? 'default'
     : namespace
 }
-
-const MIGRATION_GUIDE = 'https://iii.dev/docs/upgrading/from-0-24-x'
-
-/** CONTRACT §5: one warning per page per deprecated API. */
-const DEPRECATIONS = {
-  registerTrigger: `registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source, target) instead. Migration guide: ${MIGRATION_GUIDE}`,
-  registerTriggerType: `registerTriggerType is deprecated and will be removed in a future release. Register a function with an observe descriptor (registerFunction(id, handler, { observe: { ... } })) instead. Migration guide: ${MIGRATION_GUIDE}`,
-} as const
-
-const deprecationsWarned = new Set<keyof typeof DEPRECATIONS>()
 
 /**
  * Local dispatch hands the handler a copy of the caller's payload and the
@@ -250,26 +260,6 @@ const UNSUPPORTED_REASON = {
   message: 'the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later',
 }
 
-/** `args_format` needs `delivery: 'owner'`: an auto function's events are its invocations, offered to every observer. */
-function validateObserveHooks(functionId: string, hooks: ObserveHooks | undefined): void {
-  if (!hooks) return
-  const delivery = hooks.delivery
-  if (delivery !== undefined && delivery !== 'auto' && delivery !== 'owner') {
-    throw new InvocationError({
-      code: 'INVALID_OBSERVE_DESCRIPTOR',
-      message: `observe.delivery must be 'auto' or 'owner', got ${JSON.stringify(delivery)}`,
-      function_id: functionId,
-    })
-  }
-  if (hooks.args_format !== undefined && delivery !== 'owner') {
-    throw new InvocationError({
-      code: 'INVALID_OBSERVE_DESCRIPTOR',
-      message: "observe.args_format requires delivery: 'owner' (an auto function takes no args)",
-      function_id: functionId,
-    })
-  }
-}
-
 /**
  * The error a call that timed out rejects with, on the remote and the local
  * path: an `Error` (its message unchanged from earlier releases) that also
@@ -285,62 +275,19 @@ function timeoutError(ms: number, functionId: string): Error & { code: 'TIMEOUT'
 /** What an outgoing `invokefunction` carries from the invocation it is made in. */
 type OutgoingFields = { caller?: CallerWire; observe_depth?: number; traceparent?: string; baggage?: string }
 
-/** What a handler failure reports when the thrown value cannot even be read (a getter or `toString` that throws). */
-const UNREADABLE_FAILURE = 'the handler failed with a value that cannot be read'
-
-function safeString(value: unknown): string {
-  try {
-    return String(value)
-  } catch {
-    return UNREADABLE_FAILURE
-  }
+/** A call the engine routes: by function id, or to the target of an observer (`activation`). */
+type RemoteRequest = {
+  function_id: string
+  payload: unknown
+  action?: CallActionType
+  timeoutMs?: number
+  metadata?: unknown
+  traceparent?: string
+  baggage?: string
 }
 
-/**
- * An error body as the engine sends it, and as this SDK's own calls reject
- * with: a plain (JSON-parsed) object with a string `code`, a string `message`
- * and, optionally, a string `stacktrace`. A class instance or anything else
- * with such fields is not one: it is reported through `String()`.
- */
-function isEngineErrorBody(value: unknown): value is { code: string; message: string; stacktrace?: string } {
-  if (value === null || typeof value !== 'object') return false
-  const proto = Object.getPrototypeOf(value)
-  if (proto !== Object.prototype && proto !== null) return false
-  const body = value as Record<string, unknown>
-  return (
-    typeof body.code === 'string' &&
-    typeof body.message === 'string' &&
-    (body.stacktrace === undefined || typeof body.stacktrace === 'string')
-  )
-}
-
-/**
- * The error a handler's failure becomes, the same on the local and the remote
- * path (code `invocation_failed`):
- * - an `Error`, from any realm (an iframe's too): its message and stack;
- * - an engine error body (a failed call's rejection, rethrown): its message and stacktrace;
- * - anything else: `String(value)`.
- * Never throws: when reading the value throws, a fixed message is reported, so
- * the caller always gets its answer.
- */
-function handlerErrorBody(error: unknown): ErrorBody {
-  try {
-    if (error instanceof Error || Object.prototype.toString.call(error) === '[object Error]') {
-      const { message, stack } = error as Error
-      return {
-        code: 'invocation_failed',
-        message: typeof message === 'string' ? message : safeString(message),
-        stacktrace: typeof stack === 'string' ? stack : undefined,
-      }
-    }
-    if (isEngineErrorBody(error)) {
-      return { code: 'invocation_failed', message: error.message, stacktrace: error.stacktrace }
-    }
-    return { code: 'invocation_failed', message: String(error), stacktrace: undefined }
-  } catch {
-    return { code: 'invocation_failed', message: safeString(error), stacktrace: undefined }
-  }
-}
+/** How a handler finished: what it returned, or what it threw. */
+type HandlerOutcome = { ok: true; value: unknown } | { ok: false; error: unknown }
 
 function resolveNamespace(optionNamespace?: string): string | undefined {
   if (optionNamespace !== undefined && optionNamespace.trim() === '') {
@@ -356,8 +303,6 @@ class Sdk implements ISdk {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
   private invocations = new Map<string, Invocation & { timeout?: ReturnType<typeof setTimeout> }>()
-  private triggers = new Map<string, RegisterTriggerMessage>()
-  private triggerTypes = new Map<string, RemoteTriggerTypeData>()
   private messagesToSend: Record<string, unknown>[] = []
   private reconnectTimeout?: ReturnType<typeof setTimeout>
   private invocationTimeoutMs: number
@@ -372,7 +317,7 @@ class Sdk implements ISdk {
   private reattachToken?: string
   private fatalError?: RegistrationRejectedError
   // Observers this worker created, replayed (same id) on every connection.
-  private observers = new Map<string, ObserverHandleImpl>()
+  private observerHandles = new Map<string, ObserverHandleImpl>()
   // The engine's features (`WorkerRegistered.features`), kept across a
   // disconnect until the next `WorkerRegistered` replaces them.
   private engineFeatures: ReadonlySet<string> = new Set()
@@ -380,7 +325,18 @@ class Sdk implements ISdk {
   private registeredOnConnection = false
   // Bumped on every connection: `functionregistered` confirms a function on one.
   private connectionEpoch = 0
+  // Observer hooks of every function this worker hosts.
+  private workerHooks: { added?: AddedHook; removed?: RemovedHook } = {}
+  // Observer hooks by function id: they outlive a registration of the id.
+  private functionHooks = new Map<
+    string,
+    { added?: AddedHook; removed?: RemovedHook; match?: MatchHook; deliver?: DeliverHook }
+  >()
   private hooksInactiveWarned = new Set<string>()
+  private unsupportedWarned = new Set<string>()
+  private unregisteredHooksWarned = new Set<string>()
+  // Standby functions waiting for their id to be free, by function id.
+  private standbyTimers = new Map<string, ReturnType<typeof setTimeout>>()
   // Observe-family frames waiting for the next `WorkerRegistered` (see sendObserveFamily).
   private observeQueue: Record<string, unknown>[] = []
   private readonly reporter: Reporter
@@ -420,30 +376,17 @@ class Sdk implements ISdk {
       options?.observe?.reporter,
     )
     this.observeHost = {
-      identity: () =>
-        this.workerId !== undefined
-          ? { worker_id: this.workerId, worker_name: this.workerName }
-          : { worker_name: this.workerName },
       sendAck: (ack) => this.sendMessage(MessageType.ObserverAck, buildObserverAck(ack), true),
       reporter: this.reporter,
-      callTarget: (target, observerId, payload, timeoutMs) =>
-        this.invokeRemote({ function_id: target, payload, timeoutMs }, undefined, {
-          observer_id: observerId,
-        }),
+      hooks: (functionId) => this.hooksOf(functionId),
       logError: (message, error) => this.logError(message, error),
+      logWarn: (message) => this.logWarn(message),
       hookTimeoutMs: () => options?.observe?.hookTimeoutMs ?? OBSERVE_HOOK_TIMEOUT_MS,
-      // No OpenTelemetry here: an event emitted outside any handler starts no trace.
-      traceContext: () => ({}),
+      observeV2: () => this.engineFeatures.has(FEATURE_OBSERVE_V2),
     }
 
     this.reporter.start()
     this.connect()
-  }
-
-  private warnDeprecated(api: keyof typeof DEPRECATIONS): void {
-    if (deprecationsWarned.has(api)) return
-    deprecationsWarned.add(api)
-    console.warn(`[iii] ${DEPRECATIONS[api]}`)
   }
 
   private logError(message: string, error?: unknown): void {
@@ -451,169 +394,34 @@ class Sdk implements ISdk {
     else console.error(`[iii] ${message}`, error)
   }
 
-  /**
-   * Registers a custom trigger type with the engine. A trigger type defines
-   * how external events (HTTP, cron, queue, etc.) map to function invocations.
-   *
-   * @deprecated Register a function with an observe descriptor instead:
-   * `registerFunction(id, handler, { observe: { delivery: 'owner', onObserverAdded, onObserverRemoved } })`.
-   * Logs a warning once per page. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
-   *
-   * @param triggerType - Trigger type registration input.
-   * @param triggerType.id - Unique trigger type identifier.
-   * @param triggerType.description - Human-readable description.
-   * @param handler - Handler with `registerTrigger` / `unregisterTrigger` callbacks.
-   *
-   * @example
-   * ```typescript
-   * worker.registerTriggerType(
-   *   { id: 'my-trigger', description: 'Custom trigger' },
-   *   {
-   *     async registerTrigger({ id, function_id, config }) { },
-   *     async unregisterTrigger({ id, function_id, config }) { },
-   *   },
-   * )
-   * ```
-   */
-  registerTriggerType = <TConfig>(
-    triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>,
-    handler: TriggerHandler<TConfig>,
-  ): TriggerTypeRef<TConfig> => {
-    this.warnDeprecated('registerTriggerType')
-    const message = this.snapshotRegistration<RegisterTriggerTypeMessage>({
-      ...triggerType,
-      message_type: MessageType.RegisterTriggerType,
-    })
-    this.sendMessage(MessageType.RegisterTriggerType, message, true)
-    this.triggerTypes.set(message.id, {
-      message,
-      handler,
-    })
+  private logWarn(message: string): void {
+    console.warn(`[iii] ${message}`)
+  }
 
-    return {
-      id: message.id,
-      // Pairs a function with its trigger, so it defaults the trigger's namespace
-      // to this worker's — otherwise the function lands in the worker's namespace
-      // and the trigger in `default`, never resolving it. The low-level
-      // `registerTrigger` keeps the engine default (`default`).
-      registerTrigger: (functionId: string, config: TConfig) => {
-        return this.registerTrigger({
-          type: message.id,
-          function_id: functionId,
-          config,
-          namespace: this.namespace,
-        })
-      },
-      registerFunction: (functionId, handler, config) => {
-        const ref = this.registerFunction(functionId, handler)
-        this.registerTrigger({
-          type: message.id,
-          function_id: functionId,
-          config,
-          namespace: this.namespace,
-        })
-        return ref
-      },
-      unregister: () => {
-        this.unregisterTriggerType(message)
-      },
-    }
+  private logInfo(message: string): void {
+    console.info(`[iii] ${message}`)
   }
 
   /**
-   * Unregisters a previously registered trigger type.
-   *
-   * @deprecated Trigger types are replaced by functions with an observe
-   * descriptor; unregister the function instead. Migration guide:
-   * https://iii.dev/docs/upgrading/from-0-24-x
-   *
-   * @param triggerType - The trigger type to unregister (must match the `id` used during registration).
-   */
-  unregisterTriggerType = (triggerType: Omit<RegisterTriggerTypeMessage, 'message_type'>): void => {
-    // The engine reads `{ id, namespace? }` (sdk/fixtures/protocol/observe/unregistertriggertype.json).
-    const { id, namespace } = triggerType as { id: string; namespace?: string }
-    this.sendMessage(MessageType.UnregisterTriggerType, namespace !== undefined ? { id, namespace } : { id }, true)
-    this.triggerTypes.delete(id)
-  }
-
-  /**
-   * Binds a trigger configuration to a registered function. When the trigger
-   * fires, the engine invokes the target function.
-   *
-   * @deprecated Use `iii.observe(source, target)` instead. Logs a warning once
-   * per page. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
-   *
-   * @param trigger - Trigger registration input.
-   * @param trigger.type - Trigger type (e.g. `http`, `durable:subscriber`, `cron`).
-   * @param trigger.function_id - ID of the function to invoke.
-   * @param trigger.config - Trigger-specific configuration.
-   * @returns A {@link Trigger} handle with an `unregister()` method.
-   *
-   * @example
-   * ```typescript
-   * const trigger = worker.registerTrigger({
-   *   type: 'http',
-   *   function_id: 'greet',
-   *   config: { api_path: '/greet', http_method: 'GET' },
-   * })
-   *
-   * // Later...
-   * trigger.unregister()
-   * ```
-   */
-  registerTrigger = (trigger: Omit<RegisterTriggerMessage, 'message_type' | 'id'>): Trigger => {
-    this.warnDeprecated('registerTrigger')
-    const id = randomUUID()
-    const fullTrigger = this.snapshotRegistration<RegisterTriggerMessage>({
-      ...trigger,
-      id,
-      message_type: MessageType.RegisterTrigger,
-      // Unset means this worker's namespace, not the engine's default. A
-      // trigger names a function, and the function a worker registers lands in
-      // the worker's namespace, so defaulting anywhere else registers a trigger
-      // that fires and resolves nothing. Naming another namespace, `default`
-      // included, stays a matter of saying so.
-      ...(() => {
-        const namespace = callNamespace(
-          trigger.namespace,
-          this.namespace,
-          'RegisterTriggerInput.namespace',
-        )
-        return namespace !== undefined ? { namespace } : {}
-      })(),
-    })
-    this.sendMessage(MessageType.RegisterTrigger, fullTrigger, true)
-    this.triggers.set(id, fullTrigger)
-
-    return {
-      unregister: () => {
-        this.sendMessage(MessageType.UnregisterTrigger, {
-          id,
-          message_type: MessageType.UnregisterTrigger,
-          type: fullTrigger.type,
-        })
-        this.triggers.delete(id)
-      },
-    }
-  }
-
-  /**
-   * Registers a function with the engine. The `functionId` is the unique identifier
-   * used by triggers and invocations.
+   * Registers a function with the engine. The `functionId` is the unique
+   * identifier callers and observers name. The handler's return value is what
+   * the function's observers observe.
    *
    * The handler runs locally in the browser session; HTTP invocation configs
    * are a Node.js SDK feature and are not accepted here. It receives the
-   * payload and the invocation's metadata.
+   * payload and the invocation's metadata. Calls this worker makes to it run
+   * in-process once the engine confirmed it, unless `options.localDispatch`
+   * is `false`.
    *
-   * Every function is observable. `options.observe` makes it observable on
-   * its own terms (owner delivery, hooks when an observer is added or
-   * removed), and calls this worker makes to it run in-process once the
-   * engine confirmed it, unless `options.localDispatch` is `false`.
+   * A function that sets `args_format`, `private: true`, `observable: false`
+   * or an `onObserverDeliver` hook needs an engine with `observe.v2`: it is
+   * registered once the connection's engine advertised it, and against an
+   * older engine it stays unregistered (logged once, `UNSUPPORTED`).
    *
    * @param functionId - Unique function identifier.
-   * @param handlerOrInvocation - Async handler executed when the function is invoked.
-   * @param options - Optional function registration options (description, request/response formats, metadata, observe hooks, localDispatch).
-   * @returns A {@link FunctionRef} with `id`, `unregister()`, `isObserved()` and `observers()`.
+   * @param handler - Handler executed when the function is invoked.
+   * @param options - Optional {@link RegisterFunctionOptions}.
+   * @returns A {@link FunctionRef}: the hook methods with the id filled in, and `unregister()`.
    *
    * @example
    * ```typescript
@@ -626,11 +434,12 @@ class Sdk implements ISdk {
    * )
    * ```
    */
-  registerFunction = (
+  // biome-ignore lint/suspicious/noExplicitAny: the handler's types default to any so untyped handlers type-check
+  registerFunction = <I = any, O = any>(
     functionId: string,
-    handlerOrInvocation: RemoteFunctionHandler,
+    handler: RemoteFunctionHandler<I, O>,
     options?: RegisterFunctionOptions,
-  ): FunctionRef => {
+  ): FunctionRef<I, O> => {
     if (!functionId || functionId.trim() === '') {
       throw new Error('id is required')
     }
@@ -638,61 +447,276 @@ class Sdk implements ISdk {
       throw new Error(`function id already registered: ${functionId}`)
     }
 
-    // The hooks stay here; only the descriptor's four fields travel, and
-    // `localDispatch` is this SDK's alone.
-    const { observe: hooks, localDispatch, ...wireOptions } = options ?? {}
-    validateObserveHooks(functionId, hooks)
-    const descriptor = observeDescriptor(hooks)
+    // `standby` and `localDispatch` are this SDK's alone; `private: false` and
+    // `observable: true` are the defaults and are not sent.
+    const { standby, localDispatch, private: isPrivate, observable, ...wireOptions } = options ?? {}
     const fullMessage = this.snapshotRegistration<RegisterFunctionMessage>({
       ...wireOptions,
-      ...(descriptor ? { observe: descriptor } : {}),
+      ...(isPrivate === true ? { private: true } : {}),
+      ...(observable === false ? { observable: false } : {}),
       id: functionId,
       message_type: MessageType.RegisterFunction,
     })
+    // Refused here when too large, before anything is retained.
+    const frame = this.prepareJson(this.toWireFormat(MessageType.RegisterFunction, fullMessage))
 
-    this.sendMessage(MessageType.RegisterFunction, fullMessage, true)
-
-    const observe = new FunctionObservers(functionId, hooks, localDispatch !== false, true, this.observeHost)
-    if (observe.needsObserve && this.registeredOnConnection && !this.engineFeatures.has(FEATURE_OBSERVE_V1)) {
-      this.warnHooksInactive(functionId)
-    }
-
-    const handler = handlerOrInvocation as RemoteFunctionHandler
-    this.functions.set(functionId, {
+    const observe = new FunctionObservers(functionId, localDispatch !== false, true, this.observeHost)
+    const fn: RemoteFunctionData = {
       message: fullMessage,
       observe,
+      standby: standby === true,
       handler: async (input, metadata?: unknown) => {
         return await handler(input, metadata)
       },
-    })
+    }
+    this.functions.set(functionId, fn)
+    if (this.mayRegister(functionId, fn)) {
+      this.sendMessageRaw(frame)
+      fn.sentEpoch = this.connectionEpoch
+    }
+    if (
+      this.registeredOnConnection &&
+      !this.engineFeatures.has(FEATURE_OBSERVE_V1) &&
+      this.hasObserverHooks(functionId)
+    ) {
+      this.warnHooksInactive(functionId)
+    }
 
-    return {
+    const ref: FunctionRef<I, O> = {
       id: functionId,
+      onObserverAdded: (hook) => {
+        this.onObserverAdded(functionId, hook)
+        return ref
+      },
+      onObserverRemoved: (hook) => {
+        this.onObserverRemoved(functionId, hook)
+        return ref
+      },
+      onObserverMatch: (hook: MatchHook<I, O> | null) => {
+        this.onObserverMatch(functionId, hook)
+        return ref
+      },
+      onObserverDeliver: (hook) => {
+        this.onObserverDeliver(functionId, hook)
+        return ref
+      },
+      observers: () => this.observers(functionId),
+      isObserved: (call) => this.isObserved(functionId, call as Partial<Call>),
       unregister: () => {
         // A stale ref (the id was unregistered and registered again) must not
         // touch the registration that replaced it: nothing to do.
-        if (this.functions.get(functionId)?.observe !== observe) return
+        if (this.functions.get(functionId) !== fn) return
         this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
         this.functions.delete(functionId)
+        this.stopStandby(functionId)
         observe.dispose()
       },
-      isObserved: () => observe.isObserved(),
-      observers: () => observe.observers(),
+    }
+    return ref
+  }
+
+  /** What a function needs `observe.v2` for (decision 18): `args_format`, `private`, `observable: false`, a deliver hook. */
+  private needsObserveV2(functionId: string, fn: RemoteFunctionData): boolean {
+    const { message } = fn
+    return (
+      message.args_format !== undefined ||
+      message.private === true ||
+      message.observable === false ||
+      this.functionHooks.get(functionId)?.deliver !== undefined
+    )
+  }
+
+  /**
+   * Whether the function's `registerfunction` may go out on the current
+   * connection now. One that needs `observe.v2` waits for this connection's
+   * `WorkerRegistered`, and stays unregistered (logged once, `UNSUPPORTED`)
+   * when the engine does not advertise it (decision 41).
+   */
+  private mayRegister(functionId: string, fn: RemoteFunctionData): boolean {
+    if (!this.isOpen()) return false
+    if (!this.needsObserveV2(functionId, fn)) return true
+    if (!this.registeredOnConnection) return false
+    if (this.engineFeatures.has(FEATURE_OBSERVE_V2)) return true
+    this.warnUnsupported(functionId)
+    return false
+  }
+
+  /** Sends the registrations that may go out now and have not on this connection. */
+  private sendRegistrations(): void {
+    for (const [functionId, fn] of this.functions) {
+      if (fn.sentEpoch === this.connectionEpoch || !this.mayRegister(functionId, fn)) continue
+      this.replayRegistration(MessageType.RegisterFunction, fn.message)
+      fn.sentEpoch = this.connectionEpoch
     }
   }
 
   /**
-   * Observes a function: every event of `source` (an invocation of an auto
-   * function, or what its owner hands over) that passes `source.filters`
-   * invokes `target`, a registered function.
+   * A deliver hook changed whether the function needs `observe.v2`: against
+   * an engine without it, a registered function is unregistered (and one
+   * held back is registered once it no longer needs it).
+   */
+  private reconcileRegistration(functionId: string): void {
+    const fn = this.functions.get(functionId)
+    if (!fn || !this.isOpen() || !this.registeredOnConnection) return
+    const sent = fn.sentEpoch === this.connectionEpoch
+    const allowed = this.engineFeatures.has(FEATURE_OBSERVE_V2) || !this.needsObserveV2(functionId, fn)
+    if (sent && !allowed) {
+      this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
+      fn.sentEpoch = undefined
+      fn.observe.onRegistrationRejected(this.connectionEpoch)
+      this.warnUnsupported(functionId)
+    } else if (!sent && allowed) {
+      this.replayRegistration(MessageType.RegisterFunction, fn.message)
+      fn.sentEpoch = this.connectionEpoch
+    }
+  }
+
+  private warnUnsupported(functionId: string): void {
+    if (this.unsupportedWarned.has(functionId)) return
+    this.unsupportedWarned.add(functionId)
+    this.logWarn(
+      `UNSUPPORTED: function "${functionId}" needs observe.v2 (args_format, private, observable: false or onObserverDeliver), which this engine does not advertise; it stays unregistered until the worker connects to an engine with observe.v2.`,
+    )
+  }
+
+  /** The hooks that apply to one function now: the worker's, and those set for its id. */
+  private hooksOf(functionId: string): FunctionHooks {
+    const own = this.functionHooks.get(functionId)
+    return {
+      workerAdded: this.workerHooks.added,
+      workerRemoved: this.workerHooks.removed,
+      added: own?.added,
+      removed: own?.removed,
+      match: own?.match,
+      deliver: own?.deliver,
+    }
+  }
+
+  private hasObserverHooks(functionId: string): boolean {
+    const own = this.functionHooks.get(functionId)
+    return !!(
+      this.workerHooks.added ||
+      this.workerHooks.removed ||
+      own?.added ||
+      own?.removed ||
+      own?.match ||
+      own?.deliver
+    )
+  }
+
+  private setFunctionHook<K extends 'added' | 'removed' | 'match' | 'deliver'>(
+    functionId: string,
+    kind: K,
+    hook: { added: AddedHook; removed: RemovedHook; match: MatchHook; deliver: DeliverHook }[K] | null,
+  ): void {
+    if (typeof functionId !== 'string' || functionId.trim() === '') {
+      throw new TypeError('the function id of an observer hook is required')
+    }
+    const keys =
+      kind === 'match' &&
+      hook !== null &&
+      typeof hook === 'object' &&
+      typeof (hook as { observer?: unknown }).observer === 'function' &&
+      typeof (hook as { call?: unknown }).call === 'function'
+    if (hook !== null && typeof hook !== 'function' && !keys) {
+      throw new TypeError(
+        kind === 'match'
+          ? `the match hook of ${functionId} must be a predicate, { observer, call } key functions, or null to remove it`
+          : `the ${kind} hook of ${functionId} must be a function, or null to remove it`,
+      )
+    }
+    const hooks = { ...this.functionHooks.get(functionId), [kind]: hook ?? undefined }
+    if (hooks.added || hooks.removed || hooks.match || hooks.deliver) this.functionHooks.set(functionId, hooks)
+    else this.functionHooks.delete(functionId)
+    const fn = this.functions.get(functionId)
+    if (!fn) return
+    if (kind === 'added' && hook) fn.observe.catchUp('fn')
+    if (kind === 'match') fn.observe.matchChanged()
+    if (kind === 'deliver') this.reconcileRegistration(functionId)
+  }
+
+  private setWorkerHook<K extends 'added' | 'removed'>(
+    kind: K,
+    hook: { added: AddedHook; removed: RemovedHook }[K] | null,
+  ): void {
+    if (hook !== null && typeof hook !== 'function') {
+      throw new TypeError(`the worker's ${kind} hook must be a function, or null to remove it`)
+    }
+    this.workerHooks = { ...this.workerHooks, [kind]: hook ?? undefined }
+    if (kind === 'added' && hook) {
+      for (const fn of this.functions.values()) fn.observe.catchUp('worker')
+    }
+  }
+
+  /**
+   * Runs `hook` when an observer of any function this worker hosts is added,
+   * before the SDK acks it; with a function id, for that function only. When
+   * both are set, the worker's runs first. Throw to reject the observer (an
+   * {@link ObserveRejection} sets the code). `null` removes the hook.
+   */
+  onObserverAdded: ISdk['onObserverAdded'] = (a: string | AddedHook | null, b?: AddedHook | null) => {
+    if (typeof a === 'string') this.setFunctionHook(a, 'added', b as AddedHook | null)
+    else this.setWorkerHook('added', a)
+    return this
+  }
+
+  /**
+   * Runs `hook` once for every accepted observer when it is removed; with a
+   * function id, for that function only. When both are set, the function's
+   * runs first. `null` removes the hook.
+   */
+  onObserverRemoved: ISdk['onObserverRemoved'] = (a: string | RemovedHook | null, b?: RemovedHook | null) => {
+    if (typeof a === 'string') this.setFunctionHook(a, 'removed', b as RemovedHook | null)
+    else this.setWorkerHook('removed', a)
+    return this
+  }
+
+  /**
+   * Says which observers want each call of `functionId`: a predicate
+   * `(obs, call) => boolean`, or `{ observer, call }` key functions the SDK
+   * indexes. iii's delivery (or the function's deliver hook) gets only the
+   * observers that want the call. `null` removes the hook.
+   */
+  onObserverMatch: ISdk['onObserverMatch'] = (functionId: string, hook: MatchHook | null): ISdk => {
+    this.setFunctionHook(functionId, 'match', hook)
+    return this
+  }
+
+  /**
+   * Delivers each call of `functionId` itself: the hook receives the call and
+   * the observers that matched it, and what it returns (or throws) is what the
+   * caller gets back. iii delivers nothing for that function. `null` removes
+   * the hook.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
+  onObserverDeliver = <I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): ISdk => {
+    this.setFunctionHook(functionId, 'deliver', hook as DeliverHook | null)
+    return this
+  }
+
+  /** The active observers of a function this worker hosts (empty for any other). */
+  observers = (functionId: string): readonly Observer[] => this.functions.get(functionId)?.observe.observers() ?? []
+
+  /**
+   * Whether a call of a function this worker hosts would reach anyone (see
+   * {@link ISdk.isObserved}).
+   */
+  isObserved = (functionId: string, call?: Partial<Call>): boolean =>
+    this.functions.get(functionId)?.observe.isObserved(call) ?? false
+
+  /**
+   * Observes a function: every call of `source` that passes `source.filters`
+   * runs `target`, a registered function. `source` is a function id, or an
+   * {@link ObserveSource} with `args` for the worker that hosts the function.
    *
    * Returns synchronously, also before the connection is up; the observer is
    * replayed with the same id on every reconnect. Errors (`INVALID_ARGS`,
-   * `INVALID_FILTER`, `FORBIDDEN`, an owner's rejection, `UNSUPPORTED` against
-   * an engine without observe) show up as state `error` and reject `ready()`.
+   * `INVALID_FILTER`, `FORBIDDEN`, `NOT_OBSERVABLE`, the host's rejection,
+   * `UNSUPPORTED` against an engine without observe) show up as state `error`
+   * and reject `ready()`.
    *
-   * @param source - What is observed: `function_id`, `args` (owner-delivered
-   *   functions only), `filters`, and `on` / `capture` / `deliver`.
+   * @param source - What is observed: a function id, or `function_id`,
+   *   `args`, `filters`, and `on` / `capture` / `deliver`.
    * @param target - The function to invoke (registered first; until then the observer is `pending`).
    * @param options - Policy and metadata: `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
    *
@@ -709,7 +733,8 @@ class Sdk implements ISdk {
    * await shipped.dispose()
    * ```
    */
-  observe = (source: ObserveSource, target: Target, options?: ObserverOptions): ObserverHandle => {
+  observe = (sourceOrId: string | ObserveSource, target: Target, options?: ObserverOptions): ObserverHandle => {
+    const source: ObserveSource = typeof sourceOrId === 'string' ? { function_id: sourceOrId } : sourceOrId
     if (!source || typeof source.function_id !== 'string' || source.function_id.trim() === '') {
       throw new Error('observe: source.function_id is required')
     }
@@ -718,7 +743,7 @@ class Sdk implements ISdk {
       throw new Error('observe: target is required (the id of a registered function)')
     }
     const id = options?.id ?? randomUUID()
-    if (this.observers.has(id)) {
+    if (this.observerHandles.has(id)) {
       throw new Error(`observe: observer id already in use: ${id}`)
     }
     const onDispose = (h: ObserverHandleImpl) => this.disposeObserver(h)
@@ -755,7 +780,7 @@ class Sdk implements ISdk {
       return refused({ code: 'INVALID_ARGS', message: `observe: the source or options are not JSON: ${error.message}` })
     }
     const handle = new ObserverHandleImpl(id, message, onDispose, logError)
-    this.observers.set(id, handle)
+    this.observerHandles.set(id, handle)
     if (this.registeredOnConnection && this.isOpen()) {
       if (this.engineFeatures.has(FEATURE_OBSERVE_V1)) this.sendObserve(handle)
       else handle.setState('error', UNSUPPORTED_REASON)
@@ -765,7 +790,8 @@ class Sdk implements ISdk {
 
   /**
    * The invocation the calling code runs in (in every handler, remote or
-   * local), or `undefined` outside any handler.
+   * local, and in its function's deliver hook), or `undefined` outside any
+   * handler.
    *
    * Browsers have no `AsyncLocalStorage`: it is known while the handler runs
    * synchronously, up to its first `await`. Read it first and re-enter it with
@@ -778,7 +804,7 @@ class Sdk implements ISdk {
    * worker.registerFunction('ui::checkout', async (cart) => {
    *   const inv = worker.currentInvocation() // { function_id, invocation_id, caller, observe_depth, ... }
    *   const quote = await fetchQuote(cart)
-   *   return worker.withInvocation(inv, () => worker.trigger({ function_id: 'orders::create', payload: quote }))
+   *   return worker.withInvocation(inv, () => worker.call({ function_id: 'orders::create', payload: quote }))
    * })
    * ```
    */
@@ -798,9 +824,8 @@ class Sdk implements ISdk {
    * whose target awaits before calling back. With several invocations
    * running this over-counts, and a legitimate chain may stop early. They
    * carry a `caller` and `traceparent` only when that is unambiguous (one
-   * invocation is running, and it is an observe activation); otherwise none.
-   * They never get an invocation's metadata: `obs.emit` / `obs.call` filters
-   * on `metadata.*` see it only inside a real scope. An invocation that never
+   * invocation is running, and it is an observe activation or its function's
+   * deliver hook is running); otherwise none. An invocation that never
    * settles stops counting as running after 10 minutes (a local call: at its
    * timeout). Local calls nest the same way: a self-recursion that awaits
    * before each call goes through the engine past 64 levels, while calls
@@ -820,7 +845,7 @@ class Sdk implements ISdk {
   }
 
   private disposeObserver(handle: ObserverHandleImpl): void {
-    if (this.observers.get(handle.id) === handle) this.observers.delete(handle.id)
+    if (this.observerHandles.get(handle.id) === handle) this.observerHandles.delete(handle.id)
     if (!handle.sent) return
     this.sendObserveFamily(MessageType.Unobserve, { id: handle.id })
   }
@@ -842,9 +867,20 @@ class Sdk implements ISdk {
   private warnHooksInactive(functionId: string): void {
     if (this.hooksInactiveWarned.has(functionId)) return
     this.hooksInactiveWarned.add(functionId)
-    console.warn(
-      `[iii] Function "${functionId}" declares observe hooks or owner delivery, but the engine does not support observe (observe.v1): it is registered as a plain function and its observe hooks are inactive.`,
+    this.logWarn(
+      `Function "${functionId}" has observer hooks, but the engine does not support observe (observe.v1): it is registered as a plain function and its observer hooks are inactive.`,
     )
+  }
+
+  /** Once the connection is registered: a hook set for an id this worker has not registered (a mistyped id?). */
+  private warnUnregisteredHookIds(): void {
+    for (const functionId of this.functionHooks.keys()) {
+      if (this.functions.has(functionId) || this.unregisteredHooksWarned.has(functionId)) continue
+      this.unregisteredHooksWarned.add(functionId)
+      this.logWarn(
+        `Observer hooks are set for "${functionId}", which this worker has not registered; check the function id.`,
+      )
+    }
   }
 
   /** Connected to an engine that advertised `observe.v1`. */
@@ -861,9 +897,10 @@ class Sdk implements ISdk {
    * that can be passed as fields in invocation data to other functions.
    */
   __helpers_create_channel = async (bufferSize?: number): Promise<import('./types').Channel> => {
-    const result = await this.trigger<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>(
-      { function_id: 'engine::channels::create', payload: { buffer_size: bufferSize } },
-    )
+    const result = await this.call<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>({
+      function_id: 'engine::channels::create',
+      payload: { buffer_size: bufferSize },
+    })
 
     return {
       writer: new ChannelWriter(this.address, result.writer),
@@ -874,17 +911,25 @@ class Sdk implements ISdk {
   }
 
   /**
-   * Invokes a remote function. The routing behavior and return type depend
-   * on the `action` field of the request.
+   * Invokes a function. The routing behavior and return type depend on the
+   * `action` field of the request.
    *
-   * | `action`                      | Behavior                                           | Return type              |
-   * |-------------------------------|----------------------------------------------------|-----------------------   |
-   * | _(none)_                      | Synchronous: waits for the function to return     | `Promise<TOutput>`       |
-   * | `TriggerAction.Enqueue(...)` | Async via named queue; engine acknowledges enqueue | `Promise<EnqueueResult>` |
-   * | `TriggerAction.Void()`       | Fire-and-forget, no response                      | `Promise<undefined>`     |
+   * | `action`                   | Behavior                                           | Return type              |
+   * |----------------------------|----------------------------------------------------|--------------------------|
+   * | _(none)_                   | Synchronous: waits for the function to return     | `Promise<TOutput>`       |
+   * | `CallAction.Enqueue(...)`  | Async via named queue; engine acknowledges enqueue | `Promise<EnqueueResult>` |
+   * | `CallAction.Void()`        | Fire-and-forget, no response                      | `Promise<undefined>`     |
    *
-   * @param request - The trigger request.
+   * With `observer` instead of `function_id`, the call runs that observer's
+   * target, with the observer's policy (`max_fires`, expiry,
+   * `max_in_flight`), metadata and loop guard. Only the worker that hosts the
+   * observed function may call through it (`NOT_FUNCTION_OWNER`); the
+   * payload goes as given. It is routed by the observer alone, so it reaches
+   * the observer's target from anywhere, after an `await` included.
+   *
+   * @param request - The call request.
    * @param request.function_id - ID of the function to invoke.
+   * @param request.observer - An observer of a function this worker hosts: its target is invoked.
    * @param request.payload - Payload to pass to the function.
    * @param request.action - Routing action. Omit for synchronous request/response.
    * @param request.timeoutMs - Override the default invocation timeout.
@@ -900,28 +945,42 @@ class Sdk implements ISdk {
    *
    * @example
    * ```typescript
-   * import { TriggerAction } from 'iii-browser-sdk'
+   * import { CallAction } from 'iii-browser-sdk'
    *
    * // Synchronous
-   * const result = await worker.trigger({ function_id: 'get-order', payload: { id: '123' } })
+   * const result = await worker.call({ function_id: 'get-order', payload: { id: '123' } })
    *
    * // Enqueue
-   * const { messageReceiptId } = await worker.trigger({
+   * const { messageReceiptId } = await worker.call({
    *   function_id: 'payments::charge',
    *   payload: { orderId: '123', amount: 49.99 },
-   *   action: TriggerAction.Enqueue({ queue: 'payment' }),
+   *   action: CallAction.Enqueue({ queue: 'payment' }),
    * })
    *
    * // Fire-and-forget
-   * worker.trigger({
+   * worker.call({
    *   function_id: 'notifications::send',
    *   payload: { userId: '123' },
-   *   action: TriggerAction.Void(),
+   *   action: CallAction.Void(),
+   * })
+   *
+   * // Through an observer, from the function's deliver hook
+   * worker.onObserverDeliver('ui::on-command', async (call) => {
+   *   const handler = commands.match(call.input)
+   *   return handler ? worker.call({ observer: handler.obs, payload: call.input }) : { handled: false }
    * })
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
-  trigger = async <TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>): Promise<TOutput> => {
+  call = async <TInput = unknown, TOutput = any>(request: CallRequest<TInput>): Promise<TOutput> => {
+    if (request.observer !== undefined) {
+      const { observer, payload, action, timeoutMs } = request
+      // The engine routes to the observer's stored target and is the one that
+      // checks it (decision 13); no namespace travels.
+      return this.invokeRemote<TOutput>({ function_id: observer.target, payload, action, timeoutMs }, undefined, {
+        observer_id: observer.id,
+      })
+    }
     const { function_id, action } = request
     // Engine-owned builtins stay in `default`. Other implicit calls stay in
     // this worker's namespace. An explicit request namespace always wins.
@@ -938,11 +997,9 @@ class Sdk implements ISdk {
       const observe = fn?.observe
       if (fn?.handler && observe?.localDispatch && (namespace === undefined || namespace === observe.namespace)) {
         const depth = callLocalDepth()
-        if (depth < MAX_LOCAL_DEPTH) return this.invokeLocal<TOutput>(function_id, fn.handler, observe, request)
+        if (depth < MAX_LOCAL_DEPTH) return this.invokeLocal<TOutput>(function_id, fn, request)
         if (!this.isOpen()) {
-          if (depth < MAX_OFFLINE_LOCAL_DEPTH) {
-            return this.invokeLocal<TOutput>(function_id, fn.handler, observe, request)
-          }
+          if (depth < MAX_OFFLINE_LOCAL_DEPTH) return this.invokeLocal<TOutput>(function_id, fn, request)
           throw new InvocationError({
             code: 'LOCAL_DEPTH_EXCEEDED',
             message: `${function_id} is called ${depth} local calls deep: past ${MAX_LOCAL_DEPTH} the call needs the engine, and the socket is closed`,
@@ -955,6 +1012,13 @@ class Sdk implements ISdk {
   }
 
   /**
+   * Invokes a function using a request object.
+   *
+   * @deprecated Use {@link Sdk.call}, the same function.
+   */
+  trigger = this.call
+
+  /**
    * What an outgoing call carries from the invocation it is made in: `caller`
    * and `observe_depth` (engines with `observe.v1` only), and the trace
    * context. The browser has no OpenTelemetry, so `traceparent` / `baggage`
@@ -962,7 +1026,7 @@ class Sdk implements ISdk {
    * none. Outside any scope `observe_depth` is the deepest running
    * invocation's (`callDepth`), so the loop guard holds after an `await`.
    */
-  private outgoingFields(request: TriggerRequest<unknown>): OutgoingFields {
+  private outgoingFields(request: { traceparent?: string; baggage?: string }): OutgoingFields {
     const cur = callContext()
     const fields: OutgoingFields = {
       traceparent: request.traceparent ?? cur?.traceparent,
@@ -977,7 +1041,7 @@ class Sdk implements ISdk {
 
   /** The routed path: an `InvokeFunction` through the engine. */
   private invokeRemote<TOutput>(
-    request: TriggerRequest<unknown>,
+    request: RemoteRequest,
     namespace: string | undefined,
     activation?: ActivationWire,
   ): Promise<TOutput> {
@@ -1043,18 +1107,42 @@ class Sdk implements ISdk {
   }
 
   /**
-   * The local path (sdk.md §4.3): runs the handler in-process, with a copy of
-   * the payload, inside a new invocation context; the same timeout and the
-   * same rejection value as the remote path; reports the call when an
-   * observer matches. Puts nothing on the wire when nobody observes the
-   * function.
+   * Runs a call's delivery inside `ctx`: the function's deliver hook, or
+   * iii's delivery to its observers. The hook sees the invocation up to its
+   * first `await`, and counts as delivering until it settles, so the calls it
+   * makes after an `await` fall back to the invocation while it is the only
+   * one running (`callContext`).
+   */
+  private deliverIn(ctx: ActiveInvocation, delivery: Delivery, hook: DeliverHook | undefined): Promise<unknown> {
+    if (hook === undefined) return delivery.run(undefined)
+    const untrack = trackDelivering(ctx)
+    return runInContext(ctx, () => delivery.run(hook)).finally(untrack)
+  }
+
+  /**
+   * The local path (sdk.md §4.3): runs the handler in-process inside a new
+   * invocation context, then delivers the call (the function's deliver hook,
+   * or iii's delivery to its observers); the same timeout and the same
+   * rejection value as the remote path. A call of a function nobody observes
+   * and without a deliver hook puts nothing on the wire.
+   *
+   * The handler gets a copy of the payload and the caller a copy of the
+   * result; a private function's input and result pass by reference.
    */
   private invokeLocal<TOutput>(
     function_id: string,
-    handler: NonNullable<RemoteFunctionData['handler']>,
-    observe: FunctionObservers,
-    request: TriggerRequest<unknown>,
+    fn: RemoteFunctionData,
+    request: {
+      payload: unknown
+      action?: CallActionType
+      timeoutMs?: number
+      metadata?: unknown
+      traceparent?: string
+      baggage?: string
+    },
   ): Promise<TOutput> {
+    const { observe } = fn
+    const handler = fn.handler as NonNullable<RemoteFunctionData['handler']>
     const parent = callContext()
     const caller: CallerWire =
       this.workerId !== undefined
@@ -1071,7 +1159,6 @@ class Sdk implements ISdk {
       invocation_id: randomUUID(),
       caller,
       observe_depth: parent ? parent.observe_depth : callDepth(),
-      metadata: request.metadata,
       localDepth: callLocalDepth() + 1,
     }
     const traceparent = request.traceparent ?? parent?.traceparent
@@ -1079,52 +1166,62 @@ class Sdk implements ISdk {
     if (traceparent !== undefined) ctx.traceparent = traceparent
     if (baggage !== undefined) ctx.baggage = baggage
 
-    // The observers this call is evaluated against: those active when it
-    // started. None → it is not reported, and its input is not copied for it.
-    const set = observe.delivery === 'auto' ? observe.compiled : []
+    // The observers the call is delivered from: those active when it started.
+    const snapshot = observe.compiled
+    const hook = this.functionHooks.get(function_id)?.deliver
+    const delivering = hook !== undefined || snapshot.length > 0
+    const byReference = fn.message.private === true
     let input: unknown
-    let observedInput: unknown
-    let observedMetadata: unknown
     let metadata: unknown
+    let callInput: unknown
+    let callMetadata: unknown
     try {
-      // What observers see is the payload and metadata as the caller passed them
-      // when the call started, not what the handler or the caller made of them since.
-      if (set.length > 0) {
-        observedInput = cloneValue(request.payload)
-        observedMetadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
+      if (byReference) {
+        // Nobody else sees either value: neither is copied, and both are read-only.
+        callInput = request.payload
+        callMetadata = request.metadata
+        input = this.resolveChannelValue(request.payload)
+        metadata = request.metadata
+      } else {
+        // What the delivery sees is the payload and metadata as the caller passed
+        // them when the call started, not what the handler or the caller made of
+        // them since. Not copied when nothing is delivered.
+        if (delivering) {
+          callInput = cloneValue(request.payload)
+          callMetadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
+        }
+        input = this.resolveChannelValue(cloneValue(request.payload))
+        metadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
       }
-      input = this.resolveChannelValue(cloneValue(request.payload))
-      metadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
     } catch (error) {
       return Promise.reject(error)
     }
 
     const startedAt = Date.now()
     const t0 = performance.now()
-    const finish = (ok: boolean, output: unknown, error: ErrorBody | undefined) => {
-      try {
-        const duration = performance.now() - t0
-        this.reporter.recordLocal(function_id, ok, duration)
-        observe.reportLocal(set, {
-          invocation_id: ctx.invocation_id,
-          ok,
-          input: observedInput,
-          output,
-          error,
-          caller: ctx.caller,
-          metadata: observedMetadata,
-          started_at_ms: startedAt,
-          duration_ms: duration,
-          observe_depth: ctx.observe_depth,
-          traceparent,
-          baggage,
-        })
-      } catch (reportError) {
-        this.logError(`Failed to report a local invocation of ${function_id}`, reportError)
+    const settle = (outcome: HandlerOutcome): unknown => {
+      const duration = performance.now() - t0
+      this.reporter.recordLocal(function_id, outcome.ok, duration)
+      if (!delivering) {
+        if (outcome.ok) return outcome.value
+        throw outcome.error
       }
+      const delivery = new Delivery(observe, {
+        call: this.callOf(function_id, ctx.invocation_id, outcome, callInput, ctx.caller, callMetadata),
+        thrown: outcome.ok ? undefined : outcome.error,
+        snapshot,
+        started_at_ms: startedAt,
+        duration_ms: duration,
+        observe_depth: ctx.observe_depth,
+        traceparent,
+        baggage,
+        routed: false,
+      })
+      return this.deliverIn(ctx, delivery, hook)
     }
 
     const effectiveTimeout = request.timeoutMs ?? this.invocationTimeoutMs
+    // Running until the call is delivered: what code after its `await`s falls back to.
     const untrack = trackRunning(ctx, effectiveTimeout)
     let started: Promise<unknown>
     try {
@@ -1133,20 +1230,22 @@ class Sdk implements ISdk {
       // Thrown before the handler's body ran (a stack too deep to enter it).
       started = Promise.reject(error)
     }
-    const done = started.then(
-      (output) => {
-        untrack()
-        finish(true, output, undefined)
-        return output
-      },
-      (error) => {
-        untrack()
-        const body = handlerErrorBody(error)
-        finish(false, undefined, body)
-        // What the remote path rejects with: the handler's error body, as the engine forwards it.
-        throw body
-      },
-    )
+    const done = started
+      .then(
+        (value) => settle({ ok: true, value }),
+        (error) => settle({ ok: false, error }),
+      )
+      .then(
+        (output) => {
+          untrack()
+          return output
+        },
+        (error) => {
+          untrack()
+          // What the remote path rejects with: the error body, as the engine forwards it.
+          throw handlerErrorBody(error)
+        },
+      )
 
     if (request.action?.type === 'void') {
       done.catch((error) => this.logError(`Error invoking function ${function_id}`, error))
@@ -1161,7 +1260,7 @@ class Sdk implements ISdk {
         (output) => {
           if (timeout !== undefined) clearTimeout(timeout)
           try {
-            resolve(cloneValue(output) as TOutput)
+            resolve((byReference ? output : cloneValue(output)) as TOutput)
           } catch (error) {
             reject(error)
           }
@@ -1175,6 +1274,23 @@ class Sdk implements ISdk {
         reject(timeoutError(effectiveTimeout, function_id))
       }, effectiveTimeout)
     })
+  }
+
+  /** The {@link Call} a finished handler made: what it was called with, and what it returned or threw. */
+  private callOf(
+    function_id: string,
+    invocation_id: string,
+    outcome: HandlerOutcome,
+    input: unknown,
+    caller: CallerWire | undefined,
+    metadata: unknown,
+  ): Call {
+    const call: Call = { function_id, invocation_id, status: outcome.ok ? 'success' : 'error', input }
+    if (outcome.ok) call.output = outcome.value
+    else call.error = handlerErrorBody(outcome.error)
+    if (caller !== undefined) call.caller = caller
+    if (metadata !== undefined) call.metadata = metadata as Record<string, unknown>
+    return call
   }
 
   /**
@@ -1217,6 +1333,7 @@ class Sdk implements ISdk {
     this.reporter.stop()
 
     this.clearReconnectTimeout()
+    for (const functionId of [...this.standbyTimers.keys()]) this.stopStandby(functionId)
 
     for (const [_id, invocation] of this.invocations) {
       if (invocation.timeout) {
@@ -1341,8 +1458,9 @@ class Sdk implements ISdk {
     }
     this.ws = undefined
     // Local dispatch and the compiled observer sets survive; what was sent on
-    // this connection is replayed on the next one.
+    // this connection is replayed on the next one (standby functions too).
     this.registeredOnConnection = false
+    for (const functionId of [...this.standbyTimers.keys()]) this.stopStandby(functionId)
 
     // A fatal registration rejection (or shutdown) sets `isShuttingDown` and a
     // terminal state before closing the socket. Do not overwrite that state with
@@ -1395,17 +1513,9 @@ class Sdk implements ISdk {
     // first would stall every function behind that grace.
     this.registerWorkerMetadata()
 
-    this.triggerTypes.forEach(({ message }) => {
-      this.replayRegistration(MessageType.RegisterTriggerType, message)
-    })
-    this.functions.forEach(({ message }) => {
-      this.replayRegistration(MessageType.RegisterFunction, message)
-    })
-    this.triggers.forEach((trigger) => {
-      this.replayRegistration(MessageType.RegisterTrigger, trigger)
-    })
-    // Observers follow the functions (so local targets exist first), once
-    // `WorkerRegistered` says whether this engine supports them.
+    // Functions that need observe.v2 wait for `WorkerRegistered`, and so do
+    // the observers, which follow the functions (so local targets exist first).
+    this.sendRegistrations()
 
     const pending = this.messagesToSend
     this.messagesToSend = []
@@ -1486,18 +1596,6 @@ class Sdk implements ISdk {
 
   private toWireFormat(messageType: MessageType, message: Omit<IIIMessage, 'message_type'>): Record<string, unknown> {
     const { message_type: _, ...rest } = message as Record<string, unknown>
-    if (messageType === MessageType.RegisterTrigger && 'type' in message) {
-      const { type: triggerType, ...triggerRest } = message as RegisterTriggerMessage
-      return { type: messageType, ...triggerRest, trigger_type: triggerType }
-    }
-    if (messageType === MessageType.UnregisterTrigger && 'type' in message) {
-      const { type: triggerType, ...triggerRest } = message as RegisterTriggerMessage
-      return { type: messageType, ...triggerRest, trigger_type: triggerType }
-    }
-    if (messageType === MessageType.TriggerRegistrationResult && 'type' in message) {
-      const { type: triggerType, ...resultRest } = message as TriggerRegistrationResultMessage
-      return { type: messageType, ...resultRest, trigger_type: triggerType }
-    }
     return { type: messageType, ...rest } as Record<string, unknown>
   }
 
@@ -1584,10 +1682,10 @@ class Sdk implements ISdk {
     return value
   }
 
-  private async onInvokeFunction<TInput>(
+  private async onInvokeFunction(
     invocation_id: string | undefined,
     function_id: string,
-    input: TInput,
+    input: unknown,
     metadata?: unknown,
     traceparent?: string,
     baggage?: string,
@@ -1599,8 +1697,6 @@ class Sdk implements ISdk {
   ): Promise<unknown> {
     const fn = this.functions.get(function_id)
 
-    const resolvedInput = this.resolveChannelValue(input) as TInput
-
     if (fn?.handler) {
       const handler = fn.handler
       // The invocation context every handler sees (`currentInvocation()`), and
@@ -1609,17 +1705,48 @@ class Sdk implements ISdk {
         function_id,
         invocation_id: invocation_id ?? randomUUID(),
         observe_depth: observeFields.observe_depth ?? 0,
-        metadata,
       }
       if (observeFields.caller) ctx.caller = observeFields.caller
       if (observeFields.activation) ctx.activation = observeFields.activation
       if (traceparent !== undefined) ctx.traceparent = traceparent
       if (baggage !== undefined) ctx.baggage = baggage
-      // Running until it settles: what code after its `await`s falls back to (`callDepth`).
-      const run = async () => {
+
+      // An observe.v2 host delivers its routed calls (v2 §8.2): the delivery
+      // sees the input as it arrived (channel refs unresolved), and what iii's
+      // delivery selects rides the answer (`observed`).
+      const snapshot: readonly ObserverImpl[] = fn.observe.compiled
+      const hook = this.functionHooks.get(function_id)?.deliver
+      const delivering = this.engineFeatures.has(FEATURE_OBSERVE_V2) && (hook !== undefined || snapshot.length > 0)
+      const startedAt = Date.now()
+      const t0 = performance.now()
+      let delivery: Delivery | undefined
+      const resolvedInput = this.resolveChannelValue(input)
+      // Running until the call is delivered: what code after its `await`s falls back to (`callDepth`).
+      const run = async (): Promise<unknown> => {
         const untrack = trackRunning(ctx, MAX_RUNNING_INVOCATION_MS)
         try {
-          return await runInContext(ctx, () => handler(resolvedInput, metadata))
+          let outcome: HandlerOutcome
+          try {
+            outcome = { ok: true, value: await runInContext(ctx, () => handler(resolvedInput, metadata)) }
+          } catch (error) {
+            outcome = { ok: false, error }
+          }
+          if (!delivering) {
+            if (outcome.ok) return outcome.value
+            throw outcome.error
+          }
+          delivery = new Delivery(fn.observe, {
+            call: this.callOf(function_id, ctx.invocation_id, outcome, input, ctx.caller, metadata),
+            thrown: outcome.ok ? undefined : outcome.error,
+            snapshot,
+            started_at_ms: startedAt,
+            duration_ms: performance.now() - t0,
+            observe_depth: ctx.observe_depth,
+            traceparent,
+            baggage,
+            routed: true,
+          })
+          return await this.deliverIn(ctx, delivery, hook)
         } finally {
           untrack()
         }
@@ -1638,93 +1765,45 @@ class Sdk implements ISdk {
 
       try {
         const result = await run()
-        this.sendMessage(MessageType.InvocationResult, {
-          invocation_id,
-          function_id,
-          result,
-          traceparent,
-          baggage,
-        })
+        this.sendMessage(
+          MessageType.InvocationResult,
+          buildInvocationResult({
+            invocation_id,
+            function_id,
+            result,
+            traceparent,
+            baggage,
+            observed: delivery?.observed,
+          }) as Omit<IIIMessage, 'message_type'>,
+        )
       } catch (error) {
-        this.sendMessage(MessageType.InvocationResult, {
-          invocation_id,
-          function_id,
-          error: handlerErrorBody(error),
-          traceparent,
-          baggage,
-        })
+        this.sendMessage(
+          MessageType.InvocationResult,
+          buildInvocationResult({
+            invocation_id,
+            function_id,
+            error: delivery ? delivery.errorBody(error) : handlerErrorBody(error),
+            traceparent,
+            baggage,
+            observed: delivery?.observed,
+          }) as Omit<IIIMessage, 'message_type'>,
+        )
       }
     } else {
       const errorCode = fn ? 'function_not_invokable' : 'function_not_found'
       const errorMessage = fn ? 'Function is HTTP-invoked and cannot be invoked locally' : 'Function not found'
       if (invocation_id) {
-        this.sendMessage(MessageType.InvocationResult, {
-          invocation_id,
-          function_id,
-          error: { code: errorCode, message: errorMessage },
-          traceparent,
-          baggage,
-        })
+        this.sendMessage(
+          MessageType.InvocationResult,
+          buildInvocationResult({
+            invocation_id,
+            function_id,
+            error: { code: errorCode, message: errorMessage },
+            traceparent,
+            baggage,
+          }) as Omit<IIIMessage, 'message_type'>,
+        )
       }
-    }
-  }
-
-  private async onRegisterTrigger(message: {
-    trigger_type: string
-    id: string
-    function_id: string
-    config: unknown
-    namespace?: string
-  }) {
-    const { trigger_type, id, function_id, config, namespace } = message
-    const triggerTypeData = this.triggerTypes.get(trigger_type)
-
-    if (triggerTypeData) {
-      try {
-        await triggerTypeData.handler.registerTrigger({ id, function_id, config, namespace })
-        this.sendMessage(MessageType.TriggerRegistrationResult, {
-          id,
-          message_type: MessageType.TriggerRegistrationResult,
-          type: trigger_type,
-          function_id,
-        })
-      } catch (error) {
-        this.sendMessage(MessageType.TriggerRegistrationResult, {
-          id,
-          message_type: MessageType.TriggerRegistrationResult,
-          type: trigger_type,
-          function_id,
-          error: { code: 'trigger_registration_failed', message: (error as Error).message },
-        })
-      }
-    } else {
-      this.sendMessage(MessageType.TriggerRegistrationResult, {
-        id,
-        message_type: MessageType.TriggerRegistrationResult,
-        type: trigger_type,
-        function_id,
-        error: { code: 'trigger_type_not_found', message: 'Trigger type not found' },
-      })
-    }
-  }
-
-  private async onUnregisterTrigger(message: {
-    trigger_type?: string
-    id: string
-    function_id?: string
-    config?: unknown
-  }) {
-    const trigger_type = message.trigger_type
-    if (!trigger_type) return
-
-    const triggerTypeData = this.triggerTypes.get(trigger_type)
-    if (!triggerTypeData) return
-
-    const { id, function_id = '', config } = message
-    try {
-      await triggerTypeData.handler.unregisterTrigger({ id, function_id, config })
-    } catch (error) {
-      console.error(`[iii] Error unregistering trigger ${id}`, error)
     }
   }
 
@@ -1755,33 +1834,31 @@ class Sdk implements ISdk {
       })
     } else if (msgType === MessageType.FunctionRegistered) {
       const msg = decodeFunctionRegistered(message)
-      // Its reports held across a reconnect are flushed once the set is acked.
-      this.functions.get(msg.id)?.observe?.onFunctionRegistered(msg, this.connectionEpoch)
+      const fn = this.functions.get(msg.id)
+      if (fn) {
+        // A standby function took over the id: its hooks run for every observer in the set.
+        this.stopStandby(msg.id)
+        fn.standingBy = false
+        // Its reports held across a reconnect are flushed once the set is acked.
+        fn.observe.onFunctionRegistered(msg, this.connectionEpoch)
+      }
     } else if (msgType === MessageType.ObserverAdded) {
       const msg = decodeObserverAdded(message)
-      this.functions.get(msg.function_id)?.observe?.onObserverAdded(msg)
+      this.functions.get(msg.function_id)?.observe.onObserverAdded(msg)
     } else if (msgType === MessageType.ObserverRemoved) {
       const msg = decodeObserverRemoved(message)
-      this.functions.get(msg.function_id)?.observe?.onObserverRemoved(msg)
+      this.functions.get(msg.function_id)?.observe.onObserverRemoved(msg)
     } else if (msgType === MessageType.ObserveResult) {
       const msg = decodeObserveResult(message)
       if (msg.warnings && msg.warnings.length > 0) {
-        console.warn(`[iii] Observer ${msg.id}: ${msg.warnings.join('; ')}`)
+        this.logWarn(`Observer ${msg.id}: ${msg.warnings.join('; ')}`)
       }
       this.onObserverState(msg.id, msg.state, msg.error)
     } else if (msgType === MessageType.ObserverStateChanged) {
       const msg = decodeObserverStateChanged(message)
       this.onObserverState(msg.id, msg.state, msg.reason)
-    } else if (msgType === MessageType.RegisterTrigger) {
-      this.onRegisterTrigger(message as { trigger_type: string; id: string; function_id: string; config: unknown })
-    } else if (msgType === MessageType.UnregisterTrigger) {
-      this.onUnregisterTrigger(
-        message as { trigger_type?: string; id: string; function_id?: string; config?: unknown },
-      )
     } else if (msgType === MessageType.RegistrationRejected) {
-      this.onRegistrationRejected(
-        message as { code: string; namespace: string; worker_name?: string; function_id?: string; owner_worker_id: string },
-      )
+      this.onRegistrationRejected(decodeRegistrationRejected(message))
     } else if (msgType === MessageType.WorkerRegistered) {
       const { worker_id, reattach_token, features } = decodeWorkerRegistered(message)
       this.workerId = worker_id
@@ -1791,45 +1868,54 @@ class Sdk implements ISdk {
   }
 
   /**
-   * `WorkerRegistered` told this connection what the engine supports. With
-   * `observe.v1` the observers are replayed (after the functions, sent on
-   * open) and held reports flushed; without it `observe()` fails with
-   * `UNSUPPORTED` and observe hooks are inactive.
+   * `WorkerRegistered` told this connection what the engine supports. The
+   * functions that need `observe.v2` go out now, or stay unregistered without
+   * it. With `observe.v1` the observers are replayed (after the functions) and
+   * held reports flushed; without it `observe()` fails with `UNSUPPORTED` and
+   * observer hooks are inactive.
    */
   private onEngineFeatures(features: string[]): void {
     this.engineFeatures = new Set(features)
     this.registeredOnConnection = true
+    this.sendRegistrations()
+    this.warnUnregisteredHookIds()
     const queued = this.observeQueue
     this.observeQueue = []
     if (this.engineFeatures.has(FEATURE_OBSERVE_V1)) {
       // What was queued while disconnected (an `unobserve`), then the replay.
       for (const frame of queued) this.sendMessageRaw(JSON.stringify(frame))
-      for (const handle of this.observers.values()) this.sendObserve(handle)
+      for (const handle of this.observerHandles.values()) this.sendObserve(handle)
       this.reporter.flush()
       return
     }
-    for (const handle of this.observers.values()) handle.setState('error', UNSUPPORTED_REASON)
-    for (const [functionId, fn] of this.functions) {
-      if (fn.observe?.needsObserve) this.warnHooksInactive(functionId)
+    for (const handle of this.observerHandles.values()) handle.setState('error', UNSUPPORTED_REASON)
+    for (const functionId of this.functions.keys()) {
+      if (this.hasObserverHooks(functionId)) this.warnHooksInactive(functionId)
     }
     this.reporter.clear()
   }
 
   private onObserverState(id: string, wireState: string, reason?: ErrorBody): void {
-    const handle = this.observers.get(id)
+    const handle = this.observerHandles.get(id)
     if (!handle) return
     const state = toObserverState(wireState)
     handle.setState(state, reason ? { code: reason.code, message: reason.message } : undefined)
-    if (state === 'disposed') this.observers.delete(id)
+    if (state === 'disposed') this.observerHandles.delete(id)
   }
 
   /**
-   * The engine rejected a registration. A `FUNCTION_NAMESPACE_CONFLICT` costs
-   * one function and leaves the connection open, so log and keep serving. A
-   * `WORKER_NAMESPACE_CONFLICT` means another live worker owns this name in the
-   * namespace: it is terminal — stop and do not reconnect (otherwise the engine
-   * would only reject the same name again, which with `maxRetries: -1` loops
-   * forever).
+   * The engine rejected a registration. The `code` decides the severity:
+   *
+   * - {@link FUNCTION_NAMESPACE_CONFLICT}: another live worker in this
+   *   namespace already exports this one function id. Only that registration
+   *   is refused; the connection stays open and the worker keeps serving its
+   *   other functions. A `standby` function retries its registration until
+   *   the id is free.
+   * - {@link FUNCTION_REJECTIONS} on one function: only that function is
+   *   refused. Logged; the worker keeps serving.
+   * - {@link WORKER_NAMESPACE_CONFLICT}, or any other code: terminal — stop and
+   *   do not reconnect (otherwise the engine would only reject the same name
+   *   again, which with `maxRetries: -1` loops forever).
    */
   private onRegistrationRejected(init: {
     code: string
@@ -1838,19 +1924,34 @@ class Sdk implements ISdk {
     function_id?: string
     owner_worker_id: string
   }): void {
-    if (init.code === 'FUNCTION_NAMESPACE_CONFLICT') {
+    if (init.code === FUNCTION_NAMESPACE_CONFLICT) {
+      const fn = init.function_id !== undefined ? this.functions.get(init.function_id) : undefined
       // The engine refused it: no local dispatch, no observers for it here.
-      if (init.function_id !== undefined)
-        this.functions.get(init.function_id)?.observe?.onRegistrationRejected(this.connectionEpoch)
-      console.warn(
-        `[iii] Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. Staying connected and serving the rest.`,
+      fn?.observe.onRegistrationRejected(this.connectionEpoch)
+      if (fn?.standby && init.function_id !== undefined) {
+        this.standBy(init.function_id, fn, init.owner_worker_id)
+        return
+      }
+      this.logWarn(
+        `Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. Staying connected and serving the rest.`,
+      )
+      return
+    }
+    if (FUNCTION_REJECTIONS.has(init.code) && init.function_id !== undefined) {
+      this.functions.get(init.function_id)?.observe.onRegistrationRejected(this.connectionEpoch)
+      this.logError(
+        `Function registration rejected with ${init.code}: function "${init.function_id}" in namespace "${init.namespace}" is not registered. Staying connected and serving the rest.`,
       )
       return
     }
 
-    console.error(
-      `[iii] Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}. Not reconnecting.`,
-    )
+    if (init.code === WORKER_NAMESPACE_CONFLICT) {
+      this.logError(
+        `Registration rejected (${init.code}): worker "${init.worker_name}" in namespace "${init.namespace}" is already owned by ${init.owner_worker_id}. Not reconnecting.`,
+      )
+    } else {
+      this.logError(`Registration rejected by engine with unknown code "${init.code}"; treating as fatal. Not reconnecting.`)
+    }
     // Terminal: suppress reconnect so neither onSocketClose nor scheduleReconnect
     // revives a connection the engine would only reject again.
     this.isShuttingDown = true
@@ -1872,31 +1973,61 @@ class Sdk implements ISdk {
     this.setConnectionState('failed')
     this.ws?.close()
   }
+
+  /**
+   * A `standby` function whose id another connection hosts (decision 21): its
+   * registration is retried every second (±20 %) until the engine accepts it
+   * (`functionregistered`, whose observers then run their hooks here) or the
+   * function is unregistered.
+   */
+  private standBy(functionId: string, fn: RemoteFunctionData, owner: string): void {
+    if (this.standbyTimers.has(functionId)) return
+    if (!fn.standingBy) {
+      this.logInfo(`Function "${functionId}" is hosted by worker ${owner}; standing by to take it over when it leaves.`)
+    }
+    fn.standingBy = true
+    const delay = Math.floor(STANDBY_RETRY_MS * (0.8 + 0.4 * Math.random()))
+    const timer = setTimeout(() => {
+      this.standbyTimers.delete(functionId)
+      if (this.functions.get(functionId) !== fn || !this.mayRegister(functionId, fn)) return
+      this.replayRegistration(MessageType.RegisterFunction, fn.message)
+      fn.sentEpoch = this.connectionEpoch
+    }, delay)
+    unrefTimer(timer)
+    this.standbyTimers.set(functionId, timer)
+  }
+
+  private stopStandby(functionId: string): void {
+    const timer = this.standbyTimers.get(functionId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.standbyTimers.delete(functionId)
+  }
 }
 
 /**
- * Factory object that constructs routing actions for {@link ISdk.trigger}.
+ * Factory object that constructs routing actions for {@link ISdk.call}.
  *
  * @example
  * ```typescript
- * import { TriggerAction } from 'iii-browser-sdk'
+ * import { CallAction } from 'iii-browser-sdk'
  *
  * // Enqueue to a named queue
- * worker.trigger({
+ * worker.call({
  *   function_id: 'process',
  *   payload: { data: 'hello' },
- *   action: TriggerAction.Enqueue({ queue: 'jobs' }),
+ *   action: CallAction.Enqueue({ queue: 'jobs' }),
  * })
  *
  * // Fire-and-forget
- * worker.trigger({
+ * worker.call({
  *   function_id: 'notify',
  *   payload: {},
- *   action: TriggerAction.Void(),
+ *   action: CallAction.Void(),
  * })
  * ```
  */
-export const TriggerAction = {
+export const CallAction = {
   /**
    * Routes the invocation through a named queue. The engine enqueues the job,
    * acknowledges the caller with `{ messageReceiptId }`, and processes it
@@ -1912,6 +2043,9 @@ export const TriggerAction = {
    */
   Void: () => ({ type: 'void' as const }),
 } as const
+
+/** @deprecated Use {@link CallAction}, the same object. */
+export const TriggerAction = CallAction
 
 /**
  * Register the worker with a iii instance, returns a connected worker client.

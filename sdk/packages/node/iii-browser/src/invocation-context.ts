@@ -2,10 +2,10 @@ import type { ActivationWire, CallerWire } from './iii-types'
 import type { InvocationContext } from './observe-types'
 
 /**
- * The invocation a handler runs in. Set around every handler, remote
- * (`InvokeFunction`) and local (in-process dispatch), and read by outgoing
- * calls (`caller`, `observe_depth`, `traceparent`) and by `obs.emit` /
- * `obs.call`.
+ * The invocation a handler runs in. Set around every handler and its
+ * function's deliver hook, remote (`InvokeFunction`) and local (in-process
+ * dispatch), and read by outgoing calls (`caller`, `observe_depth`,
+ * `traceparent`).
  */
 export type ActiveInvocation = {
   function_id: string
@@ -13,9 +13,7 @@ export type ActiveInvocation = {
   caller?: CallerWire
   activation?: ActivationWire
   observe_depth: number
-  /** The invocation's metadata sidecar: what an emitted event's filters see as `metadata`. */
-  metadata?: unknown
-  /** The trace context the invocation arrived with: what calls and events made from it carry. */
+  /** The trace context the invocation arrived with: what the calls made from it carry. */
   traceparent?: string
   baggage?: string
   /** How many local calls deep this invocation is (0 for one that came over the wire). */
@@ -59,11 +57,11 @@ export const MAX_RUNNING_INVOCATION_MS = 10 * 60 * 1000
  *
  * One scope for the whole page, like the Node SDK's one `AsyncLocalStorage`
  * per process: a handler of one worker that calls another worker's
- * `trigger()` is that call's caller.
+ * `call()` is that call's caller.
  */
 let current: ActiveInvocation | undefined
 
-/** The public views handed out, so `withInvocation(view, fn)` restores everything (metadata included). */
+/** The public views handed out, so `withInvocation(view, fn)` restores the invocation they were taken from. */
 const views = new WeakMap<object, ActiveInvocation>()
 
 export function currentContext(): ActiveInvocation | undefined {
@@ -112,36 +110,40 @@ function live(): ActiveInvocation[] {
   return out
 }
 
-/** What a fallback attribution lends: the invocation without its metadata sidecar (one object per invocation). */
-const lent = new WeakMap<ActiveInvocation, ActiveInvocation>()
+/**
+ * The invocations whose function's deliver hook is running: code after the
+ * hook's `await`s falls back to them (see {@link callContext}).
+ */
+const delivering = new WeakSet<ActiveInvocation>()
 
-function lend(ctx: ActiveInvocation): ActiveInvocation {
-  let view = lent.get(ctx)
-  if (!view) {
-    const { metadata: _, ...rest } = ctx
-    view = rest
-    lent.set(ctx, view)
+/**
+ * Marks `ctx` as delivering (its function's deliver hook is running); call
+ * the returned function when the hook settles.
+ */
+export function trackDelivering(ctx: ActiveInvocation): () => void {
+  delivering.add(ctx)
+  return () => {
+    delivering.delete(ctx)
   }
-  return view
 }
 
 /**
- * The invocation a call, an emit or a report made now belongs to. Inside a
- * scope, the scope's. Outside any scope (code after an `await`), the running
- * invocation when that is unambiguous: it is the only one running and it is
- * an observe activation. It lends its ids, caller and trace context, never its
- * metadata: filters on `metadata.*` see only what a real scope carries.
- * Otherwise none, and the call carries no `caller`: the SDK cannot tell which
- * handler, if any, made it.
+ * The invocation a call or a report made now belongs to. Inside a scope, the
+ * scope's. Outside any scope (code after an `await`), the running invocation
+ * when that is unambiguous: it is the only one running, and it is an observe
+ * activation or its function's deliver hook is running (the calls the hook
+ * makes after an `await`, through its observers or not). It lends its ids,
+ * caller and trace context. Otherwise none, and the call carries no
+ * `caller`: the SDK cannot tell which handler, if any, made it.
  */
 export function callContext(): ActiveInvocation | undefined {
   if (current) return current
   const all = live()
-  return all.length === 1 && all[0].activation ? lend(all[0]) : undefined
+  return all.length === 1 && (all[0].activation || delivering.has(all[0])) ? all[0] : undefined
 }
 
 /**
- * The `observe_depth` a call, an emit or a report made now carries. Inside a
+ * The `observe_depth` a call or a report made now carries. Inside a
  * scope, the scope's. Outside any scope, the deepest running invocation's:
  * the engine's loop guard counts on this depth, so code after an `await`
  * over-counts (a chain may stop earlier than `max_observe_depth`) rather than
@@ -216,7 +218,7 @@ export function runInContext<T>(ctx: ActiveInvocation | undefined, fn: () => T):
   }
 }
 
-/** The public view of the current invocation (without the metadata sidecar). */
+/** The public view of the current invocation. */
 export function publicContext(ctx: ActiveInvocation | undefined): InvocationContext | undefined {
   if (!ctx) return undefined
   const view: InvocationContext = {
