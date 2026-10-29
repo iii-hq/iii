@@ -223,12 +223,13 @@ struct ListOutcome {
     daemon_namespace: String,
     daemon_pid: u32,
     /// Target triple this daemon resolves `package://` workers for: the
-    /// `target` it sends to the registry's `POST /resolve` first.
-    target: String,
+    /// `target` it sends to the registry's `POST /resolve` first. Absent when
+    /// this build of iii has no triple for its platform.
+    target: Option<String>,
     /// Every target triple this host runs, preferred first. Compose resolves
     /// for a later one only when the registry answers `unsupported_platform`
-    /// and lists it as available.
-    targets: Vec<String>,
+    /// and lists it as available. Absent with `target`.
+    targets: Option<Vec<String>>,
     projects: Vec<ProjectSummary>,
 }
 
@@ -240,12 +241,13 @@ struct StatusOutcome {
     state_dir: PathBuf,
     daemon_pid: u32,
     /// Target triple this daemon resolves `package://` workers for: the
-    /// `target` it sends to the registry's `POST /resolve` first.
-    target: String,
+    /// `target` it sends to the registry's `POST /resolve` first. Absent when
+    /// this build of iii has no triple for its platform.
+    target: Option<String>,
     /// Every target triple this host runs, preferred first. Compose resolves
     /// for a later one only when the registry answers `unsupported_platform`
-    /// and lists it as available.
-    targets: Vec<String>,
+    /// and lists it as available. Absent with `target`.
+    targets: Option<Vec<String>>,
     containers: Vec<ContainerStatus>,
 }
 
@@ -647,21 +649,17 @@ async fn dispatch(
         },
         // Every project this daemon holds. No id: this is the call an operator
         // makes when they have forgotten what is running.
-        Operation::List => Ok(json!({
+        Operation::List => Ok(with_host_targets(json!({
             "daemon": daemon.worker_name,
             // Which machine answered. Several daemons share an engine, so a
             // caller who reached one by namespace can confirm it was the one
             // they meant.
             "daemon_namespace": daemon.daemon_namespace,
             "daemon_pid": std::process::id(),
-            // What this host asks the registry for, so a caller checking for
-            // updates asks for a build compose would install.
-            "target": crate::registry::host_target(),
-            "targets": crate::registry::host_targets(),
             "projects": daemon.list().await,
-        })),
+        }))),
         Operation::Status => match daemon.status(file.as_deref()).await {
-            Ok(project) => Ok(json!({
+            Ok(project) => Ok(with_host_targets(json!({
                 "namespace": project.project_namespace,
                 "file": project.file_path(),
                 // Derived from the file, so nobody can guess it: where this
@@ -670,10 +668,8 @@ async fn dispatch(
                 // Which process is answering. `--detach` waits on this: another
                 // daemon would otherwise answer for the one being launched.
                 "daemon_pid": std::process::id(),
-                "target": crate::registry::host_target(),
-                "targets": crate::registry::host_targets(),
                 "containers": project.status().await,
-            })),
+            }))),
             Err(err) => Err(compose_error(&err)),
         },
         // What the operating system sees, which is not always what the daemon
@@ -916,6 +912,31 @@ fn report_mutation(
 }
 
 /// Serialize the generated root schema into the value carried over the wire.
+/// Adds what this host asks the registry for, so a caller checking for
+/// updates asks for a build compose would install.
+fn with_host_targets(mut answer: Value) -> Value {
+    insert_host_targets(
+        &mut answer,
+        crate::registry::host_target(),
+        crate::registry::host_targets(),
+    );
+    answer
+}
+
+/// `target` is the triple compose sends first to the registry's `POST
+/// /resolve`, and `targets` every triple it tries, in order. A build with no
+/// triple for its platform reports `unknown`, which no registry serves, so the
+/// answer leaves both out rather than offer it to a caller.
+fn insert_host_targets(answer: &mut Value, target: &str, targets: &[&str]) {
+    if target == "unknown" {
+        return;
+    }
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("target".to_string(), json!(target));
+        fields.insert("targets".to_string(), json!(targets));
+    }
+}
+
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
@@ -1455,7 +1476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_and_list_report_the_targets_compose_resolves_for() {
+    async fn status_and_list_carry_the_targets_the_registry_is_asked_for() {
         let tmp = tempfile::tempdir().unwrap();
         let file = project_with_selectors(tmp.path());
         let daemon = selector_daemon();
@@ -1470,14 +1491,46 @@ mod tests {
         .await
         .unwrap();
 
-        let targets = json!(crate::registry::host_targets());
+        // Wiring: both answers carry the values resolution sends. What those
+        // values are per platform is tested in the registry module.
         assert_eq!(status["target"], crate::registry::host_target());
-        assert_eq!(status["targets"], targets);
+        assert_eq!(status["targets"], json!(crate::registry::host_targets()));
         assert_eq!(status["targets"][0], status["target"]);
-        assert_eq!(list["target"], crate::registry::host_target());
-        assert_eq!(list["targets"], targets);
+        assert_eq!(
+            (&list["target"], &list["targets"]),
+            (&status["target"], &status["targets"])
+        );
         assert_eq!(list["projects"][0]["containers"], status["containers"]);
         daemon.shutdown().await;
+    }
+
+    #[test]
+    fn host_targets_are_reported_in_resolution_order() {
+        let mut answer = json!({ "daemon_pid": 1 });
+
+        insert_host_targets(
+            &mut answer,
+            "x86_64-unknown-linux-musl",
+            &["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+        );
+
+        assert_eq!(
+            answer,
+            json!({
+                "daemon_pid": 1,
+                "target": "x86_64-unknown-linux-musl",
+                "targets": ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+            })
+        );
+    }
+
+    #[test]
+    fn a_platform_without_a_triple_reports_no_targets() {
+        let mut answer = json!({ "daemon_pid": 1 });
+
+        insert_host_targets(&mut answer, "unknown", &["unknown"]);
+
+        assert_eq!(answer, json!({ "daemon_pid": 1 }));
     }
 
     #[tokio::test]
@@ -1528,9 +1581,11 @@ mod tests {
                     "{function_id} container schema is missing {key}"
                 );
             }
+            // Absent on a platform with no triple, and from older daemons.
             let required = schema["required"].as_array().unwrap();
-            assert!(required.contains(&json!("target")));
-            assert!(required.contains(&json!("targets")));
+            assert!(!required.contains(&json!("target")));
+            assert!(!required.contains(&json!("targets")));
+            assert!(envelope.contains_key("target") && envelope.contains_key("targets"));
             let container_required = schema["definitions"]["ContainerStatus"]["required"]
                 .as_array()
                 .unwrap();

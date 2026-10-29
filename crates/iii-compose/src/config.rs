@@ -599,7 +599,14 @@ fn validate_container(
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
 
-    if is_package && raw.version.is_none() {
+    // An empty selector (`version: ""`, or a variable that expands to nothing)
+    // selects nothing, and the lock refuses to record one.
+    if is_package
+        && raw
+            .version
+            .as_deref()
+            .is_none_or(|version| version.trim().is_empty())
+    {
         return Err(ComposeError::MissingVersionForPackage {
             container: key.to_string(),
         });

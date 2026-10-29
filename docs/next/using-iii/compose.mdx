@@ -485,10 +485,11 @@ compose daemon).
 
 `requested` is the `version` a `package://` worker declares in `worker-compose.yaml`, after variable
 expansion: a tag such as `latest`, a semver range, or an exact version. It is the selector that
-`compose::update worker=<name>` resolves again, so the release it selects now is the version a plain
-update moves to; a release outside it needs `worker=<name>@<selector>`. `version` is present only
-while the lock holds a result for that selector, so a worker whose selector changed in the file
-reports no `version` until Compose resolves it. A `path://` worker reports no `requested`.
+`compose::update worker=<name>` resolves again, so the release it selects now is the version that
+call moves to; a release outside it needs `worker=<name>@<selector>`. A `compose::update` without
+`worker` or `workers` resolves `latest` for every package instead. `version` is present only while
+the lock holds a result for that selector, so a worker whose selector changed in the file reports no
+`version` until Compose resolves it. A `path://` worker reports no `requested`.
 
 The response also carries the platform Compose resolves packages for. `target` is the target triple
 the daemon sends first as `target` to the registry's `POST /resolve`. `targets` lists every triple
@@ -496,7 +497,7 @@ the host runs, preferred first: a static musl build of iii on a glibc Linux host
 `x86_64-unknown-linux-musl`, then `x86_64-unknown-linux-gnu`, and Compose resolves for the second
 only when the registry answers `unsupported_platform` and lists it as available. A client that
 checks the registry for updates itself can follow the same order to find a build Compose would
-install.
+install. Both fields are absent when iii has no target triple for the platform it was built for.
 
 ```json
 {
@@ -752,7 +753,7 @@ Each key under `containers` is the name the worker registers under.
 | Field             | Type           | Default              | Description                                                                                                |
 | ----------------- | -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `worker`          | string         | required             | `path://<dir>` or `package://<name>`. A package may name its registry: `package://<registry-host>/<name>`. |
-| `version`         | string         | absent               | Version range. Required for `package://`.                                                                  |
+| `version`         | string         | absent               | Version range. Required for `package://`, and not empty.                                                   |
 | `start_after`     | array          | empty                | Workers that must start first (ie. a worker dependency). Self-dependencies and cycles are rejected.        |
 | `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this worker owns.                                        |
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration; a mapping whose `name` changes is replaced whole.              |

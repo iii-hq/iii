@@ -1004,6 +1004,28 @@ containers:
 }
 
 #[test]
+fn an_empty_version_is_no_version_for_a_package_worker() {
+    for version in ["''", "'  '", "${III_COMPOSE_EMPTY_VERSION_TEST_UNSET:-}"] {
+        assert_eq!(
+            code(&format!(
+                "containers:\n  api:\n    worker: package://workers.iii.dev/api\n    version: {version}\n"
+            )),
+            "MISSING_VERSION_FOR_PACKAGE",
+            "version: {version}"
+        );
+    }
+}
+
+#[test]
+fn a_path_worker_still_ignores_an_empty_version() {
+    let file = parse(
+        "containers:\n  api:\n    worker: path://.\n    version: ''\n    scripts:\n      run: ./api\n",
+    )
+    .unwrap();
+    assert_eq!(file.containers["api"].requested(), None);
+}
+
+#[test]
 fn orders_a_diamond_graph_dependencies_first() {
     let file = parse(
         r#"
