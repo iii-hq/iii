@@ -2,9 +2,6 @@
 //!
 //! Requires a running III engine. Set III_URL and III_HTTP_URL, or use localhost defaults.
 
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
-
 mod common;
 
 use std::time::Duration;
@@ -12,7 +9,6 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use iii_sdk::RegisterFunction;
-use iii_sdk::protocol::RegisterTriggerInput;
 
 async fn get_health_status(http_url: &str) -> u16 {
     common::http_client()
@@ -24,7 +20,7 @@ async fn get_health_status(http_url: &str) -> u16 {
 }
 
 #[tokio::test]
-async fn register_healthcheck_function_and_trigger() {
+async fn register_healthcheck_function_and_route() {
     let iii = common::shared_iii();
 
     let fn_ref = iii.register_function(
@@ -44,20 +40,10 @@ async fn register_healthcheck_function_and_trigger() {
     let status_before = get_health_status(&common::engine_http_url()).await;
     assert_eq!(
         status_before, 404,
-        "expected 404 before trigger registration"
+        "expected 404 before the route is observed"
     );
 
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "http".to_string(),
-            fn_ref.id.clone(),
-            json!({
-                "api_path": "health",
-                "http_method": "GET",
-                "description": "Healthcheck endpoint",
-            }),
-        ))
-        .expect("register trigger");
+    let route = common::route(iii, "GET", "/health", &fn_ref.id).await;
 
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -81,8 +67,8 @@ async fn register_healthcheck_function_and_trigger() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
+    route.dispose().await.expect("dispose");
     fn_ref.unregister();
-    trigger.unregister();
 
     common::settle().await;
 

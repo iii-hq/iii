@@ -12,8 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
+use iii_sdk::CallRequest;
 use iii_sdk::RegisterFunction;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::FunctionInfo;
 
 fn unique_function_id(prefix: &str) -> String {
@@ -140,8 +140,8 @@ async fn delivers_events_to_external_http_function() {
     );
     common::settle().await;
 
-    let (trigger_result, webhook_result) = tokio::join!(
-        iii.trigger(TriggerRequest {
+    let (call_result, webhook_result) = tokio::join!(
+        iii.call(CallRequest {
             function_id: function_id.clone(),
             payload: payload.clone(),
             action: None,
@@ -149,7 +149,7 @@ async fn delivers_events_to_external_http_function() {
         }),
         probe.wait_for_webhook(Duration::from_secs(7)),
     );
-    trigger_result.expect("invocation failed");
+    call_result.expect("invocation failed");
     let webhook = webhook_result.expect("no webhook received");
 
     assert_eq!(webhook.method, "POST");
@@ -181,7 +181,7 @@ async fn registers_and_unregisters_external_http_function() {
 
     let found = {
         let list_result = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::list".to_string(),
                 payload: json!({}),
                 action: None,
@@ -205,7 +205,7 @@ async fn registers_and_unregisters_external_http_function() {
 
     let gone = {
         let list_result = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::functions::list".to_string(),
                 payload: json!({}),
                 action: None,
@@ -249,8 +249,8 @@ async fn delivers_events_with_custom_headers() {
     );
     common::settle().await;
 
-    let (trigger_result, webhook_result) = tokio::join!(
-        iii.trigger(TriggerRequest {
+    let (call_result, webhook_result) = tokio::join!(
+        iii.call(CallRequest {
             function_id: function_id.clone(),
             payload: payload.clone(),
             action: None,
@@ -258,7 +258,7 @@ async fn delivers_events_with_custom_headers() {
         }),
         probe.wait_for_webhook(Duration::from_secs(7)),
     );
-    trigger_result.expect("invocation failed");
+    call_result.expect("invocation failed");
     let webhook = webhook_result.expect("no webhook received");
 
     assert_eq!(webhook.method, "POST");
@@ -307,14 +307,14 @@ async fn delivers_events_to_multiple_external_functions() {
     );
     common::settle().await;
 
-    let (trigger_a_result, trigger_b_result, webhook_a_result, webhook_b_result) = tokio::join!(
-        iii.trigger(TriggerRequest {
+    let (call_a_result, call_b_result, webhook_a_result, webhook_b_result) = tokio::join!(
+        iii.call(CallRequest {
             function_id: function_id_a.clone(),
             payload: payload_a.clone(),
             action: None,
             timeout_ms: None,
         }),
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: function_id_b.clone(),
             payload: payload_b.clone(),
             action: None,
@@ -323,8 +323,8 @@ async fn delivers_events_to_multiple_external_functions() {
         probe_a.wait_for_webhook(Duration::from_secs(7)),
         probe_b.wait_for_webhook(Duration::from_secs(7)),
     );
-    trigger_a_result.expect("invocation a failed");
-    trigger_b_result.expect("invocation b failed");
+    call_a_result.expect("invocation a failed");
+    call_b_result.expect("invocation b failed");
     let webhook_a = webhook_a_result.expect("no webhook received for a");
     let webhook_b = webhook_b_result.expect("no webhook received for b");
 
@@ -356,8 +356,8 @@ async fn stops_delivering_events_after_unregister() {
     );
     common::settle().await;
 
-    let (trigger_result, webhook_result) = tokio::join!(
-        iii.trigger(TriggerRequest {
+    let (call_result, webhook_result) = tokio::join!(
+        iii.call(CallRequest {
             function_id: function_id.clone(),
             payload: payload_before.clone(),
             action: None,
@@ -365,7 +365,7 @@ async fn stops_delivering_events_after_unregister() {
         }),
         probe.wait_for_webhook(Duration::from_secs(7)),
     );
-    trigger_result.expect("invocation before unregister failed");
+    call_result.expect("invocation before unregister failed");
     let webhook_before = webhook_result.expect("no webhook before unregister");
     assert_eq!(
         webhook_before.body.as_ref().unwrap()["phase"],
@@ -376,7 +376,7 @@ async fn stops_delivering_events_after_unregister() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id,
             payload: payload_after,
             action: None,
@@ -414,8 +414,8 @@ async fn delivers_events_using_put_method() {
     );
     common::settle().await;
 
-    let (trigger_result, webhook_result) = tokio::join!(
-        iii.trigger(TriggerRequest {
+    let (call_result, webhook_result) = tokio::join!(
+        iii.call(CallRequest {
             function_id: function_id.clone(),
             payload: payload.clone(),
             action: None,
@@ -423,7 +423,7 @@ async fn delivers_events_using_put_method() {
         }),
         probe.wait_for_webhook(Duration::from_secs(7)),
     );
-    trigger_result.expect("invocation failed");
+    call_result.expect("invocation failed");
     let webhook = webhook_result.expect("no webhook received");
 
     assert_eq!(webhook.method, "PUT");

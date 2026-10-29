@@ -1,21 +1,35 @@
-//! `FunctionRef::is_observed()` is the emit fast path: one atomic load and
-//! no allocation. A test binary of its own, with a counting allocator.
+//! The fast paths a source asks before building an event: `is_observed()` is
+//! one atomic load, and `is_observed_for(&call)` on a function matched by
+//! keys one hash lookup per call key; neither allocates. A test binary of its
+//! own, with an allocator that counts the allocations of each thread.
+
+mod common;
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    sync::atomic::{AtomicUsize, Ordering},
+    cell::Cell,
+    time::{Duration, Instant},
 };
 
-use iii_sdk::{Error, IIIClient, RegisterFunction};
-use serde_json::Value;
+use iii_helpers::observability::OtelConfig;
+use iii_sdk::runtime::WorkerMetadata;
+use iii_sdk::{
+    Call, Error, IIIClient, InitOptions, Match, RegisterFunction, WorkerIdentityMode,
+    register_worker,
+};
+use serde_json::{Value, json};
+
+use common::mock_engine::MockEngine;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATIONS.with(|count| count.set(count.get() + 1));
         // SAFETY: forwarded unchanged to the system allocator.
         unsafe { System.alloc(layout) }
     }
@@ -29,6 +43,23 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
+fn allocations() -> usize {
+    ALLOCATIONS.with(Cell::get)
+}
+
+/// Allocations `f` made on this thread, with a live counter as the control.
+fn allocations_of(f: impl FnOnce()) -> usize {
+    let before = allocations();
+    f();
+    let made = allocations() - before;
+
+    let before = allocations();
+    let boxed = std::hint::black_box(Box::new(42u64));
+    assert!(allocations() > before, "the counter is live");
+    drop(boxed);
+    made
+}
+
 #[test]
 fn is_observed_does_not_allocate() {
     let iii = IIIClient::new("ws://127.0.0.1:1");
@@ -36,23 +67,98 @@ fn is_observed_does_not_allocate() {
         "alloc::f",
         RegisterFunction::new(|input: Value| Ok::<_, Error>(input)),
     );
-    let before = ALLOCATIONS.load(Ordering::SeqCst);
     let mut observed = 0;
-    for _ in 0..10_000 {
-        if std::hint::black_box(&function).is_observed() {
-            observed += 1;
+    let made = allocations_of(|| {
+        for _ in 0..10_000 {
+            if std::hint::black_box(&function).is_observed() {
+                observed += 1;
+            }
         }
-    }
-    let after = ALLOCATIONS.load(Ordering::SeqCst);
+    });
     assert_eq!(observed, 0);
-    assert_eq!(after - before, 0, "is_observed() allocated");
+    assert_eq!(made, 0, "is_observed() allocated");
+}
 
-    // Positive control: the counter does see an allocation.
-    let before = ALLOCATIONS.load(Ordering::SeqCst);
-    let boxed = std::hint::black_box(Box::new(42u64));
-    assert!(
-        ALLOCATIONS.load(Ordering::SeqCst) > before,
-        "the counter is live"
+#[tokio::test]
+async fn a_key_miss_does_not_allocate() {
+    let mock = MockEngine::start().await;
+    let iii = register_worker(
+        mock.url(),
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: "alloc".into(),
+                ..WorkerMetadata::default()
+            }),
+            otel: Some(OtelConfig {
+                enabled: Some(false),
+                ..OtelConfig::default()
+            }),
+            identity: WorkerIdentityMode::Explicit,
+            ..InitOptions::default()
+        },
     );
-    drop(boxed);
+    iii.on_observer_match_for(
+        "cron::on-tick",
+        Match::keys(
+            |obs| obs.args_value()["expression"].as_str().into(),
+            |call| call.input["expression"].as_str().into(),
+        ),
+    );
+    let on_tick = iii.register_function(
+        "cron::on-tick",
+        RegisterFunction::new(|tick: Value| Ok::<_, Error>(tick)).private(),
+    );
+    mock.wait_for(
+        |m| {
+            m.iter()
+                .any(|f| f["function_id"] == "engine::workers::register")
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+    mock.send_to_client(json!({
+        "type": "workerregistered", "worker_id": "w-1",
+        "features": ["observe.v1", "observe.v2", "local-dispatch.v1"]
+    }));
+    mock.wait_for(
+        |m| m.iter().any(|f| f["type"] == "registerfunction"),
+        Duration::from_secs(5),
+    )
+    .await;
+    mock.send_to_client(json!({
+        "type": "functionregistered", "id": "cron::on-tick", "namespace": "default",
+        "revision": 1, "local_dispatch": true,
+        "observers": [{ "id": "nine", "args": { "expression": "0 0 9 * * * *" },
+                        "filters": {}, "target": "reports::daily", "capture": ["input"],
+                        "on": "success" }]
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !on_tick.is_observed() {
+        assert!(
+            Instant::now() < deadline,
+            "the observer never became active"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let filed = Call {
+        input: json!({ "expression": "0 0 9 * * * *" }),
+        ..Call::default()
+    };
+    let other = Call {
+        input: json!({ "expression": "0 */5 * * * * *" }),
+        ..Call::default()
+    };
+    assert!(on_tick.is_observed_for(&filed), "the filed key is observed");
+    let mut observed = 0;
+    let made = allocations_of(|| {
+        for _ in 0..10_000 {
+            if std::hint::black_box(&on_tick).is_observed_for(&other) {
+                observed += 1;
+            }
+        }
+    });
+    assert_eq!(observed, 0);
+    assert_eq!(made, 0, "is_observed_for() allocated on a key miss");
+    iii.shutdown_async().await;
 }

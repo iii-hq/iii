@@ -1,12 +1,12 @@
-//! observe against a real engine (`III_URL`): the routed path (phase 1) and
-//! hooks, local dispatch, reports and owner delivery (phase 2).
+//! observe against a real engine (`III_URL`): delivery of routed calls
+//! (phase 1), and hooks, local dispatch, reports and calls through an
+//! observer (phase 2).
 //!
 //! Requires a running III engine. Set III_URL, or use the default.
 
 mod common;
 
 use std::{
-    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -16,12 +16,12 @@ use serde_json::{Value, json};
 
 use common::{engine_ws_url, proxy::CountingProxy};
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::protocol::TriggerRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    Capture, Dispatch, Error, Filter, IIIClient, InitOptions, Observe, ObserveHandler,
-    ObserveRejection, Observed, Observer, ObserverOptions, ObserverState, On, RegisterFunction,
-    Source, TriggerAction, WorkerIdentityMode, current_invocation, register_worker, scope,
+    AddedHook, Call, CallAction, CallRequest, Capture, Dispatch, Error, Filter, IIIClient,
+    InitOptions, Match, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState, On,
+    RegisterFunction, RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker,
+    scope,
 };
 
 const WAIT: Duration = Duration::from_secs(10);
@@ -117,11 +117,11 @@ fn stable(mut envelope: Value) -> Value {
     envelope
 }
 
-fn trigger_req(function_id: &str, payload: Value) -> TriggerRequest {
-    TriggerRequest::new(function_id, payload)
+fn call_req(function_id: &str, payload: Value) -> CallRequest {
+    CallRequest::new(function_id, payload)
 }
 
-// ═════════════════════════ phase 1: the routed path ══════════════════════
+// ═════════════════════════ phase 1: routed calls ═════════════════════════
 
 #[tokio::test]
 async fn routed_calls_activate_the_matching_observers() {
@@ -151,13 +151,13 @@ async fn routed_calls_activate_the_matching_observers() {
     let caller = client(&format!("checkout-{id}")).await;
     for amount in [100, 900] {
         caller
-            .trigger(trigger_req(&charge, json!({ "amount": amount })))
+            .call(call_req(&charge, json!({ "amount": amount })))
             .await
             .unwrap();
     }
     // another caller: the caller filter says no
     observer
-        .trigger(trigger_req(&charge, json!({ "amount": 950 })))
+        .call(call_req(&charge, json!({ "amount": 950 })))
         .await
         .unwrap();
     let got = inbox.wait(1).await;
@@ -210,7 +210,7 @@ async fn on_error_delivers_the_error_with_its_capture() {
         .unwrap()
         .unwrap();
     let _ = owner
-        .trigger(trigger_req(&charge, json!({ "amount": 1 })).dispatch(Dispatch::Remote))
+        .call(call_req(&charge, json!({ "amount": 1 })).dispatch(Dispatch::Remote))
         .await
         .unwrap_err();
     inbox.wait(1).await;
@@ -254,9 +254,9 @@ async fn targets_keep_observers_pending_and_self_targets_fail() {
 }
 
 #[tokio::test]
-async fn args_on_an_auto_function_are_invalid() {
+async fn args_on_a_function_without_args_format_are_invalid() {
     let id = uid();
-    let (source, target) = (format!("it{id}::auto"), format!("it{id}::t"));
+    let (source, target) = (format!("it{id}::plain"), format!("it{id}::t"));
     let iii = client(&format!("w-{id}")).await;
     iii.register_function(&source, RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
     iii.register_function(&target, Inbox::default().function());
@@ -292,7 +292,7 @@ async fn max_fires_and_dispose_end_an_observer() {
 
     // engine::observers::get shows the observer's filters, normalized and unchanged.
     let got = iii
-        .trigger(trigger_req(
+        .call(call_req(
             "engine::observers::get",
             json!({ "id": once.id() }),
         ))
@@ -303,7 +303,7 @@ async fn max_fires_and_dispose_end_an_observer() {
     assert_eq!(&shown["filters"], normalized.normalized(), "{got:#}");
 
     for n in 0..3 {
-        iii.trigger(trigger_req(&source, json!({ "n": n })).dispatch(Dispatch::Remote))
+        iii.call(call_req(&source, json!({ "n": n })).dispatch(Dispatch::Remote))
             .await
             .unwrap();
     }
@@ -323,7 +323,7 @@ async fn max_fires_and_dispose_end_an_observer() {
         .unwrap();
     open.dispose().await.unwrap();
     assert_eq!(open.state(), ObserverState::Disposed);
-    iii.trigger(trigger_req(&source, json!({ "n": 9 })).dispatch(Dispatch::Remote))
+    iii.call(call_req(&source, json!({ "n": 9 })).dispatch(Dispatch::Remote))
         .await
         .unwrap();
     settle().await;
@@ -361,7 +361,7 @@ async fn caller_propagates_from_handlers_and_through_scope() {
                 async move {
                     let ctx = current_invocation();
                     tokio::spawn(scope(ctx, async move {
-                        caller.trigger(trigger_req(&probe, json!({}))).await
+                        caller.call(call_req(&probe, json!({}))).await
                     }))
                     .await
                     .unwrap()?;
@@ -372,7 +372,7 @@ async fn caller_propagates_from_handlers_and_through_scope() {
     );
     settle().await;
     caller
-        .trigger(trigger_req(&outer, json!({})).dispatch(Dispatch::Remote))
+        .call(call_req(&outer, json!({})).dispatch(Dispatch::Remote))
         .await
         .unwrap();
     let ctx = seen.lock().unwrap()[0].clone();
@@ -407,7 +407,7 @@ async fn an_expired_observer_is_disposed() {
         .unwrap()
         .unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
-    iii.trigger(trigger_req(&source, json!({})).dispatch(Dispatch::Remote))
+    iii.call(call_req(&source, json!({})).dispatch(Dispatch::Remote))
         .await
         .unwrap();
     until("expiry", || handle.state() == ObserverState::Disposed).await;
@@ -449,7 +449,7 @@ async fn observers_survive_a_reconnect_with_the_same_id() {
         .unwrap()
         .unwrap();
     let listed = owner
-        .trigger(trigger_req(
+        .call(call_req(
             "engine::observers::get",
             json!({ "id": handle.id() }),
         ))
@@ -464,9 +464,7 @@ async fn observers_survive_a_reconnect_with_the_same_id() {
             "no activation after the reconnect"
         );
         owner
-            .trigger(
-                trigger_req(&source, json!({ "after": "reconnect" })).dispatch(Dispatch::Remote),
-            )
+            .call(call_req(&source, json!({ "after": "reconnect" })).dispatch(Dispatch::Remote))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -500,7 +498,7 @@ async fn the_loop_guard_stops_a_cycle() {
                     .unwrap()
                     .push(current_invocation().map_or(0, |c| c.observe_depth));
                 async move {
-                    iii.trigger(trigger_req(&source, json!({})).dispatch(Dispatch::Remote))
+                    iii.call(call_req(&source, json!({})).dispatch(Dispatch::Remote))
                         .await?;
                     Ok::<_, Error>(Value::Null)
                 }
@@ -512,7 +510,7 @@ async fn the_loop_guard_stops_a_cycle() {
         .await
         .unwrap()
         .unwrap();
-    iii.trigger(trigger_req(&source, json!({})).dispatch(Dispatch::Remote))
+    iii.call(call_req(&source, json!({})).dispatch(Dispatch::Remote))
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -522,7 +520,7 @@ async fn the_loop_guard_stops_a_cycle() {
     iii.shutdown_async().await;
 }
 
-// ═════════════════ phase 2: local dispatch, hooks, owner delivery ═════════
+// ═════════════ phase 2: local dispatch, hooks, calls through observers ═════
 
 /// The equivalence suite: the same calls, routed through the engine and run
 /// in-process, give identical observer-visible envelopes (ids, timings and
@@ -576,10 +574,10 @@ async fn local_and_remote_calls_deliver_the_same_envelope() {
     ] {
         let matches = payload["n"].as_i64().unwrap() >= 10;
         for dispatch in [Dispatch::Remote, Dispatch::Auto] {
-            let request = trigger_req(&source, payload.clone())
+            let request = call_req(&source, payload.clone())
                 .metadata(json!({ "tenant": "acme" }))
                 .dispatch(dispatch);
-            let _ = owner.trigger(request).await;
+            let _ = owner.call(request).await;
             if matches {
                 expected += 1;
                 inbox.wait(expected).await;
@@ -609,9 +607,7 @@ async fn local_and_remote_calls_deliver_the_same_envelope() {
 /// and the loop yields, so nothing sent during the loop goes uncounted.
 async fn local_calls(iii: &IIIClient, function_id: &str, n: u64) {
     for i in 0..n {
-        iii.trigger(trigger_req(function_id, json!(i)))
-            .await
-            .unwrap();
+        iii.call(call_req(function_id, json!(i))).await.unwrap();
         if i % 1_000 == 0 {
             tokio::task::yield_now().await;
         }
@@ -683,7 +679,7 @@ async fn deep_recursion_returns() {
                     if n == 0 {
                         return Ok::<_, Error>(json!("done"));
                     }
-                    Box::pin(owner.trigger(trigger_req(&source, json!(n - 1)))).await
+                    Box::pin(owner.call(call_req(&source, json!(n - 1)))).await
                 }
             }
         }),
@@ -691,9 +687,9 @@ async fn deep_recursion_returns() {
     until("local dispatch", || function.local_dispatch_active()).await;
     let out = tokio::time::timeout(
         Duration::from_secs(60),
-        owner.trigger(TriggerRequest {
+        owner.call(CallRequest {
             timeout_ms: Some(60_000),
-            ..trigger_req(&source, json!(1_000))
+            ..call_req(&source, json!(1_000))
         }),
     )
     .await
@@ -726,7 +722,7 @@ async fn every_local_call_after_ready_is_activated() {
     const N: usize = 500;
     for n in 0..N {
         owner
-            .trigger(trigger_req(&source, json!({ "n": n })))
+            .call(call_req(&source, json!({ "n": n })))
             .await
             .unwrap();
     }
@@ -738,11 +734,12 @@ async fn every_local_call_after_ready_is_activated() {
     }
 }
 
-/// An owner-delivered source: routes each event to the observers of its
-/// topic, and answers a request through `call`.
+/// A source with args: each observer names a topic, the added hook rejects
+/// one, and the match hook gives each event to its topic's observers. With
+/// `answer`, a deliver hook answers each request through its topic's first
+/// observer instead.
 #[derive(Clone, Default)]
 struct Topics {
-    by_topic: Arc<Mutex<HashMap<String, Vec<Observer>>>>,
     added: Arc<Mutex<Vec<Value>>>,
     removed: Arc<Mutex<Vec<String>>>,
 }
@@ -753,89 +750,78 @@ struct TopicArgs {
     topic: String,
 }
 
-impl Topics {
-    fn observers(&self, topic: &str) -> Vec<Observer> {
-        self.by_topic
-            .lock()
-            .unwrap()
-            .get(topic)
-            .cloned()
-            .unwrap_or_default()
-    }
-}
-
 #[async_trait]
-impl ObserveHandler for Topics {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+impl AddedHook for Topics {
+    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         self.added.lock().unwrap().push(obs.args_value().clone());
         let TopicArgs { topic } = obs.args()?;
         if topic == "forbidden" {
             return Err(ObserveRejection::new("TOPIC_FORBIDDEN", "not this one"));
         }
-        self.by_topic
-            .lock()
-            .unwrap()
-            .entry(topic)
-            .or_default()
-            .push(obs.clone());
         Ok(())
-    }
-
-    async fn on_observer_removed(&self, obs: &Observer) {
-        self.removed.lock().unwrap().push(obs.id().to_string());
-        for list in self.by_topic.lock().unwrap().values_mut() {
-            list.retain(|o| o != obs);
-        }
     }
 }
 
-async fn topics_owner(name: &str, source: &str, topics: &Topics) -> IIIClient {
-    let owner = client(name).await;
-    owner.register_function(
-        source,
-        RegisterFunction::new_async({
-            let topics = topics.clone();
-            move |event: Value| {
-                let topics = topics.clone();
+#[async_trait]
+impl RemovedHook for Topics {
+    async fn on_removed(&self, obs: Observer) {
+        self.removed.lock().unwrap().push(obs.id().to_string());
+    }
+}
+
+async fn topics_host(name: &str, source: &str, topics: &Topics, answer: bool) -> IIIClient {
+    let host = client(name).await;
+    host.on_observer_added_for(source, topics.clone())
+        .on_observer_removed_for(source, topics.clone())
+        .on_observer_match_for(
+            source,
+            Match::keys(
+                |obs| obs.args_value()["topic"].as_str().into(),
+                |call| call.input["topic"].as_str().into(),
+            ),
+        );
+    if answer {
+        host.on_observer_deliver_for(source, {
+            let host = host.clone();
+            move |call: Call, observers: Vec<Observer>| {
+                let host = host.clone();
                 async move {
-                    let topic = event["topic"].as_str().unwrap_or_default().to_string();
-                    let observers = topics.observers(&topic);
-                    if event["call"] == json!(true) {
-                        let obs = observers.first().ok_or("no route")?;
-                        return obs.call::<Value>(event).await;
+                    let obs = observers.first().ok_or("no route")?;
+                    if !obs.matches(&call) {
+                        return Err(Error::Remote {
+                            code: "ROUTE_FILTERED".into(),
+                            message: "the route's filters say no".into(),
+                            stacktrace: None,
+                        });
                     }
-                    let mut emitted = 0;
-                    for obs in observers {
-                        if obs.emit(&event)? {
-                            emitted += 1;
-                        }
-                    }
-                    Ok::<_, Error>(json!({ "emitted": emitted }))
+                    host.call(CallRequest::observer(obs, call.input.clone()))
+                        .await
                 }
             }
-        })
-        .observe(
-            Observe::owner()
-                .args_format::<TopicArgs>()
-                .handler(topics.clone()),
-        ),
+        });
+    }
+    host.register_function(
+        source,
+        RegisterFunction::new(|event: Value| Ok::<_, Error>(event))
+            .args_format::<TopicArgs>()
+            .private(),
     );
-    owner
+    host
 }
 
 #[tokio::test]
-async fn owners_get_validated_args_route_by_them_and_can_reject() {
+async fn hosts_get_validated_args_route_by_them_and_can_reject() {
     let id = uid();
     let source = format!("it{id}::topics");
     let topics = Topics::default();
-    let owner = topics_owner(&format!("owner-{id}"), &source, &topics).await;
+    let host = topics_host(&format!("host-{id}"), &source, &topics, false).await;
     let observer = client(&format!("observer-{id}")).await;
     let (a, b) = (Inbox::default(), Inbox::default());
     observer.register_function(format!("it{id}::a"), a.function());
     observer.register_function(format!("it{id}::b"), b.function());
     settle().await;
 
-    // A missing required arg fails in the engine, before the owner is asked.
+    // A missing required arg fails in the engine, before the host is asked.
     let missing = observer.observe(
         Source::function(&source).args(json!({})),
         format!("it{id}::a"),
@@ -850,7 +836,7 @@ async fn owners_get_validated_args_route_by_them_and_can_reject() {
         "the hook never ran"
     );
 
-    // The owner's own rejection reaches ready().
+    // The added hook's rejection reaches ready().
     let rejected = observer.observe(
         Source::function(&source).args(json!({ "topic": "forbidden" })),
         format!("it{id}::a"),
@@ -879,38 +865,26 @@ async fn owners_get_validated_args_route_by_them_and_can_reject() {
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        topics
-            .added
-            .lock()
-            .unwrap()
-            .contains(&json!({ "topic": "a" }))
-    );
 
-    // Emitted right after ready(): the owner indexed the observer before its ack.
-    let out = owner
-        .trigger(trigger_req(&source, json!({ "topic": "a", "n": 1 })))
-        .await
-        .unwrap();
-    assert_eq!(out, json!({ "emitted": 1 }));
-    let out = owner
-        .trigger(trigger_req(&source, json!({ "topic": "b", "n": 1 })))
-        .await
-        .unwrap();
-    assert_eq!(out, json!({ "emitted": 0 }), "b's filters say no");
-    owner
-        .trigger(trigger_req(&source, json!({ "topic": "b", "n": 2 })))
-        .await
-        .unwrap();
+    // Called right after ready(): the observer was active before its ack.
+    for event in [
+        json!({ "topic": "a", "n": 1 }),
+        json!({ "topic": "b", "n": 1 }),
+        json!({ "topic": "b", "n": 2 }),
+    ] {
+        let out = host.call(call_req(&source, event.clone())).await.unwrap();
+        assert_eq!(out, event, "the caller gets the handler's return value");
+    }
     let got_a = a.wait(1).await;
     let got_b = b.wait(1).await;
     settle().await;
-    assert_eq!((a.len(), b.len()), (1, 1));
+    assert_eq!((a.len(), b.len()), (1, 1), "b's filters said no to n: 1");
     assert_eq!(got_a[0]["input"], json!({ "topic": "a", "n": 1 }));
+    assert_eq!(got_a[0]["output"], json!({ "topic": "a", "n": 1 }));
     assert_eq!(got_b[0]["input"], json!({ "topic": "b", "n": 2 }));
-    assert_eq!(got_a[0]["caller"]["worker_name"], format!("owner-{id}"));
+    assert_eq!(got_a[0]["caller"]["worker_name"], format!("host-{id}"));
 
-    // dispose → on_observer_removed
+    // dispose → the removed hook
     to_a.dispose().await.unwrap();
     until("on_observer_removed", || {
         topics
@@ -920,17 +894,17 @@ async fn owners_get_validated_args_route_by_them_and_can_reject() {
             .contains(&to_a.id().to_string())
     })
     .await;
-    for c in [owner, observer] {
+    for c in [host, observer] {
         c.shutdown_async().await;
     }
 }
 
 #[tokio::test]
-async fn owner_calls_return_the_targets_result() {
+async fn calls_through_an_observer_return_the_targets_result() {
     let id = uid();
     let source = format!("it{id}::requests");
     let topics = Topics::default();
-    let owner = topics_owner(&format!("http-{id}"), &source, &topics).await;
+    let host = topics_host(&format!("http-{id}"), &source, &topics, true).await;
     let users = client(&format!("users-{id}")).await;
     let handler = format!("it{id}::get-user");
     users.register_function(
@@ -952,10 +926,10 @@ async fn owner_calls_return_the_targets_result() {
         .unwrap()
         .unwrap();
 
-    let res = owner
-        .trigger(trigger_req(
+    let res = host
+        .call(call_req(
             &source,
-            json!({ "topic": "users", "call": true, "tenant": "acme", "path": "/users/42" }),
+            json!({ "topic": "users", "tenant": "acme", "path": "/users/42" }),
         ))
         .await
         .unwrap();
@@ -967,50 +941,67 @@ async fn owner_calls_return_the_targets_result() {
         "metadata sidecar"
     );
 
-    let err = owner
-        .trigger(trigger_req(
+    let err = host
+        .call(call_req(
             &source,
-            json!({ "topic": "users", "call": true, "tenant": "other" }),
+            json!({ "topic": "users", "tenant": "other" }),
         ))
         .await
         .unwrap_err();
-    assert_eq!(err.invocation_error().unwrap().code, "FILTERS_NOT_MATCHED");
+    assert_eq!(err.invocation_error().unwrap().code, "ROUTE_FILTERED");
 
-    let obs = topics.observers("users")[0].clone();
-    route.dispose().await.unwrap();
-    until("removal", || !obs.is_active()).await;
-    let err = obs
-        .call::<Value>(json!({ "tenant": "acme" }))
+    // Only the host of the observer's function may call through it.
+    let obs = host.observers(&source)[0].clone();
+    let err = users
+        .call(CallRequest::observer(&obs, json!({ "tenant": "acme" })))
         .await
         .unwrap_err();
-    assert_eq!(err.invocation_error().unwrap().code, "OBSERVER_NOT_ACTIVE");
-    for c in [owner, users] {
+    assert_eq!(err.invocation_error().unwrap().code, "NOT_FUNCTION_OWNER");
+
+    route.dispose().await.unwrap();
+    until("removal", || !obs.is_active()).await;
+    let err = host
+        .call(CallRequest::observer(&obs, json!({ "tenant": "acme" })))
+        .await
+        .unwrap_err();
+    let code = err.invocation_error().unwrap().code.clone();
+    assert!(
+        code == "OBSERVER_NOT_ACTIVE" || code == "OBSERVER_NOT_FOUND",
+        "{code}"
+    );
+    for c in [host, users] {
         c.shutdown_async().await;
     }
 }
 
 #[tokio::test]
-async fn auto_functions_refuse_emit_and_call() {
+async fn the_host_sees_its_observers_and_their_filters() {
     let id = uid();
     let (source, target) = (format!("it{id}::plain"), format!("it{id}::t"));
-    let owner = client(&format!("owner-{id}")).await;
+    let host = client(&format!("host-{id}")).await;
     let function =
-        owner.register_function(&source, RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
-    owner.register_function(&target, Inbox::default().function());
-    let handle = owner.observe(Source::function(&source), &target);
+        host.register_function(&source, RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
+    host.register_function(&target, Inbox::default().function());
+    let handle = host.observe(
+        Source::function(&source).filters(json!({ "input.n": { "$gt": 1 } })),
+        &target,
+    );
     tokio::time::timeout(WAIT, handle.ready())
         .await
         .unwrap()
         .unwrap();
-    until("the observer reaches its owner", || function.is_observed()).await;
+    until("the observer reaches its host", || function.is_observed()).await;
     let obs = function.observers()[0].clone();
     assert_eq!(obs.id(), handle.id());
     assert_eq!(obs.target(), target);
-    let err = obs.emit(&json!({})).unwrap_err();
-    assert_eq!(err.invocation_error().unwrap().code, "NOT_OWNER_DELIVERED");
-    let err = obs.call::<Value>(json!({})).await.unwrap_err();
-    assert_eq!(err.invocation_error().unwrap().code, "NOT_OWNER_DELIVERED");
-    owner.shutdown_async().await;
+    let call = |n: i64| Call {
+        input: json!({ "n": n }),
+        output: Some(json!({ "n": n })),
+        ..Call::default()
+    };
+    assert!(obs.matches(&call(2)));
+    assert!(!obs.matches(&call(1)));
+    host.shutdown_async().await;
 }
 
 #[tokio::test]
@@ -1042,7 +1033,7 @@ async fn reconnect_keeps_serving_locally_and_flushes_reports() {
         "the call below is made while disconnected"
     );
     let out = owner
-        .trigger(trigger_req(&source, json!({ "while": "offline" })))
+        .call(call_req(&source, json!({ "while": "offline" })))
         .await
         .unwrap();
     assert_eq!(
@@ -1079,10 +1070,10 @@ async fn void_local_calls_keep_their_context() {
     );
     until("local dispatch", || function.local_dispatch_active()).await;
     owner
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: source.clone(),
             payload: json!({}),
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await

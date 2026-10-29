@@ -2200,7 +2200,6 @@ dependencies = [
 name = "iii-example"
 version = "0.0.0"
 dependencies = [
- "async-trait",
  "iii-helpers",
  "iii-sdk",
  "reqwest 0.12.28",

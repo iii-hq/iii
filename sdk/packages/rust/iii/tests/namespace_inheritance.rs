@@ -4,13 +4,8 @@
 //! is the frame the SDK actually emits.
 //!
 //! The rule these pin down: a namespace declared once, at registration, holds
-//! for everything the worker does afterwards. Before it, `register_trigger` and
-//! `trigger` both defaulted to the engine's `default` namespace, so a worker in
-//! `orders` registered a trigger that fired and resolved nothing, and its calls
-//! left its own namespace without saying so.
-
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
+//! for everything the worker does afterwards: its observers' sources and
+//! targets resolve in it, and its calls stay in it, unless they name another.
 
 mod common;
 
@@ -18,8 +13,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerAction, TriggerRequest};
-use iii_sdk::{IIIClient, InitOptions, register_worker};
+use iii_sdk::{CallAction, CallRequest, IIIClient, InitOptions, Source, Target, register_worker};
 
 use common::mock_engine::{MockEngine, message_type};
 
@@ -33,16 +27,30 @@ fn worker_in(mock: &MockEngine, namespace: Option<&str>) -> IIIClient {
     )
 }
 
-/// Finds the first frame of `kind` and returns its `namespace`, distinguishing
-/// "absent" from "present and null" by returning `Value::Null` only for the
-/// latter.
-async fn namespace_of(mock: &MockEngine, kind: &str) -> Option<Value> {
-    let frames = mock.wait_for_count(1, Duration::from_secs(3)).await;
-    let _ = frames;
-    mock.received_messages()
-        .into_iter()
-        .find(|m| message_type(m) == Some(kind))
-        .and_then(|m| m.get("namespace").cloned())
+/// The `observe` frame the worker sends once the engine said it supports
+/// observe.
+async fn observe_frame(mock: &MockEngine) -> Value {
+    mock.wait_for(
+        |messages| {
+            messages
+                .iter()
+                .any(|m| m["function_id"] == "engine::workers::register")
+        },
+        Duration::from_secs(3),
+    )
+    .await;
+    mock.send_to_client(json!({
+        "type": "workerregistered", "worker_id": "w-1",
+        "features": ["observe.v1", "observe.v2", "local-dispatch.v1"]
+    }));
+    mock.wait_for(
+        |messages| messages.iter().any(|m| message_type(m) == Some("observe")),
+        Duration::from_secs(3),
+    )
+    .await
+    .into_iter()
+    .find(|m| message_type(m) == Some("observe"))
+    .expect("an observe frame")
 }
 
 async fn invocation_namespace_of(mock: &MockEngine, function_id: &str) -> Option<Value> {
@@ -64,22 +72,19 @@ async fn invocation_namespace_of(mock: &MockEngine, function_id: &str) -> Option
 }
 
 #[tokio::test]
-async fn a_trigger_registers_in_the_workers_namespace() {
+async fn an_observer_resolves_in_the_workers_namespace() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, Some("orders"));
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "cron".to_string(),
-        "api::process".to_string(),
-        json!({}),
-    ))
-    .expect("registertrigger");
+    iii.observe("api::process", "api::audit");
 
+    let observe = observe_frame(&mock).await;
     assert_eq!(
-        namespace_of(&mock, "registertrigger").await,
-        Some(json!("orders")),
+        observe["source"]["namespace"],
+        json!("orders"),
         "an unset namespace means the worker's, not the engine's default"
     );
+    assert_eq!(observe["target"]["namespace"], json!("orders"));
 }
 
 #[tokio::test]
@@ -87,19 +92,17 @@ async fn an_explicit_namespace_still_wins() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, Some("orders"));
 
-    // Including `default`: a worker that means the engine's namespace says so,
-    // which is the only way to bind a trigger to a builtin from inside a
+    // Including `default`: a worker that means the engine's namespace says
+    // so, which is the only way to observe a function there from inside a
     // namespace.
-    iii.register_trigger(
-        RegisterTriggerInput::new("cron".to_string(), "state::sweep".to_string(), json!({}))
-            .in_namespace("default".to_string()),
-    )
-    .expect("registertrigger");
-
-    assert_eq!(
-        namespace_of(&mock, "registertrigger").await,
-        Some(json!("default"))
+    iii.observe(
+        Source::function("state::sweep").namespace("default"),
+        Target::function("api::audit").namespace("billing"),
     );
+
+    let observe = observe_frame(&mock).await;
+    assert_eq!(observe["source"]["namespace"], json!("default"));
+    assert_eq!(observe["target"]["namespace"], json!("billing"));
 }
 
 #[tokio::test]
@@ -107,16 +110,13 @@ async fn a_worker_without_a_namespace_is_unchanged() {
     let mock = MockEngine::start().await;
     let iii = worker_in(&mock, None);
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "cron".to_string(),
-        "api::process".to_string(),
-        json!({}),
-    ))
-    .expect("registertrigger");
+    iii.observe("api::process", "api::audit");
 
     // Absent, not null: the whole fleet runs this way today and the frame it
     // sends must not change shape.
-    assert_eq!(namespace_of(&mock, "registertrigger").await, None);
+    let observe = observe_frame(&mock).await;
+    assert!(observe["source"].get("namespace").is_none(), "{observe}");
+    assert!(observe["target"].get("namespace").is_none(), "{observe}");
 }
 
 #[tokio::test]
@@ -127,16 +127,16 @@ async fn an_invocation_stays_in_the_callers_namespace() {
     // Void: fire-and-forget, so the frame goes out without waiting on a reply
     // the mock will never send.
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "api::ping".to_string(),
             payload: json!({}),
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await;
 
     assert_eq!(
-        namespace_of(&mock, "invokefunction").await,
+        invocation_namespace_of(&mock, "api::ping").await,
         Some(json!("orders"))
     );
 }
@@ -147,10 +147,10 @@ async fn an_engine_invocation_stays_in_default() {
     let iii = worker_in(&mock, Some("orders"));
 
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "engine::channels::create".to_string(),
             payload: json!({}),
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await;
@@ -167,11 +167,11 @@ async fn an_explicit_namespace_wins_for_an_engine_invocation() {
     let iii = worker_in(&mock, Some("orders"));
 
     let _ = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "engine::channels::create".to_string(),
                 payload: json!({}),
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             }
             .namespace("sandbox"),
@@ -192,10 +192,10 @@ async fn a_configuration_invocation_stays_in_default() {
     // `configuration::*` belongs to the engine-owned `configuration` worker,
     // which only exists in `default`.
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "configuration::get".to_string(),
             payload: json!({}),
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             timeout_ms: None,
         })
         .await;
@@ -212,11 +212,11 @@ async fn an_explicit_namespace_wins_for_a_configuration_invocation() {
     let iii = worker_in(&mock, Some("orders"));
 
     let _ = iii
-        .trigger(
-            TriggerRequest {
+        .call(
+            CallRequest {
                 function_id: "configuration::get".to_string(),
                 payload: json!({}),
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             }
             .namespace("sandbox"),
@@ -234,7 +234,7 @@ async fn an_explicit_namespace_wins_for_a_configuration_invocation() {
 /// `engine::workers::register` is how a worker announces itself, and it is an
 /// engine builtin. Sending it into the worker's own namespace would route the
 /// announcement to a namespace the engine does not serve it in, so nothing
-/// would ever register. It does not travel through `trigger`, and this is the
+/// would ever register. It does not travel through `call`, and this is the
 /// guard on that.
 #[tokio::test]
 async fn the_workers_own_registration_is_not_redirected() {
@@ -262,7 +262,7 @@ async fn the_workers_own_registration_is_not_redirected() {
 ///
 /// Absent and blank mean opposite things, and read as the same they produce the
 /// failure nobody can see: the worker registers in `default`, and since a
-/// worker's calls and triggers now follow its namespace, the whole project
+/// worker's calls and observers follow its namespace, the whole project
 /// serves from a place the declaration never named.
 ///
 /// Checked before any connection, so it fails at startup the way `iii compose`
@@ -326,8 +326,7 @@ mod blank_namespace {
 /// An error rather than a panic: unlike `InitOptions.namespace`, a per-call
 /// namespace can come from data, and the caller can do something with it.
 mod blank_call_namespace {
-    use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-    use iii_sdk::{IIIClient, InitOptions, register_worker};
+    use iii_sdk::{CallRequest, IIIClient, InitOptions, ObserverState, Source, register_worker};
     use serde_json::json;
 
     fn worker() -> IIIClient {
@@ -341,26 +340,18 @@ mod blank_call_namespace {
     }
 
     #[test]
-    fn register_trigger_refuses_it() {
-        let err = worker()
-            .register_trigger(
-                RegisterTriggerInput::new(
-                    "cron".to_string(),
-                    "api::process".to_string(),
-                    json!({}),
-                )
-                .in_namespace(String::new()),
-            )
-            .err()
-            .expect("a blank namespace is a mistake, not the worker's");
-        assert!(err.to_string().contains("namespace is empty"), "{err}");
+    fn observe_refuses_it() {
+        let handle = worker().observe(Source::function("api::process").namespace(""), "api::audit");
+        assert_eq!(handle.state(), ObserverState::Error);
+        let reason = handle.reason().expect("a reason");
+        assert!(reason.message.contains("namespace is empty"), "{reason:?}");
     }
 
     #[tokio::test]
-    async fn trigger_refuses_it() {
+    async fn call_refuses_it() {
         let err = worker()
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "api::ping".to_string(),
                     payload: json!({}),
                     action: None,
@@ -376,13 +367,11 @@ mod blank_call_namespace {
     #[test]
     fn an_absent_one_still_inherits() {
         // The control: absent is not blank, and still means this worker's.
-        let bound = worker()
-            .register_trigger(RegisterTriggerInput::new(
-                "cron".to_string(),
-                "api::process".to_string(),
-                json!({}),
-            ))
-            .is_ok();
-        assert!(bound, "absent is not a mistake");
+        let handle = worker().observe("api::process", "api::audit");
+        assert_eq!(
+            handle.state(),
+            ObserverState::Pending,
+            "absent is not a mistake"
+        );
     }
 }

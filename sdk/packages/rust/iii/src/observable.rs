@@ -1,62 +1,12 @@
-//! Observable functions: the owner's side of observe.
+//! The host's side of observe: the observers of the functions this worker
+//! hosts, and the task that runs their hooks.
 //!
-//! A function registered with [`RegisterFunction::observe`](crate::RegisterFunction::observe)
-//! learns who observes it through an [`ObserveHandler`], and, when it is
-//! owner-delivered, hands each event to the observers it belongs to with
-//! [`Observer::emit`] or [`Observer::call`].
-//!
-//! ```rust,no_run
-//! use iii_sdk::{
-//!     Error, IIIClient, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction,
-//! };
-//! use schemars::JsonSchema;
-//! use serde::{Deserialize, Serialize};
-//! use std::{collections::HashMap, sync::{Arc, Mutex}};
-//!
-//! #[derive(Deserialize, JsonSchema)]
-//! #[serde(deny_unknown_fields)]
-//! struct CronArgs { expression: String }
-//!
-//! #[derive(Serialize, Deserialize, JsonSchema)]
-//! struct CronTick { expression: String, scheduled_time: String }
-//!
-//! /// expression → observers
-//! #[derive(Clone, Default)]
-//! struct Schedules(Arc<Mutex<HashMap<String, Vec<Observer>>>>);
-//!
-//! #[async_trait::async_trait]
-//! impl ObserveHandler for Schedules {
-//!     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-//!         let CronArgs { expression } = obs.args()?; // validated by the engine
-//!         self.0.lock().unwrap().entry(expression).or_default().push(obs.clone());
-//!         Ok(())
-//!     }
-//!     async fn on_observer_removed(&self, obs: &Observer) {
-//!         for list in self.0.lock().unwrap().values_mut() {
-//!             list.retain(|o| o.id() != obs.id());
-//!         }
-//!     }
-//! }
-//!
-//! # fn demo(iii: &IIIClient) {
-//! let schedules = Schedules::default();
-//! let on_tick = iii.register_function(
-//!     "scheduler::on-tick",
-//!     RegisterFunction::new({
-//!         let schedules = schedules.clone();
-//!         move |tick: CronTick| {
-//!             let observers = schedules.0.lock().unwrap().get(&tick.expression).cloned();
-//!             for obs in observers.unwrap_or_default() {
-//!                 obs.emit(&tick)?; // the observer's filters are checked here
-//!             }
-//!             Ok::<_, Error>(())
-//!         }
-//!     })
-//!     .observe(Observe::owner().args_format::<CronArgs>().handler(schedules)),
-//! );
-//! assert!(!on_tick.is_observed());
-//! # }
-//! ```
+//! Each registered function has an entry: its compiled set of active
+//! observers (read with one atomic load on every call), its match and
+//! deliver hooks, and a hook task that applies the engine's announcements
+//! (`functionregistered`, `observeradded`, `observerremoved`) one at a time,
+//! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`]s set in
+//! [`hooks`](crate::hooks).
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -69,167 +19,26 @@ use std::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use async_trait::async_trait;
 use futures_util::FutureExt;
-use iii_filter::{Doc, Filter};
-use schemars::JsonSchema;
-use serde::{Serialize, de::DeserializeOwned};
-use serde_json::{Value, value::to_raw_value};
-use tokio::sync::mpsc;
+use iii_filter::{Doc, Filter, Roots};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use tokio::sync::{mpsc, watch};
 
 use crate::{
-    context::with_current,
     error::Error,
-    iii::{IIIClient, IIIInner, RemoteCall},
-    protocol::{
-        Activation, Caller, Capture, Delivery, ErrorBody, InvocationStatus, LegacyTrigger, Message,
-        ObserveDescriptor, ObserverView, On, observe_codes,
-    },
-    reporter::{CaptureMask, PendingItem},
+    hooks::{AddedSlot, Call, DeliverHook, Level, Match, Matcher, RemovedHook},
+    iii::{IIIClient, IIIInner},
+    protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
+    reporter::CaptureMask,
 };
 
-/// How long `on_observer_added` may run before the observer is rejected with
-/// `OWNER_TIMEOUT` (the engine enforces the same timeout).
+/// How long the added hooks of an observer may run before it is rejected
+/// with `OWNER_TIMEOUT` (the engine enforces the same timeout).
 pub(crate) const HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The observe descriptor of a function, for
-/// [`RegisterFunction::observe`](crate::RegisterFunction::observe).
-///
-/// - [`Observe::auto`]: the function's invocations are the events; every
-///   observer is offered every invocation and the SDK reports the matching
-///   ones. It takes no args.
-/// - [`Observe::owner`]: the function's owner reads each observer's args, sets
-///   up what they ask for and hands each event to the observers it belongs to
-///   with [`Observer::emit`] or [`Observer::call`].
-///
-/// A function registered without one is still observable, as `auto` without
-/// hooks.
-#[derive(Clone)]
-pub struct Observe {
-    pub(crate) descriptor: ObserveDescriptor,
-    pub(crate) handler: Option<Arc<dyn ObserveHandler>>,
-}
-
-impl fmt::Debug for Observe {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Observe")
-            .field("descriptor", &self.descriptor)
-            .field("handler", &self.handler.is_some())
-            .finish()
-    }
-}
-
-impl Observe {
-    fn with_delivery(delivery: Delivery) -> Self {
-        Self {
-            descriptor: ObserveDescriptor {
-                delivery: Some(delivery),
-                ..ObserveDescriptor::default()
-            },
-            handler: None,
-        }
-    }
-
-    /// Owner delivery: this worker routes events to observers by their args.
-    pub fn owner() -> Self {
-        Self::with_delivery(Delivery::Owner)
-    }
-
-    /// Auto delivery (the default): every invocation is an event.
-    pub fn auto() -> Self {
-        Self::with_delivery(Delivery::Auto)
-    }
-
-    /// The JSON Schema of the observers' args, generated from `T`. The engine
-    /// validates every `observe` against it (`INVALID_ARGS`) before
-    /// [`ObserveHandler::on_observer_added`] runs. `#[serde(deny_unknown_fields)]`
-    /// on `T` rejects argument typos.
-    ///
-    /// Owner delivery only: registering an auto function with an
-    /// `args_format` panics with `INVALID_OBSERVE_DESCRIPTOR`.
-    pub fn args_format<T: JsonSchema>(self) -> Self {
-        let schema = crate::iii::json_schema_for::<T>();
-        self.args_format_value(schema.unwrap_or(Value::Null))
-    }
-
-    /// [`args_format`](Self::args_format) from a JSON Schema value.
-    pub fn args_format_value(mut self, schema: Value) -> Self {
-        self.descriptor.args_format = Some(schema);
-        self
-    }
-
-    /// Accept the old `register_trigger({ trigger_type })` for this trigger
-    /// type: when no live provider of it exists, the engine turns such a
-    /// trigger into an observer of this function, with
-    /// [`Observer::legacy`] set.
-    pub fn legacy_trigger_type(mut self, trigger_type: impl Into<String>) -> Self {
-        self.descriptor.legacy_trigger_type = Some(trigger_type.into());
-        self
-    }
-
-    /// `false` refuses every observer (`NOT_OBSERVABLE`). Default `true`.
-    pub fn allow(mut self, allow: bool) -> Self {
-        self.descriptor.allow = Some(allow);
-        self
-    }
-
-    /// The callbacks that run when an observer is added to or removed from
-    /// this function.
-    pub fn handler<H: ObserveHandler>(mut self, handler: H) -> Self {
-        self.handler = Some(Arc::new(handler));
-        self
-    }
-
-    pub(crate) fn delivery(&self) -> Delivery {
-        self.descriptor.delivery.clone().unwrap_or_default()
-    }
-}
-
-/// Callbacks of an observable function, run once per observer added or
-/// removed, one at a time per function and in the engine's order.
-///
-/// `on_observer_added` runs before the SDK acknowledges the observer, so what
-/// it puts in the owner's index is in place before the engine marks the
-/// observer `active`. Returning an error rejects the observer: an
-/// [`ObserveRejection`] sets the code, a plain error is `OBSERVE_REJECTED`,
-/// and a callback still running after 30 s is `OWNER_TIMEOUT`.
-///
-/// A callback past the timeout is cancelled (its future is dropped at its
-/// next `.await`) so the function's next callback can run; anything it
-/// spawned keeps running and may overlap that next callback. Callbacks run on
-/// the connection's runtime: do not block in them.
-// async_trait injects #[must_use] on boxed Future-returning trait methods.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
-pub trait ObserveHandler: Send + Sync + 'static {
-    /// An observer was attached to the function. Index it by its args here.
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let _ = obs;
-        Ok(())
-    }
-
-    /// An observer was detached (unobserve, disposal, its worker left for
-    /// good, a reconnect that no longer lists it). Cannot fail.
-    async fn on_observer_removed(&self, obs: &Observer) {
-        let _ = obs;
-    }
-}
-
-#[async_trait]
-impl<T: ObserveHandler + ?Sized> ObserveHandler for Arc<T> {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        (**self).on_observer_added(obs).await
-    }
-
-    async fn on_observer_removed(&self, obs: &Observer) {
-        (**self).on_observer_removed(obs).await
-    }
-}
-
-/// An owner's refusal of an observer, with the code its `ready()` fails with.
+/// An [`AddedHook`](crate::AddedHook)'s refusal of an observer, with the code
+/// the observer's `ready()` fails with. Any other error is `OBSERVE_REJECTED`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObserveRejection {
     pub code: String,
@@ -309,24 +118,46 @@ pub(crate) fn capture_mask(capture: &[Capture]) -> CaptureMask {
     mask
 }
 
-/// One observer of a function this worker hosts, as its owner sees it: its
+/// One observer of a function this worker hosts, as its host sees it: its
 /// id, args, filters, target, capture and `on`. Never its metadata, policy or
 /// observing worker.
 ///
-/// Cheap to clone (an `Arc`), so owners keep it in their own index. Two
-/// `Observer`s are equal when their ids are.
+/// Cheap to clone (an `Arc`), so hooks take it by value and a worker keeps it
+/// in its own index. Two `Observer`s are equal when their ids are.
+///
+/// The engine may announce an observer again with the same args and other
+/// filters, target, capture or `on`: it stays the same observer and no hook
+/// runs. Handles given out earlier keep the view they were made with, and
+/// [`IIIClient::observers`] returns the announced one.
 #[derive(Clone)]
 pub struct Observer {
     inner: Arc<ObserverInner>,
 }
 
+/// Where an observer stands with the SDK's ack.
+#[derive(Debug, Clone, PartialEq)]
+enum Acceptance {
+    Pending,
+    Accepted,
+    Refused(ErrorBody),
+}
+
+/// What the engine announced for an observer. A replay that keeps its args
+/// and changes anything else gets a new one, with the same [`ObserverState`].
 struct ObserverInner {
     view: ObserverView,
     filter: Filter,
     mask: CaptureMask,
     function_id: String,
     namespace: String,
-    delivery: Delivery,
+    state: Arc<ObserverState>,
+}
+
+/// Where an observer stands, whatever view of it a handle holds.
+struct ObserverState {
+    /// Its place among the function's observers, in the order they were
+    /// added: a call matches by keys only the observers it started with.
+    seq: u64,
     /// The revision the engine last announced it in (`observeradded`, or a
     /// `functionregistered` that listed it): what an ack must echo, or the
     /// engine ignores it as stale.
@@ -336,6 +167,7 @@ struct ObserverInner {
     /// Set by [`Observer::reject`]: re-sent whenever the engine lists the
     /// observer again, until it is removed.
     rejection: Mutex<Option<ErrorBody>>,
+    acceptance: watch::Sender<Acceptance>,
     client: Weak<IIIInner>,
 }
 
@@ -366,67 +198,34 @@ impl std::hash::Hash for Observer {
     }
 }
 
-/// Who an event (emit) or an owner call is from, by the rules of sdk.md §1.
-pub(crate) struct EventOrigin {
-    /// The caller filters see: inside the observed function's own handler,
-    /// that invocation's caller; inside another handler, that handler; outside
-    /// any handler, this worker.
-    pub caller: Caller,
-    /// Inside the function's own handler: that invocation's id.
-    pub invocation_id: Option<String>,
-    pub observe_depth: u32,
-    pub metadata: Option<Value>,
-    pub traceparent: Option<String>,
-    pub baggage: Option<String>,
-}
-
-impl EventOrigin {
-    pub(crate) fn current(function_id: &str, iii: &IIIClient) -> Self {
-        with_current(|current| match current {
-            Some(cur) if cur.function_id == function_id => EventOrigin {
-                caller: cur.caller.clone().unwrap_or_else(|| iii.self_caller()),
-                invocation_id: Some(cur.invocation_id.clone()),
-                observe_depth: cur.observe_depth,
-                metadata: cur.metadata.clone(),
-                traceparent: cur.traceparent.clone(),
-                baggage: cur.baggage.clone(),
-            },
-            Some(cur) => EventOrigin {
-                caller: Caller {
-                    function_id: Some(cur.function_id.clone()),
-                    invocation_id: Some(cur.invocation_id.clone()),
-                    parent: cur.caller.as_ref().and_then(crate::iii::parent_of),
-                    ..iii.self_caller()
-                },
-                invocation_id: None,
-                observe_depth: cur.observe_depth,
-                metadata: cur.metadata.clone(),
-                traceparent: cur.traceparent.clone(),
-                baggage: cur.baggage.clone(),
-            },
-            None => {
-                let (traceparent, baggage) = crate::iii::inject_trace_headers();
-                EventOrigin {
-                    caller: iii.self_caller(),
-                    invocation_id: None,
-                    observe_depth: 0,
-                    metadata: None,
-                    traceparent,
-                    baggage,
-                }
-            }
-        })
-    }
-}
-
 impl Observer {
     fn new(
         view: ObserverView,
         filter: Filter,
-        entry: &FunctionEntry,
+        function_id: &str,
         namespace: String,
         revision: u64,
+        seq: u64,
         client: Weak<IIIInner>,
+    ) -> Self {
+        let (acceptance, _) = watch::channel(Acceptance::Pending);
+        let state = Arc::new(ObserverState {
+            seq,
+            revision: AtomicU64::new(revision),
+            active: AtomicBool::new(false),
+            rejection: Mutex::new(None),
+            acceptance,
+            client,
+        });
+        Self::with_state(view, filter, function_id.to_string(), namespace, state)
+    }
+
+    fn with_state(
+        view: ObserverView,
+        filter: Filter,
+        function_id: String,
+        namespace: String,
+        state: Arc<ObserverState>,
     ) -> Self {
         let mask = capture_mask(&view.capture);
         Self {
@@ -434,15 +233,26 @@ impl Observer {
                 view,
                 filter,
                 mask,
-                function_id: entry.id.clone(),
+                function_id,
                 namespace,
-                delivery: entry.delivery.clone(),
-                revision: AtomicU64::new(revision),
-                active: AtomicBool::new(false),
-                rejection: Mutex::new(None),
-                client,
+                state,
             }),
         }
+    }
+
+    /// This observer with the view a replay announced, sharing its state.
+    fn with_view(&self, view: ObserverView, filter: Filter, namespace: &str) -> Self {
+        Self::with_state(
+            view,
+            filter,
+            self.inner.function_id.clone(),
+            namespace.to_string(),
+            self.inner.state.clone(),
+        )
+    }
+
+    fn state(&self) -> &ObserverState {
+        &self.inner.state
     }
 
     /// The observer's id (client-generated, stable across replays).
@@ -476,221 +286,108 @@ impl Observer {
         &self.inner.view.args
     }
 
-    /// The observer's filters in normal form (`{}` matches every event).
-    /// Applied by the SDK on every [`emit`](Self::emit) and
-    /// [`call`](Self::call); the owner never changes them.
+    /// The observer's filters in normal form (`{}` matches every call).
+    /// iii's delivery and [`matches`](Self::matches) apply them.
     pub fn filters(&self) -> &Value {
         &self.inner.view.filters
     }
 
-    /// The function each activation invokes.
+    /// The function each delivery invokes.
     pub fn target(&self) -> &str {
         &self.inner.view.target
     }
 
-    /// What activations ship to the target.
+    /// What deliveries ship to the target.
     pub fn capture(&self) -> &[Capture] {
         &self.inner.view.capture
     }
 
-    /// Which outcomes activate it (auto functions only).
+    /// Which outcomes of a call reach it.
     pub fn on(&self) -> &On {
         &self.inner.view.on
     }
 
-    /// The old trigger this observer stands for, when the engine's legacy shim
-    /// created it from a `register_trigger`. Read `config` as its args.
-    pub fn legacy(&self) -> Option<&LegacyTrigger> {
-        self.inner.view.legacy.as_ref()
-    }
-
-    /// Whether it is still delivered to: acked, and neither removed nor
+    /// Whether it is still delivered to: accepted, and neither removed nor
     /// rejected since.
     pub fn is_active(&self) -> bool {
-        self.inner.active.load(Ordering::Acquire)
+        self.state().active.load(Ordering::Acquire)
     }
 
-    /// Evaluates the observer's filters against `doc`, exactly as given.
-    /// Lets an owner answer before calling (the HTTP router's 422).
-    pub fn matches(&self, doc: &Doc<'_>) -> bool {
-        self.inner.filter.matches(doc)
-    }
-
-    fn owner_delivered(&self) -> Result<(), Error> {
-        if self.inner.delivery == Delivery::Owner {
-            return Ok(());
+    /// Whether `call` reaches this observer: its `on` accepts the call's
+    /// status and its filters match the call. A deliver hook that calls
+    /// targets itself applies them with this.
+    pub fn matches(&self, call: &Call) -> bool {
+        let success = call.status == InvocationStatus::Success;
+        if !self.accepts(success) {
+            return false;
         }
-        Err(coded_error(
-            observe_codes::NOT_OWNER_DELIVERED,
-            format!(
-                "{} is not owner-delivered: its invocations are its events",
-                self.inner.function_id
-            ),
-        ))
-    }
-
-    fn client(&self) -> Option<IIIClient> {
-        self.inner.client.upgrade().map(IIIClient::from_inner)
-    }
-
-    /// Hands `event` to this observer, fire-and-forget. Owner functions only
-    /// (`NOT_OWNER_DELIVERED` otherwise).
-    ///
-    /// The observer's filters see `{ input: event, caller, metadata }`, where
-    /// `caller` is the invocation this runs in: inside the observed function's
-    /// own handler, that invocation's caller; inside another handler, that
-    /// handler; outside any handler, this worker. Returns `Ok(false)` and
-    /// sends nothing when they reject it, or when the observer is no longer
-    /// active (removed or rejected meanwhile: an owner's fan-out loop goes
-    /// on). Otherwise the event joins the next batched report and the engine
-    /// activates the target with the [`Observed`](crate::Observed) envelope,
-    /// in the trace of the invocation it was emitted from.
-    ///
-    /// Delivery is at-most-once. Reports wait in a bounded buffer while the
-    /// connection is down and go out once the engine confirms the function
-    /// again; a report frame whose write failed when the connection dropped
-    /// is not resent (it may have arrived) and counts as dropped. Every drop
-    /// is counted and reported in `localinvocationstats`.
-    pub fn emit<T: Serialize + ?Sized>(&self, event: &T) -> Result<bool, Error> {
-        self.owner_delivered()?;
-        if !self.is_active() {
-            return Ok(false);
-        }
-        let Some(iii) = self.client() else {
-            return Ok(false);
-        };
-        let input = serde_json::to_value(event)?;
-        let origin = EventOrigin::current(&self.inner.function_id, &iii);
-        if !self.filter_accepts(&input, &origin) {
-            return Ok(false);
-        }
-
-        let item = PendingItem {
-            function_id: self.inner.function_id.clone(),
-            namespace: Some(self.inner.namespace.clone()),
-            invocation_id: origin
-                .invocation_id
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            matched: vec![self.id().to_string()],
-            status: InvocationStatus::Success,
-            input: Some(to_raw_value(&input)?),
-            output: None,
-            error: None,
-            caller: Some(origin.caller),
-            metadata: origin.metadata.as_ref().map(to_raw_value).transpose()?,
-            started_at_ms: crate::iii::now_ms(),
-            duration_ms: 0.0,
-            observe_depth: origin.observe_depth,
-            traceparent: origin.traceparent,
-            baggage: origin.baggage,
-            mask: CaptureMask {
-                output: false,
-                error: false,
-                ..self.inner.mask
-            },
-            emitted: true,
-            seq: 0,
-        };
-        iii.reporter().push(item);
-        Ok(true)
-    }
-
-    fn filter_accepts(&self, input: &Value, origin: &EventOrigin) -> bool {
         let filter = &self.inner.filter;
         if filter.is_match_all() {
             return true;
         }
-        let caller = if filter.roots().caller {
-            serde_json::to_value(&origin.caller).ok()
-        } else {
-            None
-        };
-        filter.matches(&Doc {
-            input: Some(input),
-            caller: caller.as_ref(),
-            metadata: origin.metadata.as_ref(),
-            ..Doc::default()
-        })
+        let parts = DocParts::of(filter.roots(), call.error.as_ref(), call.caller.as_ref());
+        filter.matches(&parts.doc(
+            Some(&call.input),
+            call.output.as_ref().filter(|_| success),
+            call.metadata.as_ref(),
+        ))
     }
 
-    /// Calls the observer's target with `payload` through the engine and
-    /// returns its result: the HTTP response, the queue ack. Owner functions
-    /// only. Fails with `FILTERS_NOT_MATCHED`, sending nothing, when the
-    /// observer's filters reject `{ input: payload, caller, metadata }`;
-    /// with `OBSERVER_NOT_ACTIVE` once it was removed; with the engine's code
-    /// (`LOOP_GUARD`, `OVERFLOW`, ...) or the target's error otherwise.
-    pub async fn call<R: DeserializeOwned>(&self, payload: impl Serialize) -> Result<R, Error> {
-        self.call_with_timeout(
-            payload,
-            Duration::from_millis(crate::iii::DEFAULT_TIMEOUT_MS),
-        )
-        .await
-    }
-
-    /// [`call`](Self::call) with its own timeout.
-    pub async fn call_with_timeout<R: DeserializeOwned>(
-        &self,
-        payload: impl Serialize,
-        timeout: Duration,
-    ) -> Result<R, Error> {
-        self.owner_delivered()?;
-        if !self.is_active() {
-            return Err(coded_error(
-                observe_codes::OBSERVER_NOT_ACTIVE,
-                format!("observer {} is not active", self.id()),
-            ));
+    /// Resolves once the SDK has acked the observer, which makes it active:
+    /// a call through it made after this resolves reaches an active observer,
+    /// since the engine handles a connection's frames in order. A provider
+    /// sends an observer its initial state this way. Fails with the
+    /// rejection's code when the observer is rejected first.
+    ///
+    /// ```rust,no_run
+    /// # use iii_sdk::{CallAction, CallRequest, IIIClient, Observer};
+    /// # use serde_json::json;
+    /// # fn demo(iii: &IIIClient) {
+    /// let iii = iii.clone();
+    /// iii.clone().on_observer_added_for("stock::on-changed", move |obs: Observer| {
+    ///     let iii = iii.clone();
+    ///     async move {
+    ///         tokio::spawn(async move {
+    ///             if obs.accepted().await.is_ok() {
+    ///                 let initial = CallRequest::observer(&obs, json!({ "available": 12 }));
+    ///                 let _ = iii.call(initial.action(CallAction::Void)).await;
+    ///             }
+    ///         });
+    ///         Ok(())
+    ///     }
+    /// });
+    /// # }
+    /// ```
+    pub async fn accepted(&self) -> Result<(), Error> {
+        let mut acceptance = self.state().acceptance.subscribe();
+        let settled = acceptance
+            .wait_for(|state| *state != Acceptance::Pending)
+            .await
+            .map(|state| state.clone());
+        match settled {
+            Ok(Acceptance::Refused(error)) => Err(coded_error(&error.code, error.message)),
+            Ok(_) => Ok(()),
+            Err(_) => Err(Error::NotConnected),
         }
-        let iii = self.client().ok_or(Error::NotConnected)?;
-        let input = serde_json::to_value(payload)?;
-        let origin = EventOrigin::current(&self.inner.function_id, &iii);
-        if !self.filter_accepts(&input, &origin) {
-            return Err(coded_error(
-                observe_codes::FILTERS_NOT_MATCHED,
-                format!("observer {}'s filters reject this payload", self.id()),
-            ));
-        }
-        let (caller, observe_depth) = iii.outgoing_caller();
-        let result = iii
-            .invoke_remote(RemoteCall {
-                function_id: self.inner.view.target.clone(),
-                payload: input,
-                action: None,
-                timeout: Some(timeout),
-                metadata: None,
-                // The engine routes an owner delivery to the observer's own
-                // target, whatever namespace a request names.
-                namespace: None,
-                caller,
-                observe_depth,
-                activation: Some(Activation {
-                    observer_id: self.id().to_string(),
-                    activation_id: None,
-                }),
-            })
-            .await?;
-        Ok(serde_json::from_value(result)?)
     }
 
     /// Rejects this observer after it was accepted (a config reload removed
-    /// what it needs). It stops receiving events now; the engine moves it to
-    /// `error` with this code and then removes it, which runs
-    /// [`ObserveHandler::on_observer_removed`]. The rejection holds across a
-    /// reconnect: the SDK sends it again whenever the engine lists the
-    /// observer, until a fresh `observeradded` brings it back.
+    /// what it needs). It stops receiving calls now; the engine moves it to
+    /// `error` with this code and then removes it, which runs its removed
+    /// hooks. The rejection holds across a reconnect: the SDK sends it again
+    /// whenever the engine lists the observer, until a fresh `observeradded`
+    /// brings it back.
     pub fn reject(&self, code: impl Into<String>, message: impl Into<String>) {
         let error = ErrorBody::new(code, message);
-        // Held to the end: ordered against an `on_observer_added` finishing.
-        let mut rejection = self
-            .inner
-            .rejection
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let state = self.state();
+        // Held to the end: ordered against an added hook finishing.
+        let mut rejection = state.rejection.lock().unwrap_or_else(|e| e.into_inner());
         *rejection = Some(error.clone());
-        if !self.inner.active.swap(false, Ordering::AcqRel) {
+        if !state.active.swap(false, Ordering::AcqRel) {
             // Not active (yet): its pending ack, or the next replay, carries it.
             return;
         }
-        let Some(iii) = self.client() else {
+        let Some(iii) = state.client.upgrade().map(IIIClient::from_inner) else {
             return;
         };
         if let Some(entry) = iii.function_entry(&self.inner.function_id) {
@@ -702,7 +399,7 @@ impl Observer {
             function_id: self.inner.function_id.clone(),
             namespace: Some(self.inner.namespace.clone()),
             id: self.id().to_string(),
-            revision: self.inner.revision.load(Ordering::Acquire),
+            revision: state.revision.load(Ordering::Acquire),
             error: Some(error),
         });
         if let Err(error) = sent {
@@ -711,35 +408,12 @@ impl Observer {
         }
     }
 
-    /// Acks an observer this SDK already holds again at `revision`, with its
-    /// rejection if it has one, when `wanted(rejected)` says so. The check and
-    /// the ack happen under the rejection lock, ordered with `reject()`.
-    fn ack_again(
-        &self,
-        iii: &IIIClient,
-        entry: &FunctionEntry,
-        namespace: &str,
-        revision: u64,
-        wanted: impl FnOnce(bool) -> bool,
-    ) -> bool {
-        let rejection = self
-            .inner
-            .rejection
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if !wanted(rejection.is_some()) {
-            return false;
-        }
-        self.inner.revision.store(revision, Ordering::Release);
-        send_ack(
-            iii,
-            entry,
-            namespace,
-            self.id(),
-            revision,
-            rejection.clone(),
-        );
-        true
+    fn settle(&self, acceptance: Acceptance) {
+        self.state().acceptance.send_replace(acceptance);
+    }
+
+    pub(crate) fn seq(&self) -> u64 {
+        self.state().seq
     }
 
     pub(crate) fn mask(&self) -> CaptureMask {
@@ -754,7 +428,7 @@ impl Observer {
         &self.inner.view
     }
 
-    /// Whether an auto invocation that ended with `status` activates it.
+    /// Whether a call that ended with `success` (or not) reaches it.
     pub(crate) fn accepts(&self, success: bool) -> bool {
         match self.inner.view.on {
             On::Success => success,
@@ -765,11 +439,43 @@ impl Observer {
     }
 }
 
-/// What a local call needs from the documents of its observers.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Needs {
-    pub input: bool,
-    pub caller: bool,
+/// The parts of a filter document that are built for it: `error` and
+/// `caller` as JSON, each only when a filter reads it.
+pub(crate) struct DocParts {
+    error: Option<Value>,
+    caller: Option<Value>,
+}
+
+impl DocParts {
+    pub(crate) fn of(
+        roots: Roots,
+        error: Option<&crate::observe::ObservedError>,
+        caller: Option<&crate::protocol::Caller>,
+    ) -> Self {
+        Self {
+            error: error
+                .filter(|_| roots.error)
+                .and_then(|error| serde_json::to_value(error).ok()),
+            caller: caller
+                .filter(|_| roots.caller)
+                .and_then(|caller| serde_json::to_value(caller).ok()),
+        }
+    }
+
+    pub(crate) fn doc<'a>(
+        &'a self,
+        input: Option<&'a Value>,
+        output: Option<&'a Value>,
+        metadata: Option<&'a Value>,
+    ) -> Doc<'a> {
+        Doc {
+            input,
+            output,
+            error: self.error.as_ref(),
+            caller: self.caller.as_ref(),
+            metadata,
+        }
+    }
 }
 
 /// The active observers of a function, swapped whole on every change so the
@@ -777,22 +483,36 @@ pub(crate) struct Needs {
 #[derive(Default)]
 pub(crate) struct CompiledSet {
     pub observers: Vec<Observer>,
-    pub needs: Needs,
+    /// The roots any observer's filter reads.
+    pub roots: Roots,
+    /// What any observer captures.
+    pub capture: CaptureMask,
+    /// The [`Observer::seq`] of the newest observer in the set: an active
+    /// observer added after it is not in the set.
+    pub seq: u64,
 }
 
 impl CompiledSet {
     fn new(observers: Vec<Observer>) -> Self {
-        let mut needs = Needs::default();
+        let mut roots = Roots::default();
+        let mut capture = CaptureMask::default();
+        let mut seq = 0;
         for obs in &observers {
-            let roots = obs.filter().roots();
-            needs.input |= roots.input || obs.mask().input;
-            needs.caller |= roots.caller || obs.mask().caller;
+            let filter = obs.filter().roots();
+            roots.input |= filter.input;
+            roots.output |= filter.output;
+            roots.error |= filter.error;
+            roots.caller |= filter.caller;
+            roots.metadata |= filter.metadata;
+            capture = capture.union(obs.mask());
+            seq = seq.max(obs.seq());
         }
-        Self { observers, needs }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.observers.is_empty()
+        Self {
+            observers,
+            roots,
+            capture,
+            seq,
+        }
     }
 }
 
@@ -826,10 +546,10 @@ impl LocalStats {
 /// Observe state of one registered function.
 pub(crate) struct FunctionEntry {
     pub(crate) id: String,
-    pub(crate) delivery: Delivery,
-    hooks: Option<Arc<dyn ObserveHandler>>,
-    /// Hooks or owner delivery: inactive against an engine without observe.
-    pub(crate) needs_observe: bool,
+    /// Declares `args_format`, `private` or `observable: false`.
+    declares_v2: bool,
+    /// Registered with [`RegisterFunction::standby`](crate::RegisterFunction::standby).
+    pub(crate) standby: bool,
     /// Has a handler here and was not registered with `local_dispatch(false)`.
     wants_local: bool,
     /// The namespace the engine registered it in (`functionregistered`).
@@ -837,52 +557,183 @@ pub(crate) struct FunctionEntry {
     local_dispatch: AtomicBool,
     /// The connection on which `functionregistered` last arrived; 0 = never.
     confirmed_epoch: AtomicU64,
-    /// Bumped by a `FUNCTION_NAMESPACE_CONFLICT`: a `functionregistered`
+    /// Bumped by each [`release`](Self::release): a `functionregistered`
     /// queued before it must not turn local dispatch back on.
     revocation: AtomicU64,
-    /// Another worker owns the function since a conflict, until the engine
+    /// The engine does not host the function for this worker since a
+    /// release (a conflict, a refused or withdrawn registration), until it
     /// confirms it again.
     revoked: AtomicBool,
+    /// A conflict was logged since the engine last confirmed the function:
+    /// a standby's later ones are logged at debug.
+    conflicted: AtomicBool,
     compiled: ArcSwap<CompiledSet>,
-    observed: AtomicUsize,
-    /// Serializes the rebuilds of `compiled` (the hook task's, `reject`'s).
+    /// The number of active observers, shifted left by one, with the low bit
+    /// set while a deliver hook is: what a call reads first, in one atomic
+    /// load.
+    delivery: AtomicUsize,
+    /// The function's deliver hook, mirrored from the hook store.
+    deliver: ArcSwapOption<Arc<dyn DeliverHook>>,
+    /// The function's match hook, with its key index.
+    matcher: ArcSwapOption<Matcher>,
+    /// Held while an observer is activated or deactivated with its filing in
+    /// the key index, and while a match hook builds its index from the
+    /// active observers: the index holds exactly the active observers.
+    indexing: Mutex<()>,
+    /// The observers created so far: the next one's [`Observer::seq`].
+    created: AtomicU64,
+    /// Serializes the rebuilds of `compiled` and `delivery`.
     publishing: Mutex<()>,
     pub(crate) stats: LocalStats,
     ops: Mutex<Option<mpsc::UnboundedSender<HookOp>>>,
+    /// Opened when `register_function` returns: no observer is acked before.
+    registered: watch::Sender<bool>,
+    /// The connection its `registerfunction` was last sent on, or
+    /// [`NOT_SENT`].
+    sent_epoch: AtomicU64,
 }
+
+/// [`FunctionEntry::sent_epoch`] of a registration not sent on any
+/// connection (epoch 0 is the one before the first connection).
+const NOT_SENT: u64 = u64::MAX;
 
 impl FunctionEntry {
     pub(crate) fn new(
         id: String,
-        observe: Option<&Observe>,
+        declares_v2: bool,
         has_handler: bool,
         local_option: bool,
+        standby: bool,
+        deliver: Option<Arc<dyn DeliverHook>>,
+        matcher: Option<Matcher>,
     ) -> Self {
-        let delivery = observe.map(Observe::delivery).unwrap_or_default();
-        let hooks = observe.and_then(|o| o.handler.clone());
+        let (registered, _) = watch::channel(false);
+        let delivery = usize::from(deliver.is_some());
         Self {
-            needs_observe: delivery == Delivery::Owner || hooks.is_some(),
             id,
-            delivery,
-            hooks,
+            declares_v2,
+            standby,
             wants_local: has_handler && local_option,
             namespace: ArcSwapOption::empty(),
             local_dispatch: AtomicBool::new(false),
             confirmed_epoch: AtomicU64::new(0),
             revocation: AtomicU64::new(0),
             revoked: AtomicBool::new(false),
+            conflicted: AtomicBool::new(false),
             compiled: ArcSwap::from_pointee(CompiledSet::default()),
-            observed: AtomicUsize::new(0),
+            delivery: AtomicUsize::new(delivery),
+            deliver: ArcSwapOption::new(deliver.map(Arc::new)),
+            matcher: ArcSwapOption::new(matcher.map(Arc::new)),
+            indexing: Mutex::new(()),
+            created: AtomicU64::new(0),
             publishing: Mutex::new(()),
             stats: LocalStats::default(),
             ops: Mutex::new(None),
+            registered,
+            sent_epoch: AtomicU64::new(NOT_SENT),
         }
     }
 
     /// One atomic load.
     #[inline]
     pub(crate) fn is_observed(&self) -> bool {
-        self.observed.load(Ordering::Acquire) != 0
+        self.delivery.load(Ordering::Acquire) >> 1 != 0
+    }
+
+    /// Whether a call is delivered at all (an active observer, or a deliver
+    /// hook): one atomic load.
+    #[inline]
+    pub(crate) fn delivers(&self) -> bool {
+        self.delivery.load(Ordering::Acquire) != 0
+    }
+
+    /// Whether `call` would reach anyone: matched by keys, an observer is
+    /// filed under one of its keys; otherwise any is active.
+    pub(crate) fn is_observed_for(&self, call: &Call) -> bool {
+        if !self.is_observed() {
+            return false;
+        }
+        let matcher = self.matcher.load();
+        matcher
+            .as_deref()
+            .and_then(|matcher| matcher.wants_any(&self.id, call))
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn matcher(&self) -> Option<Arc<Matcher>> {
+        self.matcher.load_full()
+    }
+
+    /// Replaces the match hook with the one `rule` reads under the index
+    /// lock, its index built from the active observers before it is
+    /// published, so no call matches by an empty index. Returns the observers
+    /// whose key function panicked, filed nowhere, with the panic: the caller
+    /// rejects them.
+    pub(crate) fn set_match(
+        &self,
+        rule: impl FnOnce() -> Option<Match>,
+    ) -> Vec<(Observer, String)> {
+        let _indexing = self.lock_index();
+        let rule = rule();
+        let unchanged = match (self.matcher.load().as_deref(), &rule) {
+            (Some(current), Some(rule)) => current.rule().same(rule),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return Vec::new();
+        }
+        let matcher = rule.map(Matcher::new);
+        let panicked = matcher
+            .as_ref()
+            .map(|matcher| matcher.file_all(&self.observers()))
+            .unwrap_or_default();
+        self.matcher.store(matcher.map(Arc::new));
+        panicked
+    }
+
+    fn lock_index(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.indexing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn deliver_hook(&self) -> Option<Arc<dyn DeliverHook>> {
+        self.deliver.load().as_deref().cloned()
+    }
+
+    fn has_deliver(&self) -> bool {
+        self.delivery.load(Ordering::Acquire) & 1 != 0
+    }
+
+    pub(crate) fn set_deliver(&self, hook: Option<Arc<dyn DeliverHook>>) {
+        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
+        self.deliver.store(hook.map(Arc::new));
+        self.refresh_delivery();
+    }
+
+    /// Needs an engine that advertised `observe.v2`: it declares
+    /// `args_format`, `private` or `observable: false`, or has a deliver or
+    /// match hook.
+    pub(crate) fn needs_v2(&self) -> bool {
+        self.declares_v2 || self.has_deliver() || self.matcher.load().is_some()
+    }
+
+    /// Records that its `registerfunction` goes out on connection `epoch`;
+    /// `false` when it already went out there.
+    pub(crate) fn mark_sent(&self, epoch: u64) -> bool {
+        self.sent_epoch.swap(epoch, Ordering::AcqRel) != epoch
+    }
+
+    pub(crate) fn sent_on(&self, epoch: u64) -> bool {
+        self.sent_epoch.load(Ordering::Acquire) == epoch
+    }
+
+    pub(crate) fn unmark_sent(&self) {
+        self.sent_epoch.store(NOT_SENT, Ordering::Release);
+    }
+
+    /// `register_function` returned: its observers may be acked.
+    pub(crate) fn open(&self) {
+        self.registered.send_replace(true);
     }
 
     pub(crate) fn compiled(&self) -> Arc<CompiledSet> {
@@ -910,17 +761,18 @@ impl FunctionEntry {
         self.namespace.load_full()
     }
 
-    /// Turns local dispatch off and forgets the confirmation: a
-    /// `FUNCTION_NAMESPACE_CONFLICT`, or the function was unregistered.
+    /// Turns local dispatch off and forgets the confirmation: the function
+    /// was released or unregistered.
     pub(crate) fn revoke(&self) {
         self.local_dispatch.store(false, Ordering::Release);
         self.confirmed_epoch.store(0, Ordering::Release);
     }
 
-    /// The function is not this worker's any more: another worker owns it
-    /// (`FUNCTION_NAMESPACE_CONFLICT`) or it was unregistered. Ordered
-    /// against `functionregistered` messages already queued, and against
-    /// `on_observer_added` callbacks still running.
+    /// The function is not this worker's any more: another worker hosts it
+    /// (`FUNCTION_NAMESPACE_CONFLICT`), the engine refused or withdrew its
+    /// registration, or it was unregistered. Ordered against
+    /// `functionregistered` messages already queued, and against added hooks
+    /// still running.
     pub(crate) fn release(&self) {
         self.revocation.fetch_add(1, Ordering::AcqRel);
         self.revoked.store(true, Ordering::Release);
@@ -935,8 +787,21 @@ impl FunctionEntry {
         self.revoked.load(Ordering::Acquire)
     }
 
+    /// Records a `FUNCTION_NAMESPACE_CONFLICT`: `true` for the first since
+    /// the engine last confirmed the function.
+    pub(crate) fn first_conflict(&self) -> bool {
+        !self.conflicted.swap(true, Ordering::AcqRel)
+    }
+
     pub(crate) fn confirmed_on(&self, epoch: u64) -> bool {
         epoch != 0 && self.confirmed_epoch.load(Ordering::Acquire) == epoch
+    }
+
+    fn refresh_delivery(&self) {
+        let observers = self.compiled.load().observers.len();
+        let hook = usize::from(self.deliver.load().is_some());
+        self.delivery
+            .store(observers << 1 | hook, Ordering::Release);
     }
 
     /// Removes deactivated observers from the compiled set.
@@ -950,21 +815,20 @@ impl FunctionEntry {
             .filter(|o| o.is_active())
             .cloned()
             .collect();
-        let count = observers.len();
         self.compiled.store(Arc::new(CompiledSet::new(observers)));
-        self.observed.store(count, Ordering::Release);
+        self.refresh_delivery();
     }
 
-    fn publish(&self, members: &BTreeMap<String, Observer>) {
+    fn publish(&self, members: &BTreeMap<String, Member>) {
         let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
         let observers: Vec<Observer> = members
             .values()
+            .map(|member| &member.observer)
             .filter(|o| o.is_active())
             .cloned()
             .collect();
-        let count = observers.len();
         self.compiled.store(Arc::new(CompiledSet::new(observers)));
-        self.observed.store(count, Ordering::Release);
+        self.refresh_delivery();
     }
 
     /// Queues `op` on this function's hook task, spawning it on first use.
@@ -989,8 +853,11 @@ impl FunctionEntry {
         iii: &IIIClient,
         op: HookOp,
     ) {
-        if matches!(op, HookOp::Reset { .. } | HookOp::Republish) {
-            // Nothing was ever added: there is nothing to reset.
+        if matches!(
+            op,
+            HookOp::Reset { .. } | HookOp::Republish | HookOp::CatchUp(_)
+        ) {
+            // Nothing was ever added: there is nothing to reset or catch up.
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -1028,11 +895,38 @@ pub(crate) enum HookOp {
     },
     /// An observer was rejected late: rebuild the compiled set.
     Republish,
-    /// Drop the whole set: a `FUNCTION_NAMESPACE_CONFLICT`, or the function
-    /// was unregistered (`last`).
+    /// Drop the whole set: the function was released (a conflict, a refused
+    /// or withdrawn registration), or unregistered (`last`).
     Reset {
         last: bool,
     },
+    /// An added hook of this level was set: it runs for each active observer
+    /// that did not run it.
+    CatchUp(Level),
+}
+
+/// An accepted observer, and the added hooks that ran for it, by the
+/// generation of the hook at each level.
+struct Member {
+    observer: Observer,
+    worker: Option<u64>,
+    function: Option<u64>,
+}
+
+impl Member {
+    fn ran(&self, level: Level) -> Option<u64> {
+        match level {
+            Level::Worker => self.worker,
+            Level::Function => self.function,
+        }
+    }
+}
+
+/// The added hooks that resolved for an observer being added.
+#[derive(Default, Clone, Copy)]
+struct Resolved {
+    worker: Option<u64>,
+    function: Option<u64>,
 }
 
 async fn run_hooks(
@@ -1040,7 +934,12 @@ async fn run_hooks(
     client: Weak<IIIInner>,
     mut ops: mpsc::UnboundedReceiver<HookOp>,
 ) {
-    let mut members: BTreeMap<String, Observer> = BTreeMap::new();
+    // No observer is acked before `register_function` returned.
+    let mut registered = entry.registered.subscribe();
+    if registered.wait_for(|open| *open).await.is_err() {
+        return;
+    }
+    let mut members: BTreeMap<String, Member> = BTreeMap::new();
     let mut revision: u64 = 0;
     while let Some(op) = ops.recv().await {
         let Some(inner) = client.upgrade() else {
@@ -1062,6 +961,7 @@ async fn run_hooks(
                     continue;
                 }
                 entry.revoked.store(false, Ordering::Release);
+                entry.conflicted.store(false, Ordering::Release);
                 entry.namespace.store(Some(Arc::new(namespace.clone())));
                 entry
                     .local_dispatch
@@ -1075,12 +975,15 @@ async fn run_hooks(
                 // `observeradded`.
                 let mut fresh = Vec::new();
                 for view in observers {
-                    let acked = members.get(&view.id).is_some_and(|held| {
-                        held.ack_again(&iii, &entry, &namespace, rev, |rejected| {
-                            rejected || held.view() == &view
-                        })
-                    });
-                    if !acked {
+                    if let Some(view) = ack_held(
+                        &iii,
+                        &entry,
+                        &mut members,
+                        view,
+                        &namespace,
+                        rev,
+                        Replay::Listed,
+                    ) {
                         fresh.push(view);
                     }
                 }
@@ -1096,12 +999,12 @@ async fn run_hooks(
                     .cloned()
                     .collect();
                 for id in gone {
-                    remove_member(&entry, &mut members, &id).await;
+                    remove_member(&iii, &entry, &mut members, &id).await;
                 }
                 for view in fresh {
-                    // a changed view: removed, then added as a new observer
+                    // changed args: removed, then added as a new observer
                     if members.contains_key(&view.id) {
-                        remove_member(&entry, &mut members, &view.id).await;
+                        remove_member(&iii, &entry, &mut members, &view.id).await;
                     }
                     add_member(&iii, &entry, &mut members, view, &namespace, rev).await;
                 }
@@ -1116,15 +1019,25 @@ async fn run_hooks(
                     tracing::debug!(function_id = %entry.id, revision = rev, held = revision, "stale observeradded ignored");
                     continue;
                 }
-                let acked = members.get(&observer.id).is_some_and(|held| {
-                    held.ack_again(&iii, &entry, &namespace, rev, |rejected| {
-                        !rejected && held.view() == &observer
-                    })
-                });
-                if !acked {
-                    // New, changed, or rejected earlier: a fresh observer.
+                if entry.is_revoked() {
+                    // Announced before the release: the function is not
+                    // this worker's, and nothing undoes an add now.
+                    tracing::debug!(function_id = %entry.id, observer_id = %observer.id, "observeradded for a released function ignored");
+                    continue;
+                }
+                if let Some(observer) = ack_held(
+                    &iii,
+                    &entry,
+                    &mut members,
+                    observer,
+                    &namespace,
+                    rev,
+                    Replay::Added,
+                ) {
+                    // New, with changed args, or rejected earlier: a fresh
+                    // observer.
                     if members.contains_key(&observer.id) {
-                        remove_member(&entry, &mut members, &observer.id).await;
+                        remove_member(&iii, &entry, &mut members, &observer.id).await;
                     }
                     add_member(&iii, &entry, &mut members, observer, &namespace, rev).await;
                 }
@@ -1135,7 +1048,7 @@ async fn run_hooks(
                     tracing::debug!(function_id = %entry.id, revision = rev, held = revision, "stale observerremoved ignored");
                     continue;
                 }
-                remove_member(&entry, &mut members, &id).await;
+                remove_member(&iii, &entry, &mut members, &id).await;
                 revision = rev;
             }
             HookOp::Republish => entry.publish(&members),
@@ -1143,15 +1056,103 @@ async fn run_hooks(
                 entry.revoke();
                 let ids: Vec<String> = members.keys().cloned().collect();
                 for id in ids {
-                    remove_member(&entry, &mut members, &id).await;
+                    remove_member(&iii, &entry, &mut members, &id).await;
                 }
                 revision = 0;
                 if last {
                     return;
                 }
             }
+            HookOp::CatchUp(level) => catch_up(&iii, &entry, &mut members, level).await,
         }
     }
+}
+
+/// Why the engine announced an observer the SDK may already hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Replay {
+    /// Listed by `functionregistered`: a late rejection is sent again.
+    Listed,
+    /// `observeradded`: an observer rejected late comes back as a new one.
+    Added,
+}
+
+/// Acks again, at `revision` and without running any hook, an observer this
+/// SDK holds that the engine announced again as `view`: one with the same
+/// args, or (when `replay` is [`Replay::Listed`]) one rejected late, whose
+/// rejection is sent again. A held observer whose filters, target, capture or
+/// `on` changed is served with the new view from the ack on. Returns `view`
+/// for an observer to add as a new one (after removing the one held).
+fn ack_held(
+    iii: &IIIClient,
+    entry: &FunctionEntry,
+    members: &mut BTreeMap<String, Member>,
+    view: ObserverView,
+    namespace: &str,
+    revision: u64,
+    replay: Replay,
+) -> Option<ObserverView> {
+    let Some(held) = members.get(&view.id).map(|member| member.observer.clone()) else {
+        return Some(view);
+    };
+    let _indexing = entry.lock_index();
+    // A changed view with the same args, prepared before the rejection lock
+    // is taken (key functions are the worker's code). `Some(None)`: a view
+    // the SDK cannot serve (a filter that does not compile, a key function
+    // that panics), which makes it a new observer.
+    let changed = (held.view().args == view.args && held.view() != &view)
+        .then(|| updated(entry, &held, &view, namespace));
+    // Under the rejection lock, ordered with `reject()`.
+    let rejection = held
+        .state()
+        .rejection
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let kept = match (rejection.is_some(), replay) {
+        (true, Replay::Listed) => true,
+        (true, Replay::Added) => false,
+        (false, _) => held.view().args == view.args,
+    };
+    if !kept {
+        return Some(view);
+    }
+    match (rejection.is_some(), changed) {
+        (false, Some(None)) => return Some(view),
+        (false, Some(Some((observer, keys)))) => {
+            if let (Some(matcher), Some(keys)) = (entry.matcher(), keys) {
+                matcher.file(&observer, keys);
+            }
+            if let Some(member) = members.get_mut(&view.id) {
+                member.observer = observer;
+            }
+            entry.publish(members);
+        }
+        _ => {}
+    }
+    held.state().revision.store(revision, Ordering::Release);
+    send_ack(iii, entry, namespace, &view.id, revision, rejection.clone());
+    None
+}
+
+/// `held` with the changed view `view`, and its keys when the function
+/// matches by keys; `None` when the SDK cannot serve the view.
+fn updated(
+    entry: &FunctionEntry,
+    held: &Observer,
+    view: &ObserverView,
+    namespace: &str,
+) -> Option<(Observer, Option<Vec<String>>)> {
+    let filter = Filter::from_normalized(&view.filters).ok()?;
+    let observer = held.with_view(view.clone(), filter, namespace);
+    let keys = match entry
+        .matcher()
+        .and_then(|matcher| matcher.observer_keys(&observer))
+    {
+        Some(Err(_)) => return None,
+        Some(Ok(keys)) => Some(keys),
+        None => None,
+    };
+    Some((observer, keys))
 }
 
 fn send_ack(
@@ -1171,12 +1172,14 @@ fn send_ack(
     });
 }
 
-/// Runs `on_observer_added`, puts the observer in the compiled set, then acks
-/// it: the first event after the engine marks it active is evaluated.
+/// Runs the added hooks that apply (the worker's, then the function's),
+/// puts the observer in the compiled set, then acks it: the first call after
+/// the engine marks it active is delivered. A hook that rejects it, or a
+/// `reject()` or release while they ran, undoes the levels that resolved.
 async fn add_member(
     iii: &IIIClient,
     entry: &Arc<FunctionEntry>,
-    members: &mut BTreeMap<String, Observer>,
+    members: &mut BTreeMap<String, Member>,
     view: ObserverView,
     namespace: &str,
     revision: u64,
@@ -1193,88 +1196,214 @@ async fn add_member(
     let observer = Observer::new(
         view,
         filter,
-        entry,
+        &entry.id,
         namespace.to_string(),
         revision,
+        entry.created.fetch_add(1, Ordering::AcqRel) + 1,
         Arc::downgrade(&iii.inner),
     );
-    if let Some(hooks) = &entry.hooks {
-        let revocation = entry.revocation();
-        let added = std::panic::AssertUnwindSafe(hooks.on_observer_added(&observer)).catch_unwind();
-        let rejection = match tokio::time::timeout(iii.hook_timeout(), added).await {
-            Ok(Ok(Ok(()))) => None,
-            Ok(Ok(Err(rejection))) => Some(rejection),
-            Ok(Err(panic)) => Some(ObserveRejection::new(
-                observe_codes::OBSERVE_REJECTED,
-                format!("on_observer_added panicked: {}", panic_message(&panic)),
-            )),
-            Err(_) => Some(ObserveRejection::new(
-                observe_codes::OWNER_TIMEOUT,
-                format!(
-                    "on_observer_added for observer {id} did not finish within {:?}",
-                    iii.hook_timeout()
-                ),
-            )),
+    let revocation = entry.revocation();
+    let deadline = tokio::time::Instant::now() + iii.hook_timeout();
+    let mut resolved = Resolved::default();
+    let [worker, function] = iii.hooks().added(&entry.id);
+    for (level, slot) in [(Level::Worker, worker), (Level::Function, function)] {
+        let Some(slot) = slot else {
+            continue;
         };
-        if let Some(rejection) = rejection {
-            tracing::debug!(function_id = %entry.id, observer_id = %id, code = %rejection.code, "observer rejected by its owner");
-            let body = ErrorBody::new(rejection.code, rejection.message);
-            return send_ack(iii, entry, namespace, &id, revision, Some(body));
-        }
-        if entry.revocation() != revocation {
-            // The function was released while the callback ran: undo the add
-            // (no ack, never active), as if it had been removed.
-            tracing::debug!(function_id = %entry.id, observer_id = %id, "function released during on_observer_added");
-            run_removed_hook(entry, hooks, &observer).await;
-            return;
+        match run_added(iii, &slot, &observer, deadline).await {
+            Ok(()) => match level {
+                Level::Worker => resolved.worker = Some(slot.generation),
+                Level::Function => resolved.function = Some(slot.generation),
+            },
+            Err(rejection) => {
+                tracing::debug!(function_id = %entry.id, observer_id = %id, code = %rejection.code, "observer rejected by an added hook");
+                let body = ErrorBody::new(rejection.code, rejection.message);
+                unwind(iii, entry, &observer, resolved).await;
+                observer.settle(Acceptance::Refused(body.clone()));
+                return send_ack(iii, entry, namespace, &id, revision, Some(body));
+            }
         }
     }
-    // A `reject()` made while the hook ran wins. Holding the rejection lock
+    match admit(iii, entry, members, &observer, resolved, revocation) {
+        Admission::Accepted => observer.settle(Acceptance::Accepted),
+        Admission::Refused { error, ack } => {
+            unwind(iii, entry, &observer, resolved).await;
+            observer.settle(Acceptance::Refused(error.clone()));
+            if ack {
+                send_ack(iii, entry, namespace, &id, revision, Some(error));
+            }
+        }
+    }
+}
+
+/// What became of an observer whose added hooks resolved.
+enum Admission {
+    /// Active, filed in the key index, acked and compiled in.
+    Accepted,
+    /// Not accepted: the levels that resolved are undone, then it fails with
+    /// `error`, which its ack carries when `ack` (a released function's
+    /// observers get none).
+    Refused { error: ErrorBody, ack: bool },
+}
+
+/// Accepts an observer whose added hooks resolved, under the function's
+/// index lock: an observer whose key function panics is rejected, and one
+/// rejected (`reject()`) or released while the hooks ran is not accepted.
+fn admit(
+    iii: &IIIClient,
+    entry: &FunctionEntry,
+    members: &mut BTreeMap<String, Member>,
+    observer: &Observer,
+    resolved: Resolved,
+    revocation: u64,
+) -> Admission {
+    let _indexing = entry.lock_index();
+    // The keys it is filed under, computed once.
+    let matcher = entry.matcher();
+    let keys = match matcher
+        .as_ref()
+        .and_then(|matcher| matcher.observer_keys(observer))
+    {
+        Some(Err(crate::hooks::KeysPanicked(panic))) => {
+            return Admission::Refused {
+                error: ErrorBody::new(
+                    observe_codes::OBSERVE_REJECTED,
+                    format!("on_observer_match key function panicked: {panic}"),
+                ),
+                ack: true,
+            };
+        }
+        Some(Ok(keys)) => Some(keys),
+        None => None,
+    };
+    if entry.revocation() != revocation {
+        // The function was released while the hooks ran: undo the add (no
+        // ack, never active), as if it had been removed.
+        tracing::debug!(function_id = %entry.id, observer_id = %observer.id(), "function released during the added hooks");
+        return Admission::Refused {
+            error: ErrorBody::new(
+                observe_codes::OBSERVER_NOT_ACTIVE,
+                format!("{} was released while its added hooks ran", entry.id),
+            ),
+            ack: false,
+        };
+    }
+    // A `reject()` made while the hooks ran wins. Holding the rejection lock
     // through the ack keeps a concurrent `reject()` strictly after it (a late
     // rejection the engine handles), never between activation and ack.
     let rejection = observer
-        .inner
+        .state()
         .rejection
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     if let Some(error) = rejection.clone() {
-        drop(rejection);
-        tracing::debug!(function_id = %entry.id, observer_id = %id, code = %error.code, "observer rejected during on_observer_added");
-        return send_ack(iii, entry, namespace, &id, revision, Some(error));
+        tracing::debug!(function_id = %entry.id, observer_id = %observer.id(), code = %error.code, "observer rejected during its added hooks");
+        return Admission::Refused { error, ack: true };
     }
-    // Ack, then publish, in one synchronous step: the ack is queued ahead of
-    // any report the new observer matches, and the connection loop (same
-    // thread) only sends it after this task yields, by when the observer is
-    // compiled in.
-    observer.inner.active.store(true, Ordering::Release);
-    send_ack(iii, entry, namespace, &id, revision, None);
-    members.insert(id.clone(), observer.clone());
+    // Filed, acked, then published, in one synchronous step: the ack is
+    // queued ahead of any report the new observer matches, and the
+    // connection loop (same thread) only sends it after this task yields, by
+    // when the observer is compiled in.
+    observer.state().active.store(true, Ordering::Release);
+    if let (Some(matcher), Some(keys)) = (&matcher, keys) {
+        matcher.file(observer, keys);
+    }
+    send_ack(
+        iii,
+        entry,
+        observer.namespace(),
+        observer.id(),
+        observer.state().revision.load(Ordering::Acquire),
+        None,
+    );
+    members.insert(
+        observer.id().to_string(),
+        Member {
+            observer: observer.clone(),
+            worker: resolved.worker,
+            function: resolved.function,
+        },
+    );
     entry.publish(members);
-    drop(rejection);
+    Admission::Accepted
 }
 
+/// Runs one added hook within the observer's deadline. A panic is
+/// `OBSERVE_REJECTED`, a hook past the deadline `OWNER_TIMEOUT`.
+async fn run_added(
+    iii: &IIIClient,
+    slot: &AddedSlot,
+    observer: &Observer,
+    deadline: tokio::time::Instant,
+) -> Result<(), ObserveRejection> {
+    let added = std::panic::AssertUnwindSafe(slot.hook.on_added(observer.clone())).catch_unwind();
+    match tokio::time::timeout_at(deadline, added).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(panic)) => Err(ObserveRejection::new(
+            observe_codes::OBSERVE_REJECTED,
+            format!("on_observer_added panicked: {}", panic_message(&panic)),
+        )),
+        Err(_) => Err(ObserveRejection::new(
+            observe_codes::OWNER_TIMEOUT,
+            format!(
+                "on_observer_added for observer {} did not finish within {:?}",
+                observer.id(),
+                iii.hook_timeout()
+            ),
+        )),
+    }
+}
+
+/// The removed hooks of the levels whose added hook resolved, the
+/// function's then the worker's: what they set up for an observer that was
+/// not accepted is released.
+async fn unwind(iii: &IIIClient, entry: &FunctionEntry, observer: &Observer, resolved: Resolved) {
+    let [function, worker] = iii.hooks().removed(&entry.id);
+    let undo = [
+        function.filter(|_| resolved.function.is_some()),
+        worker.filter(|_| resolved.worker.is_some()),
+    ];
+    for hook in undo.into_iter().flatten() {
+        run_removed(iii, entry, &hook, observer).await;
+    }
+}
+
+/// Takes an accepted observer out, then runs the removed hooks, the
+/// function's then the worker's: exactly once per accepted observer.
 async fn remove_member(
+    iii: &IIIClient,
     entry: &Arc<FunctionEntry>,
-    members: &mut BTreeMap<String, Observer>,
+    members: &mut BTreeMap<String, Member>,
     id: &str,
 ) {
-    let Some(observer) = members.remove(id) else {
+    let Some(member) = members.remove(id) else {
         return;
     };
-    observer.inner.active.store(false, Ordering::Release);
-    entry.publish(members);
-    if let Some(hooks) = &entry.hooks {
-        run_removed_hook(entry, hooks, &observer).await;
+    {
+        let _indexing = entry.lock_index();
+        member
+            .observer
+            .state()
+            .active
+            .store(false, Ordering::Release);
+        if let Some(matcher) = entry.matcher() {
+            matcher.unfile(id);
+        }
+        entry.publish(members);
+    }
+    for hook in iii.hooks().removed(&entry.id).into_iter().flatten() {
+        run_removed(iii, entry, &hook, &member.observer).await;
     }
 }
 
-async fn run_removed_hook(
+async fn run_removed(
+    iii: &IIIClient,
     entry: &FunctionEntry,
-    hooks: &Arc<dyn ObserveHandler>,
+    hook: &Arc<dyn RemovedHook>,
     observer: &Observer,
 ) {
-    let removed = std::panic::AssertUnwindSafe(hooks.on_observer_removed(observer)).catch_unwind();
-    match tokio::time::timeout(HOOK_TIMEOUT, removed).await {
+    let removed = std::panic::AssertUnwindSafe(hook.on_removed(observer.clone())).catch_unwind();
+    match tokio::time::timeout(iii.hook_timeout(), removed).await {
         Ok(Ok(())) => {}
         Ok(Err(panic)) => tracing::warn!(
             function_id = %entry.id,
@@ -1285,8 +1414,53 @@ async fn run_removed_hook(
         Err(_) => tracing::warn!(
             function_id = %entry.id,
             observer_id = %observer.id(),
-            "on_observer_removed did not finish within {HOOK_TIMEOUT:?}"
+            "on_observer_removed did not finish within {:?}",
+            iii.hook_timeout()
         ),
+    }
+}
+
+/// Runs the added hook of `level`, set once observers were already active,
+/// for each of them that did not run it. One that fails is rejected late.
+/// Logs one warning with the number of observers it ran for.
+async fn catch_up(
+    iii: &IIIClient,
+    entry: &Arc<FunctionEntry>,
+    members: &mut BTreeMap<String, Member>,
+    level: Level,
+) {
+    let Some(slot) = iii.hooks().added_at(level, &entry.id) else {
+        return;
+    };
+    let behind: Vec<Observer> = members
+        .values()
+        .filter(|member| member.observer.is_active() && member.ran(level) != Some(slot.generation))
+        .map(|member| member.observer.clone())
+        .collect();
+    if behind.is_empty() {
+        return;
+    }
+    tracing::warn!(
+        function_id = %entry.id,
+        observers = behind.len(),
+        "{} observer(s) of {} were active before its on_observer_added hook was set; it runs \
+         for each of them now. Set hooks by function id before registering the function.",
+        behind.len(),
+        entry.id
+    );
+    for observer in behind {
+        let deadline = tokio::time::Instant::now() + iii.hook_timeout();
+        match run_added(iii, &slot, &observer, deadline).await {
+            Ok(()) => {
+                if let Some(member) = members.get_mut(observer.id()) {
+                    match level {
+                        Level::Worker => member.worker = Some(slot.generation),
+                        Level::Function => member.function = Some(slot.generation),
+                    }
+                }
+            }
+            Err(rejection) => observer.reject(rejection.code, rejection.message),
+        }
     }
 }
 
@@ -1309,9 +1483,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        RegisterFunction,
+        CallRequest, RegisterFunction,
         iii::{IIIConnectionState, MutexExt, Outbound},
-        protocol::TriggerRequest,
     };
 
     /// A client that is "running" but not connected: what it sends lands in
@@ -1348,20 +1521,8 @@ mod tests {
         iii.handle_message(&message.to_string()).unwrap();
     }
 
-    struct Hooks;
-
-    #[async_trait]
-    impl ObserveHandler for Hooks {
-        async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-            match obs.id() {
-                "hangs" => {
-                    std::future::pending::<()>().await;
-                    Ok(())
-                }
-                "panics" => panic!("hook blew up"),
-                _ => Ok(()),
-            }
-        }
+    fn echo() -> RegisterFunction {
+        RegisterFunction::new(|v: Value| Ok::<_, Error>(v))
     }
 
     fn added(revision: u64, id: &str) -> Value {
@@ -1374,11 +1535,15 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_hook_past_its_timeout_is_owner_timeout_and_a_panic_is_rejected() {
         let (iii, mut rx) = client();
-        iii.register_function(
-            "h::f",
-            RegisterFunction::new(|v: Value| Ok::<_, Error>(v))
-                .observe(Observe::owner().handler(Hooks)),
-        );
+        iii.on_observer_added_for("h::f", |obs: Observer| async move {
+            match obs.id() {
+                "hangs" => std::future::pending::<()>().await,
+                "panics" => panic!("hook blew up"),
+                _ => {}
+            }
+            Ok(())
+        });
+        iii.register_function("h::f", echo());
         feed(&iii, added(1, "hangs"));
         let ack = next_ack(&mut rx).await;
         assert_eq!(ack["id"], "hangs");
@@ -1398,54 +1563,900 @@ mod tests {
         assert!(ack.get("error").is_none());
     }
 
+    /// The worker's and the function's added hooks share one 30 s budget.
+    #[tokio::test(start_paused = true)]
+    async fn the_timeout_spans_both_levels() {
+        let (iii, mut rx) = client();
+        iii.on_observer_added(|_obs: Observer| async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            Ok(())
+        });
+        iii.on_observer_added_for("h::f", |_obs: Observer| async move {
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            Ok(())
+        });
+        iii.register_function("h::f", echo());
+        feed(&iii, added(1, "slow"));
+        let ack = next_ack(&mut rx).await;
+        assert_eq!(ack["error"]["code"], "OWNER_TIMEOUT");
+    }
+
+    /// Functions that need `observe.v2` stay unregistered on an engine
+    /// without it, logged once each; the next engine with it registers them.
     #[tokio::test]
     #[tracing_test::traced_test]
-    async fn an_engine_without_observe_is_logged_once_for_functions_with_hooks() {
-        let (iii, _rx) = client();
-        iii.register_function(
-            "o::hooked",
-            RegisterFunction::new(|v: Value| Ok::<_, Error>(v)).observe(Observe::owner()),
+    async fn an_engine_without_observe_v2_leaves_v2_functions_unregistered() {
+        let (iii, mut rx) = client();
+        iii.register_function("o::private", echo().private());
+        iii.register_function("o::plain", echo());
+        iii.on_observer_deliver_for("o::hooked", answer_with_count);
+        iii.register_function("o::hooked", echo());
+        iii.on_observer_match_for("o::matched", kind_keys());
+        iii.register_function("o::matched", echo());
+        let registered = |frames: &[Value]| -> Vec<String> {
+            frames
+                .iter()
+                .filter(|m| m["type"] == "registerfunction")
+                .map(|m| m["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            registered(&sent(&mut rx)),
+            vec!["o::plain"],
+            "held until the hello"
         );
-        iii.register_function(
-            "o::plain",
-            RegisterFunction::new(|v: Value| Ok::<_, Error>(v)),
-        );
-        let hello = json!({ "type": "workerregistered", "worker_id": "w" });
-        feed(&iii, hello.clone());
-        feed(&iii, hello.clone());
-        // registered once the engine said it has no observe: warned too
+
+        let v1 = json!({ "type": "workerregistered", "worker_id": "w",
+                         "features": ["observe.v1", "local-dispatch.v1"] });
+        feed(&iii, v1.clone());
+        feed(&iii, v1.clone());
+        assert!(registered(&sent(&mut rx)).is_empty());
+        // registered once the engine said it has no observe.v2: warned too
         iii.register_function(
             "o::late",
-            RegisterFunction::new(|v: Value| Ok::<_, Error>(v)).observe(Observe::owner()),
+            echo().args_format_value(json!({ "type": "object" })),
         );
-        iii.register_function(
-            "o::late-plain",
-            RegisterFunction::new(|v: Value| Ok::<_, Error>(v)),
-        );
+        assert!(registered(&sent(&mut rx)).is_empty());
         let warned = |lines: &[&str]| {
-            let hits: Vec<&&str> = lines
-                .iter()
-                .filter(|l| l.contains("does not support observe"))
-                .collect();
-            match hits.as_slice() {
-                [first, late]
-                    if first.contains("o::hooked")
-                        && !first.contains("o::plain")
-                        && late.contains("o::late")
-                        && !late.contains("o::late-plain")
-                        && !late.contains("o::hooked") =>
-                {
-                    Ok(())
-                }
-                other => Err(format!(
-                    "expected a line naming o::hooked, then one naming o::late, got {other:?}"
-                )),
+            let named = |id: &str| {
+                lines
+                    .iter()
+                    .filter(|l| l.contains("UNSUPPORTED") && l.contains(&format!("{id} needs")))
+                    .count()
+            };
+            match (
+                named("o::private"),
+                named("o::hooked"),
+                named("o::matched"),
+                named("o::late"),
+                named("o::plain"),
+            ) {
+                (1, 1, 1, 1, 0) => Ok(()),
+                other => Err(format!("expected one line each, got {other:?}")),
             }
         };
         logs_assert(warned);
-        // a reconnect to the same engine says nothing new
+
+        // a plain function that gets a deliver hook is withdrawn
+        iii.on_observer_deliver_for("o::plain", answer_with_count);
+        let frames = sent(&mut rx);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            frames[0],
+            json!({ "type": "unregisterfunction", "id": "o::plain" })
+        );
+        // and registered again once its deliver hook is removed
+        iii.clear_observer_deliver_for("o::plain");
+        assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
+        // a match hook withdraws it too, until it is removed
+        iii.on_observer_match_for("o::plain", kind_keys());
+        assert_eq!(
+            sent(&mut rx),
+            vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
+        );
+        iii.clear_observer_match_for("o::plain");
+        assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
+        iii.on_observer_deliver_for("o::plain", answer_with_count);
+        assert_eq!(
+            sent(&mut rx),
+            vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
+        );
+
+        // an engine with observe.v2 registers them all
+        feed(
+            &iii,
+            json!({ "type": "workerregistered", "worker_id": "w",
+                    "features": ["observe.v1", "observe.v2", "local-dispatch.v1"] }),
+        );
+        let mut ids = registered(&sent(&mut rx));
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "o::hooked",
+                "o::late",
+                "o::matched",
+                "o::plain",
+                "o::private"
+            ]
+        );
+        let private = iii
+            .functions()
+            .get("o::private")
+            .map(|data| serde_json::to_value(data.message.to_message()).unwrap())
+            .unwrap();
+        assert_eq!(private["private"], true);
+    }
+
+    /// Once the connection is registered, the SDK names each hook id this
+    /// worker has not registered, once.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn hooks_for_an_unregistered_id_are_named_once() {
+        let (iii, _rx) = client();
+        iii.on_observer_added_for("typo::f", |_obs: Observer| async move { Ok(()) });
+        iii.on_observer_removed_for("real::f", |_obs: Observer| async move {});
+        iii.register_function("real::f", echo());
+        let hello = json!({ "type": "workerregistered", "worker_id": "w",
+                            "features": ["observe.v1", "observe.v2"] });
+        feed(&iii, hello.clone());
         feed(&iii, hello);
-        logs_assert(warned);
+        logs_assert(|lines: &[&str]| {
+            let named: Vec<&&str> = lines
+                .iter()
+                .filter(|l| l.contains("which this worker has not registered"))
+                .collect();
+            match named.as_slice() {
+                [line] if line.contains("typo::f") => Ok(()),
+                other => Err(format!("expected one line naming typo::f, got {other:?}")),
+            }
+        });
+    }
+
+    /// Records the warnings of the current thread.
+    #[derive(Clone, Default)]
+    struct Warnings(Arc<Mutex<Vec<String>>>);
+
+    impl tracing::Subscriber for Warnings {
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::WARN
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Line(String);
+            impl tracing::field::Visit for Line {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+                    use std::fmt::Write;
+                    let _ = write!(self.0, "{}={:?} ", field.name(), value);
+                }
+            }
+            let mut line = Line(String::new());
+            event.record(&mut line);
+            self.0.lock().unwrap().push(line.0);
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// An added hook set once observers are active runs for each of them,
+    /// with one warning naming the function and how many.
+    #[tokio::test]
+    async fn a_late_hook_is_caught_up_with_one_warning() {
+        let warnings = Warnings::default();
+        let _capture = tracing::subscriber::set_default(warnings.clone());
+        let (iii, mut rx) = client();
+        let function = iii.register_function("late::f", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "late::f", "revision": 1, "local_dispatch": true,
+                    "observers": [{ "id": "o1", "target": "t", "filters": {} },
+                                  { "id": "o2", "target": "t", "filters": {} }] }),
+        );
+        next_ack(&mut rx).await;
+        next_ack(&mut rx).await;
+        while function.observers().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let ran = Arc::new(AtomicUsize::new(0));
+        function.on_observer_added({
+            let ran = ran.clone();
+            move |_obs: Observer| {
+                let ran = ran.clone();
+                async move {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            }
+        });
+        while ran.load(Ordering::SeqCst) < 2 {
+            tokio::task::yield_now().await;
+        }
+        let lines = warnings.0.lock().unwrap().clone();
+        let caught: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("were active before its on_observer_added hook was set"))
+            .collect();
+        assert_eq!(caught.len(), 1, "{lines:#?}");
+        assert!(
+            caught[0].contains("2 observer(s) of late::f"),
+            "{}",
+            caught[0]
+        );
+
+        // cleared: nothing runs again
+        function.clear_observer_added();
+        tokio::task::yield_now().await;
+        assert_eq!(ran.load(Ordering::SeqCst), 2);
+    }
+
+    /// A deliver hook that answers with the number of observers it got.
+    async fn answer_with_count(_call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+        Ok(json!(observers.len()))
+    }
+
+    fn v2_hello(iii: &IIIClient) {
+        feed(
+            iii,
+            json!({ "type": "workerregistered", "worker_id": "w",
+                    "features": ["observe.v1", "observe.v2", "local-dispatch.v1"] }),
+        );
+    }
+
+    async fn next_frame(rx: &mut UnboundedReceiver<Outbound>, ty: &str) -> Value {
+        loop {
+            let Some(Outbound::Message(envelope)) = rx.recv().await else {
+                panic!("sender gone");
+            };
+            let value: Value = serde_json::from_str(envelope.payload.as_str()).unwrap();
+            if value["type"] == ty {
+                return value;
+            }
+        }
+    }
+
+    /// Registers `function_id` on a v2 connection with `observers` and waits
+    /// until they are active.
+    async fn hosted(
+        iii: &IIIClient,
+        rx: &mut UnboundedReceiver<Outbound>,
+        function_id: &str,
+        observers: Value,
+    ) -> crate::runtime::FunctionRef {
+        let function = iii.register_function(function_id, echo());
+        let count = observers.as_array().map_or(0, Vec::len);
+        feed(
+            iii,
+            json!({ "type": "functionregistered", "id": function_id, "revision": 1,
+                    "local_dispatch": true, "observers": observers }),
+        );
+        for _ in 0..count {
+            next_ack(rx).await;
+        }
+        while function.observers().len() < count {
+            tokio::task::yield_now().await;
+        }
+        function
+    }
+
+    fn view_with_args(id: &str, args: Value) -> Value {
+        json!({ "id": id, "args": args, "target": "t", "filters": {} })
+    }
+
+    /// A function with a deliver hook delivers its calls itself: a routed
+    /// call's answer is the hook's, with no `observed` and no report, and the
+    /// hook gets the observers its match hook says want the call.
+    #[tokio::test]
+    async fn a_deliver_hook_answers_and_iii_delivers_nothing() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        sent(&mut rx);
+        iii.on_observer_match_for(
+            "self::f",
+            crate::Match::predicate(|obs, call| obs.args_value()["kind"] == call.input["kind"]),
+        );
+        iii.on_observer_deliver_for("self::f", answer_with_count);
+        hosted(
+            &iii,
+            &mut rx,
+            "self::f",
+            json!([
+                view_with_args("a1", json!({ "kind": "a" })),
+                view_with_args("a2", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        feed(
+            &iii,
+            json!({ "type": "invokefunction", "invocation_id": "11111111-2222-4333-8444-555555555555",
+                    "function_id": "self::f", "data": { "kind": "a" } }),
+        );
+        let answer = next_frame(&mut rx, "invocationresult").await;
+        assert_eq!(answer["result"], 2, "the two observers of kind a");
+        assert!(answer.get("observed").is_none());
+        iii.flush_reports();
+        assert!(
+            sent(&mut rx)
+                .iter()
+                .all(|m| m["type"] != "invocationsobserved"),
+            "iii delivers nothing for it"
+        );
+    }
+
+    /// A predicate that panics matches nothing, logged once per function.
+    #[tokio::test]
+    async fn a_panicking_predicate_matches_nothing_and_is_logged_once() {
+        let warnings = Warnings::default();
+        let _capture = tracing::subscriber::set_default(warnings.clone());
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        iii.on_observer_match_for(
+            "pp::f",
+            crate::Match::predicate(|obs, _call| {
+                if obs.id() == "boom" {
+                    panic!("predicate bug");
+                }
+                true
+            }),
+        );
+        hosted(
+            &iii,
+            &mut rx,
+            "pp::f",
+            json!([
+                view_with_args("boom", json!({})),
+                view_with_args("fine", json!({}))
+            ]),
+        )
+        .await;
+        sent(&mut rx);
+        for invocation in [
+            "21111111-2222-4333-8444-555555555555",
+            "31111111-2222-4333-8444-555555555555",
+        ] {
+            feed(
+                &iii,
+                json!({ "type": "invokefunction", "invocation_id": invocation,
+                        "function_id": "pp::f", "data": {} }),
+            );
+            let answer = next_frame(&mut rx, "invocationresult").await;
+            assert_eq!(answer["observed"], json!(["fine"]));
+        }
+        let lines = warnings.0.lock().unwrap().clone();
+        let logged = lines
+            .iter()
+            .filter(|l| l.contains("predicate panicked"))
+            .count();
+        assert_eq!(logged, 1, "{lines:#?}");
+    }
+
+    /// An observer whose key function panics is rejected with
+    /// `OBSERVE_REJECTED`, when it is added and when a match hook set late
+    /// rebuilds the index.
+    #[tokio::test]
+    async fn a_panicking_key_function_rejects_the_observer() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let keys = || {
+            crate::Match::keys(
+                |obs| {
+                    if obs.id() == "boom" {
+                        panic!("key bug");
+                    }
+                    obs.args_value()["kind"].as_str().into()
+                },
+                |call| call.input["kind"].as_str().into(),
+            )
+        };
+        iii.on_observer_match_for("kp::f", keys());
+        let function = iii.register_function("kp::f", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "kp::f", "revision": 1,
+                    "local_dispatch": true,
+                    "observers": [view_with_args("boom", json!({ "kind": "a" })),
+                                  view_with_args("fine", json!({ "kind": "a" }))] }),
+        );
+        let first = next_ack(&mut rx).await;
+        assert_eq!(first["id"], "boom");
+        assert_eq!(first["error"]["code"], "OBSERVE_REJECTED");
+        let second = next_ack(&mut rx).await;
+        assert!(second.get("error").is_none());
+        let call = Call {
+            input: json!({ "kind": "a" }),
+            ..Call::default()
+        };
+        while !function.is_observed_for(&call) {
+            tokio::task::yield_now().await;
+        }
+
+        // a match hook set late files the active observers; one whose keys
+        // panic is rejected late
+        let late = hosted(
+            &iii,
+            &mut rx,
+            "kl::f",
+            json!([
+                view_with_args("boom", json!({ "kind": "a" })),
+                view_with_args("fine", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        late.on_observer_match(keys());
+        let rejection = next_ack(&mut rx).await;
+        assert_eq!(rejection["id"], "boom");
+        assert_eq!(rejection["error"]["code"], "OBSERVE_REJECTED");
+        let b = Call {
+            input: json!({ "kind": "b" }),
+            ..Call::default()
+        };
+        while !late.is_observed_for(&b) {
+            tokio::task::yield_now().await;
+        }
+        assert!(!late.is_observed_for(&call), "boom is filed nowhere");
+    }
+
+    /// Keys from a string array at `value[field]`.
+    fn keys_at<'a>(value: &'a Value, field: &str) -> crate::Keys<'a> {
+        value[field]
+            .as_array()
+            .map(|keys| keys.iter().filter_map(Value::as_str).collect::<Vec<&str>>())
+            .into()
+    }
+
+    /// The `observed` ids of the answer to a routed call of `function_id`
+    /// with `input`.
+    async fn routed_observed(
+        iii: &IIIClient,
+        rx: &mut UnboundedReceiver<Outbound>,
+        function_id: &str,
+        invocation_id: &str,
+        input: Value,
+    ) -> Value {
+        feed(
+            iii,
+            json!({ "type": "invokefunction", "invocation_id": invocation_id,
+                    "function_id": function_id, "data": input }),
+        );
+        let answer = next_frame(rx, "invocationresult").await;
+        answer.get("observed").cloned().unwrap_or(json!([]))
+    }
+
+    /// A match hook set while observers are active matches them from the
+    /// moment it is set, while the function's hook task is busy too.
+    #[tokio::test]
+    async fn a_match_hook_set_late_matches_at_once() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let function = hosted(
+            &iii,
+            &mut rx,
+            "ml::f",
+            json!([
+                view_with_args("a", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        // the hook task runs a late added hook that never finishes
+        function.on_observer_added(|_obs: Observer| async move {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        function.on_observer_match(crate::Match::keys(
+            |obs| obs.args_value()["kind"].as_str().into(),
+            |call| call.input["kind"].as_str().into(),
+        ));
+        let call = |kind: &str| Call {
+            input: json!({ "kind": kind }),
+            ..Call::default()
+        };
+        assert!(function.is_observed_for(&call("a")));
+        assert!(function.is_observed_for(&call("b")));
+        assert!(!function.is_observed_for(&call("c")));
+        sent(&mut rx);
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "ml::f",
+            "51111111-2222-4333-8444-555555555555",
+            json!({ "kind": "b" }),
+        )
+        .await;
+        assert_eq!(observed, json!(["b"]));
+    }
+
+    /// Matched by keys, an observer filed under several keys of a call is
+    /// matched once, and each observer under any of them is matched.
+    #[tokio::test]
+    async fn an_observer_under_several_keys_of_a_call_matches_once() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        iii.on_observer_match_for(
+            "mk::f",
+            crate::Match::keys(
+                |obs| keys_at(obs.args_value(), "keys"),
+                |call| keys_at(&call.input, "keys"),
+            ),
+        );
+        hosted(
+            &iii,
+            &mut rx,
+            "mk::f",
+            json!([
+                view_with_args("both", json!({ "keys": ["x", "*"] })),
+                view_with_args("star", json!({ "keys": ["*"] })),
+                view_with_args("y", json!({ "keys": ["y"] }))
+            ]),
+        )
+        .await;
+        sent(&mut rx);
+        let sorted = |observed: Value| {
+            let mut ids: Vec<String> = serde_json::from_value(observed).unwrap();
+            ids.sort();
+            ids
+        };
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "mk::f",
+            "61111111-2222-4333-8444-555555555555",
+            json!({ "keys": ["x", "*", "x", "y"] }),
+        )
+        .await;
+        assert_eq!(sorted(observed), vec!["both", "star", "y"]);
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "mk::f",
+            "71111111-2222-4333-8444-555555555555",
+            json!({ "keys": ["*"] }),
+        )
+        .await;
+        assert_eq!(sorted(observed), vec!["both", "star"]);
+    }
+
+    fn kind_keys() -> crate::Match {
+        crate::Match::keys(
+            |obs| obs.args_value()["kind"].as_str().into(),
+            |call| call.input["kind"].as_str().into(),
+        )
+    }
+
+    fn kind(kind: &str) -> Call {
+        Call {
+            input: json!({ "kind": kind }),
+            ..Call::default()
+        }
+    }
+
+    /// A match hook set while an observer's removal runs builds its index
+    /// from the active observers, each one's keys computed once: the removed
+    /// observer is filed nowhere.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_match_hook_set_during_a_removal_files_only_active_observers() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let removed = Arc::new(AtomicBool::new(false));
+        iii.on_observer_removed_for("mr::f", {
+            let removed = removed.clone();
+            move |_obs: Observer| {
+                let removed = removed.clone();
+                async move { removed.store(true, Ordering::SeqCst) }
+            }
+        });
+        let function = hosted(
+            &iii,
+            &mut rx,
+            "mr::f",
+            json!([
+                view_with_args("a", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        let computed = Arc::new(Mutex::new(Vec::<String>::new()));
+        // a's key function announces a's removal and gives the hook task
+        // 200 ms to run it before a is filed
+        function.on_observer_match(crate::Match::keys(
+            {
+                let (iii, removed, computed) = (iii.clone(), removed.clone(), computed.clone());
+                move |obs| {
+                    computed.lock().unwrap().push(obs.id().to_string());
+                    if obs.id() == "a" {
+                        feed(
+                            &iii,
+                            json!({ "type": "observerremoved", "function_id": "mr::f",
+                                    "revision": 2, "id": "a" }),
+                        );
+                        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+                        while !removed.load(Ordering::SeqCst)
+                            && std::time::Instant::now() < deadline
+                        {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                    obs.args_value()["kind"].as_str().into()
+                }
+            },
+            |call| call.input["kind"].as_str().into(),
+        ));
+        while !removed.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(function.is_observed_for(&kind("b")));
+        assert!(!function.is_observed_for(&kind("a")), "a is filed nowhere");
+        assert_eq!(*computed.lock().unwrap(), vec!["a", "b"], "keys once each");
+    }
+
+    /// Matched by keys, a call matches only the observers it started with:
+    /// one accepted while the handler runs is neither delivered the call nor
+    /// handed to the deliver hook.
+    #[tokio::test]
+    async fn an_observer_accepted_during_a_call_does_not_match_it() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let gated = || {
+            let (entered, gate) = (entered.clone(), gate.clone());
+            RegisterFunction::new_async(move |input: Value| {
+                let (entered, gate) = (entered.clone(), gate.clone());
+                async move {
+                    entered.notify_one();
+                    gate.notified().await;
+                    Ok::<_, Error>(input)
+                }
+            })
+        };
+        iii.on_observer_match_for("kd::f", kind_keys());
+        iii.on_observer_match_for("kh::f", kind_keys());
+        iii.on_observer_deliver_for(
+            "kh::f",
+            |_call: Call, observers: Vec<Observer>| async move {
+                Ok(json!(
+                    observers.iter().map(Observer::id).collect::<Vec<_>>()
+                ))
+            },
+        );
+        for (n, function_id) in ["kd::f", "kh::f"].into_iter().enumerate() {
+            iii.register_function(function_id, gated());
+            feed(
+                &iii,
+                json!({ "type": "functionregistered", "id": function_id, "revision": 1,
+                        "local_dispatch": true,
+                        "observers": [view_with_args("a", json!({ "kind": "x" }))] }),
+            );
+            next_ack(&mut rx).await;
+            feed(
+                &iii,
+                json!({ "type": "invokefunction", "function_id": function_id,
+                        "invocation_id": format!("8111111{n}-2222-4333-8444-555555555555"),
+                        "data": { "kind": "x" } }),
+            );
+            entered.notified().await;
+            feed(
+                &iii,
+                json!({ "type": "observeradded", "function_id": function_id, "revision": 2,
+                        "observer": view_with_args("b", json!({ "kind": "x" })) }),
+            );
+            assert_eq!(next_ack(&mut rx).await["id"], "b");
+            gate.notify_one();
+            let answer = next_frame(&mut rx, "invocationresult").await;
+            match function_id {
+                "kd::f" => assert_eq!(answer["observed"], json!(["a"])),
+                _ => assert_eq!(answer["result"], json!(["a"])),
+            }
+        }
+    }
+
+    /// An `observeradded` queued behind a slow added hook when the function's
+    /// registration is withdrawn runs no hook and gets no ack.
+    #[tokio::test]
+    async fn an_observer_announced_before_a_withdrawal_is_not_added() {
+        let (iii, mut rx) = client();
+        feed(
+            &iii,
+            json!({ "type": "workerregistered", "worker_id": "w",
+                    "features": ["observe.v1", "local-dispatch.v1"] }),
+        );
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let ran = Arc::new(Mutex::new(Vec::<String>::new()));
+        iii.on_observer_added_for("wq::f", {
+            let (gate, ran) = (gate.clone(), ran.clone());
+            move |obs: Observer| {
+                let (gate, ran) = (gate.clone(), ran.clone());
+                async move {
+                    ran.lock().unwrap().push(obs.id().to_string());
+                    if obs.id() == "slow" {
+                        gate.notified().await;
+                    }
+                    Ok(())
+                }
+            }
+        });
+        let function = iii.register_function("wq::f", echo());
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "wq::f", "revision": 1,
+                    "local_dispatch": true, "observers": [view_with_args("slow", json!({}))] }),
+        );
+        while ran.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "wq::f", "revision": 2,
+                    "observer": view_with_args("late", json!({})) }),
+        );
+        iii.on_observer_deliver_for("wq::f", answer_with_count);
+        gate.notify_one();
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(*ran.lock().unwrap(), vec!["slow"], "late's hook never ran");
+        let frames = sent(&mut rx);
+        assert!(
+            frames.iter().all(|m| m["type"] != "observerack"),
+            "{frames:#?}"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|m| m["type"] == "unregisterfunction" && m["id"] == "wq::f")
+        );
+        assert!(!function.is_observed());
+    }
+
+    /// No observer is acked before `register_function` returned: the hook
+    /// task waits for the entry to open.
+    #[tokio::test]
+    async fn no_observer_is_acked_before_the_registration_returns() {
+        let (iii, mut rx) = client();
+        let entry = Arc::new(FunctionEntry::new(
+            "b7::f".to_string(),
+            false,
+            true,
+            true,
+            false,
+            None,
+            None,
+        ));
+        let view: ObserverView =
+            serde_json::from_value(json!({ "id": "o", "target": "t", "filters": {} })).unwrap();
+        entry.enqueue(
+            &iii,
+            HookOp::Registered {
+                revocation: entry.revocation(),
+                epoch: 0,
+                namespace: "default".to_string(),
+                revision: 1,
+                local_dispatch: true,
+                observers: vec![view],
+            },
+        );
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert!(sent(&mut rx).is_empty(), "nothing acked");
+        assert!(!entry.is_observed());
+        entry.open();
+        assert_eq!(next_ack(&mut rx).await["id"], "o");
+        while !entry.is_observed() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Hooks set by id stay in place across `unregister()` and a later
+    /// registration of the same id: the added, removed, match and deliver
+    /// hooks all apply to the new registration.
+    #[tokio::test]
+    async fn hooks_by_id_survive_unregister_and_a_new_registration() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let record = |what: &'static str| {
+            let events = events.clone();
+            move |obs: Observer| {
+                events.lock().unwrap().push(format!("{what} {}", obs.id()));
+            }
+        };
+        let (on_added, on_removed) = (record("added"), record("removed"));
+        iii.on_observer_added_for("rr::f", move |obs: Observer| {
+            on_added(obs);
+            async { Ok::<_, ObserveRejection>(()) }
+        })
+        .on_observer_removed_for("rr::f", move |obs: Observer| {
+            on_removed(obs);
+            async {}
+        })
+        .on_observer_match_for("rr::f", kind_keys())
+        .on_observer_deliver_for("rr::f", answer_with_count);
+        let events_now = || events.lock().unwrap().clone();
+
+        let first = hosted(
+            &iii,
+            &mut rx,
+            "rr::f",
+            json!([view_with_args("a", json!({ "kind": "a" }))]),
+        )
+        .await;
+        first.unregister();
+        while events_now().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let again = hosted(
+            &iii,
+            &mut rx,
+            "rr::f",
+            json!([view_with_args("b", json!({ "kind": "b" }))]),
+        )
+        .await;
+        assert_eq!(events_now(), vec!["added a", "removed a", "added b"]);
+        assert!(again.is_observed_for(&kind("b")));
+        assert!(!again.is_observed_for(&kind("a")), "matched by keys");
+        sent(&mut rx);
+        for (input, matched) in [("b", 1), ("a", 0)] {
+            feed(
+                &iii,
+                json!({ "type": "invokefunction", "function_id": "rr::f",
+                        "invocation_id": format!("9111111{matched}-2222-4333-8444-555555555555"),
+                        "data": { "kind": input } }),
+            );
+            let answer = next_frame(&mut rx, "invocationresult").await;
+            assert_eq!(answer["result"], matched, "the deliver hook answers");
+        }
+        again.unregister();
+        while events_now().len() < 4 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(events_now()[3], "removed b");
+    }
+
+    /// A standby warns once per wait for the host to leave: its later
+    /// conflicts are logged at debug until the engine confirms it.
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn a_standby_warns_once_per_wait() {
+        let (iii, _rx) = client();
+        let function = iii.register_function("sb::f", echo().standby());
+        let conflict = json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
+                               "namespace": "default", "function_id": "sb::f",
+                               "owner_worker_id": "w2" });
+        for _ in 0..3 {
+            feed(&iii, conflict.clone());
+        }
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "sb::f", "revision": 1,
+                    "local_dispatch": true, "observers": [] }),
+        );
+        while !function.local_dispatch_active() {
+            tokio::task::yield_now().await;
+        }
+        feed(&iii, conflict);
+        logs_assert(|lines: &[&str]| {
+            let count = |level: &str, text: &str| {
+                lines
+                    .iter()
+                    .filter(|l| l.contains(level) && l.contains(text))
+                    .count()
+            };
+            match (
+                count("WARN", "the standby registers it again until it takes over"),
+                count(
+                    "DEBUG",
+                    "standby: another worker still hosts this function id",
+                ),
+            ) {
+                (2, 2) => Ok(()),
+                other => Err(format!("expected (warn, debug) = (2, 2), got {other:?}")),
+            }
+        });
     }
 
     /// A peer that stops reading: flushed frames wait in the outbound channel,
@@ -1453,10 +2464,10 @@ mod tests {
     #[tokio::test]
     async fn frames_a_peer_does_not_read_stay_within_the_bound() {
         let (iii, _unread) = client();
-        let function =
-            iii.register_function("b::f", RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
         iii.set_connection_state(IIIConnectionState::Connected);
         iii.inner.connection_epoch.store(1, Ordering::SeqCst);
+        let function =
+            iii.register_function("b::f", RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
         feed(
             &iii,
             json!({ "type": "functionregistered", "id": "b::f", "revision": 1, "local_dispatch": true,
@@ -1467,7 +2478,7 @@ mod tests {
         }
         let payload = json!({ "blob": "x".repeat(10_000) });
         for i in 0..3_000 {
-            iii.trigger(TriggerRequest::new("b::f", payload.clone()))
+            iii.call(CallRequest::new("b::f", payload.clone()))
                 .await
                 .unwrap();
             if i % 100 == 0 {

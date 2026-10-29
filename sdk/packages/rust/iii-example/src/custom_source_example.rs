@@ -1,16 +1,17 @@
 //! Custom event sources as observable functions.
 //!
-//! A source that needs setup per observer (a schedule, a watched path) is
-//! owner-delivered and takes args; one whose events happen anyway is an auto
-//! function, observed with filters.
+//! A source is a function whose handler returns the event it is called with:
+//! the worker calls it when the event happens, and its observers observe the
+//! event. One that needs setup per observer (a schedule, a watched path)
+//! takes args and sets up in an added hook; one whose events happen anyway
+//! is observed with filters.
 
 use iii_sdk::{
-    Error, IIIClient, Observe, ObserveHandler, ObserveRejection, Observed, Observer,
-    RegisterFunction, Source,
+    Error, IIIClient, Match, ObserveRejection, Observed, Observer, RegisterFunction, Source,
 };
 use serde_json::json;
 
-// ── Example 1: an owner-delivered source with typed args ────────────────
+// ── Example 1: a source with typed args ─────────────────────────────────
 
 /// What an observer of `example::on-schedule` asks for.
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -35,24 +36,7 @@ pub struct ScheduleFired {
     pub fire_count: u64,
 }
 
-struct Scheduler;
-
-#[async_trait::async_trait]
-impl ObserveHandler for Scheduler {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let args: ScheduleArgs = obs.args()?;
-        if !args.at.ends_with('Z') {
-            return Err(ObserveRejection::new(
-                "INVALID_SCHEDULE",
-                format!("`at` must be a UTC timestamp, got {}", args.at),
-            ));
-        }
-        println!("[schedule] {} scheduled at {}", obs.target(), args.at);
-        Ok(())
-    }
-}
-
-// ── Example 2: an owner-delivered source with an enum in its args ───────
+// ── Example 2: a source with an enum in its args, matched by key ────────
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -75,35 +59,34 @@ pub enum FileEvent {
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct FileChanged {
+    /// The watched pattern the file matched
+    pub pattern: String,
     pub event: String,
     pub path: String,
     pub size_bytes: Option<u64>,
 }
 
-struct FileWatcher;
-
-#[async_trait::async_trait]
-impl ObserveHandler for FileWatcher {
-    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
-        let args: FileWatchArgs = obs.args()?;
-        println!("[file-watch] Watching: {}", args.pattern);
-        Ok(())
-    }
-}
-
 // ── Setup ───────────────────────────────────────────────────────────────
 
 pub fn setup(iii: &IIIClient) {
-    // ── Example 1: schedule (owner-delivered, typed args) ───────────
+    // ── Example 1: schedule (typed args, validated before acceptance) ─
+    iii.on_observer_added_for("example::on-schedule", |obs: Observer| async move {
+        let args: ScheduleArgs = obs.args()?;
+        if !args.at.ends_with('Z') {
+            return Err(ObserveRejection::new(
+                "INVALID_SCHEDULE",
+                format!("`at` must be a UTC timestamp, got {}", args.at),
+            ));
+        }
+        println!("[schedule] {} scheduled at {}", obs.target(), args.at);
+        Ok(())
+    });
     iii.register_function(
         "example::on-schedule",
-        RegisterFunction::new(|_: ScheduleFired| Ok::<_, Error>(()))
+        RegisterFunction::new(|fired: ScheduleFired| Ok::<_, Error>(fired))
             .description("Fires on a one-time or daily schedule. Observe it with args { at }.")
-            .observe(
-                Observe::owner()
-                    .args_format::<ScheduleArgs>()
-                    .handler(Scheduler),
-            ),
+            .args_format::<ScheduleArgs>()
+            .private(),
     );
     iii.register_function(
         "example::send_report",
@@ -118,18 +101,31 @@ pub fn setup(iii: &IIIClient) {
         "example::send_report",
     );
 
-    // ── Example 2: file watch (owner-delivered, enum args) ──────────
+    // ── Example 2: file watch (enum args, keyed by pattern) ─────────
+    iii.on_observer_added_for("example::on-file-change", |obs: Observer| async move {
+        let args: FileWatchArgs = obs.args()?;
+        println!("[file-watch] Watching: {}", args.pattern);
+        Ok(())
+    })
+    .on_observer_removed_for("example::on-file-change", |obs: Observer| async move {
+        println!("[file-watch] Observer {} stopped watching", obs.id());
+    })
+    // each change goes to the observers of its pattern, whatever their number
+    .on_observer_match_for(
+        "example::on-file-change",
+        Match::keys(
+            |obs| obs.args_value()["pattern"].as_str().into(),
+            |call| call.input["pattern"].as_str().into(),
+        ),
+    );
     iii.register_function(
         "example::on-file-change",
-        RegisterFunction::new(|_: FileChanged| Ok::<_, Error>(()))
+        RegisterFunction::new(|change: FileChanged| Ok::<_, Error>(change))
             .description(
                 "Fires when a watched file changes. Observe it with args { pattern, events }.",
             )
-            .observe(
-                Observe::owner()
-                    .args_format::<FileWatchArgs>()
-                    .handler(FileWatcher),
-            ),
+            .args_format::<FileWatchArgs>()
+            .private(),
     );
     iii.register_function(
         "example::process_csv",
@@ -145,8 +141,8 @@ pub fn setup(iii: &IIIClient) {
         "example::process_csv",
     );
 
-    // ── Example 3: an auto function, observed with filters ──────────
-    // Every invocation is an event; no args, no hooks.
+    // ── Example 3: a function observed with filters ─────────────────
+    // Every call is observable; no args, no hooks.
     iii.register_function(
         "example::custom-event",
         RegisterFunction::new(|input: serde_json::Value| Ok::<_, Error>(input))
