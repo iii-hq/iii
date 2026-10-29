@@ -140,14 +140,6 @@ differ, this file wins, and the spec is updated to match.
     are active rebuilds the index from them. With `onObserverDeliver` also set,
     the deliver hook receives the matched observers.
 
-46. **No `capture`.** The consumer option `capture` is removed; `deliver`
-    (`envelope`, `input`, `output`) is the one choice of what a target
-    receives, and the envelope always carries `input`, `output` or `error`,
-    `caller` and `metadata`. The engine ignores a `capture` field from 0.25
-    SDKs. A host serializes what the matched observers' `deliver` needs.
-    `configuration::on-updated` carries `{ id, event_type }`; consumers that
-    need the value call `configuration::get`.
-
 ## SDKs (all five)
 
 16. **Calling.** `call` (and `call_async` in Python, `Call` in Go) is the API;

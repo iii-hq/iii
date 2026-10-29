@@ -86,7 +86,6 @@ engine.
 | CLI `iii trigger <fn>` | `iii call <fn>`; `iii trigger` is an alias |
 | `Observe::owner()`, `Observe::auto()`, `ObserveHandler` (Rust) | `on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` methods taking closures or types that implement the hook traits (§5.2) |
 | `observe({ function_id }, target)` | also `observe('fn::id', target)` |
-| consumer option `capture` | removed; `deliver` picks what the target receives |
 | the engine evaluates routed calls, the host evaluates local calls and emits | the host evaluates every call of its functions; the engine evaluates calls to hosts without `observe.v2` and to engine-hosted sources (§8.2) |
 | error codes `NOT_OWNER_DELIVERED`, `FILTERS_NOT_MATCHED`, `TARGET_MISMATCH`, `INVALID_OBSERVE_DESCRIPTOR` | retired |
 
@@ -102,6 +101,7 @@ iii.observe(
     function_id: 'database::on-row-changed',
     args: { db: 'primary', table: 'orders', ops: ['insert', 'update'] },  // for the database worker
     filters: { 'caller.parent.worker_name': { $ne: 'order-projector' } },   // for iii
+    capture: ['input', 'caller'],
     deliver: 'output',
   },
   'orders::project',
@@ -113,9 +113,12 @@ iii.observe(
   says what they mean; the database worker reads `{ db, table, ops }` to
   capture that table and to deliver only its changes.
 - **`filters`** select which calls reach the target, by anything in the call.
+- **`capture`** chooses which parts of the call the envelope carries:
+  `input`, `output` (or `error`) and `caller`; default all three. Ids, status
+  and timing are always there. An observer that only counts calls or records
+  errors uses `capture: []` and never moves the payloads.
 - **`deliver`** is what the target receives when iii delivers: the `Observed`
-  envelope (default: ids, status, timing, `input`, `output` or `error`,
-  `caller` and `metadata`), the call's `input`, or its `output`. A function whose
+  envelope (default), the call's `input`, or its `output`. A function whose
   `onObserverDeliver` calls targets itself documents what they receive
   (`http::on-request` targets receive the `HttpRequest`).
 - The handle (`ready()`, `state`, `onStateChange`, `dispose()`) and the
@@ -390,6 +393,7 @@ interface Observer {
   readonly filters: Filter                    // normalized
   readonly target: string                     // function id
   readonly on: 'success' | 'error' | 'complete'
+  readonly capture: Capture[]
   matches(call: Partial<Call>): boolean       // `on` and filters
   accepted(): Promise<void>                   // resolves once the SDK has acked the observer
   reject(code: string, message: string): void // late rejection
@@ -594,7 +598,7 @@ The worker that hosts a function delivers its calls:
 input (the same value, as for every event source), an `invocationsobserved`
 item carries the value once and sets `"output_is_input": true`; the engine
 fills `output` from `input`. Event sources send each event once, whatever the
-observers' `deliver` asks for. A routed call needs no flag: the engine takes `output` from
+observers capture. A routed call needs no flag: the engine takes `output` from
 the `invocationresult` it already receives.
 
 The engine evaluates filters itself for calls to hosts without `observe.v2`
@@ -833,7 +837,7 @@ Trigger types and the functions that replace them:
 | `subscribe` | `pubsub::publish`, observed with a filter on `input.topic` | none |
 | `state` | `state::on-changed` | none; filters on `input.scope`, `input.key` |
 | `log`, `trace` | `observability::on-log`, `observability::on-span` | none |
-| `configuration` | `configuration::on-updated` | none; the event carries `{ id, event_type }`, and `configuration::get` returns the value |
+| `configuration` | `configuration::on-updated` | none |
 | `engine::functions-available`, `engine::workers-available` | `engine::on-functions-changed`, `engine::on-workers-changed` | none |
 | `stream`, `stream:join`, `stream:leave` | `stream::on-changed`, `stream::on-join`, `stream::on-leave` | none; filters on `input.stream_name`, `input.group_id` |
 | — | `engine::on-observers-changed` (new) | none |
