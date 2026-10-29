@@ -496,7 +496,9 @@ def _router(client: III, engine: FakeEngine) -> None:
         client,
         engine,
         "http::on-request",
-        observer_info("route-1", "users::get", args={"path": "/users"}, filters={"$and": [{"input.tenant": {"$eq": "acme"}}]}),
+        observer_info(
+            "route-1", "users::get", args={"path": "/users"}, filters={"$and": [{"input.tenant": {"$eq": "acme"}}]}
+        ),
     )
 
 

@@ -44,7 +44,7 @@ def test_stream_data_from_sender_to_processor(iii_client: III):
         await channel.writer.write(payload)
         await channel.writer.close_async()
 
-        result = await iii_client.trigger_async(
+        result = await iii_client.call_async(
             {
                 "function_id": "test.data.processor",
                 "payload": {
@@ -70,7 +70,7 @@ def test_stream_data_from_sender_to_processor(iii_client: III):
             {"name": "latency_ms", "value": 12},
         ]
 
-        result = iii_client.trigger(
+        result = iii_client.call(
             {
                 "function_id": "test.data.sender",
                 "payload": {"records": records},
@@ -154,7 +154,7 @@ def test_bidirectional_streaming(iii_client: III):
             offset = end
         await input_channel.writer.close_async()
 
-        worker_result = await iii_client.trigger_async(
+        worker_result = await iii_client.call_async(
             {
                 "function_id": "test.stream.worker",
                 "payload": {
@@ -181,7 +181,7 @@ def test_bidirectional_streaming(iii_client: III):
     try:
         text = "The quick brown fox jumps over the lazy dog and then runs around the park"
 
-        result = iii_client.trigger(
+        result = iii_client.call(
             {
                 "function_id": "test.stream.coordinator",
                 "payload": {

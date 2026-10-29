@@ -191,7 +191,7 @@ def _make_integration_client() -> III:
     time.sleep(0.1)
 
     try:
-        client.trigger({"function_id": "engine::functions::list", "payload": {}})
+        client.call({"function_id": "engine::functions::list", "payload": {}})
     except Exception:
         client.shutdown()
         pytest.skip("III engine not available")
@@ -202,7 +202,7 @@ def _make_integration_client() -> III:
 async def _invoke(client: III, function_id: str, payload: dict[str, Any]) -> Any:
     """Directly invoke an HTTP external function without blocking the test loop.
 
-    ``client.trigger`` is synchronous and blocks the caller until the engine's
+    ``client.call`` is synchronous and blocks the caller until the engine's
     webhook POST round-trips. Since the WebhookProbe server runs on this same
     event loop, calling it inline would deadlock -- so we run it on a worker
     thread and let the loop keep serving the probe.
@@ -210,7 +210,7 @@ async def _invoke(client: III, function_id: str, payload: dict[str, Any]) -> Any
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None,
-        lambda: client.trigger({"function_id": function_id, "payload": payload}),
+        lambda: client.call({"function_id": function_id, "payload": payload}),
     )
 
 
@@ -359,7 +359,7 @@ async def test_registers_and_unregisters_external_function() -> None:
         # Verify the function appears in the engine function list (with retries for timing).
         found = False
         for _ in range(10):
-            result = client.trigger({"function_id": "engine::functions::list", "payload": {}})
+            result = client.call({"function_id": "engine::functions::list", "payload": {}})
             function_ids = [f["function_id"] for f in result.get("functions", [])]
             if function_id in function_ids:
                 found = True
@@ -375,7 +375,7 @@ async def test_registers_and_unregisters_external_function() -> None:
         # Verify the function is gone (with retries for timing).
         gone = False
         for _ in range(10):
-            result = client.trigger({"function_id": "engine::functions::list", "payload": {}})
+            result = client.call({"function_id": "engine::functions::list", "payload": {}})
             function_ids = [f["function_id"] for f in result.get("functions", [])]
             if function_id not in function_ids:
                 gone = True
@@ -517,7 +517,7 @@ async def test_stops_delivering_after_unregister() -> None:
         http_fn = None
         time.sleep(0.5)
 
-        # Second invocation -- the function is gone, so the trigger is rejected
+        # Second invocation -- the function is gone, so the call is rejected
         # and nothing reaches the webhook.
         try:
             await _invoke(client, function_id, payload_after)

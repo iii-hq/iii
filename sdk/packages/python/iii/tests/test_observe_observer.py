@@ -228,7 +228,9 @@ def test_the_source_is_a_function_id_or_a_dict(engine: FakeEngine, connect: Any)
     client = connect(engine)
     client.observe("orders::create", "alerts::big-order", {"id": "short"})
     client.observe({"function_id": "orders::create"}, "alerts::big-order", {"id": "long"})
-    short, long = engine.wait_for(lambda: len(engine.frames_of("observe")) == 2 and engine.frames_of("observe"), what="it")
+    short, long = engine.wait_for(
+        lambda: len(engine.frames_of("observe")) == 2 and engine.frames_of("observe"), what="both frames"
+    )
     assert {**short, "id": "long"} == long
     with pytest.raises(TypeError):
         client.observe(["orders::create"], "alerts::big-order")  # type: ignore[arg-type]

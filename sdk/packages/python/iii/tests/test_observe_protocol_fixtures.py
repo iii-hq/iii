@@ -24,7 +24,6 @@ from observe_fake_engine import (
     settle,
     wait_until,
 )
-
 from opentelemetry import trace
 
 from iii import CallAction, InvocationError, Observer, ObserveRejection
@@ -209,7 +208,12 @@ def test_engine_only_fixtures_carry_the_0_25_observe_object_no_registration_here
             },
         ),
         # the string shorthand
-        ("observe-minimal.json", "orders::archive", "search::reindex-order", {"id": "d94f3a5b-6c7d-4e8f-a01b-2c3d4e5f6a7b"}),
+        (
+            "observe-minimal.json",
+            "orders::archive",
+            "search::reindex-order",
+            {"id": "d94f3a5b-6c7d-4e8f-a01b-2c3d4e5f6a7b"},
+        ),
         (
             "observe-on-error.json",
             {
@@ -355,7 +359,8 @@ def test_invocationsobserved_event_source_json_a_private_source_called_in_a_rout
     client.register_function("database::on-row-changed", lambda event: event, private=True)
     engine.deliver(
         function_registered(
-            "database::on-row-changed", [observer_info(o, "t", capture=["input", "output", "caller"]) for o in item["matched"]]
+            "database::on-row-changed",
+            [observer_info(o, "t", capture=["input", "output", "caller"]) for o in item["matched"]],
         )
     )
     engine.deliver(function_registered("database::execute"))
@@ -482,7 +487,9 @@ def test_invocationsobserved_routed_items_json_next_with_changed_calls(engine: F
         return output
 
     by_warehouse = [
-        observer_info(item["matched"][0], "t", filters={"$and": [{"input.warehouse": {"$eq": item["input"]["warehouse"]}}]})
+        observer_info(
+            item["matched"][0], "t", filters={"$and": [{"input.warehouse": {"$eq": item["input"]["warehouse"]}}]}
+        )
         for item in (first, second)
     ]
     _confirm(client, engine, "orders::import", [*by_warehouse, observer_info("batch-observer", "t")])
