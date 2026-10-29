@@ -34,7 +34,7 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 	_, _ = watcher.RegisterFunction(checkout, func(ctx context.Context, data json.RawMessage) (any, error) {
 		var amount int
 		_ = json.Unmarshal(data, &amount)
-		return watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": amount})})
+		return watcher.Call(ctx, iii.CallRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": amount})})
 	})
 	h, err := watcher.Observe(iii.Source{
 		FunctionID: charge,
@@ -53,9 +53,9 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 		t.Fatalf("state %s", h.State())
 	}
 
-	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Payload: raw(750)})
-	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Payload: raw(10)})                          // filtered out by input
-	call(t, watcher, iii.TriggerRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": 900})}) // no caller.function_id
+	call(t, watcher, iii.CallRequest{FunctionID: checkout, Payload: raw(750)})
+	call(t, watcher, iii.CallRequest{FunctionID: checkout, Payload: raw(10)})                          // filtered out by input
+	call(t, watcher, iii.CallRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": 900})}) // no caller.function_id
 	acts := exactly(t, got, 1, "one activation", 10*time.Second)
 	a := acts[0]
 	if a.Data["observer_id"] != h.ID() || a.Data["function_id"] != charge || a.Data["namespace"] != "default" || a.Data["status"] != "success" {
@@ -103,10 +103,10 @@ func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
 	ready(t, a)
 	ready(t, b)
 
-	call(t, watcher, iii.TriggerRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": false, "n": 1})})
+	call(t, watcher, iii.CallRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": false, "n": 1})})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": true, "n": 2})}); err == nil {
+	if _, err := watcher.Call(ctx, iii.CallRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": true, "n": 2})}); err == nil {
 		t.Fatal("the failing call succeeded")
 	}
 	e := exactly(t, errs, 1, "the error activation", 10*time.Second)[0]
@@ -142,7 +142,7 @@ func TestObserveRoutedPendingUntilTheTargetIsRegistered(t *testing.T) {
 	}
 	got := collector(t, watcher, target)
 	ready(t, h)
-	call(t, watcher, iii.TriggerRequest{FunctionID: tick})
+	call(t, watcher, iii.CallRequest{FunctionID: tick})
 	exactly(t, got, 1, "the activation", 10*time.Second)
 }
 
@@ -190,8 +190,8 @@ func TestObserveRoutedDisposeAndMaxFires(t *testing.T) {
 	if err := a.Dispose(context.Background()); err != nil || a.State() != iii.ObserverDisposed {
 		t.Fatalf("dispose: %v %s", err, a.State())
 	}
-	call(t, watcher, iii.TriggerRequest{FunctionID: ping})
-	call(t, watcher, iii.TriggerRequest{FunctionID: ping})
+	call(t, watcher, iii.CallRequest{FunctionID: ping})
+	call(t, watcher, iii.CallRequest{FunctionID: ping})
 	waitFor(t, "max_fires to dispose the observer", 10*time.Second, func() bool { return b.State() == iii.ObserverDisposed })
 	time.Sleep(300 * time.Millisecond)
 	if disposed.len() != 0 || once.len() != 1 {
@@ -215,7 +215,7 @@ func TestObserveRoutedSurvivesAReconnectOfItsWorker(t *testing.T) {
 	proxy.drop()
 	waitFor(t, "the observe replay", 10*time.Second, func() bool { return countOf(proxy.since(mark), "observe") >= 1 })
 	time.Sleep(500 * time.Millisecond)
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
 	a := exactly(t, got, 1, "an activation after the reconnect", 10*time.Second)[0]
 	if a.Data["observer_id"] != h.ID() || h.State() != iii.ObserverActive {
 		t.Errorf("observer %v state %s", a.Data["observer_id"], h.State())
@@ -231,7 +231,7 @@ func TestObserveRoutedExpiresIn(t *testing.T) {
 	h, _ := watcher.Observe(iii.Source{FunctionID: lease}, target, iii.ObserverOptions{ExpiresIn: 300 * time.Millisecond})
 	ready(t, h)
 	time.Sleep(500 * time.Millisecond)
-	call(t, watcher, iii.TriggerRequest{FunctionID: lease})
+	call(t, watcher, iii.CallRequest{FunctionID: lease})
 	waitFor(t, "the expiry", 10*time.Second, func() bool { return h.State() == iii.ObserverDisposed })
 	time.Sleep(200 * time.Millisecond)
 	if got.len() != 0 || h.Reason() == nil || h.Reason().Code != "EXPIRED" {
@@ -257,12 +257,12 @@ func TestObserveRoutedLoopGuard(t *testing.T) {
 			Input int `json:"input"`
 		}
 		_ = json.Unmarshal(data, &env)
-		_, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: loop, Payload: raw(env.Input + 1)})
+		_, err := watcher.Call(ctx, iii.CallRequest{FunctionID: loop, Payload: raw(env.Input + 1)})
 		return nil, err
 	})
 	h, _ := watcher.Observe(iii.Source{FunctionID: loop, Capture: []iii.Capture{iii.CaptureInput}}, onLoop)
 	ready(t, h)
-	call(t, watcher, iii.TriggerRequest{FunctionID: loop, Payload: raw(0)})
+	call(t, watcher, iii.CallRequest{FunctionID: loop, Payload: raw(0)})
 	time.Sleep(2 * time.Second)
 	mu.Lock()
 	defer mu.Unlock()
@@ -288,7 +288,7 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: work}, target, iii.ObserverOptions{MaxFires: 3})
 	ready(t, h)
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
 	waitFor(t, "the first activation", 10*time.Second, func() bool { return got.len() == 1 })
 
 	mark := proxy.mark()
@@ -298,8 +298,8 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 		return countOf(sent, "reattach") == 1 && countOf(sent, "observe") >= 1
 	})
 	time.Sleep(500 * time.Millisecond)
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
 	waitFor(t, "max_fires reached across the reattach", 10*time.Second, func() bool { return h.State() == iii.ObserverDisposed })
 	if got.len() != 3 || h.Reason() == nil || h.Reason().Code != "MAX_FIRES" {
 		t.Errorf("%d activations, reason %+v: fires must survive the reattach", got.len(), h.Reason())

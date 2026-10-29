@@ -77,7 +77,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 			Fail     bool         `json:"fail"`
 		}
 		_ = json.Unmarshal(data, &in)
-		return owner.Trigger(ctx, iii.TriggerRequest{
+		return owner.Call(ctx, iii.CallRequest{
 			FunctionID: price,
 			Payload:    raw(map[string]any{"sku": "A-1", "qty": 3, "fail": in.Fail}),
 			Metadata:   raw(map[string]string{"channel": "web"}),
@@ -97,7 +97,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 		before := got.len()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_, _ = owner.Trigger(ctx, iii.TriggerRequest{FunctionID: checkout, Payload: raw(map[string]any{"dispatch": dispatch, "fail": fail}), Dispatch: dispatch})
+		_, _ = owner.Call(ctx, iii.CallRequest{FunctionID: checkout, Payload: raw(map[string]any{"dispatch": dispatch, "fail": fail}), Dispatch: dispatch})
 		waitFor(t, fmt.Sprintf("the %s activation", dispatch), 10*time.Second, func() bool { return got.len() > before })
 		all := got.all()
 		return all[len(all)-1]
@@ -141,10 +141,10 @@ func TestObserveZeroWire(t *testing.T) {
 	const calls = 1_000_000
 	mark := proxy.mark()
 	ctx := context.Background()
-	req := iii.TriggerRequest{FunctionID: inc, Payload: json.RawMessage(`1`)}
+	req := iii.CallRequest{FunctionID: inc, Payload: json.RawMessage(`1`)}
 	start := time.Now()
 	for i := 0; i < calls; i++ {
-		if _, err := owner.Trigger(ctx, req); err != nil {
+		if _, err := owner.Call(ctx, req); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,7 +165,7 @@ func TestObserveZeroWire(t *testing.T) {
 	ready(t, h)
 	mark = proxy.mark()
 	for i := 0; i < 10; i++ {
-		call(t, owner, iii.TriggerRequest{FunctionID: observed, Payload: raw(i)})
+		call(t, owner, iii.CallRequest{FunctionID: observed, Payload: raw(i)})
 	}
 	exactly(t, got, 10, "the observed calls' activations", 10*time.Second)
 	if n := countOf(proxy.since(mark), "invocationsobserved"); n == 0 {
@@ -187,7 +187,7 @@ func TestObserveActivationRace(t *testing.T) {
 	ready(t, h)
 	mark := proxy.mark()
 	for i := 0; i < n; i++ {
-		call(t, owner, iii.TriggerRequest{FunctionID: fn, Payload: raw(i)})
+		call(t, owner, iii.CallRequest{FunctionID: fn, Payload: raw(i)})
 	}
 	acts := exactly(t, got, n, fmt.Sprintf("%d activations", n), 20*time.Second)
 	seen := map[float64]bool{}
@@ -302,7 +302,7 @@ func (o *cronOwner) wasRemoved(id string) bool {
 
 func (o *cronOwner) tick(t *testing.T, expr string, n int) {
 	t.Helper()
-	call(t, o.client, iii.TriggerRequest{FunctionID: o.fn, Payload: raw(map[string]any{"expression": expr, "n": n})})
+	call(t, o.client, iii.CallRequest{FunctionID: o.fn, Payload: raw(map[string]any{"expression": expr, "n": n})})
 }
 
 // sdk.md §7 Args: obs.Args is what the observer sent; a missing required argument and
@@ -381,7 +381,7 @@ func TestObserveOwnerHooks(t *testing.T) {
 	if f, _ := json.Marshal(added[0].Filters); string(f) != `{"$and":[{"input.n":{"$gte":2}}]}` {
 		t.Errorf("filters as the owner sees them: %s", f)
 	}
-	got := call(t, watcher, iii.TriggerRequest{FunctionID: iii.FnGetObserver, Payload: raw(map[string]string{"id": ok.ID()})})
+	got := call(t, watcher, iii.CallRequest{FunctionID: iii.FnGetObserver, Payload: raw(map[string]string{"id": ok.ID()})})
 	if !strings.Contains(string(got), `"input.n"`) {
 		t.Errorf("engine::observers::get: %s", got)
 	}
@@ -501,7 +501,7 @@ func TestObserveOwnerCall(t *testing.T) {
 	ready(t, onAuto)
 	localDispatchReady(t, owner, onRequest)
 
-	out := call(t, owner, iii.TriggerRequest{FunctionID: onRequest, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})})
+	out := call(t, owner, iii.CallRequest{FunctionID: onRequest, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})})
 	if string(out) != `{"body":{"path":"/users"},"status":200}` {
 		t.Errorf("response %s", out)
 	}
@@ -575,7 +575,7 @@ func TestObserveReconnect(t *testing.T) {
 
 	proxy.drop()
 	waitFor(t, "the disconnect", 5*time.Second, func() bool { return owner.State() != iii.StateConnected })
-	if out := call(t, owner, iii.TriggerRequest{FunctionID: fn, Payload: raw(21)}); string(out) != "42" { // still local
+	if out := call(t, owner, iii.CallRequest{FunctionID: fn, Payload: raw(21)}); string(out) != "42" { // still local
 		t.Errorf("local call while disconnected: %s", out)
 	}
 	// an observer removed while the owner is away
@@ -610,7 +610,7 @@ func TestObserveConflictOnReplayDisablesLocalDispatch(t *testing.T) {
 	proxy.hold()
 	proxy.drop()
 	waitFor(t, "the disconnect", 5*time.Second, func() bool { return first.State() != iii.StateConnected })
-	if out := call(t, first, iii.TriggerRequest{FunctionID: fn}); string(out) != `"first"` { // local while away
+	if out := call(t, first, iii.CallRequest{FunctionID: fn}); string(out) != `"first"` { // local while away
 		t.Errorf("local call while away: %s", out)
 	}
 	second := observeWorker(t, "conflict-second", nil)
@@ -618,14 +618,14 @@ func TestObserveConflictOnReplayDisablesLocalDispatch(t *testing.T) {
 		_, _ = second.RegisterFunction(fn, func(context.Context, json.RawMessage) (any, error) { return "second", nil })
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		out, err := second.Trigger(ctx, iii.TriggerRequest{FunctionID: fn, Dispatch: iii.DispatchRemote})
+		out, err := second.Call(ctx, iii.CallRequest{FunctionID: fn, Dispatch: iii.DispatchRemote})
 		return err == nil && string(out) == `"second"`
 	})
 	proxy.release()
 	waitFor(t, "local dispatch disabled by the conflict", 10*time.Second, func() bool {
 		return first.State() == iii.StateConnected && !first.LocalDispatchActive(fn)
 	})
-	if out := call(t, first, iii.TriggerRequest{FunctionID: fn}); string(out) != `"second"` {
+	if out := call(t, first, iii.CallRequest{FunctionID: fn}); string(out) != `"second"` {
 		t.Errorf("after the conflict the call must reach the new owner, got %s", out)
 	}
 }

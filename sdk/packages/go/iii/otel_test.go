@@ -316,16 +316,16 @@ func tracedContext(t *testing.T) context.Context {
 	return baggage.ContextWithBaggage(ctx, b)
 }
 
-// B2: Trigger injects the traceparent and baggage of ctx into the outbound invoke frame,
+// B2: Call injects the traceparent and baggage of ctx into the outbound invoke frame,
 // with telemetry export disabled (TestMain's OTEL_ENABLED=false), and omits them when
 // ctx carries none.
-func TestOtelTriggerInjectsTraceContext(t *testing.T) {
+func TestOtelCallInjectsTraceContext(t *testing.T) {
 	e := newOtelEngine(t, nil)
 	c := e.connect(t)
-	if _, err := c.Trigger(tracedContext(t), TriggerRequest{FunctionID: "remote::traced", Action: VoidAction()}); err != nil {
+	if _, err := c.Call(tracedContext(t), CallRequest{FunctionID: "remote::traced", Action: VoidAction()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "remote::plain", Action: VoidAction()}); err != nil {
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "remote::plain", Action: VoidAction()}); err != nil {
 		t.Fatal(err)
 	}
 	traced := e.waitInvoke(t, "remote::traced")
@@ -358,7 +358,7 @@ func TestOtelHandlerReceivesCallerTraceContext(t *testing.T) {
 	got := make(chan seen, 1)
 	_, _ = c.RegisterFunction("traced::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		got <- seen{trace.SpanContextFromContext(ctx), baggage.FromContext(ctx).Member("tenant").Value()}
-		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "downstream::fn", Action: VoidAction()})
+		_, err := c.Call(ctx, CallRequest{FunctionID: "downstream::fn", Action: VoidAction()})
 		return "ok", err
 	})
 	var s seen
@@ -390,7 +390,7 @@ func TestOtelInvocationSpanExported(t *testing.T) {
 		WithHeaders(http.Header{"X-Test": {"1"}}),
 	)
 	_, _ = c.RegisterFunction("orders::create", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "inventory::reserve", Action: VoidAction()})
+		_, err := c.Call(ctx, CallRequest{FunctionID: "inventory::reserve", Action: VoidAction()})
 		return map[string]any{"ok": true, "token": "t-1"}, err
 	})
 
@@ -673,7 +673,7 @@ func TestOtelLocalDispatchSpanParent(t *testing.T) {
 	registerLocal(t, c, "local::child", func(ctx context.Context, _ json.RawMessage) (any, error) { return 2, nil })
 
 	parentCtx, parent := otel.Tracer("user").Start(context.Background(), "caller")
-	if _, err := c.Trigger(parentCtx, TriggerRequest{FunctionID: "local::child"}); err != nil {
+	if _, err := c.Call(parentCtx, CallRequest{FunctionID: "local::child"}); err != nil {
 		t.Fatal(err)
 	}
 	parent.End()

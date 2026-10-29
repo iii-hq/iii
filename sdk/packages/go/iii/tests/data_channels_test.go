@@ -74,7 +74,7 @@ func TestChannelStreamSenderToProcessor(t *testing.T) {
 		"label":  "batch",
 		"reader": ch.ReaderRef,
 	})
-	res, err := c.Trigger(ctxFor(t, 15*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 15*time.Second), iii.CallRequest{
 		FunctionID: "test::chan::go::processor",
 		Payload:    procPayload,
 		Timeout:    15 * time.Second,

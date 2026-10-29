@@ -24,13 +24,13 @@ func registerLocal(t *testing.T, c *Client, id string, h Handler, opts ...Regist
 	return ref
 }
 
-func trigger(t *testing.T, c *Client, req TriggerRequest) json.RawMessage {
+func call(t *testing.T, c *Client, req CallRequest) json.RawMessage {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := c.Trigger(ctx, req)
+	out, err := c.Call(ctx, req)
 	if err != nil {
-		t.Fatalf("Trigger(%s): %v", req.FunctionID, err)
+		t.Fatalf("Call(%s): %v", req.FunctionID, err)
 	}
 	return out
 }
@@ -59,10 +59,10 @@ func TestLocalDispatchRunsInProcess(t *testing.T) {
 		return n + 1, nil
 	})
 	mark := fe.mark()
-	if out := trigger(t, c, TriggerRequest{FunctionID: "math::inc", Payload: json.RawMessage(`41`)}); string(out) != "42" {
+	if out := call(t, c, CallRequest{FunctionID: "math::inc", Payload: json.RawMessage(`41`)}); string(out) != "42" {
 		t.Fatalf("result %s", out)
 	}
-	if out := trigger(t, c, TriggerRequest{FunctionID: "math::inc", Payload: json.RawMessage(`1`), Namespace: "default"}); string(out) != "2" {
+	if out := call(t, c, CallRequest{FunctionID: "math::inc", Payload: json.RawMessage(`1`), Namespace: "default"}); string(out) != "2" {
 		t.Fatalf("result %s (the namespace it registered in stays local)", out)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -70,14 +70,14 @@ func TestLocalDispatchRunsInProcess(t *testing.T) {
 		t.Fatalf("%d frames, %d calls", n, calls.Load())
 	}
 
-	short := func(req TriggerRequest) {
+	short := func(req CallRequest) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
-		_, _ = c.Trigger(ctx, req) // the fake engine does not answer
+		_, _ = c.Call(ctx, req) // the fake engine does not answer
 	}
-	short(TriggerRequest{FunctionID: "math::inc", Dispatch: DispatchRemote})
-	short(TriggerRequest{FunctionID: "math::inc", Action: EnqueueAction("q")})
-	short(TriggerRequest{FunctionID: "math::inc", Namespace: "elsewhere"})
+	short(CallRequest{FunctionID: "math::inc", Dispatch: DispatchRemote})
+	short(CallRequest{FunctionID: "math::inc", Action: EnqueueAction("q")})
+	short(CallRequest{FunctionID: "math::inc", Namespace: "elsewhere"})
 	off := false
 	// Registered with local dispatch, then registered again without it (an id is
 	// registered once: unregister first).
@@ -89,12 +89,12 @@ func TestLocalDispatchRunsInProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, "confirmed", func() bool { return c.functionObservers("math::remote-only").syncedOn(c.currentEpoch()) })
-	short(TriggerRequest{FunctionID: "math::remote-only"})
+	short(CallRequest{FunctionID: "math::remote-only"})
 	waitUntil(t, "remote frames", func() bool { return invokeFrames(fe, "math::inc") == 3 && invokeFrames(fe, "math::remote-only") == 1 })
 	if calls.Load() != 2 {
 		t.Errorf("handler ran %d times; the remote calls must not run it here", calls.Load())
 	}
-	if _, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "math::inc", Dispatch: "sideways"}); err == nil {
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "math::inc", Dispatch: "sideways"}); err == nil {
 		t.Error("unknown Dispatch accepted")
 	}
 }
@@ -112,7 +112,7 @@ func TestLocalDispatchNeedsTheEngineConfirmation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_, _ = c.Trigger(ctx, TriggerRequest{FunctionID: "math::inc"})
+	_, _ = c.Call(ctx, CallRequest{FunctionID: "math::inc"})
 	waitUntil(t, "remote frame", func() bool { return invokeFrames(fe, "math::inc") == 1 })
 }
 
@@ -126,7 +126,7 @@ func TestLocalVoidIsFireAndForget(t *testing.T) {
 		<-release
 		return nil, nil
 	})
-	out, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "jobs::run", Action: VoidAction()})
+	out, err := c.Call(context.Background(), CallRequest{FunctionID: "jobs::run", Action: VoidAction()})
 	if err != nil || out != nil {
 		t.Fatalf("void: %s %v", out, err)
 	}
@@ -148,7 +148,7 @@ func TestLocalDispatchSurvivesADisconnect(t *testing.T) {
 	fe.mu.Unlock()
 	fe.m.closeActiveConnection()
 	waitUntil(t, "offline", func() bool { return !c.registeredNow() })
-	if out := trigger(t, c, TriggerRequest{FunctionID: "math::inc", Payload: json.RawMessage(`7`)}); string(out) != "7" {
+	if out := call(t, c, CallRequest{FunctionID: "math::inc", Payload: json.RawMessage(`7`)}); string(out) != "7" {
 		t.Errorf("result %s", out)
 	}
 	close(gate)
@@ -172,7 +172,7 @@ func TestLocalValueSemantics(t *testing.T) {
 		return m, nil
 	})
 	in := json.RawMessage(`{"a":[1,2]}`)
-	out := trigger(t, c, TriggerRequest{FunctionID: "vals::mutate", Payload: in})
+	out := call(t, c, CallRequest{FunctionID: "vals::mutate", Payload: in})
 	if string(in) != `{"a":[1,2]}` {
 		t.Errorf("the handler's mutation reached the caller: %s", in)
 	}
@@ -205,22 +205,22 @@ func TestLocalErrorsAndTimeoutsMatchTheRemotePath(t *testing.T) {
 		return nil, nil
 	})
 	var ie *InvocationError
-	_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "err::typed"})
+	_, err := c.Call(context.Background(), CallRequest{FunctionID: "err::typed"})
 	if !errors.As(err, &ie) || ie.Code != "CARD_DECLINED" || ie.Message != "declined" || ie.Stacktrace != "at charge()" || ie.FunctionID != "err::typed" {
 		t.Errorf("typed: %#v", err)
 	}
-	_, err = c.Trigger(context.Background(), TriggerRequest{FunctionID: "err::plain"})
+	_, err = c.Call(context.Background(), CallRequest{FunctionID: "err::plain"})
 	if !errors.As(err, &ie) || ie.Code != "invocation_failed" || ie.Message != "boom" {
 		t.Errorf("plain: %#v", err)
 	}
-	_, err = c.Trigger(context.Background(), TriggerRequest{FunctionID: "err::panic"})
+	_, err = c.Call(context.Background(), CallRequest{FunctionID: "err::panic"})
 	if !errors.As(err, &ie) || ie.Code != "invocation_failed" {
 		t.Errorf("panic: %#v", err)
 	}
-	if _, err = c.Trigger(context.Background(), TriggerRequest{FunctionID: "err::slow", Timeout: 20 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
+	if _, err = c.Call(context.Background(), CallRequest{FunctionID: "err::slow", Timeout: 20 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
 		t.Errorf("timeout: %v", err)
 	}
-	if _, err = c.Trigger(context.Background(), TriggerRequest{FunctionID: "err::plain", Payload: json.RawMessage(`{`)}); err == nil {
+	if _, err = c.Call(context.Background(), CallRequest{FunctionID: "err::plain", Payload: json.RawMessage(`{`)}); err == nil {
 		t.Error("invalid JSON payload accepted")
 	}
 }
@@ -242,9 +242,9 @@ func TestInvocationContextOfLocalCalls(t *testing.T) {
 	registerLocal(t, c, "chain::outer", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		inv, _ := InvocationFromContext(ctx)
 		got <- inv
-		return c.Trigger(ctx, TriggerRequest{FunctionID: "chain::inner"})
+		return c.Call(ctx, CallRequest{FunctionID: "chain::inner"})
 	})
-	trigger(t, c, TriggerRequest{FunctionID: "chain::outer"})
+	call(t, c, CallRequest{FunctionID: "chain::outer"})
 	outer, inner := <-got, <-got
 	if outer.FunctionID != "chain::outer" || outer.Caller == nil || outer.Caller.FunctionID != "" || outer.Caller.WorkerName != "observe-test" || outer.Caller.WorkerID != "worker-1" {
 		t.Errorf("outer %+v caller %+v", outer, outer.Caller)
@@ -273,11 +273,11 @@ func TestLocalReentrancyGuard(t *testing.T) {
 		}
 		cctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		defer cancel()
-		return c.Trigger(cctx, TriggerRequest{FunctionID: "rec::down", Payload: json.RawMessage(fmt.Sprint(n + 1))})
+		return c.Call(cctx, CallRequest{FunctionID: "rec::down", Payload: json.RawMessage(fmt.Sprint(n + 1))})
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, _ = c.Trigger(ctx, TriggerRequest{FunctionID: "rec::down", Payload: json.RawMessage(`0`)})
+	_, _ = c.Call(ctx, CallRequest{FunctionID: "rec::down", Payload: json.RawMessage(`0`)})
 	if depth.Load() != maxLocalDepth {
 		t.Errorf("ran %d levels locally, want %d", depth.Load(), maxLocalDepth)
 	}
@@ -296,7 +296,7 @@ func TestRemoteHandlerContextAndCallerPropagation(t *testing.T) {
 		got <- inv
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 		defer cancel()
-		_, _ = c.Trigger(cctx, TriggerRequest{FunctionID: "pager::page", Dispatch: DispatchRemote})
+		_, _ = c.Call(cctx, CallRequest{FunctionID: "pager::page", Dispatch: DispatchRemote})
 		return "done", nil
 	})
 	var activation map[string]json.RawMessage
@@ -322,7 +322,7 @@ func TestRemoteHandlerContextAndCallerPropagation(t *testing.T) {
 	// outside any handler: no caller, no depth
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_, _ = c.Trigger(ctx, TriggerRequest{FunctionID: "pager::other"})
+	_, _ = c.Call(ctx, CallRequest{FunctionID: "pager::other"})
 	plain := fe.waitFrames(MsgInvokeFunction, 1, func(d *DecodedMessage) bool { return d.InvokeFunction.FunctionID == "pager::other" })[0]
 	raw, _ := MarshalMessage(plain.InvokeFunction)
 	var fields map[string]json.RawMessage
@@ -341,7 +341,7 @@ func TestNoCallerToAnEngineWithoutObserve(t *testing.T) {
 	_, _ = c.RegisterFunction("old::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
 		defer cancel()
-		_, _ = c.Trigger(cctx, TriggerRequest{FunctionID: "old::other"})
+		_, _ = c.Call(cctx, CallRequest{FunctionID: "old::other"})
 		return nil, nil
 	})
 	id := uuid.New()
@@ -352,17 +352,10 @@ func TestNoCallerToAnEngineWithoutObserve(t *testing.T) {
 	}
 }
 
-// autoObserver adds an observer of an auto function and waits for its ack.
-func autoObserver(t *testing.T, fe *fakeEngine, fn string, info ObserverInfo) {
-	t.Helper()
-	rev := fe.add(fn, info)
-	if a := fe.waitAck(fn, info.ID, rev); a.Error != nil {
-		t.Fatalf("%s rejected: %+v", info.ID, a.Error)
-	}
-}
-
-// sdk.md §4.3: a matched local call of an auto function is reported once, with the
-// union of the matched observers' captures; on: error sees only failures.
+// A matched local call is reported once, with the union of the matched observers'
+// captures; on: error sees only failures. The item's caller carries the call's
+// context only: a call made outside any handler has none (the engine stamps the
+// worker), while filters see this worker as the caller.
 func TestLocalCallsOfAutoFunctionsAreReported(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -382,10 +375,10 @@ func TestLocalCallsOfAutoFunctionsAreReported(t *testing.T) {
 	failures := observerInfo("failures", "x::y", "", "", CaptureInput, CaptureError, CaptureCaller)
 	failures.On = OnError
 	for _, o := range []ObserverInfo{big, caller, failures} {
-		autoObserver(t, fe, "pay::charge", o)
+		addObserver(t, fe, "pay::charge", o)
 	}
 
-	trigger(t, c, TriggerRequest{FunctionID: "pay::charge", Payload: json.RawMessage(`{"amount":750}`), Metadata: json.RawMessage(`{"channel":"web"}`)})
+	call(t, c, CallRequest{FunctionID: "pay::charge", Payload: json.RawMessage(`{"amount":750}`), Metadata: json.RawMessage(`{"channel":"web"}`)})
 	items := fe.waitItems(1)
 	it := items[0]
 	if len(it.Matched) != 2 || it.Matched[0] != "big" || it.Matched[1] != "by-worker" || it.Status != "success" {
@@ -398,7 +391,7 @@ func TestLocalCallsOfAutoFunctionsAreReported(t *testing.T) {
 		t.Errorf("item %+v", it)
 	}
 
-	_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "pay::charge", Payload: json.RawMessage(`{"amount":10,"fail":true}`)})
+	_, err := c.Call(context.Background(), CallRequest{FunctionID: "pay::charge", Payload: json.RawMessage(`{"amount":10,"fail":true}`)})
 	if err == nil {
 		t.Fatal("no error")
 	}
@@ -407,12 +400,12 @@ func TestLocalCallsOfAutoFunctionsAreReported(t *testing.T) {
 	if len(fail.Matched) != 1 || fail.Matched[0] != "failures" || fail.Status != "error" || fail.Output != nil {
 		t.Errorf("failure item %+v", fail)
 	}
-	if string(fail.Error) != `{"code":"CARD_DECLINED","message":"declined"}` || fail.Caller == nil || fail.Caller.WorkerName != "observe-test" {
+	if string(fail.Error) != `{"code":"CARD_DECLINED","message":"declined"}` || fail.Caller != nil {
 		t.Errorf("failure parts: error %s caller %+v", fail.Error, fail.Caller)
 	}
 
 	// no filter matches: nothing reported
-	trigger(t, c, TriggerRequest{FunctionID: "pay::charge", Payload: json.RawMessage(`{"amount":0}`)})
+	call(t, c, CallRequest{FunctionID: "pay::charge", Payload: json.RawMessage(`{"amount":0}`)})
 	time.Sleep(30 * time.Millisecond)
 	if n := len(fe.reportItems()); n != 2 {
 		t.Errorf("%d items, want 2", n)
@@ -434,10 +427,10 @@ func TestLocalCallUsesTheSetCapturedAtCallStart(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		trigger(t, c, TriggerRequest{FunctionID: "slow::fn"})
+		call(t, c, CallRequest{FunctionID: "slow::fn"})
 	}()
 	<-started
-	autoObserver(t, fe, "slow::fn", observerInfo("late", "x::y", "", ""))
+	addObserver(t, fe, "slow::fn", observerInfo("late", "x::y", "", ""))
 	close(release)
 	<-done
 	time.Sleep(30 * time.Millisecond)
@@ -458,10 +451,10 @@ func TestZeroWireUnobservedLocalCalls(t *testing.T) {
 	}
 	mark := fe.mark()
 	ctx := context.Background()
-	req := TriggerRequest{FunctionID: "zw::inc", Payload: json.RawMessage(`1`)}
+	req := CallRequest{FunctionID: "zw::inc", Payload: json.RawMessage(`1`)}
 	start := time.Now()
 	for i := 0; i < calls; i++ {
-		if _, err := c.Trigger(ctx, req); err != nil {
+		if _, err := c.Call(ctx, req); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -474,10 +467,10 @@ func TestZeroWireUnobservedLocalCalls(t *testing.T) {
 
 	// positive control: the same harness sees the frames of an observed function
 	registerLocal(t, c, "zw::observed", func(context.Context, json.RawMessage) (any, error) { return 1, nil })
-	autoObserver(t, fe, "zw::observed", observerInfo("o1", "x::y", "", "", CaptureInput))
+	addObserver(t, fe, "zw::observed", observerInfo("o1", "x::y", "", "", CaptureInput))
 	mark = fe.mark()
 	for i := 0; i < 10; i++ {
-		if _, err := c.Trigger(ctx, TriggerRequest{FunctionID: "zw::observed", Payload: json.RawMessage(`1`)}); err != nil {
+		if _, err := c.Call(ctx, CallRequest{FunctionID: "zw::observed", Payload: json.RawMessage(`1`)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -507,7 +500,7 @@ func TestNamespaceConflictOnReplayDiscardsHeldReports(t *testing.T) {
 	})
 	fe.m.closeActiveConnection()
 	waitUntil(t, "offline", func() bool { return !c.registeredNow() })
-	trigger(t, c, TriggerRequest{FunctionID: "held::fn", Payload: json.RawMessage(`"held"`)}) // still local
+	call(t, c, CallRequest{FunctionID: "held::fn", Payload: json.RawMessage(`"held"`)}) // still local
 	waitUntil(t, "held", func() bool { return c.reporter.size() == 1 })
 	close(gate)
 	waitUntil(t, "discarded", func() bool { return c.reporter.size() == 0 && !c.LocalDispatchActive("held::fn") })
@@ -542,9 +535,9 @@ func TestLocalInvocationStatsCountEveryLocalCall(t *testing.T) {
 		t.Fatalf("%d stats frames with nothing to report", n)
 	}
 	for i := 0; i < 3; i++ {
-		trigger(t, c, TriggerRequest{FunctionID: "st::ok"})
+		call(t, c, CallRequest{FunctionID: "st::ok"})
 	}
-	_, _ = c.Trigger(ctx, TriggerRequest{FunctionID: "st::err"})
+	_, _ = c.Call(ctx, CallRequest{FunctionID: "st::err"})
 	stats := fe.waitFrames(MsgLocalInvocationStats, 1, nil)[0].LocalInvocationStats
 	byFn := map[string]LocalFunctionStats{}
 	for _, f := range stats.Functions {
@@ -573,7 +566,7 @@ func TestReportsHeldUntilTheFunctionIsConfirmedAgain(t *testing.T) {
 	fe.mu.Unlock()
 	fe.m.closeActiveConnection()
 	waitUntil(t, "offline", func() bool { return !c.registeredNow() })
-	trigger(t, c, TriggerRequest{FunctionID: "rc::fn", Payload: json.RawMessage(`"while away"`)})
+	call(t, c, CallRequest{FunctionID: "rc::fn", Payload: json.RawMessage(`"while away"`)})
 	time.Sleep(20 * time.Millisecond)
 	if c.reporter.size() != 1 {
 		t.Fatalf("buffered %d", c.reporter.size())
@@ -612,7 +605,7 @@ func TestConcurrentLocalCallsAndObserverChurn(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					_, _ = c.Trigger(context.Background(), TriggerRequest{FunctionID: "cc::fn", Payload: json.RawMessage(`{"k":1}`)})
+					_, _ = c.Call(context.Background(), CallRequest{FunctionID: "cc::fn", Payload: json.RawMessage(`{"k":1}`)})
 					_ = c.IsObserved("cc::fn")
 					_ = c.Observers("cc::fn")
 				}
@@ -631,11 +624,11 @@ func TestConcurrentLocalCallsAndObserverChurn(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	close(stop)
 	wg.Wait()
-	trigger(t, c, TriggerRequest{FunctionID: "cc::fn", Payload: json.RawMessage(`{"k":1}`)})
+	call(t, c, CallRequest{FunctionID: "cc::fn", Payload: json.RawMessage(`{"k":1}`)})
 	deadline := time.Now().Add(5 * time.Second)
 	for len(fe.frames(MsgInvocationsObserved)) == 0 {
 		if time.Now().After(deadline) {
-			epoch, online := c.reportOnline()
+			epoch, online, _ := c.reportOnline()
 			t.Fatalf("no report frames: buffered %d, queued %d, deferred %v, online %v, synced %v, frames %v",
 				c.reporter.size(), c.reportQueued(), c.reporter.deferred.Load(), online,
 				c.functionObservers("cc::fn").syncedOn(epoch), frameTypes(fe))
@@ -668,7 +661,7 @@ func TestReportOfACallRunningAcrossAConflictIsInactive(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		trigger(t, c, TriggerRequest{FunctionID: "race::fn"})
+		call(t, c, CallRequest{FunctionID: "race::fn"})
 	}()
 	<-started
 	fe.send(&RegistrationRejectedMessage{Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: "race::fn", OwnerWorkerID: "other"})
@@ -699,7 +692,7 @@ func TestReportOfACallRunningAcrossAReRegistration(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		trigger(t, c, TriggerRequest{FunctionID: "rr::fn", Payload: json.RawMessage(`"across"`)})
+		call(t, c, CallRequest{FunctionID: "rr::fn", Payload: json.RawMessage(`"across"`)})
 	}()
 	<-started
 	if err := old.Unregister(); err != nil {
@@ -732,10 +725,10 @@ func TestLocalCallReturnsOnTheCallersDeadlineWhenTheHandlerBlocks(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	if _, err := c.Trigger(ctx, TriggerRequest{FunctionID: "block::fn"}); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := c.Call(ctx, CallRequest{FunctionID: "block::fn"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("ctx deadline: %v", err)
 	}
-	if _, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "block::fn", Timeout: 30 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "block::fn", Timeout: 30 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
 		t.Errorf("Timeout: %v", err)
 	}
 	if d := time.Since(start); d > time.Second {
@@ -769,7 +762,7 @@ func TestLocalReportUsesSnapshotsTakenAtCallStart(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = c.Trigger(context.Background(), TriggerRequest{FunctionID: "snap::fn", Payload: payload, Metadata: metadata, Action: VoidAction()})
+		_, _ = c.Call(context.Background(), CallRequest{FunctionID: "snap::fn", Payload: payload, Metadata: metadata, Action: VoidAction()})
 	}()
 	<-done // void: returned at once
 	<-started

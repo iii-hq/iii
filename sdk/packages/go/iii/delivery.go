@@ -138,7 +138,7 @@ func (d *deliveryRun) next(_ context.Context, call *Call, observers []*Observer)
 	late := d.settled && d.routed
 	if !late {
 		for _, obs := range observers {
-			if obs == nil || obs.owner != d.f || d.sent[obs.id] || !obs.active.Load() {
+			if obs == nil || obs.owner != d.f || d.sent[obs.id] {
 				continue
 			}
 			if !onAccepts(obs.on, ok) || !obs.filter.Matches(doc) {

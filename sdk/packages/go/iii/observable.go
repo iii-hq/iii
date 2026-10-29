@@ -548,7 +548,11 @@ func (f *functionObservers) catchUp(level hookLevel) {
 		if len(behind) == 0 {
 			return
 		}
-		log.Printf("iii: OnObserverAdded was set for %q while %d observers were active without it; running it for each of them now", f.functionID, len(behind))
+		if level == workerLevel {
+			log.Printf("iii: OnObserverAdded was set while %d observers of %q were active without it; running it for each of them now", len(behind), f.functionID)
+		} else {
+			log.Printf("iii: OnObserverAddedFor(%q) was set while %d observers were active without it; running it for each of them now", f.functionID, len(behind))
+		}
 		for _, obs := range behind {
 			obs.addedGen[level] = gen
 			if !obs.active.Load() {

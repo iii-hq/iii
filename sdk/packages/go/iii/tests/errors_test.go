@@ -25,7 +25,7 @@ func TestHandlerErrorSurfacesAsInvocationError(t *testing.T) {
 	}
 	settle()
 
-	_, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	_, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: "test::errors::go::boom",
 		Payload:    json.RawMessage(`{}`),
 	})
@@ -51,7 +51,7 @@ func TestTypedInvocationErrorPropagates(t *testing.T) {
 	}
 	settle()
 
-	_, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	_, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: "test::errors::go::forbidden",
 		Payload:    json.RawMessage(`{}`),
 	})
@@ -66,7 +66,7 @@ func TestTypedInvocationErrorPropagates(t *testing.T) {
 
 func TestInvokeUnknownFunctionErrors(t *testing.T) {
 	c := connect(t)
-	_, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	_, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: "test::errors::go::does-not-exist",
 		Payload:    json.RawMessage(`{}`),
 		Timeout:    3 * time.Second,

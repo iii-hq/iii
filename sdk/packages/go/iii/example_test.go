@@ -11,9 +11,10 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Example_helloWorker is a complete hello-world worker: register a function, bind an HTTP
-// trigger to it, and connect. The handler speaks the engine's HTTP-trigger envelope (the
-// request body is under "body"; the response is {status_code, body}).
+// Example_helloWorker is a complete hello-world worker: register a function, route HTTP
+// requests to it by observing the http worker's http::on-request, and connect. The
+// handler receives the request (the body is under "body") and returns the response
+// ({status_code, body}).
 func Example_helloWorker() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL) // ws://127.0.0.1:49134
 
@@ -35,11 +36,10 @@ func Example_helloWorker() {
 		log.Fatal(err)
 	}
 
-	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-		Type:       "http",
-		FunctionID: greet.ID,
-		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
-	}); err != nil {
+	if _, err := client.Observe(iii.Source{
+		FunctionID: "http::on-request",
+		Args:       iii.Args{"method": "POST", "path": "/greet"},
+	}, greet.ID); err != nil {
 		log.Fatal(err)
 	}
 
@@ -105,14 +105,14 @@ func ExampleMetadataFromContext() {
 		})
 }
 
-// ExampleClient_Trigger invokes a function and awaits its result, then shows the typed
+// ExampleClient_Call invokes a function and awaits its result, then shows the typed
 // error handling: ErrTimeout for a missed deadline and InvocationError for a remote
 // failure.
-func ExampleClient_Trigger() {
+func ExampleClient_Call() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	res, err := client.Trigger(context.Background(), iii.TriggerRequest{
+	res, err := client.Call(context.Background(), iii.CallRequest{
 		FunctionID: "orders::create",
 		Payload:    json.RawMessage(`{"item":"widget"}`),
 	})
@@ -149,4 +149,138 @@ func ExampleRegisterFunctionTyped() {
 		func(ctx context.Context, req greetRequest) (greetResponse, error) {
 			return greetResponse{Message: "Hello, " + req.Name + "!"}, nil
 		})
+}
+
+// ExampleClient_ObserveFunction runs a target on every successful call of a function.
+func ExampleClient_ObserveFunction() {
+	client := iii.RegisterWorker(iii.DefaultEngineURL)
+	defer client.Close()
+
+	client.RegisterFunction("alerts::new-order", func(ctx context.Context, data json.RawMessage) (any, error) {
+		var event iii.Observed
+		if err := json.Unmarshal(data, &event); err != nil {
+			return nil, err
+		}
+		log.Printf("order created: %s", event.Output)
+		return nil, nil
+	})
+	if _, err := client.ObserveFunction("orders::create", "alerts::new-order"); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// ExampleKeyed hosts an event source: one call of timer::on-tick per tick of each
+// interval its observers ask for, delivered to the observers of that interval only. The
+// hooks are set by id before the registration, so they run for every observer.
+func ExampleKeyed() {
+	client := iii.RegisterWorker(iii.DefaultEngineURL)
+	defer client.Close()
+
+	type timerArgs struct {
+		EveryMs int64 `json:"every_ms"`
+	}
+	keyOf := func(everyMs int64) string { return fmt.Sprint(everyMs) }
+	stops := map[string]chan struct{}{} // one ticker per interval, used on the hook queue only
+
+	client.OnObserverAddedFor("timer::on-tick", func(ctx context.Context, obs *iii.Observer) error {
+		var args timerArgs
+		if err := obs.DecodeArgs(&args); err != nil || args.EveryMs <= 0 {
+			return iii.ObserveRejection("INVALID_ARGS", "every_ms must be a positive integer")
+		}
+		if _, running := stops[keyOf(args.EveryMs)]; running {
+			return nil
+		}
+		stop := make(chan struct{})
+		stops[keyOf(args.EveryMs)] = stop
+		go func() {
+			ticker := time.NewTicker(time.Duration(args.EveryMs) * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case now := <-ticker.C:
+					tick, _ := json.Marshal(map[string]int64{"every_ms": args.EveryMs, "fired_at_ms": now.UnixMilli()})
+					if !client.IsObservedFor("timer::on-tick", &iii.Call{Input: tick}) {
+						continue
+					}
+					client.Call(context.Background(), iii.CallRequest{FunctionID: "timer::on-tick", Payload: tick, Action: iii.VoidAction()})
+				}
+			}
+		}()
+		return nil
+	})
+	client.OnObserverRemovedFor("timer::on-tick", func(ctx context.Context, obs *iii.Observer) {
+		var args timerArgs
+		_ = obs.DecodeArgs(&args)
+		for _, other := range client.Observers("timer::on-tick") {
+			var o timerArgs
+			if other != obs && other.DecodeArgs(&o) == nil && o.EveryMs == args.EveryMs {
+				return // the interval is still observed
+			}
+		}
+		if stop, ok := stops[keyOf(args.EveryMs)]; ok {
+			close(stop)
+			delete(stops, keyOf(args.EveryMs))
+		}
+	})
+	client.OnObserverDeliverFor("timer::on-tick", iii.Keyed(
+		func(obs *iii.Observer) []string {
+			var args timerArgs
+			_ = obs.DecodeArgs(&args)
+			return []string{keyOf(args.EveryMs)}
+		},
+		func(call *iii.Call) []string {
+			var tick timerArgs // the tick carries every_ms too
+			_ = json.Unmarshal(call.Input, &tick)
+			return []string{keyOf(tick.EveryMs)}
+		},
+	))
+
+	if _, err := client.RegisterFunction("timer::on-tick", iii.Identity, iii.FunctionOptions{
+		Description: "One call per tick. Observe it with args { every_ms }.",
+		ArgsFormat:  json.RawMessage(`{"type":"object","required":["every_ms"],"properties":{"every_ms":{"type":"integer","minimum":1}}}`),
+		Private:     true,
+	}); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// ExampleClient_OnObserverDeliverFor routes each chat command to the one observer that
+// handles it, calls its target through the observer, and answers the caller with the
+// target's result.
+func ExampleClient_OnObserverDeliverFor() {
+	client := iii.RegisterWorker(iii.DefaultEngineURL)
+	defer client.Close()
+
+	commandOf := func(obs *iii.Observer) string {
+		command, _ := obs.Args["command"].(string)
+		return command
+	}
+	client.OnObserverDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer, next iii.Next) (any, error) {
+		var req struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(call.Input, &req); err != nil {
+			return nil, err
+		}
+		for _, obs := range observers {
+			if commandOf(obs) != req.Command {
+				continue
+			}
+			if !obs.Matches(call) {
+				return map[string]string{"reply": "/" + req.Command + " is not available"}, nil
+			}
+			// what this hook returns is what the caller gets back
+			return client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+		}
+		return map[string]string{"reply": "unknown command /" + req.Command}, nil
+	})
+
+	if _, err := client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{
+		ArgsFormat: json.RawMessage(`{"type":"object","required":["command"],"properties":{"command":{"type":"string"}}}`),
+		Private:    true,
+	}); err != nil {
+		log.Fatal(err)
+	}
 }

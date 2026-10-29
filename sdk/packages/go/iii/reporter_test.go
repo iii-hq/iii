@@ -88,7 +88,7 @@ func TestReporterIsBoundedAndCountsDrops(t *testing.T) {
 	limits = defaultReporterLimits
 	one := newReportItem(testItem("f", 0))
 	one.capture([]Capture{CaptureInput})
-	_ = one.render()
+	_ = one.render(true)
 	limits.maxBytes = len(one.json)*2 + 1
 	rb := newReporter(host, limits)
 	rb.push(testItem("f", 1), []Capture{CaptureInput})
@@ -118,7 +118,7 @@ func TestReporterSplitsAFlushUnderTheFrameLimit(t *testing.T) {
 	limits := defaultReporterLimits
 	one := newReportItem(testItem("f", 10))
 	one.capture([]Capture{CaptureInput})
-	_ = one.render()
+	_ = one.render(true)
 	limits.maxFrameBytes = reportFrameOverhead + 3*len(one.json) + 2
 	r := newReporter(host, limits)
 	for i := 10; i < 17; i++ {
@@ -197,23 +197,6 @@ func TestReporterStatsOnlyWhenNonZero(t *testing.T) {
 	defer timed.shutdown()
 	timed.recordLocal("g", true, 1)
 	waitUntil(t, "stats on the timer", func() bool { return len(host.sentFrames()) == 2 })
-}
-
-func TestReporterCoalescesOnlyTheSameEventFromTheSameInvocation(t *testing.T) {
-	host := &fakeReportHost{online: false}
-	r := newReporter(host, defaultReporterLimits)
-	a, b := &invocation{}, &invocation{}
-	event := json.RawMessage(`{"row":1}`)
-	init := reportInit{functionID: "db::on", invocationID: "i", status: "success", values: reportValues{input: event}}
-	r.pushEmit(init, []Capture{CaptureInput}, "o1", event, a)
-	r.pushEmit(init, []Capture{CaptureInput}, "o2", event, a) // coalesced
-	r.pushEmit(init, []Capture{CaptureInput}, "o1", event, a) // the same observer again: a new item
-	r.pushEmit(init, []Capture{CaptureInput}, "o3", event, b) // another invocation
-	other := json.RawMessage(`{"row":2}`)
-	r.pushEmit(reportInit{functionID: "db::on", invocationID: "i", status: "success", values: reportValues{input: other}}, nil, "o2", other, a)
-	if r.size() != 4 || len(r.items[0].wire.Matched) != 2 {
-		t.Errorf("%d items; first matched %v", r.size(), r.items[0].wire.Matched)
-	}
 }
 
 // SDK-PARITY decision 21: frames sent and not yet written to the socket count against

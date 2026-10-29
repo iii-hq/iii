@@ -1689,16 +1689,16 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	var observed []string
 	var items []*reportItem
 	started := time.Now()
-	answer, aerr := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody) (any, error) {
+	answer, aerr := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody, herr error) (any, error) {
 		if !hostDelivers || (deliver == nil && len(set) == 0) {
-			return outcomeOf(result, errBody)
+			return outcomeOf(result, errBody, herr)
 		}
 		run := newDeliveryRun(f, handlerCall(msg.FunctionID, inv.invocationID, msg.Data, result, errBody, msg.Caller, msg.Metadata), deliver != nil, true)
 		run.startedAt, run.duration, run.observeDepth, run.trace = started, time.Since(started), msg.ObserveDepth, tc
 		value, err := run.deliver(ctx, deliver, set)
 		answerJSON, answerErr := encodeAnswer(value, err, false)
 		observed, items = run.settleRouted(answerJSON, answerErr)
-		return outcomeOf(answerJSON, answerErr)
+		return outcomeOf(answerJSON, answerErr, err)
 	})
 	resultJSON, errBody := encodeAnswer(answer, aerr, false)
 	if len(items) > 0 {
@@ -1707,16 +1707,16 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	c.replyInvocation(epoch, msg, resultJSON, errBody, tc, observed)
 }
 
-// runInvocation runs handler h and then deliver, with the handler's encoded outcome,
-// inside the invocation's span: deliver's return value is the call's. clone copies a
-// json.RawMessage the handler returns. A handler panic is recovered into an error, so a
-// caller gets an InvocationResult.error instead of a timeout.
-func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, clone bool, deliver func(ctx context.Context, result json.RawMessage, errBody *ErrorBody) (any, error)) (result any, err error) {
+// runInvocation runs handler h and then deliver, with the handler's encoded outcome
+// and its error, inside the invocation's span: deliver's return value is the call's.
+// clone copies a json.RawMessage the handler returns. A handler panic is recovered
+// into an error, so a caller gets an InvocationResult.error instead of a timeout.
+func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, clone bool, deliver func(ctx context.Context, result json.RawMessage, errBody *ErrorBody, herr error) (any, error)) (result any, err error) {
 	ctx, endSpan := c.startInvocationSpan(ctx, data) // otel_client.go: "execute <fn>" span
 	defer func() { endSpan(result, err) }()
 	value, herr := callHandler(ctx, h, data)
 	resultJSON, errBody := encodeAnswer(value, herr, clone)
-	return deliver(ctx, resultJSON, errBody)
+	return deliver(ctx, resultJSON, errBody, herr)
 }
 
 // callHandler invokes h, recovering a panic into an error.
@@ -1742,9 +1742,13 @@ func encodeAnswer(value any, err error, clone bool) (json.RawMessage, *ErrorBody
 	return encoded, nil
 }
 
-// outcomeOf is an encoded outcome as a deliver function returns it.
-func outcomeOf(result json.RawMessage, errBody *ErrorBody) (any, error) {
-	if errBody != nil {
+// outcomeOf is an encoded outcome as a deliver function returns it: err when the
+// outcome is that error, else the error body as an *InvocationError.
+func outcomeOf(result json.RawMessage, errBody *ErrorBody, err error) (any, error) {
+	switch {
+	case err != nil:
+		return nil, err
+	case errBody != nil:
 		return nil, &InvocationError{Code: errBody.Code, Message: errBody.Message, Stacktrace: derefString(errBody.Stacktrace)}
 	}
 	return result, nil

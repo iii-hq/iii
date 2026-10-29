@@ -131,7 +131,7 @@ func TestConflictingRouteStructureIsRejected(t *testing.T) {
 	// never becomes an active registered trigger.
 	registered := 0
 	for _, fid := range []string{"test::api::conflict::a::go", "test::api::conflict::b::go"} {
-		res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+		res, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 			FunctionID: iii.FnListRegisteredTriggers,
 			Payload:    json.RawMessage(`{"function_id":"` + fid + `"}`),
 		})

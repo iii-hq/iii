@@ -102,7 +102,7 @@ func main() {
 	// engine sends for a POST /greet.
 	callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := client.Trigger(callCtx, iii.TriggerRequest{
+	result, err := client.Call(callCtx, iii.CallRequest{
 		FunctionID: "hello::greet",
 		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
 	})

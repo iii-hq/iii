@@ -36,7 +36,7 @@ func TestRegisterTriggerUnknownType(t *testing.T) {
 	// returning — matching the reference SDKs). The observable, version-stable signal is
 	// that the rejected trigger never becomes an ACTIVE registered trigger: it must not
 	// appear in engine::registered-triggers::list.
-	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: iii.FnListRegisteredTriggers,
 		Payload:    json.RawMessage(`{}`),
 	})
@@ -64,7 +64,7 @@ func TestRegisterTriggerUnknownType(t *testing.T) {
 	}
 
 	// And the worker is still usable after the rejection.
-	if _, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	if _, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: iii.FnListFunctions,
 		Payload:    json.RawMessage(`{}`),
 	}); err != nil {

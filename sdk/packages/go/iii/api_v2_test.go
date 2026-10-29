@@ -14,26 +14,26 @@ import (
 	"github.com/coder/websocket"
 )
 
-// V4: TriggerRequest.Payload is the invocation's data; the deprecated Data is used only
+// V4: CallRequest.Payload is the invocation's data; the deprecated Data is used only
 // when Payload is nil; neither is sent as {}.
-func TestTriggerRequestPayload(t *testing.T) {
+func TestCallRequestPayload(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 	ctx := context.Background()
 	for _, tc := range []struct {
 		fn   string
-		req  TriggerRequest
+		req  CallRequest
 		want string
 	}{
-		{"p::payload", TriggerRequest{Payload: json.RawMessage(`{"a":1}`)}, `{"a":1}`},
-		{"p::data", TriggerRequest{Data: json.RawMessage(`{"b":2}`)}, `{"b":2}`},
-		{"p::both", TriggerRequest{Payload: json.RawMessage(`{"p":true}`), Data: json.RawMessage(`{"d":true}`)}, `{"p":true}`},
-		{"p::none", TriggerRequest{}, `{}`},
+		{"p::payload", CallRequest{Payload: json.RawMessage(`{"a":1}`)}, `{"a":1}`},
+		{"p::data", CallRequest{Data: json.RawMessage(`{"b":2}`)}, `{"b":2}`},
+		{"p::both", CallRequest{Payload: json.RawMessage(`{"p":true}`), Data: json.RawMessage(`{"d":true}`)}, `{"p":true}`},
+		{"p::none", CallRequest{}, `{}`},
 	} {
 		req := tc.req
 		req.FunctionID = tc.fn
 		req.Action = VoidAction()
-		if _, err := c.Trigger(ctx, req); err != nil {
+		if _, err := c.Call(ctx, req); err != nil {
 			t.Fatalf("%s: %v", tc.fn, err)
 		}
 		got := m.waitFor(func(msgs []map[string]json.RawMessage) bool { return indexOfFunctionID(msgs, tc.fn) >= 0 }, 3*time.Second)
@@ -90,7 +90,7 @@ func TestShutdownIsGraceful(t *testing.T) {
 	workerRegisterFrame(t, m)
 	pending := make(chan error, 1)
 	go func() {
-		_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::silent", Timeout: time.Minute})
+		_, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::silent", Timeout: time.Minute})
 		pending <- err
 	}()
 	m.waitFor(func(msgs []map[string]json.RawMessage) bool { return indexOfFunctionID(msgs, "svc::silent") >= 0 }, 3*time.Second)
@@ -103,10 +103,10 @@ func TestShutdownIsGraceful(t *testing.T) {
 	select {
 	case err := <-pending:
 		if !errors.Is(err, ErrNotConnected) {
-			t.Errorf("pending Trigger error = %v, want ErrNotConnected", err)
+			t.Errorf("pending Call error = %v, want ErrNotConnected", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("pending Trigger not cancelled by Shutdown")
+		t.Fatal("pending Call not cancelled by Shutdown")
 	}
 	if c.ConnectionState() != StateDisconnected {
 		t.Errorf("state = %q, want disconnected", c.ConnectionState())
@@ -120,8 +120,8 @@ func TestShutdownIsGraceful(t *testing.T) {
 	if err := c.Close(); err != nil {
 		t.Errorf("Close after Shutdown: %v", err)
 	}
-	if _, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::late", Timeout: time.Second}); !errors.Is(err, ErrNotConnected) {
-		t.Errorf("Trigger after Shutdown: %v, want ErrNotConnected", err)
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::late", Timeout: time.Second}); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("Call after Shutdown: %v, want ErrNotConnected", err)
 	}
 }
 

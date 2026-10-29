@@ -102,11 +102,11 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Cal
 	run := func() localOutcome {
 		started := time.Now()
 		var delivery *deliveryRun
-		answer, aerr := c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody) (any, error) {
+		answer, aerr := c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody, herr error) (any, error) {
 			duration := time.Since(started)
 			c.reporter.recordLocal(functionID, errBody == nil, float64(duration)/float64(time.Millisecond))
 			if !delivering {
-				return outcomeOf(result, errBody)
+				return outcomeOf(result, errBody, herr)
 			}
 			delivery = newDeliveryRun(f, handlerCall(functionID, inv.invocationID, observedInput, result, errBody, caller, inv.metadata), deliver != nil, false)
 			delivery.startedAt, delivery.duration, delivery.observeDepth, delivery.trace = started, duration, inv.observeDepth, inv.trace

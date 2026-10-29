@@ -70,7 +70,7 @@ func TestTriggerTypeSchemasDiscovery(t *testing.T) {
 			defer ticker.Stop()
 			var raw json.RawMessage
 			for {
-				raw, err = c.Trigger(ctx, iii.TriggerRequest{FunctionID: iii.FnInfoTriggers, Payload: query})
+				raw, err = c.Call(ctx, iii.CallRequest{FunctionID: iii.FnInfoTriggers, Payload: query})
 				if err == nil {
 					break
 				}
