@@ -43,9 +43,10 @@ type TypedHandler[Req any, Resp any] func(ctx context.Context, req Req) (Resp, e
 //
 // Use [Client.RegisterFunction] directly for schemaless functions. See [InferSchema] to
 // obtain a type's schema on its own. Pass a single [RegisterFunctionOptions] value to
-// attach a description, registration metadata or observe hooks; its RequestFormat and
-// ResponseFormat, when set, are sent instead of the inferred schemas (that type is then
-// not reflected).
+// attach a description, registration metadata, args_format, private, observable or
+// standby; its RequestFormat and ResponseFormat, when set, are sent instead of the
+// inferred schemas (that type is then not reflected). Its handle sets the function's
+// hooks, as [Client.RegisterFunction]'s does.
 func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler TypedHandler[Req, Resp], opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if handler == nil {
 		return nil, fmt.Errorf("iii: RegisterFunctionTyped(%q): handler is nil", id)

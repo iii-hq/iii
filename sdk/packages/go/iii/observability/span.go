@@ -30,7 +30,7 @@ type SpanOptions struct {
 
 // WithSpan runs fn inside a new span named name and returns fn's result (Node
 // withSpan). The span is a child of opts.Traceparent when set, else of the span in ctx;
-// fn receives the span and a ctx carrying it, to pass on to Trigger, the Logger or
+// fn receives the span and a ctx carrying it, to pass on to Call, the Logger or
 // nested spans. The span ends with an OK status when fn returns a nil error, and with an
 // ERROR status and an exception event when fn returns an error or panics (the panic is
 // re-raised). Without running telemetry the global tracer provider is used.

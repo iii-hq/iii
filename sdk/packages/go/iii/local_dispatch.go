@@ -10,11 +10,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// This file is the local path of Trigger (sdk.md §3, §4.3): a function this worker
-// hosts, confirmed by the engine for in-process calls, runs here without touching the
-// wire. Nobody observing it means zero frames; a matched observer means one report item.
+// This file is the local path of Call: a function this worker hosts, confirmed by the
+// engine for in-process calls, runs here without touching the wire, and is delivered
+// here as a routed call is. Nobody observing it means zero frames; a matched observer
+// means one report item.
 
-// localTarget returns the function Trigger may run in-process: registered here, the
+// localTarget returns the function Call may run in-process: registered here, the
 // engine confirmed it with local_dispatch, the local-dispatch option is on, and the
 // resolved namespace is the one the engine registered it in (empty: this worker's).
 func (c *Client) localTarget(functionID, namespace string) (registeredFunction, bool) {
@@ -36,11 +37,12 @@ type localOutcome struct {
 	err    *ErrorBody
 }
 
-// invokeLocal runs the handler in-process, inside a new invocation context, with a
-// copy of the payload (value semantics, as over the wire); the caller gets a fresh
-// encoding of the result. Timeouts and errors have the remote path's shape: ErrTimeout,
-// and an *InvocationError carrying the handler's error body.
-func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req TriggerRequest) (json.RawMessage, error) {
+// invokeLocal runs the handler in-process, inside a new invocation context, then
+// delivers the call. The handler gets a copy of the payload and the caller its own
+// encoding of the result (value semantics, as over the wire), except for a private
+// function, whose payload and result pass by reference. Timeouts and errors have the
+// remote path's shape: ErrTimeout, and an *InvocationError carrying the error body.
+func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req CallRequest) (json.RawMessage, error) {
 	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -53,8 +55,15 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 		_, err := json.Marshal(req.Metadata)
 		return nil, err
 	}
-	obs := fn.observe
+	f := fn.observe
 	functionID := fn.message.ID
+	private := f.private
+	copyOf := func(raw json.RawMessage) json.RawMessage {
+		if private {
+			return raw
+		}
+		return bytes.Clone(raw)
+	}
 
 	parent := invocationFrom(ctx)
 	workerID, workerName := c.identity()
@@ -69,54 +78,46 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 		inv.localDepth = parent.localDepth + 1
 	}
 	if len(req.Metadata) > 0 {
-		inv.metadata = bytes.Clone(req.Metadata)
+		inv.metadata = copyOf(req.Metadata)
 	}
 
-	// Evaluated against the observers active when the call started: an unobserved
-	// call is never reported, and its input is not copied for it.
-	set := obs.compiledSet()
-	var observedInput json.RawMessage
-	if obs.delivery == DeliveryAuto && len(set) > 0 {
-		// what observers see is the payload as the caller passed it
-		observedInput = bytes.Clone(data)
+	// Delivered to the observers active when the call started: an unobserved call
+	// without a deliver hook is never reported, and its input is not copied for it.
+	set := f.compiledSet()
+	deliver := f.deliverHook()
+	delivering := deliver != nil || len(set) > 0
+	input := copyOf(data)
+	// what observers see is the payload as the caller passed it
+	observedInput := input
+	if delivering {
+		observedInput = copyOf(data)
 	}
-	input := bytes.Clone(data)
 	// The handler runs on the client's lifetime context, as a remote one runs on the
 	// connection's: the caller's cancellation and values do not reach it.
 	// The handler gets its own copy of the metadata: what it does with it cannot
 	// change the report (made from inv.metadata, the snapshot taken at call start).
 	// The caller's trace context does reach it (otel.go), so its span joins the trace.
-	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), bytes.Clone(inv.metadata)), inv)
+	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), copyOf(inv.metadata)), inv)
 
 	run := func() localOutcome {
 		started := time.Now()
-		var out localOutcome
-		result, herr := c.runHandler(hctx, fn.handler, input)
-		if herr != nil {
-			out.err = errorBodyFromHandlerError(herr)
-		} else if encoded, err := json.Marshal(result); err != nil {
-			out.err = &ErrorBody{Code: "invocation_failed", Message: err.Error()}
-		} else {
-			out.result = encoded
+		var delivery *deliveryRun
+		answer, aerr := c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody) (any, error) {
+			duration := time.Since(started)
+			c.reporter.recordLocal(functionID, errBody == nil, float64(duration)/float64(time.Millisecond))
+			if !delivering {
+				return outcomeOf(result, errBody)
+			}
+			delivery = newDeliveryRun(f, handlerCall(functionID, inv.invocationID, observedInput, result, errBody, caller, inv.metadata), deliver != nil, false)
+			delivery.startedAt, delivery.duration, delivery.observeDepth, delivery.trace = started, duration, inv.observeDepth, inv.trace
+			return delivery.deliver(ctx, deliver, set)
+		})
+		if delivery != nil {
+			delivery.settleLocal()
 		}
-		duration := time.Since(started)
-		c.reporter.recordLocal(functionID, out.err == nil, float64(duration)/float64(time.Millisecond))
-		if len(set) > 0 {
-			obs.reportLocal(set, localCall{
-				invocationID: inv.invocationID,
-				ok:           out.err == nil,
-				input:        observedInput,
-				output:       out.result,
-				err:          out.err,
-				caller:       caller,
-				metadata:     inv.metadata,
-				startedAt:    started,
-				duration:     duration,
-				observeDepth: inv.observeDepth,
-				trace:        inv.trace,
-			})
-		}
-		return out
+		// the handler's result is already the caller's own copy; a deliver hook's is not
+		result, errBody := encodeAnswer(answer, aerr, !private && deliver != nil)
+		return localOutcome{result: result, err: errBody}
 	}
 
 	if req.Action != nil && req.Action.Type == "void" {
@@ -130,7 +131,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 
 	done := make(chan localOutcome, 1)
 	go func() { done <- run() }()
-	timer := time.NewTimer(c.triggerTimeout(req.Timeout))
+	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
 	select {
 	case out := <-done:
