@@ -1340,11 +1340,11 @@ impl ObserverRegistry {
     /// metadata, a fresh `activation_id` and depth + 1. The payload goes as
     /// given. The result, or the refusal code, goes back to the host.
     ///
-    /// A refusal by policy counts a drop as it does for an activation
-    /// (`LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`, `INACTIVE` once expired). A
-    /// fire-and-forget call nobody waits on is also counted when the checks
-    /// refuse it, under the refusal's code, and every refusal of one is
-    /// logged at `debug` (decision 13).
+    /// A refusal by policy of a call the host waits on counts a drop as it
+    /// does for an activation (`LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`,
+    /// `INACTIVE` once expired). A fire-and-forget call nobody waits on
+    /// counts every refusal under the refusal's code, and each is logged at
+    /// `debug` (decision 13).
     pub async fn observer_call(
         self: &Arc<Self>,
         worker: &WorkerConnection,
@@ -1354,7 +1354,7 @@ impl ObserverRegistry {
             .check_observer_call(worker.id, &call)
             .and_then(|observer| {
                 let depth = call.observe_depth.unwrap_or(0);
-                self.admit_observer_call(&observer, depth)
+                self.admit_observer_call(&observer, depth, call.fire_and_forget)
                     .map(|slot| (observer, slot, depth))
             });
         let (observer, _slot, depth) = match admitted {
@@ -1428,18 +1428,24 @@ impl ObserverRegistry {
 
     /// Policy for a call through `observer`, in order: depth, expiry,
     /// `max_fires`, `max_in_flight` (no queue: the host is waiting for the
-    /// result). Returns the in-flight slot the call holds.
+    /// result). Returns the in-flight slot the call holds. A refusal counts
+    /// a drop under the policy's reason, or under the refusal's code for a
+    /// `fire_and_forget` call.
     fn admit_observer_call(
         self: &Arc<Self>,
         observer: &Arc<Observer>,
         depth: u32,
+        fire_and_forget: bool,
     ) -> Result<Slot, ErrorBody> {
-        let reject = |code: &str, message: String| Err(ErrorBody::new(code, message));
+        let refuse = |policy: &str, code: &str, message: String| {
+            drop_event(observer, if fire_and_forget { code } else { policy });
+            Err(ErrorBody::new(code, message))
+        };
         let max_depth = self.config().max_observe_depth;
         if depth.saturating_add(1) > max_depth {
-            drop_event(observer, observe_codes::LOOP_GUARD);
             warn_loop_guard(observer, depth, max_depth);
-            return reject(
+            return refuse(
+                observe_codes::LOOP_GUARD,
                 observe_codes::LOOP_GUARD,
                 format!("the chain of observers is deeper than {max_depth}"),
             );
@@ -1450,14 +1456,15 @@ impl ObserverRegistry {
                 observe_codes::EXPIRED,
                 "the observer's expires_in_ms elapsed",
             );
-            drop_event(observer, observe_codes::INACTIVE);
-            return reject(
+            return refuse(
+                observe_codes::INACTIVE,
                 observe_codes::OBSERVER_NOT_ACTIVE,
                 format!("observer `{}` expired", observer.id),
             );
         }
-        let Some(fired) = take_fire(observer) else {
-            return reject(
+        let Some(fired) = try_fire(observer) else {
+            return refuse(
+                observe_codes::MAX_FIRES,
                 observe_codes::OBSERVER_NOT_ACTIVE,
                 format!("observer `{}` reached its max_fires", observer.id),
             );
@@ -1467,8 +1474,8 @@ impl ObserverRegistry {
             if flow.running >= observer.policy.max_in_flight {
                 drop(flow);
                 observer.fires.fetch_sub(1, Ordering::AcqRel);
-                drop_event(observer, observe_codes::OVERFLOW);
-                return reject(
+                return refuse(
+                    observe_codes::OVERFLOW,
                     observe_codes::OVERFLOW,
                     format!(
                         "observer `{}` already has {} calls in flight",
@@ -1696,20 +1703,24 @@ fn saturating_add(counter: &std::sync::atomic::AtomicU64, count: u64) {
 /// Counts one fire against `max_fires`; `None` (and a `MAX_FIRES` drop) when
 /// the observer has none left. Returns the fire's number.
 fn take_fire(observer: &Observer) -> Option<u64> {
+    let fired = try_fire(observer);
+    if fired.is_none() {
+        drop_event(observer, observe_codes::MAX_FIRES);
+    }
+    fired
+}
+
+/// Counts one fire against `max_fires`; `None` when the observer has none
+/// left. Returns the fire's number.
+fn try_fire(observer: &Observer) -> Option<u64> {
     match observer.policy.max_fires {
-        Some(max) => {
-            match observer
-                .fires
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |fires| {
-                    (fires < max).then_some(fires + 1)
-                }) {
-                Ok(previous) => Some(previous + 1),
-                Err(_) => {
-                    drop_event(observer, observe_codes::MAX_FIRES);
-                    None
-                }
-            }
-        }
+        Some(max) => observer
+            .fires
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |fires| {
+                (fires < max).then_some(fires + 1)
+            })
+            .ok()
+            .map(|previous| previous + 1),
         None => Some(observer.fires.fetch_add(1, Ordering::AcqRel) + 1),
     }
 }
@@ -2107,6 +2118,83 @@ mod tests {
             .await
             .is_ok()
         );
+    }
+
+    /// A call through an observer that policy refuses (expired before its
+    /// timer disposed it, or its last fire taken meanwhile) is refused with
+    /// `OBSERVER_NOT_ACTIVE`. Fire-and-forget, it counts that code as its
+    /// drop reason (decision 13); awaited, the policy's reason, as an
+    /// activation does.
+    #[tokio::test]
+    async fn a_refused_fire_and_forget_call_counts_the_refusal_code() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let _sink = test_support::capture(&engine, "test::dst");
+        let (host, _socket) = test_support::worker(&engine);
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+            (host.id, crate::engine::InvocationKind::Regular),
+        );
+        let call = |observer_id: &str, fire_and_forget: bool| super::ObserverCall {
+            invocation_id: None,
+            data: json!({}),
+            caller: None,
+            observe_depth: None,
+            activation: crate::protocol::Activation {
+                observer_id: observer_id.to_string(),
+                activation_id: None,
+            },
+            traceparent: None,
+            baggage: None,
+            fire_and_forget,
+        };
+        let dropped = |id: &str, reason: &str| {
+            engine
+                .observers
+                .get_info(&engine, None, id)
+                .unwrap()
+                .dropped
+                .get(reason)
+                .copied()
+        };
+
+        let mut spent = test_support::request("spent", "test::src", "test::dst", None);
+        spent.max_fires = Some(1);
+        test_support::observe_request(&engine, &host, spent).await;
+        engine
+            .observers
+            .get("spent")
+            .unwrap()
+            .fires
+            .store(1, Ordering::SeqCst);
+        for fire_and_forget in [true, false] {
+            let refused = engine
+                .observers
+                .observer_call(&host, call("spent", fire_and_forget))
+                .await
+                .unwrap_err();
+            assert_eq!(refused.code, "OBSERVER_NOT_ACTIVE");
+        }
+        assert_eq!(dropped("spent", "OBSERVER_NOT_ACTIVE"), Some(1));
+        assert_eq!(dropped("spent", "MAX_FIRES"), Some(1));
+
+        let mut expiring = test_support::request("expiring", "test::src", "test::dst", None);
+        expiring.expires_in_ms = Some(20);
+        test_support::observe_request(&engine, &host, expiring).await;
+        // Disposed by the refusal, and forgotten: its counters are read
+        // from here.
+        let observer = engine.observers.get("expiring").unwrap();
+        // Blocks the runtime's only thread: its expiry timer cannot run.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let refused = engine
+            .observers
+            .observer_call(&host, call("expiring", true))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, "OBSERVER_NOT_ACTIVE");
+        assert_eq!(observer.state(), crate::protocol::ObserverState::Disposed);
+        assert_eq!(observer.drops.observer_not_active.load(Ordering::SeqCst), 1);
+        assert_eq!(observer.drops.inactive.load(Ordering::SeqCst), 0);
     }
 
     #[test]
