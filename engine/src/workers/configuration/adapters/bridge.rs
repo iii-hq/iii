@@ -5,19 +5,22 @@
 // See LICENSE and PATENTS files for details.
 
 //! Bridge adapter — delegates `configuration::*` to a remote III instance
-//! and rebroadcasts that instance's `configuration` trigger events into the
-//! local fan-out so subscribers see remote-originated changes too.
+//! and observes that instance's `configuration::on-updated`, rebroadcasting
+//! each change into the local fan-out so subscribers see remote-originated
+//! changes too.
 
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction, register_worker};
+use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
 
 use crate::engine::Engine;
+use crate::observer::events::CONFIGURATION_ON_UPDATED;
+use crate::protocol::DEFAULT_NAMESPACE;
 use crate::workers::configuration::adapters::{
     AdapterEnsureOutcome, ConfigurationAdapter, EnsureCandidate, EnsureSupport, ExternalChange,
     ExternalChangeSender, RegisterKind, RegisterOutcome, SetOutcome,
@@ -42,9 +45,9 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 pub struct BridgeAdapter {
     bridge: Arc<IIIClient>,
-    /// Holds onto the relay [`iii_sdk::trigger::Trigger`] handle so the SDK keeps
-    /// the remote subscription alive for the worker's lifetime.
-    relay_trigger: Mutex<Option<iii_sdk::trigger::Trigger>>,
+    /// The observer of the remote `configuration::on-updated`, disposed by
+    /// [`ConfigurationAdapter::destroy`].
+    relay_observer: Mutex<Option<ObserverHandle>>,
     /// Set lazily by `watch` — used by the relay function below.
     sender: OnceCell<ExternalChangeSender>,
 }
@@ -61,7 +64,7 @@ impl BridgeAdapter {
         ));
         Ok(Self {
             bridge,
-            relay_trigger: Mutex::new(None),
+            relay_observer: Mutex::new(None),
             sender: OnceCell::new(),
         })
     }
@@ -252,13 +255,12 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 
     async fn delete(&self, _id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
-        // The remote `configuration::*` surface does not expose `delete`
-        // — cleanup happens through TTL on the remote engine. Surface a
-        // clear error so callers know to operate on the remote engine
-        // directly when they want a hard removal.
+        // The remote `configuration::*` surface does not expose `delete`.
+        // Surface a clear error so callers know to operate on the remote
+        // engine directly when they want a hard removal.
         Err(anyhow::anyhow!(
             "bridge adapter cannot delete configurations on the remote engine; \
-             rely on TTL or operate on the remote engine directly"
+             operate on the remote engine directly"
         ))
     }
 
@@ -303,9 +305,8 @@ impl ConfigurationAdapter for BridgeAdapter {
         let sender_lookup = self.sender.clone();
         let raw_reader = self.bridge.clone();
 
-        // Register the relay handler on this bridge worker — when the
-        // remote engine fires the `configuration` trigger we registered
-        // below, it'll route the call to this function.
+        // Register the relay handler on this bridge worker: the observer
+        // created below makes the remote engine call it with each event.
         self.bridge.register_function(
             RELAY_FUNCTION_ID,
             RegisterFunction::new_async(move |payload: Value| {
@@ -366,32 +367,25 @@ impl ConfigurationAdapter for BridgeAdapter {
             }),
         );
 
-        // The remote engine's `configuration` trigger type is the only way
-        // to follow it until `configuration::on-updated` can be observed there.
-        #[allow(deprecated)]
-        let trigger = self
-            .bridge
-            .register_trigger(RegisterTriggerInput::new(
-                "configuration".to_string(),
-                RELAY_FUNCTION_ID.to_string(),
-                serde_json::json!({}),
-            ))
-            .map_err(|e| {
-                anyhow::anyhow!("failed to subscribe to remote configuration trigger: {}", e)
-            })?;
-        *self.relay_trigger.lock().expect("relay trigger lock") = Some(trigger);
+        let observer = self.bridge.observe(
+            Source::function(CONFIGURATION_ON_UPDATED)
+                .namespace(DEFAULT_NAMESPACE)
+                .deliver(Deliver::Input),
+            RELAY_FUNCTION_ID,
+        );
+        *self.relay_observer.lock().expect("relay observer lock") = Some(observer);
         Ok(())
     }
 
-    /// Unregister the relay and close the remote client without deleting configuration entries.
+    /// Dispose the relay observer and close the remote client without deleting configuration entries.
     async fn destroy(&self) -> anyhow::Result<()> {
-        if let Some(trigger) = self
-            .relay_trigger
+        let observer = self
+            .relay_observer
             .lock()
-            .expect("relay trigger lock")
-            .take()
-        {
-            trigger.unregister();
+            .expect("relay observer lock")
+            .take();
+        if let Some(observer) = observer {
+            observer.dispose().await?;
         }
         self.bridge.shutdown_async().await;
         Ok(())
