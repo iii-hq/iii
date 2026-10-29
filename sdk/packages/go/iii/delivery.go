@@ -113,14 +113,14 @@ func (d *deliveryRun) isUnchanged(call *Call) bool {
 
 // isOwnOutcome reports whether an answer is the handler's own outcome: its output, or
 // the error it returned.
-func (d *deliveryRun) isOwnOutcome(result json.RawMessage, errBody *ErrorBody) bool {
+func (d *deliveryRun) isOwnOutcome(answer outcome) bool {
 	if !d.hooked {
 		return true
 	}
 	if d.call.succeeded() {
-		return errBody == nil && bytes.Equal(result, d.origOutput)
+		return answer.errBody == nil && bytes.Equal(answer.result, d.origOutput)
 	}
-	return errBody != nil && bytes.Equal(jsonOf(errBody), d.origError)
+	return answer.errBody != nil && bytes.Equal(jsonOf(answer.errBody), d.origError)
 }
 
 // next is the Next a deliver hook receives.
@@ -217,13 +217,13 @@ func (d *deliveryRun) settleLocal() {
 	}
 }
 
-// settleRouted closes the delivery of a routed call answered with result or errBody.
-// It returns the ids for the answer's observed list and the report items to send
-// before the answer.
-func (d *deliveryRun) settleRouted(result json.RawMessage, errBody *ErrorBody) (observed []string, items []*reportItem) {
+// settleRouted closes the delivery of a routed call answered with answer. It returns
+// the ids for the answer's observed list and the report items to send before the
+// answer.
+func (d *deliveryRun) settleRouted(answer outcome) (observed []string, items []*reportItem) {
 	unchanged, changed := d.settle()
 	if len(unchanged.matched) > 0 {
-		if d.isOwnOutcome(result, errBody) {
+		if d.isOwnOutcome(answer) {
 			observed = unchanged.matched
 		} else {
 			changed = append([]delivered{unchanged}, changed...)
@@ -280,9 +280,8 @@ func reportCaller(c *Caller) *Caller {
 }
 
 // encodeResult encodes what a handler or a deliver hook returned: a json.RawMessage is
-// used as given once it is checked (copied when clone is set), any other value is
-// marshaled.
-func encodeResult(v any, clone bool) (json.RawMessage, error) {
+// used as given once it is checked, any other value is marshaled.
+func encodeResult(v any) (json.RawMessage, error) {
 	raw, ok := v.(json.RawMessage)
 	if !ok {
 		return json.Marshal(v)
@@ -294,22 +293,19 @@ func encodeResult(v any, clone bool) (json.RawMessage, error) {
 		_, err := json.Marshal(raw)
 		return nil, err
 	}
-	if clone {
-		return bytes.Clone(raw), nil
-	}
 	return raw, nil
 }
 
-// handlerCall is the call a handler made: its outcome as the caller would get it.
-func handlerCall(functionID, invocationID string, input json.RawMessage, result json.RawMessage, errBody *ErrorBody, caller *Caller, metadata json.RawMessage) *Call {
+// handlerCall is the call a handler made, with the outcome its caller would get.
+func handlerCall(functionID, invocationID string, input json.RawMessage, handler outcome, caller *Caller, metadata json.RawMessage) *Call {
 	call := &Call{FunctionID: functionID, InvocationID: invocationID, Input: input, Caller: caller, Metadata: metadata}
-	if errBody != nil {
+	if handler.errBody != nil {
 		call.Status = "error"
-		e := *errBody
+		e := *handler.errBody
 		call.Error = &e
 	} else {
 		call.Status = "success"
-		call.Output = result
+		call.Output = handler.result
 	}
 	return call
 }

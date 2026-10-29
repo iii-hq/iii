@@ -1,9 +1,9 @@
 # iii Go SDK
 
 Go SDK for the [iii engine](https://github.com/iii-hq/iii). A process becomes an iii
-**worker** by opening a single WebSocket to the engine and registering **functions** and
-**triggers**; the engine invokes those functions and the worker replies over the same
-socket.
+**worker** by opening a single WebSocket to the engine and registering **functions**; the
+engine invokes those functions and the worker replies over the same socket. Every
+function is observable: when a function runs, its **observers** run.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/iii-hq/iii/sdk/packages/go/iii.svg)](https://pkg.go.dev/github.com/iii-hq/iii/sdk/packages/go/iii)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
@@ -36,8 +36,8 @@ func main() {
 	// is set, else iii.DefaultEngineURL (ws://127.0.0.1:49134).
 	client := iii.RegisterWorker("")
 
-	// Exposed over HTTP, so the handler speaks the engine's HTTP envelope: the request
-	// body is under "body", and the response is { status_code, body }.
+	// Served over HTTP, so the handler reads the request (its body is under "body") and
+	// returns the response { status_code, body }.
 	greet, err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req struct {
 			Body struct {
@@ -56,11 +56,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-		Type:       "http",
-		FunctionID: greet.ID,
-		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
-	}); err != nil {
+	// POST /greet runs hello::greet: it observes the http worker's http::on-request,
+	// with the route as args.
+	if _, err := client.Observe(iii.Source{
+		FunctionID: "http::on-request",
+		Args:       iii.Args{"method": "POST", "path": "/greet"},
+	}, greet.ID); err != nil {
 		log.Fatal(err)
 	}
 
@@ -78,22 +79,22 @@ func main() {
 		}
 	}()
 
-	result, err := client.Trigger(context.Background(), iii.TriggerRequest{
+	result, err := client.Call(context.Background(), iii.CallRequest{
 		FunctionID: greet.ID,
 		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
 	})
 	if err != nil {
-		log.Printf("trigger: %v", err) // not log.Fatal: it would skip the deferred Shutdown
+		log.Printf("call: %v", err) // not log.Fatal: it would skip the deferred Shutdown
 		return
 	}
 	log.Printf("result: %s", result) // {"status_code":200,"body":{"message":"Hello, world!"}}
 }
 ```
 
-> **HTTP trigger envelope.** When a function is reached over an `http` trigger, the
-> engine wraps the request as `{ path, method, body, headers, … }` and expects the
-> function to return `{ status_code, body }`. Functions invoked only over the socket can
-> use any payload shape. See the [HTTP trigger documentation](https://iii.dev/docs).
+> **HTTP requests.** The target of an `http::on-request` observer receives the request
+> as `{ path, method, body, headers, … }` and returns `{ status_code, body }`. Functions
+> called only over the socket can use any payload shape. See the
+> [HTTP documentation](https://iii.dev/docs).
 
 A complete, runnable version is in the [`iii-example`](../iii-example) module.
 
@@ -109,28 +110,27 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Connection state | `client.ConnectionState() ConnectionState`, `client.OnConnectionStateChange(listener) (unsubscribe func())` | The current state, and every change (`connecting`, `connected`, `reconnecting`, `disconnected`, `failed`) in order. |
 | Worker id | `client.WorkerID() string` | The id the engine assigned (empty before the first acknowledgement). |
 | Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...) (*FunctionRef, error)` | Register a function with request/response schemas inferred from the types. |
-| Register function | `client.RegisterFunction(id, handler, opts...) (*FunctionRef, error)` | Register a function the engine can invoke by name. |
+| Register function | `client.RegisterFunction(id, handler, opts...) (*FunctionRef, error)` | Register a function the engine can invoke by name. `iii.Identity` returns its input: the handler of an event source. |
 | Register HTTP function | `client.RegisterHTTPFunction(id, iii.HTTPInvocationRef{...}, opts...) (*FunctionRef, error)` | Register a function hosted elsewhere that the engine invokes over HTTP. |
-| Unregister | `ref.Unregister() error` | Remove the function (or trigger, or trigger type) the handle refers to; reconnects no longer register it. |
+| Unregister | `ref.Unregister() error` | Remove the function; reconnects no longer register it. |
 | Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
-| Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)` | Invoke `target` on every matching invocation (or owner event) of a function. |
+| Call (await) | `client.Call(ctx, iii.CallRequest{FunctionID, Payload, ...})` | Call a function and wait for the result. `client.Trigger` and `iii.TriggerRequest` are the same under their 0.25 names. |
+| Call (fire-and-forget) | `client.Call(ctx, iii.CallRequest{Action: iii.VoidAction()})` | Call without waiting. |
+| Call (enqueue) | `client.Call(ctx, iii.CallRequest{Action: iii.EnqueueAction("queue")})` | Route the call through a named queue. |
+| Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)`, `client.ObserveFunction(id, target, opts...)` | Run `target` on every matching call of a function. |
 | Current invocation | `iii.InvocationFromContext(ctx) (iii.Invocation, bool)` | The invocation a handler runs in (id, caller, activation, observe depth). |
-| Owner hooks | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{...}}` | React when the function is observed; hand events to observers with `obs.Emit` / `obs.Call`. |
-| Observed? | `ref.IsObserved()`, `ref.Observers()` (or `client.IsObserved(id)`, `client.Observers(id)`) | The active observers of a function this worker registered. |
-| Register trigger (deprecated) | `client.RegisterTrigger(iii.RegisterTriggerInput{...}) (*Trigger, error)` | Bind a trigger (HTTP, cron, queue, …) to a function. Use `Observe` where the source has moved. |
-| Register trigger type (deprecated) | `client.RegisterTriggerType(iii.RegisterTriggerTypeInput{...}, handler) (*TriggerTypeRef, error)` | Implement a custom trigger type. Use `ObserveHooks`. |
-| Unregister trigger type by id (deprecated) | `client.UnregisterTriggerType(id) error` | Remove a trigger type without its handle. |
-| Invoke (await) | `client.Trigger(ctx, TriggerRequest{FunctionID, Payload, ...})` | Invoke a function and wait for the result. |
-| Invoke (fire-and-forget) | `client.Trigger(ctx, TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting. |
-| Invoke (enqueue) | `client.Trigger(ctx, TriggerRequest{Action: iii.EnqueueAction("queue")})` | Route the invocation through a named queue. |
+| Observer hooks | `client.OnObserverAdded(hook)`, `client.OnObserverAddedFor(id, hook)`, `client.OnObserverRemoved(hook)`, `client.OnObserverRemovedFor(id, hook)`, `client.OnObserverDeliverFor(id, hook)`; `ref.OnObserverAdded`, `ref.OnObserverRemoved`, `ref.OnObserverDeliver` | Set up and tear down per observer, for every function or one; choose who gets each call. |
+| Keyed delivery | `iii.Keyed(observerKeys, callKeys) iii.DeliverHook` | Deliver each call to the observers filed under its keys. |
+| Call through an observer | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` | Run an observer's target from a deliver hook. |
+| Observed? | `ref.IsObserved()`, `ref.IsObservedFor(call)`, `ref.Observers()` (or `client.IsObserved(id)`, `client.IsObservedFor(id, call)`, `client.Observers(id)`) | The active observers of a function this worker hosts. |
 | Create channel | `client.CreateChannel(ctx, bufferSize)` | Open a streaming data channel (writer + reader ends). |
 | Open channel end | `client.OpenReader(ref)`, `client.OpenWriter(ref)` | Open the end of a channel received in a payload, with the client's address and headers. |
 | Shut down | `client.Shutdown(ctx) error` | Stop gracefully: flush reports and telemetry within ctx, cancel pending calls, close the socket with a handshake. |
 | Close | `client.Close() error` | Stop at once (io.Closer): short fixed flush bounds, cancel pending calls, drop the socket. |
 
-`Register*` may be called before or after `Connect`; registrations are kept in memory and
-(re)sent to the engine on every (re)connection, until the handle they returned is
-unregistered.
+`Register*`, `Observe` and the hook methods may be called before or after `Connect`;
+registrations and observers are kept in memory and (re)sent to the engine on every
+(re)connection, until they are unregistered or disposed.
 
 ### Options
 
@@ -143,7 +143,7 @@ Pass options to `New` or `RegisterWorker`:
 | `iii.WithDescription(text)` | One-line summary shown by `engine::workers::list` / `engine::workers::info`. |
 | `iii.WithHeaders(h)` | Headers for the WebSocket handshake of the main connection and of channels. |
 | `iii.WithReconnectConfig(cfg)` | Reconnect schedule (see [Connection behavior](#connection-behavior)). |
-| `iii.WithInvocationTimeout(d)` | How long `Trigger` waits when `TriggerRequest.Timeout` is zero (default `iii.DefaultInvocationTimeout`, 30s). |
+| `iii.WithInvocationTimeout(d)` | How long `Call` waits when `CallRequest.Timeout` is zero (default `iii.DefaultInvocationTimeout`, 30s). |
 | `iii.WithTelemetry(iii.TelemetryOptions{...})` | Language, project name and framework reported in the worker metadata. |
 | `iii.WithOtel(iii.OtelConfig{...})` | OpenTelemetry export to the engine: on by default, configured or turned off here (see [Observability](#observability)). |
 | `iii.WithMetricsReporting(enabled)` | Worker resource gauges (memory, CPU, uptime) exported with the telemetry (default `true`). |
@@ -199,6 +199,28 @@ client.RegisterFunction("orders::create", ordersHandler, iii.RegisterFunctionOpt
 	Metadata:       json.RawMessage(`{"owner":"billing-team","priority":"high"}`),
 })
 ```
+
+Four more options describe the function to its observers. `ArgsFormat` is the JSON
+Schema of the observers' args (the engine validates them, `INVALID_ARGS`); `Private`
+lets only this worker call the function, while other workers may observe it;
+`Observable: &off` refuses every observer (`NOT_OBSERVABLE`); and `Standby` makes the
+worker wait for the function when another connection already hosts its id, registering
+it again about once a second until the engine accepts it. These three travel as
+`args_format`, `private` and `observable`; they need an engine with `observe.v2`, and
+against an older one the function stays unregistered and the SDK logs `UNSUPPORTED`
+once.
+
+```go
+// an event source: its handler returns the event, only this worker calls it
+ticks, err := client.RegisterFunction("cron::on-tick", iii.Identity, iii.FunctionOptions{
+	ArgsFormat: json.RawMessage(`{"type":"object","required":["expression"],"properties":{"expression":{"type":"string"}}}`),
+	Private:    true,
+	Standby:    true,
+})
+```
+
+A call this worker makes to its own private function passes the input and the result by
+reference: the handler and the hooks treat both as read-only.
 
 Returning an `*iii.InvocationError` preserves its `Code` on the wire; any other error is
 reported with code `invocation_failed`. A handler panic is recovered and reported the
@@ -260,11 +282,11 @@ charge, err := client.RegisterHTTPFunction("billing::charge", iii.HTTPInvocation
 
 ### Unregistering
 
-Every registration returns a handle whose `Unregister` removes it: `*FunctionRef` (from
-`RegisterFunction`, `RegisterHTTPFunction`, `RegisterFunctionTyped`), `*Trigger` (from
-`RegisterTrigger`) and `*TriggerTypeRef` (from `RegisterTriggerType`). The engine is told
-when the client is connected, and later reconnects no longer replay the registration.
-`FunctionRef.Unregister` also releases the function's observers.
+`ref.Unregister()` removes the function the handle refers to (from `RegisterFunction`,
+`RegisterHTTPFunction` or `RegisterFunctionTyped`): the engine is told when the client
+is connected, later reconnects no longer replay the registration, and the function's
+observers are released through its removed hooks. The hooks set for its id stay, for a
+later registration of the id.
 
 ```go
 ref, err := client.RegisterFunction("jobs::nightly", handler)
@@ -275,81 +297,35 @@ if err := ref.Unregister(); err != nil {
 ```
 
 `Unregister` is idempotent: a second call, or a call on a handle whose id was registered
-again since, does nothing and returns nil. That is the Node SDK's rule for `FunctionRef`;
-the Go `Trigger` and `TriggerTypeRef` follow it too, where Node's resend the unregister
-frame. The deprecated `client.UnregisterTriggerType(id)` removes a trigger type by id.
+again since, does nothing and returns nil, as the Node SDK's `FunctionRef` does.
 
-### Describing custom trigger types
-
-`RegisterTriggerTypeInput` names the type and can describe the configuration accepted
-when binding a trigger and the payload delivered when it fires. Given a `handler`
-that implements `iii.TriggerHandler`:
-
-```go
-events, err := client.RegisterTriggerType(iii.RegisterTriggerTypeInput{
-	ID:          "messaging::events",
-	Description: "Filtered message events",
-	TriggerRequestFormat: json.RawMessage(`{
-		"type":"object",
-		"properties":{"chat_ids":{"type":"array","items":{"type":"string"}}},
-		"additionalProperties":false
-	}`),
-	CallRequestFormat: json.RawMessage(`{
-		"type":"object",
-		"properties":{"message_id":{"type":"string"},"text":{"type":"string"}},
-		"required":["message_id"]
-	}`),
-}, handler)
-if err != nil {
-	log.Fatal(err)
-}
-
-// Bind a trigger of this type to an existing function, or register a function and
-// bind it in one call; both resolve the function in this worker's namespace.
-_, err = events.RegisterTrigger("chat::on-message", json.RawMessage(`{"chat_ids":["c1"]}`))
-_, err = events.RegisterFunction("chat::audit", auditHandler, json.RawMessage(`{"chat_ids":["c2"]}`))
-```
-
-The `FunctionRef` from `events.RegisterFunction` controls the function only: as in the
-Node SDK, its `Unregister` leaves the trigger bound until `events.Unregister()` removes
-the type.
-
-`engine::triggers::info` exposes `TriggerRequestFormat` as `configuration_schema`
-and `CallRequestFormat` as `request_schema`. Inspect a provider using
-`{"id":"messaging::events","namespace":"your-worker-namespace"}`. You can also
-generate either schema with `iii.InferSchema[T]()`.
-
-Nil or empty schema bytes omit the corresponding field. The SDK copies the bytes for
-registration and reconnect replay, rejects malformed JSON, and preserves the previous
-registration when an update is rejected. Schemas describe the contract;
-handlers remain responsible for validating trigger configuration and payloads.
-The SDK checks JSON syntax, not JSON Schema semantics.
-
-### Invoking functions
+### Calling functions
 
 ```go
 // Await the result.
-res, err := client.Trigger(ctx, iii.TriggerRequest{
+res, err := client.Call(ctx, iii.CallRequest{
 	FunctionID: "orders::create",
 	Payload:    json.RawMessage(`{"item":"widget"}`),
 })
 
 // Fire-and-forget (e.g. logging).
-client.Trigger(ctx, iii.TriggerRequest{
+client.Call(ctx, iii.CallRequest{
 	FunctionID: iii.LogInfo,
 	Payload:    json.RawMessage(`{"message":"page_view"}`),
 	Action:     iii.VoidAction(),
 })
 
 // Enqueue through a named queue and await the receipt.
-client.Trigger(ctx, iii.TriggerRequest{
+client.Call(ctx, iii.CallRequest{
 	FunctionID: "jobs::process",
 	Action:     iii.EnqueueAction("jobs"),
 })
 ```
 
-An await or enqueue call waits `TriggerRequest.Timeout`, or, when that is zero, the
+An await or enqueue call waits `CallRequest.Timeout`, or, when that is zero, the
 client's invocation timeout (`iii.WithInvocationTimeout`, default 30s).
+`client.Trigger`, `iii.TriggerRequest` and `iii.TriggerAction` are `Call`, `CallRequest`
+and `CallAction` under their 0.25 names.
 
 Errors are typed: `errors.Is(err, iii.ErrTimeout)` for a missed deadline,
 `errors.Is(err, iii.ErrNotConnected)` for a call cancelled by shutdown, and
@@ -358,18 +334,19 @@ Errors are typed: `errors.Is(err, iii.ErrTimeout)` for a missed deadline,
 
 A call to a function this worker registered itself runs in-process once the engine
 confirmed it (no frames on the wire unless someone observes it). The handler gets its
-own copy of the payload, and errors and timeouts look as on the remote path. Pass
-`Dispatch: iii.DispatchRemote` to go through the engine anyway, or register the
-function with `LocalDispatch: &off` (`off := false`).
+own copy of the payload (a private function's is passed by reference), and errors and
+timeouts look as on the remote path. Pass `Dispatch: iii.DispatchRemote` to go through
+the engine anyway, or register the function with `LocalDispatch: &off` (`off := false`).
 
-Inside a handler, pass the handler's `ctx` to `Trigger`: the call then carries the
-handler as its caller (observers can filter on `caller.*`) and the observe depth the
-engine's loop guard reads.
+Inside a handler, pass the handler's `ctx` to `Call`: the call then carries the handler
+as its caller (observers can filter on `caller.*`) and the observe depth the engine's
+loop guard reads.
 
 ### Observing functions
 
-Every function is observable. The target is a registered function; it receives the
-`iii.Observed` envelope (`input`, `output` or `error`, `caller`, ...).
+Every function is observable. When the source function runs, the target runs; the
+target is a registered function and receives the `iii.Observed` envelope (`input`,
+`output` or `error`, `caller`, ...).
 
 ```go
 client.RegisterFunction("alerts::big-order", func(ctx context.Context, data json.RawMessage) (any, error) {
@@ -387,61 +364,129 @@ if err == nil {
 }
 // later
 _ = observer.Dispose(ctx)
+
+// every successful call, the observer defaults
+client.ObserveFunction("orders::create", "audit::record")
 ```
 
-Engine-hosted sources are observed the same way, e.g. worker changes:
+`Source.Args` go to the worker that hosts the function, which reads them in its hooks
+(a cron expression, a route, a table); `Source.Filters` select calls by `input`,
+`output`, `error`, `caller` and `metadata`. Engine-hosted sources are observed the same
+way, e.g. worker changes:
 
 ```go
 client.Observe(iii.Source{FunctionID: iii.FnOnWorkersChanged, Deliver: iii.DeliverInput}, "ops::on-workers")
 ```
 
-A function of your own can hand its events to the observers they belong to (owner
-delivery), and react when one is added or removed. Here a worker's own scheduler
-function routes each tick to the observers of its expression:
+The filter evaluator is the `filter` subpackage
+(`github.com/iii-hq/iii/sdk/packages/go/iii/filter`), the same language the engine runs.
+
+### Hosting observed functions
+
+The worker that hosts a function decides what observing it means with three hooks. Each
+overrides something iii does by default:
+
+| Hook | What iii does by default | Use it to |
+| --- | --- | --- |
+| `iii.AddedHook` | accepts the observer: it becomes active and receives the function's calls | set something up from the observer's args before it is accepted (a cron job, a database trigger, a route); return an error to reject it |
+| `iii.RemovedHook` | stops delivering to the observer and forgets it | tear down what the added hook set up |
+| `iii.DeliverHook` | after each call, delivers to every observer whose `on` and filters match | choose which observers get each call and what the caller gets back; `next` is iii's delivery for the observers passed |
+
+`OnObserverAdded` and `OnObserverRemoved` are set for every function the worker hosts on
+the client, and for one function by id (`OnObserverAddedFor`, `OnObserverRemovedFor`) or
+on its `FunctionRef`. Both levels run: when an observer is added, the worker's hook and
+then the function's; when it is removed, the function's and then the worker's. The
+deliver hook is set per function (`OnObserverDeliverFor`, `ref.OnObserverDeliver`). Each
+method returns its receiver, and `nil` removes the hook.
 
 ```go
-var mu sync.Mutex
-schedules := map[string][]*iii.Observer{} // expression -> observers
+// every function this worker hosts: keep the event stream open while anything is observed
+client.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error { return events.Retain(ctx) })
+client.OnObserverRemoved(func(ctx context.Context, obs *iii.Observer) { events.Release(ctx) })
 
-client.RegisterFunction("reports::on-tick", func(ctx context.Context, data json.RawMessage) (any, error) {
-	var tick struct{ Expression string `json:"expression"` }
-	_ = json.Unmarshal(data, &tick)
-	mu.Lock()
-	observers := append([]*iii.Observer(nil), schedules[tick.Expression]...)
-	mu.Unlock()
-	for _, obs := range observers {
-		obs.Emit(ctx, data) // false when the observer's filters reject the tick
-	}
-	return nil, nil
-}, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
-	Delivery:   iii.DeliveryOwner,
-	ArgsFormat: json.RawMessage(`{"type":"object","required":["expression"],"properties":{"expression":{"type":"string"}}}`),
-	OnObserverAdded: func(ctx context.Context, obs *iii.Observer) error {
-		expr, _ := obs.Args["expression"].(string)
-		mu.Lock()
-		schedules[expr] = append(schedules[expr], obs)
-		mu.Unlock()
-		return nil // or iii.ObserveRejection("INVALID_EXPRESSION", "...")
+// one function, by id, before it is registered
+client.OnObserverAddedFor("cron::on-tick", func(ctx context.Context, obs *iii.Observer) error {
+	expression, _ := obs.Args["expression"].(string)
+	return scheduler.Retain(expression) // an iii.ObserveRejection("INVALID_CRON_EXPRESSION", ...) rejects it
+})
+client.OnObserverRemovedFor("cron::on-tick", func(ctx context.Context, obs *iii.Observer) {
+	expression, _ := obs.Args["expression"].(string)
+	scheduler.Release(expression)
+})
+client.OnObserverDeliverFor("cron::on-tick", iii.Keyed(
+	func(obs *iii.Observer) []string { // the keys an observer is filed under
+		expression, _ := obs.Args["expression"].(string)
+		return []string{expression}
 	},
-	OnObserverRemoved: func(ctx context.Context, obs *iii.Observer) {
-		// remove obs from schedules
+	func(call *iii.Call) []string { // the keys a call is delivered to
+		var tick struct{ Expression string `json:"expression"` }
+		_ = json.Unmarshal(call.Input, &tick)
+		return []string{tick.Expression}
 	},
-}})
+))
+
+client.RegisterFunction("cron::on-tick", iii.Identity, iii.FunctionOptions{ArgsFormat: cronArgs, Private: true})
+
+// the scheduler calls the function with each tick; Keyed hands it to that expression's observers
+if client.IsObservedFor("cron::on-tick", &iii.Call{Input: tick}) {
+	client.Call(ctx, iii.CallRequest{FunctionID: "cron::on-tick", Payload: tick, Action: iii.VoidAction()})
+}
 ```
 
-`obs.Call(ctx, payload)` invokes the observer's target through the engine and returns
-its result (an HTTP router answers with it). The filter evaluator is the `filter`
-subpackage (`github.com/iii-hq/iii/sdk/packages/go/iii/filter`), the same language
-the engine runs.
+How the hooks run:
 
-### Trigger APIs (deprecated)
+- **Accepted.** An observer is accepted once every added hook that applies to it has
+  returned nil; the SDK then acks it and it becomes active. `obs.Accepted(ctx)` waits for
+  that, so a host can send a new observer its initial state.
+- **Rejected.** An added hook that returns an error rejects the observer with the code
+  of an `iii.ObserveRejection(code, message)`, or `OBSERVE_REJECTED` for any other error.
+  The removed hook of each level whose added hook already returned runs.
+- **Removed.** The removed hooks run exactly once for every accepted observer: on
+  unobserve, on disposal, and after a late rejection with `obs.Reject(code, message)`.
+- **One at a time.** The hooks of one function run one at a time, in the order the
+  engine announced the observers; hooks of different functions run concurrently. A hook
+  past 30s fails the observer with `OWNER_TIMEOUT` and its ctx is cancelled.
+- **Set hooks by id before registering.** The SDK acks no observer of a function before
+  `RegisterFunction` returns, but a hook set on the returned handle can come after
+  observers were accepted. A hook set while the function has active observers runs for
+  each of them at once (an error late-rejects that observer), and the SDK logs one
+  warning naming the function and the number of observers. A hook id this worker has not
+  registered is reported once its connection is registered.
 
-`RegisterTrigger` and `RegisterTriggerType` keep working in 0.25 but are deprecated:
-they log a warning once per process. Use `client.Observe(source, target)` and
-`RegisterFunction(id, handler, iii.RegisterFunctionOptions{Observe: ...})` instead.
-Built-in trigger providers (HTTP, cron, queue, ...) keep `RegisterTrigger` until they
-ship their source functions. See the
-[migration guide](https://iii.dev/docs/upgrading/from-0-24-x).
+The deliver hook receives the call (`iii.Call`: `Input`, `Output` and `Error` as JSON,
+`Caller`, `Metadata`), the function's active observers when the call started, and
+`next`. What it returns is what the caller gets back. It runs inside the function's
+invocation, so calls it makes with its `ctx` have that invocation as their caller. To
+choose observers and let iii deliver, pass them to `next`, which applies their `on` and
+filters and delivers each at most once per call. To call a target yourself, check
+`obs.Matches(call)` and call through the observer; the target's result can be the
+caller's:
+
+```go
+client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer, next iii.Next) (any, error) {
+	route := routes.Match(call.Input)
+	if route == nil {
+		return map[string]int{"status_code": 404}, nil
+	}
+	if !route.Obs.Matches(call) {
+		return map[string]int{"status_code": 422}, nil
+	}
+	return client.Call(ctx, iii.CallRequest{Observer: route.Obs, Payload: call.Input})
+})
+```
+
+A call through an observer goes to its stored target: the engine checks that this worker
+hosts the observer's function and that the observer is active (`NOT_FUNCTION_OWNER`,
+`OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`) and applies its policy (`OVERFLOW` past
+`max_in_flight`), metadata sidecar and loop guard.
+
+`iii.Keyed` keeps an index for a function with many observers: the SDK computes an
+observer's keys once, when it is accepted, and unfiles it when it is removed, and
+`IsObservedFor(call)` is one lookup per call key. Keys express wildcards by listing them.
+
+Every call of a function, local or routed, is delivered by the worker that hosts it.
+A routed call's matches ride its answer, and an unobserved call sends nothing. A
+function with a deliver hook needs an engine with `observe.v2`, as the options above do.
 
 ## Connection behavior
 
@@ -504,7 +549,7 @@ if err := client.Shutdown(ctx); err != nil {
 For bulk or streaming data, open a channel instead of passing everything through a single
 invocation result. `CreateChannel` returns a writer and a reader, each backed by its own
 WebSocket; pass either end's ref (`WriterRef` / `ReaderRef`) to another worker inside a
-trigger payload, and it opens the opposite end.
+call payload, and it opens the opposite end.
 
 ```go
 ch, err := client.CreateChannel(ctx, nil)
@@ -513,7 +558,7 @@ ch.Writer.Write(ctx, payload)        // binary frames (64 KiB chunks)
 ch.Writer.SendMessage(ctx, progress) // discrete text message
 ch.Writer.Close()                    // signals end-of-stream
 
-// hand ch.ReaderRef to a processor function via Trigger; on that side:
+// hand ch.ReaderRef to a processor function via Call; on that side:
 refs, _ := iii.ExtractChannelRefs(data)
 reader := client.OpenReader(refs["reader"]) // client address, WithHeaders and III_TOKEN
 reader.OnMessage(func(m string) { /* text messages */ })
@@ -541,7 +586,7 @@ What the SDK records:
 
 - **Invocation spans.** Every handler runs inside an `execute <function id>` span (kind
   INTERNAL), a child of the trace context the invocation carried. The handler's `ctx`
-  carries that span: pass it to `Trigger` and the call joins the trace. The SDK injects
+  carries that span: pass it to `Call` and the call joins the trace. The SDK injects
   `traceparent` and `baggage` into outbound invocations and extracts them from inbound
   ones, also when export is turned off.
 - **Invocation payloads.** The span records the handler's input and output as the
@@ -620,16 +665,109 @@ Without running telemetry (turned off, or no client started) the helpers fall ba
 The module is 0.x, and this release changes its API. It requires **Go 1.25 or later**
 (the module's `go` directive is 1.25).
 
-**Registrations return handles.** `RegisterFunction`, `RegisterHTTPFunction` and
-`RegisterFunctionTyped` return `(*FunctionRef, error)`; unregister through the handle.
+**`Call` invokes a function.** `CallRequest` and `CallAction` are the request and the
+action; `Trigger`, `TriggerRequest` and `TriggerAction` are the same function and types
+under their 0.25 names, marked deprecated. `CallRequest.Payload` carries the input;
+`Data` still works when `Payload` is nil, and is deprecated.
 
 ```go
 // 0.25
-if err := client.RegisterFunction("orders::create", handler); err != nil {
-	log.Fatal(err)
-}
+client.Trigger(ctx, iii.TriggerRequest{FunctionID: "orders::create", Data: body})
 
-// now
+// 0.26
+client.Call(ctx, iii.CallRequest{FunctionID: "orders::create", Payload: body})
+```
+
+**Triggers are observers.** `RegisterTrigger`, `RegisterTriggerNamespaced`, `Trigger`
+handles and `RegisterTriggerInput` are removed: observe the function that replaces the
+trigger type, with the trigger's config as args, and the bound function as the target.
+The trigger metadata is the observer's metadata sidecar.
+
+```go
+// 0.25
+trigger, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+	Type:       "cron",
+	FunctionID: "reports::daily-summary",
+	Config:     json.RawMessage(`{"expression":"0 0 9 * * * *"}`),
+	Metadata:   json.RawMessage(`{"team":"reports"}`),
+})
+// later: trigger.Unregister()
+
+// 0.26
+observer, err := client.Observe(iii.Source{
+	FunctionID: "cron::on-tick",
+	Args:       iii.Args{"expression": "0 0 9 * * * *"},
+	Deliver:    iii.DeliverInput,
+}, "reports::daily-summary", iii.ObserverOptions{Metadata: json.RawMessage(`{"team":"reports"}`)})
+// later: observer.Dispose(ctx)
+```
+
+| Trigger type | Observe | Args |
+| --- | --- | --- |
+| `http` | `http::on-request` | `{ method, path, middleware_function_ids?, public_webhook? }` |
+| `cron` | `cron::on-tick` | `{ expression }` |
+| `database::row-changed` | `database::on-row-changed` | `{ db, table?, ops? }` |
+| `durable:subscriber` | `queue::on-message` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` |
+| `subscribe` | `pubsub::publish`, filtered on `input.topic` | none |
+| `state` | `state::on-changed`, filtered on `input.scope`, `input.key` | none |
+| `log`, `trace` | `iii.FnOnLog`, `iii.FnOnSpan` | none |
+| `configuration` | `iii.FnOnConfigurationUpdate` | none |
+| `engine::functions-available` | `iii.FnOnFunctionsChanged` | none |
+| `stream`, `stream:join`, `stream:leave` | `iii.FnOnStreamChanged`, `iii.FnOnStreamJoin`, `iii.FnOnStreamLeave` | none |
+
+`TriggerFunctionsAvailable`, `TriggerLog`, `FnListTriggers`, `FnInfoTriggers`,
+`FnListRegisteredTriggers` and `FnInfoRegisteredTriggers` are removed: the engine-hosted
+sources are the `FnOn*` constants, and `engine::functions::list` and `info` describe
+each function's `args_format`, `private`, `observable` and `observer_count`.
+
+**Trigger types are functions with hooks.** `RegisterTriggerType`, `TriggerTypeRef`,
+`UnregisterTriggerType`, `TriggerHandler` and `TriggerConfig` are removed. Register a
+function whose handler returns the event, with `ArgsFormat` for what the trigger config
+was and `Private: true`; `TriggerHandler.RegisterTrigger` becomes an added hook,
+`UnregisterTrigger` a removed hook, and firing each binding becomes one call of the
+function, which iii delivers to the observers its deliver hook (or `iii.Keyed`) picks.
+
+**Observer hooks are methods.** `RegisterFunctionOptions.Observe`, `ObserveHooks` and
+`Delivery` are removed. `ArgsFormat` is an option of any function, `Allow: &off` is
+`Observable: &off`, and the callbacks are hooks set by id on the client or on the
+`FunctionRef`:
+
+```go
+// 0.25
+client.RegisterFunction("chat::on-command", handler, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{
+	Delivery:          iii.DeliveryOwner,
+	ArgsFormat:        commandArgs,
+	OnObserverAdded:   add,
+	OnObserverRemoved: remove,
+}})
+
+// 0.26
+client.OnObserverAddedFor("chat::on-command", add)
+client.OnObserverRemovedFor("chat::on-command", remove)
+client.OnObserverDeliverFor("chat::on-command", deliver)
+client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{ArgsFormat: commandArgs, Private: true})
+```
+
+| 0.25 | 0.26 |
+| --- | --- |
+| an index from args to observers, and `obs.Emit(ctx, event)` | call the function with the event; `iii.Keyed(observerKeys, callKeys)` or a deliver hook passing the chosen observers to `next` |
+| `obs.Call(ctx, payload)` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` in the deliver hook, after `obs.Matches(call)` |
+| `obs.Matches(iii.ObserveDoc{...})` | `obs.Matches(&iii.Call{...})`, which also applies `on` |
+| `obs.Legacy`, `LegacyTriggerType` | consumers observe the function |
+| a handler that refuses calls from other workers | `Private: true` |
+
+**RBAC hooks.** In `helpers/workerconnection`, `AuthResult.AllowedTriggerTypes`,
+`AuthResult.AllowTriggerTypeRegistration` and the trigger registration hook types are
+removed; `OnFunctionRegistrationInput` and `OnFunctionRegistrationResult` carry
+`private`, `observable` and `args_format`.
+
+**Registrations return handles.** `RegisterFunction`, `RegisterHTTPFunction` and
+`RegisterFunctionTyped` return `(*FunctionRef, error)`; unregister through the handle.
+A function id is registered once per client: registering it again returns an error
+(`function id already registered`), as the Node, Python and Rust SDKs do, and an empty id
+is refused. To replace a function, unregister it first.
+
+```go
 ref, err := client.RegisterFunction("orders::create", handler)
 if err != nil {
 	log.Fatal(err)
@@ -637,92 +775,7 @@ if err != nil {
 _ = ref.Unregister() // when the function is retired
 ```
 
-**A function id is registered once per client.** Registering an id again used to replace
-the earlier function; it now returns an error (`function id already registered`), as the
-Node, Python and Rust SDKs do, and an empty id is refused. To replace a function,
-unregister it first. Trigger types, and triggers registered with an explicit `ID`, are
-still replaced when registered again.
-
-```go
-// 0.25: the second call replaced the first handler
-client.RegisterFunction("orders::create", v1)
-client.RegisterFunction("orders::create", v2)
-
-// now
-ref, err := client.RegisterFunction("orders::create", v1)
-if err != nil {
-	log.Fatal(err)
-}
-if err := ref.Unregister(); err != nil {
-	log.Fatal(err)
-}
-ref, err = client.RegisterFunction("orders::create", v2)
-```
-
-**`RegisterTrigger` takes a `RegisterTriggerInput` and returns a `*Trigger`.** An empty
-`ID` makes the SDK generate one (a UUID, as the Node and Python SDKs do), nil `Config`
-is sent as `{}`, `Namespace` is where the function resolves (empty: this worker's
-namespace) and `TriggerNamespace` where the trigger type's provider is found (empty: the
-engine resolves it). `RegisterTriggerNamespaced` keeps its signature and is deprecated.
-
-```go
-// 0.25
-err := client.RegisterTrigger("orders-http", "http", "orders::create",
-	json.RawMessage(`{"api_path":"/orders","http_method":"POST"}`))
-
-// now
-trigger, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-	ID:         "orders-http", // optional
-	Type:       "http",
-	FunctionID: "orders::create",
-	Config:     json.RawMessage(`{"api_path":"/orders","http_method":"POST"}`),
-})
-// later: trigger.Unregister()
-```
-
-**`RegisterTriggerType` takes a `RegisterTriggerTypeInput` and the handler, and returns a
-`*TriggerTypeRef`.** `RegisterTriggerTypeOptions` is removed; its two schemas are fields
-of the input.
-
-```go
-// 0.25
-err := client.RegisterTriggerType("webhook", "Webhooks", handler,
-	iii.RegisterTriggerTypeOptions{TriggerRequestFormat: configSchema})
-
-// now
-webhooks, err := client.RegisterTriggerType(iii.RegisterTriggerTypeInput{
-	ID:                   "webhook",
-	Description:          "Webhooks",
-	TriggerRequestFormat: configSchema,
-}, handler)
-// webhooks.RegisterTrigger(functionID, config), webhooks.RegisterFunction(id, h, config),
-// webhooks.Unregister()
-```
-
-**`TriggerRequest.Payload` replaces `Data`.** `Data` still works when `Payload` is nil,
-and is deprecated.
-
-```go
-// 0.25
-client.Trigger(ctx, iii.TriggerRequest{FunctionID: "orders::create", Data: body})
-
-// now
-client.Trigger(ctx, iii.TriggerRequest{FunctionID: "orders::create", Payload: body})
-```
-
 **`ConnectionState()` replaces `State()`**, which stays as a deprecated alias.
-
-```go
-// 0.25
-if client.State() == iii.StateConnected {
-	log.Print("connected")
-}
-
-// now
-if client.ConnectionState() == iii.StateConnected {
-	log.Print("connected")
-}
-```
 
 **New:** `client.Shutdown(ctx)` for a graceful stop (see
 [Connection behavior](#connection-behavior)) and `client.WorkerID()`.

@@ -63,8 +63,9 @@ type Client struct {
 
 	// reply is the per-connection channel for connection-SCOPED frames (pong,
 	// InvocationResult, observer acks, reports, calls through an observer): frames that
-	// are only meaningful on the socket that prompted them, in the order they were sent. A fresh channel is created per connection and discarded on
-	// teardown, so a reply can never leak onto the next connection (iii-hq/iii#1749).
+	// are only meaningful on the socket that prompted them, written in the order they
+	// were sent. A fresh channel is created per connection and discarded on teardown,
+	// so a reply can never leak onto the next connection (iii-hq/iii#1749).
 	// Guarded by replyMu; nil when there is no live connection.
 	replyMu sync.Mutex
 	reply   chan []byte
@@ -1689,34 +1690,62 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	var observed []string
 	var items []*reportItem
 	started := time.Now()
-	answer, aerr := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody, herr error) (any, error) {
+	out := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, handler outcome) outcome {
 		if !hostDelivers || (deliver == nil && len(set) == 0) {
-			return outcomeOf(result, errBody, herr)
+			return handler
 		}
-		run := newDeliveryRun(f, handlerCall(msg.FunctionID, inv.invocationID, msg.Data, result, errBody, msg.Caller, msg.Metadata), deliver != nil, true)
+		run := newDeliveryRun(f, handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, msg.Metadata), deliver != nil, true)
 		run.startedAt, run.duration, run.observeDepth, run.trace = started, time.Since(started), msg.ObserveDepth, tc
-		value, err := run.deliver(ctx, deliver, set)
-		answerJSON, answerErr := encodeAnswer(value, err, false)
-		observed, items = run.settleRouted(answerJSON, answerErr)
-		return outcomeOf(answerJSON, answerErr, err)
+		answer := outcomeOf(run.deliver(ctx, deliver, set))
+		observed, items = run.settleRouted(answer)
+		return answer
 	})
-	resultJSON, errBody := encodeAnswer(answer, aerr, false)
 	if len(items) > 0 {
 		c.reporter.sendItems(epoch, true, items)
 	}
-	c.replyInvocation(epoch, msg, resultJSON, errBody, tc, observed)
+	c.replyInvocation(epoch, msg, out.result, out.errBody, tc, observed)
 }
 
-// runInvocation runs handler h and then deliver, with the handler's encoded outcome
-// and its error, inside the invocation's span: deliver's return value is the call's.
-// clone copies a json.RawMessage the handler returns. A handler panic is recovered
-// into an error, so a caller gets an InvocationResult.error instead of a timeout.
-func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, clone bool, deliver func(ctx context.Context, result json.RawMessage, errBody *ErrorBody, herr error) (any, error)) (result any, err error) {
+// outcome is a call's outcome as the wire carries it, its encoded result or its error
+// body, and the error it came from.
+type outcome struct {
+	result  json.RawMessage
+	errBody *ErrorBody
+	err     error
+}
+
+// outcomeOf encodes what a handler or a deliver hook returned: a json.RawMessage is
+// used as given once it is checked, any other value is marshaled.
+func outcomeOf(value any, err error) outcome {
+	if err != nil {
+		return outcome{errBody: errorBodyFromHandlerError(err), err: err}
+	}
+	encoded, err := encodeResult(value)
+	if err != nil {
+		return outcome{errBody: &ErrorBody{Code: "invocation_failed", Message: err.Error()}, err: err}
+	}
+	return outcome{result: encoded}
+}
+
+// runInvocation runs handler h and then deliver, with the handler's outcome, inside the
+// invocation's span; deliver's outcome is the call's. A handler panic is recovered into
+// an error, so a caller gets an InvocationResult.error instead of a timeout. clone
+// copies a json.RawMessage the handler returns.
+func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, clone bool, deliver func(ctx context.Context, handler outcome) outcome) outcome {
 	ctx, endSpan := c.startInvocationSpan(ctx, data) // otel_client.go: "execute <fn>" span
-	defer func() { endSpan(result, err) }()
-	value, herr := callHandler(ctx, h, data)
-	resultJSON, errBody := encodeAnswer(value, herr, clone)
-	return deliver(ctx, resultJSON, errBody, herr)
+	handler := outcomeOf(callHandler(ctx, h, data))
+	if clone && handler.result != nil {
+		handler.result = bytes.Clone(handler.result)
+	}
+	out := deliver(ctx, handler)
+	if out.err != nil {
+		endSpan(nil, out.err)
+	} else if out.errBody != nil {
+		endSpan(nil, newInvocationError(out.errBody, ""))
+	} else {
+		endSpan(out.result, nil)
+	}
+	return out
 }
 
 // callHandler invokes h, recovering a panic into an error.
@@ -1727,38 +1756,6 @@ func callHandler(ctx context.Context, h Handler, data json.RawMessage) (result a
 		}
 	}()
 	return h(ctx, data)
-}
-
-// encodeAnswer is a handler's or a deliver hook's outcome as the wire carries it: the
-// encoded value, or the error body. clone copies a json.RawMessage the value is.
-func encodeAnswer(value any, err error, clone bool) (json.RawMessage, *ErrorBody) {
-	if err != nil {
-		return nil, errorBodyFromHandlerError(err)
-	}
-	encoded, err := encodeResult(value, clone)
-	if err != nil {
-		return nil, &ErrorBody{Code: "invocation_failed", Message: err.Error()}
-	}
-	return encoded, nil
-}
-
-// outcomeOf is an encoded outcome as a deliver function returns it: err when the
-// outcome is that error, else the error body as an *InvocationError.
-func outcomeOf(result json.RawMessage, errBody *ErrorBody, err error) (any, error) {
-	switch {
-	case err != nil:
-		return nil, err
-	case errBody != nil:
-		return nil, &InvocationError{Code: errBody.Code, Message: errBody.Message, Stacktrace: derefString(errBody.Stacktrace)}
-	}
-	return result, nil
-}
-
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 // errorBodyFromHandlerError maps a handler error to a wire ErrorBody. A typed

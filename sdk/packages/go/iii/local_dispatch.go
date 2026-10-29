@@ -32,11 +32,6 @@ func (c *Client) localTarget(functionID, namespace string) (registeredFunction, 
 	return fn, true
 }
 
-type localOutcome struct {
-	result json.RawMessage
-	err    *ErrorBody
-}
-
 // invokeLocal runs the handler in-process, inside a new invocation context, then
 // delivers the call. The handler gets a copy of the payload and the caller its own
 // encoding of the result (value semantics, as over the wire), except for a private
@@ -99,44 +94,47 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Cal
 	// The caller's trace context does reach it (otel.go), so its span joins the trace.
 	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), copyOf(inv.metadata)), inv)
 
-	run := func() localOutcome {
+	run := func() outcome {
 		started := time.Now()
 		var delivery *deliveryRun
-		answer, aerr := c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, result json.RawMessage, errBody *ErrorBody, herr error) (any, error) {
+		out := c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, handler outcome) outcome {
 			duration := time.Since(started)
-			c.reporter.recordLocal(functionID, errBody == nil, float64(duration)/float64(time.Millisecond))
+			c.reporter.recordLocal(functionID, handler.errBody == nil, float64(duration)/float64(time.Millisecond))
 			if !delivering {
-				return outcomeOf(result, errBody, herr)
+				return handler
 			}
-			delivery = newDeliveryRun(f, handlerCall(functionID, inv.invocationID, observedInput, result, errBody, caller, inv.metadata), deliver != nil, false)
+			delivery = newDeliveryRun(f, handlerCall(functionID, inv.invocationID, observedInput, handler, caller, inv.metadata), deliver != nil, false)
 			delivery.startedAt, delivery.duration, delivery.observeDepth, delivery.trace = started, duration, inv.observeDepth, inv.trace
-			return delivery.deliver(ctx, deliver, set)
+			answer := outcomeOf(delivery.deliver(ctx, deliver, set))
+			if !private && deliver != nil && answer.result != nil {
+				// the hook's value is the caller's own copy, as the handler's is
+				answer.result = bytes.Clone(answer.result)
+			}
+			return answer
 		})
 		if delivery != nil {
 			delivery.settleLocal()
 		}
-		// the handler's result is already the caller's own copy; a deliver hook's is not
-		result, errBody := encodeAnswer(answer, aerr, !private && deliver != nil)
-		return localOutcome{result: result, err: errBody}
+		return out
 	}
 
 	if req.Action != nil && req.Action.Type == "void" {
 		go func() {
-			if out := run(); out.err != nil {
-				log.Printf("iii: error invoking function %q: %s: %s", functionID, out.err.Code, out.err.Message)
+			if out := run(); out.errBody != nil {
+				log.Printf("iii: error invoking function %q: %s: %s", functionID, out.errBody.Code, out.errBody.Message)
 			}
 		}()
 		return nil, nil
 	}
 
-	done := make(chan localOutcome, 1)
+	done := make(chan outcome, 1)
 	go func() { done <- run() }()
 	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
 	select {
 	case out := <-done:
-		if out.err != nil {
-			return nil, newInvocationError(out.err, functionID)
+		if out.errBody != nil {
+			return nil, newInvocationError(out.errBody, functionID)
 		}
 		return out.result, nil
 	case <-timer.C:
