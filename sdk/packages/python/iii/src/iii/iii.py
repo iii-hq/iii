@@ -1138,6 +1138,12 @@ class III:
         elif msg_type == MessageType.FUNCTION_REGISTERED.value:
             registered = FunctionRegisteredMessage.model_validate(data)
             state = self._observe_state(registered.id)
+            if state is not None and state.sent_epoch != self._connection_epoch:
+                # The answer to a registration this connection withdrew (a
+                # function that needs observe.v2 on an engine without it): the
+                # function stays unregistered.
+                log.debug("functionregistered for a withdrawn registration of %r ignored", registered.id)
+                return
             if registered.id in self._standing_by:
                 self._standing_by.discard(registered.id)
                 log.info("Function %r is hosted by this worker now (standby)", registered.id)
@@ -1154,7 +1160,10 @@ class III:
         elif msg_type == MessageType.OBSERVER_ADDED.value:
             added = ObserverAddedMessage.model_validate(data)
             state = self._observe_state(added.function_id)
-            if state is not None:
+            if state is not None and state.sent_epoch != self._connection_epoch:
+                # An observer of a registration this connection withdrew: no hook runs, no ack goes out.
+                log.debug("observeradded for a withdrawn registration of %r ignored", added.function_id)
+            elif state is not None:
                 state.on_observer_added(added.namespace, added.revision, added.observer)
         elif msg_type == MessageType.OBSERVER_REMOVED.value:
             removed = ObserverRemovedMessage.model_validate(data)
@@ -1365,9 +1374,10 @@ class III:
     # registration: what an engine without observe.v2 cannot host waits or stays out
 
     def _needs_v2(self, function_id: str, data: RemoteFunctionData) -> bool:
-        """``args_format``, ``private``, ``observable=False`` or an
-        ``on_observer_deliver``: the function needs an engine with ``observe.v2``."""
-        return data.needs_v2 or function_id in self._deliver_hooks
+        """``args_format``, ``private``, ``observable=False``, an
+        ``on_observer_match`` or an ``on_observer_deliver``: the function needs
+        an engine with ``observe.v2`` (decision 18)."""
+        return data.needs_v2 or function_id in self._match_hooks or function_id in self._deliver_hooks
 
     def _schedule_registration(self, function_id: str) -> None:
         try:
@@ -1396,13 +1406,14 @@ class III:
         if function_id not in self._unsupported_warned:
             self._unsupported_warned.add(function_id)
             log.error(
-                "Function %r needs observe.v2 (args_format, private, observable=False or on_observer_deliver), "
+                "Function %r needs observe.v2 (args_format, private, observable=False, on_observer_match or "
+                "on_observer_deliver), "
                 "which the engine does not support (UNSUPPORTED): it stays unregistered. Upgrade the engine to "
                 "0.26 or later.",
                 function_id,
             )
         if state.sent_epoch == epoch:
-            # Registered as a plain function before it set on_observer_deliver.
+            # Registered as a plain function before it set on_observer_match or on_observer_deliver.
             self._send_frame(self._prepare_json(UnregisterFunctionMessage(id=function_id)))
         if state.released_epoch != epoch:
             # Unregistered on this connection: no local dispatch, no observers,
@@ -2122,9 +2133,10 @@ class III:
                 engine-side effects).
 
         A function that declares ``args_format``, ``private`` or
-        ``observable=False``, or has an ``on_observer_deliver``, needs an
-        engine with ``observe.v2``: against an older engine it stays
-        unregistered and ``UNSUPPORTED`` is logged once.
+        ``observable=False``, or has an ``on_observer_match`` or an
+        ``on_observer_deliver``, needs an engine with ``observe.v2``: against
+        an older engine it stays unregistered and ``UNSUPPORTED`` is logged
+        once.
 
         Returns:
             A ``FunctionRef``: ``id``, the hook methods, ``observers()``,
@@ -2409,7 +2421,9 @@ class III:
         :class:`MatchKeys` for the keys form); ``None`` removes it. A match
         hook set while the function has active observers is applied to them
         on the SDK loop, which rebuilds the index from them. Predicates and
-        key functions are sync: they run on every call.
+        key functions are sync: they run on every call. A function with a
+        match hook needs an engine with ``observe.v2``: against an older one
+        it stays unregistered, and ``UNSUPPORTED`` is logged once.
 
         Examples:
             >>> iii.on_observer_match(
@@ -2537,6 +2551,8 @@ class III:
         state = self._observe_state(function_id)
         if state is not None:
             state.match_changed()
+            # It decides whether the function needs observe.v2.
+            self._schedule_registration(function_id)
 
     def _set_deliver_hook(self, function_id: str, hook: DeliverHook | None) -> None:
         if hook is not None and not callable(hook):

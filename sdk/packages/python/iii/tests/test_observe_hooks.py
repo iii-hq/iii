@@ -15,7 +15,9 @@ import pytest
 from observe_fake_engine import (
     FakeEngine,
     acks,
+    answers,
     function_registered,
+    invoke,
     observer_added,
     observer_info,
     observer_removed,
@@ -667,6 +669,109 @@ def test_changed_args_are_a_different_observer(engine: FakeEngine, connect: Any)
     engine.deliver(function_registered("args::fn", [observer_info("o", "t", args={"x": 2})], revision=1))
     engine.wait_for(lambda: len(acks(engine)) == 2, what="the re-ack")
     assert log == ["added {'x': 1}", "removed {'x': 1}", "added {'x': 2}"]
+
+
+def test_an_observer_announced_again_with_the_same_args_runs_no_hook_and_is_served_with_that_view(
+    engine: FakeEngine, connect: Any
+) -> None:
+    """Decision 44: a held observer announced again with the same args is
+    re-acked without any hook, and served with the filters, target and
+    capture it was announced with; listed by ``functionregistered`` or by
+    ``observeradded``. Other args are a removal and then an add."""
+    client = connect(engine)
+    log: list[str] = []
+    client.on_observer_added("ra::fn", lambda obs: log.append(f"added {obs.id} {obs.args}"))
+    client.on_observer_removed("ra::fn", lambda obs: log.append(f"removed {obs.id} {obs.args}"))
+    ref = client.register_function("ra::fn", lambda data: data)
+    engine.deliver(function_registered("ra::fn", [observer_info("a", "t::a", args={"kind": "a"})], revision=1))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    [held] = ref.observers()
+
+    def above(n: int) -> dict[str, Any]:
+        return observer_info(
+            "a", "t::target", args={"kind": "a"}, filters={"$and": [{"input.n": {"$gt": n}}]}, capture=["input"]
+        )
+
+    calls = iter(range(1, 100))
+
+    def observed(n: int) -> list[str] | None:
+        invocation_id = f"r-{next(calls)}"
+        engine.deliver(invoke("ra::fn", {"n": n}, invocation_id))
+        [answer] = engine.wait_for(lambda: answers(engine, invocation_id), what="the answer")
+        return answer.get("observed")
+
+    # listed by functionregistered
+    engine.deliver(function_registered("ra::fn", [above(1)], revision=2))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="the re-ack")
+    assert observed(1) is None
+    assert observed(2) == ["a"]
+    # announced by observeradded
+    engine.deliver(observer_added("ra::fn", 3, above(5)))
+    engine.wait_for(lambda: len(acks(engine)) == 3, what="the second re-ack")
+    assert observed(2) is None
+    assert observed(6) == ["a"]
+    assert log == ["added a {'kind': 'a'}"]
+    assert _ack_ids(engine) == [("a", 1, None), ("a", 2, None), ("a", 3, None)]
+    assert ref.observers() == [held]
+    assert (held.target, held.capture, held.filters) == ("t::target", ["input"], above(5)["filters"])
+
+    # its late rejection carries the revision announced last; listed again, whatever its args, it is re-acked with it
+    held.reject("GONE", "config reloaded")
+    engine.deliver(function_registered("ra::fn", [observer_info("a", "t::a", args={"kind": "other"})], revision=4))
+    engine.wait_for(lambda: len(acks(engine)) == 5, what="the rejection, twice")
+    assert _ack_ids(engine)[3:] == [("a", 3, "GONE"), ("a", 4, "GONE")]
+    assert ref.is_observed() is False
+
+    # a fresh observeradded brings it back as a new observer; other args: removed, then added
+    engine.deliver(observer_added("ra::fn", 5, observer_info("a", "t::a", args={"kind": "a"})))
+    engine.wait_for(lambda: len(acks(engine)) == 6, what="the fresh ack")
+    engine.deliver(observer_added("ra::fn", 6, observer_info("a", "t::a", args={"kind": "b"})))
+    engine.wait_for(lambda: len(acks(engine)) == 7, what="the ack of the new args")
+    settle(client, engine)
+    assert log == [
+        "added a {'kind': 'a'}",
+        "removed a {'kind': 'a'}",
+        "added a {'kind': 'a'}",
+        "removed a {'kind': 'a'}",
+        "added a {'kind': 'b'}",
+    ]
+    assert _ack_ids(engine)[5:] == [("a", 5, None), ("a", 6, None)]
+    assert [o.args for o in ref.observers()] == [{"kind": "b"}]
+
+
+def test_a_held_observer_announced_with_filters_that_do_not_compile_is_removed_then_refused(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    removed: list[str] = []
+    client.on_observer_removed("bad-again::fn", lambda obs: removed.append(obs.id))
+    ref = client.register_function("bad-again::fn", lambda d: d)
+    engine.deliver(function_registered("bad-again::fn", [observer_info("o", "t")], revision=3))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    bad = observer_info("o", "t")
+    bad["filters"] = ["not", "an", "object"]
+    engine.deliver(function_registered("bad-again::fn", [bad], revision=5))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="the refusal")
+    settle(client, engine)
+    assert removed == ["o"]
+    assert _ack_ids(engine) == [("o", 3, None), ("o", 5, "INVALID_FILTER")]
+    assert ref.observers() == []
+
+
+def test_a_held_observer_served_a_changed_view_is_filed_under_its_new_keys(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    added: list[str] = []
+    client.on_observer_added("rk::fn", lambda obs: added.append(obs.id))
+    client.on_observer_match("rk::fn", observer=lambda obs: obs.target, call=lambda call: call.input["to"])
+    ref = client.register_function("rk::fn", lambda d: d)
+    engine.deliver(function_registered("rk::fn", [observer_info("a", "t::one")], revision=1))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    assert ref.is_observed({"input": {"to": "t::one"}}) is True
+    engine.deliver(observer_added("rk::fn", 2, observer_info("a", "t::two")))
+    engine.wait_for(lambda: len(acks(engine)) == 2, what="the re-ack")
+    assert added == ["a"]
+    assert ref.is_observed({"input": {"to": "t::one"}}) is False
+    assert ref.is_observed({"input": {"to": "t::two"}}) is True
 
 
 def test_a_malformed_filter_from_the_engine_is_refused(engine: FakeEngine, connect: Any) -> None:
