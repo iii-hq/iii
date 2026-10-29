@@ -646,7 +646,7 @@ impl IIIClient {
             metadata: invocation.metadata.clone(),
         };
         let matched: Vec<Observer> = match &matcher {
-            Some(matcher) => matcher.matching(&entry.id, &snapshot.observers, &call),
+            Some(matcher) => matcher.matching(&entry.id, &snapshot, &call),
             None => snapshot
                 .observers
                 .iter()

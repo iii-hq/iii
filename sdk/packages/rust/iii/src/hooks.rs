@@ -75,7 +75,7 @@ use serde_json::Value;
 use crate::{
     error::Error,
     iii::{IIIClient, MutexExt},
-    observable::{CatchUp, FunctionEntry, HookOp, ObserveRejection, Observer},
+    observable::{CompiledSet, FunctionEntry, HookOp, ObserveRejection, Observer},
     observe::ObservedError,
     protocol::{Caller, InvocationStatus, observe_codes},
 };
@@ -399,6 +399,24 @@ impl Match {
             call: Arc::new(call),
         }
     }
+
+    /// Whether `other` is this hook (a clone of it).
+    pub(crate) fn same(&self, other: &Match) -> bool {
+        match (self, other) {
+            (Self::Predicate(a), Self::Predicate(b)) => Arc::ptr_eq(a, b),
+            (
+                Self::Keys {
+                    observer: a,
+                    call: c,
+                },
+                Self::Keys {
+                    observer: b,
+                    call: d,
+                },
+            ) => Arc::ptr_eq(a, b) && Arc::ptr_eq(c, d),
+            _ => false,
+        }
+    }
 }
 
 /// A function's [`Match`] at work: for keys, the index of its observers.
@@ -426,6 +444,10 @@ impl Matcher {
             index: RwLock::new(KeyIndex::default()),
             warned: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) fn rule(&self) -> &Match {
+        &self.rule
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, KeyIndex> {
@@ -482,19 +504,18 @@ impl Matcher {
         index.keys_of.insert(obs.id().to_string(), keys);
     }
 
-    /// Files each of `observers` under its keys (again, if it was filed
-    /// already). One whose key function panics is rejected late.
-    pub(crate) fn file_all<'o>(&self, observers: impl IntoIterator<Item = &'o Observer>) {
+    /// Files each of `observers` under its keys. Returns the ones whose key
+    /// function panicked, filed nowhere, with the panic.
+    pub(crate) fn file_all(&self, observers: &[Observer]) -> Vec<(Observer, String)> {
+        let mut panicked = Vec::new();
         for obs in observers {
             match self.observer_keys(obs) {
                 Some(Ok(keys)) => self.file(obs, keys),
-                Some(Err(KeysPanicked(panic))) => obs.reject(
-                    observe_codes::OBSERVE_REJECTED,
-                    format!("on_observer_match key function panicked: {panic}"),
-                ),
+                Some(Err(KeysPanicked(panic))) => panicked.push((obs.clone(), panic)),
                 None => {}
             }
         }
+        panicked
     }
 
     /// Takes the observer with id `id` out of the index.
@@ -526,16 +547,18 @@ impl Matcher {
         )
     }
 
-    /// The active observers among `observers` (keys: in the index) that want
-    /// `call`, each once.
+    /// The observers of `snapshot`, the set a call started with, that are
+    /// still active and want `call`, each once. With keys, they are the ones
+    /// in the index that are no newer than the snapshot.
     pub(crate) fn matching(
         &self,
         function_id: &str,
-        observers: &[Observer],
+        snapshot: &CompiledSet,
         call: &Call,
     ) -> Vec<Observer> {
         match &self.rule {
-            Match::Predicate(wants) => observers
+            Match::Predicate(wants) => snapshot
+                .observers
                 .iter()
                 .filter(|obs| obs.is_active())
                 .filter(|obs| {
@@ -552,6 +575,7 @@ impl Matcher {
             } => {
                 let keys = self.keys_of_call(call, call_keys.as_ref(), function_id);
                 let index = self.read();
+                let wanted = |obs: &Observer| obs.is_active() && obs.seq() <= snapshot.seq;
                 let mut found: Vec<Observer> = Vec::new();
                 // An observer is filed once per key: the first key's list
                 // needs no dedupe, and the ids taken so far are hashed only
@@ -565,14 +589,14 @@ impl Matcher {
                     match first {
                         None => {
                             first = Some(list);
-                            found.extend(list.iter().filter(|obs| obs.is_active()).cloned());
+                            found.extend(list.iter().filter(|obs| wanted(obs)).cloned());
                         }
                         Some(first) => {
                             if taken.is_empty() {
                                 taken.extend(first.iter().map(Observer::id));
                             }
                             for obs in list {
-                                if obs.is_active() && taken.insert(obs.id()) {
+                                if wanted(obs) && taken.insert(obs.id()) {
                                     found.push(obs.clone());
                                 }
                             }
@@ -769,7 +793,7 @@ impl IIIClient {
             Level::Worker
         };
         for entry in self.hosted_entries(function_id) {
-            entry.enqueue(self, HookOp::CatchUp(CatchUp::Added(level)));
+            entry.enqueue(self, HookOp::CatchUp(level));
         }
     }
 
@@ -796,39 +820,30 @@ impl IIIClient {
     }
 
     fn set_match_hook(&self, function_id: &str, rule: Option<Match>) {
-        // The key index holds the observers already active before the
-        // matcher is published: no call in between matches by an empty
-        // index. Built outside the store lock, since key functions are the
-        // caller's code.
-        let current = self.function_entry(function_id);
-        let indexed = current.as_ref().zip(rule.clone()).map(|(entry, rule)| {
-            let matcher = Matcher::new(rule);
-            matcher.file_all(&entry.observers());
-            matcher
-        });
         let entry = {
+            // Under the store lock, as a registration reads it: the entry of
+            // a function registered meanwhile gets the hook either way.
             let mut store = self.inner.hooks.lock();
             store
                 .0
                 .by_id
                 .entry(function_id.to_string())
                 .or_default()
-                .matching = rule.clone();
-            let entry = self.function_entry(function_id);
-            if let Some(entry) = &entry {
-                let same = current
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, entry));
-                entry.set_matcher(match indexed {
-                    Some(matcher) if same => Some(matcher),
-                    _ => rule.map(Matcher::new),
-                });
-            }
-            entry
+                .matching = rule;
+            self.function_entry(function_id)
         };
-        // the observers added meanwhile are filed in order on the hook task
-        if let Some(entry) = entry {
-            entry.enqueue(self, HookOp::CatchUp(CatchUp::Index));
+        let Some(entry) = entry else {
+            return;
+        };
+        // Outside the store lock, since key functions are the caller's code.
+        // The entry reads the hook from the store again under its index
+        // lock: of two hooks set at once, it keeps the one the store keeps.
+        let panicked = entry.set_match(|| self.inner.hooks.lock().matching(function_id));
+        for (obs, panic) in panicked {
+            obs.reject(
+                observe_codes::OBSERVE_REJECTED,
+                format!("on_observer_match key function panicked: {panic}"),
+            );
         }
     }
 

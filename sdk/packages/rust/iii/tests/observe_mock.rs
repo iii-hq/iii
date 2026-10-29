@@ -1213,6 +1213,114 @@ async fn reconnect_diffs_the_set_and_keeps_serving_locally() {
     iii.shutdown_async().await;
 }
 
+/// An observer the engine announces again with the same args is re-acked
+/// without running any hook, and served with the filters it was announced
+/// with: listed by `functionregistered` or by `observeradded`. The handle its
+/// added hook got is the same observer. Changed args are a removal and then
+/// an add (decision 44).
+#[tokio::test]
+async fn a_replay_with_the_same_args_runs_no_hook() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "ra::f", &recorder);
+    let function = hosted(
+        &mock,
+        &iii,
+        "ra::f",
+        echo(),
+        json!([observer_with_args("a", json!({ "kind": "a" }))]),
+    )
+    .await;
+    acked_for(&mock, "ra::f", &[("a", 1)]).await;
+    let held = observer(&recorder, "a");
+    let above = |n: i64| {
+        json!({ "id": "a", "args": { "kind": "a" }, "target": "t::target",
+                "filters": { "$and": [{ "input.n": { "$gt": n } }] },
+                "capture": ["input", "caller"], "on": "success" })
+    };
+    let observed = |invocation_id: &'static str, n: i64| {
+        let mock = &mock;
+        async move {
+            route_call(mock, "ra::f", invocation_id, json!({ "n": n }));
+            ids(&answer_to(mock, invocation_id).await["observed"])
+        }
+    };
+
+    confirm(&mock, "ra::f", 2, true, json!([above(1)]));
+    acked_for(&mock, "ra::f", &[("a", 2)]).await;
+    assert!(
+        observed("a1b2c3d4-0001-4000-8000-000000000001", 1)
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        observed("a1b2c3d4-0001-4000-8000-000000000002", 2).await,
+        vec!["a"]
+    );
+
+    mock.send_to_client(json!({
+        "type": "observeradded", "function_id": "ra::f", "namespace": "default",
+        "revision": 3, "observer": above(5)
+    }));
+    acked_for(&mock, "ra::f", &[("a", 3)]).await;
+    assert!(
+        observed("a1b2c3d4-0001-4000-8000-000000000003", 2)
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        observed("a1b2c3d4-0001-4000-8000-000000000004", 6).await,
+        vec!["a"]
+    );
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec!["add a"],
+        "no hook ran"
+    );
+    assert_eq!(function.observers()[0].filters(), &above(5)["filters"]);
+    assert_eq!(
+        function.observers()[0].capture(),
+        &[Capture::Input, Capture::Caller]
+    );
+
+    // the handle the added hook got: active, and its late rejection is the
+    // observer's, at the revision announced last
+    assert!(held.is_active());
+    held.reject("GONE", "config reloaded");
+    let rejection = frame(&mock, |m| {
+        m["type"] == "observerack" && m["error"]["code"] == "GONE"
+    })
+    .await;
+    assert_eq!(rejection["revision"], 3);
+    until("rejected", || !function.is_observed()).await;
+
+    // a fresh observeradded brings it back as a new observer
+    mock.send_to_client(added("ra::f", 4, "a", json!({ "kind": "a" })));
+    acked_for(&mock, "ra::f", &[("a", 4)]).await;
+    until("re-added", || function.is_observed()).await;
+    // changed args: removed, then added
+    confirm(
+        &mock,
+        "ra::f",
+        5,
+        true,
+        json!([observer_with_args("a", json!({ "kind": "b" }))]),
+    );
+    acked_for(&mock, "ra::f", &[("a", 5)]).await;
+    until("the args changed", || {
+        recorder.events.lock().unwrap().len() == 5
+    })
+    .await;
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec!["add a", "remove a", "add a", "remove a", "add a"]
+    );
+    assert_eq!(observer(&recorder, "a").args_value()["kind"], "b");
+    iii.shutdown_async().await;
+}
+
 // ───────────────────────────── match and deliver hooks ───────────────────
 
 /// `src::events` with three observers, each wanting the calls of the `kind`
