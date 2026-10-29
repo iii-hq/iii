@@ -1,6 +1,6 @@
 # configuration
 
-Schema-validated, reactive registry of named configuration entries. Workers register their configuration ids with a JSON Schema, publish values that are validated against it, and emit `configuration` triggers on every change so other workers react without polling.
+Schema-validated, reactive registry of named configuration entries. Workers register their configuration ids with a JSON Schema, publish values that are validated against it, and the engine calls `configuration::on-updated` on every change so other workers observe it and react without polling.
 
 The default `fs` adapter stores one YAML file per id under a configurable directory and watches it for external edits — manual edits surface as `configuration:updated` events the same way SDK calls do. The `bridge` adapter delegates to a remote III Engine and re-broadcasts its events into the local fan-out. Reads expand `${VAR:default}` placeholders against the live process env on every call, so env changes propagate without a worker restart.
 
@@ -25,7 +25,6 @@ engine:
         name: fs
         config:
           directory: ./config
-      ttl_seconds: 0
 ```
 
 ## Configuration
@@ -33,7 +32,6 @@ engine:
 | Field | Type | Description |
 |---|---|---|
 | `adapter` | Adapter | Adapter for configuration persistence. Defaults to `fs`. |
-| `ttl_seconds` | integer | Per-id cleanup countdown in seconds. When `>0`, an entry whose last subscriber trigger has been unregistered for this long is deleted. Defaults to `0` (no cleanup). |
 
 ## Adapters
 
@@ -53,11 +51,11 @@ config:
 
 The default location was previously `./data/configuration`. When running on the default `./config`, the adapter performs a one-time soft migration on boot: every `<id>.yaml` still in `./data/configuration` is moved across (logged at INFO). If a file with the same name already exists in `./config`, that file is **skipped with a WARNING** and the legacy copy is left untouched for you to reconcile. An explicit `directory:` override disables the migration.
 
-External writes / edits / removals to the watched directory are debounced (500 ms) and replayed as `configuration:registered`, `configuration:updated`, or `configuration:deleted` events through the same trigger fan-out used by SDK calls. A hand-edit that fails schema validation (after `${VAR}` expansion) is **rejected with a WARNING** — the previous good value is kept rather than loaded.
+External writes / edits / removals to the watched directory are debounced (500 ms) and replayed as `configuration:registered`, `configuration:updated`, or `configuration:deleted` events through the same fan-out as SDK calls. A hand-edit that fails schema validation (after `${VAR}` expansion) is **rejected with a WARNING** — the previous good value is kept rather than loaded.
 
 ### bridge
 
-Forwards every `configuration::*` call to a remote III Engine via the iii-sdk and registers a remote `configuration` trigger so changes on the source engine are mirrored into the local trigger fan-out.
+Forwards every `configuration::*` call to a remote III Engine via the iii-sdk and observes the remote engine's `configuration::on-updated`, so changes on the source engine are mirrored into the local fan-out.
 
 ```yaml
 name: bridge
@@ -69,7 +67,7 @@ config:
 |---|---|---|
 | `bridge_url` | string | WebSocket URL of the remote III Engine. Defaults to `ws://localhost:49134`. |
 
-The `bridge` adapter cannot delete configurations on the remote engine; cleanup happens via the remote's TTL or by operating on the remote engine directly.
+The `bridge` adapter cannot delete configurations on the remote engine; delete them by operating on the remote engine directly.
 
 `configuration::ensure` over the `bridge` is forwarded to the remote engine's own `configuration::ensure` — the original seed candidate is sent to the remote and the seed-vs-preserve decision is made at the authoritative engine, so a stale local cache can never overwrite an operator value on the remote engine. If the remote engine does not expose `configuration::ensure` (an older engine), the call fails closed with `ADAPTER_ERROR`; the bridge deliberately does **not** fall back to a legacy `configuration::register`, which would risk overwriting remote state.
 
@@ -87,7 +85,7 @@ Returns: the stored entry `{ id, name, description, schema, value, metadata }`. 
 
 Atomically ensure an id exists with a schema, name, description, and metadata, seeding `initial_value` **only when no non-null value is stored yet**. If a value already exists (including `false`, `0`, or `""` — these are real values, not "empty"), it is preserved verbatim and the candidate seed is ignored and never validated. Unlike `configuration::register`, `ensure` never overwrites a stored value, so it is the race-free way for one or many workers to seed a default — use it instead of read-then-`register`. When the seed *is* applied it is validated against `schema` exactly like `register` validates `initial_value`. Fires `configuration:registered` on first creation or `configuration:updated` when an existing entry is refreshed.
 
-`register`, `ensure`, `set`, and `delete` are linearized per store (one engine process — the `fs` adapter's on-disk store), so with the `fs` adapter a seed can never clobber a concurrent `set` and two racing seeds resolve to a single winner without a lost write. This lock guards the LOCAL store only: with the `bridge` adapter the authoritative store is the remote engine and its own linearization applies (the local cache is a best-effort mirror), so `configuration::ensure` is decided remotely (see the `bridge` adapter above), never against the local cache. External direct edits to an `fs` file are surfaced by the directory watcher and reconciled into the in-memory cache against the adapter's CURRENT authoritative state under the write path's lock — a watcher event is a hint, not a trusted snapshot. The event is captured and queued before it is applied, so a newer local `register`/`ensure`/`set`/`delete` can commit in between; the reconcile re-reads the adapter and adopts its current value, so a stale event never reverts an internal write and a stale delete never drops a locally recreated entry (a failed authoritative read keeps the last-known cache rather than deleting). This matters because the watcher echo-suppresses a superseded edit, so no later corrective event would repair a cache a trusted-verbatim snapshot had reverted. Genuine concurrent external edits remain last-writer-wins. The `bridge` adapter's authority is the remote engine's ordered event stream, so its relayed events are applied directly, without a reconciling round-trip. Trigger fan-out happens after each mutation commits, is suppressed for an external event a newer local mutation superseded, and is not strictly ordered across concurrent callers.
+`register`, `ensure`, `set`, and `delete` are linearized per store (one engine process — the `fs` adapter's on-disk store), so with the `fs` adapter a seed can never clobber a concurrent `set` and two racing seeds resolve to a single winner without a lost write. This lock guards the LOCAL store only: with the `bridge` adapter the authoritative store is the remote engine and its own linearization applies (the local cache is a best-effort mirror), so `configuration::ensure` is decided remotely (see the `bridge` adapter above), never against the local cache. External direct edits to an `fs` file are surfaced by the directory watcher and reconciled into the in-memory cache against the adapter's CURRENT authoritative state under the write path's lock — a watcher event is a hint, not a trusted snapshot. The event is captured and queued before it is applied, so a newer local `register`/`ensure`/`set`/`delete` can commit in between; the reconcile re-reads the adapter and adopts its current value, so a stale event never reverts an internal write and a stale delete never drops a locally recreated entry (a failed authoritative read keeps the last-known cache rather than deleting). This matters because the watcher echo-suppresses a superseded edit, so no later corrective event would repair a cache a trusted-verbatim snapshot had reverted. Genuine concurrent external edits remain last-writer-wins. The `bridge` adapter's authority is the remote engine's ordered event stream, so its relayed events are applied directly, without a reconciling round-trip. Fan-out happens after each mutation commits, is suppressed for an external event a newer local mutation superseded, and is not strictly ordered across concurrent callers.
 
 Parameters: `id` (string), `name` (string), `description` (string), `schema` (object — JSON Schema), `initial_value` (any, optional — the seed candidate), `metadata` (any, optional)
 
@@ -134,15 +132,9 @@ Returns: `id` (string), `name` (string), `description` (string), `schema` (objec
 | `NOT_FOUND` | `get` or `schema` was called against an id that is not registered. |
 | `ADAPTER_ERROR` | The adapter failed to persist the change (disk error, bridge unreachable, etc.). |
 
-## Trigger Type: `configuration`
+## Engine-hosted source: `configuration::on-updated`
 
-Fires when a configuration entry is registered, updated, or deleted — including external `fs` file edits and bridge-forwarded events from a remote engine.
-
-| Config Field | Type | Description |
-|---|---|---|
-| `configuration_id` | string | Only fire for changes to this id. When omitted, fires for every id. |
-| `event_types` | string[] | Subset of `configuration:registered`, `configuration:updated`, `configuration:deleted`. When omitted, fires for every event type. |
-| `condition_function_id` | string | Function ID for conditional execution. If it returns `false`, the handler is skipped. |
+The engine calls `configuration::on-updated` when a configuration entry is registered, updated, or deleted — including external `fs` file edits and bridge-forwarded events from a remote engine — with the event as its input and output. It is a private function: only the engine calls it. Observe it to react to changes; filter on `input.id` and `input.event_type` to pick them.
 
 ### Configuration Event Payload
 
@@ -161,34 +153,25 @@ Fires when a configuration entry is registered, updated, or deleted — includin
 ### Sample Code
 
 ```typescript
-const fn = iii.registerFunction(
-  { id: 'stream::onConfigChange' },
-  async (event) => {
-    console.log('Configuration changed:', event.event_type, event.id)
-    console.log('New value:', event.new_value)
-    return {}
-  },
-)
-
-iii.registerTrigger({
-  type: 'configuration',
-  function_id: fn.id,
-  config: {
-    configuration_id: 'iii-stream',
-    event_types: ['configuration:updated'],
-  },
+iii.registerFunction('stream::on-config-change', async ({ input: event }) => {
+  console.log('Configuration changed:', event.event_type, event.id)
+  console.log('New value:', event.new_value)
+  return {}
 })
+
+iii.observe(
+  {
+    function_id: 'configuration::on-updated',
+    filters: {
+      'input.id': { $eq: 'iii-stream' },
+      'input.event_type': { $eq: 'configuration:updated' },
+    },
+  },
+  'stream::on-config-change',
+)
 ```
 
-Mutations that fire triggers: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::ensure` (`:registered` when it creates an entry, `:updated` when it refreshes one), `configuration::set` (`:updated`), TTL-driven cleanup (`:deleted`), and external `fs` create / edit / delete events. Reads (`configuration::get`, `configuration::list`, `configuration::schema`) do **not** fire triggers.
-
-## TTL Cleanup
-
-The worker tracks the number of triggers currently bound to each configuration id. When `ttl_seconds > 0` is configured AND the **last** trigger for an id is unregistered, a countdown deletes the entry after the TTL elapses. A new trigger registration before the countdown fires aborts the cleanup; while at least one trigger is bound to an id, that entry never expires.
-
-`ttl_seconds = 0` (the default) disables expiry entirely — entries persist until they are explicitly deleted via the adapter or, for the `fs` adapter, by removing the underlying file.
-
-This is the cleanup story for ephemeral workers that come and go (sandboxes, short-lived consumers) and should not leave stale configuration behind when no one is left subscribing.
+Mutations that call it: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::ensure` (`:registered` when it creates an entry, `:updated` when it refreshes one), `configuration::set` (`:updated`), and external `fs` create / edit / delete events. Reads (`configuration::get`, `configuration::list`, `configuration::schema`) do **not** call it.
 
 ## Usage Example: Migrating a Worker Off `config.yaml`
 
@@ -198,7 +181,7 @@ import { registerWorker } from 'iii-sdk'
 const iii = registerWorker('ws://localhost:49134')
 
 // 1. Declare the schema once at startup.
-await iii.trigger({
+await iii.call({
   function_id: 'configuration::register',
   payload: {
     id: 'iii-stream',
@@ -217,21 +200,20 @@ await iii.trigger({
 })
 
 // 2. Read the live value (placeholders expanded) anywhere you need it.
-const { value } = await iii.trigger({
+const { value } = await iii.call({
   function_id: 'configuration::get',
   payload: { id: 'iii-stream' },
 })
 
-// 3. Subscribe to changes elsewhere — set/external-edit/bridge events all
-//    arrive on the same trigger.
-const onChange = iii.registerFunction('stream::onConfigChange', async (event) => {
+// 3. Observe changes elsewhere — set/external-edit/bridge events all
+//    arrive through the same source.
+iii.registerFunction('stream::on-config-change', async ({ input: event }) => {
   console.log('Stream config now:', event.new_value)
   return {}
 })
 
-iii.registerTrigger({
-  type: 'configuration',
-  function_id: onChange.id,
-  config: { configuration_id: 'iii-stream' },
-})
+iii.observe(
+  { function_id: 'configuration::on-updated', filters: { 'input.id': { $eq: 'iii-stream' } } },
+  'stream::on-config-change',
+)
 ```

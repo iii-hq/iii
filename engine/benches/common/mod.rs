@@ -55,7 +55,7 @@ pub fn churn_batch_sizes() -> [usize; 3] {
     [100, 1_000, 5_000]
 }
 
-pub fn trigger_payload() -> Value {
+pub fn event_payload() -> Value {
     serde_json::json!({
         "source": "criterion",
         "event": "fanout",

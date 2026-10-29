@@ -192,8 +192,8 @@ pub struct MigrateOutcome {
     pub active_entry: Option<ConfigurationEntry>,
 }
 
-/// Whether a reconciled [`ExternalChange`] should be fanned out to trigger
-/// subscribers, returned by [`ConfigurationStore::apply_external`].
+/// Whether a reconciled [`ExternalChange`] should be fanned out to listeners
+/// and observers, returned by [`ConfigurationStore::apply_external`].
 ///
 /// External changes reach the store through a channel, so a snapshot the
 /// watcher captured can be applied only AFTER a newer local mutation commits.
@@ -673,6 +673,7 @@ impl ConfigurationStore {
     }
 
     /// Delete from storage before removing the cache entry under the mutation lock.
+    #[cfg(test)]
     pub async fn delete(&self, id: &str) -> Result<Option<ConfigurationEntry>, StoreError> {
         let _write = self.write_lock.lock().await;
         let removed = self.adapter.delete(id).await?;

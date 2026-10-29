@@ -202,7 +202,8 @@ workers:
   # a standalone comment
   - name: configuration
     config:
-      ttl_seconds: 0
+      adapter:
+        name: fs
 rootfs: overlay
 "
         .to_string()

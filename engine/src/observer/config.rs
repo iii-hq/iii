@@ -32,15 +32,15 @@ pub struct ObserversConfig {
     /// back after it replays them as new observers, as after an engine
     /// restart. `0` forgets them at once.
     pub disposed_retention_ms: u64,
-    /// An added observer the owner does not ack in time fails with
-    /// `OWNER_TIMEOUT`.
+    /// An added observer the function's host does not ack in time (its
+    /// `onObserverAdded` hooks) fails with `OWNER_TIMEOUT`.
     pub owner_ack_timeout_ms: u64,
     /// `max_in_flight` of an observer that sets none.
     pub default_max_in_flight: u32,
     /// Activations one observer may queue behind its in-flight limit before
     /// they are dropped (`OVERFLOW`).
     pub max_queue_per_observer: usize,
-    /// How long an activation (and an owner delivery) may wait for its
+    /// How long an activation (and a call through an observer) may wait for its
     /// target's answer before its in-flight slot is freed and it counts as a
     /// `TIMEOUT` failure. The same 30 s the SDKs and the HTTP invoker default
     /// to for a call.

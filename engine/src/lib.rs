@@ -6,10 +6,10 @@
 
 pub mod bin_resolve;
 pub mod builtins;
-pub mod condition;
 pub mod config;
 pub(crate) mod deprecation;
 pub mod engine;
+pub mod event_formats;
 pub mod function;
 pub mod invocation;
 mod legacy_worker_functions;
@@ -19,8 +19,6 @@ pub mod observer;
 pub mod protocol;
 pub mod services;
 pub mod telemetry;
-pub mod trigger;
-pub mod trigger_formats;
 pub(crate) mod update_ops;
 pub mod worker_connections;
 
@@ -33,9 +31,6 @@ pub mod workers {
     pub mod external;
     pub mod http_functions;
     pub mod observability;
-    /// Compatibility API for downstream custom queue adapters. The legacy
-    /// `iii-queue` worker is no longer registered by the engine.
-    pub mod queue;
     pub mod redis;
     pub mod registry;
     pub mod reload;
@@ -46,6 +41,6 @@ pub mod workers {
     pub mod worker;
 }
 
-pub use workers::{config::EngineBuilder, queue::QueueAdapter};
+pub use workers::config::EngineBuilder;
 
 // todo: create a prelude module for commonly used traits and types

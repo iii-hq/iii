@@ -22,7 +22,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
-use crate::trigger::Trigger;
+use crate::observer::StandingObserver;
+use crate::protocol::Deliver;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
@@ -314,21 +315,25 @@ fn check_disabled(config: &TelemetryConfig) -> Option<DisableReason> {
     None
 }
 
-struct FunctionTriggerData {
+struct FunctionObserverData {
     function_count: usize,
     functions: Vec<String>,
-    trigger_count: usize,
-    trigger_types: Vec<String>,
+    /// Observers workers created (the engine's own are left out).
+    observer_count: usize,
+    /// Functions those observers observe.
+    observable_function_count: usize,
+    /// User functions registered `private`.
+    private_function_count: usize,
 }
 
 struct EngineSnapshot {
-    ft: FunctionTriggerData,
+    ft: FunctionObserverData,
     wd: WorkerData,
     project: ProjectContext,
 }
 
 fn collect_engine_snapshot(engine: &Engine) -> EngineSnapshot {
-    let ft = collect_functions_and_triggers(engine);
+    let ft = collect_functions_and_observers(engine);
     let wd = collect_worker_data(engine);
     let project = resolve_project_context(wd.sdk_telemetry.as_ref());
     EngineSnapshot { ft, wd, project }
@@ -356,8 +361,8 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
         serde_json::json!(snap.ft.function_count),
     );
     m.insert(
-        "trigger_count".into(),
-        serde_json::json!(snap.ft.trigger_count),
+        "observer_count".into(),
+        serde_json::json!(snap.ft.observer_count),
     );
     m.insert(
         "worker_registrations".into(),
@@ -369,8 +374,12 @@ fn build_base_properties(snap: &EngineSnapshot) -> serde_json::Map<String, serde
     );
     m.insert("functions".into(), serde_json::json!(snap.ft.functions));
     m.insert(
-        "trigger_types".into(),
-        serde_json::json!(snap.ft.trigger_types),
+        "observable_function_count".into(),
+        serde_json::json!(snap.ft.observable_function_count),
+    );
+    m.insert(
+        "private_function_count".into(),
+        serde_json::json!(snap.ft.private_function_count),
     );
     m.insert("client_type".into(), serde_json::json!(snap.wd.client_type));
     m.insert(
@@ -549,32 +558,39 @@ fn is_hostname_pid_fallback(name: &str, pid: Option<u32>) -> bool {
 //     }
 // }
 
-fn collect_functions_and_triggers(engine: &Engine) -> FunctionTriggerData {
+fn collect_functions_and_observers(engine: &Engine) -> FunctionObserverData {
     // Keys are `(namespace, function_id)`; telemetry reports bare ids, and the
     // same id in two namespaces is two distinct registrations.
-    let functions: Vec<String> = engine
+    let user_functions: Vec<(String, String)> = engine
         .functions
         .iter()
-        .map(|entry| entry.key().1.clone())
-        .filter(|id| !is_iii_builtin_function_id(id))
+        .map(|entry| entry.key().clone())
+        .filter(|(_, id)| !is_iii_builtin_function_id(id))
         .collect();
-
+    let private_function_count = user_functions
+        .iter()
+        .filter(|(namespace, id)| engine.observers.options(namespace, id).private)
+        .count();
+    let functions: Vec<String> = user_functions.into_iter().map(|(_, id)| id).collect();
     let function_count = functions.len();
 
-    let mut trigger_types_used: HashSet<String> = HashSet::new();
-    let mut trigger_count = 0usize;
+    let observers: Vec<_> = engine
+        .observers
+        .observers()
+        .into_iter()
+        .filter(|observer| !observer.is_engine_owned())
+        .collect();
+    let observable_functions: HashSet<&crate::observer::FnKey> = observers
+        .iter()
+        .map(|observer| &observer.function)
+        .collect();
 
-    for entry in engine.trigger_registry.triggers.iter() {
-        let trigger = entry.value();
-        trigger_types_used.insert(trigger.trigger_type.clone());
-        trigger_count += 1;
-    }
-
-    FunctionTriggerData {
+    FunctionObserverData {
         function_count,
         functions,
-        trigger_count,
-        trigger_types: trigger_types_used.into_iter().collect(),
+        observer_count: observers.len(),
+        observable_function_count: observable_functions.len(),
+        private_function_count,
     }
 }
 
@@ -744,98 +760,22 @@ impl TelemetryContext {
     }
 }
 
-/// The trigger type the `queue` worker provides, which both reported topics
-/// are consumed through.
-const DURABLE_SUBSCRIBER: &str = "durable:subscriber";
+/// The function the `queue` worker hosts: one call per message, observed with
+/// args `{ topic }` by each subscriber.
+const QUEUE_ON_MESSAGE: &str = "queue::on-message";
 
-/// How often the worker looks for a `durable:subscriber` provider in a
-/// namespace it has not subscribed in yet.
-///
-/// A worker in a named namespace provides the type there and nowhere else, and
-/// trigger routing is strict: a binding at home in `default` resolves a
-/// provider in `default` or nothing. So a project that runs `queue` under its
-/// own namespace needs its own subscription, and the provider registers after
-/// this worker starts.
-// ponytail: a poll because the registry has no provider-registration hook;
-// replace it with one if the registry ever grows it.
-const TOPIC_WATCH_RESCAN_SECS: u64 = 60;
-
-/// One binding of a reported topic, at home in `default` where this worker's
-/// handler is registered, with the provider named explicitly so the binding
-/// reaches the `queue` worker of exactly that namespace.
-///
-/// The default namespace keeps the plain trigger id, so an engine that has
-/// always subscribed there does not grow a second binding on upgrade.
-fn topic_watch(trigger_id: &str, function_id: &str, topic: &str, namespace: &str) -> Trigger {
-    let id = if namespace == crate::protocol::DEFAULT_NAMESPACE {
-        trigger_id.to_string()
-    } else {
-        format!("{trigger_id}:{namespace}")
-    };
-    Trigger {
-        id,
-        trigger_type: DURABLE_SUBSCRIBER.to_string(),
-        function_id: function_id.to_string(),
-        config: serde_json::json!({ "topic": topic }),
-        worker_id: None,
+/// Subscribes `function_id` to `topic` on the `queue` worker, in every
+/// namespace the worker runs in: an engine-owned observer of
+/// `queue::on-message` per namespace, which the worker calls through with
+/// each message. The default namespace keeps the plain observer id.
+fn watch_topic(engine: &Engine, observer_id: &str, topic: &str, function_id: &str) {
+    engine.observers.observe_everywhere(StandingObserver {
+        id: observer_id.to_string(),
+        function_id: QUEUE_ON_MESSAGE.to_string(),
+        args: serde_json::json!({ "topic": topic }),
+        target_id: function_id.to_string(),
+        deliver: Deliver::Input,
         metadata: None,
-        namespace: crate::protocol::default_namespace(),
-        trigger_namespace: Some(namespace.to_string()),
-        home_namespace: crate::protocol::default_namespace(),
-        provider_namespace: namespace.to_string(),
-    }
-}
-
-/// The namespaces that provide `durable:subscriber` right now.
-fn durable_subscriber_namespaces(engine: &Engine) -> Vec<String> {
-    engine
-        .trigger_registry
-        .trigger_types
-        .iter()
-        .filter(|entry| entry.key().1 == DURABLE_SUBSCRIBER)
-        .map(|entry| entry.key().0.clone())
-        .collect()
-}
-
-/// Subscribe both reported topics in every namespace that provides
-/// `durable:subscriber`, as providers appear.
-///
-/// `default` is subscribed by the caller before this loop starts and is never
-/// revisited. Each namespace is subscribed once: the binding survives its
-/// provider restarting, and a re-registration would replace an active binding
-/// with an identical one for nothing.
-fn spawn_topic_watch_rescan(
-    engine: Arc<Engine>,
-    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    telemetry_enabled: bool,
-) {
-    tokio::spawn(async move {
-        let mut subscribed: HashSet<String> =
-            HashSet::from([crate::protocol::DEFAULT_NAMESPACE.to_string()]);
-        loop {
-            for namespace in durable_subscriber_namespaces(&engine) {
-                if !subscribed.insert(namespace.clone()) {
-                    continue;
-                }
-                harness::register_trigger_in(&engine, &namespace).await;
-                identify::register_trigger_in(&engine, &namespace).await;
-                if telemetry_enabled {
-                    onboarding::register_trigger_in(&engine, &namespace).await;
-                }
-                tracing::debug!(namespace = %namespace, "subscribed the reported topics");
-            }
-            let delay = tokio::time::sleep(std::time::Duration::from_secs(TOPIC_WATCH_RESCAN_SECS));
-            tokio::pin!(delay);
-            tokio::select! {
-                biased;
-                result = shutdown_rx.changed() => {
-                    if result.is_err() || *shutdown_rx.borrow() {
-                        return;
-                    }
-                }
-                _ = &mut delay => {}
-            }
-        }
     });
 }
 
@@ -908,10 +848,9 @@ impl Worker for DisabledTelemetryWorker {
         _shutdown_tx: tokio::sync::watch::Sender<bool>,
     ) -> anyhow::Result<()> {
         harness::register_drain(&self.engine);
-        harness::register_trigger(&self.engine).await;
+        harness::watch_topic(&self.engine);
         identify::register_drain(&self.engine);
-        identify::register_trigger(&self.engine).await;
-        spawn_topic_watch_rescan(Arc::clone(&self.engine), _shutdown_rx, false);
+        identify::watch_topic(&self.engine);
         Ok(())
     }
 
@@ -988,14 +927,13 @@ impl Worker for TelemetryWorker {
     ) -> anyhow::Result<()> {
         // The onboarding tour reports each completed step on its own topic.
         onboarding::register_handler(&self.engine, self.ctx.clone(), self.posthog_client.clone());
-        onboarding::register_trigger(&self.engine).await;
+        onboarding::watch_topic(&self.engine);
         // The harness reports its own session usage on its own topic.
         harness::register_handler(&self.engine, self.ctx.clone(), self.posthog_client.clone());
-        harness::register_trigger(&self.engine).await;
+        harness::watch_topic(&self.engine);
         // A worker that captured an email publishes it on its own topic.
         identify::register_handler(&self.engine, self.ctx.clone(), self.posthog_client.clone());
-        identify::register_trigger(&self.engine).await;
-        spawn_topic_watch_rescan(Arc::clone(&self.engine), shutdown_rx.clone(), true);
+        identify::watch_topic(&self.engine);
 
         let interval_secs = self.config.heartbeat_interval_secs;
         let posthog_client = self.posthog_client.clone();
@@ -1210,13 +1148,12 @@ crate::register_worker!(
 mod tests {
     use super::*;
     use serial_test::serial;
-    use std::{env, future::Future, pin::Pin, sync::atomic::Ordering, time::Duration};
+    use std::{env, sync::atomic::Ordering, time::Duration};
     use tokio::sync::mpsc;
 
     use crate::{
         function::{Function, FunctionResult, HandlerFn},
         services::Service,
-        trigger::{Trigger, TriggerRegistrator, TriggerType},
         worker_connections::WorkerConnection,
         workers::{
             observability::metrics::get_metrics_accumulator, telemetry::collector::collector,
@@ -1275,7 +1212,6 @@ mod tests {
         telemetry.kv_deletes.store(0, Ordering::Relaxed);
         telemetry.api_requests.store(0, Ordering::Relaxed);
         telemetry.function_registrations.store(0, Ordering::Relaxed);
-        telemetry.trigger_registrations.store(0, Ordering::Relaxed);
         telemetry.peak_active_workers.store(0, Ordering::Relaxed);
     }
 
@@ -1303,24 +1239,6 @@ mod tests {
             "svc",
             "worker",
         );
-    }
-
-    struct NoopRegistrator;
-
-    impl TriggerRegistrator for NoopRegistrator {
-        fn register_trigger(
-            &self,
-            _trigger: Trigger,
-        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
-        }
-
-        fn unregister_trigger(
-            &self,
-            _trigger: Trigger,
-        ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
-        }
     }
 
     fn make_env_info() -> EnvironmentInfo {
@@ -2062,7 +1980,7 @@ mod tests {
     }
 
     // =========================================================================
-    // collect_functions_and_triggers
+    // collect_functions_and_observers
     // =========================================================================
 
     fn make_test_engine() -> Arc<Engine> {
@@ -2070,18 +1988,19 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_functions_and_triggers_empty_engine() {
+    fn test_collect_functions_and_observers_empty_engine() {
         let engine = make_test_engine();
-        let result = collect_functions_and_triggers(&engine);
+        let result = collect_functions_and_observers(&engine);
 
         assert_eq!(result.function_count, 0);
-        assert_eq!(result.trigger_count, 0);
         assert!(result.functions.is_empty());
-        assert!(result.trigger_types.is_empty());
+        assert_eq!(result.observer_count, 0);
+        assert_eq!(result.observable_function_count, 0);
+        assert_eq!(result.private_function_count, 0);
     }
 
     #[test]
-    fn test_collect_functions_and_triggers_filters_engine_and_iii_prefixes() {
+    fn test_collect_functions_and_observers_filters_engine_and_iii_prefixes() {
         let engine = make_test_engine();
 
         let handler: Arc<crate::function::HandlerFn> =
@@ -2131,54 +2050,55 @@ mod tests {
             },
         );
 
-        let result = collect_functions_and_triggers(&engine);
+        let result = collect_functions_and_observers(&engine);
         assert_eq!(result.function_count, 2);
         let mut fns = result.functions.clone();
         fns.sort();
         assert_eq!(fns, vec!["math::add", "user::my_function"]);
     }
 
-    #[test]
-    fn test_collect_functions_and_triggers_with_triggers() {
+    /// Workers' observers are counted, with the functions they observe; the
+    /// engine's own observers are not. Private user functions are counted.
+    #[tokio::test]
+    async fn test_collect_functions_and_observers_counts_workers_observers() {
+        use crate::observer::events::test_support;
         let engine = make_test_engine();
-
-        engine.trigger_registry.triggers.insert(
-            "trigger-1".to_string(),
-            crate::trigger::Trigger {
-                id: "trigger-1".to_string(),
-                trigger_type: "cron".to_string(),
-                function_id: "my_fn".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
+        let _orders = test_support::capture(&engine, "orders::create");
+        let _alerts = test_support::capture(&engine, "alerts::big-order");
+        let _audit = test_support::capture(&engine, "audit::log");
+        let _first = test_support::observe(
+            &engine,
+            "obs-1",
+            "orders::create",
+            "alerts::big-order",
+            None,
+        )
+        .await;
+        let _second =
+            test_support::observe(&engine, "obs-2", "orders::create", "audit::log", None).await;
+        let default = crate::protocol::DEFAULT_NAMESPACE.to_string();
+        engine
+            .observers
+            .observe_as_engine(crate::observer::EngineObserver {
+                id: "engine-obs".to_string(),
+                function: (default.clone(), "alerts::big-order".to_string()),
+                args: serde_json::json!({}),
+                filters: None,
+                target: (default, "audit::log".to_string()),
+                deliver: crate::protocol::Deliver::Input,
                 metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
+            })
+            .unwrap();
+        engine.observers.set_options(
+            crate::protocol::DEFAULT_NAMESPACE,
+            "audit::log",
+            crate::observer::FunctionOptions::private(),
         );
 
-        engine.trigger_registry.triggers.insert(
-            "trigger-2".to_string(),
-            crate::trigger::Trigger {
-                id: "trigger-2".to_string(),
-                trigger_type: "http".to_string(),
-                function_id: "other_fn".to_string(),
-                config: serde_json::json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            },
-        );
-
-        let result = collect_functions_and_triggers(&engine);
-        assert_eq!(result.trigger_count, 2);
-
-        assert!(result.trigger_types.contains(&"cron".to_string()));
-        assert!(result.trigger_types.contains(&"http".to_string()));
+        let result = collect_functions_and_observers(&engine);
+        assert_eq!(result.observer_count, 2);
+        assert_eq!(result.observable_function_count, 1);
+        assert_eq!(result.private_function_count, 1);
     }
 
     // =========================================================================
@@ -2238,11 +2158,12 @@ mod tests {
     #[test]
     fn test_build_base_properties_includes_short_term_names() {
         let snap = EngineSnapshot {
-            ft: FunctionTriggerData {
+            ft: FunctionObserverData {
                 function_count: 2,
                 functions: vec!["orders::charge".to_string(), "agent::memory".to_string()],
-                trigger_count: 1,
-                trigger_types: vec!["http".to_string()],
+                observer_count: 3,
+                observable_function_count: 1,
+                private_function_count: 1,
             },
             wd: WorkerData {
                 worker_count_total: 2,
@@ -2266,6 +2187,9 @@ mod tests {
 
         let props = build_base_properties(&snap);
         assert_eq!(props["project_name"], serde_json::json!("checkout"));
+        assert_eq!(props["observer_count"], 3);
+        assert_eq!(props["observable_function_count"], 1);
+        assert_eq!(props["private_function_count"], 1);
         assert_eq!(
             props["functions"],
             serde_json::json!(["orders::charge", "agent::memory"])
@@ -2551,37 +2475,64 @@ mod tests {
         ));
         // Not observability: other engine surfaces and user functions.
         assert!(!is_observability_function_id("engine::functions::list"));
-        assert!(!is_observability_function_id("engine::register_trigger"));
+        assert!(!is_observability_function_id("engine::observers::list"));
         assert!(!is_observability_function_id("configuration::list"));
         assert!(!is_observability_function_id("state::get"));
         assert!(!is_observability_function_id("orders::process"));
     }
 
     // =========================================================================
-    // topic_watch
+    // watch_topic
     // =========================================================================
 
-    #[test]
-    fn a_default_namespace_watch_keeps_the_plain_trigger_id() {
-        let watch = topic_watch("t::watch", "t::on-event", "some:topic", "default");
-        assert_eq!(watch.id, "t::watch");
-        assert_eq!(watch.trigger_namespace.as_deref(), Some("default"));
-        assert_eq!(watch.home_namespace, "default");
-        assert_eq!(watch.namespace, "default");
-        assert_eq!(watch.config["topic"], "some:topic");
-    }
+    /// A topic is observed on `queue::on-message` with `{ topic }` as args,
+    /// in every namespace the queue worker registers it in, delivering to
+    /// the engine's handler in `default`.
+    #[tokio::test]
+    async fn a_topic_is_observed_in_every_namespace_the_queue_runs_in() {
+        use crate::engine::{EngineTrait, Handler, RegisterFunctionRequest};
+        let engine = make_test_engine();
+        let _handler = crate::observer::events::test_support::capture(&engine, "t::on-event");
+        watch_topic(&engine, "t::watch", "some:topic", "t::on-event");
+        assert!(engine.observers.get("t::watch").is_none(), "no queue yet");
 
-    #[test]
-    fn each_namespace_gets_its_own_binding_of_the_same_topic() {
-        let project = topic_watch("t::watch", "t::on-event", "some:topic", "my-project");
-        // Its own id, so it never replaces the default one.
-        assert_eq!(project.id, "t::watch:my-project");
-        // Strict: this project's provider or nothing, because a binding at
-        // home in `default` would otherwise never reach it.
-        assert_eq!(project.trigger_namespace.as_deref(), Some("my-project"));
-        // The handler it fires stays where this worker registered it.
-        assert_eq!(project.namespace, "default");
-        assert_eq!(project.home_namespace, "default");
+        for namespace in [crate::protocol::DEFAULT_NAMESPACE, "my-project"] {
+            // The queue worker's function validates its subscribers' args.
+            engine.observers.set_options(
+                namespace,
+                QUEUE_ON_MESSAGE,
+                crate::observer::FunctionOptions {
+                    args_format: Some(serde_json::json!({ "type": "object" })),
+                    ..crate::observer::FunctionOptions::private()
+                },
+            );
+            engine.register_function_handler_ns(
+                namespace,
+                RegisterFunctionRequest {
+                    function_id: QUEUE_ON_MESSAGE.to_string(),
+                    description: None,
+                    request_format: None,
+                    response_format: None,
+                    metadata: None,
+                },
+                Handler::new(|message: serde_json::Value| async move {
+                    FunctionResult::Success(Some(message))
+                }),
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while engine.observers.get("t::watch").is_none()
+                || engine.observers.get("t::watch@my-project").is_none()
+            {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("an observer per namespace");
+        let project = engine.observers.get("t::watch@my-project").unwrap();
+        assert_eq!(project.args, serde_json::json!({ "topic": "some:topic" }));
+        assert_eq!(project.function.0, "my-project");
+        assert_eq!(project.target.0, crate::protocol::DEFAULT_NAMESPACE);
     }
 
     // =========================================================================
@@ -2905,33 +2856,6 @@ mod tests {
         let engine = make_test_engine();
         register_test_function(&engine, "svc::worker");
 
-        engine
-            .trigger_registry
-            .register_trigger_type(TriggerType::new(
-                "durable:subscriber",
-                "Queue",
-                Box::new(NoopRegistrator),
-                None,
-            ))
-            .await
-            .expect("register trigger type");
-        engine
-            .trigger_registry
-            .register_trigger(Trigger {
-                id: "queue-trigger-1".to_string(),
-                trigger_type: "durable:subscriber".to_string(),
-                function_id: "svc::worker".to_string(),
-                config: serde_json::json!({ "topic": "orders" }),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            })
-            .await
-            .expect("register trigger");
-
         let (worker_tx, _worker_rx) = mpsc::channel(1);
         let mut worker = WorkerConnection::new(worker_tx);
         worker.runtime = Some("node".to_string());
@@ -2955,7 +2879,6 @@ mod tests {
         telemetry.queue_emits.store(7, Ordering::Relaxed);
         telemetry.api_requests.store(5, Ordering::Relaxed);
         telemetry.function_registrations.store(1, Ordering::Relaxed);
-        telemetry.trigger_registrations.store(1, Ordering::Relaxed);
 
         let module = build_manual_module(engine, 1);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

@@ -6,10 +6,10 @@
 
 Durable streams for real-time data subscriptions. Streams organize data hierarchically: `stream_name` > `group_id` > `item_id`. Clients subscribe via WebSocket and receive real-time updates when items change.
 
-When a worker triggers `stream::set`, the engine:
+When a worker calls `stream::set`, the engine:
 1. Persists the data via the configured adapter (Redis or KvStore)
 2. Publishes a notification to all WebSocket clients subscribed to that stream and group
-3. Evaluates registered `stream` triggers and fires matching handlers
+3. Calls `stream::on-changed`, whose matching observers run
 
 `iii-stream` is engine-owned. Configure it under `engine.workers.iii-stream` in a managed
 `worker-compose.yaml`.
@@ -106,7 +106,7 @@ config:
 
 ### `stream::set`
 
-Sets a value in the stream. Notifies all WebSocket subscribers and fires `stream` triggers.
+Sets a value in the stream. Notifies all WebSocket subscribers and calls `stream::on-changed`.
 
 Parameters: `stream_name` (string), `group_id` (string), `item_id` (string), `data` (any)
 
@@ -189,49 +189,55 @@ def on_auth(input):
 iii.register_function("onAuth", on_auth)
 ```
 
-## Trigger Types
+## Engine-hosted sources
 
-### `stream`
+Private functions only the engine calls, each with its event as input and output. Observe them to
+react to stream activity; filter on `input.stream_name`, `input.group_id`, and `input.id`.
 
-Fires when an item changes (via `stream::set`, `stream::update`, or `stream::delete`).
+### `stream::on-changed`
 
-| Config Field | Type | Description |
-|---|---|---|
-| `stream_name` | string | Required. Only changes on this stream fire the handler. |
-| `group_id` | string | If set, only changes within this group fire the handler. |
-| `item_id` | string | If set, only changes to this specific item fire the handler. |
-| `condition_function_id` | string | Function ID for conditional execution. |
+Called when an item changes (via `stream::set`, `stream::update`, or `stream::delete`), a group is
+synced, or a custom event is sent to a group (`stream::send`).
 
-Payload fields: `type` (`create`/`update`/`delete`), `timestamp`, `streamName`, `groupId`, `id`, `event` (object with `type` and `data`).
-
-### `stream:join` and `stream:leave`
-
-Fire when a client connects or disconnects via WebSocket.
-
-Payload fields: `subscription_id`, `stream_name`, `group_id`, `id` (optional), `context` (from auth).
+Event fields: `event_type` (`create`/`update`/`delete`/`sync`/`event`), `timestamp`, `stream_name`,
+`group_id`, `id`, `event` (the change as stream subscribers receive it).
 
 ```typescript
-const fn = iii.registerFunction('onJoin', (input) => {
+iii.observe(
+  {
+    function_id: 'stream::on-changed',
+    filters: { 'input.stream_name': { $eq: 'presence' }, 'input.group_id': { $eq: 'room-1' } },
+  },
+  'presence::on-change',
+)
+```
+
+### `stream::on-join` and `stream::on-leave`
+
+Called when a client subscribes to a group (or an item) over WebSocket, and when it leaves.
+
+Event fields: `subscription_id`, `stream_name`, `group_id`, `id` (optional), `context` (from auth).
+
+```typescript
+iii.registerFunction('presence::on-join', ({ input }) => {
   console.log(`Joined ${input.stream_name}/${input.group_id}`, input.context)
   return {}
 })
 
-iii.registerTrigger({
-  type: 'stream:join',
-  function_id: fn.id,
-  config: {},
-})
+iii.observe('stream::on-join', 'presence::on-join')
 ```
+
+Authorize subscriptions in the worker's `auth_function`, which runs once per WebSocket handshake.
 
 ## Usage Example: Real-Time Presence
 
 ```typescript
-import { registerWorker, TriggerAction } from 'iii-sdk'
+import { CallAction, registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
 // Set presence
-iii.trigger({
+iii.call({
   function_id: 'stream::set',
   payload: {
     stream_name: 'presence',
@@ -239,17 +245,17 @@ iii.trigger({
     item_id: 'user-123',
     data: { name: 'Alice', online: true, lastSeen: new Date().toISOString() },
   },
-  action: TriggerAction.Void(),
+  action: CallAction.Void(),
 })
 
 // Get a user
-const user = await iii.trigger({
+const user = await iii.call({
   function_id: 'stream::get',
   payload: { stream_name: 'presence', group_id: 'room-1', item_id: 'user-123' },
 })
 
 // List all members in a room
-const roomMembers = await iii.trigger({
+const roomMembers = await iii.call({
   function_id: 'stream::list',
   payload: { stream_name: 'presence', group_id: 'room-1' },
 })

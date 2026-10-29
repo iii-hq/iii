@@ -33,7 +33,7 @@ name = "concurrent_invocation_bench"
 harness = false
 
 [[bench]]
-name = "trigger_fanout_bench"
+name = "observe_fanout_bench"
 harness = false
 
 [[bench]]
@@ -61,10 +61,6 @@ name = "ws_roundtrip_bench"
 harness = false
 
 [[bench]]
-name = "queue_enqueue_bench"
-harness = false
-
-[[bench]]
 name = "worker_invocation_tracking_bench"
 harness = false
 
@@ -72,10 +68,12 @@ harness = false
 name = "observe_dispatch_bench"
 harness = false
 
+[[bench]]
+name = "observe_routed_bench"
+harness = false
+
 [features]
-default = ["rabbitmq"]
-rabbitmq = ["lapin"]
-# Registers an in-process `memory` queue adapter for this crate's own tests.
+# Test-only controls (the durable trace archive's) for this crate's own tests.
 # Enabled only through the self dev-dependency below; never in a normal build.
 test-adapters = []
 
@@ -124,7 +122,6 @@ arc-swap = "1"
 iii-filter = { workspace = true }
 indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
-lapin = { version = "3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
@@ -166,8 +163,8 @@ which = "7"
 
 [dev-dependencies]
 # Self-dependency trick: turns on `test-adapters` for this crate's own test
-# targets (the `memory` pub/sub adapter the pubsub config e2e suite swaps to)
-# without enabling it for a normal build.
+# targets (the trace archive's test controls) without enabling it for a
+# normal build.
 iii = { path = ".", features = ["test-adapters"] }
 tokio = { version = "1", features = ["test-util"] }
 mockall = "0.13"
@@ -176,6 +173,4 @@ temp-env = "0.3"
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 tempfile = "3"
 wiremock = "0.6"
-testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }
 libc = "0.2"

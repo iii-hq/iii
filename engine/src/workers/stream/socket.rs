@@ -17,26 +17,19 @@ use crate::{
         adapters::StreamConnection,
         connection::SocketStreamConnection,
         structs::{StreamAuthContext, StreamOutbound},
-        trigger::StreamTriggers,
     },
 };
 
 pub struct StreamSocketManager {
     pub engine: Arc<Engine>,
     stream_module: Arc<StreamWorker>,
-    triggers: Arc<StreamTriggers>,
 }
 
 impl StreamSocketManager {
-    pub fn new(
-        engine: Arc<Engine>,
-        stream_module: Arc<StreamWorker>,
-        triggers: Arc<StreamTriggers>,
-    ) -> Self {
+    pub fn new(engine: Arc<Engine>, stream_module: Arc<StreamWorker>) -> Self {
         Self {
             engine,
             stream_module,
-            triggers,
         }
     }
 
@@ -58,7 +51,6 @@ impl StreamSocketManager {
             context,
             tx,
             self.engine.clone(),
-            self.triggers.clone(),
         );
 
         let writer = tokio::spawn(async move {
@@ -175,7 +167,7 @@ mod tests {
     use crate::{
         engine::{EngineTrait, Handler, RegisterFunctionRequest},
         function::FunctionResult,
-        trigger::Trigger,
+        observer::events::{STREAM_ON_LEAVE, register_stream_event_sources, test_support},
         workers::{
             observability::metrics::ensure_default_meter,
             stream::{
@@ -351,11 +343,8 @@ mod tests {
             StreamModuleConfig::default(),
             adapter.clone(),
         ));
-        let manager = Arc::new(StreamSocketManager::new(
-            engine.clone(),
-            module.clone(),
-            module.triggers.clone(),
-        ));
+        register_stream_event_sources(&engine);
+        let manager = Arc::new(StreamSocketManager::new(engine.clone(), module.clone()));
 
         let app = Router::new().route("/", get(ws_route)).with_state(manager);
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -556,30 +545,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn socket_handler_cleanup_triggers_leave_on_disconnect() {
+    async fn socket_handler_cleanup_calls_on_leave_on_disconnect() {
         let adapter = Arc::new(TestSocketAdapter::default());
         *adapter.list_result.lock().expect("lock list_result") = vec![json!({ "status": "open" })];
 
-        let (engine, module, server, url) = spawn_server(adapter.clone()).await;
+        let (engine, _module, server, url) = spawn_server(adapter.clone()).await;
         let (leave_tx, mut leave_rx) = mpsc::unbounded_channel::<String>();
         register_leave_handler(&engine, leave_tx);
-        module
-            .triggers
-            .leave_triggers
-            .write()
-            .await
-            .insert(Trigger {
-                id: "leave-trigger".to_string(),
-                trigger_type: crate::workers::stream::trigger::LEAVE_TRIGGER_TYPE.to_string(),
-                function_id: "test::leave_handler".to_string(),
-                config: json!({}),
-                worker_id: None,
-                metadata: None,
-                namespace: "default".to_string(),
-                trigger_namespace: None,
-                home_namespace: crate::protocol::default_namespace(),
-                provider_namespace: crate::protocol::default_namespace(),
-            });
+        let _observer = test_support::observe(
+            &engine,
+            "obs-leave",
+            STREAM_ON_LEAVE,
+            "test::leave_handler",
+            None,
+        )
+        .await;
 
         let (mut client, _response) = connect_async(url).await.expect("connect websocket client");
         let _ = wait_for_subscription(&adapter).await;
@@ -596,8 +576,8 @@ mod tests {
 
         let left_subscription = timeout(Duration::from_secs(1), leave_rx.recv())
             .await
-            .expect("timed out waiting for leave trigger")
-            .expect("leave trigger channel closed");
+            .expect("timed out waiting for the leave event")
+            .expect("leave channel closed");
         assert_eq!(left_subscription, "sub-cleanup");
         let _ = wait_for_unsubscribe(&adapter).await;
 

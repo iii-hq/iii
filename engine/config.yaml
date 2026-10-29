@@ -19,7 +19,6 @@ workers:
         name: fs
         config:
           directory: ./config
-      ttl_seconds: 0
 
   # Ephemeral sandboxes are an engine-managed exception to worker-compose.
   # - name: iii-sandbox

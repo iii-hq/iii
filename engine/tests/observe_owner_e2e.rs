@@ -1,7 +1,8 @@
-//! Owner sync and owner reports (protocol.md §2.3, §3.3–§3.5), over real
-//! WebSockets: `functionregistered`, `observeradded` / `observerremoved` with
-//! per-function revisions, `observerack` gating `active`, `invocationsobserved`,
-//! owner delivery (`obs.call`) and `localinvocationstats`.
+//! Host sync and host reports (protocol.md §2.3, §3.3–§3.5; v2 §4.6, §6), over
+//! real WebSockets: `functionregistered`, `observeradded` / `observerremoved`
+//! with per-function revisions, `observerack` gating `active`,
+//! `invocationsobserved`, calls through an observer, private functions and
+//! `localinvocationstats`.
 //!
 //! The owners here ack by hand ([`Client::manual_acks`]), so every test
 //! controls when (and whether) an observer goes `active`.
@@ -431,6 +432,75 @@ async fn an_owner_coming_back_gets_the_set_again_and_acks_it() {
     sink.reply(&activation, Value::Null).await;
 }
 
+/// A standby (v2 §7): a second instance whose registration conflicts while
+/// the host is connected registers once the host leaves, gets the
+/// function's current observers in `functionregistered`, acks them, and
+/// they are active again.
+#[tokio::test]
+async fn a_standby_takes_over_the_functions_observers_when_its_host_leaves() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut cron = observe_support::connect_v2(&t, "cron").await;
+    cron.register_function_with(json!({
+        "type": "registerfunction",
+        "id": "cron::on-tick",
+        "args_format": {
+            "type": "object",
+            "required": ["expression"],
+            "properties": { "expression": { "type": "string" } }
+        },
+        "private": true
+    }))
+    .await;
+    registered(&t.engine, "default", "cron::on-tick").await;
+    let mut sink = host(&t, "sink", &["sink::ticks"]).await;
+    sink.observe_active(observer(
+        "nightly",
+        json!({ "function_id": "cron::on-tick", "args": { "expression": "0 0 * * *" } }),
+        "sink::ticks",
+    ))
+    .await;
+
+    let mut standby = observe_support::connect_v2(&t, "cron-standby").await;
+    standby.manual_acks();
+    standby.register_function("cron::on-tick").await;
+    let conflict = standby
+        .expect("registrationrejected", |f| {
+            f["type"] == "registrationrejected"
+        })
+        .await;
+    assert_eq!(conflict["code"], "FUNCTION_NAMESPACE_CONFLICT");
+
+    cron.disconnect().await;
+    let pending = sink.state_becomes("nightly", "pending").await;
+    assert_eq!(pending["reason"]["code"], "OWNER_UNAVAILABLE");
+
+    standby
+        .register_function_with(json!({
+            "type": "registerfunction",
+            "id": "cron::on-tick",
+            "args_format": { "type": "object" },
+            "private": true
+        }))
+        .await;
+    let set = function_registered(&mut standby, "cron::on-tick").await;
+    assert_eq!(set["observers"].as_array().unwrap().len(), 1, "{set}");
+    assert_eq!(set["observers"][0]["id"], "nightly");
+    assert_eq!(
+        set["observers"][0]["args"],
+        json!({ "expression": "0 0 * * *" })
+    );
+    ack(&mut standby, "cron::on-tick", "nightly", &set["revision"]).await;
+    sink.state_becomes("nightly", "active").await;
+
+    // The standby hosts the function now: its calls reach the observer.
+    standby
+        .send(report(vec![item("cron::on-tick", &["nightly"], "success")]))
+        .await;
+    let activation = sink.invoked("sink::ticks").await;
+    assert_eq!(activation["data"]["observer_id"], "nightly");
+    sink.reply(&activation, Value::Null).await;
+}
+
 #[tokio::test]
 async fn a_report_from_a_connection_that_does_not_own_the_function_is_dropped() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -654,21 +724,19 @@ async fn a_reporter_whose_reports_keep_overflowing_is_held_once_not_per_report()
     sink.invoked("sink::slow").await;
 }
 
-/// Registers `http::on-request` (owner-delivered, routed by `path`) and
-/// `http::auto` on an `observe.v1` owner that acks everything.
+/// Registers `http::on-request` (private, observed with args `{ path }`) and
+/// `http::auto` on an `observe.v1` host that acks everything.
 async fn http_owner(t: &TestEngine) -> Client {
     let mut http = connect(t, "http", true).await;
     http.register_function_with(json!({
         "type": "registerfunction",
         "id": "http::on-request",
-        "observe": {
-            "delivery": "owner",
-            "args_format": {
-                "type": "object",
-                "required": ["path"],
-                "properties": { "path": { "type": "string" } }
-            }
-        }
+        "args_format": {
+            "type": "object",
+            "required": ["path"],
+            "properties": { "path": { "type": "string" } }
+        },
+        "private": true
     }))
     .await;
     http.register_function("http::auto").await;
@@ -686,12 +754,12 @@ fn route(id: &str, path: &str, target: &str) -> Value {
 }
 
 #[tokio::test]
-async fn an_owner_delivery_goes_to_the_stored_target_and_answers_the_owner() {
+async fn a_call_through_an_observer_goes_to_the_stored_target_and_answers_the_host() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = http_owner(&t).await;
     let mut users = host(&t, "users", &["users::get"]).await;
-    // The same id in another namespace: an owner naming that namespace on
-    // `obs.call` still reaches the observer's target (D13).
+    // The same id in another namespace: a host naming that namespace on a
+    // call through an observer still reaches the observer's target (D13).
     let mut acme = Client::open(t.port, "acme-users").await;
     acme.send(json!({
         "type": "invokefunction",
@@ -743,20 +811,13 @@ async fn an_owner_delivery_goes_to_the_stored_target_and_answers_the_owner() {
 }
 
 #[tokio::test]
-async fn owner_delivery_rejections() {
+async fn calls_through_an_observer_that_are_refused() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = http_owner(&t).await;
     let mut users = host(&t, "users", &["users::get"]).await;
     let mut frame = route("route", "/users/:id", "users::get");
     frame["max_in_flight"] = json!(1);
     users.observe_active(frame).await;
-    users
-        .observe_active(observer(
-            "auto-obs",
-            json!({ "function_id": "http::auto" }),
-            "users::get",
-        ))
-        .await;
     let waiting = users
         .observe(route("waiting", "/later", "users::missing"))
         .await;
@@ -775,16 +836,8 @@ async fn owner_delivery_rejections() {
             obs_call("no-such-observer", "users::get", json!({})),
         ),
         (
-            "NOT_OWNER_DELIVERED",
-            obs_call("auto-obs", "users::get", json!({})),
-        ),
-        (
             "OBSERVER_NOT_ACTIVE",
             obs_call("waiting", "users::missing", json!({})),
-        ),
-        (
-            "TARGET_MISMATCH",
-            obs_call("route", "users::other", json!({})),
         ),
         (
             "LOOP_GUARD",
@@ -809,8 +862,8 @@ async fn owner_delivery_rejections() {
         "NOT_FUNCTION_OWNER"
     );
 
-    // One delivery in flight is the limit: the owner is waiting for the
-    // result, so the next one fails instead of queueing.
+    // One call in flight is the limit: the host is waiting for the result,
+    // so the next one fails instead of queueing.
     let (_, fields) = obs_call("route", "users::get", json!({}));
     let first = http
         .call_with("users::get", json!({ "n": 1 }), fields.clone())
@@ -833,11 +886,64 @@ async fn owner_delivery_rejections() {
     let info = get(&mut http, "route").await;
     assert_eq!(info["dropped"]["LOOP_GUARD"], 1, "{info}");
     assert_eq!(info["dropped"]["OVERFLOW"], 1, "{info}");
+    assert!(
+        info["dropped"].get("NOT_FUNCTION_OWNER").is_none(),
+        "the caller got the refusal: no drop: {info}"
+    );
     assert_eq!(info["fires"], 2);
 }
 
+/// A fire-and-forget call through an observer that the engine refuses gets
+/// no answer: it is dropped and counted under the refusal's code (decision
+/// 13), on the observer when it exists.
 #[tokio::test]
-async fn an_owner_delivery_whose_target_never_answers_times_out() {
+async fn a_refused_fire_and_forget_call_through_an_observer_is_counted() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut http = http_owner(&t).await;
+    let mut users = host(&t, "users", &["users::get"]).await;
+    users
+        .observe_active(route("route", "/users/:id", "users::get"))
+        .await;
+    let waiting = users
+        .observe(route("waiting", "/later", "users::missing"))
+        .await;
+    assert_eq!(waiting["state"], "pending");
+    let void = |observer_id: &str| json!({ "activation": { "observer_id": observer_id }, "action": { "type": "void" } });
+
+    let mut stranger = connect(&t, "stranger", true).await;
+    stranger
+        .call_with("users::get", json!({}), void("route"))
+        .await;
+    http.call_with("users::missing", json!({}), void("waiting"))
+        .await;
+    http.call_with("users::get", json!({}), void("no-such-observer"))
+        .await;
+    // No invocation id: nobody can wait for the answer either.
+    http.send(json!({
+        "type": "invokefunction",
+        "function_id": "users::missing",
+        "data": {},
+        "activation": { "observer_id": "waiting" },
+    }))
+    .await;
+
+    get(&mut stranger, "route").await;
+    let route = get(&mut http, "route").await;
+    assert_eq!(route["dropped"]["NOT_FUNCTION_OWNER"], 1, "{route}");
+    assert_eq!(route["fires"], 0);
+    let waiting = get(&mut http, "waiting").await;
+    assert_eq!(waiting["dropped"]["OBSERVER_NOT_ACTIVE"], 2, "{waiting}");
+    for client in [&mut http, &mut stranger] {
+        assert!(
+            !client.has_seen(|f| f["type"] == "invocationresult" && f["error"].is_object()),
+            "no answer to a fire-and-forget call"
+        );
+    }
+    assert!(!users.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "users::get"));
+}
+
+#[tokio::test]
+async fn a_call_through_an_observer_whose_target_never_answers_times_out() {
     let t = spawn_engine(ObserversConfig {
         activation_timeout_ms: 150,
         ..ObserversConfig::default()
@@ -1337,7 +1443,7 @@ async fn reports_apply_on_for_auto_functions_and_count_invalid_items() {
 }
 
 #[tokio::test]
-async fn owner_delivery_policy_and_target_failures() {
+async fn observer_call_policy_and_target_failures() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = http_owner(&t).await;
     let mut users = host(&t, "users", &["users::get"]).await;
@@ -1352,7 +1458,7 @@ async fn owner_delivery_policy_and_target_failures() {
         .await;
     let fields = |id: &str| json!({ "activation": { "observer_id": id } });
 
-    // max_fires: the one delivery goes through, and the observer is gone.
+    // max_fires: the one call goes through, and the observer is gone.
     let call = http
         .call_with("users::get", json!({}), fields("once"))
         .await;
@@ -1378,7 +1484,7 @@ async fn owner_delivery_policy_and_target_failures() {
         "OBSERVER_NOT_FOUND"
     );
 
-    // The target answers with an error: the owner gets it, counted.
+    // The target answers with an error: the host gets it, counted.
     let call = http
         .call_with(
             "users::get",
@@ -1396,7 +1502,7 @@ async fn owner_delivery_policy_and_target_failures() {
     assert_eq!(
         delivered["caller"]["parent"],
         json!({ "worker_name": "edge", "function_id": "edge::accept" }),
-        "caller.parent passes through an owner call"
+        "caller.parent passes through a call through an observer"
     );
     users
         .reply_error(&delivered, "NOT_FOUND", "no such user")
@@ -1419,10 +1525,10 @@ async fn owner_delivery_policy_and_target_failures() {
     );
 }
 
-/// The owner going away while its `obs.call` waits frees the slot, and is
-/// not counted against the target.
+/// The host going away while its call through an observer waits frees the
+/// slot, and is not counted against the target.
 #[tokio::test]
-async fn an_owner_leaving_mid_call_frees_the_slot() {
+async fn a_host_leaving_mid_call_frees_the_slot() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let http = http_owner(&t).await;
     let mut users = host(&t, "users", &["users::get"]).await;
@@ -1468,10 +1574,10 @@ async fn an_owner_leaving_mid_call_frees_the_slot() {
     );
 }
 
-/// An `obs.call` with `action: void` gets no answer, and leaves nothing
-/// tracked on the owner's connection.
+/// A call through an observer with `action: void` gets no answer, and leaves
+/// nothing tracked on the host's connection.
 #[tokio::test]
-async fn a_void_owner_call_leaves_no_invocation_behind() {
+async fn a_void_call_through_an_observer_leaves_no_invocation_behind() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = http_owner(&t).await;
     let mut users = host(&t, "users", &["users::get"]).await;
@@ -1499,7 +1605,7 @@ async fn a_void_owner_call_leaves_no_invocation_behind() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    assert!(empty, "the owner's connection still tracks the call");
+    assert!(empty, "the host's connection still tracks the call");
     get(&mut http, "barrier").await;
     assert!(!http.has_seen(|f| f["type"] == "invocationresult" && f["result"] == "ignored"));
 }
@@ -1547,11 +1653,11 @@ async fn local_invocation_counts_saturate() {
     );
 }
 
-/// An owner-delivered function's events are what its owner reports, stamped
-/// with the owner's identity: only the owner invokes it, or anyone could
-/// forge them. Auto functions are not restricted.
+/// A private function's calls are what its observers observe, stamped with
+/// its host's identity: only the host calls it, or anyone could forge them.
+/// Other functions are not restricted.
 #[tokio::test]
-async fn only_the_owner_invokes_an_owner_delivered_function() {
+async fn only_the_host_calls_a_private_function() {
     use iii::engine::EngineTrait;
 
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -1567,7 +1673,7 @@ async fn only_the_owner_invokes_an_owner_delivered_function() {
         refused["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("owner-delivered")
+            .contains("private")
     );
     let refused = t
         .engine
@@ -1576,7 +1682,7 @@ async fn only_the_owner_invokes_an_owner_delivered_function() {
         .unwrap_err();
     assert_eq!(refused.code, "FORBIDDEN", "the engine itself too");
 
-    // Its owner, calling itself remotely.
+    // Its host, calling itself remotely.
     let call = http.call("http::on-request", json!({ "path": "/" })).await;
     http.serve("http::on-request", json!({ "status_code": 200 }))
         .await;
@@ -1585,18 +1691,18 @@ async fn only_the_owner_invokes_an_owner_delivered_function() {
         json!({ "status_code": 200 })
     );
 
-    // An auto function: anyone.
+    // A function that is not private: anyone.
     let call = other.call("http::auto", json!({})).await;
     http.serve("http::auto", json!("auto")).await;
     assert_eq!(other.result(call).await["result"], "auto");
     assert!(!http.has_seen(|f| f["type"] == "invokefunction" && f["data"]["path"] == "/forged"));
 }
 
-/// An owner-delivered function cannot be an observer's target: every
-/// activation would be refused. Refused at `observe`, and when the target
-/// registers as owner-delivered later.
+/// A private function cannot be an observer's target: every activation would
+/// be refused. Refused at `observe`, and when the target registers as private
+/// later.
 #[tokio::test]
-async fn an_owner_delivered_function_is_no_target() {
+async fn a_private_function_is_no_target() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let _http = http_owner(&t).await;
     let _orders = host(&t, "orders", &["orders::create"]).await;
@@ -1622,17 +1728,16 @@ async fn an_owner_delivered_function_is_no_target() {
     late.register_function_with(json!({
         "type": "registerfunction",
         "id": "late::router",
-        "observe": { "delivery": "owner" }
+        "private": true
     }))
     .await;
     let error = watcher.state_becomes("into-later", "error").await;
     assert_eq!(error["reason"]["code"], "FORBIDDEN");
 }
 
-/// The owner-only rule holds for every way a call reaches the function: a
-/// fire-and-forget call, and an old provider firing a trigger bound to it.
+/// The host-only rule holds for a fire-and-forget call too.
 #[tokio::test]
-async fn void_calls_and_trigger_fan_out_cannot_reach_an_owner_delivered_function() {
+async fn a_void_call_cannot_reach_a_private_function() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = http_owner(&t).await;
     let mut other = connect(&t, "other", true).await;
@@ -1645,44 +1750,8 @@ async fn void_calls_and_trigger_fan_out_cannot_reach_an_owner_delivered_function
         }))
         .await;
 
-    // An old-style provider fires a binding to it, as old providers do: by
-    // invoking the bound function.
-    let mut provider = connect(&t, "ticker", false).await;
-    provider
-        .send(json!({ "type": "registertriggertype", "id": "tick", "description": "old ticks" }))
-        .await;
-    assert!(
-        eventually(|| t
-            .engine
-            .trigger_registry
-            .trigger_types
-            .contains_key(&iii::trigger::type_key("default", "tick")))
-        .await
-    );
-    other
-        .send(json!({
-            "type": "registertrigger",
-            "id": "t-tick",
-            "trigger_type": "tick",
-            "function_id": "http::on-request",
-            "config": {}
-        }))
-        .await;
-    let binding = provider
-        .expect("registertrigger", |f| {
-            f["type"] == "registertrigger" && f["id"] == "t-tick"
-        })
-        .await;
-    let fire = provider
-        .call(
-            binding["function_id"].as_str().unwrap(),
-            json!({ "path": "/tick" }),
-        )
-        .await;
-    assert_eq!(provider.result(fire).await["error"]["code"], "FORBIDDEN");
-
     // The void call was handled before `other`'s later call; neither reached
-    // the owner.
+    // the host.
     let call = other
         .call("http::on-request", json!({ "path": "/after" }))
         .await;

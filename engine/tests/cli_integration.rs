@@ -391,3 +391,133 @@ fn trigger_kv_with_json_merge_parses() {
         stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// CLI trigger: argument parsing and connection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_trigger_subcommand_parses_correctly() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args(["trigger", "--help"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(output.status.success(), "trigger --help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FUNCTION_PATH"),
+        "Help should mention FUNCTION_PATH, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--json"),
+        "Help should mention --json, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn cli_trigger_missing_required_args_fails() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args(["trigger"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "trigger without FUNCTION_PATH should fail"
+    );
+}
+
+#[test]
+fn cli_trigger_invalid_json_payload_fails() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args([
+            "trigger",
+            "test::fn",
+            "--json",
+            "not-valid-json",
+            "--port",
+            "19876",
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "trigger with invalid --json should fail"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid JSON") || stderr.contains("JSON"),
+        "Should mention JSON error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn cli_trigger_connection_refused_fails_gracefully() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args([
+            "trigger",
+            "iii::queue::redrive",
+            "queue=orders",
+            "--port",
+            "19877",
+            "--timeout-ms",
+            "2000",
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "trigger to unreachable port should fail"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to connect")
+            || stderr.contains("connect")
+            || stderr.contains("Timed out")
+            || stderr.contains("timeout"),
+        "Should mention connection failure or timeout, got: {}",
+        stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CLI: backward compatibility — no subcommand still works
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_no_subcommand_with_version_still_works() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args(["--version"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        output.status.success(),
+        "iii --version should still work without subcommand"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "Version output should not be empty"
+    );
+}

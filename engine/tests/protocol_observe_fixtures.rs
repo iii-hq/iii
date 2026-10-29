@@ -10,8 +10,8 @@ use std::{
 };
 
 use iii::protocol::{
-    Capture, Delivery, FEATURE_LARGE_MESSAGES_V1, InvocationStatus, Message, ObserverState,
-    engine_features,
+    Capture, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1, FEATURE_OBSERVE_V1,
+    FEATURE_OBSERVE_V2, InvocationStatus, Message, ObserverState, engine_features,
 };
 use iii::workers::engine_fn::RegisterWorkerInput;
 use serde_json::{Value, json};
@@ -49,9 +49,17 @@ fn message(name: &str) -> Message {
     serde_json::from_value(fixture(name)).unwrap_or_else(|err| panic!("{name}: {err}"))
 }
 
+/// Fixtures of frames no party sends: `invocationsobserved-routed-items.json`
+/// reports a routed call's matches in items of its own, which a host never
+/// sends (decision 38: a routed call's matches ride its answer).
+const NOT_SENT: &[&str] = &["invocationsobserved-routed-items"];
+
 #[test]
 fn every_observe_fixture_round_trips_through_message() {
     for (name, value) in fixtures() {
+        if NOT_SENT.contains(&name.as_str()) {
+            continue;
+        }
         let msg: Message = serde_json::from_value(value.clone())
             .unwrap_or_else(|err| panic!("{name}.json does not decode as Message: {err}"));
         let encoded = serde_json::to_value(&msg).expect("encodes");
@@ -92,14 +100,10 @@ fn message_tags() -> BTreeSet<String> {
         .collect()
 }
 
-/// The message types that existed before 0.25. Every other type is new with
-/// observe and must have a fixture; every one of these has a pre-0.25 frame
-/// below.
+/// The message types that existed before 0.25 and still do. Every other type
+/// is new with observe and must have a fixture; every one of these has a
+/// pre-0.25 frame below.
 const PRE_025: &[&str] = &[
-    "registertriggertype",
-    "registertrigger",
-    "triggerregistrationresult",
-    "unregistertrigger",
     "registerfunction",
     "unregisterfunction",
     "invokefunction",
@@ -116,13 +120,6 @@ const PRE_025: &[&str] = &[
 /// it: none of the fields observe adds.
 fn pre_025_frames() -> Vec<Value> {
     vec![
-        json!({ "type": "registertriggertype", "id": "webhook", "description": "Webhooks",
-                "trigger_request_format": { "type": "object" } }),
-        json!({ "type": "registertrigger", "id": "t-1", "trigger_type": "cron",
-                "function_id": "reports::daily", "config": { "expression": "0 0 9 * * *" } }),
-        json!({ "type": "triggerregistrationresult", "id": "t-1", "trigger_type": "cron",
-                "function_id": "reports::daily" }),
-        json!({ "type": "unregistertrigger", "id": "t-1", "trigger_type": "cron" }),
         json!({ "type": "registerfunction", "id": "orders::create" }),
         json!({ "type": "unregisterfunction", "id": "orders::create" }),
         json!({ "type": "invokefunction", "invocation_id": "3c5e7a9b-1d3f-4b5d-9f1a-3c5e7a9b1d3f",
@@ -188,6 +185,10 @@ fn every_pre_025_frame_still_decodes_and_re_encodes_without_new_fields() {
             "observe_depth",
             "activation",
             "observe",
+            "args_format",
+            "private",
+            "observable",
+            "observed",
             "features",
         ] {
             assert!(encoded.get(key).is_none(), "`{key}` appeared in {encoded}");
@@ -223,14 +224,19 @@ const OPTIONAL: &[(&str, &str)] = &[
     ("localinvocationstats", "/functions/0/duration_ms_sum"),
     ("localinvocationstats", "/functions"),
     ("localinvocationstats", "/dropped_reports"),
+    (
+        "invocationsobserved-event-source",
+        "/items/0/output_is_input",
+    ),
     ("registerfunction", "/description"),
     ("registerfunction", "/request_format"),
     ("registerfunction", "/response_format"),
-    ("registerfunction-owner", "/observe"),
-    ("registerfunction-owner", "/observe/delivery"),
-    ("registerfunction-owner", "/observe/args_format"),
-    ("registerfunction-owner", "/observe/legacy_trigger_type"),
-    ("registerfunction-owner", "/observe/allow"),
+    ("registerfunction-private", "/args_format"),
+    ("registerfunction-private", "/private"),
+    ("registerfunction-not-observable", "/observable"),
+    ("registerfunction-v1-owner", "/observe"),
+    ("registerfunction-v1-owner", "/observe/delivery"),
+    ("registerfunction-v1-not-observable", "/observe/allow"),
     ("invokefunction-activation", "/caller"),
     ("invokefunction-activation", "/observe_depth"),
     ("invokefunction-activation", "/activation"),
@@ -238,15 +244,17 @@ const OPTIONAL: &[(&str, &str)] = &[
     ("invokefunction-activation", "/traceparent"),
     ("invokefunction-activation", "/metadata"),
     ("invokefunction-caller", "/caller/parent"),
-    ("invokefunction-owner-call-namespace", "/namespace"),
+    ("invokefunction-observer-call-namespace", "/namespace"),
+    ("invokefunction-observer-call", "/caller"),
     ("invokefunction-workers-register", "/data/features"),
-    ("unregistertriggertype", "/namespace"),
+    ("invocationresult-observed", "/observed"),
+    ("invocationresult-observed", "/result"),
+    ("invocationresult-observed-error", "/error"),
     ("workerregistered", "/reattach_token"),
     ("workerregistered", "/features"),
     ("observeresult-error", "/error"),
     ("observeresult-error", "/warnings"),
     ("observerstatechanged-reason", "/reason"),
-    ("observeradded-legacy", "/observer/legacy"),
 ];
 
 #[test]
@@ -362,11 +370,6 @@ fn fixtures_carry_the_documented_variants() {
     };
     assert!(observers.is_empty());
 
-    let Message::ObserverAdded { observer, .. } = message("observeradded-legacy") else {
-        panic!("observeradded-legacy");
-    };
-    assert_eq!(observer.legacy.expect("legacy").trigger_type, "http");
-
     let Message::InvocationsObserved { items } = message("invocationsobserved") else {
         panic!("invocationsobserved");
     };
@@ -374,17 +377,24 @@ fn fixtures_carry_the_documented_variants() {
     let items = items.items;
     assert!(
         items.iter().any(|i| i.status == InvocationStatus::Error),
-        "an auto item that failed"
+        "a call that failed"
     );
     assert!(
         items.iter().any(|i| i.output == Some(Value::Null)),
-        "an auto item that returned null"
+        "a call that returned null"
     );
-    let owner_item = items
-        .iter()
-        .find(|i| i.matched.len() > 1 && i.caller.as_ref().is_some_and(|c| c.parent.is_some()))
-        .expect("an owner emit coalesced for two observers, with a parent caller");
-    let event = owner_item.input.as_ref().expect("the row-changed event");
+    assert!(
+        items.iter().all(|i| !i.output_is_input),
+        "output_is_input is left out at its default"
+    );
+
+    let Message::InvocationsObserved { items } = message("invocationsobserved-event-source") else {
+        panic!("invocationsobserved-event-source");
+    };
+    let event_source = &items.items[0];
+    assert!(event_source.output_is_input && event_source.output.is_none());
+    assert!(event_source.matched.len() > 1, "one event, two observers");
+    let event = event_source.input.as_ref().expect("the row change");
     for key in [
         "db",
         "schema",
@@ -395,27 +405,78 @@ fn fixtures_carry_the_documented_variants() {
         "truncated",
         "at",
     ] {
-        assert!(
-            event.get(key).is_some(),
-            "database.md §2.2 event field `{key}`"
-        );
+        assert!(event.get(key).is_some(), "row change field `{key}`");
     }
 
-    let Message::RegisterFunction { observe, .. } = message("registerfunction-owner") else {
-        panic!("registerfunction-owner");
+    let Message::RegisterFunction {
+        args_format,
+        private,
+        observable,
+        observe,
+        ..
+    } = message("registerfunction-private")
+    else {
+        panic!("registerfunction-private");
     };
-    let observe = observe.expect("descriptor");
-    assert_eq!(observe.delivery(), Delivery::Owner);
-    assert!(observe.args_format.is_some() && observe.legacy_trigger_type.is_some());
-    let Message::RegisterFunction { observe, .. } = message("registerfunction") else {
+    assert!(args_format.is_some() && private && observable && observe.is_none());
+    let Message::RegisterFunction {
+        args_format,
+        private,
+        observable,
+        observe,
+        ..
+    } = message("registerfunction")
+    else {
         panic!("registerfunction");
     };
-    assert!(observe.is_none());
-    let Message::RegisterFunction { observe, .. } = message("registerfunction-not-observable")
+    assert!(args_format.is_none() && !private && observable && observe.is_none());
+    let Message::RegisterFunction { observable, .. } = message("registerfunction-not-observable")
     else {
         panic!("registerfunction-not-observable");
     };
-    assert!(!observe.expect("descriptor").allow());
+    assert!(!observable);
+    let Message::RegisterFunction { observe, .. } = message("registerfunction-v1-owner") else {
+        panic!("registerfunction-v1-owner");
+    };
+    assert!(!observe.expect("the 0.25 object").is_supported());
+    let Message::RegisterFunction { observe, .. } = message("registerfunction-v1-not-observable")
+    else {
+        panic!("registerfunction-v1-not-observable");
+    };
+    let observe = observe.expect("the 0.25 object");
+    assert!(observe.is_supported() && !observe.allow());
+
+    for (name, code) in [
+        ("registrationrejected-unsupported", "UNSUPPORTED"),
+        (
+            "registrationrejected-invalid-args-format",
+            "INVALID_ARGS_FORMAT",
+        ),
+    ] {
+        let Message::RegistrationRejected {
+            code: got,
+            owner_worker_id,
+            ..
+        } = message(name)
+        else {
+            panic!("{name}");
+        };
+        assert_eq!(got, code);
+        assert!(owner_worker_id.is_empty(), "{name}");
+    }
+
+    for (name, observed) in [
+        ("invocationresult-observed", 2),
+        ("invocationresult-observed-error", 1),
+        ("invocationresult-hook-result", 0),
+        ("invocationresult", 0),
+        ("invocationresult-not-function-owner", 0),
+    ] {
+        let Message::InvocationResult { observed: ids, .. } = message(name) else {
+            panic!("{name}");
+        };
+        assert_eq!(ids.len(), observed, "{name}");
+    }
 
     let Message::InvokeFunction {
         invocation_id,
@@ -439,9 +500,9 @@ fn fixtures_carry_the_documented_variants() {
         namespace,
         activation,
         ..
-    } = message("invokefunction-owner-call-namespace")
+    } = message("invokefunction-observer-call-namespace")
     else {
-        panic!("invokefunction-owner-call-namespace");
+        panic!("invokefunction-observer-call-namespace");
     };
     assert!(
         namespace.is_some() && activation.is_some(),
@@ -452,12 +513,23 @@ fn fixtures_carry_the_documented_variants() {
         observe_depth,
         activation,
         ..
-    } = message("invokefunction-owner-call")
+    } = message("invokefunction-observer-call")
     else {
-        panic!("invokefunction-owner-call");
+        panic!("invokefunction-observer-call");
     };
     assert_eq!(observe_depth, None, "depth 0 is omitted");
     assert!(activation.expect("activation").activation_id.is_none());
+
+    let Message::InvokeFunction {
+        invocation_id,
+        action,
+        activation,
+        ..
+    } = message("invokefunction-observer-call-void")
+    else {
+        panic!("invokefunction-observer-call-void");
+    };
+    assert!(invocation_id.is_none() && action.is_some() && activation.is_some());
 
     let Message::InvokeFunction {
         caller,
@@ -473,7 +545,23 @@ fn fixtures_carry_the_documented_variants() {
     let Message::WorkerRegistered { features, .. } = message("workerregistered") else {
         panic!("workerregistered");
     };
+    assert_eq!(
+        features,
+        [
+            FEATURE_OBSERVE_V1,
+            FEATURE_OBSERVE_V2,
+            FEATURE_LOCAL_DISPATCH_V1
+        ]
+    );
     assert_eq!(features, engine_features(), "what this engine advertises");
+    let Message::WorkerRegistered { features, .. } = message("workerregistered-v1") else {
+        panic!("workerregistered-v1");
+    };
+    assert_eq!(
+        features,
+        [FEATURE_OBSERVE_V1, FEATURE_LOCAL_DISPATCH_V1],
+        "a 0.25 engine: no observe.v2"
+    );
     let Message::WorkerRegistered { features, .. } = message("workerregistered-legacy") else {
         panic!("workerregistered-legacy");
     };
@@ -511,19 +599,16 @@ fn fixtures_use_only_known_enum_values() {
             Message::InvocationsObserved { items } => {
                 assert!(items.items.iter().all(|i| i.status.is_known()), "{name}");
             }
-            Message::RegisterFunction {
-                observe: Some(observe),
-                ..
-            } => assert!(observe.delivery().is_known(), "{name}"),
             _ => {}
         }
     }
 }
 
 /// SDKs declare their features in the `engine::workers::register` payload:
-/// the engine's, plus `large-messages.v1`, which only workers declare. The
-/// engine reads them from what the fixture sends (plus the
-/// `_caller_worker_id` it injects into every forwarded payload).
+/// `observe.v1`, `observe.v2`, `local-dispatch.v1`, plus `large-messages.v1`,
+/// which only workers declare. The engine reads them from what the fixture
+/// sends (plus the `_caller_worker_id` it injects into every forwarded
+/// payload).
 #[test]
 fn workers_register_fixture_declares_features() {
     let Message::InvokeFunction {
@@ -537,7 +622,13 @@ fn workers_register_fixture_declares_features() {
     assert_eq!(function_id, "engine::workers::register");
     data["_caller_worker_id"] = Value::String("550e8400-e29b-41d4-a716-446655440000".into());
     let input: RegisterWorkerInput = serde_json::from_value(data).expect("decodes");
-    let mut declared = engine_features();
-    declared.push(FEATURE_LARGE_MESSAGES_V1.to_string());
-    assert_eq!(input.features, declared);
+    assert_eq!(
+        input.features,
+        [
+            FEATURE_OBSERVE_V1,
+            FEATURE_OBSERVE_V2,
+            FEATURE_LOCAL_DISPATCH_V1,
+            FEATURE_LARGE_MESSAGES_V1
+        ]
+    );
 }

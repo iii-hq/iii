@@ -1,8 +1,8 @@
 //! The observe handshake over a real WebSocket connection: the engine
 //! advertises its features in `workerregistered`, records the features a
 //! worker declares on `engine::workers::register` (and sizes what it sends the
-//! worker by them), and decodes the `unregistertriggertype` every SDK has
-//! always sent.
+//! worker by them), and drops the 0.25 trigger messages without closing the
+//! connection.
 
 mod observe_support;
 
@@ -12,7 +12,6 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use iii::engine::{Engine, EngineTrait};
 use iii::protocol::{DEFAULT_NAMESPACE, ENGINE_FEATURES};
-use iii::trigger::type_key;
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::{Message as WsMessage, protocol::WebSocketConfig};
 use uuid::Uuid;
@@ -84,6 +83,10 @@ async fn the_engine_advertises_its_features_and_records_the_workers() {
         json!(ENGINE_FEATURES),
         "workerregistered lists what the engine supports"
     );
+    assert_eq!(
+        registered["features"],
+        json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
+    );
     let worker_id: Uuid = registered["worker_id"]
         .as_str()
         .expect("worker_id")
@@ -105,6 +108,45 @@ async fn the_engine_advertises_its_features_and_records_the_workers() {
         })
         .await,
         "the declared features are recorded on the connection"
+    );
+    assert!(
+        !engine
+            .worker_registry
+            .get_worker(&worker_id)
+            .unwrap()
+            .features
+            .observe_v2(),
+        "observe.v1 alone: the engine evaluates this host's routed calls"
+    );
+}
+
+/// A v2 SDK declares `observe.v1` and `observe.v2`: it delivers the calls of
+/// the functions it hosts.
+#[tokio::test]
+async fn a_worker_declaring_observe_v2_delivers_its_own_calls() {
+    let (port, engine) = spawn_engine().await;
+    let (mut ws, registered) = connect(port).await;
+    let worker_id: Uuid = registered["worker_id"].as_str().unwrap().parse().unwrap();
+
+    send(
+        &mut ws,
+        workers_register(Some(json!([
+            "observe.v1",
+            "observe.v2",
+            "local-dispatch.v1",
+            "large-messages.v1"
+        ]))),
+    )
+    .await;
+
+    assert!(
+        eventually(|| {
+            engine
+                .worker_registry
+                .get_worker(&worker_id)
+                .is_some_and(|w| w.features.observe_v1() && w.features.observe_v2())
+        })
+        .await
     );
 }
 
@@ -159,66 +201,27 @@ async fn malformed_features_do_not_break_the_registration() {
     );
 }
 
-/// Before 0.25 this frame failed to decode on every engine and the type
-/// lingered until the provider disconnected.
+/// The trigger messages a 0.25 SDK sends are dropped, unanswered, and the
+/// connection keeps being served.
 #[tokio::test]
-async fn a_provider_retires_its_trigger_type_over_the_wire() {
+async fn removed_messages_are_dropped_and_the_connection_stays_open() {
     let (port, engine) = spawn_engine().await;
     let (mut ws, _) = connect(port).await;
     send(&mut ws, workers_register(None)).await;
 
-    send(
-        &mut ws,
+    for frame in [
         json!({ "type": "registertriggertype", "id": "webhook", "description": "e2e" }),
-    )
-    .await;
-    let key = type_key(DEFAULT_NAMESPACE, "webhook");
-    assert!(
-        eventually(|| engine.trigger_registry.trigger_types.contains_key(&key)).await,
-        "the provider registered its type"
-    );
-
-    // What the Node SDK sends: the whole trigger type, minus the tag.
-    send(
-        &mut ws,
-        json!({ "type": "unregistertriggertype", "id": "webhook", "description": "e2e" }),
-    )
-    .await;
-    assert!(
-        eventually(|| !engine.trigger_registry.trigger_types.contains_key(&key)).await,
-        "the provider retired its type"
-    );
-}
-
-#[tokio::test]
-async fn another_connection_cannot_retire_a_trigger_type() {
-    let (port, engine) = spawn_engine().await;
-    let (mut provider, _) = connect(port).await;
-    send(&mut provider, workers_register(None)).await;
-    send(
-        &mut provider,
-        json!({ "type": "registertriggertype", "id": "webhook", "description": "e2e" }),
-    )
-    .await;
-    let key = type_key(DEFAULT_NAMESPACE, "webhook");
-    assert!(eventually(|| engine.trigger_registry.trigger_types.contains_key(&key)).await);
-
-    let (mut other, _) = connect(port).await;
-    // A different name: a second live `observe-e2e` would be refused as a
-    // worker-name conflict and closed.
-    let mut register = workers_register(None);
-    register["data"]["name"] = json!("observe-e2e-other");
-    send(&mut other, register).await;
-    send(
-        &mut other,
+        json!({ "type": "registertrigger", "id": "t-1", "trigger_type": "webhook",
+                "function_id": "observe::probe", "config": {} }),
+        json!({ "type": "registertrigger", "id": "t-2", "trigger_type": "webhook",
+                "function_id": "observe::probe", "config": {} }),
+        json!({ "type": "unregistertrigger", "id": "t-1" }),
         json!({ "type": "unregistertriggertype", "id": "webhook" }),
-    )
-    .await;
-    // Registrations (the unregister included) are applied in arrival order,
-    // possibly from the namespace drain rather than the read loop, so a
-    // function registered after it is the marker that it has been applied.
+    ] {
+        send(&mut ws, frame).await;
+    }
     send(
-        &mut other,
+        &mut ws,
         json!({ "type": "registerfunction", "id": "observe::probe" }),
     )
     .await;
@@ -228,11 +231,19 @@ async fn another_connection_cannot_retire_a_trigger_type() {
             .get(DEFAULT_NAMESPACE, "observe::probe")
             .is_some())
         .await,
-        "the other connection is served normally"
+        "the connection is served normally after the dropped frames"
     );
-    assert!(
-        engine.trigger_registry.trigger_types.contains_key(&key),
-        "only the provider may retire its type"
+
+    send(&mut ws, json!({ "type": "ping" })).await;
+    let reply = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("an answer")
+        .expect("stream yields")
+        .expect("frame decodes");
+    let reply: Value = serde_json::from_str(reply.to_text().expect("text frame")).expect("json");
+    assert_eq!(
+        reply["type"], "pong",
+        "nothing answered the dropped frames: the next frame is the pong"
     );
 }
 

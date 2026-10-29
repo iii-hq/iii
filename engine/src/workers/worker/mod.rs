@@ -223,6 +223,9 @@ impl Worker for WorkerManager {
     }
 
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        if let Some(rbac) = config.as_ref().and_then(|config| config.get("rbac")) {
+            rbac_config::warn_removed_keys(rbac);
+        }
         let config: WorkerManagerConfig = config
             .map(serde_json::from_value)
             .transpose()?
