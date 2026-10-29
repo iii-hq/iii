@@ -23,20 +23,25 @@ iii.registerFunction('hello::greet', async (input) => {
   return { message: `Hello, ${input.name}!` }
 })
 
-const result = await iii.trigger({ function_id: 'hello::greet', payload: { name: 'world' } })
+const result = await iii.call({ function_id: 'hello::greet', payload: { name: 'world' } })
 ```
 
 ## API
 
-| Operation                | Signature                                                                         | Description                                                    |
-| ------------------------ | --------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Initialize               | `registerWorker(url, options?)`                                                   | Create and connect to the engine. Returns an `IIIClient`       |
-| Register function        | `iii.registerFunction(id, handler, options?)`                                     | Register a function that can be invoked by name                |
-| Invoke (await)           | `await iii.trigger({ function_id, payload })`                                     | Invoke a function and wait for the result                      |
-| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })`             | Invoke without waiting                                         |
-| Invoke (enqueue)         | `iii.trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })` | Route invocation through a named queue                         |
-| Observe                  | `iii.observe({ function_id, args?, filters? }, target, options?)`                 | Invoke `target` on every matching invocation of a function     |
-| Current invocation       | `iii.currentInvocation()`                                                         | The invocation the running handler serves (caller, activation) |
+| Operation                | Signature                                                                     | Description                                                     |
+| ------------------------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Initialize               | `registerWorker(url, options?)`                                               | Create and connect to the engine. Returns an `IIIClient`        |
+| Register function        | `iii.registerFunction(id, handler, options?)`                                 | Register a function that can be called by id and observed       |
+| Call (await)             | `await iii.call({ function_id, payload })`                                    | Call a function and wait for the result                         |
+| Call (fire-and-forget)   | `iii.call({ function_id, payload, action: CallAction.Void() })`               | Call without waiting                                            |
+| Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`   | Route the call through a named queue                            |
+| Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)` | Call `target` on every matching call of a function              |
+| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverDeliver`                   | Change what observing a function this worker hosts means        |
+| Call through an observer | `await iii.call({ observer, payload })`                                       | Run an observer's target, with its policy and metadata          |
+| Current invocation       | `iii.currentInvocation()`                                                     | The invocation the running handler serves (caller, activation)  |
+
+`iii.trigger` and `TriggerAction` are the same function and object as
+`iii.call` and `CallAction`.
 
 ### Registering Functions
 
@@ -46,16 +51,18 @@ iii.registerFunction('orders::create', async (input) => {
 })
 ```
 
-### Invoking Functions
+The handler's return value is what the function's observers observe.
+
+### Calling Functions
 
 ```javascript
-import { registerWorker, TriggerAction } from 'iii-sdk'
+import { CallAction, registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://localhost:49134')
 
-const result = await iii.trigger({ function_id: 'orders::create', payload: { item: 'widget' } })
+const result = await iii.call({ function_id: 'orders::create', payload: { item: 'widget' } })
 
-iii.trigger({ function_id: 'analytics::track', payload: { event: 'page_view' }, action: TriggerAction.Void() })
+iii.call({ function_id: 'analytics::track', payload: { event: 'page_view' }, action: CallAction.Void() })
 ```
 
 A call to a function this worker registered itself runs in-process once the
@@ -65,12 +72,17 @@ with `localDispatch: false`.
 
 ### Observing Functions
 
-Every function is observable. The target is a registered function; it receives
-the `Observed` envelope (`input`, `output` or `error`, `caller`, ...).
+Every function is observable. When `orders::create` runs, its observers run.
+The target is a registered function; it receives the `Observed` envelope
+(`input`, `output` or `error`, `caller`, ...).
 
 ```javascript
 iii.registerFunction('alerts::big-order', async ({ input, output }) => notify(input, output))
 
+// every successful call
+iii.observe('orders::create', 'search::reindex-order')
+
+// only large orders
 const observer = iii.observe(
   { function_id: 'orders::create', filters: { 'input.body.total': { $gte: 500 } } },
   'alerts::big-order',
@@ -80,35 +92,58 @@ await observer.ready()
 await observer.dispose()
 ```
 
-A function can hand its own events to the observers they belong to (owner
-delivery), and react when one is added or removed:
+### Hosting Observable Functions
+
+The worker that hosts a function decides what observing it means with three
+hooks, each overriding a default:
+
+| Hook                                       | Default                                                         |
+| ------------------------------------------ | --------------------------------------------------------------- |
+| `onObserverAdded(obs)`                     | accept the observer                                             |
+| `onObserverRemoved(obs)`                   | stop delivering to it and forget it                             |
+| `onObserverDeliver(call, observers, next)` | after each call, run every observer whose filters match the call |
+
+`onObserverAdded` and `onObserverRemoved` can be set for every function the
+worker hosts, or for one function by id or on its `FunctionRef`.
+`onObserverDeliver` is set per function. Each method returns its receiver, and
+`null` removes a hook.
+
+An event source returns the event it is called with. `args_format` describes
+the `args` its observers pass, and `private: true` lets only this worker call
+it:
 
 ```javascript
-const schedules = new Map() // expression -> observers
+import { keyed, ObserveRejection } from 'iii-sdk'
 
-iii.registerFunction('cron::on-tick', async (tick) => {
-  for (const obs of schedules.get(tick.expression) ?? []) obs.emit(tick)
-}, {
-  observe: {
-    delivery: 'owner',
+iii
+  .registerFunction('cron::on-tick', (tick) => tick, {
     args_format: { type: 'object', required: ['expression'], properties: { expression: { type: 'string' } } },
-    onObserverAdded(obs) {
-      if (!schedules.has(obs.args.expression)) schedules.set(obs.args.expression, new Set())
-      schedules.get(obs.args.expression).add(obs)
-    },
-    onObserverRemoved(obs) {
-      schedules.get(obs.args.expression)?.delete(obs)
-    },
-  },
-})
+    private: true,
+  })
+  .onObserverAdded((obs) => {
+    if (!isValidCron(obs.args.expression)) throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'bad expression')
+    scheduler.retain(obs.args.expression, (scheduled_time) =>
+      iii.call({ function_id: 'cron::on-tick', payload: { expression: obs.args.expression, scheduled_time } }))
+  })
+  .onObserverRemoved((obs) => scheduler.release(obs.args.expression))
+  // each tick reaches the observers of its expression
+  .onObserverDeliver(keyed({ observer: (obs) => obs.args.expression, call: (call) => call.input.expression }))
+
+// a consumer
+iii.observe({ function_id: 'cron::on-tick', args: { expression: '0 0 9 * * * *' } }, 'reports::daily')
 ```
 
-### Trigger APIs (deprecated)
+A deliver hook can call targets itself, and what it returns is what the
+function's caller gets back:
 
-`registerTrigger` and `registerTriggerType` keep working in 0.25 but are
-deprecated: they log a warning once per process. Use `iii.observe(source,
-target)` and `registerFunction(id, handler, { observe })` instead. See the
-[migration guide](https://iii.dev/docs/upgrading/from-0-24-x).
+```javascript
+iii.onObserverDeliver('http::on-request', async (call) => {
+  const route = routes.match(call.input)
+  if (!route) return { status_code: 404 }
+  if (!route.obs.matches(call)) return { status_code: 422 }
+  return iii.call({ observer: route.obs, payload: call.input })
+})
+```
 
 ## Resources
 

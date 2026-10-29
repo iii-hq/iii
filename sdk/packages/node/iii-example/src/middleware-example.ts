@@ -9,7 +9,7 @@ const logger = new Logger(undefined, 'middleware-example')
 
 // Auth middleware: checks for a valid API key in the Authorization header.
 // Returns 401 if missing or invalid, otherwise continues to the next step.
-iii.registerFunction('middleware::auth', async (req) => {
+iii.registerFunction('middleware::auth', async req => {
   const authHeader = req.request?.headers?.authorization
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     logger.warn('Auth middleware rejected request: missing or invalid token')
@@ -26,7 +26,7 @@ iii.registerFunction('middleware::auth', async (req) => {
 })
 
 // Request logger middleware: logs method and path, then continues.
-iii.registerFunction('middleware::request-logger', async (req) => {
+iii.registerFunction('middleware::request-logger', async req => {
   logger.info('Incoming request', {
     method: req.request?.method,
     path: Object.keys(req.request?.path_params ?? {}).length > 0 ? req.request.path_params : 'none',
@@ -45,14 +45,10 @@ iii.registerFunction('api::health', async () => ({
   body: { status: 'ok', timestamp: new Date().toISOString() },
 }))
 
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'api::health',
-  config: {
-    api_path: 'health',
-    http_method: 'GET',
-  },
-})
+iii.observe(
+  { function_id: 'http::on-request', args: { method: 'GET', path: '/health' } },
+  'api::health',
+)
 
 // Protected endpoint: auth + logger middleware
 iii.registerFunction('api::users-list', async () => ({
@@ -65,18 +61,20 @@ iii.registerFunction('api::users-list', async () => ({
   },
 }))
 
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'api::users-list',
-  config: {
-    api_path: 'users',
-    http_method: 'GET',
-    middleware_function_ids: ['middleware::request-logger', 'middleware::auth'],
+iii.observe(
+  {
+    function_id: 'http::on-request',
+    args: {
+      method: 'GET',
+      path: '/users',
+      middleware_function_ids: ['middleware::request-logger', 'middleware::auth'],
+    },
   },
-})
+  'api::users-list',
+)
 
 // Protected endpoint: auth only
-iii.registerFunction('api::users-create', async (req) => {
+iii.registerFunction('api::users-create', async req => {
   const { name, email } = req.body ?? {}
   if (!name || !email) {
     return { status_code: 400, body: { error: 'name and email are required' } }
@@ -86,14 +84,14 @@ iii.registerFunction('api::users-create', async (req) => {
   return { status_code: 201, body: user }
 })
 
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'api::users-create',
-  config: {
-    api_path: 'users',
-    http_method: 'POST',
-    middleware_function_ids: ['middleware::auth'],
+iii.observe(
+  {
+    function_id: 'http::on-request',
+    args: { method: 'POST', path: '/users', middleware_function_ids: ['middleware::auth'] },
   },
-})
+  'api::users-create',
+)
 
-logger.info('Middleware example registered: GET /health (public), GET /users (auth+logger), POST /users (auth)')
+logger.info(
+  'Middleware example registered: GET /health (public), GET /users (auth+logger), POST /users (auth)',
+)

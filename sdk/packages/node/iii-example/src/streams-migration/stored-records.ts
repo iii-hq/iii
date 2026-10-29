@@ -2,12 +2,12 @@
  * Recipe 2 of 3: queryable records with live updates.
  *
  * Replaces: the iii-stream `set` / `get` / `list` functions as a generic KV store, plus
- * binding the deprecated `stream` trigger type (or the Streams WebSocket) to watch it.
+ * observing iii-stream changes (or the Streams WebSocket) to watch it.
  *
  * With: explicit storage owned by the domain worker, `tasks::get` and a paginated
- * `tasks::list`, and a `tasks::changed` trigger type that fires ONLY AFTER the write is
- * committed, carrying `{ id, revision, op }` (notify, then query). The consumer:
- *   1. binds first, then does its initial read (paginated list);
+ * `tasks::list`, and a private `tasks::on-changed` source that the worker calls ONLY AFTER
+ * the write is committed, with `{ id, revision, op }` (notify, then query). The consumer:
+ *   1. observes first, then does its initial read (paginated list);
  *   2. on each notification re-reads the record unless it already has that revision, so
  *      duplicates and out-of-order deliveries are harmless;
  *   3. after a reconnect (or restart), re-queries everything (resync), because
@@ -18,8 +18,7 @@
  *
  * Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
-import { type IIIClient, registerWorker, TriggerAction } from 'iii-sdk'
-import type { TriggerConfig } from 'iii-sdk/trigger'
+import { type IIIClient, keyed, ObserveRejection, registerWorker } from 'iii-sdk'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 const RUN_ID = Math.random().toString(36).slice(2, 8)
@@ -32,12 +31,13 @@ export type Task = {
   updated_at: number
 }
 export type TaskChange = { id: string; revision: number; op: 'upserted' | 'deleted' }
-export type TaskChangedConfig = { id?: string; metadata?: Record<string, unknown> }
+/** An observer's args: watch one task, or every task without `id`. */
+export type TaskChangedArgs = { id?: string }
 type GetResult = { task: Task | null; revision: number }
 type ListResult = { tasks: Task[]; next_cursor?: string }
 
-export const TASK_CHANGED = 'tasks::changed'
-const MAX_BINDINGS = 256
+export const TASK_CHANGED = 'tasks::on-changed'
+const MAX_OBSERVERS = 256
 const MAX_PAGE = 100
 
 // ── Storage ────────────────────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ const MAX_PAGE = 100
 /**
  * DEMO STORAGE: an in-memory Map, so this recipe runs on a bare engine and loses its data
  * when the process exits. In production this is your source of truth: a database, or the
- * `state` worker (`state::set` / `state::get` / `state::list` through `iii.trigger`).
+ * `state` worker (`state::set` / `state::get` / `state::list` through `iii.call`).
  * What matters is the contract: a write returns only once it is committed, every write
  * bumps a per-record revision, and deletes keep a tombstone revision so that revisions
  * never go backwards and a late event can never resurrect a deleted record.
@@ -91,79 +91,51 @@ function createDemoTaskStore() {
   }
 }
 
-// ── Provider: the tasks worker owns storage, queries and the change trigger ───
-
-function validateConfig(raw: unknown): TaskChangedConfig {
-  if (raw === undefined || raw === null) return {}
-  if (typeof raw !== 'object' || Array.isArray(raw))
-    throw new Error(`${TASK_CHANGED}: config must be an object`)
-  const config = raw as Record<string, unknown>
-  for (const key of Object.keys(config)) {
-    if (key !== 'id' && key !== 'metadata')
-      throw new Error(`${TASK_CHANGED}: unknown config key '${key}'`)
-  }
-  if (config.id !== undefined && (typeof config.id !== 'string' || config.id.length === 0)) {
-    throw new Error(`${TASK_CHANGED}: id must be a non-empty string`)
-  }
-  if (
-    config.metadata !== undefined &&
-    (typeof config.metadata !== 'object' || config.metadata === null)
-  ) {
-    throw new Error(`${TASK_CHANGED}: metadata must be an object`)
-  }
-  return config as TaskChangedConfig
-}
+// ── Provider: the tasks worker owns storage, queries and the change source ────
 
 export function startTasksWorker(engineUrl = ENGINE_URL) {
   const iii = registerWorker(engineUrl, { workerName: `tasks-${RUN_ID}`, otel: { enabled: false } })
   const store = createDemoTaskStore()
-  const bindings = new Map<string, TriggerConfig<TaskChangedConfig>>()
 
-  iii.registerTriggerType<TaskChangedConfig>(
-    {
-      id: TASK_CHANGED,
+  // The source: the handler returns the change it is called with, which is what observers
+  // observe. `private`: only this worker calls it. The engine validates observers' args
+  // against `args_format` (INVALID_ARGS); keyed delivery reaches the observers of one task
+  // and those of every task, with one lookup per key.
+  const changed = iii
+    .registerFunction(TASK_CHANGED, (change: TaskChange) => change, {
       description:
-        'Fires after a task write is committed. Config: { id?, metadata? }. Payload: { id, revision, op }. ' +
+        'Called after a task write is committed: { id, revision, op }. Observe it with args { id? }. ' +
         'Notification only: read the record with tasks::get / tasks::list.',
-    },
-    {
-      async registerTrigger(binding) {
-        const config = validateConfig(binding.config)
-        if (!bindings.has(binding.id) && bindings.size >= MAX_BINDINGS) {
-          throw new Error(`${TASK_CHANGED}: binding limit (${MAX_BINDINGS}) reached`)
-        }
-        bindings.set(binding.id, { ...binding, config })
-        console.log(`[tasks] bound ${binding.id} -> ${binding.function_id}`)
+      args_format: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { id: { type: 'string', minLength: 1 } },
       },
-      async unregisterTrigger(binding) {
-        bindings.delete(binding.id)
-        console.log(`[tasks] unbound ${binding.id}`)
-      },
-    },
-  )
-
-  /** Bounded fan-out, fire-and-forget, namespace and metadata preserved (see recipe 1). */
-  async function emit(change: TaskChange): Promise<number> {
-    let delivered = 0
-    for (const binding of Array.from(bindings.values())) {
-      if (binding.config.id !== undefined && binding.config.id !== change.id) continue
-      const metadata = binding.config.metadata ?? binding.metadata
-      try {
-        await iii.trigger({
-          function_id: binding.function_id,
-          namespace: binding.namespace,
-          payload: change,
-          ...(metadata === undefined ? {} : { metadata }),
-          action: TriggerAction.Void(),
-        })
-        delivered++
-      } catch (error) {
-        console.warn(
-          `[tasks] delivery to ${binding.function_id} failed: ${(error as Error).message}`,
+      private: true,
+    })
+    .onObserverAdded(obs => {
+      if (changed.observers().length >= MAX_OBSERVERS) {
+        throw new ObserveRejection(
+          'OBSERVER_LIMIT',
+          `${TASK_CHANGED}: observer limit (${MAX_OBSERVERS}) reached`,
         )
       }
-    }
-    return delivered
+      console.log(`[tasks] observed by ${obs.id} -> ${obs.target}`)
+    })
+    .onObserverRemoved(obs => {
+      console.log(`[tasks] observer ${obs.id} removed`)
+    })
+    .onObserverDeliver(
+      keyed<TaskChange, TaskChange>({
+        observer: obs => (obs.args as TaskChangedArgs).id ?? '*',
+        call: call => [call.input.id, '*'],
+      }),
+    )
+
+  /** Notify: one call of the source; iii delivers it to the matching observers. */
+  async function emit(change: TaskChange): Promise<void> {
+    if (!changed.isObserved({ input: change })) return
+    await iii.call({ function_id: TASK_CHANGED, payload: change })
   }
 
   iii.registerFunction(
@@ -174,7 +146,7 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
       return task
     },
     {
-      description: 'Create or update a task, then fire tasks::changed',
+      description: 'Create or update a task, then notify tasks::on-changed',
       request_format: {
         type: 'object',
         required: ['id'],
@@ -195,7 +167,7 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
       await emit({ id: input.id, revision, op: 'deleted' })
       return { deleted: true, revision }
     },
-    { description: 'Delete a task, then fire tasks::changed' },
+    { description: 'Delete a task, then notify tasks::on-changed' },
   )
 
   // Demo-only failure injection, used by the self-check at the end of main().
@@ -233,7 +205,7 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
   return {
     iii,
     store,
-    bindingCount: () => bindings.size,
+    observerCount: () => changed.observers().length,
     /** Demo only: make the next tasks::get / tasks::list call fail. */
     failNextRead: () => {
       failReads = 1
@@ -278,7 +250,7 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
     let cursor: string | undefined
     let pages = 0
     do {
-      const page = await iii.trigger<unknown, ListResult>({
+      const page = await iii.call<unknown, ListResult>({
         function_id: 'tasks::list',
         payload: { limit: PAGE_SIZE, ...(cursor ? { cursor } : {}) },
       })
@@ -298,7 +270,7 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
 
   async function readOne(id: string): Promise<void> {
     stats.reads++
-    const result = await iii.trigger<unknown, GetResult>({
+    const result = await iii.call<unknown, GetResult>({
       function_id: 'tasks::get',
       payload: { id },
     })
@@ -367,11 +339,11 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
     return null
   })
 
-  // 1. Bind first, so nothing committed after the read below can be missed ...
-  const binding = iii.registerTrigger({ type: TASK_CHANGED, function_id: handlerId, config: {} })
+  // 1. Observe first, so nothing committed after the read below can be missed ...
+  const observer = iii.observe({ function_id: TASK_CHANGED, deliver: 'input' }, handlerId)
 
   // 3. ... and re-query after every reconnect: notifications fired while disconnected are gone.
-  // (getConnectionState() is a local read; the SDK re-binds triggers by itself on reconnect.)
+  // (getConnectionState() is a local read; the SDK replays the observer by itself on reconnect.)
   let watching = false
   let wasConnected = false
   const reconnectWatch = setInterval(() => {
@@ -389,9 +361,10 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
     iii,
     view,
     stats,
-    binding,
-    /** 2. Initial read (call after binding). Also the recovery path. */
+    observer,
+    /** 2. Initial read (call once the observer is active). Also the recovery path. */
     async initialRead() {
+      await observer.ready()
       needsResync = true
       await drain()
       wasConnected = iii.getConnectionState() === 'connected'
@@ -400,9 +373,11 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
     idle: () => draining === null && dirty.size === 0 && !needsResync,
     /** Demo introspection: a retry of a failed read is scheduled. */
     retryPending: () => retryTimer !== undefined,
+    /** Leaves: the observer is disposed (the provider's onObserverRemoved runs), then the worker stops. */
     async stop() {
       clearInterval(reconnectWatch)
       clearTimeout(retryTimer)
+      await observer.dispose()
       await iii.shutdown()
     },
   }
@@ -437,7 +412,7 @@ async function untilCallable(caller: IIIClient, function_id: string, payload: un
   const start = Date.now()
   for (;;) {
     try {
-      return await caller.trigger({ function_id, payload })
+      return await caller.call({ function_id, payload })
     } catch (error) {
       const notYet = String((error as Error).message).includes('function_not_found')
       if (!notYet || Date.now() - start > 5000) throw error
@@ -447,7 +422,7 @@ async function untilCallable(caller: IIIClient, function_id: string, payload: un
 }
 
 const upsert = (caller: IIIClient, payload: { id: string; title?: string; done?: boolean }) =>
-  caller.trigger<unknown, Task>({ function_id: 'tasks::upsert', payload })
+  caller.call<unknown, Task>({ function_id: 'tasks::upsert', payload })
 
 async function main(): Promise<void> {
   console.log(`[demo] engine ${ENGINE_URL}`)
@@ -463,7 +438,7 @@ async function main(): Promise<void> {
       await upsert(tasks.iii, { id, title: `Title of ${id}` })
 
     dashboard = startDashboard('one')
-    await waitFor('binding active', () => tasks.bindingCount() === 1)
+    await waitFor('observer active', () => tasks.observerCount() === 1)
     await dashboard.initialRead()
     check(
       liveRevisions(dashboard.view) === 'task-a@r1,task-b@r1,task-c@r1',
@@ -481,7 +456,7 @@ async function main(): Promise<void> {
     // At-least-once delivery: simulate a duplicate and a late (out-of-order) redelivery.
     const before = dashboard.stats.skipped
     for (const revision of [2, 1]) {
-      await tasks.iii.trigger({
+      await tasks.iii.call({
         function_id: 'dashboard::on-task-changed::one',
         payload: { id: 'task-a', revision, op: 'upserted' } satisfies TaskChange,
       })
@@ -492,23 +467,23 @@ async function main(): Promise<void> {
     )
     check(dashboard.view.get('task-a')?.revision === 2, 'view still at task-a r2')
 
-    // Simulated disconnect: the consumer goes away; the engine unbinds it at the provider.
+    // The consumer goes away: its observer is removed at the provider.
     const keptView = dashboard.view
     await dashboard.stop()
-    await waitFor('provider saw the consumer leave', () => tasks.bindingCount() === 0)
+    await waitFor('provider saw the consumer leave', () => tasks.observerCount() === 0)
 
     // Writes while nobody is listening: these notifications are delivered to no one.
     await upsert(tasks.iii, { id: 'task-b', title: 'Renamed while offline' })
-    await tasks.iii.trigger({ function_id: 'tasks::delete', payload: { id: 'task-c' } })
+    await tasks.iii.call({ function_id: 'tasks::delete', payload: { id: 'task-c' } })
     await upsert(tasks.iii, { id: 'task-d', title: 'Created while offline' })
     check(
       liveRevisions(keptView) === 'task-a@r2,task-b@r1,task-c@r1',
       'cached view is stale after the outage',
     )
 
-    // Reconnect with the cached view: bind again, then resync by re-querying the owner.
+    // Reconnect with the cached view: observe again, then resync by re-querying the owner.
     dashboard = startDashboard('two', keptView)
-    await waitFor('binding active again', () => tasks.bindingCount() === 1)
+    await waitFor('observer active again', () => tasks.observerCount() === 1)
     await dashboard.initialRead()
     const expected = [...tasks.store.snapshot()]
       .map(([id, rev]) => `${id}@r${rev}`)

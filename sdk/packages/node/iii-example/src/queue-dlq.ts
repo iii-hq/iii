@@ -1,5 +1,5 @@
 import type { EnqueueResult } from '@iii-dev/helpers/queue'
-import { Logger, TriggerAction } from 'iii-sdk'
+import { Logger, CallAction } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
@@ -26,10 +26,10 @@ useApi(
   async (req, logger) => {
     logger.info('Enqueuing DLQ demo job', { body: req.body })
 
-    const receipt = await iii.trigger<unknown, EnqueueResult>({
+    const receipt = await iii.call<unknown, EnqueueResult>({
       function_id: 'dlq-demo::process',
       payload: req.body,
-      action: TriggerAction.Enqueue({ queue: 'dlq-demo' }),
+      action: CallAction.Enqueue({ queue: 'dlq-demo' }),
     })
 
     logger.info('DLQ demo job enqueued', { receiptId: receipt.messageReceiptId })
