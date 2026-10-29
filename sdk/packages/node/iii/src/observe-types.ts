@@ -1,10 +1,8 @@
-import type { RegisterFunctionFormat } from './iii-types'
-
 /** What an observer ships to its target. Default `['input', 'output', 'caller']`. */
 export type Capture = 'input' | 'output' | 'error' | 'caller' | 'metadata'
 
 /**
- * An observer's lifecycle: `pending` (no owner yet, waiting for the owner's
+ * An observer's lifecycle: `pending` (no host yet, waiting for the host's
  * ack, or no target yet) → `active` or `error`; `suspended` while its worker
  * or target is away; `disposed` at the end.
  */
@@ -45,7 +43,7 @@ export interface Caller {
 export type CallerInfo = Partial<Omit<Caller, 'parent'>> & { parent?: Partial<Omit<Caller, 'parent'>> }
 
 /**
- * What the target of an auto observer (or of `obs.emit`) receives with
+ * What an observer's target receives when iii delivers with
  * `deliver: 'envelope'` (the default). Fields not in the observer's
  * `capture` are absent.
  */
@@ -71,15 +69,22 @@ export interface ObserveSource {
   function_id: string
   /** Defaults to this worker's namespace (`engine::*` resolves to `default`). */
   namespace?: string
-  /** Owner-delivered functions only: for the owner; validated against its `args_format`. */
+  /**
+   * For the worker that hosts the function: what to set up and which calls
+   * to deliver (a table, a cron expression, a route). The engine validates
+   * them against the function's `args_format`.
+   */
   args?: Record<string, unknown>
-  /** Which events reach the target; `{}` (or absent) = every event. */
+  /** Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. */
   filters?: Filter
-  /** Auto only; default `'success'`. */
+  /** Which outcomes reach the target; default `'success'`. */
   on?: 'success' | 'error' | 'complete'
-  /** Auto and `obs.emit`; default `['input', 'output', 'caller']`. */
+  /** What the envelope carries; default `['input', 'output', 'caller']`. */
   capture?: Capture[]
-  /** Auto and `obs.emit`; default `'envelope'`. */
+  /**
+   * What the target receives when iii delivers: the {@link Observed} envelope
+   * (default), the call's `input`, or its `output`.
+   */
   deliver?: 'envelope' | 'input' | 'output'
 }
 
@@ -122,91 +127,99 @@ export interface ObserverHandle {
   dispose(): Promise<void>
 }
 
-/** The document an observer's filters read (filters.md §1). */
-export type ObserveDoc = {
-  input?: unknown
-  output?: unknown
-  error?: unknown
-  caller?: CallerInfo
-  metadata?: unknown
+/**
+ * One call of a function, as its host delivers it: what the handler was
+ * called with and what it returned (or threw). Observers observe `output`,
+ * the handler's return value.
+ */
+export interface Call<I = unknown, O = unknown> {
+  function_id: string
+  invocation_id: string
+  status: 'success' | 'error'
+  input: I
+  /** The handler's return value: what observers observe. */
+  output?: O
+  /** What the handler threw. */
+  error?: { code: string; message: string; stacktrace?: string }
+  /** Who made the call; absent for a call made outside any handler. */
+  caller?: Caller
+  metadata?: Record<string, unknown>
 }
 
 /**
- * An observer as the function's owner sees it (`onObserverAdded`,
+ * An observer as the worker that hosts its function sees it (the hooks,
  * `FunctionRef.observers()`): its args, filters, target, capture and `on`.
- * Never its metadata, policy or the observing worker.
+ * Who observes, the observer's metadata and its policy stay with the engine.
  */
 export interface Observer {
   readonly id: string
-  /** The observed function (the one this worker hosts). */
+  /** The observed function (one this worker hosts). */
   readonly function_id: string
-  /** The observer's args, validated against `args_format` by the engine. */
+  /** The observer's args, validated against the function's `args_format` by the engine. */
   readonly args: Record<string, unknown>
-  /** The observer's filters, normalized; the SDK applies them in `emit` / `call`. */
+  /** The observer's filters, normalized. */
   readonly filters: Filter
   /** The target function id. */
   readonly target: string
-  readonly capture: Capture[]
-  /** Auto only. */
   readonly on: 'success' | 'error' | 'complete'
-  /** Set when the engine's legacy shim created the observer from an old `registerTrigger`. */
-  readonly legacy?: { trigger_type: string; config: unknown }
-  /** Evaluates the observer's filters on a document. */
-  matches(doc: ObserveDoc): boolean
+  readonly capture: Capture[]
   /**
-   * Owner delivery, fire-and-forget: hands `event` to this observer. Returns
-   * `false` and sends nothing when its filters reject the event or the
-   * observer is no longer active (removed or rejected meanwhile). Throws
-   * `NOT_OWNER_DELIVERED` on an auto function.
+   * Whether `call` reaches this observer: its `on` accepts the call's
+   * `status` (absent reads as `'success'`) and its filters match the call.
    */
-  emit(event: unknown): boolean
+  matches(call: Partial<Call>): boolean
   /**
-   * Owner delivery, request/response: invokes the target with `payload` and
-   * resolves with its result. Rejects with `FILTERS_NOT_MATCHED` (nothing is
-   * sent) when the filters reject the payload, and with `OBSERVER_NOT_ACTIVE`
-   * when the observer is no longer active.
+   * Resolves once the SDK has acked the observer. A call through the
+   * observer made after it resolves reaches an active observer, so a provider
+   * sends an observer its initial state from here. Rejects with an
+   * {@link ObserveRejection} when the observer is rejected instead.
    */
-  call<R = unknown>(payload: unknown, opts?: { timeoutMs?: number; metadata?: never }): Promise<R>
+  accepted(): Promise<void>
   /**
    * Late rejection of an active observer (e.g. after a config reload). It
-   * stops receiving events at once, and stays rejected across reconnects
-   * until the engine adds it again.
+   * stops receiving calls at once, its `onObserverRemoved` hooks run, and it
+   * stays rejected across reconnects until the engine adds it again.
    */
   reject(code: string, message: string): void
 }
 
 /**
- * The `observe` option of `registerFunction`: how the function's observers
- * are delivered, and the callbacks that run when one is added or removed.
- *
- * The callbacks of one function run one at a time, in revision order, with
- * one exception: a callback still running after 30 s is treated as failed
- * (`OWNER_TIMEOUT`) and the next one starts, so a hung callback cannot stall
- * its function forever. It may then overlap with the callbacks after it, and
- * if a timed-out `onObserverAdded` completes later, `onObserverRemoved` runs
- * for that observer.
+ * Runs when an observer of a function is added, before the SDK acks it.
+ * Throw to reject the observer: an {@link ObserveRejection} sets the code,
+ * anything else is `OBSERVE_REJECTED`; after 30 s it is rejected with
+ * `OWNER_TIMEOUT`.
  */
-export interface ObserveHooks {
-  /**
-   * `auto` (default): every invocation is offered to every observer.
-   * `owner`: the handler hands each event to the observers it belongs to,
-   * with `obs.emit` / `obs.call`.
-   */
-  delivery?: 'auto' | 'owner'
-  /** Owner only: JSON Schema of the observers' `args` (the engine answers `INVALID_ARGS`). */
-  args_format?: RegisterFunctionFormat
-  /** Accept old `registerTrigger({ type })` calls for this trigger type. */
-  legacy_trigger_type?: string
-  /** Default `true`; `false` refuses every observer (`NOT_OBSERVABLE`). */
-  allow?: boolean
-  /**
-   * Runs once per added observer, before the SDK acks it. Throw to reject it
-   * (an {@link ObserveRejection} sets the code, anything else is
-   * `OBSERVE_REJECTED`); after 30 s it is rejected with `OWNER_TIMEOUT`.
-   */
-  onObserverAdded?(obs: Observer): void | Promise<void>
-  /** Runs once per removed observer. Cannot fail: errors are logged. */
-  onObserverRemoved?(obs: Observer): void | Promise<void>
+export type AddedHook = (obs: Observer) => void | Promise<void>
+
+/** Runs once for every accepted observer when it is removed. An error it throws is logged. */
+export type RemovedHook = (obs: Observer) => void | Promise<void>
+
+/**
+ * iii's delivery for the observers passed: those whose `on` and filters match
+ * `call` reach their targets (each observer at most once per call, however
+ * many times it runs). Resolves to `call.output`, or rejects with its error.
+ */
+export type Next<I = unknown, O = unknown> = (call: Call<I, O>, observers: readonly Observer[]) => Promise<O>
+
+/**
+ * Decides which observers get each call of a function, and what its caller
+ * gets back: what the hook returns (or throws). It receives the call, the
+ * function's active observers when the call started, and `next`, iii's
+ * delivery. It runs inside the function's invocation, so the calls it makes
+ * have that invocation as their caller.
+ */
+export type DeliverHook<I = unknown, O = unknown, R = O> = (
+  call: Call<I, O>,
+  observers: readonly Observer[],
+  next: Next<I, O>,
+) => R | Promise<R>
+
+/** The keys of {@link keyed} delivery: each function returns a key or a list of keys. */
+export interface KeyedSpec<I = unknown, O = unknown> {
+  /** The keys an observer is filed under, computed once when it is accepted. */
+  observer: (obs: Observer) => string | readonly string[]
+  /** The keys a call is delivered to. */
+  call: (call: Call<I, O>) => string | readonly string[]
 }
 
 /**

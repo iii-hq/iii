@@ -2,31 +2,39 @@
  * Constants for the III module.
  */
 
-/**
- * Engine function paths for internal operations.
- *
- * Naming note: `LIST_TRIGGERS` / `INFO_TRIGGERS` cover trigger TYPES
- * (templates). `LIST_REGISTERED_TRIGGERS` / `INFO_REGISTERED_TRIGGERS`
- * cover trigger INSTANCES (subscriber rows). The old
- * `engine::trigger-types::list` builtin has been removed and is now
- * served by `engine::triggers::list`.
- */
+/** Engine function paths for internal operations. */
 export const EngineFunctions = {
   LIST_FUNCTIONS: 'engine::functions::list',
   INFO_FUNCTIONS: 'engine::functions::info',
   LIST_WORKERS: 'engine::workers::list',
   INFO_WORKERS: 'engine::workers::info',
-  LIST_TRIGGERS: 'engine::triggers::list',
-  INFO_TRIGGERS: 'engine::triggers::info',
-  LIST_REGISTERED_TRIGGERS: 'engine::registered-triggers::list',
-  INFO_REGISTERED_TRIGGERS: 'engine::registered-triggers::info',
   REGISTER_WORKER: 'engine::workers::register',
 } as const
 
-/** Engine trigger types */
-export const EngineTriggers = {
-  FUNCTIONS_AVAILABLE: 'engine::functions-available',
-  LOG: 'log',
+/**
+ * The event sources the engine hosts: private functions whose handler
+ * returns the event, observed with `iii.observe(EngineSources.X, target)`.
+ * None takes args; filter on the event (`input`) instead.
+ */
+export const EngineSources = {
+  /** A function was registered or unregistered; each row carries `observer_count`. */
+  FUNCTIONS_CHANGED: 'engine::on-functions-changed',
+  /** A worker connected or left. */
+  WORKERS_CHANGED: 'engine::on-workers-changed',
+  /** An observer changed state: `{ observer_id, function_id, target, state, reason? }`. */
+  OBSERVERS_CHANGED: 'engine::on-observers-changed',
+  /** A log record. */
+  LOG: 'observability::on-log',
+  /** A finished span. */
+  SPAN: 'observability::on-span',
+  /** The engine's configuration was reloaded. */
+  CONFIGURATION_UPDATED: 'configuration::on-updated',
+  /** A stream item changed; filter on `input.stream_name`, `input.group_id`. */
+  STREAM_CHANGED: 'stream::on-changed',
+  /** A client joined a stream group. */
+  STREAM_JOIN: 'stream::on-join',
+  /** A client left a stream group. */
+  STREAM_LEAVE: 'stream::on-leave',
 } as const
 
 /** Log function paths */
