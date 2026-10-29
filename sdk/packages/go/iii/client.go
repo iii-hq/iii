@@ -649,9 +649,9 @@ func logUnsupported(functionID string) {
 }
 
 // reconsiderRegistration follows a deliver hook set or removed for functionID on a
-// connection to an engine without observe.v2: a registered function that now needs it
-// is unregistered (UNSUPPORTED), and one left unregistered that no longer needs it is
-// registered.
+// connection to an engine without observe.v2: setting one on a registered function
+// unregisters it (UNSUPPORTED), and removing the one that kept a function unregistered
+// registers it.
 func (c *Client) reconsiderRegistration(functionID string) {
 	c.mu.Lock()
 	fn, ok := c.functions[functionID]
@@ -1734,8 +1734,8 @@ func outcomeOf(value any, err error) outcome {
 
 // runInvocation runs handler h and then deliver, with the handler's outcome, inside the
 // invocation's span; deliver's outcome is the call's. A handler panic is recovered into
-// an error, so a caller gets an InvocationResult.error instead of a timeout. clone
-// copies a json.RawMessage the handler returns.
+// an error, so a caller gets an InvocationResult.error, not a timeout. clone copies a
+// json.RawMessage the handler returns.
 func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, clone bool, deliver func(ctx context.Context, handler outcome) outcome) outcome {
 	ctx, endSpan := c.startInvocationSpan(ctx, data) // otel_client.go: "execute <fn>" span
 	handler := outcomeOf(callHandler(ctx, h, data))

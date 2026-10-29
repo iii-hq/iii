@@ -966,7 +966,7 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 }
 
 // A Reject made while an added hook is still running wins: the add acks with it
-// instead of activating, and the engine's observerremoved runs the removed hooks to
+// rather than activating, and the engine's observerremoved runs the removed hooks to
 // undo what the added hooks set up.
 func TestRejectDuringOnObserverAddedWins(t *testing.T) {
 	fe := newFakeEngine(t)

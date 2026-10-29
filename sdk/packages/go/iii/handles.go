@@ -56,8 +56,8 @@ func (r *FunctionRef) Unregister() error {
 }
 
 // IsObserved reports whether any observer is active on the function (one load: check
-// it before building an event nobody would receive). False once the handle no longer
-// controls the registration.
+// it before building an event nobody would receive). False for a handle that does not
+// control the function's current registration.
 func (r *FunctionRef) IsObserved() bool {
 	if r == nil || r.observe == nil {
 		return false
@@ -67,8 +67,8 @@ func (r *FunctionRef) IsObserved() bool {
 
 // IsObservedFor reports whether call would reach an observer, as
 // [Client.IsObservedFor] does: on a function delivered by [Keyed], whether an observer
-// is filed under one of the call's keys; otherwise [FunctionRef.IsObserved]. False once
-// the handle no longer controls the registration.
+// is filed under one of the call's keys; otherwise [FunctionRef.IsObserved]. False for
+// a handle that does not control the function's current registration.
 func (r *FunctionRef) IsObservedFor(call *Call) bool {
 	if r == nil || r.observe == nil {
 		return false
@@ -77,7 +77,7 @@ func (r *FunctionRef) IsObservedFor(call *Call) bool {
 }
 
 // Observers returns the active observers of the function, as its host sees them.
-// Empty once the handle no longer controls the registration.
+// Empty for a handle that does not control the function's current registration.
 func (r *FunctionRef) Observers() []*Observer {
 	if r == nil || r.observe == nil {
 		return nil

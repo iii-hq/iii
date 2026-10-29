@@ -164,7 +164,7 @@ func (d *deliveryRun) next(_ context.Context, call *Call, observers []*Observer)
 
 	switch {
 	case late:
-		// the engine no longer holds the call: nothing can be delivered for it
+		// the engine released the call with its answer: nothing can be delivered for it
 		d.f.client.reporter.countDrop(d.f.functionID, dropLateDelivery)
 	case settled && len(out.matched) > 0:
 		// a local call's next after its hook settled is reported on its own

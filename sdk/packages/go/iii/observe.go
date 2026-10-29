@@ -364,7 +364,7 @@ func (c *Client) queueUnobserveLocked(id string, epoch uint64) {
 }
 
 // onWorkerRegistered: the engine said what it supports on this connection. With
-// observe.v2 the functions that need it are registered now, held until this point;
+// observe.v2 the functions that need it, held until WorkerRegistered, are registered;
 // without it they stay unregistered (UNSUPPORTED, logged once each). With observe.v1
 // the observers are replayed (after the functions) and held reports flushed; without
 // it Observe fails with UNSUPPORTED. Hook ids this worker has not registered are

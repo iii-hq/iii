@@ -37,7 +37,7 @@ type DeliverHook func(ctx context.Context, call *Call, observers []*Observer, ne
 // match it and that no earlier next of the same call delivered, without waiting for
 // the targets, and returns the call's outcome: its Output, or its Error as an
 // *[InvocationError]. A call that differs from the handler's is reported as given. The
-// engine drops a delivery to an observer that is no longer active.
+// engine drops a delivery to an observer that is not active.
 type Next func(ctx context.Context, call *Call, observers []*Observer) (any, error)
 
 // Call is one call of a function, as its host sees it in a [DeliverHook], in [Keyed]

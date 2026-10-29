@@ -112,7 +112,7 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...) (*FunctionRef, error)` | Register a function with request/response schemas inferred from the types. |
 | Register function | `client.RegisterFunction(id, handler, opts...) (*FunctionRef, error)` | Register a function the engine can invoke by name. `iii.Identity` returns its input: the handler of an event source. |
 | Register HTTP function | `client.RegisterHTTPFunction(id, iii.HTTPInvocationRef{...}, opts...) (*FunctionRef, error)` | Register a function hosted elsewhere that the engine invokes over HTTP. |
-| Unregister | `ref.Unregister() error` | Remove the function; reconnects no longer register it. |
+| Unregister | `ref.Unregister() error` | Remove the function; later reconnects do not register it. |
 | Read invocation metadata | `iii.MetadataFromContext(ctx) (json.RawMessage, bool)` | Read the optional per-invocation metadata sidecar inside a handler. |
 | Call (await) | `client.Call(ctx, iii.CallRequest{FunctionID, Payload, ...})` | Call a function and wait for the result. `client.Trigger` and `iii.TriggerRequest` are the same under their 0.25 names. |
 | Call (fire-and-forget) | `client.Call(ctx, iii.CallRequest{Action: iii.VoidAction()})` | Call without waiting. |
@@ -284,7 +284,7 @@ charge, err := client.RegisterHTTPFunction("billing::charge", iii.HTTPInvocation
 
 `ref.Unregister()` removes the function the handle refers to (from `RegisterFunction`,
 `RegisterHTTPFunction` or `RegisterFunctionTyped`): the engine is told when the client
-is connected, later reconnects no longer replay the registration, and the function's
+is connected, later reconnects do not replay the registration, and the function's
 observers are released through its removed hooks. The hooks set for its id stay, for a
 later registration of the id.
 
