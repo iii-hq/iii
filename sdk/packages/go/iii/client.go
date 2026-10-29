@@ -586,6 +586,11 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 		observe.setDeliver(deliver)
 	}
 	c.mu.Unlock()
+	// No observer of the function is acked before this call returns: its hook queue
+	// waits for the return.
+	registered := make(chan struct{})
+	defer close(registered)
+	observe.enqueue(func() { <-registered })
 	c.sendFunction(fn)
 	return &FunctionRef{ID: id, client: c, observe: observe}, nil
 }

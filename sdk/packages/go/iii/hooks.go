@@ -153,7 +153,7 @@ func (c *Client) OnObserverAdded(hook AddedHook) *Client {
 // warning naming the function and how many observers were active without it. It
 // returns the client, for chaining.
 func (c *Client) OnObserverAddedFor(functionID string, hook AddedHook) *Client {
-	f := c.setFunctionHook(functionID, func(h *observerHooks) {
+	f := c.setFunctionHook(functionID, func(h *observerHooks, _ *functionObservers) {
 		c.hookGen++
 		h.added, h.addedGen = hook, c.hookGen
 	})
@@ -177,7 +177,7 @@ func (c *Client) OnObserverRemoved(hook RemovedHook) *Client {
 // functionID, before the worker's; nil removes it. It is stored by function id, as
 // [Client.OnObserverAddedFor] is. It returns the client, for chaining.
 func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Client {
-	c.setFunctionHook(functionID, func(h *observerHooks) { h.removed = hook })
+	c.setFunctionHook(functionID, func(h *observerHooks, _ *functionObservers) { h.removed = hook })
 	return c
 }
 
@@ -189,17 +189,19 @@ func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Clie
 // function registered with [Client.RegisterHTTPFunction]: the engine delivers its
 // calls. It returns the client, for chaining.
 func (c *Client) OnObserverDeliverFor(functionID string, hook DeliverHook) *Client {
-	f := c.setFunctionHook(functionID, func(h *observerHooks) { h.deliver = hook })
-	if f != nil {
-		f.setDeliver(hook)
-	}
+	c.setFunctionHook(functionID, func(h *observerHooks, f *functionObservers) {
+		h.deliver = hook
+		if f != nil {
+			f.setDeliver(hook)
+		}
+	})
 	c.reconsiderRegistration(functionID)
 	return c
 }
 
-// setFunctionHook applies set to functionID's hooks, under mu, and returns the
-// function's observe state when it is registered.
-func (c *Client) setFunctionHook(functionID string, set func(*observerHooks)) *functionObservers {
+// setFunctionHook applies set to functionID's hooks, under mu, with the function's
+// observe state when it is registered (nil otherwise), and returns that state.
+func (c *Client) setFunctionHook(functionID string, set func(*observerHooks, *functionObservers)) *functionObservers {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	h := c.functionHooks[functionID]
@@ -207,14 +209,15 @@ func (c *Client) setFunctionHook(functionID string, set func(*observerHooks)) *f
 		h = &observerHooks{}
 		c.functionHooks[functionID] = h
 	}
-	set(h)
+	var f *functionObservers
+	if fn, ok := c.functions[functionID]; ok {
+		f = fn.observe
+	}
+	set(h, f)
 	if h.empty() {
 		delete(c.functionHooks, functionID)
 	}
-	if fn, ok := c.functions[functionID]; ok {
-		return fn.observe
-	}
-	return nil
+	return f
 }
 
 // addedHookGen is the added hook of one level for functionID, and its generation.
@@ -419,9 +422,25 @@ func (x *keyedIndex) lookup(keys []string) []*Observer {
 	x.mu.RLock()
 	defer x.mu.RUnlock()
 	var out []*Observer
+	var seen map[*Observer]bool
 	for _, key := range keys {
-		for _, obs := range x.byKey[key] {
-			if !slices.Contains(out, obs) {
+		bucket := x.byKey[key]
+		if len(bucket) == 0 {
+			continue
+		}
+		if out == nil {
+			out = append([]*Observer(nil), bucket...)
+			continue
+		}
+		if seen == nil {
+			seen = make(map[*Observer]bool, len(out)+len(bucket))
+			for _, obs := range out {
+				seen[obs] = true
+			}
+		}
+		for _, obs := range bucket {
+			if !seen[obs] {
+				seen[obs] = true
 				out = append(out, obs)
 			}
 		}

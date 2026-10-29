@@ -72,6 +72,8 @@ type deliveryRun struct {
 }
 
 func newDeliveryRun(f *functionObservers, call *Call, hooked, routed bool) *deliveryRun {
+	// the deliveries made with the handler's call report it as it was handed over
+	snapshot := *call
 	d := &deliveryRun{
 		f:         f,
 		call:      call,
@@ -79,7 +81,7 @@ func newDeliveryRun(f *functionObservers, call *Call, hooked, routed bool) *deli
 		routed:    routed,
 		namespace: f.currentNamespace(),
 		sent:      map[string]bool{},
-		unchanged: delivered{call: call},
+		unchanged: delivered{call: &snapshot},
 	}
 	if hooked {
 		d.origInput, d.origOutput, d.origMetadata, d.origStatus = call.Input, call.Output, call.Metadata, call.Status
@@ -167,7 +169,7 @@ func (d *deliveryRun) next(_ context.Context, call *Call, observers []*Observer)
 	case settled && len(out.matched) > 0:
 		// a local call's next after its hook settled is reported on its own
 		if unchanged {
-			out.call = d.call
+			out.call = d.unchanged.call
 		}
 		d.f.client.reporter.push(d.reportInit(out))
 	}
