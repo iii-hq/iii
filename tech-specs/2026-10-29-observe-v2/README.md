@@ -14,7 +14,8 @@ status: draft
 > ([`filters.md`](../2026-10-13-observe/filters.md)), observer lifecycle,
 > policy, loop guard and local dispatch. Where this document says nothing,
 > the 0.25 design applies. Triggers are removed (§11), and `call` is how a
-> function is invoked (§3.1).
+> function is invoked (§3.1). Implementation decisions are in
+> [`decisions.md`](decisions.md).
 
 ## 1. The model
 
@@ -379,6 +380,7 @@ interface Observer {
   readonly on: 'success' | 'error' | 'complete'
   readonly capture: Capture[]
   matches(call: Partial<Call>): boolean       // `on` and filters
+  accepted(): Promise<void>                   // resolves once the SDK has acked the observer
   reject(code: string, message: string): void // late rejection
 }
 
@@ -386,6 +388,10 @@ class ObserveRejection extends Error {        // thrown by onObserverAdded to re
   constructor(readonly code: string, message: string)
 }
 ```
+
+`accepted()` lets a provider send an observer its initial state: a call
+through the observer made after it resolves reaches an active observer, since
+the engine handles a connection's frames in order.
 
 An observer is a record of what was asked for. The worker sees the fields
 above; who observes, the observer's metadata and its policy stay with the
@@ -560,10 +566,11 @@ The worker that hosts a function delivers its calls:
   observer's stored target.
 
 **A handler that returns its input.** When the handler's return value is its
-input (the same value, as for every event source), a report item or an
-`invocationresult` carries the value once and sets `"output_is_input": true`;
-the engine fills `output` from `input`. Event sources send each event once,
-whatever the observers capture.
+input (the same value, as for every event source), an `invocationsobserved`
+item carries the value once and sets `"output_is_input": true`; the engine
+fills `output` from `input`. Event sources send each event once, whatever the
+observers capture. A routed call needs no flag: the engine takes `output` from
+the `invocationresult` it already receives.
 
 The engine evaluates filters itself for calls to hosts without `observe.v2`
 and for engine-hosted sources.
@@ -803,6 +810,8 @@ Trigger types and the functions that replace them:
 | `log`, `trace` | `observability::on-log`, `observability::on-span` | none |
 | `configuration` | `configuration::on-updated` | none |
 | `engine::functions-available`, `engine::workers-available` | `engine::on-functions-changed`, `engine::on-workers-changed` | none |
+| `stream`, `stream:join`, `stream:leave` | `stream::on-changed`, `stream::on-join`, `stream::on-leave` | none; filters on `input.stream_name`, `input.group_id` |
+| — | `engine::on-observers-changed` (new) | none |
 
 Every other trigger type `T` of a worker `W` becomes `W::on-<event>`, listed
 in that worker's README.
