@@ -53,6 +53,33 @@
       "observe_depth": 1
     },
     {
+      "function_id": "orders::create",
+      "namespace": "default",
+      "invocation_id": "4b6d8f0a-2c4e-4a6c-8e0a-2c4e6a8c0e1f",
+      "matched": [
+        "8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70"
+      ],
+      "status": "success",
+      "input": {
+        "sku": "A-1",
+        "qty": 2
+      },
+      "output": {
+        "order_id": "ord_1003",
+        "total": 1250
+      },
+      "caller": {
+        "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
+        "worker_name": "checkout",
+        "function_id": "checkout::confirm",
+        "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
+      },
+      "started_at_ms": 1760350000150,
+      "duration_ms": 3.25,
+      "observe_depth": 0,
+      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    {
       "function_id": "database::on-row-changed",
       "namespace": "default",
       "invocation_id": "c3f5a7b9-0d2e-4f4a-8b6c-7d9e1f3a5b7c",
@@ -77,6 +104,7 @@
         "truncated": false,
         "at": 1760350000201
       },
+      "output_is_input": true,
       "caller": {
         "worker_name": "database",
         "function_id": "database::execute",

@@ -13,8 +13,5 @@
       }
     }
   },
-  "observe": {
-    "delivery": "auto",
-    "allow": false
-  }
+  "observable": false
 }

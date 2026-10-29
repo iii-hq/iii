@@ -35,8 +35,6 @@
           "type": "string"
         }
       }
-    },
-    "legacy_trigger_type": "cron",
-    "allow": true
+    }
   }
 }

@@ -1,0 +1,7 @@
+{
+  "type": "registrationrejected",
+  "code": "UNSUPPORTED",
+  "namespace": "default",
+  "function_id": "cron::on-tick",
+  "owner_worker_id": ""
+}
