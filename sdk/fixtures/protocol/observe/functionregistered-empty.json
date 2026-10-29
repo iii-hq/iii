@@ -1,6 +1,6 @@
 {
   "type": "functionregistered",
-  "id": "orders::archive",
+  "id": "ledger::post-entry",
   "namespace": "default",
   "revision": 1,
   "local_dispatch": false,

@@ -29,6 +29,9 @@
         "message": "Route 'GET /users/:uid' conflicts with 'GET /users/:id'"
       }
     },
+    "caller": {
+      "worker_name": "iii-engine"
+    },
     "started_at_ms": 1760350000412,
     "duration_ms": 0.018
   },
