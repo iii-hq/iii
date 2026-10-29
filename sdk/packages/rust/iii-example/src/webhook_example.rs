@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use iii_sdk::runtime::FunctionInfo;
 use iii_sdk::{
-    Call, CallRequest, Error, IIIClient, Next, ObserveRejection, Observer, RegisterFunction, Source,
+    Call, CallRequest, Error, IIIClient, Match, ObserveRejection, Observer, RegisterFunction,
+    Source,
 };
 use serde_json::json;
 
@@ -63,17 +64,23 @@ pub fn setup(iii: &IIIClient) {
             }
         }
     })
+    // Each webhook goes to the observer of its URL.
+    .on_observer_match_for(
+        "example::on-webhook",
+        Match::keys(
+            |obs| obs.args_value()["url"].as_str().into(),
+            |call| call.input["url"].as_str().into(),
+        ),
+    )
     // The webhook's response is the result of its URL's handler, called
     // through the observer. The observer's filters decide whether it gets the
     // webhook at all.
     .on_observer_deliver_for("example::on-webhook", {
         let iii = iii.clone();
-        move |call: Call, observers: Vec<Observer>, _next: Next| {
+        move |call: Call, observers: Vec<Observer>| {
             let iii = iii.clone();
             async move {
-                let url = call.input["url"].clone();
-                let Some(route) = observers.iter().find(|obs| obs.args_value()["url"] == url)
-                else {
+                let Some(route) = observers.first() else {
                     return Ok(json!({ "status_code": 404 }));
                 };
                 if !route.matches(&call) {

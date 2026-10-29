@@ -6,17 +6,17 @@
 //! create the same `execute <fn>` span, set the same current invocation and
 //! produce the same error shape.
 //!
-//! Then the host delivers the call: iii's delivery evaluates the observers'
-//! `on` and compiled filters and reports only the matches, or the function's
-//! deliver hook decides, through [`Next`]. A local call's matches join the
-//! batched `invocationsobserved` reports; a routed call's ride its
-//! `invocationresult` (`observed`), or go out as report items just ahead of
-//! it. A call with no observer and no deliver hook costs one atomic load and
-//! puts nothing on the wire.
+//! Then the host delivers the call. Its observers are matched (all of them,
+//! or those the function's match hook says want it), and iii's delivery
+//! evaluates their `on` and compiled filters and reports only the matches; or
+//! the function's deliver hook delivers the call itself. A local call's
+//! matches join the batched `invocationsobserved` reports; a routed call's
+//! ride its `invocationresult` (`observed`). A call with no observer and no
+//! deliver hook costs one atomic load and puts nothing on the wire.
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -28,10 +28,9 @@ use serde_json::{Value, json, value::to_raw_value};
 use crate::{
     context::{Frame, InvocationCtx, local_depth, scope_frame, with_current},
     error::Error,
-    hooks::{Call, DeliverHook, Next, same_json},
+    hooks::{Call, DeliverHook, same_json},
     iii::{
-        DEFAULT_TIMEOUT_MS, IIIClient, MutexExt, PreparedEnvelope, inject_trace_headers, now_ms,
-        parent_of,
+        DEFAULT_TIMEOUT_MS, IIIClient, PreparedEnvelope, inject_trace_headers, now_ms, parent_of,
     },
     observable::{DocParts, FunctionEntry, Observer, panic_message},
     observe::ObservedError,
@@ -247,8 +246,7 @@ pub(crate) fn error_body(error: Error, stacktrace: Option<String>) -> ErrorBody 
 pub(crate) enum Route {
     /// A local call: its matches are reported.
     Local,
-    /// A call routed by an `observe.v2` engine: its matches ride the answer
-    /// or go out just ahead of it.
+    /// A call routed by an `observe.v2` engine: its matches ride the answer.
     Routed,
     /// A call routed by an engine that evaluates its observers itself.
     Engine,
@@ -269,10 +267,8 @@ pub(crate) struct Hosted {
 pub(crate) struct Answer {
     /// What the caller gets: the handler's outcome, or its deliver hook's.
     pub result: Result<Value, ErrorBody>,
-    /// A routed call's matches that ride its `invocationresult`.
+    /// A routed call's matches, which ride its `invocationresult`.
     pub observed: Vec<String>,
-    /// A routed call's report items, sent just ahead of its answer.
-    pub items: Vec<PendingItem>,
     /// The `execute <fn>` span's context, for the answer's trace headers.
     pub otel_cx: OtelContext,
 }
@@ -283,14 +279,11 @@ async fn run_deliver_hook(
     hook: Arc<dyn DeliverHook>,
     call: Call,
     observers: Vec<Observer>,
-    next: Next,
     frame: Arc<Frame>,
     otel_cx: &OtelContext,
 ) -> Result<Value, Error> {
     use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
-    let run = scope_frame(frame, async move {
-        hook.on_deliver(call, observers, next).await
-    });
+    let run = scope_frame(frame, async move { hook.on_deliver(call, observers).await });
     AssertUnwindSafe(run.with_context(otel_cx.clone()))
         .catch_unwind()
         .await
@@ -310,7 +303,7 @@ fn observed_error(body: &ErrorBody) -> ObservedError {
 }
 
 /// A call as a filter and a report see it, borrowed.
-pub(crate) struct CallView<'a> {
+struct CallView<'a> {
     input: Option<&'a Value>,
     output: Option<&'a Value>,
     error: Option<&'a ObservedError>,
@@ -334,201 +327,83 @@ impl<'a> CallView<'a> {
 }
 
 /// What every report item of one call shares.
-struct ReportCtx {
-    invocation_id: String,
+struct ReportCtx<'a> {
+    entry: &'a FunctionEntry,
+    invocation: &'a InvocationCtx,
     started_at_ms: u64,
     duration_ms: f64,
-    observe_depth: u32,
-    traceparent: Option<String>,
-    baggage: Option<String>,
 }
 
-/// The delivery of one call: what its `next` calls delivered, until its
-/// deliver hook settles.
-pub(crate) struct Delivery {
-    iii: IIIClient,
-    entry: Arc<FunctionEntry>,
-    report: ReportCtx,
-    /// A routed call: the matches of the handler's call ride the answer.
-    routed: bool,
-    /// The handler's call, to tell a `next` call given it unchanged.
-    original: Option<Call>,
-    state: Mutex<DeliveryState>,
-}
-
-#[derive(Default)]
-struct DeliveryState {
-    /// Observers delivered so far: each at most once per call.
-    delivered: Vec<String>,
-    /// Matches of `next` calls given the handler's call unchanged.
-    pooled: Vec<String>,
-    pooled_mask: CaptureMask,
-    /// One item per `next` call given a changed call.
-    items: Vec<PendingItem>,
-    settled: bool,
-}
-
-impl Delivery {
-    /// The observers of this function among `observers` that are active,
-    /// accept the call's status and whose filters match it, less those
-    /// already delivered, which it records.
-    fn select(
-        &self,
-        view: &CallView<'_>,
-        observers: &[Observer],
-        delivered: &mut Vec<String>,
-    ) -> (Vec<String>, CaptureMask) {
-        let candidates = || {
-            observers.iter().filter(|obs| {
-                obs.function_id() == self.entry.id && obs.is_active() && obs.accepts(view.success)
-            })
-        };
-        let mut roots = Roots::default();
-        for obs in candidates() {
-            let read = obs.filter().roots();
-            roots.error |= read.error;
-            roots.caller |= read.caller;
-        }
-        let parts = DocParts::of(roots, view.error, view.caller);
-        let doc = parts.doc(view.input, view.output, view.metadata);
-        let mut matched = Vec::new();
-        let mut mask = CaptureMask::default();
-        for obs in candidates() {
-            if delivered.iter().any(|id| id == obs.id()) || !obs.filter().matches(&doc) {
-                continue;
-            }
-            delivered.push(obs.id().to_string());
+/// The observers of the function among `observers` that are active, accept
+/// the call's status and whose filters match it.
+fn select(
+    function_id: &str,
+    view: &CallView<'_>,
+    observers: &[Observer],
+) -> (Vec<String>, CaptureMask) {
+    let candidates = || {
+        observers.iter().filter(|obs| {
+            obs.function_id() == function_id && obs.is_active() && obs.accepts(view.success)
+        })
+    };
+    let mut roots = Roots::default();
+    for obs in candidates() {
+        let read = obs.filter().roots();
+        roots.error |= read.error;
+        roots.caller |= read.caller;
+    }
+    let parts = DocParts::of(roots, view.error, view.caller);
+    let doc = parts.doc(view.input, view.output, view.metadata);
+    let mut matched = Vec::new();
+    let mut mask = CaptureMask::default();
+    for obs in candidates() {
+        if obs.filter().matches(&doc) {
             matched.push(obs.id().to_string());
             mask = mask.union(obs.mask());
         }
-        (matched, mask)
     }
+    (matched, mask)
+}
 
-    /// iii's delivery of the handler's call to `observers`: a routed call's
-    /// matches ride its answer, a local call's are reported.
-    fn deliver_unchanged(
-        &self,
-        view: &CallView<'_>,
-        observers: &[Observer],
-    ) -> (Vec<String>, Vec<PendingItem>) {
-        let (matched, mask) = self.select(view, observers, &mut Vec::new());
-        if matched.is_empty() || self.routed {
-            return (matched, Vec::new());
-        }
-        self.iii.reporter().push(self.item(view, matched, mask));
-        (Vec::new(), Vec::new())
-    }
-
-    /// One `next` call: see [`Next::run`].
-    pub(crate) fn run(&self, call: &Call, observers: &[Observer]) -> Result<Value, Error> {
-        let unchanged = self
-            .original
-            .as_ref()
-            .is_some_and(|original| original.same_as(call));
-        let view = CallView::of(call);
-        let mut state = self.state.lock_or_recover();
-        if state.settled && self.routed {
-            drop(state);
-            // Its answer went out: nothing more is delivered for it.
-            self.iii
-                .reporter()
-                .count_drop(&self.entry.id, observe_codes::LATE_DELIVERY);
-            return call.result();
-        }
-        let (matched, mask) = self.select(&view, observers, &mut state.delivered);
-        if !matched.is_empty() {
-            if state.settled {
-                let item = self.item(&view, matched, mask);
-                drop(state);
-                self.iii.reporter().push(item);
-            } else if unchanged {
-                state.pooled.extend(matched);
-                state.pooled_mask = state.pooled_mask.union(mask);
-            } else {
-                let item = self.item(&view, matched, mask);
-                state.items.push(item);
-            }
-        }
-        call.result()
-    }
-
-    /// The deliver hook settled with `answer`. A routed call's pooled
-    /// matches ride the answer when it is the handler's own outcome, and go
-    /// in an item carrying the handler's call otherwise. A local call's
-    /// items are reported; a routed call's are returned, to go out ahead of
-    /// its answer.
-    fn settle(&self, answer: &Result<Value, ErrorBody>) -> (Vec<String>, Vec<PendingItem>) {
-        let mut state = self.state.lock_or_recover();
-        state.settled = true;
-        let pooled = std::mem::take(&mut state.pooled);
-        let pooled_mask = state.pooled_mask;
-        let mut items = std::mem::take(&mut state.items);
-        drop(state);
-        let mut observed = Vec::new();
-        if let Some(original) = self.original.as_ref().filter(|_| !pooled.is_empty()) {
-            if self.routed && Self::is_own_outcome(original, answer) {
-                observed = pooled;
-            } else {
-                items.push(self.item(&CallView::of(original), pooled, pooled_mask));
-            }
-        }
-        if self.routed {
-            return (observed, items);
-        }
-        for item in items {
-            self.iii.reporter().push(item);
-        }
-        (Vec::new(), Vec::new())
-    }
-
-    /// Whether `answer` is the handler's own outcome: its output, or the
-    /// error it threw.
-    fn is_own_outcome(original: &Call, answer: &Result<Value, ErrorBody>) -> bool {
-        match (answer, &original.error) {
-            (Ok(value), None) => original
-                .output
-                .as_ref()
-                .is_some_and(|output| same_json(output, value)),
-            (Err(body), Some(error)) => body.code == error.code && body.message == error.message,
-            _ => false,
-        }
-    }
-
-    /// A report item: the parts of the call `mask` captures. An item that
-    /// carries both the input and the output of a handler that returned its
-    /// input carries the value once (`output_is_input`).
-    fn item(&self, view: &CallView<'_>, matched: Vec<String>, mask: CaptureMask) -> PendingItem {
-        let raw = |value: &Value| to_raw_value(value).ok();
-        let input = view.input.filter(|_| mask.input);
-        let output = view.output.filter(|_| mask.output);
-        let output_is_input = matches!((input, output), (Some(i), Some(o)) if same_json(i, o));
-        PendingItem {
-            function_id: self.entry.id.clone(),
-            namespace: self.entry.namespace().map(|ns| ns.to_string()),
-            invocation_id: self.report.invocation_id.clone(),
-            matched,
-            status: if view.success {
-                InvocationStatus::Success
-            } else {
-                InvocationStatus::Error
-            },
-            input: input.and_then(raw),
-            output: output.filter(|_| !output_is_input).and_then(raw),
-            error: view
-                .error
-                .filter(|_| mask.error)
-                .and_then(|error| to_raw_value(error).ok()),
-            caller: view.caller.filter(|_| mask.caller).and_then(report_caller),
-            metadata: view.metadata.filter(|_| mask.metadata).and_then(raw),
-            started_at_ms: self.report.started_at_ms,
-            duration_ms: self.report.duration_ms,
-            observe_depth: self.report.observe_depth,
-            traceparent: self.report.traceparent.clone(),
-            baggage: self.report.baggage.clone(),
-            mask,
-            output_is_input,
-            seq: 0,
-        }
+/// A report item: the parts of the call `mask` captures. An item that
+/// carries both the input and the output of a handler that returned its
+/// input carries the value once (`output_is_input`).
+fn item(
+    report: &ReportCtx<'_>,
+    view: &CallView<'_>,
+    matched: Vec<String>,
+    mask: CaptureMask,
+) -> PendingItem {
+    let raw = |value: &Value| to_raw_value(value).ok();
+    let input = view.input.filter(|_| mask.input);
+    let output = view.output.filter(|_| mask.output);
+    let output_is_input = matches!((input, output), (Some(i), Some(o)) if same_json(i, o));
+    PendingItem {
+        function_id: report.entry.id.clone(),
+        namespace: report.entry.namespace().map(|ns| ns.to_string()),
+        invocation_id: report.invocation.invocation_id.clone(),
+        matched,
+        status: if view.success {
+            InvocationStatus::Success
+        } else {
+            InvocationStatus::Error
+        },
+        input: input.and_then(raw),
+        output: output.filter(|_| !output_is_input).and_then(raw),
+        error: view
+            .error
+            .filter(|_| mask.error)
+            .and_then(|error| to_raw_value(error).ok()),
+        caller: view.caller.filter(|_| mask.caller).and_then(report_caller),
+        metadata: view.metadata.filter(|_| mask.metadata).and_then(raw),
+        started_at_ms: report.started_at_ms,
+        duration_ms: report.duration_ms,
+        observe_depth: report.invocation.observe_depth,
+        traceparent: report.invocation.traceparent.clone(),
+        baggage: report.invocation.baggage.clone(),
+        mask,
+        output_is_input,
+        seq: 0,
     }
 }
 
@@ -695,17 +570,20 @@ impl IIIClient {
                     .result
                     .map_err(|error| error_body(error, executed.stacktrace)),
                 observed: Vec::new(),
-                items: Vec::new(),
                 otel_cx: executed.otel_cx,
             };
         }
 
         let hook = entry.deliver_hook();
+        let matcher = entry.matcher();
         let snapshot = entry.compiled();
-        // What a filter reads, what a report carries and what a deliver hook
-        // gets: only that is kept of the input, which the handler owns.
-        let keep_input =
-            hook.is_some() || snapshot.roots.input || (local && snapshot.capture.input);
+        // What a filter reads, what a report carries and what a match or
+        // deliver hook gets: only that is kept of the input, which the handler
+        // owns.
+        let keep_input = hook.is_some()
+            || matcher.is_some()
+            || snapshot.roots.input
+            || (local && snapshot.capture.input);
         let input = keep_input.then(|| payload.clone());
         let started_at_ms = now_ms();
         let started = Instant::now();
@@ -722,24 +600,16 @@ impl IIIClient {
         }
         let result = result.map_err(|error| error_body(error, stacktrace));
         let invocation = frame.invocation();
-        let delivery = Delivery {
-            iii: self.clone(),
-            entry: entry.clone(),
-            report: ReportCtx {
-                invocation_id: invocation.invocation_id.clone(),
-                started_at_ms,
-                duration_ms: elapsed.as_secs_f64() * 1000.0,
-                observe_depth: invocation.observe_depth,
-                traceparent: invocation.traceparent.clone(),
-                baggage: invocation.baggage.clone(),
-            },
-            routed: !local,
-            original: None,
-            state: Mutex::new(DeliveryState::default()),
+        let report = ReportCtx {
+            entry: &entry,
+            invocation,
+            started_at_ms,
+            duration_ms: elapsed.as_secs_f64() * 1000.0,
         };
 
-        let Some(hook) = hook else {
-            // iii's delivery: every active observer, the handler's call.
+        if hook.is_none() && matcher.is_none() {
+            // iii's delivery to every active observer: the call's parts are
+            // read in place.
             let error = result.as_ref().err().map(observed_error);
             let view = CallView {
                 input: input.as_ref(),
@@ -749,14 +619,13 @@ impl IIIClient {
                 metadata: invocation.metadata.as_ref(),
                 success: result.is_ok(),
             };
-            let (observed, items) = delivery.deliver_unchanged(&view, &snapshot.observers);
+            let observed = self.deliver(&report, &view, &snapshot.observers, local);
             return Answer {
                 result,
                 observed,
-                items,
                 otel_cx,
             };
-        };
+        }
 
         let (output, handler_error) = match result {
             Ok(output) => (Some(output), None),
@@ -776,12 +645,18 @@ impl IIIClient {
             caller: invocation.caller.clone(),
             metadata: invocation.metadata.clone(),
         };
+        let matched: Vec<Observer> = match &matcher {
+            Some(matcher) => matcher.matching(&entry.id, &snapshot.observers, &call),
+            None => snapshot
+                .observers
+                .iter()
+                .filter(|obs| obs.is_active())
+                .cloned()
+                .collect(),
+        };
 
-        if let Some(keyed) = hook.as_keyed() {
-            // A keyed index: the observers filed under the call's keys get
-            // the handler's call, as from iii's delivery.
-            let chosen = keyed.observers_for(&call);
-            let (observed, items) = delivery.deliver_unchanged(&CallView::of(&call), &chosen);
+        let Some(hook) = hook else {
+            let observed = self.deliver(&report, &CallView::of(&call), &matched, local);
             let result = match handler_error {
                 Some(body) => Err(body),
                 None => Ok(call.output.take().unwrap_or(Value::Null)),
@@ -789,28 +664,13 @@ impl IIIClient {
             return Answer {
                 result,
                 observed,
-                items,
                 otel_cx,
             };
-        }
-
-        // The hook's own copy, when what `next` delivers is compared with
-        // the handler's call.
-        let observers: Vec<Observer> = snapshot
-            .observers
-            .iter()
-            .filter(|obs| obs.is_active())
-            .cloned()
-            .collect();
-        let delivery = Arc::new(Delivery {
-            original: (!observers.is_empty()).then(|| call.clone()),
-            ..delivery
-        });
-        let next = Next {
-            delivery: delivery.clone(),
         };
-        let answer = run_deliver_hook(hook, call, observers, next, frame.clone(), &otel_cx).await;
-        let answer = answer.map_err(|error| match (&handler_error, &error) {
+
+        // The hook delivers the call itself: iii delivers nothing for it.
+        let answer = run_deliver_hook(hook, call, matched, frame.clone(), &otel_cx).await;
+        let result = answer.map_err(|error| match (&handler_error, &error) {
             // the handler's own error, rethrown: its body, stacktrace included
             (Some(body), Error::Remote { code, message, .. })
                 if body.code == *code && body.message == *message =>
@@ -819,13 +679,29 @@ impl IIIClient {
             }
             _ => error_body(error, None),
         });
-        let (observed, items) = delivery.settle(&answer);
         Answer {
-            result: answer,
-            observed,
-            items,
+            result,
+            observed: Vec::new(),
             otel_cx,
         }
+    }
+
+    /// iii's delivery of a call to `observers`: those whose `on` and filters
+    /// match it. A routed call's matches ride its answer (returned); a local
+    /// call's are reported.
+    fn deliver(
+        &self,
+        report: &ReportCtx<'_>,
+        view: &CallView<'_>,
+        observers: &[Observer],
+        local: bool,
+    ) -> Vec<String> {
+        let (matched, mask) = select(&report.entry.id, view, observers);
+        if matched.is_empty() || !local {
+            return matched;
+        }
+        self.reporter().push(item(report, view, matched, mask));
+        Vec::new()
     }
 
     /// Sends what is due from the report buffer: items of functions the
@@ -858,30 +734,6 @@ impl IIIClient {
                 tracing::debug!(error = %error, "report frame not sent");
                 self.reporter()
                     .count_items(&frame.functions, observe_codes::INACTIVE);
-            }
-        }
-    }
-
-    /// Sends the report items of a routed call that arrived on connection
-    /// `epoch`, ahead of its answer and without waiting for a batch. Items
-    /// whose connection closed meanwhile count as `DISCONNECTED`.
-    pub(crate) fn send_routed_items(&self, items: Vec<PendingItem>, epoch: u64) {
-        if items.is_empty() {
-            return;
-        }
-        if epoch != self.connection_epoch() || !self.is_connected() {
-            let functions: Vec<String> = items.into_iter().map(|item| item.function_id).collect();
-            self.reporter()
-                .count_items(&functions, observe_codes::DISCONNECTED);
-            return;
-        }
-        for (json, functions) in self.reporter().frames_of(items, self.engine_observes_v2()) {
-            let envelope = PreparedEnvelope::from_json(json, None, None)
-                .observe_family()
-                .routed_reports(functions.clone());
-            if self.send_prepared(envelope).is_err() {
-                self.reporter()
-                    .count_items(&functions, observe_codes::DISCONNECTED);
             }
         }
     }

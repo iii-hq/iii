@@ -7,7 +7,7 @@
 //! is observed with filters.
 
 use iii_sdk::{
-    Error, IIIClient, Keyed, ObserveRejection, Observed, Observer, RegisterFunction, Source,
+    Error, IIIClient, Match, ObserveRejection, Observed, Observer, RegisterFunction, Source,
 };
 use serde_json::json;
 
@@ -36,7 +36,7 @@ pub struct ScheduleFired {
     pub fire_count: u64,
 }
 
-// ── Example 2: a source with an enum in its args, delivered by key ──────
+// ── Example 2: a source with an enum in its args, matched by key ────────
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -110,10 +110,10 @@ pub fn setup(iii: &IIIClient) {
     .on_observer_removed_for("example::on-file-change", |obs: Observer| async move {
         println!("[file-watch] Observer {} stopped watching", obs.id());
     })
-    // each change reaches the observers of its pattern, whatever their number
-    .on_observer_deliver_for(
+    // each change goes to the observers of its pattern, whatever their number
+    .on_observer_match_for(
         "example::on-file-change",
-        Keyed::new(
+        Match::keys(
             |obs| obs.args_value()["pattern"].as_str().into(),
             |call| call.input["pattern"].as_str().into(),
         ),

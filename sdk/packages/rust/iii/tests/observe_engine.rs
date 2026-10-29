@@ -19,7 +19,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, Capture, Dispatch, Error, Filter, IIIClient,
-    InitOptions, Next, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState, On,
+    InitOptions, Match, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState, On,
     RegisterFunction, RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker,
     scope,
 };
@@ -735,8 +735,9 @@ async fn every_local_call_after_ready_is_activated() {
 }
 
 /// A source with args: each observer names a topic, the added hook rejects
-/// one, and the deliver hook hands each event to its topic's observers, or
-/// answers a request through its topic's first observer.
+/// one, and the match hook gives each event to its topic's observers. With
+/// `answer`, a deliver hook answers each request through its topic's first
+/// observer instead.
 #[derive(Clone, Default)]
 struct Topics {
     added: Arc<Mutex<Vec<Value>>>,
@@ -768,24 +769,24 @@ impl RemovedHook for Topics {
     }
 }
 
-async fn topics_host(name: &str, source: &str, topics: &Topics) -> IIIClient {
+async fn topics_host(name: &str, source: &str, topics: &Topics, answer: bool) -> IIIClient {
     let host = client(name).await;
     host.on_observer_added_for(source, topics.clone())
         .on_observer_removed_for(source, topics.clone())
-        .on_observer_deliver_for(source, {
+        .on_observer_match_for(
+            source,
+            Match::keys(
+                |obs| obs.args_value()["topic"].as_str().into(),
+                |call| call.input["topic"].as_str().into(),
+            ),
+        );
+    if answer {
+        host.on_observer_deliver_for(source, {
             let host = host.clone();
-            move |call: Call, observers: Vec<Observer>, next: Next| {
+            move |call: Call, observers: Vec<Observer>| {
                 let host = host.clone();
                 async move {
-                    let topic = call.input["topic"].as_str().unwrap_or_default().to_string();
-                    let chosen: Vec<Observer> = observers
-                        .into_iter()
-                        .filter(|obs| obs.args_value()["topic"] == topic.as_str())
-                        .collect();
-                    if call.input["call"] != json!(true) {
-                        return next.run(&call, &chosen);
-                    }
-                    let obs = chosen.first().ok_or("no route")?;
+                    let obs = observers.first().ok_or("no route")?;
                     if !obs.matches(&call) {
                         return Err(Error::Remote {
                             code: "ROUTE_FILTERED".into(),
@@ -798,6 +799,7 @@ async fn topics_host(name: &str, source: &str, topics: &Topics) -> IIIClient {
                 }
             }
         });
+    }
     host.register_function(
         source,
         RegisterFunction::new(|event: Value| Ok::<_, Error>(event))
@@ -812,7 +814,7 @@ async fn hosts_get_validated_args_route_by_them_and_can_reject() {
     let id = uid();
     let source = format!("it{id}::topics");
     let topics = Topics::default();
-    let host = topics_host(&format!("host-{id}"), &source, &topics).await;
+    let host = topics_host(&format!("host-{id}"), &source, &topics, false).await;
     let observer = client(&format!("observer-{id}")).await;
     let (a, b) = (Inbox::default(), Inbox::default());
     observer.register_function(format!("it{id}::a"), a.function());
@@ -902,7 +904,7 @@ async fn calls_through_an_observer_return_the_targets_result() {
     let id = uid();
     let source = format!("it{id}::requests");
     let topics = Topics::default();
-    let host = topics_host(&format!("http-{id}"), &source, &topics).await;
+    let host = topics_host(&format!("http-{id}"), &source, &topics, true).await;
     let users = client(&format!("users-{id}")).await;
     let handler = format!("it{id}::get-user");
     users.register_function(
@@ -927,7 +929,7 @@ async fn calls_through_an_observer_return_the_targets_result() {
     let res = host
         .call(call_req(
             &source,
-            json!({ "topic": "users", "call": true, "tenant": "acme", "path": "/users/42" }),
+            json!({ "topic": "users", "tenant": "acme", "path": "/users/42" }),
         ))
         .await
         .unwrap();
@@ -942,7 +944,7 @@ async fn calls_through_an_observer_return_the_targets_result() {
     let err = host
         .call(call_req(
             &source,
-            json!({ "topic": "users", "call": true, "tenant": "other" }),
+            json!({ "topic": "users", "tenant": "other" }),
         ))
         .await
         .unwrap_err();

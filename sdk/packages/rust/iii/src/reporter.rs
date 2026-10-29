@@ -13,9 +13,6 @@
 //!   dropped come back as items; one whose write failed is not resent (it may
 //!   have arrived: reports are at-most-once) and counts as `INACTIVE`.
 //!
-//! A routed call's items skip the buffer: they go out at once, just ahead of
-//! the call's answer ([`Reporter::frames_of`]).
-
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -805,27 +802,6 @@ impl Reporter {
         (frames, too_large)
     }
 
-    /// `items` as frames to send now, outside the buffer: the report items of
-    /// one routed call, `(json, function of each item)`. Items larger than a
-    /// frame are counted as `TOO_LARGE`.
-    pub(crate) fn frames_of(
-        &self,
-        items: Vec<PendingItem>,
-        v2: bool,
-    ) -> Vec<(String, Vec<String>)> {
-        let (frames, too_large) = self.pack(items, v2);
-        if !too_large.is_empty() {
-            let mut state = self.lock();
-            for function_id in too_large {
-                state.count(&function_id, observe_codes::TOO_LARGE, 1);
-            }
-        }
-        frames
-            .into_iter()
-            .map(|(json, functions, _)| (json, functions))
-            .collect()
-    }
-
     /// Takes every waiting item and returns those `gate` lets through as
     /// frames of at most `batch_items` items and `frame_bytes` bytes, each
     /// holding its bytes against the bound until it is written. Held items
@@ -1173,37 +1149,6 @@ mod tests {
         let items = items_of(&reporter.take_frames(|_| Gate::Send)[0]);
         assert_eq!(items[0]["output_is_input"], true);
         assert!(items[0].get("output").is_none());
-    }
-
-    /// A routed call's items go out as frames of their own, outside the
-    /// buffer; one larger than a frame is `TOO_LARGE`.
-    #[test]
-    fn routed_items_are_framed_outside_the_buffer() {
-        let reporter = Reporter::with_limits(Limits {
-            frame_bytes: 2_000,
-            ..Limits::default()
-        });
-        let frames = reporter.frames_of(
-            vec![
-                item("f", &["a"], json!(1)),
-                item("f", &["b"], json!("x".repeat(3_000))),
-                item("f", &["c"], json!(2)),
-            ],
-            true,
-        );
-        assert_eq!(frames.len(), 1);
-        let (json, functions) = &frames[0];
-        assert_eq!(functions, &vec!["f".to_string(), "f".to_string()]);
-        let matched: Vec<Value> = items_of(json)
-            .iter()
-            .map(|i| i["matched"].clone())
-            .collect();
-        assert_eq!(matched, vec![json!(["a"]), json!(["c"])]);
-        assert_eq!(reporter.len(), 0, "nothing buffered");
-        assert_eq!(
-            reporter.take_drops(),
-            vec![("f".to_string(), "TOO_LARGE", 1)]
-        );
     }
 
     #[test]

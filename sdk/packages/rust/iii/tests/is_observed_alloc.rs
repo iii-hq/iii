@@ -1,7 +1,7 @@
 //! The fast paths a source asks before building an event: `is_observed()` is
-//! one atomic load, and `is_observed_for(&call)` on a function delivered by
-//! [`Keyed`] one hash lookup per call key; neither allocates. A test binary of
-//! its own, with an allocator that counts the allocations of each thread.
+//! one atomic load, and `is_observed_for(&call)` on a function matched by
+//! keys one hash lookup per call key; neither allocates. A test binary of its
+//! own, with an allocator that counts the allocations of each thread.
 
 mod common;
 
@@ -14,7 +14,7 @@ use std::{
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
-    Call, Error, IIIClient, InitOptions, Keyed, RegisterFunction, WorkerIdentityMode,
+    Call, Error, IIIClient, InitOptions, Match, RegisterFunction, WorkerIdentityMode,
     register_worker,
 };
 use serde_json::{Value, json};
@@ -80,7 +80,7 @@ fn is_observed_does_not_allocate() {
 }
 
 #[tokio::test]
-async fn a_keyed_miss_does_not_allocate() {
+async fn a_key_miss_does_not_allocate() {
     let mock = MockEngine::start().await;
     let iii = register_worker(
         mock.url(),
@@ -97,9 +97,9 @@ async fn a_keyed_miss_does_not_allocate() {
             ..InitOptions::default()
         },
     );
-    iii.on_observer_deliver_for(
+    iii.on_observer_match_for(
         "cron::on-tick",
-        Keyed::new(
+        Match::keys(
             |obs| obs.args_value()["expression"].as_str().into(),
             |call| call.input["expression"].as_str().into(),
         ),
@@ -159,6 +159,6 @@ async fn a_keyed_miss_does_not_allocate() {
         }
     });
     assert_eq!(observed, 0);
-    assert_eq!(made, 0, "is_observed_for() allocated on a keyed miss");
+    assert_eq!(made, 0, "is_observed_for() allocated on a key miss");
     iii.shutdown_async().await;
 }

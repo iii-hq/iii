@@ -47,7 +47,7 @@ pub mod errors {
 
 pub use context::{InvocationCtx, current_invocation, scope};
 pub use error::{Error, InvocationError};
-pub use hooks::{AddedHook, Call, DeliverHook, Keyed, Keys, Next, RemovedHook};
+pub use hooks::{AddedHook, Call, DeliverHook, Keys, Match, RemovedHook};
 pub use iii::TelemetryOptions;
 pub use iii::{IIIClient, ObserveSupportListener, RegisterFunction, WorkerIdentityMode};
 pub use iii_filter::{Doc, Filter};
@@ -423,7 +423,7 @@ fn _ensure_enqueue_result_at_root() {}
 /// # #![allow(deprecated)]
 /// use iii_sdk::{
 ///     AddedHook, Call, CallAction, CallRequest, Caller, Capture, DeliverHook, Deliver, Dispatch,
-///     Doc, Filter, InvocationCtx, Keyed, Keys, Next, ObserveRejection, Observed, Observer,
+///     Doc, Filter, InvocationCtx, Keys, Match, ObserveRejection, Observed, Observer,
 ///     ObserverHandle, ObserverOptions, ObserverState, On, RemovedHook, Source, Target,
 ///     TriggerAction, current_invocation, scope,
 /// };

@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Call (enqueue)             | `iii.call(CallRequest { action: Some(CallAction::Enqueue { queue }), .. })`  | Route the call through a named queue                            |
 | Observe a function         | `iii.observe("orders::create", target)`                                      | Run `target` after every successful call of a function          |
 | Observe with args, filters | `iii.observe(Source::function(id).args(..).filters(..), target)`             | Args for the function's worker, filters for which calls         |
-| Observer hooks             | `iii.on_observer_added_for(id, h)`, `..._removed_for`, `..._deliver_for`     | What the worker hosting a function does when it is observed     |
+| Observer hooks             | `iii.on_observer_added_for(id, h)`, `..._removed_for`, `..._match_for`, `..._deliver_for` | What the worker hosting a function does when it is observed |
 | Call through an observer   | `iii.call(CallRequest::observer(&obs, payload)).await?`                      | Run an observer's target from a deliver hook                    |
 
 `trigger`, `TriggerRequest` and `TriggerAction` are `call`, `CallRequest` and
@@ -168,26 +168,28 @@ names them (`engine::on-functions-changed`, `observability::on-log`, ...).
 
 ### Hosting Observable Functions
 
-The worker that hosts a function decides what observing it means with three
+The worker that hosts a function decides what observing it means with four
 hooks, each overriding what iii does by default:
 
-| Hook                    | What iii does by default                          | Use the hook to…                                                        |
-| ----------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
-| `on_observer_added`     | accepts the observer                              | set something up from its args first; return an `ObserveRejection` to reject it |
-| `on_observer_removed`   | forgets the observer                              | tear down what the added hook set up                                    |
-| `on_observer_deliver`   | delivers each call to every matching observer     | pick the observers of each call, and what its caller gets back          |
+| Hook                  | The question it answers                                                         | What iii does by default                                    |
+| --------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `on_observer_added`   | What do I set up for this observer? Return an `ObserveRejection` to reject it.  | accepts the observer                                        |
+| `on_observer_removed` | What do I tear down?                                                            | forgets the observer                                        |
+| `on_observer_match`   | Does this observer want this call?                                              | every observer wants every call                             |
+| `on_observer_deliver` | I deliver this call myself: which observers, and what does the caller get back? | delivers to every matching observer whose filters match it  |
 
 Added and removed hooks run for one function (`..._for(id, hook)`, or on the
 `FunctionRef`) and for every function the worker hosts (`on_observer_added(hook)`):
 the worker's then the function's when an observer is added, the reverse when
-it is removed. Async closures and your own types implement the hook traits.
-Set hooks by id before registering the function, so they see every observer.
+it is removed. Match and deliver hooks are set per function. Async closures
+and your own types implement the hook traits. Set hooks by id before
+registering the function, so they see every observer.
 
 An event source is a function whose handler returns the event it is called
 with, `private` so only its worker calls it:
 
 ```rust
-use iii_sdk::{Call, CallRequest, Error, Keyed, ObserveRejection, Observer, RegisterFunction};
+use iii_sdk::{Call, CallRequest, Error, Match, ObserveRejection, Observer, RegisterFunction};
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -200,10 +202,11 @@ iii.on_observer_added_for("cron::on-tick", |obs: Observer| async move {
     }
     Ok(()) // start the expression's job
 });
-// each tick reaches the observers of its expression, however many there are
-iii.on_observer_deliver_for(
+// an observer of expression X wants the ticks of expression X; by keys, iii
+// keeps an index, however many observers there are
+iii.on_observer_match_for(
     "cron::on-tick",
-    Keyed::new(
+    Match::keys(
         |obs| obs.args_value()["expression"].as_str().into(),
         |call| call.input["expression"].as_str().into(),
     ),
@@ -222,15 +225,16 @@ if on_tick.is_observed_for(&call) {
 }
 ```
 
-A deliver hook that answers the caller itself calls the observer's target
-through the observer, and applies its filters with `obs.matches(&call)`:
+A deliver hook takes delivery over: it gets the observers that matched, calls
+their targets through them, applies their filters with `obs.matches(&call)`,
+and returns what the caller gets back:
 
 ```rust
-use iii_sdk::{Call, CallRequest, Next, Observer};
+use iii_sdk::{Call, CallRequest, Observer};
 
 iii.on_observer_deliver_for("http::on-request", {
     let iii = iii.clone();
-    move |call: Call, observers: Vec<Observer>, _next: Next| {
+    move |call: Call, observers: Vec<Observer>| {
         let iii = iii.clone();
         async move {
             let Some(route) = observers.first() else {

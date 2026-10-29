@@ -2,8 +2,8 @@
 //! hosts, and the task that runs their hooks.
 //!
 //! Each registered function has an entry: its compiled set of active
-//! observers (read with one atomic load on every call), its deliver hook,
-//! and a hook task that applies the engine's announcements
+//! observers (read with one atomic load on every call), its match and
+//! deliver hooks, and a hook task that applies the engine's announcements
 //! (`functionregistered`, `observeradded`, `observerremoved`) one at a time,
 //! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`]s set in
 //! [`hooks`](crate::hooks).
@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     error::Error,
-    hooks::{AddedSlot, Call, DeliverHook, Keyed, Level, RemovedHook},
+    hooks::{AddedSlot, Call, DeliverHook, Level, Matcher, RemovedHook},
     iii::{IIIClient, IIIInner},
     protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
     reporter::CaptureMask,
@@ -242,7 +242,7 @@ impl Observer {
     }
 
     /// The observer's filters in normal form (`{}` matches every call).
-    /// [`Next`](crate::Next) and [`matches`](Self::matches) apply them.
+    /// iii's delivery and [`matches`](Self::matches) apply them.
     pub fn filters(&self) -> &Value {
         &self.inner.view.filters
     }
@@ -549,6 +549,8 @@ pub(crate) struct FunctionEntry {
     delivery: AtomicUsize,
     /// The function's deliver hook, mirrored from the hook store.
     deliver: ArcSwapOption<Arc<dyn DeliverHook>>,
+    /// The function's match hook, with its key index.
+    matcher: ArcSwapOption<Matcher>,
     /// Serializes the rebuilds of `compiled` and `delivery`.
     publishing: Mutex<()>,
     pub(crate) stats: LocalStats,
@@ -572,6 +574,7 @@ impl FunctionEntry {
         local_option: bool,
         standby: bool,
         deliver: Option<Arc<dyn DeliverHook>>,
+        matcher: Option<Matcher>,
     ) -> Self {
         let (registered, _) = watch::channel(false);
         let delivery = usize::from(deliver.is_some());
@@ -588,6 +591,7 @@ impl FunctionEntry {
             compiled: ArcSwap::from_pointee(CompiledSet::default()),
             delivery: AtomicUsize::new(delivery),
             deliver: ArcSwapOption::new(deliver.map(Arc::new)),
+            matcher: ArcSwapOption::new(matcher.map(Arc::new)),
             publishing: Mutex::new(()),
             stats: LocalStats::default(),
             ops: Mutex::new(None),
@@ -609,17 +613,25 @@ impl FunctionEntry {
         self.delivery.load(Ordering::Acquire) != 0
     }
 
-    /// Whether `call` would reach anyone: with a [`Keyed`] deliver hook, an
-    /// observer is filed under one of its keys; otherwise any is active.
+    /// Whether `call` would reach anyone: matched by keys, an observer is
+    /// filed under one of its keys; otherwise any is active.
     pub(crate) fn is_observed_for(&self, call: &Call) -> bool {
         if !self.is_observed() {
             return false;
         }
-        let deliver = self.deliver.load();
-        match deliver.as_deref().and_then(|hook| hook.as_keyed()) {
-            Some(keyed) => keyed.contains(call),
-            None => true,
-        }
+        let matcher = self.matcher.load();
+        matcher
+            .as_deref()
+            .and_then(|matcher| matcher.wants_any(&self.id, call))
+            .unwrap_or(true)
+    }
+
+    pub(crate) fn matcher(&self) -> Option<Arc<Matcher>> {
+        self.matcher.load_full()
+    }
+
+    pub(crate) fn set_matcher(&self, matcher: Option<Matcher>) {
+        self.matcher.store(matcher.map(Arc::new));
     }
 
     pub(crate) fn deliver_hook(&self) -> Option<Arc<dyn DeliverHook>> {
@@ -634,14 +646,6 @@ impl FunctionEntry {
         let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
         self.deliver.store(hook.map(Arc::new));
         self.refresh_delivery();
-    }
-
-    /// Runs `f` with the function's [`Keyed`] index, when it has one.
-    fn with_keyed(&self, f: impl FnOnce(&Keyed)) {
-        let deliver = self.deliver.load();
-        if let Some(keyed) = deliver.as_deref().and_then(|hook| hook.as_keyed()) {
-            f(keyed);
-        }
     }
 
     /// Needs an engine that advertised `observe.v2`: it declares
@@ -803,7 +807,8 @@ pub(crate) enum CatchUp {
     /// An added hook of this level was set: it runs for each active observer
     /// that did not run it.
     Added(Level),
-    /// A [`Keyed`] deliver hook was set: every active observer is filed in it.
+    /// A match hook was set: a key index is rebuilt from the active
+    /// observers.
     Index,
 }
 
@@ -988,13 +993,7 @@ async fn run_hooks(
             HookOp::CatchUp(CatchUp::Added(level)) => {
                 catch_up(&iii, &entry, &mut members, level).await;
             }
-            HookOp::CatchUp(CatchUp::Index) => entry.with_keyed(|keyed| {
-                for member in members.values() {
-                    if member.observer.is_active() {
-                        keyed.file(&member.observer);
-                    }
-                }
-            }),
+            HookOp::CatchUp(CatchUp::Index) => rebuild_index(&entry, &members),
         }
     }
 }
@@ -1067,6 +1066,25 @@ async fn add_member(
             }
         }
     }
+    // The keys it is filed under, computed once: an observer whose key
+    // function panics is rejected.
+    let matcher = entry.matcher();
+    let keys = match matcher
+        .as_ref()
+        .and_then(|matcher| matcher.observer_keys(&observer))
+    {
+        Some(Err(crate::hooks::KeysPanicked(panic))) => {
+            let body = ErrorBody::new(
+                observe_codes::OBSERVE_REJECTED,
+                format!("on_observer_match key function panicked: {panic}"),
+            );
+            unwind(iii, entry, &observer, resolved).await;
+            observer.settle(Acceptance::Refused(body.clone()));
+            return send_ack(iii, entry, namespace, &id, revision, Some(body));
+        }
+        Some(Ok(keys)) => Some(keys),
+        None => None,
+    };
     if entry.revocation() != revocation {
         // The function was released while the hooks ran: undo the add (no
         // ack, never active), as if it had been removed.
@@ -1074,7 +1092,7 @@ async fn add_member(
         unwind(iii, entry, &observer, resolved).await;
         observer.settle(Acceptance::Refused(ErrorBody::new(
             observe_codes::OBSERVER_NOT_ACTIVE,
-            format!("{} is not hosted here any more", entry.id),
+            format!("{} was released while its added hooks ran", entry.id),
         )));
         return;
     }
@@ -1093,7 +1111,9 @@ async fn add_member(
             // connection loop (same thread) only sends it after this task
             // yields, by when the observer is compiled in.
             observer.inner.active.store(true, Ordering::Release);
-            entry.with_keyed(|keyed| keyed.file(&observer));
+            if let (Some(matcher), Some(keys)) = (&matcher, keys) {
+                matcher.file(&observer, keys);
+            }
             send_ack(iii, entry, namespace, &id, revision, None);
             members.insert(
                 id.clone(),
@@ -1170,7 +1190,9 @@ async fn remove_member(
         return;
     };
     member.observer.inner.active.store(false, Ordering::Release);
-    entry.with_keyed(|keyed| keyed.unfile(id));
+    if let Some(matcher) = entry.matcher() {
+        matcher.unfile(id);
+    }
     entry.publish(members);
     for hook in iii.hooks().removed(&entry.id).into_iter().flatten() {
         run_removed(iii, entry, &hook, &member.observer).await;
@@ -1198,6 +1220,27 @@ async fn run_removed(
             "on_observer_removed did not finish within {:?}",
             iii.hook_timeout()
         ),
+    }
+}
+
+/// Files the active observers in the key index of a match hook set while
+/// they were active. One whose key function panics is rejected late.
+fn rebuild_index(entry: &FunctionEntry, members: &BTreeMap<String, Member>) {
+    let Some(matcher) = entry.matcher() else {
+        return;
+    };
+    for member in members
+        .values()
+        .filter(|member| member.observer.is_active())
+    {
+        match matcher.observer_keys(&member.observer) {
+            Some(Ok(keys)) => matcher.file(&member.observer, keys),
+            Some(Err(crate::hooks::KeysPanicked(panic))) => member.observer.reject(
+                observe_codes::OBSERVE_REJECTED,
+                format!("on_observer_match key function panicked: {panic}"),
+            ),
+            None => {}
+        }
     }
 }
 
@@ -1370,12 +1413,7 @@ mod tests {
         let (iii, mut rx) = client();
         iii.register_function("o::private", echo().private());
         iii.register_function("o::plain", echo());
-        iii.on_observer_deliver_for(
-            "o::hooked",
-            |call: Call, observers: Vec<Observer>, next: crate::Next| async move {
-                next.run(&call, &observers)
-            },
-        );
+        iii.on_observer_deliver_for("o::hooked", answer_with_count);
         iii.register_function("o::hooked", echo());
         let registered = |frames: &[Value]| -> Vec<String> {
             frames
@@ -1421,27 +1459,17 @@ mod tests {
         logs_assert(warned);
 
         // a plain function that gets a deliver hook is withdrawn
-        iii.on_observer_deliver_for(
-            "o::plain",
-            |call: Call, observers: Vec<Observer>, next: crate::Next| async move {
-                next.run(&call, &observers)
-            },
-        );
+        iii.on_observer_deliver_for("o::plain", answer_with_count);
         let frames = sent(&mut rx);
         assert_eq!(frames.len(), 1);
         assert_eq!(
             frames[0],
             json!({ "type": "unregisterfunction", "id": "o::plain" })
         );
-        // and registered again once it needs observe.v2 no longer
+        // and registered again once its deliver hook is removed
         iii.clear_observer_deliver_for("o::plain");
         assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
-        iii.on_observer_deliver_for(
-            "o::plain",
-            |call: Call, observers: Vec<Observer>, next: crate::Next| async move {
-                next.run(&call, &observers)
-            },
-        );
+        iii.on_observer_deliver_for("o::plain", answer_with_count);
         assert_eq!(
             sent(&mut rx),
             vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
@@ -1569,20 +1597,9 @@ mod tests {
         assert_eq!(ran.load(Ordering::SeqCst), 2);
     }
 
-    /// What a deliver hook was given, kept past the call.
-    type Kept = Arc<Mutex<Option<(Call, Vec<Observer>, crate::Next)>>>;
-
-    fn deliver_and_keep_next(kept: Kept) -> impl crate::DeliverHook {
-        move |call: Call, observers: Vec<Observer>, next: crate::Next| {
-            let kept = kept.clone();
-            async move {
-                // twice: each observer is delivered at most once per call
-                next.run(&call, &observers)?;
-                let result = next.run(&call, &observers);
-                *kept.lock().unwrap() = Some((call, observers, next));
-                result
-            }
-        }
+    /// A deliver hook that answers with the number of observers it got.
+    async fn answer_with_count(_call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+        Ok(json!(observers.len()))
     }
 
     fn v2_hello(iii: &IIIClient) {
@@ -1605,80 +1622,186 @@ mod tests {
         }
     }
 
-    /// A routed call delivers each observer once, however many times `next`
-    /// runs; a `next` after the hook settled delivers nothing and counts as
-    /// `LATE_DELIVERY`.
-    #[tokio::test]
-    async fn a_next_after_the_hook_settled_is_late() {
-        let (iii, mut rx) = client();
-        v2_hello(&iii);
-        let kept = Arc::new(Mutex::new(None));
-        iii.on_observer_deliver_for("late::routed", deliver_and_keep_next(kept.clone()));
-        let function = iii.register_function("late::routed", echo());
+    /// Registers `function_id` on a v2 connection with `observers` and waits
+    /// until they are active.
+    async fn hosted(
+        iii: &IIIClient,
+        rx: &mut UnboundedReceiver<Outbound>,
+        function_id: &str,
+        observers: Value,
+    ) -> crate::runtime::FunctionRef {
+        let function = iii.register_function(function_id, echo());
+        let count = observers.as_array().map_or(0, Vec::len);
         feed(
-            &iii,
-            json!({ "type": "functionregistered", "id": "late::routed", "revision": 1,
-                    "local_dispatch": true,
-                    "observers": [{ "id": "o", "target": "t", "filters": {} }] }),
+            iii,
+            json!({ "type": "functionregistered", "id": function_id, "revision": 1,
+                    "local_dispatch": true, "observers": observers }),
         );
-        next_ack(&mut rx).await;
-        while !function.is_observed() {
+        for _ in 0..count {
+            next_ack(rx).await;
+        }
+        while function.observers().len() < count {
             tokio::task::yield_now().await;
         }
+        function
+    }
+
+    fn view_with_args(id: &str, args: Value) -> Value {
+        json!({ "id": id, "args": args, "target": "t", "filters": {} })
+    }
+
+    /// A function with a deliver hook delivers its calls itself: a routed
+    /// call's answer is the hook's, with no `observed` and no report, and the
+    /// hook gets the observers its match hook says want the call.
+    #[tokio::test]
+    async fn a_deliver_hook_answers_and_iii_delivers_nothing() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        sent(&mut rx);
+        iii.on_observer_match_for(
+            "self::f",
+            crate::Match::predicate(|obs, call| obs.args_value()["kind"] == call.input["kind"]),
+        );
+        iii.on_observer_deliver_for("self::f", answer_with_count);
+        hosted(
+            &iii,
+            &mut rx,
+            "self::f",
+            json!([
+                view_with_args("a1", json!({ "kind": "a" })),
+                view_with_args("a2", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
         feed(
             &iii,
             json!({ "type": "invokefunction", "invocation_id": "11111111-2222-4333-8444-555555555555",
-                    "function_id": "late::routed", "data": { "n": 1 } }),
+                    "function_id": "self::f", "data": { "kind": "a" } }),
         );
         let answer = next_frame(&mut rx, "invocationresult").await;
-        assert_eq!(answer["result"], json!({ "n": 1 }));
-        assert_eq!(answer["observed"], json!(["o"]), "once");
-
-        let (call, observers, next) = kept.lock().unwrap().take().unwrap();
-        assert_eq!(next.run(&call, &observers).unwrap(), json!({ "n": 1 }));
-        assert_eq!(
-            iii.reporter().take_drops(),
-            vec![("late::routed".to_string(), "LATE_DELIVERY", 1)]
+        assert_eq!(answer["result"], 2, "the two observers of kind a");
+        assert!(answer.get("observed").is_none());
+        iii.flush_reports();
+        assert!(
+            sent(&mut rx)
+                .iter()
+                .all(|m| m["type"] != "invocationsobserved"),
+            "iii delivers nothing for it"
         );
-        assert!(sent(&mut rx).is_empty(), "a late next sends nothing");
     }
 
-    /// The report items of a routed call whose connection is gone are not
-    /// sent: they count as `DISCONNECTED`.
+    /// A predicate that panics matches nothing, logged once per function.
     #[tokio::test]
-    async fn routed_items_of_a_closed_connection_are_disconnected() {
+    async fn a_panicking_predicate_matches_nothing_and_is_logged_once() {
+        let warnings = Warnings::default();
+        let _capture = tracing::subscriber::set_default(warnings.clone());
         let (iii, mut rx) = client();
         v2_hello(&iii);
-        iii.on_observer_deliver_for(
-            "gone::f",
-            |call: Call, observers: Vec<Observer>, next: crate::Next| async move {
-                next.run(&call, &observers)?;
-                Ok(json!("the hook's own answer"))
-            },
+        iii.on_observer_match_for(
+            "pp::f",
+            crate::Match::predicate(|obs, _call| {
+                if obs.id() == "boom" {
+                    panic!("predicate bug");
+                }
+                true
+            }),
         );
-        let function = iii.register_function("gone::f", echo());
+        hosted(
+            &iii,
+            &mut rx,
+            "pp::f",
+            json!([
+                view_with_args("boom", json!({})),
+                view_with_args("fine", json!({}))
+            ]),
+        )
+        .await;
+        sent(&mut rx);
+        for invocation in [
+            "21111111-2222-4333-8444-555555555555",
+            "31111111-2222-4333-8444-555555555555",
+        ] {
+            feed(
+                &iii,
+                json!({ "type": "invokefunction", "invocation_id": invocation,
+                        "function_id": "pp::f", "data": {} }),
+            );
+            let answer = next_frame(&mut rx, "invocationresult").await;
+            assert_eq!(answer["observed"], json!(["fine"]));
+        }
+        let lines = warnings.0.lock().unwrap().clone();
+        let logged = lines
+            .iter()
+            .filter(|l| l.contains("predicate panicked"))
+            .count();
+        assert_eq!(logged, 1, "{lines:#?}");
+    }
+
+    /// An observer whose key function panics is rejected with
+    /// `OBSERVE_REJECTED`, when it is added and when a match hook set late
+    /// rebuilds the index.
+    #[tokio::test]
+    async fn a_panicking_key_function_rejects_the_observer() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let keys = || {
+            crate::Match::keys(
+                |obs| {
+                    if obs.id() == "boom" {
+                        panic!("key bug");
+                    }
+                    obs.args_value()["kind"].as_str().into()
+                },
+                |call| call.input["kind"].as_str().into(),
+            )
+        };
+        iii.on_observer_match_for("kp::f", keys());
+        let function = iii.register_function("kp::f", echo());
         feed(
             &iii,
-            json!({ "type": "functionregistered", "id": "gone::f", "revision": 1,
+            json!({ "type": "functionregistered", "id": "kp::f", "revision": 1,
                     "local_dispatch": true,
-                    "observers": [{ "id": "o", "target": "t", "filters": {} }] }),
+                    "observers": [view_with_args("boom", json!({ "kind": "a" })),
+                                  view_with_args("fine", json!({ "kind": "a" }))] }),
         );
-        next_ack(&mut rx).await;
-        while !function.is_observed() {
+        let first = next_ack(&mut rx).await;
+        assert_eq!(first["id"], "boom");
+        assert_eq!(first["error"]["code"], "OBSERVE_REJECTED");
+        let second = next_ack(&mut rx).await;
+        assert!(second.get("error").is_none());
+        let call = Call {
+            input: json!({ "kind": "a" }),
+            ..Call::default()
+        };
+        while !function.is_observed_for(&call) {
             tokio::task::yield_now().await;
         }
-        feed(
+
+        // a match hook set late files the active observers; one whose keys
+        // panic is rejected late
+        let late = hosted(
             &iii,
-            json!({ "type": "invokefunction", "invocation_id": "21111111-2222-4333-8444-555555555555",
-                    "function_id": "gone::f", "data": { "n": 1 } }),
-        );
-        let answer = next_frame(&mut rx, "invocationresult").await;
-        assert_eq!(answer["result"], "the hook's own answer");
-        assert!(answer.get("observed").is_none());
-        assert_eq!(
-            iii.reporter().take_drops(),
-            vec![("gone::f".to_string(), "DISCONNECTED", 1)]
-        );
+            &mut rx,
+            "kl::f",
+            json!([
+                view_with_args("boom", json!({ "kind": "a" })),
+                view_with_args("fine", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        late.on_observer_match(keys());
+        let rejection = next_ack(&mut rx).await;
+        assert_eq!(rejection["id"], "boom");
+        assert_eq!(rejection["error"]["code"], "OBSERVE_REJECTED");
+        let b = Call {
+            input: json!({ "kind": "b" }),
+            ..Call::default()
+        };
+        while !late.is_observed_for(&b) {
+            tokio::task::yield_now().await;
+        }
+        assert!(!late.is_observed_for(&call), "boom is filed nowhere");
     }
 
     /// A peer that stops reading: flushed frames wait in the outbound channel,

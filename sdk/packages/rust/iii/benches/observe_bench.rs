@@ -7,9 +7,10 @@
 //!   with `handler_alone`), no copy of input or result;
 //! - a local call with 10 observers, none matching: < 5 µs;
 //! - a local call with 1 matching observer: 1 report item, batched;
-//! - a keyed function whose 10,000 observers are filed under other keys:
-//!   `is_observed_for(call)` is one hash lookup per call key, no allocation;
-//! - keyed delivery to 1 matching observer among 10,000;
+//! - a function matched by keys whose 10,000 observers are filed under other
+//!   keys: `is_observed_for(call)` is one hash lookup per call key, no
+//!   allocation;
+//! - matching by keys, 1 matching observer among 10,000;
 //! - an event source (the handler returns its input) observed with input and
 //!   output captured: each report item carries the event once.
 //!
@@ -38,7 +39,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
-    Call, CallRequest, Error, IIIClient, InitOptions, Keyed, RegisterFunction, WorkerIdentityMode,
+    Call, CallRequest, Error, IIIClient, InitOptions, Match, RegisterFunction, WorkerIdentityMode,
     register_worker,
 };
 
@@ -197,9 +198,9 @@ fn host() -> Host {
             ..InitOptions::default()
         },
     );
-    iii.on_observer_deliver_for(
+    iii.on_observer_match_for(
         "bench::keyed",
-        Keyed::new(
+        Match::keys(
             |obs| obs.args_value()["expression"].as_str().into(),
             |call| call.input["expression"].as_str().into(),
         ),
@@ -278,7 +279,7 @@ fn observe_benches(c: &mut Criterion) {
         ..Call::default()
     };
     assert!(!host.keyed.is_observed_for(&miss));
-    c.bench_function("is_observed_for/keyed_miss_of_10000", |b| {
+    c.bench_function("is_observed_for/key_miss_of_10000", |b| {
         b.iter(|| black_box(&host.keyed).is_observed_for(black_box(&miss)))
     });
 
@@ -323,7 +324,7 @@ fn observe_benches(c: &mut Criterion) {
     );
     bench_call(
         c,
-        "call_local/keyed_1_of_10000",
+        "call_local/match_keys_1_of_10000",
         &host.iii,
         "bench::keyed",
         |i| json!({ "expression": "hit", "n": i }),

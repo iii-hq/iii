@@ -530,7 +530,7 @@ use crate::{
     context::{InvocationCtx, with_current},
     dispatch::{Hosted, Route, run_reporter},
     error::Error,
-    hooks::{AddedHook, Call, DeliverHook, HookStore, RemovedHook},
+    hooks::{AddedHook, Call, DeliverHook, HookStore, Match, Matcher, RemovedHook},
     observable::{FunctionEntry, HookOp, Observer},
     observe::{ObserverEntry, ObserverReason},
     protocol::{
@@ -1030,9 +1030,6 @@ pub(crate) struct PreparedEnvelope {
     /// A report frame's bytes, held against the report buffer's bound until
     /// the frame is written or dropped.
     report_lease: Option<crate::reporter::ReportLease>,
-    /// The report items of a routed call (the function of each): only for
-    /// the connection the call arrived on.
-    routed_reports: Option<Vec<String>>,
     /// The `registerfunction` of a function that needs `observe.v2`: sent
     /// again once the next connection's engine advertises it.
     v2_registration: bool,
@@ -1085,7 +1082,6 @@ impl PreparedEnvelope {
             registration_key,
             observe_family: false,
             report_lease: None,
-            routed_reports: None,
             v2_registration: false,
             write_failed: false,
             _spare_capacity: lease,
@@ -1101,12 +1097,6 @@ impl PreparedEnvelope {
     /// Marks an observe message; see [`IIIClient::hold_observe_frames`].
     pub(crate) fn observe_family(mut self) -> Self {
         self.observe_family = true;
-        self
-    }
-
-    /// Marks the report items of a routed call, of these functions.
-    pub(crate) fn routed_reports(mut self, functions: Vec<String>) -> Self {
-        self.routed_reports = Some(functions);
         self
     }
 
@@ -1217,11 +1207,10 @@ impl FunctionRef {
         self.state.is_observed()
     }
 
-    /// Whether `call` would reach anyone. With a [`Keyed`](crate::Keyed)
-    /// deliver hook: an observer is filed under one of the call's keys, one
-    /// hash lookup per key and no allocation for keys borrowed from the
-    /// call. Otherwise the call is not looked at: as
-    /// [`is_observed`](Self::is_observed).
+    /// Whether `call` would reach anyone. Matched by [`Match::keys`]: an
+    /// observer is filed under one of the call's keys, one hash lookup per
+    /// key and no allocation for keys borrowed from the call. Otherwise the
+    /// call is not looked at: as [`is_observed`](Self::is_observed).
     ///
     /// ```rust,no_run
     /// # use iii_sdk::{Call, CallRequest, IIIClient};
@@ -1260,6 +1249,12 @@ impl FunctionRef {
         self
     }
 
+    /// [`IIIClient::on_observer_match_for`] this function.
+    pub fn on_observer_match(&self, rule: Match) -> &Self {
+        self.iii.on_observer_match_for(&self.id, rule);
+        self
+    }
+
     /// [`IIIClient::on_observer_deliver_for`] this function.
     pub fn on_observer_deliver(&self, hook: impl DeliverHook) -> &Self {
         self.iii.on_observer_deliver_for(&self.id, hook);
@@ -1275,6 +1270,12 @@ impl FunctionRef {
     /// [`IIIClient::clear_observer_removed_for`] this function.
     pub fn clear_observer_removed(&self) -> &Self {
         self.iii.clear_observer_removed_for(&self.id);
+        self
+    }
+
+    /// [`IIIClient::clear_observer_match_for`] this function.
+    pub fn clear_observer_match(&self) -> &Self {
+        self.iii.clear_observer_match_for(&self.id);
         self
     }
 
@@ -2192,7 +2193,7 @@ impl IIIClient {
         if id.trim().is_empty() {
             panic!("id is required");
         }
-        let new_entry = |deliver: Option<Arc<dyn DeliverHook>>| {
+        let new_entry = |deliver: Option<Arc<dyn DeliverHook>>, matching: Option<Match>| {
             Arc::new(FunctionEntry::new(
                 id.clone(),
                 message.declares_v2(),
@@ -2200,6 +2201,7 @@ impl IIIClient {
                 local_dispatch,
                 standby,
                 deliver,
+                matching.map(Matcher::new),
             ))
         };
         let envelope = match Self::prepare_envelope(&message.to_message()) {
@@ -2207,7 +2209,7 @@ impl IIIClient {
             Err(error) => {
                 tracing::warn!(error = %error, "Function registration rejected locally");
                 // A rejected handle must not unregister a previous host of this ID.
-                let state = new_entry(None);
+                let state = new_entry(None, None);
                 return FunctionRef {
                     id,
                     unregister_fn: Arc::new(|| {}),
@@ -2217,10 +2219,10 @@ impl IIIClient {
             }
         };
         let state = {
-            // The deliver hook is read and the entry filed under the hook
-            // store's lock: a hook set meanwhile reaches the entry.
+            // The match and deliver hooks are read and the entry filed under
+            // the hook store's lock: a hook set meanwhile reaches the entry.
             let hooks = self.inner.hooks.lock();
-            let state = new_entry(hooks.deliver(&id));
+            let state = new_entry(hooks.deliver(&id), hooks.matching(&id));
             let mut funcs = self.inner.functions.lock_or_recover();
             match funcs.entry(id.clone()) {
                 std::collections::hash_map::Entry::Occupied(_) => {
@@ -2284,11 +2286,11 @@ impl IIIClient {
         }
     }
 
-    /// A deliver hook was just set on a registered function, or removed:
-    /// one that needs `observe.v2` now and went to an engine without it is
-    /// unregistered there, and one that needs it no longer is registered.
-    /// Until this connection's engine said what it supports, its
-    /// `workerregistered` decides.
+    /// A deliver hook was just set on a registered function, or removed: a
+    /// function that needs `observe.v2` and whose registration went to an
+    /// engine without it is unregistered there, and an unregistered one that
+    /// does not need it is registered. Until this connection's engine said
+    /// what it supports, its `workerregistered` decides.
     pub(crate) fn reconcile_registration(&self, entry: &Arc<FunctionEntry>) {
         let features = self.inner.engine_features.load(Ordering::SeqCst);
         if features == ENGINE_FEATURES_UNKNOWN {
@@ -3111,10 +3113,6 @@ impl IIIClient {
                 self.inner
                     .reporter
                     .count_frame(envelope.payload.as_str(), observe_codes::INACTIVE);
-            } else if let Some(functions) = &envelope.routed_reports {
-                self.inner
-                    .reporter
-                    .count_items(functions, observe_codes::INACTIVE);
             }
         }
         self.inner.reporter.close();
@@ -3166,10 +3164,8 @@ impl IIIClient {
     /// Observe messages left over from a previous connection wait for this
     /// engine's `WorkerRegistered`: sent when it advertises observe, dropped
     /// otherwise. Leftover `observe` frames, and registrations that need
-    /// `observe.v2`, are dropped now: they are replayed from the maps once
-    /// the engine said it can take them. The report items of routed calls
-    /// are for the connection their calls arrived on: dropped and counted as
-    /// `DISCONNECTED`.
+    /// `observe.v2`, are dropped here: they are replayed from the maps once
+    /// the engine said it can take them.
     fn hold_observe_frames(
         &self,
         queue: &mut Vec<PreparedEnvelope>,
@@ -3185,12 +3181,6 @@ impl IIIClient {
                     .as_deref()
                     .is_some_and(|key| key.starts_with(OBSERVER_KEY_PREFIX));
             if replayed {
-                continue;
-            }
-            if let Some(functions) = &envelope.routed_reports {
-                self.inner
-                    .reporter
-                    .count_items(functions, observe_codes::DISCONNECTED);
                 continue;
             }
             if envelope.report_lease.is_some() {
@@ -3751,7 +3741,6 @@ impl IIIClient {
         } else {
             Route::Engine
         };
-        let epoch = self.connection_epoch();
 
         let iii = self.clone();
 
@@ -3776,9 +3765,6 @@ impl IIIClient {
                 .await;
 
             if let Some(invocation_id) = reply_to {
-                // The report items go just ahead of the answer, so the engine
-                // still holds the call when they arrive.
-                iii.send_routed_items(answer.items, epoch);
                 // Inject trace context from our span into the response.
                 // We briefly attach the otel context (no .await crossing)
                 // so inject_traceparent/inject_baggage can read it.

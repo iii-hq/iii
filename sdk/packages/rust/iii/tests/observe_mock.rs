@@ -25,9 +25,8 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, Capture, Dispatch, Error, IIIClient, InitOptions,
-    Keyed, Keys, Next, ObserveRejection, Observer, ObserverOptions, ObserverState, On,
-    RegisterFunction, RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker,
-    scope,
+    Keys, Match, ObserveRejection, Observer, ObserverOptions, ObserverState, On, RegisterFunction,
+    RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker, scope,
 };
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -1189,23 +1188,16 @@ async fn reconnect_diffs_the_set_and_keeps_serving_locally() {
     iii.shutdown_async().await;
 }
 
-// ───────────────────────────── deliver hooks ─────────────────────────────
+// ───────────────────────────── match and deliver hooks ───────────────────
 
-/// `src::events` with three observers, delivered by a hook that picks the
-/// ones whose args name the call's `kind`.
+/// `src::events` with three observers, each wanting the calls of the `kind`
+/// its args name.
 async fn kinds_setup(mock: &MockEngine, iii: &IIIClient) -> (FunctionRef, Recorder) {
     let recorder = Recorder::default();
     set_hooks(iii, "src::events", &recorder);
-    iii.on_observer_deliver_for(
+    iii.on_observer_match_for(
         "src::events",
-        |call: Call, observers: Vec<Observer>, next: Next| async move {
-            let kind = call.input["kind"].clone();
-            let chosen: Vec<Observer> = observers
-                .into_iter()
-                .filter(|obs| obs.args_value()["kind"] == kind)
-                .collect();
-            next.run(&call, &chosen)
-        },
+        Match::predicate(|obs, call| obs.args_value()["kind"] == call.input["kind"]),
     );
     let function = hosted(
         mock,
@@ -1240,10 +1232,10 @@ fn observer(recorder: &Recorder, id: &str) -> Observer {
         .unwrap()
 }
 
-/// The hook picks the observers, `next` applies their filters, and one local
-/// call is one report item listing every observer delivered.
+/// The match hook picks the observers, iii applies their filters, and one
+/// local call is one report item listing every observer delivered.
 #[tokio::test]
-async fn a_deliver_hook_picks_the_observers_and_next_applies_their_filters() {
+async fn a_match_hook_picks_the_observers_and_iii_applies_their_filters() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "database");
     connected(&mock, &iii, true).await;
@@ -1261,7 +1253,7 @@ async fn a_deliver_hook_picks_the_observers_and_next_applies_their_filters() {
     assert_eq!(
         out,
         json!({ "kind": "a", "x": 2 }),
-        "the caller gets next's value"
+        "the caller gets the handler's value"
     );
     // kind b
     iii.call(CallRequest::new(
@@ -1296,7 +1288,7 @@ fn report_items_in(messages: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// `Observer::matches` applies `on` and the filters, as `next` does.
+/// `Observer::matches` applies `on` and the filters, as iii's delivery does.
 #[tokio::test]
 async fn an_observer_matches_by_on_and_filters() {
     let mock = MockEngine::start().await;
@@ -1336,7 +1328,7 @@ async fn a_call_through_an_observer_is_the_fixture_frame() {
     set_hooks(&iii, "http::on-request", &recorder);
     iii.on_observer_deliver_for("http::on-request", {
         let iii = iii.clone();
-        move |call: Call, observers: Vec<Observer>, _next: Next| {
+        move |call: Call, observers: Vec<Observer>| {
             let iii = iii.clone();
             async move {
                 let Some(route) = observers.first() else {
@@ -2412,7 +2404,7 @@ async fn removal_runs_once_per_accepted_observer() {
     until("a removed", removed(1)).await;
 
     // rejected late: removed when the engine removes it, and not again on a
-    // replay that no longer lists it
+    // replay that does not list it
     mock.send_to_client(added("once::f", 5, "b", json!({})));
     until("b added", || function.is_observed()).await;
     observer(&recorder, "b").reject("GONE", "config reloaded");
@@ -2515,19 +2507,19 @@ async fn a_hook_set_late_is_caught_up() {
     iii.shutdown_async().await;
 }
 
-// ───────────────────────────── keyed delivery ────────────────────────────
+// ───────────────────────────── matching by keys ──────────────────────────
 
-/// A `Keyed` index follows adds and removes: a call reaches the observers
+/// The key index follows adds and removes: a call matches the observers
 /// filed under its keys, `is_observed_for` answers by key, and filters still
 /// apply.
 #[tokio::test]
-async fn keyed_delivery_follows_adds_and_removes() {
+async fn the_key_index_follows_adds_and_removes() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "cron");
     connected(&mock, &iii, true).await;
-    iii.on_observer_deliver_for(
+    iii.on_observer_match_for(
         "cron::on-tick",
-        Keyed::new(
+        Match::keys(
             |obs| {
                 obs.args_value()["expression"]
                     .as_str()
@@ -2737,148 +2729,128 @@ async fn a_routed_error_rides_the_error_answer() {
     iii.shutdown_async().await;
 }
 
-/// A deliver hook that answers with its own value: the matches go in a report
-/// item carrying the handler's call, sent just ahead of the answer.
+/// A deliver hook answers a routed call itself: the answer is its value,
+/// with no `observed` and no report item, and it gets the observers the
+/// match hook says want the call.
 #[tokio::test]
-async fn a_hook_result_sends_the_matches_ahead_of_the_answer() {
+async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
     let mock = MockEngine::start().await;
-    let iii = worker(&mock, "orders");
+    let iii = worker(&mock, "queue");
     connected(&mock, &iii, true).await;
-    let item = fixture("invocationsobserved-routed.json")["items"][0].clone();
-    let expected = fixture("invocationresult-hook-result.json");
-    let handler_output = item["output"].clone();
-    let hook_result = expected["result"].clone();
-    iii.on_observer_deliver_for("orders::submit", {
-        move |call: Call, observers: Vec<Observer>, next: Next| {
-            let hook_result = hook_result.clone();
+    let got: Arc<Mutex<Vec<String>>> = Arc::default();
+    iii.on_observer_match_for(
+        "queue::on-message",
+        Match::keys(
+            |obs| obs.id().into(),
+            |call| {
+                call.metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata["subscriber"].as_str())
+                    .into()
+            },
+        ),
+    )
+    .on_observer_deliver_for("queue::on-message", {
+        let got = got.clone();
+        move |call: Call, observers: Vec<Observer>| {
+            let got = got.clone();
             async move {
-                next.run(&call, &observers)?;
-                Ok(hook_result)
+                *got.lock().unwrap() = observers.iter().map(|o| o.id().to_string()).collect();
+                let Some(subscriber) = observers.first() else {
+                    return Err(Error::Remote {
+                        code: "OBSERVER_NOT_ACTIVE".into(),
+                        message: "subscriber removed".into(),
+                        stacktrace: None,
+                    });
+                };
+                Ok(json!({ "acked_by": subscriber.id(), "matches": subscriber.matches(&call) }))
             }
         }
     });
     hosted(
         &mock,
         &iii,
-        "orders::submit",
-        RegisterFunction::new(move |_: Value| Ok::<_, Error>(handler_output.clone())),
-        json!([{ "id": item["matched"][0], "args": {}, "filters": {}, "target": "t::a",
-                 "capture": ["input", "output", "caller"], "on": "success" }]),
-    )
-    .await;
-    acked(&mock, &[(item["matched"][0].as_str().unwrap(), 1)]).await;
-    mock.clear();
-
-    let invocation = expected["invocation_id"].as_str().unwrap();
-    route_call(
-        &mock,
-        "orders::submit",
-        invocation,
-        json!({ "sku": "A-1", "qty": 2 }),
-    );
-    let answer = answer_to(&mock, invocation).await;
-    assert_eq!(answer["result"], expected["result"]);
-    assert!(answer.get("observed").is_none(), "{answer:#}");
-    let messages = mock.received_messages();
-    let report_at = messages
-        .iter()
-        .position(is("invocationsobserved"))
-        .expect("the matches are reported");
-    let answer_at = messages.iter().position(is("invocationresult")).unwrap();
-    assert!(report_at < answer_at, "items go ahead of the answer");
-    let sent = &messages[report_at]["items"][0];
-    for key in [
-        "function_id",
-        "namespace",
-        "invocation_id",
-        "matched",
-        "status",
-        "input",
-        "output",
-        "caller",
-        "observe_depth",
-    ] {
-        assert_eq!(sent[key], item[key], "{key}: {sent:#}");
-    }
-    iii.shutdown_async().await;
-}
-
-/// `next` given changed calls sends one item each, and the matches of the
-/// unchanged call ride the answer: items and `observed` coexist.
-#[tokio::test]
-async fn changed_calls_send_their_own_items() {
-    let mock = MockEngine::start().await;
-    let iii = worker(&mock, "orders");
-    connected(&mock, &iii, true).await;
-    let fixture_items = fixture("invocationsobserved-routed-items.json")["items"].clone();
-    let output = fixture_items[0]["output"].clone();
-    iii.on_observer_deliver_for(
-        "orders::import",
-        |call: Call, observers: Vec<Observer>, next: Next| async move {
-            let result = next.run(&call, &observers);
-            for order in call.input["orders"].as_array().cloned().unwrap_or_default() {
-                let one = Call {
-                    input: order,
-                    ..call.clone()
-                };
-                next.run(&one, &observers)?;
-            }
-            result
-        },
-    );
-    let warehouse = |id: &Value, warehouse: &str| {
-        json!({ "id": id, "args": {}, "target": "t::w", "capture": ["input", "output", "caller"],
-                "filters": { "$and": [{ "input.warehouse": { "$eq": warehouse } }] },
-                "on": "success" })
-    };
-    hosted(
-        &mock,
-        &iii,
-        "orders::import",
-        RegisterFunction::new(move |_: Value| Ok::<_, Error>(output.clone())),
+        "queue::on-message",
+        echo().private(),
         json!([
-            observer_with_args("batch", json!({})),
-            warehouse(&fixture_items[0]["matched"][0], "ams-2"),
-            warehouse(&fixture_items[1]["matched"][0], "fra-1")
+            observer_with_args("sub-a", json!({ "topic": "emails" })),
+            observer_with_args("sub-b", json!({ "topic": "emails" }))
         ]),
     )
     .await;
-    acked(&mock, &[("batch", 1)]).await;
+    acked(&mock, &[("sub-a", 1), ("sub-b", 1)]).await;
     mock.clear();
 
-    let invocation = fixture_items[0]["invocation_id"].as_str().unwrap();
-    let orders: Vec<Value> = fixture_items
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|item| item["input"].clone())
-        .collect();
+    mock.send_to_client(json!({
+        "type": "invokefunction", "invocation_id": "4f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        "function_id": "queue::on-message", "data": { "to": "ada@example.com" },
+        "metadata": { "subscriber": "sub-b" }
+    }));
+    let answer = answer_to(&mock, "4f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(
+        answer["result"],
+        json!({ "acked_by": "sub-b", "matches": true })
+    );
+    assert!(answer.get("observed").is_none(), "{answer:#}");
+    assert_eq!(
+        *got.lock().unwrap(),
+        vec!["sub-b"],
+        "the matched observer only"
+    );
+
+    // its error is the caller's
+    mock.send_to_client(json!({
+        "type": "invokefunction", "invocation_id": "5f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        "function_id": "queue::on-message", "data": {},
+        "metadata": { "subscriber": "gone" }
+    }));
+    let answer = answer_to(&mock, "5f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(answer["error"]["code"], "OBSERVER_NOT_ACTIVE");
+    assert!(answer.get("observed").is_none());
+
+    // and a local call: no report
+    iii.call(
+        CallRequest::new("queue::on-message", json!({})).metadata(json!({ "subscriber": "sub-a" })),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(frames(&mock, "invocationsobserved").is_empty());
+    iii.shutdown_async().await;
+}
+
+/// A match hook narrows a routed call's observers; the matches ride its
+/// answer.
+#[tokio::test]
+async fn a_match_hook_narrows_a_routed_calls_observers() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "cron");
+    connected(&mock, &iii, true).await;
+    iii.on_observer_match_for(
+        "cron::routed",
+        Match::predicate(|obs, call| obs.args_value()["expression"] == call.input["expression"]),
+    );
+    hosted(
+        &mock,
+        &iii,
+        "cron::routed",
+        echo(),
+        json!([
+            observer_with_args("nine", json!({ "expression": "A" })),
+            observer_with_args("five", json!({ "expression": "B" }))
+        ]),
+    )
+    .await;
+    acked(&mock, &[("nine", 1), ("five", 1)]).await;
     route_call(
         &mock,
-        "orders::import",
-        invocation,
-        json!({ "orders": orders }),
+        "cron::routed",
+        "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        json!({ "expression": "B" }),
     );
-    let answer = answer_to(&mock, invocation).await;
-    assert_eq!(answer["result"], fixture_items[0]["output"]);
-    assert_eq!(
-        answer["observed"],
-        json!(["batch"]),
-        "the unchanged call's match"
-    );
-    let items = report_items_in(&mock.received_messages());
-    assert_eq!(items.len(), 2, "{items:#?}");
-    for (sent, expected) in items.iter().zip(fixture_items.as_array().unwrap()) {
-        for key in ["invocation_id", "matched", "input", "output"] {
-            assert_eq!(sent[key], expected[key], "{key}: {sent:#}");
-        }
-        // the call's caller as it arrived, without the worker the engine stamps
-        assert_eq!(
-            sent["caller"],
-            json!({ "function_id": "checkout::confirm",
-                    "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20" })
-        );
-    }
+    let answer = answer_to(&mock, "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(answer["observed"], json!(["five"]));
+    assert_eq!(answer["result"]["expression"], "B");
     iii.shutdown_async().await;
 }
 

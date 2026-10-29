@@ -328,10 +328,10 @@ pub enum Message {
         traceparent: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
-        /// Host → engine, from an `observe.v2` host: the observers its
-        /// delivery of this routed call matched, when the answer is the
-        /// handler's own outcome. The engine activates them and strips the
-        /// field before forwarding the result.
+        /// Host → engine, from an `observe.v2` host: the observers iii's
+        /// delivery of this routed call selected; the answer is the handler's
+        /// outcome. The engine activates them and strips the field before
+        /// forwarding the result.
         #[serde(
             default,
             deserialize_with = "null_as_default",
@@ -481,9 +481,8 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
-    /// Host → engine: what the host's delivery matched, per call: local
-    /// calls, and routed calls whose matches do not ride the answer's
-    /// `observed`. Batched.
+    /// Host → engine: what the host's delivery matched in local calls,
+    /// batched. A routed call's matches ride its `invocationresult`.
     InvocationsObserved {
         #[serde(default, deserialize_with = "null_as_default")]
         items: Vec<ObservedItem>,
@@ -644,7 +643,7 @@ pub mod observe_codes {
     /// A call through an observer from a connection that does not host the
     /// observer's function.
     pub const NOT_FUNCTION_OWNER: &str = "NOT_FUNCTION_OWNER";
-    /// A call through an observer that is not active (any more).
+    /// A call through an observer that is not active.
     pub const OBSERVER_NOT_ACTIVE: &str = "OBSERVER_NOT_ACTIVE";
     pub const OVERFLOW: &str = "OVERFLOW";
     pub const LOOP_GUARD: &str = "LOOP_GUARD";
@@ -660,12 +659,6 @@ pub mod observe_codes {
     pub const BUFFER_FULL: &str = "BUFFER_FULL";
     /// Drop reason: one report item larger than a frame.
     pub const TOO_LARGE: &str = "TOO_LARGE";
-    /// Drop reason: a deliver hook's `next` call on a routed call after the
-    /// hook settled; it delivers nothing.
-    pub const LATE_DELIVERY: &str = "LATE_DELIVERY";
-    /// Drop reason: report items of a routed call whose connection closed
-    /// before they were sent.
-    pub const DISCONNECTED: &str = "DISCONNECTED";
 }
 
 /// Declares a wire enum carried as a lowercase string, with an
@@ -916,8 +909,8 @@ pub struct Activation {
     pub activation_id: Option<String>,
 }
 
-/// One item of `invocationsobserved`: one call and the observers a `next`
-/// call delivered it to.
+/// One item of `invocationsobserved`: one local call and the observers
+/// iii's delivery selected for it.
 ///
 /// `input` / `output` / `error` / `metadata` keep `null` apart from absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -988,9 +981,8 @@ pub struct LocalFunctionStats {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DroppedReportStats {
     pub function_id: String,
-    /// [`observe_codes::BUFFER_FULL`], [`observe_codes::TOO_LARGE`],
-    /// [`observe_codes::INACTIVE`], [`observe_codes::LATE_DELIVERY`] or
-    /// [`observe_codes::DISCONNECTED`].
+    /// [`observe_codes::BUFFER_FULL`], [`observe_codes::TOO_LARGE`] or
+    /// [`observe_codes::INACTIVE`].
     pub reason: String,
     pub count: u64,
 }
