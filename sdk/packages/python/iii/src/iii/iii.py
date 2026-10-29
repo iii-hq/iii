@@ -1378,7 +1378,8 @@ class III:
     def _sync_registration(self, function_id: str) -> None:
         """SDK loop: sends a function's ``registerfunction`` on the current
         connection when it may go, and keeps a function that needs
-        ``observe.v2`` off an engine without it."""
+        ``observe.v2`` off an engine without it, released there (no local
+        dispatch, no observers)."""
         data = self._functions.get(function_id)
         if data is None or not self._is_open():
             return  # replayed on the next connection
@@ -1403,6 +1404,9 @@ class III:
         if state.sent_epoch == epoch:
             # Registered as a plain function before it set on_observer_deliver.
             self._send_frame(self._prepare_json(UnregisterFunctionMessage(id=function_id)))
+        if state.released_epoch != epoch:
+            # Unregistered on this connection: no local dispatch, no observers,
+            # also when an earlier engine had registered it.
             state.on_registration_rejected(epoch)
 
     def _retry_standby(self, data: RemoteFunctionData, epoch: int) -> None:

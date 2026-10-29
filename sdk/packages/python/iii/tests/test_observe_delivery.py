@@ -888,6 +888,32 @@ def test_registration_needing_observe_v2_goes_after_workerregistered_on_every_co
     assert [f["id"] for f in second if f["type"] == "registerfunction"] == ["cron::on-tick"]
 
 
+def test_a_reconnect_to_an_engine_without_observe_v2_releases_a_function_that_needs_it(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    ticks: list[Any] = []
+    removed: list[str] = []
+    client.on_observer_removed("cron::on-tick", lambda obs: removed.append(obs.id))
+    client.register_function("cron::on-tick", lambda tick: ticks.append(tick), private=True)
+    _confirm(client, engine, "cron::on-tick", observer_info("o", "t"))
+    state = client._functions["cron::on-tick"].observe
+    assert state.local_dispatch is True
+    engine.features = V1_FEATURES
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    settle(client, engine)
+    assert state.local_dispatch is False and client.observers("cron::on-tick") == [] and removed == ["o"]
+    assert engine.frames_of("registerfunction", 1) == []
+    # the call goes through the engine, which does not host the function
+    client.call({"function_id": "cron::on-tick", "payload": {"n": 1}, "action": CallAction.Void()})
+    engine.wait_for(
+        lambda: [f for f in engine.frames_of("invokefunction", 1) if f["function_id"] == "cron::on-tick"],
+        what="the routed call",
+    )
+    assert ticks == []
+
+
 def test_a_deliver_hook_set_after_registering_on_a_v1_engine_unregisters_the_function(
     engine_factory: Any, connect: Any
 ) -> None:
