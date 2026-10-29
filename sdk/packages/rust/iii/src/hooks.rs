@@ -511,17 +511,18 @@ impl Matcher {
         )
     }
 
-    /// The observers of `function_id` among `active` (keys: in the index)
-    /// that want `call`, each once.
+    /// The active observers among `observers` (keys: in the index) that want
+    /// `call`, each once.
     pub(crate) fn matching(
         &self,
         function_id: &str,
-        active: &[Observer],
+        observers: &[Observer],
         call: &Call,
     ) -> Vec<Observer> {
         match &self.rule {
-            Match::Predicate(wants) => active
+            Match::Predicate(wants) => observers
                 .iter()
+                .filter(|obs| obs.is_active())
                 .filter(|obs| {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| wants(obs, call)))
                         .unwrap_or_else(|panic| {
@@ -539,7 +540,7 @@ impl Matcher {
                 let mut found: Vec<Observer> = Vec::new();
                 keys.for_each(|key| {
                     for obs in index.by_key.get(key).into_iter().flatten() {
-                        if !found.contains(obs) {
+                        if obs.is_active() && !found.contains(obs) {
                             found.push(obs.clone());
                         }
                     }
