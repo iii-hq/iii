@@ -53,8 +53,8 @@ pub struct ProgressEmitter {
 impl ProgressEmitter {
     pub fn register(client: &IIIClient) -> Self {
         // An event source: the handler returns the event it is called with,
-        // and only this daemon calls it. Each call is an ordinary engine
-        // trace whether or not anything observes it.
+        // and only this daemon calls it. Each call is traced whether or not
+        // anything observes it.
         let source = client.register_function(
             PROGRESS_FUNCTION_ID,
             RegisterFunction::new(|event: ProgressEvent| Ok::<_, Error>(event))
