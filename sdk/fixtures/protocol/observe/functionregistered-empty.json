@@ -2,7 +2,7 @@
   "type": "functionregistered",
   "id": "orders::archive",
   "namespace": "default",
-  "revision": 0,
+  "revision": 1,
   "local_dispatch": false,
   "observers": []
 }

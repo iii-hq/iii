@@ -18,5 +18,8 @@
   "target": {
     "function_id": "alerts::payment-failed"
   },
+  "metadata": {
+    "team": "payments-oncall"
+  },
   "max_in_flight": 4
 }

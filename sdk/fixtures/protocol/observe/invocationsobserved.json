@@ -19,8 +19,6 @@
         "message": "card declined by issuer"
       },
       "caller": {
-        "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
-        "worker_name": "checkout",
         "function_id": "checkout::confirm",
         "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
       },
@@ -41,13 +39,9 @@
         "order_id": "ord_1001"
       },
       "output": null,
-      "caller": {
-        "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
-        "worker_name": "billing"
-      },
       "started_at_ms": 1760350000180,
       "duration_ms": 0.42,
-      "observe_depth": 1
+      "observe_depth": 0
     },
     {
       "function_id": "orders::create",
@@ -66,8 +60,6 @@
         "total": 1250
       },
       "caller": {
-        "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
-        "worker_name": "checkout",
         "function_id": "checkout::confirm",
         "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
       },
@@ -78,49 +70,6 @@
       "duration_ms": 3.25,
       "observe_depth": 0,
       "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    },
-    {
-      "function_id": "database::on-row-changed",
-      "namespace": "default",
-      "invocation_id": "c3f5a7b9-0d2e-4f4a-8b6c-7d9e1f3a5b7c",
-      "matched": [
-        "e2a4c6b8-1d3f-4a5b-8c7d-9e0f1a2b3c4d",
-        "f3b5d7c9-2e4a-4b6c-9d8e-0f1a2b3c4d5e"
-      ],
-      "status": "success",
-      "input": {
-        "db": "primary",
-        "schema": "public",
-        "table": "invoices",
-        "op": "update",
-        "affected_rows": 1,
-        "returning": [
-          {
-            "id": 77,
-            "status": "paid",
-            "amount": 1250
-          }
-        ],
-        "truncated": false,
-        "at": 1760350000201
-      },
-      "output_is_input": true,
-      "caller": {
-        "worker_name": "database",
-        "function_id": "database::execute",
-        "invocation_id": "4a6c8e0b-2d4f-4a6c-9e1b-3d5f7a9c1e3b",
-        "parent": {
-          "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
-          "worker_name": "billing",
-          "function_id": "billing::close-invoice",
-          "invocation_id": "77e1c3a5-b7d9-4f1b-9d3f-5b7d9f1b3d5f"
-        }
-      },
-      "started_at_ms": 1760350000201,
-      "duration_ms": 0.004,
-      "observe_depth": 2,
-      "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-      "baggage": "iii.function.id=database::execute"
     }
   ]
 }

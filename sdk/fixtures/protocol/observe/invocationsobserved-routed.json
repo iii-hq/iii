@@ -11,7 +11,8 @@
       "status": "success",
       "input": {
         "sku": "A-1",
-        "qty": 2
+        "qty": 2,
+        "_caller_worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f"
       },
       "output": {
         "order_id": "ord_1004",
@@ -21,8 +22,6 @@
         "warehouse": "ams-2"
       },
       "caller": {
-        "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
-        "worker_name": "checkout",
         "function_id": "checkout::confirm",
         "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
       },
