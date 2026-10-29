@@ -258,3 +258,22 @@ func TestShutdownIsBoundedWhenTheWriterIsWedged(t *testing.T) {
 		t.Errorf("Shutdown took %s", d)
 	}
 }
+
+// EngineSources names the engine-hosted sources as every SDK does (decision 17).
+func TestEngineSources(t *testing.T) {
+	for _, tc := range []struct{ got, want string }{
+		{EngineSources.FunctionsChanged, "engine::on-functions-changed"},
+		{EngineSources.WorkersChanged, "engine::on-workers-changed"},
+		{EngineSources.ObserversChanged, "engine::on-observers-changed"},
+		{EngineSources.Log, "observability::on-log"},
+		{EngineSources.Span, "observability::on-span"},
+		{EngineSources.ConfigurationUpdated, "configuration::on-updated"},
+		{EngineSources.StreamChanged, "stream::on-changed"},
+		{EngineSources.StreamJoin, "stream::on-join"},
+		{EngineSources.StreamLeave, "stream::on-leave"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%q, want %q", tc.got, tc.want)
+		}
+	}
+}

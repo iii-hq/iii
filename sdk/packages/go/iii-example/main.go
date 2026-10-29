@@ -10,9 +10,9 @@
 //	go run .                   # from sdk/packages/go/iii-example
 //	curl -X POST localhost:3111/greet -H 'Content-Type: application/json' -d '{"name":"world"}'
 //
-// The Content-Type header matters: the http worker only parses a JSON body into the
-// request's "body" field, so a form-urlencoded request (curl's -d default) arrives with
-// body=null and the handler falls back to its default.
+// The http worker parses a request body sent as application/json into the request's
+// "body" field; for any other content type "body" is null, and the handler greets
+// "world".
 package main
 
 import (
@@ -28,8 +28,8 @@ import (
 )
 
 // httpRequest is the subset of the HTTP request this example reads. The target of an
-// http::on-request observer receives the request as { path, method, body, headers, ... }
-// and the parsed request body lives under "body", not at the top level.
+// http::on-request observer receives the request as { path, method, body, headers, ... };
+// body is the parsed JSON body.
 type httpRequest struct {
 	Body greetBody `json:"body"`
 }
@@ -38,9 +38,8 @@ type greetBody struct {
 	Name string `json:"name"`
 }
 
-// httpResponse is the HTTP response: the function returns { status_code, body } for the
-// http worker to build a response. Returning the payload directly would yield an empty
-// HTTP body.
+// httpResponse is the HTTP response: the function returns { status_code, body }, which
+// the http worker sends as the response.
 type httpResponse struct {
 	StatusCode int `json:"status_code"`
 	Body       any `json:"body"`

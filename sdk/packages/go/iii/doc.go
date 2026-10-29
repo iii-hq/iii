@@ -4,7 +4,7 @@
 // registering functions; the engine invokes those functions and the worker replies over
 // the same socket. Functions are observable: when a function runs, its observers run.
 // The SDK handles the connection lifecycle (connect, reconnect with backoff, offline
-// buffering) so callers work in terms of functions and observers, not frames.
+// buffering), so callers work in terms of functions and observers.
 //
 // # Quick start
 //
@@ -100,18 +100,21 @@
 //
 // # Hosting observed functions
 //
-// The worker that hosts a function decides what observing it means with three hooks,
+// The worker that hosts a function decides what observing it means with four hooks,
 // each overriding a default: [AddedHook] (accept the observer; set something up from
-// its Args, or reject it with [ObserveRejection]), [RemovedHook] (forget it; tear down)
-// and [DeliverHook] (deliver each call to every observer whose filters match it; pick
-// observers and decide what the caller gets back, with [Next] as iii's delivery).
-// [Client.OnObserverAdded] and [Client.OnObserverRemoved] set them for every function
-// the worker hosts, [Client.OnObserverAddedFor], [Client.OnObserverRemovedFor] and
-// [Client.OnObserverDeliverFor] for one function by id, and the [FunctionRef] methods
-// for the function they were returned for. Set hooks by id before RegisterFunction.
-// [Keyed] delivers each call to the observers filed under its keys, and
-// [FunctionRef.IsObservedFor] answers whether a call would reach anyone. A deliver hook
-// calls a target itself with [CallRequest].Observer, after [Observer.Matches].
+// its Args, or reject it with [ObserveRejection]), [RemovedHook] (forget it; tear
+// down), [MatchHook] (every observer wants every call; say which observers want each
+// call) and [DeliverHook] (iii delivers each call to the matched observers whose on and
+// filters match it, and the caller gets the handler's result; deliver the call yourself
+// to the matched observers and decide what the caller gets back).
+// [Client.OnObserverAdded] and [Client.OnObserverRemoved] set the first two for every
+// function the worker hosts; [Client.OnObserverAddedFor], [Client.OnObserverRemovedFor],
+// [Client.OnObserverMatchFor] and [Client.OnObserverDeliverFor] set them for one
+// function by id, and the [FunctionRef] methods for the function they were returned
+// for. Set hooks by id before RegisterFunction. [MatchFunc] matches with a predicate,
+// [MatchKeys] with keys the SDK indexes, and [FunctionRef.IsObservedFor] answers
+// whether a call would reach anyone. A deliver hook calls a target itself with
+// [CallRequest].Observer, after [Observer.Matches].
 //
 // # Schema inference
 //

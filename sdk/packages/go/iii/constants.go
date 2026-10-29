@@ -48,8 +48,8 @@ const (
 
 // Engine-hosted sources: private functions of the engine whose handler returns the
 // event, so input and output are both the event. Observe them with [Client.Observe]
-// and filters on input; only the engine calls them. Mirrors EngineSources in the Node
-// SDK.
+// and filters on input; only the engine calls them. [EngineSources] names them as the
+// other SDKs do.
 const (
 	// FnOnFunctionsChanged is called when the function set changes:
 	// { event: "functions_changed", functions: [...] }.
@@ -74,6 +74,33 @@ const (
 	// FnOnStreamLeave is called when a client leaves a stream group (iii-stream).
 	FnOnStreamLeave = "stream::on-leave"
 )
+
+// EngineSources are the ids of the engine-hosted sources under the names every SDK
+// gives them (EngineSources in the Node, browser, Python and Rust SDKs):
+// EngineSources.FunctionsChanged is [FnOnFunctionsChanged], and so on.
+//
+//	client.ObserveFunction(iii.EngineSources.FunctionsChanged, "catalog::refresh")
+var EngineSources = struct {
+	FunctionsChanged     string
+	WorkersChanged       string
+	ObserversChanged     string
+	Log                  string
+	Span                 string
+	ConfigurationUpdated string
+	StreamChanged        string
+	StreamJoin           string
+	StreamLeave          string
+}{
+	FunctionsChanged:     FnOnFunctionsChanged,
+	WorkersChanged:       FnOnWorkersChanged,
+	ObserversChanged:     FnOnObserversChanged,
+	Log:                  FnOnLog,
+	Span:                 FnOnSpan,
+	ConfigurationUpdated: FnOnConfigurationUpdate,
+	StreamChanged:        FnOnStreamChanged,
+	StreamJoin:           FnOnStreamJoin,
+	StreamLeave:          FnOnStreamLeave,
+}
 
 // Log function paths. Mirrors LogFunctions in the Node SDK. Call these with
 // [VoidAction] (fire-and-forget) to write to the engine log.

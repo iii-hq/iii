@@ -119,8 +119,8 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Call (enqueue) | `client.Call(ctx, iii.CallRequest{Action: iii.EnqueueAction("queue")})` | Route the call through a named queue. |
 | Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)`, `client.ObserveFunction(id, target, opts...)` | Run `target` on every matching call of a function. |
 | Current invocation | `iii.InvocationFromContext(ctx) (iii.Invocation, bool)` | The invocation a handler runs in (id, caller, activation, observe depth). |
-| Observer hooks | `client.OnObserverAdded(hook)`, `client.OnObserverAddedFor(id, hook)`, `client.OnObserverRemoved(hook)`, `client.OnObserverRemovedFor(id, hook)`, `client.OnObserverDeliverFor(id, hook)`; `ref.OnObserverAdded`, `ref.OnObserverRemoved`, `ref.OnObserverDeliver` | Set up and tear down per observer, for every function or one; choose who gets each call. |
-| Keyed delivery | `iii.Keyed(observerKeys, callKeys) iii.DeliverHook` | Deliver each call to the observers filed under its keys. |
+| Observer hooks | `client.OnObserverAdded(hook)`, `client.OnObserverAddedFor(id, hook)`, `client.OnObserverRemoved(hook)`, `client.OnObserverRemovedFor(id, hook)`, `client.OnObserverMatchFor(id, match)`, `client.OnObserverDeliverFor(id, hook)`; `ref.OnObserverAdded`, `ref.OnObserverRemoved`, `ref.OnObserverMatch`, `ref.OnObserverDeliver` | Set up and tear down per observer, for every function or one; say which observers want each call; deliver calls yourself. |
+| Match observers | `iii.MatchFunc(func(obs, call) bool)`, `iii.MatchKeys(observerKeys, callKeys)` | A predicate, or keys the SDK indexes. |
 | Call through an observer | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` | Run an observer's target from a deliver hook. |
 | Observed? | `ref.IsObserved()`, `ref.IsObservedFor(call)`, `ref.Observers()` (or `client.IsObserved(id)`, `client.IsObservedFor(id, call)`, `client.Observers(id)`) | The active observers of a function this worker hosts. |
 | Create channel | `client.CreateChannel(ctx, bufferSize)` | Open a streaming data channel (writer + reader ends). |
@@ -383,21 +383,23 @@ The filter evaluator is the `filter` subpackage
 
 ### Hosting observed functions
 
-The worker that hosts a function decides what observing it means with three hooks. Each
+The worker that hosts a function decides what observing it means with four hooks. Each
 overrides something iii does by default:
 
 | Hook | What iii does by default | Use it to |
 | --- | --- | --- |
 | `iii.AddedHook` | accepts the observer: it becomes active and receives the function's calls | set something up from the observer's args before it is accepted (a cron job, a database trigger, a route); return an error to reject it |
 | `iii.RemovedHook` | stops delivering to the observer and forgets it | tear down what the added hook set up |
-| `iii.DeliverHook` | after each call, delivers to every observer whose `on` and filters match | choose which observers get each call and what the caller gets back; `next` is iii's delivery for the observers passed |
+| `*iii.MatchHook` | every observer wants every call | say which observers want each call, from their args: a cron observer of `0 9 * * *` wants that expression's ticks |
+| `iii.DeliverHook` | delivers each call to the matched observers whose `on` and filters match, and gives the caller the handler's result | deliver each call yourself to the matched observers, and decide what the caller gets back: route an HTTP request to one route and return its response |
 
 `OnObserverAdded` and `OnObserverRemoved` are set for every function the worker hosts on
 the client, and for one function by id (`OnObserverAddedFor`, `OnObserverRemovedFor`) or
 on its `FunctionRef`. Both levels run: when an observer is added, the worker's hook and
-then the function's; when it is removed, the function's and then the worker's. The
-deliver hook is set per function (`OnObserverDeliverFor`, `ref.OnObserverDeliver`). Each
-method returns its receiver, and `nil` removes the hook.
+then the function's; when it is removed, the function's and then the worker's. The match
+and deliver hooks are set per function (`OnObserverMatchFor`, `OnObserverDeliverFor`,
+`ref.OnObserverMatch`, `ref.OnObserverDeliver`). Each method returns its receiver, and
+`nil` removes the hook.
 
 ```go
 // every function this worker hosts: keep the event stream open while anything is observed
@@ -413,57 +415,110 @@ client.OnObserverRemovedFor("cron::on-tick", func(ctx context.Context, obs *iii.
 	expression, _ := obs.Args["expression"].(string)
 	scheduler.Release(expression)
 })
-client.OnObserverDeliverFor("cron::on-tick", iii.Keyed(
-	func(obs *iii.Observer) []string { // the keys an observer is filed under
-		expression, _ := obs.Args["expression"].(string)
-		return []string{expression}
-	},
-	func(call *iii.Call) []string { // the keys a call is delivered to
-		var tick struct{ Expression string `json:"expression"` }
-		_ = json.Unmarshal(call.Input, &tick)
-		return []string{tick.Expression}
-	},
-))
+// an observer of expression X gets the ticks of expression X
+client.OnObserverMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+	var tick struct{ Expression string `json:"expression"` }
+	_ = json.Unmarshal(call.Input, &tick)
+	return obs.Args["expression"] == tick.Expression
+}))
 
 client.RegisterFunction("cron::on-tick", iii.Identity, iii.FunctionOptions{ArgsFormat: cronArgs, Private: true})
 
-// the scheduler calls the function with each tick; Keyed hands it to that expression's observers
-if client.IsObservedFor("cron::on-tick", &iii.Call{Input: tick}) {
-	client.Call(ctx, iii.CallRequest{FunctionID: "cron::on-tick", Payload: tick, Action: iii.VoidAction()})
-}
+// the scheduler calls the function with each tick
+client.Call(ctx, iii.CallRequest{FunctionID: "cron::on-tick", Payload: tick, Action: iii.VoidAction()})
 ```
 
-How the hooks run:
+How the added and removed hooks run:
 
 - **Accepted.** An observer is accepted once every added hook that applies to it has
   returned nil; the SDK then acks it and it becomes active. `obs.Accepted(ctx)` waits for
-  that, so a host can send a new observer its initial state.
+  that, so a host can send a new observer its initial state: the added hook starts a
+  goroutine that waits on `obs.Accepted` and then calls through the observer (called
+  with the hook's own `ctx`, `Accepted` returns an error at once).
 - **Rejected.** An added hook that returns an error rejects the observer with the code
   of an `iii.ObserveRejection(code, message)`, or `OBSERVE_REJECTED` for any other error.
   The removed hook of each level whose added hook already returned runs.
 - **Removed.** The removed hooks run exactly once for every accepted observer: on
   unobserve, on disposal, and after a late rejection with `obs.Reject(code, message)`.
 - **One at a time.** The hooks of one function run one at a time, in the order the
-  engine announced the observers; hooks of different functions run concurrently. A hook
-  past 30s fails the observer with `OWNER_TIMEOUT` and its ctx is cancelled.
+  engine announced the observers, also across an `Unregister` and a new registration of
+  its id; hooks of different functions run concurrently. A hook past 30s fails the
+  observer with `OWNER_TIMEOUT` and its ctx is cancelled.
 - **Set hooks by id before registering.** The SDK acks no observer of a function before
   `RegisterFunction` returns, but a hook set on the returned handle can come after
   observers were accepted. A hook set while the function has active observers runs for
   each of them at once (an error late-rejects that observer), and the SDK logs one
   warning naming the function and the number of observers. A hook id this worker has not
-  registered is reported once its connection is registered.
+  registered is reported once, a short while after its connection is registered or the
+  hook is set.
 
-The deliver hook receives the call (`iii.Call`: `Input`, `Output` and `Error` as JSON,
-`Caller`, `Metadata`), the function's active observers when the call started, and
-`next`. What it returns is what the caller gets back. It runs inside the function's
-invocation, so calls it makes with its `ctx` have that invocation as their caller. To
-choose observers and let iii deliver, pass them to `next`, which applies their `on` and
-filters and delivers each at most once per call. To call a target yourself, check
-`obs.Matches(call)` and call through the observer; the target's result can be the
-caller's:
+#### Matching observers
+
+The match hook answers one question: does this observer want this call? iii does
+everything else as usual: the observer's `on`, filters, policy and `deliver` still apply.
+`iii.MatchFunc` is a predicate, asked once per active observer per call; a predicate
+that panics counts as no match, and the SDK logs it once per function.
+
+`iii.MatchKeys` is for a function with many observers: an observer wants a call when
+they share a key, and the SDK keeps an index instead of asking every observer. It
+computes an observer's keys once, when it is accepted, files the observer under each and
+unfiles it when it is removed; an observer whose key function panics is rejected with
+`OBSERVE_REJECTED`. A call matches the observers filed under any of its keys, each once.
+Keys express wildcards by listing them:
 
 ```go
-client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer, next iii.Next) (any, error) {
+rowKey := func(db, table, op string) string { return db + "|" + table + "|" + op }
+client.OnObserverMatchFor("database::on-row-changed", iii.MatchKeys(
+	func(obs *iii.Observer) []string { // what this observer listens for
+		var args struct {
+			DB, Table string
+			Ops       []string
+		}
+		_ = obs.DecodeArgs(&args)
+		if args.Table == "" {
+			args.Table = "*"
+		}
+		if len(args.Ops) == 0 {
+			args.Ops = []string{"*"}
+		}
+		var keys []string
+		for _, op := range args.Ops {
+			keys = append(keys, rowKey(args.DB, args.Table, op))
+		}
+		return keys
+	},
+	func(call *iii.Call) []string { // what this call is
+		var change struct{ DB, Table, Op string }
+		_ = json.Unmarshal(call.Input, &change)
+		return []string{
+			rowKey(change.DB, change.Table, change.Op), rowKey(change.DB, change.Table, "*"),
+			rowKey(change.DB, "*", change.Op), rowKey(change.DB, "*", "*"),
+		}
+	},
+))
+
+// a notification from the database becomes a call, when someone wants it
+if client.IsObservedFor("database::on-row-changed", &iii.Call{Input: change}) {
+	client.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: change, Action: iii.VoidAction()})
+}
+```
+
+`IsObserved(id)` is one atomic load. `IsObservedFor(id, call)` on a function matched by
+keys is one lookup per call key; on any other function it is `IsObserved(id)`. A match
+hook set while the function has active observers rebuilds the index from them.
+
+#### Delivering yourself
+
+The deliver hook receives the call (`iii.Call`: `Input`, `Output` and `Error` as JSON,
+`Caller`, `Metadata`) and the observers that matched it, as they were when the call
+started. What it returns is what the caller gets back, and iii delivers nothing for the
+function. It runs inside the function's invocation, so calls it makes with its `ctx`
+have that invocation as their caller. To call a target, check `obs.Matches(call)` (the
+observer's `on` and filters) and call through the observer; the target's result can be
+the caller's:
+
+```go
+client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
 	route := routes.Match(call.Input)
 	if route == nil {
 		return map[string]int{"status_code": 404}, nil
@@ -480,13 +535,12 @@ hosts the observer's function and that the observer is active (`NOT_FUNCTION_OWN
 `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`) and applies its policy (`OVERFLOW` past
 `max_in_flight`), metadata sidecar and loop guard.
 
-`iii.Keyed` keeps an index for a function with many observers: the SDK computes an
-observer's keys once, when it is accepted, and unfiles it when it is removed, and
-`IsObservedFor(call)` is one lookup per call key. Keys express wildcards by listing them.
-
 Every call of a function, local or routed, is delivered by the worker that hosts it.
-A routed call's matches ride its answer, and an unobserved call sends nothing. A
-function with a deliver hook needs an engine with `observe.v2`, as the options above do.
+iii's delivery reports a local call's matches in one batched report item and lists a
+routed call's matches on its answer, and an unobserved call sends nothing. A function
+with a deliver hook needs an engine with `observe.v2`, as the options above do. Against
+an engine without it, the engine delivers the routed calls of every other function
+itself, without its match hook.
 
 ## Connection behavior
 
@@ -717,15 +771,16 @@ observer, err := client.Observe(iii.Source{
 
 `TriggerFunctionsAvailable`, `TriggerLog`, `FnListTriggers`, `FnInfoTriggers`,
 `FnListRegisteredTriggers` and `FnInfoRegisteredTriggers` are removed: the engine-hosted
-sources are the `FnOn*` constants, and `engine::functions::list` and `info` describe
-each function's `args_format`, `private`, `observable` and `observer_count`.
+sources are the `FnOn*` constants, also named as in the other SDKs by `iii.EngineSources`
+(`iii.EngineSources.FunctionsChanged`, …), and `engine::functions::list` and `info`
+describe each function's `args_format`, `private`, `observable` and `observer_count`.
 
 **Trigger types are functions with hooks.** `RegisterTriggerType`, `TriggerTypeRef`,
 `UnregisterTriggerType`, `TriggerHandler` and `TriggerConfig` are removed. Register a
 function whose handler returns the event, with `ArgsFormat` for what the trigger config
 was and `Private: true`; `TriggerHandler.RegisterTrigger` becomes an added hook,
 `UnregisterTrigger` a removed hook, and firing each binding becomes one call of the
-function, which iii delivers to the observers its deliver hook (or `iii.Keyed`) picks.
+function, which iii delivers to the observers its match hook picks.
 
 **Observer hooks are methods.** `RegisterFunctionOptions.Observe`, `ObserveHooks` and
 `Delivery` are removed. `ArgsFormat` is an option of any function, `Allow: &off` is
@@ -744,13 +799,13 @@ client.RegisterFunction("chat::on-command", handler, iii.RegisterFunctionOptions
 // 0.26
 client.OnObserverAddedFor("chat::on-command", add)
 client.OnObserverRemovedFor("chat::on-command", remove)
-client.OnObserverDeliverFor("chat::on-command", deliver)
+client.OnObserverMatchFor("chat::on-command", iii.MatchKeys(observerKeys, callKeys))
 client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{ArgsFormat: commandArgs, Private: true})
 ```
 
 | 0.25 | 0.26 |
 | --- | --- |
-| an index from args to observers, and `obs.Emit(ctx, event)` | call the function with the event; `iii.Keyed(observerKeys, callKeys)` or a deliver hook passing the chosen observers to `next` |
+| an index from args to observers, and `obs.Emit(ctx, event)` | call the function with the event; `OnObserverMatchFor(id, iii.MatchKeys(observerKeys, callKeys))` or `iii.MatchFunc(predicate)` |
 | `obs.Call(ctx, payload)` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` in the deliver hook, after `obs.Matches(call)` |
 | `obs.Matches(iii.ObserveDoc{...})` | `obs.Matches(&iii.Call{...})`, which also applies `on` |
 | `obs.Legacy`, `LegacyTriggerType` | consumers observe the function |
