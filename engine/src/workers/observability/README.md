@@ -78,7 +78,7 @@ caveats:
 | Live | `logs_console_output`, `logs_sampling_ratio`, `logs_enabled` (ingest gate), `enabled` (ingest gate) | Immediate — read per use |
 | Limits | `memory_max_spans`, `logs_max_count`, `metrics_max_count`, `metrics_retention_seconds` | Immediate — enforced on the next insert / 60s sweep |
 | Swap | `sampling_ratio`, `sampling.*`, `alerts`, `collapse_spans`, `level` | Immediate — compiled artifact rebuilt and swapped (alert states of surviving rules keep cooldown/firing continuity) |
-| Task rebuild | `logs_exporter`, `logs_batch_size`, `logs_flush_interval_ms`, `logs_retention_seconds`, and `logs_enabled` on a false→true transition | The background task restarts with the new settings. A `logs_enabled` false→true toggle revives the log store and respawns the log-trigger subscriber, OTLP logs exporter, and retention task — so the `log` trigger fan-out and OTLP log export reactivate without an engine restart |
+| Task rebuild | `logs_exporter`, `logs_batch_size`, `logs_flush_interval_ms`, `logs_retention_seconds`, and `logs_enabled` on a false→true transition | The background task restarts with the new settings. A `logs_enabled` false→true toggle revives the log store and respawns the log subscriber, OTLP logs exporter, and retention task — so `observability::on-log` and OTLP log export reactivate without an engine restart |
 | Restart-only | `exporter`, `endpoint` (trace **and** logs exporters), `service_name`/`service_version`/`service_namespace` (trace resource **and** logs exporter identity), `format`, `metrics_enabled`, `metrics_exporter`, `enabled` (pipeline construction) | Logged as a warning; applied at the next engine start via the persisted entry. `endpoint`/`service_name`/`service_version` are restart-tier for **all** signals so logs and traces always move to the new collector/identity together, never split mid-edit |
 
 Known limitation: an engine config-file reload that destroys and recreates
@@ -339,9 +339,9 @@ macro fields plus baggage-stamped `iii.*` attributes); attributes recorded later
 `otel.status_code`, are absent, so pending spans read `status: "unset"`. When the span closes, the
 final span **replaces the snapshot in place** — same storage position, one entry per span id.
 
-This is what lets live trace views show in-progress work: engine-side parent spans (`trigger <fn>`,
-`enqueue`, builtin `call <fn>`) become visible while the work under them is still running, traces
-appear in list views as soon as they start, and the trace triggers tick on span
+This is what lets live trace views show in-progress work: engine-side parent spans (`call <fn>`,
+`enqueue`) become visible while the work under them is still running, traces
+appear in list views as soon as they start, and `observability::on-span` ticks on span
 start as well as close. Worker (SDK) spans still arrive only when they close — they are ingested
 over OTLP, which has no notion of an unfinished span.
 
@@ -351,7 +351,7 @@ Consumers of the Traces API should treat `pending: true` (or `end_time_unix_nano
 serialized when true, so the wire shape of finished spans is unchanged.
 
 **OTEL compliance:** pending snapshots exist ONLY in the in-memory store (and the query views and
-trace-trigger ticks fed from it). The OTLP export path (both the engine exporter and the SDK-span forwarder) is
+`observability::on-span` ticks fed from it). The OTLP export path (both the engine exporter and the SDK-span forwarder) is
 untouched and only ever ships complete spans — `end_time_unix_nano` is semantically required on the
 OTLP wire, and nothing partial ever reaches it. Spans that never close (e.g. a leaked guard) remain
 pending until buffer eviction; they are a dev-store artifact, not exported data.
@@ -373,20 +373,18 @@ pending until buffer eviction; they are a dev-store artifact, not exported data.
 | `engine::sampling::rules`  | List all active sampling rules.                                                     |
 | `engine::health::check`    | Check engine health status. Returns `status`, `components`, `timestamp`, `version`. |
 | `engine::alerts::list`     | List all configured alert rules and their current state.                            |
-| `engine::alerts::evaluate` | Manually trigger evaluation of all alert rules.                                     |
+| `engine::alerts::evaluate` | Evaluate all alert rules now.                                                       |
 
-## Trigger Type: `log`
+## Engine-hosted source: `observability::on-log`
 
-Register a function to react to log entries as they are produced.
-
-| Config Field | Type   | Description                                                                                                  |
-| ------------ | ------ | ------------------------------------------------------------------------------------------------------------ |
-| `level`      | string | Log level to subscribe to: `info`, `warn`, `error`, `debug`, or `trace`. When omitted, fires for all levels. |
+The engine calls `observability::on-log` once per ingested log record, with the record as its input
+and output. Observe it to react to log entries as they are produced; filter on the record's fields.
+It is a private function: only the engine calls it.
 
 ### Sample Code
 
 ```typescript
-const fn = iii.registerFunction("monitoring::onError", async (logEntry) => {
+iii.registerFunction("monitoring::onError", async ({ input: logEntry }) => {
   await sendAlert({
     message: logEntry.body,
     severity: logEntry.severity_text,
@@ -395,55 +393,48 @@ const fn = iii.registerFunction("monitoring::onError", async (logEntry) => {
   return {};
 });
 
-iii.registerTrigger({
-  type: "log",
-  function_id: fn.id,
-  config: { level: "error" },
-});
+iii.observe(
+  {
+    function_id: "observability::on-log",
+    filters: { "input.severity_number": { $gte: 17 } }, // ERROR and above
+  },
+  "monitoring::onError",
+);
 ```
 
-Log entry payload fields: `timestamp_unix_nano`, `observed_timestamp_unix_nano`, `severity_number`,
+Log record fields: `timestamp_unix_nano`, `observed_timestamp_unix_nano`, `severity_number`,
 `severity_text`, `body`, `attributes`, `trace_id`, `span_id`, `resource`, `service_name`,
 `instrumentation_scope_name`, `instrumentation_scope_version`.
 
-## Trigger Type: `trace`
+Records logged in the trace of an `observability::on-log` activation are its targets' own activity
+and do not call it again, so a target that logs does not feed itself.
 
-Register a function to react to span activity in the in-memory trace store, so any client — a worker
-or the web console — can refresh reactively instead of polling. The trigger is a **coalesced "traces
-changed" tick**, not a per-span feed: span activity is debounced (~300ms) and the handler receives
-the distinct affected trace ids for the window. With `live_spans` on, the tick also fires when spans
-**start** (pending snapshots land in the store), not just when they close. Re-read details via
-`engine::traces::list` / `engine::traces::spans` / `engine::traces::tree`. Requires the memory exporter (`exporter: memory` or
-`both`); in OTLP-only mode engine spans never land in the store, so the trigger only ever sees
-OTLP-ingested SDK spans there.
+## Engine-hosted source: `observability::on-span`
 
-Engine-internal spans and the trigger's **own delivery spans** are excluded from firing it —
-delivering a trigger via `engine.call` is itself instrumented as a span, so without this exclusion
-the trigger would re-fire on its own output (an unbounded feedback loop). This is why a span trigger
-differs from the `log` trigger, whose delivery produces spans, not logs.
+The engine calls `observability::on-span` on span activity in the in-memory trace store, so any
+client — a worker or the web console — can refresh reactively instead of polling. Each call is a
+**coalesced "traces changed" tick**, not a per-span feed: span activity is debounced (~300ms) and
+the event lists the distinct affected trace ids for the window. With `live_spans` on, the tick also
+fires when spans **start** (pending snapshots land in the store), not just when they close. Re-read
+details via `engine::traces::list` / `engine::traces::spans` / `engine::traces::tree`. Requires the
+memory exporter (`exporter: memory` or `both`); in OTLP-only mode engine spans never land in the
+store, so the source only ever sees OTLP-ingested SDK spans there.
 
-| Config Field   | Type   | Description                                                                                                                                               |
-| -------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `service_name` | string | Only fire for activity from this service. When omitted, fires for any service. Compared case-insensitively.                                               |
-| `status`       | string | Only fire when a span with this status (`ok`, `error`, or `unset`) landed in the window. When omitted, fires for any status. Compared case-insensitively. |
-
-Both filters are ANDed; omit both to fire on any span activity.
+Engine-internal spans, observability-function spans, and the spans of the source's own activations
+do not tick it — an activation is itself instrumented as spans, so without this exclusion the
+source would re-fire on its own output (an unbounded feedback loop).
 
 ### Sample Code
 
 ```typescript
-const fn = iii.registerFunction("devtools::onTracesChanged", async ({ trace_ids }) => {
+iii.registerFunction("devtools::onTracesChanged", async ({ input: { trace_ids } }) => {
   // A "refetch soon" beat — re-read the traces you care about.
   await refreshTraceViews(trace_ids);
   return {};
 });
 
-iii.registerTrigger({
-  type: "trace",
-  function_id: fn.id,
-  config: {}, // or { status: 'error' }
-});
+iii.observe("observability::on-span", "devtools::onTracesChanged");
 ```
 
-Handler payload: `{ "trace_ids": string[] }` — the distinct trace ids with span activity in the
-coalesced window.
+Event: `{ "trace_ids": string[] }` — the distinct trace ids with span activity in the coalesced
+window.

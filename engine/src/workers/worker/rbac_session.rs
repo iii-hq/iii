@@ -72,7 +72,7 @@ pub(crate) struct AuthResult {
     function_registration_prefix: Option<String>,
 }
 
-/// Auth result fields an earlier engine read and this one ignores.
+/// Auth result fields this engine ignores, with one warning per process.
 const REMOVED_FIELDS: [&str; 2] = ["allowed_trigger_types", "allow_trigger_type_registration"];
 
 /// Logs one `warn` per process when an auth function's result sets a removed

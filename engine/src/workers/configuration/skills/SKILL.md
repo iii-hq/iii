@@ -7,11 +7,9 @@ description: >-
 
 # configuration
 
-The `configuration` worker is a server-side registry of named entries. Every entry has an id (e.g. `iii-stream`, `billing-service`), a human-readable name and description, a JSON Schema describing the value shape, and a JSON value validated against that schema. Workers call `configuration::register` once at startup to declare their schema and `configuration::set` to publish values; consumers call `configuration::get` / `configuration::list` to read and bind a `configuration` trigger to react to changes without polling.
+The `configuration` worker is a server-side registry of named entries. Every entry has an id (e.g. `iii-stream`, `billing-service`), a human-readable name and description, a JSON Schema describing the value shape, and a JSON value validated against that schema. Workers call `configuration::register` once at startup to declare their schema and `configuration::set` to publish values; consumers call `configuration::get` / `configuration::list` to read and observe `configuration::on-updated` to react to changes without polling.
 
 The default `fs` adapter persists one YAML file per id under `./config` and watches the directory for external edits, so manual edits surface as `configuration:updated` events. The `bridge` adapter delegates to a remote engine. The worker is engine-owned and may be configured at `engine.workers.configuration`.
-
-A per-id TTL (off by default) cleans up entries whose last subscriber trigger has unregistered, scoped to the lifecycle of ephemeral workers that come and go without an explicit teardown step.
 
 ## When to Use
 
@@ -74,36 +72,35 @@ Distinct concurrent overrides sharing one configuration id are not supported.
 
 `register`, `ensure`, `migrate`, and `set` are the mutators; the read-side functions are cache-backed and cheap. Every mutator (plus `delete`) is linearized per store (the local `fs` store, one engine process), so a seed can never clobber a concurrent `set` and two racing seeds resolve to a single winner. Over the `bridge` adapter the authoritative store is the remote engine and its own linearization applies (the local cache is a best-effort mirror), so `ensure` is decided remotely, never against the local cache. Reads expand `${VAR:default}` placeholders against the live process env on every call, so env changes propagate without restarts — pass `raw: true` to `configuration::get` when you need the stored template form.
 
-## Reactive triggers
+## Reacting to changes
 
-Bind a `configuration` trigger when a function should run automatically on every register / set / delete — including external `fs` file edits and bridge-forwarded events from a remote engine. The engine invokes matching handlers asynchronously after each successful mutation and after TTL-driven cleanup, so a worker stays in sync with its configuration without polling.
+Observe `configuration::on-updated` when a function should run automatically on every register / set / delete — including external `fs` file edits and bridge-forwarded events from a remote engine. The engine calls it after each successful mutation and runs its observers' targets asynchronously, so a worker stays in sync with its configuration without polling.
 
 Reach for it when:
 
 - A worker needs to reload in-memory state when its configuration is rewritten by another component or by an operator editing the YAML directly.
 - The same handler should run regardless of who edited the configuration (local SDK call, remote engine via the bridge adapter, or a file edit).
 
-If you only need the new value inside the same function that wrote it, `configuration::set` already returns `old_value` / `new_value` — register a trigger only when a *different* worker should react.
+If you only need the new value inside the same function that wrote it, `configuration::set` already returns `old_value` / `new_value` — observe only when a *different* worker should react.
 
-### How to bind
+### How to observe
 
 1. Register a handler: `iii.registerFunction('stream::on-config-change', handler)`.
-2. Register the trigger:
+2. Observe the source:
 
 ```typescript
-iii.registerTrigger({
-  type: 'configuration',
-  function_id: 'stream::on-config-change',
-  config: {
-    configuration_id: 'iii-stream',          // optional. Omit to receive every id.
-    event_types: ['configuration:updated'],  // optional. Subset of configuration:registered|configuration:updated|configuration:deleted.
-    // condition_function_id is also supported — see get function info.
+iii.observe(
+  {
+    function_id: 'configuration::on-updated',
+    filters: {
+      'input.id': { $eq: 'iii-stream' },                         // optional. Omit to receive every id.
+      'input.event_type': { $eq: 'configuration:updated' },      // optional. configuration:registered|updated|deleted.
+    },
   },
-})
+  'stream::on-config-change',
+)
 ```
 
-Mutations that fire triggers: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::ensure` (`:registered` on creation, `:updated` on refresh), `configuration::set` (`:updated`), TTL cleanup (`:deleted`), and external `fs` create/edit/delete events. Reads do **not** fire triggers.
+Mutations that call it: `configuration::register` (`:registered` on first call, `:updated` on re-registration), `configuration::ensure` (`:registered` on creation, `:updated` on refresh), `configuration::set` (`:updated`), and external `fs` create/edit/delete events. Reads do **not** call it.
 
-The worker also respects per-id TTL: when `ttl_seconds > 0` is configured and the **last** trigger bound to a `configuration_id` is unregistered, the entry is deleted after the TTL elapses. A new trigger registration before the countdown fires aborts the cleanup.
-
-For the event payload shape, call `iii get function info` on the trigger type or handler function id.
+For the event shape, call `engine::functions::info { function_id: "configuration::on-updated" }`: its `request_format` is the event.

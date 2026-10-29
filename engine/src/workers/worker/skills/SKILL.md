@@ -3,7 +3,7 @@ name: iii-worker-manager
 description: >-
   WebSocket listener that SDK workers connect to. Use to expose the engine to
   trusted (internal) and untrusted (RBAC-protected) workers, gate function and
-  trigger registration, and audit or transform every invocation through a
+  observer registration, and audit or transform every invocation through a
   middleware function. Mounts channel WebSocket endpoints on every listener.
 ---
 
@@ -19,17 +19,17 @@ are mounted on every listener at `/ws/channels/{channel_id}`.
 - Exposing the engine to an untrusted network — RBAC is mandatory, never open the engine port itself. Use the standalone [`rbac-proxy` worker](https://workers.iii.dev/workers/rbac-proxy) (`iii trigger compose::add worker=rbac-proxy`), which applies these RBAC rules on its own port out of process. A second `#instance` listener with an `rbac` block and an `auth_function_id` is the in-engine alternative.
 - Restricting which functions a connected worker can invoke — combine `expose_functions` filters (operator-side) with `forbidden_functions` from `AuthResult` (per-session, hard deny).
 - Auditing, rate-limiting, or enriching every invocation — set `middleware_function_id` on the listener; the middleware decides whether to call the target and what to return.
-- Per-tenant or per-session namespace isolation — return `function_registration_prefix` from the auth function so every function/trigger this session registers is transparently prefixed without the worker code knowing.
-- Gating dynamic registration — wire `on_function_registration_function_id`, `on_trigger_registration_function_id`, or `on_trigger_type_registration_function_id` to validate or rewrite registrations.
+- Per-tenant or per-session namespace isolation — return `function_registration_prefix` from the auth function so every function this session registers (and every observer target it names) is transparently prefixed without the worker code knowing.
+- Gating dynamic registration — wire `on_function_registration_function_id` or `on_observer_registration_function_id` to validate or rewrite registrations.
 
 ## Boundaries
 
 - The infrastructure carve-out (`engine::channels::create`, `engine::workers::register`, `engine::log::*`, `engine::baggage::*`) is always allowed on RBAC listeners regardless of `expose_functions`. Adding one of those IDs to `forbidden_functions` denies it but logs a warning — workers may behave unpredictably (broken setup, lost logs, missing context).
 - The engine port must remain internal. Only `rbac-proxy` or an RBAC-protected `#instance` listener may face an external network.
-- The middleware is **not** a pre-handler — it must invoke the target function itself (typically via `iii.trigger`) and return its result. Returning early without invoking simply skips the call.
+- The middleware is **not** a pre-handler — it must invoke the target function itself (typically via `iii.call`) and return its result. Returning early without invoking simply skips the call.
 - `forbidden_functions` from the auth result wins over both `allowed_functions` and `expose_functions`. There is no way for a session to override an operator's deny list.
 - Registration hooks return mapped fields or **throw** to deny. Omitted result fields keep their original values; returning `{}` is a no-op (allow as-is).
-- Triggers and functions registered through an RBAC session are scoped to that session and cleaned up automatically on disconnect.
+- Functions and observers registered through an RBAC session are scoped to that session: its functions are removed on disconnect, and its observers are disposed when it does not reconnect within `observers.observer_grace_ms`.
 
 ## Configuration
 
@@ -48,8 +48,7 @@ engine:
       rbac:
         auth_function_id: my-project::auth
         on_function_registration_function_id: my-project::on-fn-reg
-        on_trigger_registration_function_id: my-project::on-trig-reg
-        on_trigger_type_registration_function_id: my-project::on-trig-type-reg
+        on_observer_registration_function_id: my-project::on-observer-reg
         expose_functions:
           - match("api::*")
           - match("*::public")
@@ -84,7 +83,7 @@ iii.registerFunction(
 )
 ```
 
-`AuthResult` defaults: `allow_function_registration: true`, `allow_trigger_type_registration: false`, `allowed_trigger_types: undefined` (permissive — every type allowed). Setting `function_registration_prefix` makes the engine transparently rewrite IDs in both directions; the worker SDK never sees the prefix.
+`AuthResult` defaults: `allow_function_registration: true`. An event source is a function, so `allow_function_registration` and the function registration hook gate event sources too. Setting `function_registration_prefix` makes the engine transparently rewrite IDs in both directions; the worker SDK never sees the prefix.
 
 ## Middleware function
 
@@ -98,7 +97,7 @@ iii.registerFunction(
   async (input: MiddlewareFunctionInput) => {
     console.log(`[audit] user=${input.context.user_id} → ${input.function_id}`)
 
-    return iii.trigger({
+    return iii.call({
       function_id: input.function_id,
       payload: {
         ...input.payload,
@@ -110,18 +109,14 @@ iii.registerFunction(
 )
 ```
 
-Skipping the `iii.trigger` call short-circuits the request — useful for rate-limit rejections (return a structured error envelope instead of invoking the target).
+Skipping the `iii.call` short-circuits the request — useful for rate-limit rejections (return a structured error envelope instead of invoking the target).
 
 ## Registration hooks
 
 Each hook receives the registration details plus `AuthResult.context`. Return mapped fields or throw to deny. Omitted fields keep their original value.
 
 ```typescript
-import type {
-  OnFunctionRegistrationInput,
-  OnTriggerRegistrationInput,
-  OnTriggerTypeRegistrationInput,
-} from '@iii-dev/helpers/worker-connection-manager'
+import type { OnFunctionRegistrationInput } from '@iii-dev/helpers/worker-connection-manager'
 
 iii.registerFunction(
   'my-project::on-fn-reg',
@@ -129,33 +124,25 @@ iii.registerFunction(
     if (input.function_id.startsWith('internal::')) {
       throw new Error('Cannot register internal functions')
     }
+    if (input.private && input.context.role !== 'admin') {
+      throw new Error('Only admins can register event sources')
+    }
     return { function_id: input.function_id }
   },
 )
 
 iii.registerFunction(
-  'my-project::on-trig-reg',
-  async (input: OnTriggerRegistrationInput) => {
-    const role = input.context.role as string
-    if (!input.function_id.startsWith(`${role}::`)) {
-      throw new Error('Function ID must be prefixed with the role')
-    }
-    return { function_id: `${role}::${input.function_id}` }
-  },
-)
-
-iii.registerFunction(
-  'my-project::on-trig-type-reg',
-  async (input: OnTriggerTypeRegistrationInput) => {
-    if (input.context.role !== 'admin') {
-      throw new Error('Only admins can register trigger types')
+  'my-project::on-observer-reg',
+  async (input: { function_id: string; target_function_id: string; context: { role: string } }) => {
+    if (!input.target_function_id.startsWith(`${input.context.role}::`)) {
+      throw new Error('Observer targets must be prefixed with the role')
     }
     return {}
   },
 )
 ```
 
-A worker can register a trigger type only when `allow_trigger_type_registration: true` AND (if configured) the hook returns a result. A worker can register a trigger only when its `trigger_type` is in `allowed_trigger_types` (or the field is omitted) AND the hook returns a result.
+The function registration hook receives `function_id`, `description`, `metadata`, `namespace`, `private`, `observable`, `args_format` (when set) and `context`, and may rewrite `function_id`, `description`, `metadata`, `private`, `observable` and `args_format`. The observer registration hook receives `observer_id`, `function_id`, `namespace`, `args`, `filters`, `target_function_id`, `target_namespace`, `metadata` and `context`, and may rewrite `function_id`, `target_function_id`, `args`, `filters` and `metadata`; a denied observer ends in `error` with code `FORBIDDEN`.
 
 ## Function filters
 

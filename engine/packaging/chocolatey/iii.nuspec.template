@@ -18,12 +18,12 @@
     <summary>WebSocket-based process communication engine</summary>
     <description>
 III is a WebSocket-based process communication engine. Workers connect over WS, register
-functions and triggers, and the engine routes invocations between workers and core modules.
+functions and observers, and the engine routes invocations between workers and core modules.
 Core modules add HTTP APIs, event stream, cron scheduling, and logging.
 
 ## Features
 - WebSocket-based worker connections
-- HTTP API trigger support
+- HTTP API support
 - Event streaming
 - Cron scheduling
 - Redis-backed queue and state

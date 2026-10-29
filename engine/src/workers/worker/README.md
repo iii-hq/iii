@@ -30,8 +30,7 @@ engine:
       rbac:
         auth_function_id: my-project::auth-function
         on_function_registration_function_id: my-project::on-function-reg
-        on_trigger_registration_function_id: my-project::on-trigger-reg
-        on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+        on_observer_registration_function_id: my-project::on-observer-reg
         expose_functions:
           - match("api::*")
           - match("*::public")
@@ -54,7 +53,7 @@ engine:
 
 ## Middleware
 
-When `middleware_function_id` is set, every invocation routed through this listener is delivered to the middleware instead of the target function. The middleware decides whether to invoke the target (via `iii.trigger`) and what to return.
+When `middleware_function_id` is set, every invocation routed through this listener is delivered to the middleware instead of the target function. The middleware decides whether to invoke the target (via `iii.call`) and what to return.
 
 ### MiddlewareFunctionInput
 
@@ -62,7 +61,7 @@ When `middleware_function_id` is set, every invocation routed through this liste
 |---|---|---|
 | `function_id` | string | The function the worker wants to invoke. |
 | `payload` | object | The payload the worker sent. |
-| `action` | TriggerAction or omitted | Routing action (`enqueue`, `void`), if any. |
+| `action` | CallAction or omitted | Routing action (`enqueue`, `void`), if any. |
 | `context` | object | Auth context from the session's `AuthResult.context`. Empty object when RBAC is not configured. |
 
 ## RBAC
@@ -76,8 +75,7 @@ When the `rbac` block is present, the listener authenticates every connection ag
 | `auth_function_id` | string | Function ID called once per WebSocket upgrade. Receives `AuthInput`, returns `AuthResult`. If unset, every connection is allowed and `expose_functions` alone gates access. |
 | `expose_functions` | FunctionFilter[] | List of filters. A function is exposed if **any** filter matches. Empty list = no functions exposed (other than the infrastructure carve-out below). |
 | `on_function_registration_function_id` | string | Hook called before each `registerFunction` from the worker. Returns mapped fields or throws to deny. |
-| `on_trigger_registration_function_id` | string | Hook called before each `registerTrigger`. Returns mapped fields or throws to deny. |
-| `on_trigger_type_registration_function_id` | string | Hook called before each `registerTriggerType`. Returns mapped fields or throws to deny. |
+| `on_observer_registration_function_id` | string | Hook called before each `observe` from the worker. Returns mapped fields or throws to deny. |
 
 ### Function Filters
 
@@ -126,10 +124,8 @@ expose_functions:
 |---|---|---|---|
 | `allowed_functions` | string[] | `[]` | Additional function IDs to allow beyond `expose_functions`. |
 | `forbidden_functions` | string[] | `[]` | Function IDs to deny even when they match `expose_functions`. Takes precedence over everything else. |
-| `allowed_trigger_types` | string[] or omitted | omitted (permissive) | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
-| `allow_trigger_type_registration` | boolean | `false` | Whether the worker may register new trigger types. |
 | `allow_function_registration` | boolean | `true` | Whether the worker may register new functions. |
-| `function_registration_prefix` | string or omitted | omitted | When set, function IDs registered by this worker are prefixed with `{prefix}::` and trigger registrations auto-prefix the `function_id` they reference. The prefix is stripped when invoking the worker, so the worker SDK never sees it. |
+| `function_registration_prefix` | string or omitted | omitted | When set, function IDs registered by this worker are prefixed with `{prefix}::`, and so is the target function of each observer it creates. The prefix is stripped when invoking the worker, so the worker SDK never sees it. |
 | `context` | object | `{}` | Arbitrary context forwarded to `middleware_function_id` and registration hooks on every call from this session. |
 
 ### Access Resolution Order
@@ -161,7 +157,7 @@ The carve-out is part of the worker's public contract: within a major version it
 
 ### Function Registration Prefix
 
-When `AuthResult.function_registration_prefix` is set, the engine transparently prefixes every function ID this session registers with `{prefix}::`. Trigger registrations also auto-prefix the `function_id` they reference. When the engine dispatches an invocation back to the worker, the prefix is stripped so the worker SDK finds the local handler.
+When `AuthResult.function_registration_prefix` is set, the engine transparently prefixes every function ID this session registers with `{prefix}::`. The target function of each observer the session creates is prefixed too. When the engine dispatches an invocation back to the worker, the prefix is stripped so the worker SDK finds the local handler.
 
 This gives every authenticated session a private namespace without the worker code having to manage prefixes.
 
@@ -176,6 +172,10 @@ Each hook receives the registration details plus `AuthResult.context`. Return a 
 | `function_id` | string | ID being registered (after `function_registration_prefix`, if any). |
 | `description` | string or omitted | Description supplied by the worker. |
 | `metadata` | object or omitted | Metadata supplied by the worker. |
+| `namespace` | string | Namespace the function is registered in. |
+| `private` | boolean | `true` when only the registering worker may call the function. |
+| `observable` | boolean | `false` when nobody may observe the function. |
+| `args_format` | object or omitted | JSON Schema of the `args` observers pass. |
 | `context` | object | Auth context for this session. |
 
 | Result field | Type | Description |
@@ -183,38 +183,33 @@ Each hook receives the registration details plus `AuthResult.context`. Return a 
 | `function_id` | string or omitted | Mapped function ID. |
 | `description` | string or omitted | Mapped description. |
 | `metadata` | object or omitted | Mapped metadata. |
+| `private` | boolean or omitted | Mapped `private`. |
+| `observable` | boolean or omitted | Mapped `observable`. |
+| `args_format` | object or omitted | Mapped `args_format`. |
 
-#### OnTriggerRegistrationInput / Result
+#### OnObserverRegistrationInput / Result
 
 | Input field | Type | Description |
 |---|---|---|
-| `trigger_id` | string | ID of the trigger being registered. |
-| `trigger_type` | string | Trigger type identifier. |
-| `function_id` | string | Function ID this trigger is bound to. |
-| `config` | unknown | Trigger-specific configuration. |
+| `observer_id` | string | ID of the observer being created. |
+| `function_id` | string | The observed function. |
+| `namespace` | string | Namespace of the observed function. |
+| `args` | object | Args for the observed function's worker. |
+| `filters` | object or omitted | Filters that pick the calls reaching the target. |
+| `target_function_id` | string | The function invoked on each matching call. |
+| `target_namespace` | string | Namespace of the target function. |
+| `metadata` | object or omitted | Metadata sent with each activation. |
 | `context` | object | Auth context for this session. |
 
 | Result field | Type | Description |
 |---|---|---|
-| `trigger_id` | string or omitted | Mapped trigger ID. |
-| `trigger_type` | string or omitted | Mapped trigger type. |
-| `function_id` | string or omitted | Mapped function ID. |
-| `config` | unknown or omitted | Mapped configuration. |
+| `function_id` | string or omitted | Mapped observed function. |
+| `target_function_id` | string or omitted | Mapped target function. |
+| `args` | object or omitted | Mapped args. |
+| `filters` | object or omitted | Mapped filters. |
+| `metadata` | object or omitted | Mapped metadata. |
 
-#### OnTriggerTypeRegistrationInput / Result
-
-| Input field | Type | Description |
-|---|---|---|
-| `trigger_type_id` | string | ID of the trigger type being registered. |
-| `description` | string | Human-readable description of the trigger type. |
-| `context` | object | Auth context for this session. |
-
-| Result field | Type | Description |
-|---|---|---|
-| `trigger_type_id` | string or omitted | Mapped trigger type ID. |
-| `description` | string or omitted | Mapped description. |
-
-A worker can register a trigger type only when `allow_trigger_type_registration` is `true` AND the hook (if configured) returns a result. A worker can register a trigger only when its `trigger_type` is in `allowed_trigger_types` (or the field is omitted) AND the hook (if configured) returns a result. Triggers registered by a session are cleaned up automatically when the worker disconnects.
+A denied observer ends in `error` with code `FORBIDDEN`. An event source is a function: registering one is gated by `allow_function_registration` and the function registration hook. Functions registered by a session are removed when the worker disconnects; the observers it created are disposed when it does not reconnect within `observers.observer_grace_ms`.
 
 ## Channels
 
@@ -224,7 +219,7 @@ A writer ends its stream with a close frame that has no code or code 1000. Any o
 
 ## Sample Code
 
-A TypeScript auth function that validates a bearer token, denies destructive ops to read-only roles, and gates trigger-type registration to admins:
+A TypeScript auth function that validates a bearer token, denies destructive ops to read-only roles, and lets only admins register functions:
 
 ```typescript
 import type { AuthInput, AuthResult } from 'iii-sdk'
@@ -249,9 +244,7 @@ iii.registerFunction(
       forbidden_functions: user.role === 'readonly'
         ? ['api::users::delete', 'api::users::update']
         : [],
-      allowed_trigger_types: user.role === 'admin'
-        ? ['cron', 'webhook']
-        : undefined,
+      allow_function_registration: user.role === 'admin',
       context: {
         user_id: user.id,
         role: user.role,
@@ -268,4 +261,4 @@ iii.registerFunction(
 - Prefer narrow `expose_functions` patterns over `match("*")`. Audit the list whenever a new namespace is added to the engine.
 - `forbidden_functions` from the auth result is the hard-deny mechanism — use it for per-user/per-role denylists that the operator's `expose_functions` cannot override.
 - The middleware is the right place for request validation, rate limiting, and audit logging. Keep it idempotent so retries do not double-charge or double-log.
-- Triggers and functions registered through an RBAC session are scoped to that session and cleaned up on disconnect.
+- Functions and observers registered through an RBAC session are scoped to that session: its functions are removed on disconnect, and its observers are disposed when it does not reconnect within `observers.observer_grace_ms`.

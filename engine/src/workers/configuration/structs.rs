@@ -12,7 +12,7 @@ use serde_json::Value;
 ///
 /// `value` is stored verbatim — including any `${VAR:default}` template
 /// strings. Expansion happens on read (`configuration::get`) and during
-/// trigger fan-out so env-var changes propagate without a worker restart.
+/// event fan-out so env-var changes propagate without a worker restart.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigurationEntry {
     /// Stable identifier (e.g. `iii-stream`, `iii-observability`).
@@ -259,7 +259,7 @@ mod tests {
             (ConfigurationEventType::Updated, "configuration:updated"),
             (ConfigurationEventType::Deleted, "configuration:deleted"),
         ] {
-            let v = serde_json::to_value(&variant).unwrap();
+            let v = serde_json::to_value(variant).unwrap();
             assert_eq!(v.as_str().unwrap(), wire);
         }
     }

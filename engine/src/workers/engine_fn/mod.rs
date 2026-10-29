@@ -1596,7 +1596,7 @@ impl EngineFunctionsWorker {
 
     #[function(
         id = "engine::observers::list",
-        description = "List observers (iii.observe): function, args, filters, target, observing worker, delivery, state, reason, fires and drops by reason. Only observers of functions the caller may invoke are listed."
+        description = "List observers (iii.observe): function, args, filters, target, observing worker, state, reason, fires and drops by reason. Only observers of functions the caller may invoke are listed."
     )]
     pub async fn observers_list(
         &self,
