@@ -19,13 +19,15 @@
 //! observer watches one function, so its activations stay in engine arrival
 //! order while different functions are evaluated in parallel.
 //!
-//! Who matches a call's observers (v2 §8.2): a host that declared `observe.v2`
-//! delivers its own calls, listing the observers its delivery matched on each
-//! routed answer (`invocationresult.observed`) and reporting its local calls
-//! (`invocationsobserved`); the engine activates those. It evaluates the
+//! Who matches a call's observers (v2 §8.2, decision 2): a host that declared
+//! `observe.v2` delivers its own calls, listing the observers its delivery
+//! matched on each routed answer (`invocationresult.observed`) and reporting
+//! its local calls (`invocationsobserved`); the engine activates those. A
+//! routed call of such a host that ends without its answer (its caller left,
+//! the engine could not send it, the host went away) activates nothing: each
+//! of its observers counts a `CANCELLED` drop. The engine evaluates the
 //! observers' `on` and filters itself for every other call: to a host without
-//! `observe.v2`, to an engine-hosted or HTTP-invoked function, and for a call
-//! that ended without its host's answer.
+//! `observe.v2`, and to an engine-hosted or HTTP-invoked function.
 //!
 //! A matched event is shared, not copied, by the observers it activates: a
 //! queued activation holds a pointer to it, and the target's argument is built
@@ -73,6 +75,9 @@ pub struct ObservedCall {
 
 struct Tracked {
     set: Arc<ActiveSet>,
+    /// The function's host delivers its calls itself: only its answer
+    /// activates the call's observers.
+    host_delivers: bool,
     /// The evaluator had room when the call began: what it needs was kept.
     admitted: bool,
     started: Instant,
@@ -569,7 +574,8 @@ impl ObserverRegistry {
     /// has room (otherwise the call counts an `OVERFLOW` drop when it
     /// completes, without having copied anything). The input is kept whoever
     /// will match the call's observers: the envelope of an observer its host
-    /// lists is built from it too.
+    /// lists is built from it too. Whether its host or the engine matches
+    /// them is decided when the call begins, from the host it goes to.
     ///
     /// Observers see the payload as the caller sent it: a call a worker makes
     /// carries the engine's `_caller_worker_id` stamp, which the copy leaves
@@ -592,9 +598,11 @@ impl ObserverRegistry {
         } else {
             None
         };
+        let host_delivers = self.host_delivers(&set.function);
         ObservedCall {
             inner: Some(Tracked {
                 set,
+                host_delivers,
                 admitted,
                 started: Instant::now(),
                 started_at_ms: now_ms(),
@@ -647,8 +655,11 @@ impl ObserverRegistry {
     /// it is checked to be an active observer of the function (decisions 3,
     /// 36). Its result is their `output`, and its `error` their `error`. An
     /// answer from a connection that does not host the function activates
-    /// nothing it lists (`REPORTER_NOT_OWNER`). Without `delivered`, the
-    /// engine evaluates the call's observers itself.
+    /// nothing it lists (`REPORTER_NOT_OWNER`). Without `delivered`, a call
+    /// whose host delivers its calls ended without its answer: each active
+    /// observer counts a `CANCELLED` drop, since only the host knows which of
+    /// them would have matched. The engine evaluates the observers of every
+    /// other call itself.
     #[allow(clippy::too_many_arguments)]
     pub fn complete(
         self: &Arc<Self>,
@@ -664,6 +675,12 @@ impl ObserverRegistry {
             return;
         };
         let matching = match delivered {
+            None if call.host_delivers => {
+                for observer in &call.set.observers {
+                    drop_event(observer, CANCELLED);
+                }
+                return;
+            }
             None => Matching::Filters,
             Some(HostDelivery { host, observed }) => {
                 if observed.is_empty() {

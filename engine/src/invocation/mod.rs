@@ -55,7 +55,8 @@ pub struct Completion {
 }
 
 impl From<Result<Option<Value>, ErrorBody>> for Completion {
-    /// An answer nobody delivered: the engine evaluates the call's observers.
+    /// A result that is no host's answer: the engine stopped the call, or did
+    /// not send it.
     fn from(result: Result<Option<Value>, ErrorBody>) -> Self {
         Self {
             result,

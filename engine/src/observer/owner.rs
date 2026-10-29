@@ -201,6 +201,7 @@ pub(crate) fn private_refusal(function_id: &str) -> ErrorBody {
 /// The active observers of one function, as the routed hook sees them, with
 /// the parts of an invocation any of them needs.
 pub struct ActiveSet {
+    pub(crate) function: FnKey,
     pub(crate) observers: Vec<Arc<Observer>>,
     pub(crate) needs: Needs,
     /// The function's hash: which evaluator shard takes its completions.
@@ -240,6 +241,7 @@ impl ActiveSet {
             hasher.finish()
         };
         Self {
+            function: key.clone(),
             observers,
             needs,
             shard,
@@ -691,6 +693,25 @@ impl ObserverRegistry {
         let deps = self.deps.get()?;
         let (connection, kind) = *deps.function_owners.get(key)?;
         Some(self.owner(connection, kind))
+    }
+
+    /// Whether `key`'s host delivers its calls itself (v2 §8.2): a connection
+    /// that declared `observe.v2` and hosts the function, not an HTTP-invoked
+    /// registration (decision 43). The engine evaluates the calls of every
+    /// other function.
+    pub(crate) fn host_delivers(&self, key: &FnKey) -> bool {
+        let Some(deps) = self.deps.get() else {
+            return false;
+        };
+        let Some((connection, kind)) = deps.function_owners.get(key).map(|owner| *owner) else {
+            return false;
+        };
+        kind == InvocationKind::Regular
+            && deps
+                .workers
+                .workers
+                .get(&connection)
+                .is_some_and(|worker| worker.features.observe_v2())
     }
 
     /// As [`Self::owner_of`] without waiting: `None` when `function_owners`'

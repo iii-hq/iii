@@ -294,6 +294,74 @@ async fn the_engine_evaluates_the_calls_of_a_host_without_observe_v2() {
     assert_eq!(fires(&t, "unlisted"), 1);
 }
 
+/// A host that declared `observe.v2` delivers its routed calls, so one that
+/// ends without its answer activates nothing (decision 2): here its caller
+/// leaves while the host runs it. The engine's `invocation_stopped` is no
+/// error of the function: its `on: error` observer counts a `CANCELLED` drop
+/// and does not fire, and the host's late answer finds nobody waiting.
+#[tokio::test]
+async fn a_call_its_caller_left_activates_nothing_for_a_host_that_delivers() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::failures"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    sink.observe_active(observer(
+        "failures",
+        json!({ "function_id": "orders::create", "on": "error" }),
+        "sink::failures",
+    ))
+    .await;
+
+    checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    checkout.disconnect().await;
+    assert!(eventually(|| dropped(&t, "failures", "CANCELLED") == 1).await);
+
+    orders
+        .reply_observed(&invoke, json!({ "id": 7 }), &["failures"])
+        .await;
+    let barrier = orders.call("engine::workers::list", json!({})).await;
+    orders.result(barrier).await;
+    assert_eq!(fires(&t, "failures"), 0);
+    assert!(!invoked_already(&mut sink, "sink::failures"));
+}
+
+/// A routed call the engine cannot send to its host (larger than the host
+/// receives) never ran there: the caller gets `payload_too_large`, and an
+/// `observe.v2` host's observers count a `CANCELLED` drop: the function
+/// raised no error for them to observe.
+#[tokio::test]
+async fn a_call_never_sent_to_a_host_that_delivers_activates_nothing() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::failures"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    sink.observe_active(observer(
+        "failures",
+        json!({ "function_id": "orders::create", "on": "error" }),
+        "sink::failures",
+    ))
+    .await;
+    t.engine
+        .worker_registry
+        .get_worker(&orders.worker_id)
+        .expect("the host is connected")
+        .receive_message_limit
+        .store(1024, std::sync::atomic::Ordering::Relaxed);
+
+    let call = checkout
+        .call("orders::create", json!({ "blob": "x".repeat(4096) }))
+        .await;
+    assert_eq!(
+        checkout.result(call).await["error"]["code"],
+        "payload_too_large"
+    );
+    assert!(eventually(|| dropped(&t, "failures", "CANCELLED") == 1).await);
+    assert_eq!(fires(&t, "failures"), 0);
+    assert!(!invoked_already(&mut orders, "orders::create"));
+    assert!(!invoked_already(&mut sink, "sink::failures"));
+}
+
 /// Every routed answer of an `observe.v2` host is read, a target's answer
 /// to an activation and to a call through an observer included (decision
 /// 36): each activates the target's own observers it lists, and the host
