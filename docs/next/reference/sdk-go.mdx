@@ -216,7 +216,7 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, er
       FunctionID is the function to invoke (e.g. an EngineFunctions constant). Empty with Observer.
     </ParamField>
     <ParamField body="Observer" type="*Observer">
-      Observer calls through an observer of a function this worker hosts: the engine runs the observer's target with Payload as given, after checking that this worker hosts the observer's function (NOT_FUNCTION_OWNER) and that the observer exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop guard. The call goes out on the current connection, after the acks already sent on it; FunctionID, Namespace and an enqueue action do not apply. A call through an observer belongs in the function's `DeliverHook`, which applies the observer's filters with `Observer.Matches`; to send one observer something outside delivery (its initial state), call the function with metadata \{"for_observer": &lt;obs.ID&gt;\} (see `Observer.Accepted`).
+      Observer calls through an observer of a function this worker hosts: the engine runs the observer's target with Payload as given, after checking that this worker hosts the observer's function (NOT_FUNCTION_OWNER) and that the observer exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop guard. The call goes out on the current connection, after the acks already sent on it; FunctionID, Namespace and an enqueue action do not apply. It takes no Metadata: the target's metadata is the observer's registration metadata, and Call refuses a request with Metadata before anything is sent. A call through an observer belongs in the function's `DeliverHook`, which applies the observer's filters with `Observer.Matches`; to send one observer something outside delivery (its initial state), call the function with metadata \{"for_observer": &lt;obs.ID&gt;\} (see `Observer.Accepted`).
     </ParamField>
     <ParamField body="Payload" type="json.RawMessage">
       Payload is the JSON input of the function (payload in the Node, Python and Rust SDKs). Nil is sent as \{\}.
@@ -225,7 +225,7 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, er
       **Deprecated.** Use Payload. Data is the JSON input of the function, used only when Payload is nil.
     </ParamField>
     <ParamField body="Metadata" type="json.RawMessage">
-      Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the payload on the wire's metadata channel, not folded into it. nil is omitted.
+      Metadata is optional per-invocation metadata (any JSON value) sent alongside the payload on the wire's metadata channel, not folded into it. nil and JSON null are no metadata: omitted, and the handler's MetadataFromContext reports none.
     </ParamField>
     <ParamField body="Action" type="*CallAction">
       Action selects void/enqueue semantics; nil means the default await path.
@@ -1531,7 +1531,7 @@ if _, err := client.RegisterFunction("timer::on-tick", iii.Identity, iii.Functio
 
 ### MetadataFromContext
 
-MetadataFromContext returns the per-invocation metadata attached to a handler's ctx. The bool is false (and the value nil) when the invocation carried no metadata, letting a handler distinguish "no metadata" from a present-but-empty value.
+MetadataFromContext returns the per-invocation metadata attached to a handler's ctx. The bool is false (and the value nil) when the invocation carried no metadata, letting a handler distinguish "no metadata" from a present-but-empty value. Metadata is any JSON value; JSON null is no metadata.
 
 **Signature**
 
@@ -2316,10 +2316,10 @@ CallRequest is the input to `Client.Call`. The Action field selects the delivery
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `FunctionID` | `string` | No | FunctionID is the function to invoke (e.g. an EngineFunctions constant). Empty with Observer. |
-| `Observer` | *[`Observer`](#observer) | No | Observer calls through an observer of a function this worker hosts: the engine runs the observer's target with Payload as given, after checking that this worker hosts the observer's function (NOT_FUNCTION_OWNER) and that the observer exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop guard. The call goes out on the current connection, after the acks already sent on it; FunctionID, Namespace and an enqueue action do not apply. A call through an observer belongs in the function's `DeliverHook`, which applies the observer's filters with `Observer.Matches`; to send one observer something outside delivery (its initial state), call the function with metadata \{"for_observer": &lt;obs.ID&gt;\} (see `Observer.Accepted`). |
+| `Observer` | *[`Observer`](#observer) | No | Observer calls through an observer of a function this worker hosts: the engine runs the observer's target with Payload as given, after checking that this worker hosts the observer's function (NOT_FUNCTION_OWNER) and that the observer exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop guard. The call goes out on the current connection, after the acks already sent on it; FunctionID, Namespace and an enqueue action do not apply. It takes no Metadata: the target's metadata is the observer's registration metadata, and Call refuses a request with Metadata before anything is sent. A call through an observer belongs in the function's `DeliverHook`, which applies the observer's filters with `Observer.Matches`; to send one observer something outside delivery (its initial state), call the function with metadata \{"for_observer": &lt;obs.ID&gt;\} (see `Observer.Accepted`). |
 | `Payload` | `json.RawMessage` | No | Payload is the JSON input of the function (payload in the Node, Python and Rust SDKs). Nil is sent as \{\}. |
 | `Data` | `json.RawMessage` | No | **Deprecated.** Use Payload. Data is the JSON input of the function, used only when Payload is nil. |
-| `Metadata` | `json.RawMessage` | No | Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the payload on the wire's metadata channel, not folded into it. nil is omitted. |
+| `Metadata` | `json.RawMessage` | No | Metadata is optional per-invocation metadata (any JSON value) sent alongside the payload on the wire's metadata channel, not folded into it. nil and JSON null are no metadata: omitted, and the handler's MetadataFromContext reports none. |
 | `Action` | *[`CallAction`](#callaction) | No | Action selects void/enqueue semantics; nil means the default await path. |
 | `Timeout` | `time.Duration` | No | Timeout bounds an await/enqueue call. Zero means the client's invocation timeout: `WithInvocationTimeout`, else `DefaultInvocationTimeout`. |
 | `Namespace` | `string` | No | Namespace routes the invocation to a specific namespace. Empty means this worker's namespace, except engine::\* and configuration::\* builtins, which resolve in the engine's default namespace. |

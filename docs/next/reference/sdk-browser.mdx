@@ -917,7 +917,7 @@ Request object passed to ISdk.call: a function by id, or the target
 of an observer.
 
 ```typescript
-type CallRequest = { action?: CallAction; baggage?: string; dispatch?: "auto" | "remote"; function_id: string; metadata?: unknown; namespace?: string; observer?: never; payload: TInput; timeoutMs?: number; traceparent?: string } | { action?: CallAction; function_id?: never; observer: Observer; payload: TInput; timeoutMs?: number }
+type CallRequest = { action?: CallAction; baggage?: string; dispatch?: "auto" | "remote"; function_id: string; metadata?: unknown; namespace?: string; observer?: never; payload: TInput; timeoutMs?: number; traceparent?: string } | { action?: CallAction; function_id?: never; metadata?: never; observer: Observer; payload: TInput; timeoutMs?: number }
 ```
 
 ---
