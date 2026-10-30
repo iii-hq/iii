@@ -58,7 +58,7 @@ iii.onObserverAdded('database::on-row-changed', async (obs) => {
 
 // one function, chained off its registration
 iii.registerFunction('database::on-row-changed', (change: RowChange) => change, { private: true, args_format: RowChangedArgs })
-  .onObserverRemoved(async (obs) => { await changeFeed.unwatch(obs.args.db, obs.args.table) })
+  .onObserverRemoved(async (obs) => { await changeFeed.release(obs.args.db, obs.args.table) })
 ```
 
 **Args and filters.** `args` belong to the worker that hosts the function.
@@ -150,7 +150,7 @@ against 0.25 keeps compiling. Examples, docs and every worker use `call`.
 ### 4.1 Registering
 
 ```ts
-iii.registerFunction<I, O>(id: string, handler: (input: I) => O | Promise<O>, options?: FunctionOptions): FunctionRef<I, O>
+iii.registerFunction<I, O>(id: string, handler: (input: I) => O | Promise<O>, options?: RegisterFunctionOptions): FunctionRef<I, O>
 ```
 
 **The handler's return value is what observers observe.** It is the `output`
@@ -192,13 +192,13 @@ type Key = string | readonly string[]
 type DeliverHook<I, O, R = O> =
   (call: Call<I, O>, observers: readonly Observer[]) => R | Promise<R>   // returns what the caller gets back
 
-interface III {
-  onObserverAdded(hook: AddedHook | null): III                            // every function this worker hosts
-  onObserverAdded(functionId: string, hook: AddedHook | null): III        // one function
-  onObserverRemoved(hook: RemovedHook | null): III
-  onObserverRemoved(functionId: string, hook: RemovedHook | null): III
-  onObserverMatch<I, O>(functionId: string, hook: MatchHook<I, O> | null): III
-  onObserverDeliver<I, O, R>(functionId: string, hook: DeliverHook<I, O, R> | null): III
+interface IIIClient {
+  onObserverAdded(hook: AddedHook | null): IIIClient                      // every function this worker hosts
+  onObserverAdded(functionId: string, hook: AddedHook | null): IIIClient  // one function
+  onObserverRemoved(hook: RemovedHook | null): IIIClient
+  onObserverRemoved(functionId: string, hook: RemovedHook | null): IIIClient
+  onObserverMatch<I, O>(functionId: string, hook: MatchHook<I, O> | null): IIIClient
+  onObserverDeliver<I, O, R>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient
 
   observers(functionId: string): readonly Observer[]
   isObserved(functionId: string, call?: Partial<Call>): boolean
@@ -258,7 +258,10 @@ iii.onObserverAdded('cron::on-tick', start)
   observer is `suspended` for `observers.observer_grace_ms` and the host lets
   it go (`onObserverRemoved` runs). If the worker reattaches in that time, the
   host gets the observer again, in the order the observers were created, and
-  its `onObserverAdded` runs before it is active again.
+  its `onObserverAdded` runs before it is active again. A worker that comes
+  back on a new connection (a restart) and observes under the same id
+  replaces the suspended observer, and the host gets the new one like any new
+  observer (decision 51).
 - **One at a time.** For each function, the SDK runs observer hooks one at a
   time, in the order the engine announced the observers. Hooks of different
   functions run concurrently.
@@ -288,7 +291,7 @@ interface Call<I = unknown, O = unknown> {
   status: 'success' | 'error'
   input: I
   output?: O                                  // the handler's return value: what observers observe
-  error?: { code: string; message: string }   // what the handler threw
+  error?: { code: string; message: string; stacktrace?: string }   // what the handler threw
   caller?: Caller
   metadata?: Record<string, unknown>
 }
@@ -348,6 +351,28 @@ iii.onObserverMatch('database::on-row-changed', {
   `"primary|orders|insert"`, `"primary|orders|*"`, `"primary|*|insert"` and
   `"primary|*|*"`: four lookups, whatever the number of observers.
 
+**A call for one observer.** A host sends one observer something of its own
+(its current state when it is added, an event it missed) by calling its
+function with the metadata `{ for_observer: obs.id }` once `obs.accepted()`
+resolves. The match hook gives such a call to that observer alone, and iii
+delivers it with that observer's `deliver`, `capture`, filters, `on` and
+policy, so its target receives every event of the function in one shape
+(decision 52):
+
+```ts
+iii.onObserverAdded('tmux::on-changed', (obs) => {
+  obs.accepted()
+    .then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args),
+                           metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+    .catch(() => undefined)                     // a rejected observer gets nothing
+})
+iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
+```
+
+With keys, the observer function also files each observer under
+`"for_observer:<id>"`, and the call function gives such a call that one key.
+
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
 can skip building an event nobody wants. Without a call it is true when the
 function has any active observer: one atomic load. With a call, on a function
@@ -391,6 +416,9 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
 - The call sends the payload as given, with the engine's `_caller_worker_id`
   stamp (the host's connection id) as on every call a worker makes. The hook
   applies the observer's filters with `obs.matches(call)`, as above.
+- A call through an observer belongs in a deliver hook, and the function's
+  description says what its targets receive. A host that sends one observer
+  its state calls its function for that observer (§4.5).
 
 ### 4.7 `Observer`
 
@@ -413,9 +441,10 @@ class ObserveRejection extends Error {        // thrown by onObserverAdded to re
 }
 ```
 
-`accepted()` lets a provider send an observer its initial state: a call
-through the observer made after it resolves reaches an active observer, since
-the engine handles a connection's frames in order.
+`accepted()` resolves after the SDK has acked the observer, so the calls the
+host sends afterwards reach an active observer (the engine handles a
+connection's frames in order). A provider sends an observer its initial state
+then, with a call for that observer (§4.5, decision 52).
 
 An observer is a record of what was asked for. The worker sees the fields
 above; who observes, the observer's metadata and its policy stay with the
@@ -425,7 +454,8 @@ engine.
 
 ### 5.1 TypeScript (node, browser)
 
-As in §4. Hooks may be sync or async.
+As in §4. Hooks may be sync or async. The browser SDK names its client
+interface `ISdk`.
 
 ### 5.2 Rust
 
@@ -520,17 +550,21 @@ The methods work as decorators and as plain calls.
 ### 5.4 Go
 
 ```go
-rowChanged := client.RegisterFunction("database::on-row-changed", iii.Identity,   // returns the event it is called with
-    iii.FunctionOptions{ArgsFormat: rowChangedArgs, Private: true})
-
-rowChanged.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error {
+// by function id, before registering, so it sees every observer (§4.3)
+client.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
     return changeFeed.Watch(ctx, obs.Args)
 })
 client.OnObserverAddedFor("cron::on-tick", start)   // by function id
 client.OnObserverAdded(retain)                      // every function this worker hosts
+
+rowChanged, err := client.RegisterFunction("database::on-row-changed", iii.Identity,   // returns the event it is called with
+    iii.FunctionOptions{ArgsFormat: rowChangedArgs, Private: true})
+if err != nil {
+    return err
+}
 rowChanged.OnObserverMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
 
-out, err := client.Call(ctx, iii.CallRequest{Observer: obs, Data: payload})
+out, err := client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})
 ```
 
 ## 6. `private` functions
@@ -673,7 +707,9 @@ examples are TypeScript for brevity, and §5.2 is the Rust shape.
 
 `onObserverAdded` installs native capture, plain code calls the function, and
 `onObserverMatch` gives each change to the observers of its database, table and
-operation, by keys.
+operation, by keys. `onObserverRemoved` releases the worker's hold on the
+table; the capture triggers stay, because every process and connection that
+captures the table shares them.
 
 ```ts
 const rowKey = (db: string, table: string, op: string) => `${db}|${table}|${op}`
@@ -688,7 +724,7 @@ const rowChanged = iii.registerFunction('database::on-row-changed', (change: Row
     if (config.native(db)) await changeFeed.watch(db, table)   // CREATE TRIGGER … pg_notify(…)
   })
   .onObserverRemoved(async (obs) => {
-    await changeFeed.unwatch(obs.args.db, obs.args.table)        // stops watching the table with its last observer
+    await changeFeed.release(obs.args.db, obs.args.table)        // the capture triggers stay: other processes share them
   })
   .onObserverMatch({
     observer: ({ args }) => (args.ops ?? ['*']).map((op) => rowKey(args.db, args.table ?? '*', op)),
@@ -706,7 +742,7 @@ changeFeed.onChange(async (n) => {
 On a `capture: statements` database, `database::execute` calls the function
 after each committed write, so `caller.parent` names the worker that wrote the
 row. The args are `{ db, table?, ops? }`. In
-`workers/database/src/triggers/capture.rs`, observers live in the match
+`workers/database/src/row_changes/capture.rs`, observers live in the match
 index and the handler returns the change it is called with.
 
 ### 10.2 cron: `cron::on-tick`
@@ -848,7 +884,7 @@ Trigger types and the functions that replace them:
 | `cron` | `cron::on-tick` | `{ expression }` |
 | `database::row-changed` | `database::on-row-changed` | `{ db, table?, ops? }` |
 | `durable:subscriber` | `queue::on-message` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` |
-| `subscribe` | `pubsub::publish`, observed with a filter on `input.topic` | none |
+| `subscribe` | `publish`, observed with a filter on `input.topic` (the pubsub worker's function, which the engine's stream bridge calls and observes) | none |
 | `state` | `state::on-changed` | none; filters on `input.scope`, `input.key` |
 | `log`, `trace` | `observability::on-log`, `observability::on-span` | none |
 | `configuration` | `configuration::on-updated` | none |
