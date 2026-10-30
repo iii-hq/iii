@@ -786,11 +786,17 @@ spec, or another connection, fails with `OBSERVER_ID_CONFLICT`, except for a wor
 connection. When the observer is `suspended` because its observing worker is away, an `Observe` of
 its `id` from a connection under the same worker name in the same namespace (as declared on
 `engine::workers::register`) replaces it. A restarted worker re-observes under the ids it used
-before this way, and a queue consumer keyed by observer id keeps its backlog. The engine disposes
-the suspended observer with `OBSERVER_DISCONNECTED`, sends its host nothing more about it (the host
-got `ObserverRemoved` when the worker left), and handles the `Observe` as for a new `id`, so the
-host gets an `ObserverAdded`. The earlier connection, reattaching, has its replay of that observer
-answered with `disposed`.
+before this way, and a queue consumer keyed by observer id keeps its backlog. The engine runs every
+check above first, and replaces the suspended observer when it creates the new one: it disposes the
+suspended observer with `OBSERVER_DISCONNECTED`, sends its host nothing more about it (the host got
+`ObserverRemoved` when the worker left), and the host gets an `ObserverAdded` for the new observer,
+as for any new `id`. An `Observe` the engine refuses leaves the suspended observer holding its `id`.
+The earlier connection, reattaching, has its replay of that observer answered with `disposed`.
+
+The takeover needs a worker name that stays the same across restarts: `III_WORKER_NAME`, which a
+supervisor sets, or the SDK's worker name option. The SDKs default the name to `hostname:pid` (the
+browser SDK to a random name), which changes when the process restarts, so a restarted worker under
+the default name gets `OBSERVER_ID_CONFLICT` until the grace period ends.
 
 ### `Unobserve`
 

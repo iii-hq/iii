@@ -800,6 +800,11 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
   the same worker name and namespace, observes under that `id` again, and its observer replaces the
   `suspended` one. A queue subscriber keeps its queued messages this way. An observer with a random
   `id` stays `suspended` until the grace period ends.
+- The worker name has to stay the same across restarts for this. Set it with `III_WORKER_NAME` or
+  the worker name option of the SDK; a worker that [iii compose](./compose) starts gets
+  `III_WORKER_NAME` from it. The default name, `hostname:pid` (a random name in the browser), changes
+  when the process restarts: the restarted worker's observe of the `id` then fails with
+  `OBSERVER_ID_CONFLICT` until the grace period ends.
 - When a worker reconnects, its SDK sends each of its observers to the engine again, with the same
   id. The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
   default). In this time, the engine does not create the observer again, and the handle becomes
@@ -1175,7 +1180,8 @@ and after `max_retries` the message moves to the topic's dead-letter queue.
 - The observer's filters read the message as `input`. A message that the filters reject is acked,
   and the target does not run.
 - While the observer is `suspended`, its messages stay queued. A restarted worker that observes
-  under the same `id` gets them from its observer.
+  under the same `id`, with the same worker name (see [Observer states](#observer-states)), gets
+  them from its observer.
 - `dispose()` stops the observer's consumer.
 
 ### State changes

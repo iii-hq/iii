@@ -376,7 +376,9 @@ a mistyped id.
   `onObserverRemoved` for it when the worker left, and hears nothing more about it. It gets the new
   observer like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a
   queue subscriber's backlog, serves the new observer. From any other worker the id stays taken
-  (`OBSERVER_ID_CONFLICT`) until the grace period ends.
+  (`OBSERVER_ID_CONFLICT`) until the grace period ends. The observing worker needs a name that
+  stays the same across restarts (`III_WORKER_NAME`, or the worker name option of the SDK): under
+  the default name, `hostname:pid`, a restarted worker is another worker.
 - **One at a time.** For each function, the SDK runs observer hooks one at a time, in the order the
   engine announced the observers. Hooks of different functions run concurrently.
 - **Timeout.** A hook that runs past 30 seconds fails the observer with `OWNER_TIMEOUT`.
