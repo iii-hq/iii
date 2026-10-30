@@ -872,6 +872,94 @@ async fn auto_functions_report_only_matching_local_calls() {
     iii.shutdown_async().await;
 }
 
+/// An observer with `capture: []` is reported the call's ids, status and
+/// timing, and none of its payloads: no input, output, error or caller, even
+/// for a failed call made from a handler.
+#[tokio::test]
+async fn an_empty_capture_reports_ids_status_and_timing_only() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let invoked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let counted = RegisterFunction::new({
+        let invoked = invoked.clone();
+        move |input: Value| {
+            let ctx = current_invocation().expect("the call's invocation");
+            invoked.lock().unwrap().push(ctx.invocation_id);
+            if input["fail"] == json!(true) {
+                return Err(Error::Remote {
+                    code: "DECLINED".into(),
+                    message: "declined".into(),
+                    stacktrace: None,
+                });
+            }
+            Ok::<_, Error>(json!({ "ok": true }))
+        }
+    });
+    hosted(
+        &mock,
+        &iii,
+        "c0::count",
+        counted,
+        json!([view("count", json!({}), json!([]), "complete")]),
+    )
+    .await;
+    acked(&mock, &[("count", 1)]).await;
+    hosted(
+        &mock,
+        &iii,
+        "c0::outer",
+        RegisterFunction::new_async({
+            let iii = iii.clone();
+            move |input: Value| {
+                let iii = iii.clone();
+                async move {
+                    let _ = iii.call(CallRequest::new("c0::count", input)).await;
+                    Ok::<_, Error>(Value::Null)
+                }
+            }
+        }),
+        json!([]),
+    )
+    .await;
+    mock.clear();
+    iii.call(CallRequest::new("c0::outer", json!({ "amount": 1 })))
+        .await
+        .unwrap();
+    iii.call(CallRequest::new(
+        "c0::outer",
+        json!({ "amount": 2, "fail": true }),
+    ))
+    .await
+    .unwrap();
+    let msgs = mock.wait_for(|m| report_items_in(m).len() >= 2, WAIT).await;
+    let items = report_items_in(&msgs);
+    assert_eq!(items.len(), 2, "{items:#?}");
+    let invoked = invoked.lock().unwrap().clone();
+    for (item, (status, invocation_id)) in items
+        .iter()
+        .zip([("success", &invoked[0]), ("error", &invoked[1])])
+    {
+        assert_eq!(item["function_id"], "c0::count");
+        assert_eq!(item["invocation_id"], json!(invocation_id));
+        assert_eq!(item["status"], status);
+        assert_eq!(item["matched"], json!(["count"]));
+        assert!(item["started_at_ms"].as_u64().unwrap() > 1_700_000_000_000);
+        assert!(item["duration_ms"].as_f64().unwrap() >= 0.0);
+        for part in [
+            "input",
+            "output",
+            "output_is_input",
+            "error",
+            "caller",
+            "metadata",
+        ] {
+            assert!(item.get(part).is_none(), "{part} is not captured: {item:#}");
+        }
+    }
+    iii.shutdown_async().await;
+}
+
 #[tokio::test]
 async fn reports_are_batched_by_256_and_by_linger() {
     let mock = MockEngine::start().await;
@@ -3516,9 +3604,12 @@ async fn a_standby_takes_over_when_the_host_leaves() {
     mock.send_to_client(conflict("solo::f"));
     mock.send_to_client(conflict("solo::plain"));
     frame(&mock, registered("solo::f")).await;
+    // 1 s ±20 % after the conflict reached the worker (the timing is pinned
+    // with a paused clock in the SDK's unit tests); the slack above is the
+    // round trip
     let first = started.elapsed();
     assert!(
-        first >= Duration::from_millis(700),
+        first >= Duration::from_millis(800) && first < Duration::from_millis(2_000),
         "about a second later: {first:?}"
     );
     mock.clear();
