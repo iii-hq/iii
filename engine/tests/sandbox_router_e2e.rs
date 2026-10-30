@@ -254,6 +254,18 @@ async fn unbound_router_answers_s303_but_info_never_errors() {
 }
 
 #[tokio::test]
+async fn create_rejects_a_binding_to_the_router_itself() {
+    let err = SandboxRouter::create(Arc::new(Engine::new()), Some(json!({"adapter": "sandbox"})))
+        .await
+        .err()
+        .expect("adapter 'sandbox' is rejected");
+    assert_eq!(
+        err.to_string(),
+        "[INVALID_SANDBOX_CONFIG] sandbox.adapter 'sandbox' must match [a-z0-9-]+ and must not be 'sandbox'"
+    );
+}
+
+#[tokio::test]
 async fn bound_router_without_adapter_answers_s301() {
     let (_port, engine) = spawn_engine(bound()).await;
 

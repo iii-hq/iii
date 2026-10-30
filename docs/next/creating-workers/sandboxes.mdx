@@ -150,7 +150,7 @@ larger payloads when called through an SDK.
 A failed `sandbox::*` call returns the same error shape whichever sandbox adapter serves it: a stable
 `code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract,
 not to any one worker: they are part of the public `sandbox::*` API that every caller sees, the
-router returns S301-S303, and every adapter returns the rest. The `docs_url` in the error payload
+router returns S301-S304, and every adapter returns the rest. The `docs_url` in the error payload
 links to the matching entry below.
 
 - <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed sandbox_id)
