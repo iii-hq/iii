@@ -637,7 +637,7 @@ containers:
     config_name: shop-api
     config_override:
       log_level: debug
-    env_file: [./.env] # specify .envs, later in list overwrites earlier declarations
+    env_file: [./.env] # later files override earlier ones; empty values (KEY=) are ignored
     environment:
       RUST_LOG: info # specify environment variables directly
       MY_ENV: ${MY_ENV:-defaultValue} # assign an environment variable from the execution environment
@@ -712,7 +712,7 @@ Each key under `containers` is the name the worker registers under.
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration; a mapping whose `name` changes is replaced whole.              |
 | `working_dir`     | path           | the worker directory | Resolved against the compose file's directory.                                                             |
 | `environment`     | map            | empty                | Environment variables for this worker.                                                                     |
-| `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file wins on conflicting entries.                        |
+| `env_file`        | array of paths | empty                | Read at start time, in declaration order. A later file's nonempty value wins; empty entries are ignored. |
 | `startup_timeout` | string         | the file's value     | Readiness budget for this worker.                                                                          |
 | `required`        | boolean        | `false`              | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
 | `restart`         | string         | `no`                 | What happens after a failed start or a run-time exit. `no`, `on-failure`, or `always`.                     |
@@ -841,10 +841,31 @@ A worker's environment combines the following sources, from lowest to highest pr
 
 1. The machine environment visible to the Compose daemon. Variables are inherited even when
    neither `env_file` nor `environment` is declared. Non-Unicode names and values are skipped.
-2. The worker's `env_file` entries, in declaration order. Later files override earlier files.
-3. The worker's `environment` map. Nonempty values override env files; an empty string preserves
+2. The worker's `env_file` entries, in declaration order. A nonempty value in a later file overrides
+   earlier files. Entries that parse to an empty value (`KEY=`, `KEY=""`, or `KEY=''`) are ignored.
+3. The worker's `environment` map. Nonempty values override env files. An empty string preserves
    an existing env-file value, or supplies an empty value when no env file defines the key.
 4. The reserved variables, which the daemon owns.
+
+Because empty `env_file` entries are ignored, they never erase an inherited machine value or a
+nonempty value from an earlier env file. Quoted whitespace, such as `KEY=" "`, is a value and still
+overrides. To give a worker an empty value, declare it in `environment` with an empty string; that
+works when no env file defines the key.
+
+```bash title="later.env"
+# Ignored: TOKEN and REGION keep their machine or earlier env-file values.
+TOKEN=
+REGION=""
+# Applied: a single space is a value.
+PADDING=" "
+```
+
+For each ignored entry, Compose prints a per-worker warning grouped by env file. The warning names
+the variable and explains where its effective value comes from instead, such as the system
+environment, a nonempty env file, or the `environment` section. Warnings never include values.
+
+On Windows, variable names are matched case-insensitively across all sources, so `token` in one
+source and `TOKEN` in another refer to the same variable.
 
 Export machine variables before starting the daemon. Changing another shell's environment does
 not update an already-running daemon. Workers and hooks inherit the daemon's Unicode machine
@@ -852,8 +873,8 @@ variables, including credentials, subject to the daemon-owned values above and t
 exception below; only start workers you trust with that environment.
 
 `III_HOST_USER_ID` is not inherited from the machine: it comes from the current project's
-`.iii/project.ini`, or is absent when the project has no device ID. An explicit `env_file` or
-`environment` value can still override it, including an empty value.
+`.iii/project.ini`, or is absent when the project has no device ID. A nonempty `env_file` value
+or an explicit `environment` value, including an empty one, can still override it.
 
 | Variable                | Value                                                                         |
 | ----------------------- | ----------------------------------------------------------------------------- |
