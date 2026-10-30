@@ -788,6 +788,36 @@ mod tests {
         }
     }
 
+    /// "trigger" appears in the CLI's help only as an alias of `call` (F4):
+    /// no command's about text and no argument's help uses the word.
+    #[test]
+    fn help_text_says_trigger_only_as_an_alias() {
+        fn walk(command: &clap::Command, path: &str, hits: &mut Vec<String>) {
+            let texts = [command.get_about(), command.get_long_about()]
+                .into_iter()
+                .flatten()
+                .map(|text| (path.to_string(), text.to_string()))
+                .chain(command.get_arguments().flat_map(|arg| {
+                    [arg.get_help(), arg.get_long_help()]
+                        .into_iter()
+                        .flatten()
+                        .map(move |text| (format!("{path} --{}", arg.get_id()), text.to_string()))
+                }));
+            for (at, text) in texts {
+                if text.to_lowercase().contains("trigger") {
+                    hits.push(format!("{at}: {text}"));
+                }
+            }
+            for sub in command.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), hits);
+            }
+        }
+
+        let mut hits = Vec::new();
+        walk(&Cli::command(), "iii", &mut hits);
+        assert!(hits.is_empty(), "help text says trigger: {hits:#?}");
+    }
+
     #[test]
     fn call_lists_trigger_and_t_as_visible_aliases() {
         let call = cli_subcommand("call").expect("call subcommand");

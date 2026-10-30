@@ -2252,7 +2252,7 @@ pub async fn handle_managed_remove_many(worker_names: &[String], yes: bool) -> i
                 list,
             );
             eprintln!(
-                "  Removing them from config.yaml triggers an engine reload that will tear the sandbox(es) down."
+                "  Removing them from config.yaml reloads the engine, which tears the sandbox(es) down."
             );
             if !confirm_prompt("  Continue? [y/N] ") {
                 eprintln!("  Aborted.");
