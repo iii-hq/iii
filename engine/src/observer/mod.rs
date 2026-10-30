@@ -350,9 +350,12 @@ pub(crate) mod test_metrics {
             const { Cell::new(None) };
     }
 
-    /// The `u64` sums of the last export: `(metric, attributes, value)`.
+    /// One `u64` sum series: `(metric, attributes, value)`.
+    type Series = (String, Vec<KeyValue>, u64);
+
+    /// The `u64` sums of the last export.
     #[derive(Clone, Default)]
-    struct Exported(Arc<Mutex<Vec<(String, Vec<KeyValue>, u64)>>>);
+    struct Exported(Arc<Mutex<Vec<Series>>>);
 
     impl PushMetricExporter for Exported {
         fn export(
