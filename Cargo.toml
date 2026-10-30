@@ -14,6 +14,7 @@ members = [
   "crates/iii-filesystem",
   "crates/iii-loadtest",
   "crates/iii-network",
+  "crates/iii-sandbox-contract",
   "crates/iii-shell-client",
   "crates/iii-shell-proto",
   "crates/iii-supervisor",

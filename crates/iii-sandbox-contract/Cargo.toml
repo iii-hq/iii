@@ -1,0 +1,19 @@
+[package]
+name = "iii-sandbox-contract"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.85"
+license = "Elastic-2.0"
+publish = false
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Wire contract between the iii engine's sandbox router and sandbox adapter workers"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = "0.8"
+
+[dev-dependencies]
+iii-sdk = { workspace = true }

@@ -2310,6 +2310,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "iii-sandbox-contract"
+version = "0.26.0"
+dependencies = [
+ "iii-sdk",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "iii-sdk"
 version = "0.26.0"
 dependencies = [
