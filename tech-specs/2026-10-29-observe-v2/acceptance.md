@@ -18,7 +18,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | A3 | What observers observe is the handler's return value (`output`); `response_format` describes it. | test |
 | A4 | `args` belong to the function's worker: validated against `args_format`, handed to the hooks, never interpreted by iii. `args_format` is allowed on any function. | test |
 | A5 | `filters` belong to iii and are evaluated wherever the call is delivered (host or engine). | test |
-| A6 | `capture` stays: it picks which of `input`, `output`/`error`, `caller` the envelope carries; ids, status and timing are always present; `capture: []` moves no payloads. | test |
+| A6 | `capture` stays: it picks which of `input`, `output`/`error`, `caller` and `metadata` (the observed call's metadata, in the envelope's `metadata` field) the envelope carries; the default is `input`, `output`, `caller`; ids, status and timing are always present; `capture: []` moves no payloads. | test |
 | A7 | `deliver: 'envelope' \| 'input' \| 'output'` picks what the target receives from iii's delivery. | test |
 | A8 | `observe('fn::id', target)` shorthand in every SDK (Go: `ObserveFunction`). | test |
 
@@ -51,6 +51,8 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | C3 | Call through an observer: `call({ observer, payload })`; frame carries `function_id = obs.target` and `activation.observer_id`; engine routes to the stored target, applies policy, metadata, loop guard; only the host of the observed function may (`NOT_FUNCTION_OWNER`); `OVERFLOW` over `max_in_flight`; refused void calls dropped and counted. | test |
 | C4 | `Observer.accepted()` resolves after the ack; a call through the observer after it reaches an active observer. A host is announced no observer whose observing worker is away; it gets the observer again when that worker reattaches (decision 47). | test |
 | C5 | CLI: `iii call <fn>` is the subcommand; `trigger` and `t` are aliases; telemetry records `call`. | test |
+| C6 | A call through an observer takes no metadata (decision 53): every SDK refuses one that names metadata before anything is sent, with its usual bad-request error and the message "a call through an observer takes no metadata; its target receives the observer's metadata"; `null` is accepted as none; the target's metadata argument is the observer's registration metadata. | test |
+| C7 | `null` metadata is no metadata (decision 54): in every SDK a local call, a routed call and an inbound `invokefunction` with `null` metadata reach the handler as none (`undefined`, `None`, `ok == false`), the frame leaves `metadata` out, and arrays and scalars pass unchanged. | test |
 
 ## D. Function options
 

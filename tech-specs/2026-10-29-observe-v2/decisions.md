@@ -301,6 +301,25 @@ differ, this file wins, and the spec is updated to match.
     .metadata(json!({ "for_observer": obs.id() }))`, Python
     `{"function_id": id, "payload": payload, "metadata": {"for_observer": obs.id}}`,
     Go `iii.CallRequest{FunctionID: id, Payload: payload, Metadata: ...}`.
+53. **A call through an observer takes no metadata.** Its target's metadata
+    argument is the observer's registration metadata, as for iii's delivery.
+    Every SDK refuses a request that names metadata before anything is sent,
+    with its usual error for a bad request (Node and browser `Error`, Python
+    `ValueError`, Rust `Error::Handler`, Go an `iii:` error) and the same
+    message: "a call through an observer takes no metadata; its target
+    receives the observer's metadata". `null` is no metadata (decision 54),
+    so it is accepted. The engine reads no `metadata` from an `invokefunction`
+    with `activation`, as it reads no namespace from it (decision 13). No SDK
+    sends one, and refusing it would take a wire error code and a drop reason
+    of its own.
+54. **`null` metadata is no metadata.** A call's metadata is any JSON value.
+    `null` (Python `None`, Rust `Value::Null`, Go `json.RawMessage("null")`)
+    is the same as none on every path: each SDK normalizes it before local
+    dispatch and before sending, so the handler, the match and deliver hooks
+    and the report see none, and the `invokefunction` frame leaves the field
+    out. An `invokefunction` that arrives with `"metadata": null` reaches the
+    handler as none too. The engine already reads `null` as none
+    (`InvokeFunction.metadata` is an `Option`).
 
 ## CLI and crates
 

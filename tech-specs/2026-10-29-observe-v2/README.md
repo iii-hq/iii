@@ -114,9 +114,11 @@ iii.observe(
   capture that table and to deliver only its changes.
 - **`filters`** select which calls reach the target, by anything in the call.
 - **`capture`** chooses which parts of the call the envelope carries:
-  `input`, `output` (or `error`) and `caller`; default all three. Ids, status
-  and timing are always there. An observer that only counts calls or records
-  errors uses `capture: []` and never moves the payloads.
+  `input`, `output` (or `error`), `caller`, and `metadata` (the observed
+  call's metadata, in the envelope's `metadata` field); default `input`,
+  `output` and `caller`. Ids, status and timing are always there. An observer
+  that only counts calls or records errors uses `capture: []` and never moves
+  the payloads.
 - **`deliver`** is what the target receives when iii delivers: the `Observed`
   envelope (default), the call's `input`, or its `output`. A function whose
   `onObserverDeliver` calls targets itself documents what they receive
@@ -132,7 +134,16 @@ iii.observe(
 ```ts
 const order = await iii.call({ function_id: 'orders::create', payload: { sku: 'A1', qty: 2 } })
 await iii.call({ function_id: 'audit::log', payload: entry, action: CallAction.Void() })   // fire-and-forget
+await iii.call({ function_id: 'audit::log', payload: entry, metadata: { tenant: 'acme' } })
 ```
+
+A call can carry **metadata** beside its payload: any JSON value. The handler
+receives it as its metadata argument (Node and browser: the second argument;
+Python: the `metadata` parameter; Rust: `Option<Value>`; Go:
+`MetadataFromContext(ctx)`), and filters read it as `metadata.*`. `null` is
+the same as no metadata: on every path, local or routed, the handler receives
+none (Node and browser `undefined`, Python and Rust `None`, Go `ok == false`),
+and the `invokefunction` frame leaves the field out (decision 54).
 
 | SDK | Call | Alias |
 |---|---|---|
@@ -431,6 +442,13 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
 - The call sends the payload as given, with the engine's `_caller_worker_id`
   stamp (the host's connection id) as on every call a worker makes. The hook
   applies the observer's filters with `obs.matches(call)`, as above.
+- It takes no metadata: its target's metadata argument is the observer's
+  registration metadata (`options.metadata` of `observe`), as for iii's
+  delivery. Every SDK refuses a call through an observer that names metadata
+  before sending anything, with its usual error for a bad request and the
+  message "a call through an observer takes no metadata; its target receives
+  the observer's metadata". `null` is no metadata, so it is accepted
+  (decision 53). Anything the target needs from the call goes in the payload.
 - A call through an observer belongs in a deliver hook, whose function
   documents what its targets receive. To send one observer something outside
   delivery (its initial state, an event it missed), a host calls its own
@@ -698,7 +716,9 @@ The worker that hosts a function delivers its calls:
 - **Through an observer.** An `invokefunction` with `activation.observer_id`.
   The engine checks that the observer exists, that the sender hosts its
   function, and that it is active, then applies policy and routes to the
-  observer's stored target.
+  observer's stored target. The target's `metadata` is the observer's
+  registration metadata; the engine reads none from the frame, as it reads no
+  namespace from it (decisions 13, 53).
 
 **A handler that returns its input.** When the handler's return value is its
 input (the same value, as for every event source), an `invocationsobserved`
