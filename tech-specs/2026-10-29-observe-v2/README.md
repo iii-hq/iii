@@ -265,9 +265,15 @@ iii.onObserverAdded('cron::on-tick', start)
   the same namespace, replaces that observer: the engine disposes it (the
   host already let it go, and hears nothing more about it), and the host gets
   the new observer like any other, so its `onObserverAdded` runs. A queue
-  consumer keyed by observer id keeps its backlog this way. From any other
-  worker, the id stays taken (`OBSERVER_ID_CONFLICT`) until the grace period
-  ends (decision 51).
+  consumer keyed by observer id keeps its backlog this way. The replacement
+  happens when the new observer is created: an `observe` the engine refuses
+  leaves the suspended observer holding its id. From any other worker, the
+  id stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends
+  (decision 51). The worker name has to stay the same across restarts
+  (`III_WORKER_NAME`, which a supervisor sets, or the SDK's worker name
+  option). Under an SDK's default name (`hostname:pid`, or a random one in
+  the browser), a restarted worker is another worker, and its `observe` of
+  the id fails with `OBSERVER_ID_CONFLICT` until the grace period ends.
 - **One at a time.** For each function, the SDK runs observer hooks one at a
   time, in the order the engine announced the observers. Hooks of different
   functions run concurrently.

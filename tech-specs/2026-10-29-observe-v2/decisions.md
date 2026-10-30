@@ -188,13 +188,10 @@ differ, this file wins, and the spec is updated to match.
     period ends. The worker name and namespace are the ones each connection
     declared on `engine::workers::register`, the pair the engine admits one
     live worker for (`WORKER_NAMESPACE_CONFLICT`); a connection that declared
-    no name replaces nothing. An observer in `error` whose observing worker
-    is away is replaced the same way. The replaced observer is disposed with
+    no name replaces nothing. The replaced observer is disposed with
     `OBSERVER_DISCONNECTED`, and the earlier connection, reattaching, has
     its replayed `observe` answered `disposed`, as for any observer disposed
-    while its worker was away. The engine then handles the `observe` as for
-    a new id, so a refusal (`FORBIDDEN`, `INVALID_ARGS`, a limit) leaves the
-    id free.
+    while its worker was away.
 
 ## SDKs (all five)
 
