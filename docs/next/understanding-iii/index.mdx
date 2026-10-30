@@ -1,17 +1,17 @@
 ---
-title: "Workers, Triggers, and Functions"
+title: "Workers, Functions, and Observers"
 description:
-  "A walkthrough of the four pieces that make up every iii system (Workers, Triggers, Functions, and
-  the Engine), using the Quickstart tutorial as an example."
+  "A walkthrough of the four pieces that make up every iii system (Workers, Functions, Observers,
+  and the Engine), using the Quickstart tutorial as an example."
 owner: "devrel"
 type: "explanation"
 ---
 
 Unix gave processes a single interface. React gave components a single interface. iii gives every
 category of software (queues, schedulers, agents, frontends, sandboxes, business logic, etc.) a
-single interface: **Workers** host work, **Functions** are the work, **Triggers** are what causes
-the work to run, and the **Engine** routes between them. Once you have a mental model for those four
-pieces, everything else in iii is a variation on a theme.
+single interface: **Workers** host work, **Functions** are the work, **Observers** run a Function
+when another Function has an event, and the **Engine** routes between them. Once you have a mental
+model for those four pieces, everything else in iii is a variation on a theme.
 
 <Note>This page uses the [Quickstart tutorial](../quickstart) as an example.</Note>
 
@@ -23,15 +23,9 @@ and the rest of the "Using iii" section.
 
 ### Worker
 
-A Worker is anything that connects to the Engine and registers Triggers and Functions with it.
-Workers can run anywhere (on a laptop, in a container, in a browser tab, on a microVM) and in any
-language as long as they can open a WebSocket to the Engine.
-
-### Trigger
-
-A Trigger is what causes a Function to run. A Trigger has a type (HTTP, cron, queue message, state
-change, another Function calling `trigger`), a configuration (which path, which schedule, which
-queue), and the function ID it invokes.
+A Worker is anything that connects to the Engine and registers Functions with it. Workers can run
+anywhere (on a laptop, in a container, in a browser tab, on a microVM) and in any language as long
+as they can open a WebSocket to the Engine.
 
 ### Function
 
@@ -39,10 +33,16 @@ A Function is a named handler inside a Worker. It takes a payload and returns a 
 identifiers follow a `service::name` convention so they remain stable across worker restarts and
 language boundaries.
 
+### Observer
+
+An Observer connects two Functions: a source and a target. Each time the source has an event, the
+Engine runs the target. By default, each successful call of the source is an event. A Worker creates
+an observer with `worker.observe(source, target)`.
+
 ### Engine
 
 The Engine is the coordinator. It accepts worker connections, maintains a live registry of available
-Functions and Triggers, and routes invocations to whichever Worker currently provides the requested
+Functions and observers, and routes invocations to whichever Worker currently provides the requested
 Function.
 
 ## The Quickstart
@@ -53,9 +53,9 @@ The Quickstart tutorial produces a running system with two Workers connected to 
 1. `caller-worker` is a TypeScript Worker that registers `math::add_two_numbers`, which calls
    `math::add` through the Engine.
 
-By the end of the Quickstart, the system also includes the `state` and `http` Workers, an
-HTTP Trigger that exposes `math::add_two_numbers` at `POST /math/add-two-numbers`, and a key-value
-scope named `math` holding a `running_total`.
+By the end of the Quickstart, the system also includes the `state` and `http` Workers, an HTTP route
+at `POST /math/add-two-numbers` that calls `math::add_two_numbers`, and a key-value scope named
+`math` holding a `running_total`.
 
 The runtime topology looks like this:
 
@@ -77,17 +77,17 @@ to `math-worker`.
 
 ## Workers
 
-Workers do the work in an iii system. Every category of capability is built as a
-Worker: queues, scheduling, sandboxing, observability, agents, business logic, devices, and even
-code executing in a browser.
+Workers do the work in an iii system. Every category of capability is built as a Worker: queues,
+scheduling, sandboxing, observability, agents, business logic, devices, and even code executing in a
+browser.
 
 Specifically, a Worker is a process that connects to the Engine over WebSocket and announces a set
-of Functions it can run and Triggers to register. Once connected, those Functions are invocable from
-anywhere in the system and those Triggers will respond to their events without per-pair integration
-code between the caller and the Worker.
+of Functions it can run. Once connected, those Functions are invocable from anywhere in the system
+without per-pair integration code between the caller and the Worker. A Worker can also observe
+Functions, so that its own Functions run when other Functions have events.
 
 The Worker concept is intentionally narrow. A Worker is not a microservice, a job runner, or a
-sidecar. It is a participant in the Engine's live registry that contributes Functions and Triggers.
+sidecar. It is a participant in the Engine's live registry that contributes Functions and observers.
 Whether the Worker is a long-lived process serving thousands of invocations per second or a
 short-lived process that connects, registers, runs once, and shuts down, the Engine treats it the
 same.
@@ -97,15 +97,16 @@ same.
 Workers are intended and designed to be independent processes. One Worker crashing does not affect
 others. The Engine connects to each Worker over a separate WebSocket and routes invocations only to
 Workers that are currently connected. A crash, restart, or network partition affecting one Worker
-does not propagate to the others. The crashed Worker's Functions and Triggers drop out of the
-routing table on disconnect, and every other Worker keeps serving.
+does not propagate to the others. The crashed Worker's Functions drop out of the routing table on
+disconnect, and every other Worker keeps serving. Its observers wait as `suspended`. If the Worker
+does not connect again in time, the Engine removes them.
 
 ### In the Quickstart
 
 Both Workers in the Quickstart fulfill the same contract: open a WebSocket connection to the Engine.
-Once connected they can register Functions, register Triggers, and `trigger()` other Functions. A
-Worker will typically do at least one of these things but ultimately isn't required to do any of
-them.
+Once connected they can register Functions, call other Functions with `trigger()`, and observe
+Functions. A Worker will typically do at least one of these things but ultimately isn't required to
+do any of them.
 
 The Python and TypeScript Workers are independent processes in different languages, with different
 runtimes, possibly on different machines. Neither one knows the execution context of the other. They
@@ -117,106 +118,8 @@ same regardless of how it was built or where it runs.
 
 <Note>
   For the connection lifecycle from worker code, see [Creating Workers /
-  Workers](../creating-workers/workers#worker-lifecycle-states).
+  Workers](../creating-workers/workers#worker-lifecycle).
 </Note>
-
-## Triggers
-
-A Trigger is a binding that tells iii when to invoke a Function. The Trigger declares a type (the
-kind of event that causes it to fire), a configuration (the per-type details, like an HTTP path or a
-cron expression), and the function ID it invokes. When the corresponding event happens, the Trigger
-fires and the Engine routes the invocation to a Worker that provides the Function. HTTP requests,
-cron schedules, queue messages, state changes, log events, and stream events all become Function
-invocations through Triggers.
-
-### Trigger types
-
-<Note>
-  `worker.trigger()` and the `iii trigger` CLI command can invoke any registered Function via its
-  `function_id` (see [Direct invocation](#direct-invocation) below). The trigger types described
-  here are how Functions get bound to other event sources (HTTP requests, cron schedules, queue
-  messages, etc.). Workers can define their own trigger types.
-</Note>
-
-Trigger types come from connected Workers. A Worker that can source events declares one or more
-trigger types alongside their configuration schemas. The http Worker provides the `http` trigger
-type. The cron Worker provides the `cron` trigger type. The state Worker provides the
-`state` trigger type. A Trigger of a given type can only be registered while a Worker advertising
-that type is connected, because that Worker is what produces the events that fire it.
-
-### Trigger components
-
-A Trigger has three parts: a `type` (the kind of event, like `http` or `cron`), a `config` (the
-per-type details, like an HTTP path or a cron expression), and a `function_id` (the Function to
-invoke). Together they tell iii what event to listen for, how to listen, and what to call when the
-event happens.
-
-A Trigger can also specify an optional `condition_function_id` that runs before the handler. When
-the Trigger fires, the Engine invokes the condition function with the same payload the handler would
-receive. If the condition returns a truthy value, the handler runs; if not, the invocation is
-skipped. Since Triggers are concerned with "when to do" and Functions are concerned with "what to
-do", conditional functions preserve that separation: the Function stays focused on its work instead
-of accumulating per-Trigger guards.
-
-### Trigger pipeline
-
-When a Trigger fires, the Engine looks up its `function_id` in the live registry, finds a Worker
-that currently provides the Function, and dispatches the invocation. The function handler sees the
-payload alone, never the source of the Trigger or the type of event that fired it.
-
-### Trigger Actions
-
-Function invocation can be controlled via Trigger Actions. The default, synchronous mode blocks
-until the Function returns its result or the configured timeout fires. The fire-and-forget mode
-(`TriggerAction.Void`) returns immediately, scheduling the Function to run without waiting for a
-result. Synchronous invocations are appropriate when the caller needs the value the Function
-returns. Fire-and-forget is for side-effect work where the caller does not need to wait.
-
-<Note>
-  Workers can also define their own `TriggerAction`s. The queue Worker provides
-  `TriggerAction.Enqueue({queue})`, which routes the invocation through a named queue with retries.
-  See queue for the queue mechanics.
-</Note>
-
-### Trigger lifecycle
-
-Triggers move through four states. `registered` means the Trigger has been declared with the Engine.
-`active` means the Trigger is currently listening for its event. `invoked` means an event has fired
-the Trigger. `unregistered` means the Trigger has been removed. When the Worker that owns a Trigger
-disconnects, all of its Triggers are unregistered automatically along with its Functions.
-
-### In the Quickstart
-
-The Quickstart tutorial invokes Functions with Triggers in three different ways:
-
-1. The CLI `iii trigger math::add a=2 b=3` is a Trigger fired by the CLI itself. The Engine routes
-   the invocation to whatever Worker provides `math::add`.
-1. The SDK call `worker.trigger({ function_id: 'math::add', ... })` is another version of the same
-   idea: one Function inside one Worker firing a Trigger that invokes another Function, routed
-   through the Engine like the CLI version.
-
-   Both paths work against any registered Function without registering an explicit Trigger; every
-   `registerFunction()` inherently gets a Trigger that can be invoked with these two methods.
-
-1. The HTTP Trigger added by the `http` Worker is done through `worker.registerTrigger()` and is
-   the common reactive way to implement Triggers.
-
-   In this example `http` owns the HTTP socket; when a request arrives at
-   `POST /math/add-two-numbers` the following happens:
-   1. `http` looks up the matching Trigger and fires a request targeting the `math::add`
-      Function.
-   1. The Engine receives the request and routes the invocation to `caller-worker`.
-   1. Finally the response flows back the same way. The `math::add` Function never sees an HTTP
-      request. It sees a payload, like every other call.
-
-One Function can have many Triggers. The same Function could be invoked by a cron schedule, a queue
-message, and a direct CLI call.
-
-Functions can also be **observed**. With `iii.observe(source, target)`, any Worker allowed to invoke
-a Function can have another Function invoked for each of its invocations that passes declarative
-filters, without changing the observed Function. In 0.25 observers replace `registerTrigger` for
-sources that are Functions, while the http, cron, and queue Workers still publish Trigger types. See
-[Observers](../using-iii/observers).
 
 ## Functions
 
@@ -242,42 +145,103 @@ collisions between unrelated Functions registered by different Workers.
 
 {/* TODO: Confirm if we still have restricted string prefixes */}
 
-### Direct invocation
+### Calling a Function
 
-Registering a Function with `registerFunction()` makes it directly invokable through
-`worker.trigger()` from any connected Worker and through the `iii trigger` CLI command. No explicit
-Trigger registration is required for these two paths; they are the baseline call surface every
-registered Function gets. Other trigger sources (HTTP, cron, queue, state, stream) bind an explicit
-Trigger to the same `function_id`.
+Registering a Function with `registerFunction()` makes it callable through `worker.trigger()` from
+any connected Worker and through the `iii trigger` CLI command. The Engine looks up the
+`function_id` in its live registry, finds a Worker that currently provides the Function, and sends
+the invocation to it. The handler sees the payload alone. It does not see where the call came from.
 
-### Multiple Triggers per Function
+### Call actions
 
-A single Function can be the target of any number of Triggers. The same Function can be invoked by
-an HTTP request, a cron schedule, and a queue message at once, by registering three separate
-Triggers that share the same `function_id`. The function code does not change; only the trigger
-registrations differ. This is what lets a single business-logic Function answer to many event
-sources without per-source variants.
+By default, a call waits until the Function returns its result or the timeout expires. Use this when
+the caller needs the value that the Function returns. With `TriggerAction.Void()`, the call returns
+at once and does not wait for a result. Use it for side effects that the caller does not need to
+wait for.
+
+<Note>
+  Workers can also define their own call actions. The queue Worker provides `TriggerAction.Enqueue(
+  {queue})`, which routes the invocation through a named queue with retries.
+</Note>
 
 ### In the Quickstart
 
-`math::add` and `math::add_two_numbers` are Functions. Their identifiers follow `service::name`. The
-`math` namespace groups related Functions together, and the name identifies the specific handler.
-However grouping is arbitrary, and while we recommend using a structured `path::to::functions` there
-is no enforcement of them within iii.
+The Quickstart calls Functions in three ways:
+
+1. The CLI command `iii trigger math::add a=2 b=3` calls `math::add`. The Engine routes the
+   invocation to `math-worker`, the Worker that provides `math::add`.
+1. `math::add_two_numbers` calls `math::add` with
+   `worker.trigger({ function_id: 'math::add', ... })`. The Engine routes this call in the same way
+   as the CLI call.
+1. The `http` Worker owns the HTTP socket. When a request arrives at `POST /math/add-two-numbers`,
+   it calls `http::add_two_numbers` in `caller-worker`, which calls `math::add_two_numbers`. The
+   response flows back the same way. The Functions never see an HTTP request. They see a payload,
+   like every other call.
+
+The Quickstart binds the HTTP route with `worker.registerTrigger()`. This API is deprecated in 0.25,
+and the http Worker still uses it for routes. See
+[Upgrading from 0.24.x](../upgrading/from-0-24-x#providers-not-migrated-yet).
 
 Function IDs are stable across worker restarts. When `math-worker` stops and restarts, callers do
 not need to know: they keep invoking `math::add`, and the Engine routes the calls to whichever
 instance currently provides that Function.
 
-Functions are defined synchronously but can be invoked asynchronously due to the decoupling between
-Triggers and Functions.
+## Observers
+
+An observer runs a target Function each time a source Function has an event. The source Function
+does not change, and it does not know which observers it has. Any Worker that is allowed to call the
+source can observe it. Observers replace triggers: `registerTrigger` and `registerTriggerType` are
+deprecated in 0.25.
+
+### Events
+
+By default, each successful call of the source is an event. The target runs after the call
+completes, and it receives the call's input, output, and caller. With `on`, an observer can also get
+the failed calls of the source, or all its calls. Filters on the source select which events run the
+target, for example only orders with a total of 500 or more.
+
+### Delivery
+
+Most Functions use auto delivery: each call is an event. A Function can also use owner delivery.
+Then the Function's own code decides which observers get each event, from the `args` that each
+observer gives. For example, a file watcher can watch one path for each observer.
+
+The Engine and the observability Worker also host source Functions for their own events, such as
+`engine::on-functions-changed`, `engine::on-workers-changed`, `configuration::on-updated`, and
+`observability::on-log`.
+
+### Observer lifecycle
+
+An observer is `pending` until its source and target are ready, and then it is `active`. When the
+observing Worker disconnects, its observers become `suspended`. If the Worker connects again within
+`observers.observer_grace_ms` (30 s by default), it keeps its observers. If not, they become
+`disposed`. An observer that the Engine or the source rejects is `error`.
+
+### Chains and the loop guard
+
+A call of a target is a normal call, so another observer can observe it. Each step adds 1 to the
+depth of the event. When the depth is more than `observers.max_observe_depth` (8 by default), the
+Engine drops the event. This stops observer loops.
+
+### In the Quickstart
+
+The Quickstart does not create observers. As an example, a Worker can run `audit::record` after each
+successful call of `math::add`:
+
+```typescript
+worker.observe({ function_id: "math::add" }, "audit::record");
+```
+
+`math::add` does not change. For the full model, see [Observers](../using-iii/observers). To make
+your own Functions observable, see [Observers](../creating-workers/observable-functions) in Creating
+Workers.
 
 ## The Engine
 
-The Engine is a single process that holds the registry of every connected Worker and every
-registered Function and Trigger. When a Worker connects, the Engine records what Functions it
-provides. When a Worker disconnects, the Engine removes its Functions, cancels any in-flight
-invocations of those Functions, and notifies the rest of the system that the topology changed.
+The Engine is a single process that holds the registry of every connected Worker, every registered
+Function, and every observer. When a Worker connects, the Engine records what Functions it provides.
+When a Worker disconnects, the Engine removes its Functions, cancels any in-flight invocations of
+those Functions, and notifies the rest of the system that the topology changed.
 
 Routing is independent of language, runtime, and location. The Engine does not need to know where
 `math::add` is running in Docker, on a Raspberry Pi, or in a browser tab. It knows that _some_
@@ -285,6 +249,6 @@ Worker provides it. The same tutorial can be redeployed across different runtime
 the function code.
 
 <Note>
-  See [Engine](./engine) for startup flow, config hot-reload, and the live registry
-  and discovery surface.
+  See [Engine](./engine) for startup flow, config hot-reload, and the live registry and discovery
+  surface.
 </Note>

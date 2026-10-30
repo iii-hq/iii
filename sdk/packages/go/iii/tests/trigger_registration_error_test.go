@@ -20,19 +20,13 @@ func TestRegisterTriggerUnknownType(t *testing.T) {
 	c := connect(t)
 	// Register a function the trigger would target, but never register a handler for the
 	// (made-up) trigger type, so the engine has nowhere to route the registration.
-	if err := c.RegisterFunction("test::trigerr::go::fn", func(_ context.Context, _ json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::trigerr::go::fn", func(_ context.Context, _ json.RawMessage) (any, error) {
 		return nil, nil
 	}); err != nil {
 		t.Fatalf("RegisterFunction: %v", err)
 	}
 	triggerID := "test-trigerr-go-" + uniqueSuffix(t)
-	if err := c.RegisterTrigger(
-		triggerID,
-		"this-trigger-type-does-not-exist",
-		"test::trigerr::go::fn",
-		json.RawMessage(`{}`),
-		nil,
-	); err != nil {
+	if _, err := c.RegisterTrigger(iii.RegisterTriggerInput{ID: triggerID, Type: "this-trigger-type-does-not-exist", FunctionID: "test::trigerr::go::fn", Config: json.RawMessage(`{}`)}); err != nil {
 		t.Fatalf("RegisterTrigger (client-side enqueue): %v", err)
 	}
 	settle()
@@ -44,7 +38,7 @@ func TestRegisterTriggerUnknownType(t *testing.T) {
 	// appear in engine::registered-triggers::list.
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: iii.FnListRegisteredTriggers,
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("engine::registered-triggers::list: %v", err)
@@ -72,7 +66,7 @@ func TestRegisterTriggerUnknownType(t *testing.T) {
 	// And the worker is still usable after the rejection.
 	if _, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: iii.FnListFunctions,
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	}); err != nil {
 		t.Fatalf("worker unusable after failed trigger registration: %v", err)
 	}

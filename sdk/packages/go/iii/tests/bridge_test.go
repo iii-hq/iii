@@ -20,7 +20,7 @@ func TestConnectSuccessfully(t *testing.T) {
 	c := connect(t)
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: iii.FnListFunctions,
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("engine::functions::list: %v", err)
@@ -42,7 +42,7 @@ func TestRegisterAndInvokeFunction(t *testing.T) {
 		mu       sync.Mutex
 		received []map[string]any
 	)
-	if err := c.RegisterFunction("test::bridge::go::echo", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::bridge::go::echo", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var in map[string]any
 		_ = json.Unmarshal(data, &in)
 		mu.Lock()
@@ -56,7 +56,7 @@ func TestRegisterAndInvokeFunction(t *testing.T) {
 
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: "test::bridge::go::echo",
-		Data:       json.RawMessage(`{"message":"hello"}`),
+		Payload:    json.RawMessage(`{"message":"hello"}`),
 	})
 	if err != nil {
 		t.Fatalf("Trigger: %v", err)
@@ -85,7 +85,7 @@ func TestInvokeFireAndForget(t *testing.T) {
 	c := connect(t)
 
 	done := make(chan map[string]any, 1)
-	if err := c.RegisterFunction("test::bridge::go::sink", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::bridge::go::sink", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var in map[string]any
 		_ = json.Unmarshal(data, &in)
 		select {
@@ -100,7 +100,7 @@ func TestInvokeFireAndForget(t *testing.T) {
 
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: "test::bridge::go::sink",
-		Data:       json.RawMessage(`{"event":"ping"}`),
+		Payload:    json.RawMessage(`{"event":"ping"}`),
 		Action:     iii.VoidAction(),
 	})
 	if err != nil {

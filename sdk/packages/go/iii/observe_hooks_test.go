@@ -46,20 +46,22 @@ func recordingHooks(l *hookLog, delivery Delivery) *ObserveHooks {
 	}
 }
 
-func registerOwner(t *testing.T, fe *fakeEngine, c *Client, id string, hooks *ObserveHooks) {
+func registerOwner(t *testing.T, fe *fakeEngine, c *Client, id string, hooks *ObserveHooks) *FunctionRef {
 	t.Helper()
-	registerOwnerWith(t, c, id, echoHandler, hooks)
+	return registerOwnerWith(t, c, id, echoHandler, hooks)
 }
 
-func registerOwnerWith(t *testing.T, c *Client, id string, handler Handler, hooks *ObserveHooks) {
+func registerOwnerWith(t *testing.T, c *Client, id string, handler Handler, hooks *ObserveHooks) *FunctionRef {
 	t.Helper()
-	if err := c.RegisterFunction(id, handler, RegisterFunctionOptions{Observe: hooks}); err != nil {
+	ref, err := c.RegisterFunction(id, handler, RegisterFunctionOptions{Observe: hooks})
+	if err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, "functionregistered for "+id, func() bool {
 		f := c.functionObservers(id)
 		return f != nil && f.syncedOn(c.currentEpoch())
 	})
+	return ref
 }
 
 // sdk.md §1, §4.2: OnObserverAdded runs once per add, before the ack, and the observer
@@ -336,15 +338,18 @@ func TestNamespaceConflictDropsObserversAndLocalDispatch(t *testing.T) {
 
 // A function registered again under the same id replaces the previous one: its
 // observers go through the previous hooks' OnObserverRemoved.
-func TestReRegisteringAFunctionReplacesItsObserveState(t *testing.T) {
+func TestRegisteringAgainAfterUnregisterReplacesTheObserveState(t *testing.T) {
 	fe := newFakeEngine(t)
 	fe.setObservers("re::fn", 1, observerInfo("o1", "x::y", "", ""))
 	c := fe.client()
 	var first, second hookLog
-	registerOwner(t, fe, c, "re::fn", recordingHooks(&first, DeliveryOwner))
+	ref := registerOwner(t, fe, c, "re::fn", recordingHooks(&first, DeliveryOwner))
 	fe.waitAck("re::fn", "o1", 1)
-	registerOwner(t, fe, c, "re::fn", recordingHooks(&second, DeliveryOwner))
+	if err := ref.Unregister(); err != nil {
+		t.Fatal(err)
+	}
 	waitUntil(t, "previous hooks removed", func() bool { _, r := first.snapshot(); return len(r) == 1 })
+	registerOwner(t, fe, c, "re::fn", recordingHooks(&second, DeliveryOwner))
 	waitUntil(t, "new hooks added", func() bool { a, _ := second.snapshot(); return len(a) == 1 })
 }
 
@@ -396,18 +401,18 @@ func TestObserveDescriptorValidation(t *testing.T) {
 	c := New("ws://unused.invalid")
 	t.Cleanup(func() { _ = c.Close() })
 	var rej *ObserveRejectionError
-	err := c.RegisterFunction("auto::fn", echoHandler, RegisterFunctionOptions{Observe: &ObserveHooks{ArgsFormat: json.RawMessage(`{"type":"object"}`)}})
+	_, err := c.RegisterFunction("auto::fn", echoHandler, RegisterFunctionOptions{Observe: &ObserveHooks{ArgsFormat: json.RawMessage(`{"type":"object"}`)}})
 	if !errors.As(err, &rej) || rej.Code != "INVALID_OBSERVE_DESCRIPTOR" {
 		t.Errorf("args_format on auto: %v", err)
 	}
-	err = c.RegisterFunction("bad::fn", echoHandler, RegisterFunctionOptions{Observe: &ObserveHooks{Delivery: "push"}})
+	_, err = c.RegisterFunction("bad::fn", echoHandler, RegisterFunctionOptions{Observe: &ObserveHooks{Delivery: "push"}})
 	if !errors.As(err, &rej) || rej.Code != "INVALID_OBSERVE_DESCRIPTOR" {
 		t.Errorf("unknown delivery: %v", err)
 	}
 	if c.functionObservers("auto::fn") != nil || c.functionObservers("bad::fn") != nil {
 		t.Error("a refused registration was stored")
 	}
-	err = RegisterFunctionTyped(c, "typed::fn", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+	_, err = RegisterFunctionTyped(c, "typed::fn", func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
 		RegisterFunctionOptions{Observe: &ObserveHooks{ArgsFormat: json.RawMessage(`{}`)}})
 	if !errors.As(err, &rej) {
 		t.Errorf("typed registration: %v", err)
@@ -416,7 +421,7 @@ func TestObserveDescriptorValidation(t *testing.T) {
 	fe := newFakeEngine(t)
 	cc := fe.client()
 	off := false
-	if err := cc.RegisterFunction("owner::fn", echoHandler, RegisterFunctionOptions{
+	if _, err := cc.RegisterFunction("owner::fn", echoHandler, RegisterFunctionOptions{
 		Observe:       &ObserveHooks{Delivery: DeliveryOwner, ArgsFormat: json.RawMessage(`{"type":"object"}`)},
 		LocalDispatch: &off,
 	}); err != nil {
@@ -440,15 +445,15 @@ func TestHooksInactiveAgainstOldEngineLogOnce(t *testing.T) {
 	c := New(fe.m.url)
 	t.Cleanup(func() { _ = c.Close() })
 	var log hookLog
-	_ = c.RegisterFunction("before::fn", echoHandler, RegisterFunctionOptions{Observe: recordingHooks(&log, DeliveryOwner)})
-	_ = c.RegisterFunction("plain::fn", echoHandler)
+	_, _ = c.RegisterFunction("before::fn", echoHandler, RegisterFunctionOptions{Observe: recordingHooks(&log, DeliveryOwner)})
+	_, _ = c.RegisterFunction("plain::fn", echoHandler)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := c.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, "registered", c.registeredNow)
-	_ = c.RegisterFunction("after::fn", echoHandler, RegisterFunctionOptions{Observe: recordingHooks(&log, DeliveryAuto)})
+	_, _ = c.RegisterFunction("after::fn", echoHandler, RegisterFunctionOptions{Observe: recordingHooks(&log, DeliveryAuto)})
 	fe.reconnect(c)
 	const inactive = "its observe hooks are inactive"
 	if logs.count(inactive) != 2 || logs.count(`"before::fn"`) != 1 || logs.count(`"after::fn"`) != 1 || logs.count("plain::fn") != 0 {

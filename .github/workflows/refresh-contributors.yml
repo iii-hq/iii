@@ -1,0 +1,82 @@
+name: Refresh Contributors
+
+# Refreshes only the landing page's contributors list, /data/contributors.json,
+# without rebuilding or redeploying the site. The page renders the list it was
+# built with and then reads this file in the browser, so a new contributor
+# shows up within a day. Nothing else in the bucket is touched.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+# Shares Deploy Website's group so the two never write to the bucket at once.
+concurrency:
+  group: deploy-website
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  refresh:
+    name: Upload /data/contributors.json
+    runs-on: ubuntu-latest
+    environment: iii-website-prod
+    timeout-minutes: 10
+
+    env:
+      AWS_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter iii-website
+
+      # --require-live fails the job instead of falling back to the committed
+      # snapshot or writing an empty list, so a bad GitHub read never replaces
+      # the live file.
+      - name: Read contributors from GitHub
+        run: pnpm --filter iii-website exec tsx scripts/generate-contributors.ts --require-live
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Same cache header Deploy Website gives every .json file.
+      - name: Upload the list
+        run: |
+          aws s3 cp website/public/data/contributors.json \
+            "s3://${{ vars.S3_BUCKET }}/data/contributors.json" \
+            --content-type "application/json" \
+            --cache-control "public,max-age=0,must-revalidate"
+
+      - name: Invalidate the list in CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ vars.CF_DISTRIBUTION_ID }}" \
+            --paths '/data/contributors.json' \
+            --query 'Invalidation.Id' \
+            --output text
+
+      - name: Job summary
+        run: |
+          count=$(jq '.contributors | length' website/public/data/contributors.json)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Contributors refreshed
+
+          - People: ${count}
+          - Object: \`s3://${{ vars.S3_BUCKET }}/data/contributors.json\`
+          EOF

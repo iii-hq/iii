@@ -105,7 +105,7 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	defer c.Close()
 	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes) + `"`)
 	for _, action := range []*TriggerAction{nil, VoidAction(), EnqueueAction("q")} {
-		_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "f", Data: huge, Action: action})
+		_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "f", Payload: huge, Action: action})
 		var ie *InvocationError
 		if !errors.As(err, &ie) || ie.Code != "payload_too_large" {
 			t.Fatalf("local: %v", err)
@@ -115,10 +115,10 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 		t.Fatal("pending/offline leak")
 	}
 	h := func(context.Context, json.RawMessage) (any, error) { return nil, nil }
-	if err := c.RegisterFunction("f", h, RegisterFunctionOptions{Metadata: huge}); err == nil {
+	if _, err := c.RegisterFunction("f", h, RegisterFunctionOptions{Metadata: huge}); err == nil {
 		t.Fatal("registration accepted")
 	}
-	typedErr := RegisterFunctionTyped(c, "typed", func(_ context.Context, req string) (string, error) {
+	_, typedErr := RegisterFunctionTyped(c, "typed", func(_ context.Context, req string) (string, error) {
 		return req, nil
 	}, RegisterFunctionOptions{Metadata: huge})
 	var typedSizeErr *InvocationError
@@ -128,10 +128,10 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	if len(c.functions) != 0 || len(c.offline) != 0 || len(c.outbound) != 0 {
 		t.Fatal("typed registration retained or enqueued oversized envelope")
 	}
-	if err := c.RegisterTriggerType("t", strings.Repeat("x", maxJSONMessageBytes), &stubTriggerHandler{}); err == nil {
+	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "t", Description: strings.Repeat("x", maxJSONMessageBytes)}, &stubTriggerHandler{}); err == nil {
 		t.Fatal("trigger type accepted")
 	}
-	if err := c.RegisterTrigger("t", "t", "f", huge); err == nil {
+	if _, err := c.RegisterTrigger(RegisterTriggerInput{ID: "t", Type: "t", FunctionID: "f", Config: huge}); err == nil {
 		t.Fatal("trigger accepted")
 	}
 	if len(c.functions)+len(c.triggers)+len(c.triggerTypes) != 0 {
@@ -177,7 +177,7 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 	}
 	m.mu.Unlock()
 	c := connectClient(t, m)
-	if err := c.RegisterFunction("length", func(_ context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("length", func(_ context.Context, data json.RawMessage) (any, error) {
 		var s string
 		json.Unmarshal(data, &s)
 		return len(s), nil
@@ -233,7 +233,7 @@ func TestJSONReplayWriterAndReattachGuards(t *testing.T) {
 		}
 	}
 	c := connectClient(t, m)
-	if err := c.RegisterFunction("retained", func(context.Context, json.RawMessage) (any, error) { return nil, nil }); err != nil {
+	if _, err := c.RegisterFunction("retained", func(context.Context, json.RawMessage) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
 	m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, "registerfunction") == 1 }, time.Second)
@@ -323,7 +323,7 @@ func TestJSONReceiveLimitRejectsAbove64MiB(t *testing.T) {
 func TestJSONNullAbsentOnWire(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
-	if err := c.RegisterFunction("null", func(context.Context, json.RawMessage) (any, error) { return nil, nil }); err != nil {
+	if _, err := c.RegisterFunction("null", func(context.Context, json.RawMessage) (any, error) { return nil, nil }); err != nil {
 		t.Fatal(err)
 	}
 	m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, "registerfunction") > 0 }, time.Second)
@@ -371,7 +371,7 @@ func TestJSONTriggerTypeSchemasRejectCombinedEnvelopeWithoutReplacement(t *testi
 				}
 			}
 			original := &stubTriggerHandler{}
-			if err := c.RegisterTriggerType("schemas", "Original", original, RegisterTriggerTypeOptions{TriggerRequestFormat: json.RawMessage(`true`)}); err != nil {
+			if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "schemas", Description: "Original", TriggerRequestFormat: json.RawMessage(`true`)}, original); err != nil {
 				t.Fatal(err)
 			}
 			if connected {
@@ -380,14 +380,14 @@ func TestJSONTriggerTypeSchemasRejectCombinedEnvelopeWithoutReplacement(t *testi
 			retained := c.triggerTypes["schemas"]
 			beforeOffline, beforeOutbound := len(c.offline), len(c.outbound)
 			schema := json.RawMessage(`{"description":"` + strings.Repeat("x", maxJSONMessageBytes/2) + `"}`)
-			opts := RegisterTriggerTypeOptions{TriggerRequestFormat: schema, CallRequestFormat: append(json.RawMessage(nil), schema...)}
-			for _, single := range []RegisterTriggerTypeOptions{{TriggerRequestFormat: schema}, {CallRequestFormat: schema}} {
+			opts := RegisterTriggerTypeInput{ID: "schemas", Description: "Replacement", TriggerRequestFormat: schema, CallRequestFormat: append(json.RawMessage(nil), schema...)}
+			for _, single := range []RegisterTriggerTypeInput{{TriggerRequestFormat: schema}, {CallRequestFormat: schema}} {
 				if _, err := prepareJSON(&RegisterTriggerTypeMessage{ID: "schemas", Description: "Replacement", TriggerRequestFormat: single.TriggerRequestFormat, CallRequestFormat: single.CallRequestFormat}); err != nil {
 					t.Fatalf("individual schema should fit: %v", err)
 				}
 			}
 			configBefore, callBefore := string(opts.TriggerRequestFormat), string(opts.CallRequestFormat)
-			err := c.RegisterTriggerType("schemas", "Replacement", &stubTriggerHandler{}, opts)
+			_, err := c.RegisterTriggerType(opts, &stubTriggerHandler{})
 			var sizeErr *InvocationError
 			if !errors.As(err, &sizeErr) || sizeErr.Code != "payload_too_large" {
 				t.Fatalf("combined schema envelope: %v", err)

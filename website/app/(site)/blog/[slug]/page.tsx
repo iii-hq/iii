@@ -93,7 +93,7 @@ export default async function BlogPost({ params }: { params: Promise<Params> }) 
 
   const publisher = {
     '@type': 'Organization',
-    name: 'III, Inc.',
+    name: 'Motia LLC',
     url: `${site.url}/`,
     logo: { '@type': 'ImageObject', url: `${site.url}/favicon.svg` },
   }

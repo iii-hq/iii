@@ -23,7 +23,7 @@ func TestChannelStreamSenderToProcessor(t *testing.T) {
 	c := connect(t)
 
 	// Processor: pull the reader ref out of its payload, read the full stream, count items.
-	if err := c.RegisterFunction("test::chan::go::processor", func(ctx context.Context, data json.RawMessage) (any, error) {
+	if _, err := c.RegisterFunction("test::chan::go::processor", func(ctx context.Context, data json.RawMessage) (any, error) {
 		refs, err := iii.ExtractChannelRefs(data)
 		if err != nil {
 			return nil, err
@@ -76,7 +76,7 @@ func TestChannelStreamSenderToProcessor(t *testing.T) {
 	})
 	res, err := c.Trigger(ctxFor(t, 15*time.Second), iii.TriggerRequest{
 		FunctionID: "test::chan::go::processor",
-		Data:       procPayload,
+		Payload:    procPayload,
 		Timeout:    15 * time.Second,
 	})
 	if err != nil {

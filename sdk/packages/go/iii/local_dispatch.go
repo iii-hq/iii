@@ -41,7 +41,7 @@ type localOutcome struct {
 // encoding of the result. Timeouts and errors have the remote path's shape: ErrTimeout,
 // and an *InvocationError carrying the handler's error body.
 func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req TriggerRequest) (json.RawMessage, error) {
-	data := req.Data
+	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
 	}
@@ -85,7 +85,8 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 	// connection's: the caller's cancellation and values do not reach it.
 	// The handler gets its own copy of the metadata: what it does with it cannot
 	// change the report (made from inv.metadata, the snapshot taken at call start).
-	hctx := withInvocation(withMetadata(c.lifeCtx, bytes.Clone(inv.metadata)), inv)
+	// The caller's trace context does reach it (otel.go), so its span joins the trace.
+	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), bytes.Clone(inv.metadata)), inv)
 
 	run := func() localOutcome {
 		started := time.Now()
@@ -129,11 +130,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 
 	done := make(chan localOutcome, 1)
 	go func() { done <- run() }()
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = DefaultInvocationTimeout
-	}
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(c.triggerTimeout(req.Timeout))
 	defer timer.Stop()
 	select {
 	case out := <-done:

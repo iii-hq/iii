@@ -40,22 +40,24 @@ func TestTriggerTypeSchemasDiscovery(t *testing.T) {
 	}`)
 
 	for _, tt := range []struct {
-		name    string
-		options []iii.RegisterTriggerTypeOptions
+		name  string
+		input iii.RegisterTriggerTypeInput
 	}{
 		{
 			name: "with_schemas",
-			options: []iii.RegisterTriggerTypeOptions{{
+			input: iii.RegisterTriggerTypeInput{
 				TriggerRequestFormat: configurationSchema,
 				CallRequestFormat:    requestSchema,
-			}},
+			},
 		},
 		{name: "legacy_without_schemas"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			id := "test::go::trigger_schemas::" + tt.name
 			const description = "Custom message events with optional discovery schemas"
-			if err := c.RegisterTriggerType(id, description, triggerSchemaHandler{}, tt.options...); err != nil {
+			in := tt.input
+			in.ID, in.Description = id, description
+			if _, err := c.RegisterTriggerType(in, triggerSchemaHandler{}); err != nil {
 				t.Fatalf("RegisterTriggerType: %v", err)
 			}
 
@@ -68,7 +70,7 @@ func TestTriggerTypeSchemasDiscovery(t *testing.T) {
 			defer ticker.Stop()
 			var raw json.RawMessage
 			for {
-				raw, err = c.Trigger(ctx, iii.TriggerRequest{FunctionID: iii.FnInfoTriggers, Data: query})
+				raw, err = c.Trigger(ctx, iii.TriggerRequest{FunctionID: iii.FnInfoTriggers, Payload: query})
 				if err == nil {
 					break
 				}
@@ -95,7 +97,7 @@ func TestTriggerTypeSchemasDiscovery(t *testing.T) {
 				"request_schema":       requestSchema,
 			} {
 				got, present := detail[field]
-				if len(tt.options) == 0 {
+				if tt.input.TriggerRequestFormat == nil {
 					if present {
 						t.Errorf("legacy registration unexpectedly exposes %s: %v", field, got)
 					}

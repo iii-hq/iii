@@ -130,7 +130,7 @@ func TestEmitCallerRules(t *testing.T) {
 	owner = newCronOwnerWith(t, fe, c, "cron::on-tick", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, emitAll(ctx, "cron::on-tick")
 	})
-	_ = c.RegisterFunction("cron::on-tick-shadow", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("cron::on-tick-shadow", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return nil, emitAll(ctx, "cron::on-tick-shadow")
 	})
 	addCronObserver(t, fe, "cron::on-tick", "all", "x", "", CaptureInput, CaptureCaller, CaptureMetadata)

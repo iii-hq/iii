@@ -105,6 +105,16 @@ pnpm tsx scripts/generate-benchmarks.ts --snapshot --summary ../target/loadtest/
   --micro <a copy of gh-pages dev/bench/data.js>
 ```
 
+## The contributors section
+
+The landing page's Contributors section lists everyone who has landed a commit in a repository the site showcases: `iii-hq/iii` and `iii-hq/workers`, the two GitHub links in `lib/site.ts` (`CONTRIBUTOR_REPOS` in `lib/contributors.ts`). `scripts/generate-contributors.ts` runs before `dev` and `build`. It reads GitHub's contributors API for each repository, merges the lists into one (one row per GitHub user id, commits summed, GitHub Apps and automation accounts such as `actions-user` removed) and writes `content/contributors/data.json`, which is gitignored and is what the section imports.
+
+When any repository cannot be read, the list comes from `content/contributors/snapshot.json`, which is committed, so a build never fails or ships an empty section. `CONTRIBUTORS_OFFLINE=1` skips the network, and `GITHUB_TOKEN`, when set, lifts the unauthenticated rate limit (60 requests an hour per address). The script also writes the list to `public/data/contributors.json` (gitignored), which the site serves at `/data/contributors.json`. The section renders the list it was built with, then reads that file in the browser and switches to it. The `Refresh Contributors` workflow (`.github/workflows/refresh-contributors.yml`) regenerates the file every day at 03:00 UTC with `--require-live` and uploads only that object to the bucket, so new contributors appear within a day without rebuilding the site. `--require-live` fails instead of falling back to the snapshot or writing an empty list. To refresh the snapshot:
+
+```bash
+pnpm tsx scripts/generate-contributors.ts --snapshot
+```
+
 ## Adding a tech spec or a deck
 
 See [roadmap/README.md](./roadmap/README.md). A spec is a `tech-specs/<slug>/` folder of markdown with frontmatter;

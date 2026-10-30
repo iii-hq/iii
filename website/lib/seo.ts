@@ -52,13 +52,25 @@ const shareImage = {
   url: '/opengraph-image.png',
   width: 1200,
   height: 630,
-  alt: 'iii: unreasonably simple software engineering',
+  alt: 'iii: More application. Less infrastructure.',
 }
 
 /**
  * Full metadata for one page. Next.js replaces (does not merge) a parent's `openGraph` and `twitter` objects, so a
  * page that sets its own title must restate the type, site name, card and image too; this keeps every page whole.
  */
+/**
+ * The favicon follows the browser theme: the black mark for light, the white mark for dark. Each file has a solid
+ * fill and the page's media query picks one. A single SVG with its own prefers-color-scheme rule is unreliable here,
+ * because Chrome lets the page's `color-scheme: dark` leak into it and shows the white mark on a light tab strip.
+ */
+export const icons: Metadata['icons'] = {
+  icon: [
+    { url: '/favicon-black.svg', type: 'image/svg+xml', media: '(prefers-color-scheme: light)' },
+    { url: '/favicon-white.svg', type: 'image/svg+xml', media: '(prefers-color-scheme: dark)' },
+  ],
+}
+
 export function pageMetadata({
   title,
   description,
@@ -100,7 +112,7 @@ const organization = {
   '@type': 'Organization',
   '@id': `${site.url}/#organization`,
   name: 'iii',
-  legalName: 'III, Inc.',
+  legalName: 'Motia LLC',
   url: `${site.url}/`,
   logo: `${site.url}/icon.svg`,
   sameAs: [links.github, links.x, links.linkedin, links.discord],

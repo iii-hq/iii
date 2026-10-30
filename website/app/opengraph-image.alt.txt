@@ -1,1 +1,1 @@
-iii: unreasonably simple software engineering
+iii: More application. Less infrastructure.

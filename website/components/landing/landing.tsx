@@ -2,6 +2,7 @@ import { Faq } from '@/components/sections/faq'
 import { Footer } from '@/components/site/footer'
 import { SiteHeader } from '@/components/site/site-header'
 import { links } from '@/lib/site'
+import { Contributors } from './contributors'
 import { FinalCta } from './final-cta'
 import { Hero } from './hero'
 import { LiveDemo } from './live-demo'
@@ -50,6 +51,8 @@ export async function Landing() {
             </>
           }
         />
+        {/* Contributors sit between the FAQ and the close: the people already building it, then "get started". */}
+        <Contributors stars={stats.stars} />
         <FinalCta />
       </main>
       <Footer container={wideContainer} />

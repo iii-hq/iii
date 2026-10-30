@@ -336,7 +336,7 @@ async fn s302_when_adapter_major_differs() {
     assert_eq!(p["retryable"], false);
     assert_eq!(
         p["message"],
-        "adapter fake implements sandbox contract 2.0, but this engine needs major 1; install a fake release whose major version is 1"
+        "adapter fake implements sandbox contract 2.0, but this engine needs major 1; install a fake release that implements sandbox contract 1.x"
     );
 }
 
