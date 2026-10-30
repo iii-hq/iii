@@ -594,6 +594,13 @@ what it returns (or throws) is what the caller gets back. iii delivers nothing f
 The hook runs inside the function's invocation, so calls it makes have that invocation as their
 caller.
 
+Choose observers in `onObserverMatch` when an observer's args and the call settle it: a cron
+expression, a table, a subscriber id. Choose them in `onObserverDeliver` when choosing compares
+observers with each other or produces part of the payload. An HTTP request goes to the most specific
+of the route patterns that fit its path, and that route's path parameters go into the request its
+target receives, so `http::on-request` sets no match hook and its deliver hook receives every active
+observer.
+
 `http::on-request` answers the HTTP server with the route's response, while its observers observe
 the request:
 

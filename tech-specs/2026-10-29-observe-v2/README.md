@@ -394,6 +394,14 @@ observers that matched it (a snapshot taken when the call started), delivers
 the call itself, and returns what the caller gets back. iii delivers nothing
 for that function.
 
+A worker chooses observers in the match hook when an observer's args and the
+call settle it: a cron expression, a table, a subscriber id. It chooses them in
+the deliver hook when choosing compares observers with each other or produces
+part of the payload. An HTTP request goes to the most specific of the route
+patterns that fit its path, and that route's path parameters go into the
+request its target receives, so `http::on-request` sets no match hook and its
+deliver hook receives every active observer.
+
 ```ts
 // http::on-request: each request goes to one route; its target's result is the response
 iii.onObserverDeliver('http::on-request', async (call) => {

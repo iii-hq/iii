@@ -534,6 +534,13 @@ client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *
 })
 ```
 
+Choose observers in the match hook when an observer's args and the call settle it: a
+cron expression, a table, a subscriber id. Choose them in the deliver hook when choosing
+compares observers with each other or produces part of the payload. An HTTP request goes
+to the most specific of the route patterns that fit its path, and that route's path
+parameters go into the request its target receives, so `http::on-request` sets no match
+hook and its deliver hook receives every active observer.
+
 A call through an observer goes to its stored target: the engine checks that this worker
 hosts the observer's function and that the observer is active (`NOT_FUNCTION_OWNER`,
 `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`) and applies its policy (`OVERFLOW` past
