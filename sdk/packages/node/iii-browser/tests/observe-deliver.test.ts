@@ -138,6 +138,8 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
       row('orders-insert', { db: 'primary', table: 'orders', ops: ['insert'] }),
       row('orders-any', { db: 'primary', table: 'orders' }),
       row('every-insert', { db: 'primary', ops: ['insert', 'update'] }),
+      // filed under two of the call's keys: primary|orders|insert and primary|orders|*
+      row('orders-insert-or-any', { db: 'primary', table: 'orders', ops: ['insert', '*'] }),
       row('big-only', { db: 'primary', table: 'orders' }, { filters: { $and: [{ 'input.big': { $eq: true } }] } }),
       row('users', { db: 'primary', table: 'users' }),
     ])
@@ -147,7 +149,39 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     })
     await flushed()
     expect(reportedItems(socket).map((i) => (i.matched as string[]).sort())).toEqual([
-      ['every-insert', 'orders-any', 'orders-insert'],
+      ['every-insert', 'orders-any', 'orders-insert', 'orders-insert-or-any'],
+    ])
+  })
+
+  it('computes the keys once per accepted observer and once per call', async () => {
+    const { sdk, socket } = worker()
+    const observerKeys = vi.fn(byRow.observer)
+    const callKeys = vi.fn(byRow.call)
+    sdk
+      .registerFunction('database::on-row-changed', (change: Change) => change, { private: true })
+      .onObserverMatch({ observer: observerKeys, call: callKeys })
+    socket.deliver(
+      functionRegistered(
+        'database::on-row-changed',
+        [row('orders', { db: 'primary', table: 'orders' }), row('any', { db: 'primary' })],
+        { revision: 1 },
+      ),
+    )
+    await settle()
+    socket.deliver(observerAdded('database::on-row-changed', 2, row('users', { db: 'primary', table: 'users' })))
+    await settle()
+    socket.clear()
+    expect(observerKeys.mock.calls.map(([obs]) => obs.id)).toEqual(['orders', 'any', 'users'])
+    for (const table of ['orders', 'users', 'items']) {
+      await sdk.call({ function_id: 'database::on-row-changed', payload: { db: 'primary', table, op: 'insert' } })
+    }
+    expect(callKeys).toHaveBeenCalledTimes(3)
+    expect(observerKeys).toHaveBeenCalledTimes(3)
+    await flushed()
+    expect(reportedItems(socket).map((i) => (i.matched as string[]).sort())).toEqual([
+      ['any', 'orders'],
+      ['any', 'users'],
+      ['any'],
     ])
   })
 
@@ -329,6 +363,29 @@ describe('onObserverDeliver', () => {
       function_id: 'queue::on-message',
       error: { code: 'OBSERVER_NOT_ACTIVE', message: 'subscriber removed' },
     })
+  })
+
+  it('null removes the hook: iii delivers the calls again, local and routed', async () => {
+    const { sdk, socket } = worker()
+    const hook = vi.fn((call: Call) => call.output)
+    sdk.registerFunction('orders::on-placed', (order: { n: number }) => order).onObserverDeliver(hook)
+    socket.deliver(functionRegistered('orders::on-placed', [observerInfo('o', 'audit::order', { capture: ['input'] })]))
+    await settle()
+    socket.clear()
+    await sdk.call({ function_id: 'orders::on-placed', payload: { n: 1 } })
+    socket.deliver(invokeFunction('orders::on-placed', { n: 2 }, { invocation_id: 'hooked' }))
+    await settle()
+    expect(hook).toHaveBeenCalledTimes(2)
+    expect(fake.resultOf(socket, 'hooked')).not.toHaveProperty('observed')
+
+    sdk.onObserverDeliver('orders::on-placed', null)
+    await sdk.call({ function_id: 'orders::on-placed', payload: { n: 3 } })
+    socket.deliver(invokeFunction('orders::on-placed', { n: 4 }, { invocation_id: 'delivered' }))
+    await settle()
+    expect(hook).toHaveBeenCalledTimes(2)
+    expect(fake.resultOf(socket, 'delivered')).toMatchObject({ result: { n: 4 }, observed: ['o'] })
+    await flushed()
+    expect(reportedItems(socket).map((i) => [i.matched, i.input])).toEqual([[['o'], { n: 3 }]])
   })
 
   it('runs with no observers too, and receives only the observers that matched', async () => {

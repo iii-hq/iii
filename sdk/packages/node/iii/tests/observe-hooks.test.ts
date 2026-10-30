@@ -147,6 +147,26 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(removed).toHaveBeenCalledTimes(1)
   })
 
+  it('rejects with OWNER_TIMEOUT at 30 s by default, and not before', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    const slow = deferred()
+    sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded(() => slow.promise)
+    socket.open()
+    socket.deliver(functionRegistered('cron::on-tick', [observerInfo('o-1', 't::a')], { revision: 1 }))
+    await settle()
+    await fake.elapse(29_999)
+    expect(acks(socket)).toEqual([])
+    await fake.elapse(1)
+    expect(acks(socket)).toEqual([
+      expect.objectContaining({
+        id: 'o-1',
+        error: { code: 'OWNER_TIMEOUT', message: 'observer hook of cron::on-tick still running after 30000ms' },
+      }),
+    ])
+    slow.resolve()
+  })
+
   it('runs the hooks of one function one at a time, in revision order', async () => {
     const { sdk, socket } = worker()
     const first = deferred()
@@ -644,7 +664,7 @@ describe('both levels: the worker hooks and the function hooks', () => {
         if (obs.id === 'refused') throw new ObserveRejection('NO_SOURCE', 'refused by the function')
       })
     sdk
-      .registerFunction('b::keyed', (e: unknown) => e)
+      .registerFunction('b::by-keys', (e: unknown) => e)
       .onObserverMatch({
         observer: (obs) => {
           if (typeof obs.args.key !== 'string') throw new Error('no key')
@@ -655,7 +675,7 @@ describe('both levels: the worker hooks and the function hooks', () => {
     sdk.registerFunction('c::slow', (e: unknown) => e).onObserverAdded(() => gate.promise)
     socket.open()
     socket.deliver(functionRegistered('a::source', [observerInfo('refused', 't::a'), observerInfo('kept', 't::b')]))
-    socket.deliver(functionRegistered('b::keyed', [observerInfo('keyless', 't::c', { args: {} })]))
+    socket.deliver(functionRegistered('b::by-keys', [observerInfo('keyless', 't::c', { args: {} })]))
     socket.deliver(functionRegistered('c::slow', [observerInfo('released', 't::d')]))
     await settle()
     socket.deliver({
@@ -780,6 +800,33 @@ describe('hooks by function id', () => {
     expect(added).toHaveBeenCalledTimes(2)
     expect(removed).toHaveBeenCalledTimes(1)
     expect(second.observers().map((o) => o.id)).toEqual(['3'])
+  })
+
+  it('null removes a worker-wide hook: it runs for no observer added or removed after', async () => {
+    const { sdk, socket } = worker()
+    const added = vi.fn()
+    const removed = vi.fn()
+    sdk.onObserverAdded(added).onObserverRemoved(removed)
+    sdk.registerFunction('a::source', (e: unknown) => e)
+    socket.open()
+    socket.deliver(functionRegistered('a::source', [observerInfo('1', 't::a'), observerInfo('2', 't::a')]))
+    await settle()
+    expect(added.mock.calls.map(([obs]) => obs.id)).toEqual(['1', '2'])
+    socket.deliver(observerRemoved('a::source', 1, '1'))
+    await settle()
+    expect(removed.mock.calls.map(([obs]) => obs.id)).toEqual(['1'])
+
+    sdk.onObserverAdded(null).onObserverRemoved(null)
+    socket.deliver(observerAdded('a::source', 2, observerInfo('3', 't::a')))
+    socket.deliver(observerRemoved('a::source', 3, '2'))
+    await settle()
+    expect(added).toHaveBeenCalledTimes(2)
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(acks(socket).map((a) => [a.id, a.error])).toEqual([
+      ['1', undefined],
+      ['2', undefined],
+      ['3', undefined],
+    ])
   })
 
   it('refuses a hook that is neither a function nor null', () => {
