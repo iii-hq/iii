@@ -1016,7 +1016,60 @@ phase 2 baseline.
 6. **Verification.** Unit, integration and cross-SDK suites; engine benches;
    load tests against §13.
 
-## 15. Decisions
+## 15. Release steps
+
+These changes follow the publication of 0.26.0. Each one needs a published
+release, tag or crate, so it lands after the release.
+
+1. **SDK CI fixtures.** In `sdk/fixtures/config-test.yaml` the state, http,
+   pubsub, cron and queue workers move to `0.26.0`, and pubsub moves to
+   `0.26.0` in `sdk/fixtures/config-bridge.yaml` and
+   `sdk/fixtures/config-bridge-backend.yaml`. The SDK CI jobs start those
+   workers.
+2. **Workers Cargo.lock files.** Each of these projects in `iii-hq/workers`
+   asks for `iii-sdk = "=0.26.0"`, and its Cargo.lock re-locks to the
+   published 0.26.0 crates so that `--locked` builds resolve. The lockfiles of
+   cron, database, github, http, queue, state, storage and tmux pin 0.25.0;
+   the others pin 0.24.6.
+
+   ```text
+   a2ui acp ade approval-gate bridge browser canvas code-runner codex
+   computer context-manager crates/config-client crates/console-ui
+   crates/judge-provider crates/native-ui crates/provider-integration-testkit
+   cron database devin document email eval fp github grok harness http ide
+   iii-directory image-resize ios-simulator judge judge-clef judge-decider
+   judge-laya judge-openai judge-semif judge-typesafe kanban llm-router lsp
+   mcp memory memory-consolidate pdf provider-anthropic provider-claude-code
+   provider-command-code provider-deepseek provider-elevenlabs
+   provider-github-copilot provider-kimi provider-llamacpp provider-openai
+   provider-openai-codex provider-opencode-go provider-openrouter
+   provider-sarvam provider-xai provider-zai pubsub queue quick-tunnel
+   rbac-proxy sandbox-code-runner secrets security-scan sentinel
+   session-manager slack state storage stories tailscale telegram-bot tmux
+   voice web workers-dev workflow worktree
+   ```
+
+3. **Workers JavaScript lockfiles.** The root `pnpm-lock.yaml`, the
+   `pnpm-lock.yaml` of claude-code, cursor, onboarding, opencode, opengantry,
+   openwiki, pi and vscode, and the `package-lock.json` of
+   `image-resize/example` and of the e2e harnesses
+   (`<worker>/tests/e2e/workers/harness`) in browser, code-runner, database,
+   ide, rbac-proxy and storage re-lock to the published 0.26.0 packages.
+4. **hermes.** `hermes/Dockerfile` downloads the CLI from the `iii/v0.26.0`
+   release and checks the sha256 of its amd64 and arm64 archives;
+   `hermes/uv.lock` re-locks iii-sdk and iii-helpers to 0.26.0.
+5. **whatsapp.** Once the Go SDK tag `sdk/packages/go/iii/v0.26.0` exists,
+   `GOWORK=off go mod tidy` in `whatsapp/` adds the SDK's lines to
+   `whatsapp/go.sum`.
+6. **deepwork kit.** `kits/deepwork/iii.kit.yaml` sets its harness,
+   iii-directory, state, kanban and ide ranges to the first releases of those
+   workers built on 0.26.0.
+7. **Templates.** The edits to the synced template files in `iii-hq/workers`
+   (the files listed in `template/upstream/sync.json`, under
+   `template/agents/` and `template/skills/harness/`) go to `iii/harness/` in
+   the `iii-hq/templates` repo, and `sync.json` records that commit.
+
+## 16. Decisions
 
 1. **Observer hooks run at both levels.** The worker's and the function's
    `onObserverAdded` both run, worker first; removal runs in reverse. Setup
@@ -1047,7 +1100,7 @@ phase 2 baseline.
     `call`; `trigger` is its alias. Triggers as a concept are gone: events are
     functions, bindings are observers.
 
-## 16. Open questions
+## 17. Open questions
 
 - **Key functions in the engine.** Matching by keys runs in the host. If the engine
   should prune activations for hosts without `observe.v2`, the keys would
