@@ -667,8 +667,8 @@ impl ObserverRegistry {
     /// back first stays. The host let it go when the worker left, so nothing
     /// more is sent to it; the disposal leaves a tombstone, so the earlier
     /// connection, reattaching later, finds the observer disposed. Returns
-    /// the transition for the caller to settle once `previous` no longer
-    /// holds the id, `None` when `previous` was not suspended.
+    /// the transition, which the caller settles after the new observer has
+    /// taken the id, or `None` when `previous` was not suspended.
     fn dispose_left_behind(
         &self,
         previous: &Arc<Observer>,
