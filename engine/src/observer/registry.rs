@@ -606,6 +606,8 @@ impl ObserverRegistry {
         }
         for observer in &observers {
             self.update(observer, |flags| flags.observing_connected = false);
+            // Its function's owner lets it go until the worker reattaches.
+            self.withdraw_while_away(observer);
         }
         let Some(runtime) = self.runtime() else {
             for observer in &observers {
@@ -680,7 +682,7 @@ impl ObserverRegistry {
     /// Re-parenting never rejects an observer: `max_per_connection` applies
     /// when observers are created, and these were created already.
     pub fn reattach(
-        &self,
+        self: &Arc<Self>,
         previous: Uuid,
         token: Option<&str>,
         connection: &WorkerConnection,
@@ -703,7 +705,7 @@ impl ObserverRegistry {
             .remove(&previous)
             .map(|(_, ids)| ids)
             .unwrap_or_default();
-        let mut moved = 0usize;
+        let mut moved = Vec::new();
         for id in ids {
             let Some(observer) = self.get(&id) else {
                 continue;
@@ -734,17 +736,20 @@ impl ObserverRegistry {
                 continue;
             }
             self.update(&observer, |flags| flags.observing_connected = true);
-            moved += 1;
+            moved.push(observer);
         }
         for mut tombstone in self.tombstones.iter_mut() {
             if tombstone.connection == previous {
                 tombstone.connection = connection;
             }
         }
+        // Each function's owner let them go when the worker left; it hears
+        // about them again, in creation order, and they go active on its ack.
+        self.announce_returned(&moved);
         tracing::info!(
             previous = %previous,
             connection = %connection,
-            observers = moved,
+            observers = moved.len(),
             "Reattach: observers re-parented to the new connection"
         );
         true

@@ -862,12 +862,14 @@ impl ObserverRegistry {
             // one (the same connection registering again) is stale.
             sync.revision += 1;
             let revision = sync.revision;
+            // An observer whose observing worker is away (suspended, waiting
+            // for a `Reattach`) is announced when it returns.
             let observers: Vec<Arc<Observer>> = entry
                 .observers()
                 .into_iter()
                 .filter(|o| {
                     let flags = o.flags();
-                    flags.failed.is_none() && flags.disposed.is_none()
+                    flags.failed.is_none() && flags.disposed.is_none() && flags.observing_connected
                 })
                 .collect();
             for observer in &observers {
@@ -991,8 +993,97 @@ impl ObserverRegistry {
         let Some(entry) = self.function_entry(&observer.function) else {
             return;
         };
-        let flags = observer.flags();
         let mut sync = lock(&entry.sync);
+        self.tell_owner_removed(&entry, &mut sync, observer);
+    }
+
+    /// The observing worker of `observer` left (its observers are suspended
+    /// for `observers.observer_grace_ms`): the function's owner lets the
+    /// observer go (`observerremoved`, when it was told about it) and holds
+    /// only observers that can become active. The observer waits for a new
+    /// ack, and its owner hears about it again when the worker reattaches
+    /// ([`Self::announce_returned`]). An observer that did not come back is
+    /// disposed with nothing more sent to the owner.
+    pub(crate) fn withdraw_while_away(self: &Arc<Self>, observer: &Arc<Observer>) {
+        if self.function_entry(&observer.function).is_none() {
+            return;
+        }
+        observer.cancel_ack_timer();
+        self.with_owner_sync(&observer.function, |entry, sync, owner| {
+            let flags = observer.flags();
+            if flags.observing_connected || flags.failed.is_some() || flags.disposed.is_some() {
+                return;
+            }
+            self.tell_owner_removed(entry, sync, observer);
+            let acked = !owner.is_some_and(|owner| owner.speaks_observe);
+            self.update(observer, |flags| {
+                if !flags.observing_connected {
+                    flags.owner_acked = acked;
+                    flags.announced = None;
+                }
+            });
+        });
+    }
+
+    /// The observing worker of `observers` reattached: each function's owner
+    /// that got its `functionregistered` hears about them again
+    /// (`observeradded`), in the order they were created, as that
+    /// `functionregistered` would have listed them, and each waits for its
+    /// ack.
+    pub(crate) fn announce_returned(self: &Arc<Self>, observers: &[Arc<Observer>]) {
+        let returned: std::collections::HashSet<&str> =
+            observers.iter().map(|o| o.id.as_str()).collect();
+        let mut functions: Vec<&FnKey> = Vec::new();
+        for observer in observers {
+            if !functions.contains(&&observer.function) {
+                functions.push(&observer.function);
+            }
+        }
+        for function in functions {
+            let Some(entry) = self.function_entry(function) else {
+                continue;
+            };
+            for observer in entry.observers() {
+                if returned.contains(observer.id.as_str()) {
+                    self.announce_on_return(&observer);
+                }
+            }
+        }
+    }
+
+    fn announce_on_return(self: &Arc<Self>, observer: &Arc<Observer>) {
+        self.with_owner_sync(&observer.function, |_entry, sync, _owner| {
+            let flags = observer.flags();
+            if !flags.observing_connected
+                || flags.failed.is_some()
+                || flags.disposed.is_some()
+                || flags.announced.is_some()
+            {
+                return;
+            }
+            // No `functionregistered` yet: it will list the observer.
+            let Some(announced_to) = sync.announced_to else {
+                return;
+            };
+            sync.revision += 1;
+            let revision = sync.revision;
+            self.announce(observer, announced_to, revision);
+            self.notify(
+                announced_to,
+                Message::ObserverAdded {
+                    function_id: observer.function.1.clone(),
+                    namespace: observer.function.0.clone(),
+                    revision,
+                    observer: view(observer),
+                },
+            );
+        });
+    }
+
+    /// Sends the owner `observerremoved` for `observer` if it was told about
+    /// it and did not reject it. The caller holds `entry`'s `sync`.
+    fn tell_owner_removed(&self, entry: &FunctionEntry, sync: &mut OwnerSync, observer: &Observer) {
+        let flags = observer.flags();
         let (announced, rejected) = observer.take_announcement();
         let (Some(announced), Some(owner)) = (announced, sync.announced_to) else {
             return;
@@ -1008,7 +1099,7 @@ impl ObserverRegistry {
             // Its hooks may be running: the owner moves on to the next
             // observer once they end, a full timeout from now at the latest.
             let at = tokio::time::Instant::now() + self.ack_timeout();
-            Self::record_progress(&entry, owner, at);
+            Self::record_progress(entry, owner, at);
         }
         sync.revision += 1;
         self.notify(

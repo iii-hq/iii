@@ -20,6 +20,7 @@ const ARGS = { tag: 'fault-tolerance' }
 type HostHarness = {
   sdk: IIIClient
   addedSpy: ReturnType<typeof vi.fn>
+  removedSpy: ReturnType<typeof vi.fn>
   fire: (payload: Record<string, unknown>) => Promise<unknown>
 }
 
@@ -28,6 +29,7 @@ describe('Observer fault tolerance (pending until hosted)', () => {
 
   function createHost(sourceId: string, opts: { standby?: boolean; name?: string } = {}): HostHarness {
     const addedSpy = vi.fn((_obs: Observer) => undefined)
+    const removedSpy = vi.fn((_obs: Observer) => undefined)
     // Named off the per-test source id: unique against every other live
     // worker, yet stable across this test's host restart.
     const sdk = registerWorker(engineWsUrl, {
@@ -42,7 +44,8 @@ describe('Observer fault tolerance (pending until hosted)', () => {
         standby: opts.standby,
       })
       .onObserverAdded(addedSpy)
-    return { sdk, addedSpy, fire: (payload) => sdk.call({ function_id: sourceId, payload }) }
+      .onObserverRemoved(removedSpy)
+    return { sdk, addedSpy, removedSpy, fire: (payload) => sdk.call({ function_id: sourceId, payload }) }
   }
 
   function createConsumer(sourceId: string, consumerFnId: string) {
@@ -103,6 +106,29 @@ describe('Observer fault tolerance (pending until hosted)', () => {
     await sleep(400)
     expect(handlerSpy).toHaveBeenCalledTimes(1)
     expect(handlerSpy.mock.calls[0][0]).toMatchObject({ input: { n: 2 } })
+  })
+
+  it('a host lets an observer go when its observing worker leaves, and a new host is not given it', async () => {
+    const SOURCE = `test::observer-away-node-${RUN}`
+    let host = createHost(SOURCE)
+    await sleep(300)
+    const consumer = createConsumer(SOURCE, `${SOURCE}::consumer`)
+    await consumer.handle.ready()
+    expect(host.addedSpy).toHaveBeenCalledTimes(1)
+
+    // The observer waits for its worker (observers.observer_grace_ms, 30 s by
+    // default); its host lets it go at once.
+    await consumer.sdk.shutdown()
+    clients.splice(clients.indexOf(consumer.sdk), 1)
+    await vi.waitFor(() => expect(host.removedSpy).toHaveBeenCalledTimes(1), { timeout: 5000 })
+    expect(host.removedSpy.mock.calls[0][0]).toMatchObject({ id: consumer.handle.id })
+
+    // A host that registers the function meanwhile has nothing to set up.
+    await host.sdk.shutdown()
+    clients.splice(clients.indexOf(host.sdk), 1)
+    host = createHost(SOURCE)
+    await sleep(800)
+    expect(host.addedSpy).not.toHaveBeenCalled()
   })
 
   it('a standby takes the function over when its host leaves, and runs its hooks for every observer', async () => {

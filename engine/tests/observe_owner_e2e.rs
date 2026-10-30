@@ -1427,10 +1427,13 @@ async fn a_conflicting_registration_gets_no_functionregistered() {
     assert!(!rival.has_seen(|f| f["type"] == "functionregistered"));
 }
 
+/// The owner lets an observer go as soon as its observing worker leaves
+/// (the observer is suspended and cannot become active), and hears nothing
+/// more when the grace period then ends.
 #[tokio::test]
-async fn the_owner_hears_observerremoved_when_the_grace_period_ends() {
+async fn the_owner_hears_observerremoved_when_the_observing_worker_leaves() {
     let t = spawn_engine(ObserversConfig {
-        observer_grace_ms: 100,
+        observer_grace_ms: 300,
         ..ObserversConfig::default()
     })
     .await;
@@ -1451,6 +1454,130 @@ async fn the_owner_hears_observerremoved_when_the_grace_period_ends() {
     watcher.disconnect().await;
     let removal = removed(&mut orders, "obs-graced").await;
     assert_eq!(removal["revision"], 3);
+    assert_eq!(
+        state(&t, "obs-graced"),
+        Some(ObserverState::Suspended),
+        "removed from its owner while its grace period runs"
+    );
+
+    assert!(
+        eventually(|| state(&t, "obs-graced").is_none()).await,
+        "disposed when the grace period ends"
+    );
+    get(&mut orders, "barrier").await;
+    assert!(
+        !orders.has_seen(|f| is_removal(f) && f["id"] == "obs-graced"),
+        "one observerremoved per observer the owner held"
+    );
+}
+
+/// A host that registers the function while an observer's observing worker
+/// is away is not told about that observer: its `accepted()` would resolve
+/// for an observer that cannot be called through (`OBSERVER_NOT_ACTIVE`).
+/// When the worker reattaches, the host gets `observeradded` and the
+/// observer goes active on its ack.
+#[tokio::test]
+async fn an_observer_whose_worker_is_away_is_announced_when_it_reattaches() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut watcher,
+        observer(
+            "obs-away",
+            json!({ "function_id": "orders::create" }),
+            "sink::orders",
+        ),
+        "orders::create",
+    )
+    .await;
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-away").await;
+
+    // The host restarts within the grace period.
+    orders.disconnect().await;
+    assert!(
+        eventually(|| t
+            .engine
+            .functions
+            .get("default", "orders::create")
+            .is_none())
+        .await
+    );
+    let (mut orders, announced) = owner(&t, "orders-2", &["orders::create"]).await;
+    assert_eq!(announced[0]["observers"], json!([]), "{}", announced[0]);
+    assert_eq!(state(&t, "obs-away"), Some(ObserverState::Suspended));
+
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    let added = added(&mut orders, "obs-away").await;
+    assert_eq!(get(&mut orders, "obs-away").await["state"], "pending");
+    ack(
+        &mut orders,
+        "orders::create",
+        "obs-away",
+        &added["revision"],
+    )
+    .await;
+    watcher.state_becomes("obs-away", "active").await;
+
+    // A call through it, made after the ack, reaches its target.
+    let call = orders
+        .call_with(
+            "sink::orders",
+            json!({ "initial": true }),
+            json!({ "activation": { "observer_id": "obs-away" } }),
+        )
+        .await;
+    let invoked = sink.invoked("sink::orders").await;
+    assert_eq!(invoked["data"]["initial"], true);
+    sink.reply(&invoked, json!({ "ok": true })).await;
+    assert_eq!(orders.result(call).await["result"], json!({ "ok": true }));
+}
+
+/// A reattaching worker's observers reach each function's owner in the
+/// order they were created, as `functionregistered` lists them, so the
+/// owner's hooks run in that order.
+#[tokio::test]
+async fn returning_observers_are_announced_in_creation_order() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let _sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let ids: Vec<String> = (0..12).map(|n| format!("obs-{n:02}")).collect();
+    for id in &ids {
+        acked_observer(
+            &mut orders,
+            &mut watcher,
+            observer(
+                id,
+                json!({ "function_id": "orders::create" }),
+                "sink::orders",
+            ),
+            "orders::create",
+        )
+        .await;
+    }
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    for id in &ids {
+        removed(&mut orders, id).await;
+    }
+
+    let _watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    let mut order = Vec::new();
+    let mut revisions = Vec::new();
+    for _ in &ids {
+        let frame = orders
+            .expect("observeradded", |f| f["type"] == "observeradded")
+            .await;
+        order.push(frame["observer"]["id"].as_str().unwrap().to_string());
+        revisions.push(frame["revision"].as_u64().unwrap());
+    }
+    assert_eq!(order, ids);
+    assert!(revisions.windows(2).all(|w| w[0] < w[1]), "{revisions:?}");
 }
 
 #[tokio::test]

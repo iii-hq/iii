@@ -609,7 +609,7 @@ E2E_ROUTED = E2E + [
 FAULT_TOLERANCE = [
     ("'../src/", "'../../src/", ANY),
     ('IIIClient', 'ISdk', ANY),
-    ('-node-${RUN}', '-browser-${RUN}', 3),
+    ('-node-${RUN}', '-browser-${RUN}', 4),
 ]
 
 TESTS = {
