@@ -1257,16 +1257,16 @@ filters on the event. A worker in any namespace observes `engine::*` and `config
 without naming a namespace. For `observability::*` and `stream::*` sources, a worker in another
 namespace names `namespace: "default"`.
 
-| Function                              | Event                                                                                                                                                                                                     |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::on-functions-changed`        | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata? }] }`. Changes within about 100 ms are coalesced into one event.                                |
-| `engine::on-workers-changed`          | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                               |
-| `engine::on-observers-changed`        | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                   |
-| `configuration::on-updated`           | `{ type: "configuration", event_type, id, name, description, schema, old_value, new_value, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. |
-| `observability::on-log`               | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                      |
-| `observability::on-span`              | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                     |
-| `stream::on-changed`                  | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id?, event }`, `event_type` one of `create`, `update`, `delete`, `sync`.                                                        |
-| `stream::on-join`, `stream::on-leave` | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id? }`.                                                                                                                         |
+| Function                              | Event                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::on-functions-changed`        | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`. `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
+| `engine::on-workers-changed`          | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                                                                                                                                                 |
+| `engine::on-observers-changed`        | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                                                                                                                                     |
+| `configuration::on-updated`           | `{ type: "configuration", event_type, id, name, description, schema, old_value, new_value, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`.                                                                                                                   |
+| `observability::on-log`               | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                                                                                                                                        |
+| `observability::on-span`              | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
+| `stream::on-changed`                  | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id?, event }`, `event_type` one of `create`, `update`, `delete`, `sync`.                                                                                                                                                                          |
+| `stream::on-join`, `stream::on-leave` | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id? }`.                                                                                                                                                                                                                                           |
 
 Each of them is a private function whose handler returns the event. So `input` and `output` are both
 the event, and `deliver: "input"` and `deliver: "output"` both give the target the event. Their
@@ -1761,8 +1761,8 @@ To change or deny observers in the RBAC configuration, see
 
 - With an engine older than 0.25, `observe` fails with `UNSUPPORTED`.
 - With a 0.25 engine, observers work. A function registered with `args_format`, `private: true`, or
-  `observable: false`, or that sets `onObserverDeliver`, needs a 0.26 engine: the SDK does not
-  register it on a 0.25 engine, so its observers stay `pending`. The
+  `observable: false`, or that sets `onObserverMatch` or `onObserverDeliver`, needs a 0.26 engine:
+  the SDK does not register it on a 0.25 engine, so its observers stay `pending`. The
   [built-in event sources](#built-in-event-sources) are such functions.
 - Functions hosted by workers on older SDKs are observable. The engine evaluates the filters for
   routed calls of functions hosted on SDKs without `observe.v2`, and the hosting SDK reports its own

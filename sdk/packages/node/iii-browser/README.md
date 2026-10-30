@@ -226,8 +226,8 @@ With `standby: true`, a second page that registers a function another
 connection already hosts waits and takes it over (with its observers) when that
 one leaves.
 
-A function that sets `args_format`, `private: true`, `observable: false` or a
-deliver hook needs an engine that advertises `observe.v2`; against an older
+A function that sets `args_format`, `private: true`, `observable: false`, a
+match hook or a deliver hook needs an engine that advertises `observe.v2`; against an older
 engine it stays unregistered, and the SDK logs `UNSUPPORTED` once for it.
 
 ### The current invocation across `await`

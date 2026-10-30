@@ -456,9 +456,9 @@ How hooks behave:
   disconnect expiry, and after a late rejection with `obs.reject(code, message)`. An error it throws
   is logged.
 - **When hooks take effect.** No observer is acked before the `registerFunction` call returns, so
-  a hook set by id before registering, or chained on the returned ref, sees every observer. In
-  Python, Rust and Go, set hooks by id before registering. A hook set once observers are active
-  runs for each of them at once, and the SDK logs a warning.
+  a hook set by id before registering sees every observer. In Node and the browser, a hook chained
+  on the returned ref does too. In Python, Rust and Go, set hooks by id before registering. A hook
+  set once observers are active runs for each of them at once, and the SDK logs a warning.
 - **Matching.** iii delivers a call to the observers `onObserverMatch` matched, and applies each
   one's `on`, filters, policy, and `deliver`. A predicate runs once per active observer per call,
   before filters; one that throws counts as no match, logged once per function. Keys are computed
@@ -576,7 +576,7 @@ https://iii.dev/docs/upgrading/from-0-25-x.
 | When | Codes |
 | --- | --- |
 | Creating an observer (`ready()` rejects) | `UNSUPPORTED` (engine older than 0.25, or an unknown `on`/`capture`/`deliver`), `INVALID_ARGS`, `INVALID_FILTER`, `INVALID_FILTER_PATH`, `NOT_OBSERVABLE`, `FORBIDDEN`, `SELF_TARGET`, `LIMIT_EXCEEDED`, `OBSERVER_ID_CONFLICT`, `OWNER_TIMEOUT`, `OBSERVE_REJECTED`, or the hosting worker's own code (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...) |
-| Registering a function | `INVALID_ARGS_FORMAT`, `FUNCTION_NAMESPACE_CONFLICT` (another connection hosts the id; see `standby`), `UNSUPPORTED` (a function with `args_format`, `private`, `observable: false` or `onObserverDeliver` on an engine without `observe.v2`: the SDK logs it once and registers the function when it connects to an engine that has it) |
+| Registering a function | `INVALID_ARGS_FORMAT`, `FUNCTION_NAMESPACE_CONFLICT` (another connection hosts the id; see `standby`), `UNSUPPORTED` (a function with `args_format`, `private`, `observable: false`, `onObserverMatch` or `onObserverDeliver` on an engine without `observe.v2`: the SDK logs it once and registers the function when it connects to an engine that has it) |
 | Calling a private function from another worker | `FORBIDDEN` |
 | A call through an observer | `NOT_FUNCTION_OWNER`, `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`, `TIMEOUT`, or the target's error |
 | State reasons | `OWNER_UNAVAILABLE`, `TARGET_UNAVAILABLE`, `OBSERVER_DISCONNECTED`, `EXPIRED`, `MAX_FIRES`, `UNOBSERVED` |

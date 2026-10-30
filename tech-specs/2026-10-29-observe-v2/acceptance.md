@@ -32,7 +32,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | B4 | A rejection unwinds: the `onObserverRemoved` of each level whose `onObserverAdded` resolved runs. | test |
 | B5 | `onObserverRemoved` runs exactly once per accepted observer (unobserve, disposal, `obs.reject()`), never for a rejected one; its errors are logged. | test |
 | B6 | Hooks of one function run one at a time; a hook past 30 s fails with `OWNER_TIMEOUT`. | test |
-| B7 | A hook set by id before registration, or chained on `registerFunction`, sees every observer; the SDK acks no observer before the registration call returned. A hook set later is caught up and logs one warning. | test |
+| B7 | The SDK acks no observer before the registration call returned, so a hook set by id before registration sees every observer; in Node and the browser so does a hook chained on `registerFunction` (spec §4.3). A hook set later is caught up and logs one warning. | test |
 | B8 | Hooks stored by id survive `unregister()` and re-registration; a hook id never registered logs a warning after the connection registers. | test |
 | B9 | `null` / `None` / `clear_*` removes a hook. | test |
 | B10 | `onObserverMatch` exists per function, as a predicate `(obs, call) => boolean` or keys `{ observer, call }`. iii delivers to matched observers with filters, `on`, policy and `deliver` applied. Default: every observer matches. | test |
