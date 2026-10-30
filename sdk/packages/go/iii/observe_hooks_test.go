@@ -577,9 +577,10 @@ func TestNoObserverIsAckedBeforeRegisterFunctionReturns(t *testing.T) {
 		if n := len(fe.acks(id)); n != 0 {
 			t.Errorf("%d observeracks before RegisterFunction returned", n)
 		}
+		// RegisterFunction returns next: an added hook that ran before this ran early
+		returned.Store(true)
 	}
 	_, err := c.RegisterFunction("early::fn", echoHandler)
-	returned.Store(true)
 	c.beforeRegisterReturn = nil
 	if err != nil {
 		t.Fatal(err)
