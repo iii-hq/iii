@@ -862,7 +862,14 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
     )
     .await
     .expect("managed project should stop");
-    assert_eq!(stop["stopping"], json!([file.to_str().unwrap()]), "{stop}");
+    // The daemon names the project by its canonical path (on macOS the temp
+    // dir under /var is /private/var).
+    let canonical = std::fs::canonicalize(&file).expect("canonical compose file path");
+    assert_eq!(
+        stop["stopping"],
+        json!([canonical.to_str().unwrap()]),
+        "{stop}"
+    );
 
     worker.shutdown_async().await;
     daemon.shutdown().await;
