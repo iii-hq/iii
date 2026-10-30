@@ -70,8 +70,8 @@ def setup(iii: IIIClient) -> None:
         "example::on-webhook",
         lambda event: event,
         description="One call per incoming webhook. Observe it with args { path, methods? }.",
-        request_format=WebhookEvent,
-        response_format=WebhookEvent,
+        request_format=WebhookEvent.model_json_schema(),
+        response_format=WebhookEvent.model_json_schema(),
         args_format=WebhookArgs,
         private=True,
     )
