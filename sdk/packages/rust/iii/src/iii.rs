@@ -4017,8 +4017,8 @@ impl IIIClient {
                 function_id = %function_id,
                 code = observe_codes::UNSUPPORTED,
                 "{}: {function_id} needs `observe.v2` (args_format, private, observable: false, \
-                 a deliver hook or a match hook), which the engine does not advertise; it stays \
-                 unregistered until the worker connects to an engine with it",
+                 on_observer_match or on_observer_deliver), which the engine does not advertise; it \
+                 stays unregistered until the worker connects to an engine with it",
                 observe_codes::UNSUPPORTED
             );
         }

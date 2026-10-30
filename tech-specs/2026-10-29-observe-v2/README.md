@@ -58,7 +58,7 @@ iii.onObserverAdded('database::on-row-changed', async (obs) => {
 
 // one function, chained off its registration
 iii.registerFunction('database::on-row-changed', (change: RowChange) => change, { private: true, args_format: RowChangedArgs })
-  .onObserverRemoved(async (obs) => { await changeFeed.unwatch(obs.args.db, obs.args.table) })
+  .onObserverRemoved(async (obs) => { await changeFeed.release(obs.args.db, obs.args.table) })
 ```
 
 **Args and filters.** `args` belong to the worker that hosts the function.
@@ -150,7 +150,7 @@ against 0.25 keeps compiling. Examples, docs and every worker use `call`.
 ### 4.1 Registering
 
 ```ts
-iii.registerFunction<I, O>(id: string, handler: (input: I) => O | Promise<O>, options?: FunctionOptions): FunctionRef<I, O>
+iii.registerFunction<I, O>(id: string, handler: (input: I) => O | Promise<O>, options?: RegisterFunctionOptions): FunctionRef<I, O>
 ```
 
 **The handler's return value is what observers observe.** It is the `output`
@@ -192,13 +192,13 @@ type Key = string | readonly string[]
 type DeliverHook<I, O, R = O> =
   (call: Call<I, O>, observers: readonly Observer[]) => R | Promise<R>   // returns what the caller gets back
 
-interface III {
-  onObserverAdded(hook: AddedHook | null): III                            // every function this worker hosts
-  onObserverAdded(functionId: string, hook: AddedHook | null): III        // one function
-  onObserverRemoved(hook: RemovedHook | null): III
-  onObserverRemoved(functionId: string, hook: RemovedHook | null): III
-  onObserverMatch<I, O>(functionId: string, hook: MatchHook<I, O> | null): III
-  onObserverDeliver<I, O, R>(functionId: string, hook: DeliverHook<I, O, R> | null): III
+interface IIIClient {
+  onObserverAdded(hook: AddedHook | null): IIIClient                      // every function this worker hosts
+  onObserverAdded(functionId: string, hook: AddedHook | null): IIIClient  // one function
+  onObserverRemoved(hook: RemovedHook | null): IIIClient
+  onObserverRemoved(functionId: string, hook: RemovedHook | null): IIIClient
+  onObserverMatch<I, O>(functionId: string, hook: MatchHook<I, O> | null): IIIClient
+  onObserverDeliver<I, O, R>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient
 
   observers(functionId: string): readonly Observer[]
   isObserved(functionId: string, call?: Partial<Call>): boolean
@@ -303,7 +303,7 @@ interface Call<I = unknown, O = unknown> {
   status: 'success' | 'error'
   input: I
   output?: O                                  // the handler's return value: what observers observe
-  error?: { code: string; message: string }   // what the handler threw
+  error?: { code: string; message: string; stacktrace?: string }   // what the handler threw
   caller?: Caller
   metadata?: Record<string, unknown>
 }
@@ -489,7 +489,8 @@ engine.
 
 ### 5.1 TypeScript (node, browser)
 
-As in §4. Hooks may be sync or async.
+As in §4. Hooks may be sync or async. The browser SDK names its client
+interface `ISdk`.
 
 ### 5.2 Rust
 
@@ -591,18 +592,22 @@ The methods work as decorators and as plain calls.
 ### 5.4 Go
 
 ```go
-rowChanged := client.RegisterFunction("database::on-row-changed", iii.Identity,   // returns the event it is called with
-    iii.FunctionOptions{ArgsFormat: rowChangedArgs, Private: true})
-
-rowChanged.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error {
+// by function id, before registering, so it sees every observer (§4.3)
+client.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
     return changeFeed.Watch(ctx, obs.Args)
 })
 client.OnObserverAddedFor("cron::on-tick", start)   // by function id
 client.OnObserverAdded(retain)                      // every function this worker hosts
+
+rowChanged, err := client.RegisterFunction("database::on-row-changed", iii.Identity,   // returns the event it is called with
+    iii.FunctionOptions{ArgsFormat: rowChangedArgs, Private: true})
+if err != nil {
+    return err
+}
 rowChanged.OnObserverMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
 
 // for one observer, under a match hook that honors for_observer (§4.7)
-_, err := client.Call(ctx, iii.CallRequest{FunctionID: "tmux::on-changed", Payload: state,
+_, err = client.Call(ctx, iii.CallRequest{FunctionID: "tmux::on-changed", Payload: state,
     Metadata: json.RawMessage(`{"for_observer":"` + obs.ID + `"}`)})
 
 // through an observer, in a deliver hook (§4.6)
@@ -650,8 +655,9 @@ away is not among them; the function's host gets it when that worker
 reattaches, or gets its replacement when the worker, back on a new
 connection under the same worker name, observes under its id again (§4.3).
 With `standby: true`, the SDK does this:
-on `FUNCTION_NAMESPACE_CONFLICT` it waits on `engine::on-functions-changed` and
-registers when the id is free.
+on `FUNCTION_NAMESPACE_CONFLICT` it retries the registration every second
+(±20 % jitter) until the engine accepts it or the function is unregistered
+(decision 21).
 
 ## 8. Wire protocol
 
@@ -752,7 +758,9 @@ examples are TypeScript for brevity, and §5.2 is the Rust shape.
 
 `onObserverAdded` installs native capture, plain code calls the function, and
 `onObserverMatch` gives each change to the observers of its database, table and
-operation, by keys.
+operation, by keys. `onObserverRemoved` releases the worker's hold on the
+table; the capture triggers stay, because every process and connection that
+captures the table shares them.
 
 ```ts
 const rowKey = (db: string, table: string, op: string) => `${db}|${table}|${op}`
@@ -767,7 +775,7 @@ const rowChanged = iii.registerFunction('database::on-row-changed', (change: Row
     if (config.native(db)) await changeFeed.watch(db, table)   // CREATE TRIGGER … pg_notify(…)
   })
   .onObserverRemoved(async (obs) => {
-    await changeFeed.unwatch(obs.args.db, obs.args.table)        // stops watching the table with its last observer
+    await changeFeed.release(obs.args.db, obs.args.table)        // the capture triggers stay: other processes share them
   })
   .onObserverMatch({
     observer: ({ args }) => (args.ops ?? ['*']).map((op) => rowKey(args.db, args.table ?? '*', op)),
@@ -785,7 +793,7 @@ changeFeed.onChange(async (n) => {
 On a `capture: statements` database, `database::execute` calls the function
 after each committed write, so `caller.parent` names the worker that wrote the
 row. The args are `{ db, table?, ops? }`. In
-`workers/database/src/triggers/capture.rs`, observers live in the match
+`workers/database/src/row_changes/capture.rs`, observers live in the match
 index and the handler returns the change it is called with.
 
 ### 10.2 cron: `cron::on-tick`
@@ -927,7 +935,7 @@ Trigger types and the functions that replace them:
 | `cron` | `cron::on-tick` | `{ expression }` |
 | `database::row-changed` | `database::on-row-changed` | `{ db, table?, ops? }` |
 | `durable:subscriber` | `queue::on-message` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` |
-| `subscribe` | `pubsub::publish`, observed with a filter on `input.topic` | none |
+| `subscribe` | `publish`, observed with a filter on `input.topic` (the pubsub worker's function, which the engine's stream bridge calls and observes) | none |
 | `state` | `state::on-changed` | none; filters on `input.scope`, `input.key` |
 | `log`, `trace` | `observability::on-log`, `observability::on-span` | none |
 | `configuration` | `configuration::on-updated` | none |

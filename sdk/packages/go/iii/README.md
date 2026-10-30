@@ -206,9 +206,9 @@ lets only this worker call the function, while other workers may observe it;
 `Observable: &off` refuses every observer (`NOT_OBSERVABLE`); and `Standby` makes the
 worker wait for the function when another connection already hosts its id, registering
 it again about once a second until the engine accepts it. These three travel as
-`args_format`, `private` and `observable`; they need an engine with `observe.v2`, as a
-match or deliver hook does, and against an older one the function stays unregistered
-and the SDK logs `UNSUPPORTED` once.
+`args_format`, `private` and `observable`; they need an engine with `observe.v2`, as an
+`OnObserverMatch` or `OnObserverDeliver` hook does, and against an older one the function
+stays unregistered and the SDK logs `UNSUPPORTED` once.
 
 ```go
 // an event source: its handler returns the event, only this worker calls it
@@ -582,9 +582,9 @@ give such a call that one key.
 Every call of a function, local or routed, is delivered by the worker that hosts it.
 iii's delivery reports a local call's matches in one batched report item and lists a
 routed call's matches on its answer, and an unobserved call sends nothing. A function
-with a match or deliver hook needs an engine with `observe.v2`, as the options above do.
-Against an engine without it, the engine delivers the routed calls of every other
-function itself.
+with an `OnObserverMatch` or `OnObserverDeliver` hook needs an engine with `observe.v2`, as
+the options above do. Against an engine without it, the engine delivers the routed calls
+of every other function itself.
 
 ## Connection behavior
 

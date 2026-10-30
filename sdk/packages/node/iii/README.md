@@ -191,10 +191,10 @@ A worker's own call to its private function passes the input and the result
 by reference: the handler and the hooks treat both as read-only, and with
 `NODE_ENV=development` the SDK freezes them, so a write throws.
 
-A function that sets `args_format`, `private: true`, `observable: false`, a
-match hook or a deliver hook needs an engine that advertises `observe.v2`;
-against an older engine it stays unregistered, and the SDK logs `UNSUPPORTED`
-once for it.
+A function that sets `args_format`, `private: true`, `observable: false`, an
+`onObserverMatch` hook or an `onObserverDeliver` hook needs an engine that
+advertises `observe.v2`; against an older engine it stays unregistered, and the
+SDK logs `UNSUPPORTED` once for it.
 
 ## Resources
 

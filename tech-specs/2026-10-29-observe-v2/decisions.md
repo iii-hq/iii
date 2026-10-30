@@ -160,7 +160,8 @@ differ, this file wins, and the spec is updated to match.
     the ack. A host holds only observers that can become active, so
     `accepted()` resolving means a call through the observer reaches an active
     observer (decision 19). An observer that does not come back is disposed
-    with nothing more sent to the host.
+    with nothing more sent to the host, as is one its worker replaces from a
+    new connection (decision 51).
 48. **The announced `capture`** (`observeradded`, `functionregistered`) also
     names the part `deliver` hands the target: `input` under `deliver: input`,
     `output` under `deliver: output`. A host's report of a local call carries
@@ -290,6 +291,7 @@ differ, this file wins, and the spec is updated to match.
     ```ts
     iii.onObserverAdded('tmux::on-changed', (obs) => {
       obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+        .catch(() => undefined)   // a rejected observer gets nothing
     })
     iii.onObserverMatch('tmux::on-changed', (obs, call) =>
       call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)

@@ -588,4 +588,37 @@ describe('reconnect', () => {
     expect(cron.removed).toEqual([gone.id])
     expect(cron.added.filter((id) => id === stays.id)).toHaveLength(1) // kept: no second add
   })
+
+  it('a late rejection while the owner is away runs its removed hooks once, at once; the replay hands the engine the rejection', async () => {
+    const owner = worker('rj-owner')
+    const watcher = worker('rj-watcher')
+    const log: string[] = []
+    const ref = owner
+      .registerFunction(`rj::source-${RUN}`, (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        log.push(`added ${obs.id}`)
+      })
+      .onObserverRemoved((obs) => {
+        log.push(`removed ${obs.id} while ${owner.getConnectionState()}`)
+      })
+    collector(watcher, `rj::target-${RUN}`)
+    const handle = watcher.observe({ function_id: `rj::source-${RUN}` }, `rj::target-${RUN}`)
+    await handle.ready()
+    const [obs] = ref.observers()
+    expect(log).toEqual([`added ${handle.id}`])
+
+    dropConnection(owner)
+    await waitFor(() => owner.getConnectionState() !== 'connected', 'the disconnect')
+    obs.reject('UNKNOWN_DB', 'removed while the owner was away')
+    await waitFor(() => log.length === 2, 'the removed hook')
+    expect(log[1]).toMatch(new RegExp(`^removed ${handle.id} while (?!connected$)`))
+
+    // the owner's replay acks the observer with its rejection: the watcher sees it, and no hook runs again
+    await waitFor(() => owner.getConnectionState() === 'connected', 'the reconnect')
+    await waitFor(() => handle.state === 'error', 'the rejection reaching the watcher', 10_000)
+    expect(handle.reason).toMatchObject({ code: 'UNKNOWN_DB' })
+    await sleep(300)
+    expect(log).toHaveLength(2)
+    expect(ref.isObserved()).toBe(false)
+  })
 })

@@ -1129,6 +1129,12 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 		if n := logs.count(fmt.Sprintf(`UNSUPPORTED: function %q`, id)); n != 1 {
 			t.Errorf("%s: UNSUPPORTED logged %d times", id, n)
 		}
+		// the line names every reason, the match and deliver hooks among them
+		reasons := fmt.Sprintf(`UNSUPPORTED: function %q declares args_format, private or observable: false, `+
+			`or sets OnObserverMatch or OnObserverDeliver`, id)
+		if logs.count(reasons) != 1 {
+			t.Errorf("%s: UNSUPPORTED line does not name OnObserverMatch and OnObserverDeliver", id)
+		}
 	}
 	if countRegister(msgs, string(MsgRegisterFunction), "plain::fn") != 1 {
 		t.Error("plain::fn not registered")

@@ -725,6 +725,74 @@ describe('both levels: the worker hooks and the function hooks', () => {
     expect(acks(socket).filter((ack) => ack.error)).toHaveLength(1)
   })
 
+  it('a late rejection while the socket is closed runs the removed hooks once, at once; replays send the rejection again and run none', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    const log: string[] = []
+    sdk
+      .onObserverAdded((obs) => {
+        log.push(`worker added ${obs.id}`)
+      })
+      .onObserverRemoved((obs) => {
+        log.push(`worker removed ${obs.id}`)
+      })
+    const ref = sdk
+      .registerFunction('offline::fn', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        log.push(`added ${obs.id}`)
+      })
+      .onObserverRemoved((obs) => {
+        log.push(`removed ${obs.id}`)
+      })
+    socket.open()
+    socket.deliver(functionRegistered('offline::fn', [observerInfo('o', 't::o')], { revision: 1 }))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(log).toEqual(['worker added o', 'added o'])
+    const [obs] = ref.observers()
+
+    socket.drop()
+    obs.reject('UNKNOWN_DB', 'removed while offline')
+    await vi.advanceTimersByTimeAsync(1)
+    // still closed: the function's removed hook, then the worker's, ran at the rejection
+    expect(fake.lastSocket()).toBe(socket)
+    expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o'])
+    expect(ref.isObserved()).toBe(false)
+    expect(acks(socket).filter((ack) => ack.error)).toEqual([])
+
+    const rejected = {
+      type: 'observerack',
+      function_id: 'offline::fn',
+      namespace: 'default',
+      id: 'o',
+      error: { code: 'UNKNOWN_DB', message: 'removed while offline' },
+    }
+    // each replay that lists it gets the rejection again, and no hook runs
+    const replay = async (previous: ReturnType<typeof fake.lastSocket>, revision: number) => {
+      await vi.advanceTimersByTimeAsync(50)
+      const next = fake.lastSocket()
+      expect(next).not.toBe(previous)
+      next.open()
+      next.deliver(functionRegistered('offline::fn', [observerInfo('o', 't::o')], { revision }))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(acks(next)).toEqual([{ ...rejected, revision }])
+      expect(ref.isObserved()).toBe(false)
+      expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o'])
+      return next
+    }
+    const second = await replay(socket, 3)
+    second.drop()
+    const third = await replay(second, 2)
+
+    // the engine's removal runs nothing again; a fresh add is a new observer
+    third.deliver(observerRemoved('offline::fn', 4, 'o'))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o'])
+    third.deliver(observerAdded('offline::fn', 5, observerInfo('o', 't::o')))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o', 'worker added o', 'added o'])
+    expect(ref.isObserved()).toBe(true)
+  })
+
   it('a timed-out function hook unwinds the worker level, and its late success is undone by its own level', async () => {
     fake.fakeClock()
     const { sdk, socket } = worker(40)
@@ -946,6 +1014,10 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
       'e::matched',
       'f::late',
     ])
+    // each line names every reason, the match and deliver hooks among them
+    for (const line of unsupported()) {
+      expect(line).toContain('(args_format, private, observable: false, onObserverMatch or onObserverDeliver)')
+    }
 
     socket.drop()
     await vi.advanceTimersByTimeAsync(50)

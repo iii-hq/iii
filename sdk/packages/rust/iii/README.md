@@ -289,8 +289,9 @@ With keys, file each observer under `for_observer:<id>` as well, and give such
 a call that one key.
 
 Functions with `args_format`, `private`, `observable(false)`, a match hook or
-a deliver hook need an engine that advertises `observe.v2`; against an older
-one they stay unregistered and the SDK logs `UNSUPPORTED` once.
+a deliver hook (`on_observer_match`, `on_observer_deliver`) need an engine
+that advertises `observe.v2`; against an older one they stay unregistered and
+the SDK logs `UNSUPPORTED` once.
 
 ### Stream Operations
 

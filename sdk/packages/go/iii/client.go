@@ -667,7 +667,7 @@ func (c *Client) markUnsupportedLocked(fn registeredFunction) bool {
 }
 
 func logUnsupported(functionID string) {
-	log.Printf("iii: UNSUPPORTED: function %q declares args_format, private or observable: false, or has a match or deliver hook, "+
+	log.Printf("iii: UNSUPPORTED: function %q declares args_format, private or observable: false, or sets OnObserverMatch or OnObserverDeliver, "+
 		"which need an engine with observe.v2; it stays unregistered until the worker connects to one", functionID)
 }
 

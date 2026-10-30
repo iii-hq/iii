@@ -997,6 +997,10 @@ def test_functions_that_need_observe_v2_wait_for_it_and_stay_out_of_a_v1_engine(
         "private::fn",
         "sealed::fn",
     ]
+    # each line names every reason, the match and deliver hooks among them
+    assert all(
+        "(args_format, private, observable=False, on_observer_match or on_observer_deliver)" in m for m in unsupported
+    )
     # calls and observe keep working; routed calls are the engine's to deliver
     client.register_function("observed::fn", lambda d: d)
     _confirm(client, engine, "observed::fn", observer_info("o", "t"))
