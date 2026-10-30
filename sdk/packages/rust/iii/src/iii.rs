@@ -3917,8 +3917,10 @@ impl IIIClient {
 
     /// The functions that need `observe.v2`, on a connection whose engine
     /// just said whether it has it: registered when it does; otherwise left
-    /// unregistered (withdrawn when their registration went out before),
-    /// with one `UNSUPPORTED` warning.
+    /// unregistered, with one `UNSUPPORTED` warning. The engine does not host
+    /// them on such a connection: one whose registration went out on it is
+    /// withdrawn, and what one kept from an earlier connection (local
+    /// dispatch, its observers, its held reports) is released.
     fn register_v2_functions(&self, v2: bool) {
         let epoch = self.connection_epoch();
         let pending: Vec<(Arc<FunctionEntry>, Message)> = self
@@ -3946,6 +3948,9 @@ impl IIIClient {
         for (entry, _) in pending {
             if entry.sent_on(epoch) {
                 self.withdraw_registration(&entry);
+            } else if !entry.is_revoked() {
+                // what it kept from an earlier connection, released once
+                self.release_function(&entry);
             }
             unsupported.push(entry.id.clone());
         }

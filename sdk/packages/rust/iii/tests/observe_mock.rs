@@ -3102,6 +3102,110 @@ async fn an_engine_without_observe_v2_evaluates_routed_calls() {
     iii.shutdown_async().await;
 }
 
+/// A function that needs `observe.v2`, hosted on an `observe.v2` engine,
+/// is released when the worker reconnects to an engine without it: local
+/// dispatch goes off, its observers are removed through the removed hooks,
+/// and the reports held for its confirmation are discarded. The next
+/// `observe.v2` engine registers it again.
+#[tokio::test]
+async fn a_reconnect_to_an_engine_without_observe_v2_releases_v2_functions() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "source");
+    connected(&mock, &iii, true).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "v2::on-event", &recorder);
+    let ran = Arc::new(AtomicUsize::new(0));
+    let function = hosted(
+        &mock,
+        &iii,
+        "v2::on-event",
+        RegisterFunction::new({
+            let ran = ran.clone();
+            move |event: Value| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Error>(event)
+            }
+        })
+        .private(),
+        json!([view("o", json!({}), json!(["input"]), "success")]),
+    )
+    .await;
+    acked(&mock, &[("o", 1)]).await;
+    until("observed", || function.is_observed()).await;
+
+    // reconnecting: a local call made before the engine's hello is reported
+    // once the engine confirms the function on this connection
+    mock.clear();
+    mock.close_active_connection();
+    frame(&mock, |m| {
+        m["type"] == "invokefunction" && m["function_id"] == "engine::workers::register"
+    })
+    .await;
+    iii.call(CallRequest::new("v2::on-event", json!({ "n": "held" })))
+        .await
+        .unwrap();
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "ran in-process");
+    hello_with(&mock, json!(["observe.v1", "local-dispatch.v1"]));
+    until("released", || !function.local_dispatch_active()).await;
+    until("removed", || {
+        recorder
+            .events
+            .lock()
+            .unwrap()
+            .contains(&"remove o".to_string())
+    })
+    .await;
+    assert!(!function.is_observed());
+    assert!(function.observers().is_empty());
+    iii.call(CallRequest {
+        function_id: "v2::on-event".into(),
+        payload: json!({ "n": "routed" }),
+        action: Some(CallAction::Void),
+        timeout_ms: None,
+    })
+    .await
+    .unwrap();
+    frame(&mock, |m| {
+        m["type"] == "invokefunction" && m["function_id"] == "v2::on-event"
+    })
+    .await;
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the engine routes it");
+    assert!(
+        frames(&mock, "registerfunction")
+            .iter()
+            .all(|m| m["id"] != "v2::on-event"),
+        "not registered with an engine without observe.v2"
+    );
+
+    // an observe.v2 engine again: registered, its observer added anew, and
+    // the report held across the other engine never sent
+    mock.clear();
+    mock.close_active_connection();
+    connected(&mock, &iii, true).await;
+    frame(&mock, registered("v2::on-event")).await;
+    confirm(
+        &mock,
+        "v2::on-event",
+        2,
+        true,
+        json!([view("o", json!({}), json!(["input"]), "success")]),
+    );
+    acked(&mock, &[("o", 2)]).await;
+    until("local dispatch", || function.local_dispatch_active()).await;
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec!["add o", "remove o", "add o"]
+    );
+    // reports flush every 5 ms
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let reported: Vec<Value> = frames(&mock, "invocationsobserved")
+        .iter()
+        .flat_map(|f| f["items"].as_array().cloned().unwrap_or_default())
+        .collect();
+    assert!(reported.is_empty(), "{reported:#?}");
+    iii.shutdown_async().await;
+}
+
 /// The registration of a private source, as the fixture pins it: top-level
 /// `args_format` and `private`, no `observe` object, sent once this
 /// connection's engine advertised `observe.v2`.
