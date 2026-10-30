@@ -66,6 +66,13 @@ scripts/                         Build and CI scripts
   a JSX `<span>` — must be wrapped in a JSX string expression so it renders
   verbatim: `<span>{'iii compose --up'}</span>`. Inside plain Markdown backticks
   it is already safe.
+- Vale runs in the Skill check workflow (`.github/workflows/skill-check.yml`,
+  configured by `.skill-check.yaml`). On each pull request the
+  `iii-hq/skills-and-validation` action renders the `.skill.md` artifact of every
+  changed `docs/next` page and checks it with Vale, using the action's bundled
+  `Terminology` and `Diataxis` styles (picked per page by the frontmatter
+  `type`), next to a structure check and an AI review. Run the same check
+  locally with `iii-skill-check verify docs/next/<page>.mdx --layers structure,vale`.
 - Vale bans em dashes (`Terminology.EmDash`) and phrases like "out of the box"
   (`Terminology.SlopMagic`) in prose. Rewrite with commas, parentheses, periods,
   or colons, and name the explicit default.
