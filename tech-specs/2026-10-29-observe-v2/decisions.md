@@ -177,6 +177,24 @@ differ, this file wins, and the spec is updated to match.
     reload adds iii-stream) loses it with the same `registrationrejected`,
     and its teardown leaves the engine's source in place. `engine::workers::info`
     lists each source among the functions of the builtin worker that hosts it.
+51. **A worker back on a new connection.** An `observe` that names the id of
+    a suspended observer (decision 47) from a connection under the same
+    worker name, in the same namespace, replaces it: the engine disposes the
+    suspended observer, which its host has already let go (nothing more is
+    sent to the host for it), and adds the new observer, announced to the
+    host like any new observer. This is how a restarted worker re-observes
+    under stable ids (queue consumers keep their backlog by id). From any
+    other worker the id stays taken (`OBSERVER_ID_CONFLICT`) until the grace
+    period ends. The worker name and namespace are the ones each connection
+    declared on `engine::workers::register`, the pair the engine admits one
+    live worker for (`WORKER_NAMESPACE_CONFLICT`); a connection that declared
+    no name replaces nothing. An observer in `error` whose observing worker
+    is away is replaced the same way. The replaced observer is disposed with
+    `OBSERVER_DISCONNECTED`, and the earlier connection, reattaching, has
+    its replayed `observe` answered `disposed`, as for any observer disposed
+    while its worker was away. The engine then handles the `observe` as for
+    a new id, so a refusal (`FORBIDDEN`, `INVALID_ARGS`, a limit) leaves the
+    id free.
 
 ## SDKs (all five)
 

@@ -259,6 +259,15 @@ iii.onObserverAdded('cron::on-tick', start)
   it go (`onObserverRemoved` runs). If the worker reattaches in that time, the
   host gets the observer again, in the order the observers were created, and
   its `onObserverAdded` runs before it is active again.
+- **Back on a new connection.** A restarted worker connects with no reattach
+  token and observes under the ids it used before. An `observe` that names a
+  suspended observer's id, from a connection under the same worker name in
+  the same namespace, replaces that observer: the engine disposes it (the
+  host already let it go, and hears nothing more about it), and the host gets
+  the new observer like any other, so its `onObserverAdded` runs. A queue
+  consumer keyed by observer id keeps its backlog this way. From any other
+  worker, the id stays taken (`OBSERVER_ID_CONFLICT`) until the grace period
+  ends (decision 51).
 - **One at a time.** For each function, the SDK runs observer hooks one at a
   time, in the order the engine announced the observers. Hooks of different
   functions run concurrently.
@@ -571,7 +580,9 @@ function's observers go `pending`; the standby registers the function,
 receives the current observers in `functionregistered`, runs its hooks for
 each, and they become active again. An observer whose observing worker is
 away is not among them; the function's host gets it when that worker
-reattaches (§4.3). With `standby: true`, the SDK does this:
+reattaches, or gets its replacement when the worker, back on a new
+connection under the same worker name, observes under its id again (§4.3).
+With `standby: true`, the SDK does this:
 on `FUNCTION_NAMESPACE_CONFLICT` it waits on `engine::on-functions-changed` and
 registers when the id is free.
 
@@ -640,6 +651,7 @@ the 0.25 messages; §4.3 says when the SDK sends `observerack`.
 | Code | When |
 |---|---|
 | `NOT_FUNCTION_OWNER` | engine: a call through an observer from a connection that does not host the observer's function |
+| `OBSERVER_ID_CONFLICT` | engine: an `observe` whose id an observer holds: the same connection's, with a different spec, or another connection's. A suspended observer's own worker, back on a new connection under the same worker name and namespace, replaces it (decision 51) |
 | `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`, `TIMEOUT` | engine: activation checks and policy, as in 0.25 §3.5 |
 | `FORBIDDEN` | engine: a call to a private function from another connection; a private function as a target; RBAC |
 | `OBSERVE_REJECTED`, `OWNER_TIMEOUT` | an `onObserverAdded` threw a plain error, or ran past 30 s |
