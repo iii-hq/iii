@@ -1,0 +1,58 @@
+{
+  "ContractVersion": { "major": 1, "minor": 1 },
+  "AdapterInfoRequest": {},
+  "AdapterInfo": {
+    "adapter": "sandbox-libkrun",
+    "adapter_version": "1.0.0",
+    "contract": { "major": 1, "minor": 1 }
+  },
+  "RouterInfo": {
+    "adapter": "sandbox-libkrun",
+    "namespace": "sandbox-libkrun",
+    "contract": { "major": 1, "minor": 1 },
+    "info": {
+      "adapter": "sandbox-libkrun",
+      "adapter_version": "1.0.0",
+      "contract": { "major": 1, "minor": 1 }
+    }
+  },
+  "WorkerPrepareRequest": {
+    "auth": "tok",
+    "source": { "kind": "bundle", "package": "my-bundle", "host_path": "/cache/my-bundle" }
+  },
+  "WorkerPrepareResponse": {},
+  "WorkerStartRequest": {
+    "auth": "tok",
+    "state_key": "9f2c1e",
+    "worker_name": "my-bundle",
+    "source": { "kind": "local", "host_path": "/work/my-worker", "run_override": "node app.js" },
+    "env": { "A": "1" },
+    "engine_url": "ws://127.0.0.1:49134"
+  },
+  "WorkerSource": { "kind": "bundle", "package": "my-bundle", "host_path": "/cache/my-bundle" },
+  "WorkerStartResponse": { "vm_id": "vm-1", "instance": 3 },
+  "WorkerStatusRequest": { "auth": "tok", "vm_id": "vm-1", "instance": 3 },
+  "WorkerStatus": {
+    "vm_id": "vm-1",
+    "instance": 3,
+    "state": "exited",
+    "exit_code": null,
+    "signal": 9,
+    "started_at_ms": 1700000000000,
+    "ended_at_ms": 1700000005000
+  },
+  "State": "running",
+  "WorkerLogsRequest": {
+    "auth": "tok",
+    "vm_id": "vm-1",
+    "cursor": 7,
+    "follow": true,
+    "channel": { "channel_id": "ch-1", "access_key": "key", "direction": "write" }
+  },
+  "WorkerLogsResponse": {},
+  "LogRecord": { "stream": "stderr", "line": "boom", "ts_ms": 1700000001000, "cursor": 8 },
+  "LogStream": "stdout",
+  "WorkerStopRequest": { "auth": "tok", "vm_id": "vm-1", "instance": 3, "grace_ms": 5000 },
+  "WorkerDestroyRequest": { "auth": "tok", "state_key": "9f2c1e" },
+  "WorkerDestroyResponse": { "destroyed": true }
+}
