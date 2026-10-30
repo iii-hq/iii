@@ -706,7 +706,7 @@ impl QueueAdapter for BuiltinQueueAdapter {
                 let iq = internal_queue(topic, ns, fid);
                 all.extend(self.queue.dlq_peek(&iq, 0, offset + limit).await);
             }
-            all.sort_by(|a, b| b.failed_at.cmp(&a.failed_at));
+            all.sort_by_key(|b| std::cmp::Reverse(b.failed_at));
             let result = all
                 .into_iter()
                 .skip(offset as usize)

@@ -611,12 +611,12 @@ fn poll_no_proxy(state: &mut PollLoopState) -> Vec<NewConnection> {
     let now = test_now();
 
     while let Some(frame) = state.device.stage_next_frame() {
-        if let FrameAction::TcpSyn { src, dst } = classify_frame(frame) {
-            if !state.conn_tracker.has_socket_for(&src, &dst) {
-                state
-                    .conn_tracker
-                    .create_tcp_socket(src, dst, &mut state.sockets);
-            }
+        if let FrameAction::TcpSyn { src, dst } = classify_frame(frame)
+            && !state.conn_tracker.has_socket_for(&src, &dst)
+        {
+            state
+                .conn_tracker
+                .create_tcp_socket(src, dst, &mut state.sockets);
         }
         state
             .iface

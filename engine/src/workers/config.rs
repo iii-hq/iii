@@ -485,7 +485,7 @@ impl WorkerEntry {
 /// occurrence keeps its original name; subsequent occurrences get `#1`,
 /// `#2`, etc. appended. This lets the diff and running-worker tracking
 /// treat each entry independently.
-pub fn assign_instance_ids(entries: &mut Vec<WorkerEntry>) {
+pub fn assign_instance_ids(entries: &mut [WorkerEntry]) {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for entry in entries.iter_mut() {
         let base = entry.name.clone();
@@ -893,11 +893,11 @@ impl EngineBuilder {
                 })
             };
 
-            for idx in 0..running.len() {
-                if running[idx].entry.config.is_none() {
+            for rw in running.iter_mut() {
+                if rw.entry.config.is_none() {
                     continue; // no `config:` block to strip
                 }
-                let id = running[idx].entry.name.clone();
+                let id = rw.entry.name.clone();
                 let persisted = match engine
                     .call("configuration::get", serde_json::json!({ "id": id }))
                     .await
@@ -918,7 +918,7 @@ impl EngineBuilder {
                 // removed, so a no-op/failed strip leaves memory and file
                 // agreeing (a later reload diff sees no phantom change).
                 if super::config_rewrite::apply_strip(path, &id, &location) {
-                    running[idx].entry.config = None;
+                    rw.entry.config = None;
                 }
             }
         }
@@ -2427,8 +2427,7 @@ modules:
             .worker
             .start_background_tasks(shutdown_rx, shutdown_tx.clone())
             .await
-            .err()
-            .expect("start_background_tasks should fail when the stream port is occupied");
+            .expect_err("start_background_tasks should fail when the stream port is occupied");
         std::mem::forget(shutdown_tx);
 
         let message = err.to_string();
@@ -2528,7 +2527,10 @@ workers:
     #[test]
     fn config_watcher_ignores_sibling_files() {
         let config = PathBuf::from("/tmp/iii-config-watch-test/config.yaml");
-        assert!(config_event_touches_path(&[config.clone()], &config,));
+        assert!(config_event_touches_path(
+            std::slice::from_ref(&config),
+            &config,
+        ));
         assert!(config_event_touches_path(
             &[PathBuf::from("/tmp/iii-config-watch-test/./config.yaml")],
             &config,

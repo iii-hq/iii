@@ -150,9 +150,11 @@ async fn every_child_leads_its_own_process_group() {
 #[tokio::test]
 async fn a_recycled_pid_is_never_recognised() {
     let tmp = tempfile::tempdir().unwrap();
-    let child = spawn("exit 0", tmp.path());
+    // Alive while spawn reads its fingerprint: a child that exits first is a
+    // zombie by then, and macOS cannot read a zombie's start time.
+    let child = spawn("sleep 30", tmp.path());
     let recorded = child.birth.clone();
-    child.wait().await;
+    child.stop(Duration::from_secs(2)).await;
 
     // Same PID number, different process: the fingerprint must not match, so a
     // restarting daemon can never signal a stranger.
@@ -230,12 +232,19 @@ async fn an_unverifiable_identity_is_never_adopted() {
 #[tokio::test]
 async fn an_adopted_child_reports_its_own_exit() {
     let tmp = tempfile::tempdir().unwrap();
-    let child = spawn("sleep 0.2", tmp.path());
+    // Exits only when signalled after adoption: a child on its own timer can be
+    // gone before a stalled test fingerprints or adopts it.
+    let child = spawn("sleep 30", tmp.path());
     let (pid, birth) = (child.pid, child.birth.clone());
     drop(child);
 
     let adopted =
         iii_compose::process::Supervised::adopt(pid, &birth).expect("still running when adopted");
+    nix::sys::signal::killpg(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
 
     // No reaper task backs an adopted process, so `wait` polls liveness. The
     // status is unrecoverable — only the fact of the exit survives.

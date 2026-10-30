@@ -1232,7 +1232,7 @@ fn prune_empty_trigger_spans(mut spans: Vec<otel::StoredSpan>) -> Vec<otel::Stor
             .filter_map(|s| s.parent_span_id.clone())
             .collect();
         let before = spans.len();
-        spans.retain(|s| !(is_trigger_wrapper(&s.name) && !has_child.contains(&s.span_id)));
+        spans.retain(|s| !is_trigger_wrapper(&s.name) || has_child.contains(&s.span_id));
         if spans.len() == before {
             break;
         }
@@ -2487,15 +2487,14 @@ impl ObservabilityWorker {
                                 .name
                                 .strip_prefix("execute ")
                                 .or_else(|| span.name.strip_prefix("call "));
-                            if let Some(named_fn) = named_fn {
-                                if trigger_fns.contains(named_fn)
+                            if let Some(named_fn) = named_fn
+                                && (trigger_fns.contains(named_fn)
                                     || crate::workers::telemetry::is_observability_function_id(
                                         named_fn,
                                     )
-                                    || named_fn.starts_with("engine::")
-                                {
-                                    continue;
-                                }
+                                    || named_fn.starts_with("engine::"))
+                            {
+                                continue;
                             }
                             window.push(span);
                         }
@@ -3345,7 +3344,7 @@ impl ObservabilityWorker {
                     })
                     .collect();
 
-                result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
+                result.sort_by_key(|b| std::cmp::Reverse(b.first_seen_ms));
                 result.truncate(limit);
                 tracing::debug!(
                     operation = "engine::traces::group_by",

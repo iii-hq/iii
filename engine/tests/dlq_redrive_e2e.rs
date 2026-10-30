@@ -253,7 +253,7 @@ async fn e2e_dlq_redrive_full_lifecycle() {
 
     let total_failures = fail_count.load(Ordering::SeqCst);
     assert!(
-        total_failures >= 1 && total_failures <= 3,
+        (1..=3).contains(&total_failures),
         "Expected 1-3 attempts (1 initial + up to 2 retries), got {total_failures}"
     );
 

@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use base64::Engine;
-use iii_shell_client::{FsStreamReader, Session, VmClientError};
+use iii_shell_client::{Session, VmClientError};
 use iii_shell_proto::{
     FRAME_HEADER_SIZE, FsEntry, FsOp, FsReadMeta, FsResult, MAX_FRAME_SIZE, ShellMessage,
     decode_frame_body, encode_frame, flags::FLAG_TERMINAL,

@@ -246,7 +246,7 @@ async fn retry_exhaustion_stops_redelivery() {
 
     let total_calls = call_count.load(Ordering::SeqCst);
     assert!(
-        total_calls >= 1 && total_calls <= 3,
+        (1..=3).contains(&total_calls),
         "Expected 1-3 invocations (1 initial + up to 2 retries), got {total_calls}"
     );
 

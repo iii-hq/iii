@@ -33,7 +33,7 @@ use iii::{
         observability::metrics::ensure_default_meter,
         worker::{
             WorkerManagerConfig,
-            rbac_config::{FunctionFilter, RbacConfig, WildcardPattern},
+            rbac_config::{FunctionFilter, RbacConfig},
             rbac_session::Session,
         },
     },
