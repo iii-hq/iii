@@ -37,7 +37,7 @@ print(result)  # {"message": "Hello, world!"}
 | Call (await result)      | `iii.call({"function_id": id, "payload": data})`                                           | Call a function and wait for the result                  |
 | Call (fire-and-forget)   | `iii.call({"function_id": id, ..., "action": CallAction.Void()})`                          | Fire-and-forget                                          |
 | Call (enqueue)           | `iii.call({"function_id": id, ..., "action": CallAction.Enqueue(queue="name")})`           | Route the call through a named queue                     |
-| Call through an observer | `iii.call({"observer": obs, "payload": data})`                                             | Run an observer's target with its policy                 |
+| Call through an observer | `iii.call({"observer": obs, "payload": data})`                                             | Run an observer's target from a deliver hook             |
 | Observe                  | `iii.observe("fn::id", target, options?)`                                                  | Run `target` when the function runs                      |
 | Observer hooks           | `iii.on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` | Decide what observing a function this worker hosts means |
 | Current invocation       | `iii.current_invocation()`                                                                 | The invocation the running handler serves                |
@@ -191,6 +191,44 @@ async def route(call, observers):
         return {"status_code": 422}
     return await iii.call_async({"observer": obs, "payload": call.input})
 ```
+
+To send one observer something of its own, such as its initial state, call
+the function with `"metadata": {"for_observer": obs.id}` once the observer is
+accepted, and let the match hook give that call to that observer alone. iii
+delivers it like every call, so the target receives it in the shape it
+receives every call of the function:
+
+```python
+import asyncio
+
+from iii import CallAction
+
+
+async def send_state(obs):
+    await obs.accepted_async()
+    await iii.call_async({
+        "function_id": "tmux::on-changed",
+        "payload": state_for(obs.args),
+        "metadata": {"for_observer": obs.id},
+        "action": CallAction.Void(),
+    })
+
+
+@iii.on_observer_added("tmux::on-changed")
+async def on_added(obs):
+    asyncio.get_running_loop().create_task(send_state(obs))
+
+
+@iii.on_observer_match("tmux::on-changed")
+def wants(obs, call):
+    for_observer = (call.metadata or {}).get("for_observer")
+    if for_observer:
+        return for_observer == obs.id
+    return obs.args["session"] == call.input["session"]
+```
+
+With keys, file each observer under `f"for_observer:{obs.id}"` as well, and
+give such a call that one key.
 
 Inside any handler, `iii.current_invocation()` returns the running invocation
 (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`). Sync
