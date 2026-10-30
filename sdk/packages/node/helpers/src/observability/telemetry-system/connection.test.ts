@@ -51,3 +51,29 @@ describe('SharedEngineConnection handshake headers', () => {
     await connection.shutdown()
   })
 })
+
+describe('SharedEngineConnection shutdown', () => {
+  it('detaches its socket listeners, so a close landing after shutdown() resolves logs nothing', async () => {
+    const connection = new SharedEngineConnection('ws://engine.test/otel')
+    const [socket] = sockets
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      await connection.shutdown()
+      expect(socket.close).toHaveBeenCalledOnce()
+      log.mockClear()
+
+      // ws emits these once the close handshake (or an aborted connect) settles
+      socket.emit('error', new Error('WebSocket was closed before the connection was established'))
+      socket.emit('close')
+
+      expect(log).not.toHaveBeenCalled()
+      expect(error).not.toHaveBeenCalled()
+      expect(connection.getState()).toBe('disconnected')
+    } finally {
+      log.mockRestore()
+      error.mockRestore()
+    }
+  })
+})

@@ -261,8 +261,19 @@ export class SharedEngineConnection {
     }
 
     if (this.ws) {
-      this.ws.close()
+      const ws = this.ws
       this.ws = null
+      this.connecting = false
+
+      // The close handshake completes after shutdown() has returned, so detach
+      // the listeners first: a late 'close' would otherwise log once the caller
+      // has moved on (a test runner tearing its worker down, a process exiting).
+      // Keep a no-op 'error' listener for "closed before the connection was
+      // established", which would otherwise become an uncaught exception.
+      ws.removeAllListeners()
+      ws.on('error', () => {})
+      ws.close()
+      console.log('[OTel] Connection closed during shutdown')
     }
 
     // Notify pending message callbacks that they won't be delivered
