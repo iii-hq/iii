@@ -1653,6 +1653,242 @@ async fn returning_observers_are_announced_in_creation_order() {
     assert!(revisions.windows(2).all(|w| w[0] < w[1]), "{revisions:?}");
 }
 
+/// The observer a worker keeps under a stable id (a queue consumer's), with
+/// `generation` in its metadata sidecar so a delivery names the observer
+/// that made it.
+fn stable(generation: u64, target: &str) -> Value {
+    let mut frame = observer(
+        "obs-stable",
+        json!({ "function_id": "orders::create" }),
+        target,
+    );
+    frame["metadata"] = json!({ "generation": generation });
+    frame
+}
+
+/// Connects `name` in `namespace`, declaring `observe.v1`, and waits until
+/// the engine knows it by name.
+async fn connect_in(t: &TestEngine, name: &str, namespace: &str) -> Client {
+    let mut client = Client::open(t.port, name).await;
+    client
+        .send(json!({
+            "type": "invokefunction",
+            "function_id": "engine::workers::register",
+            "data": {
+                "runtime": "test", "version": "0.25.0", "name": name,
+                "namespace": namespace, "features": ["observe.v1"]
+            },
+            "action": { "type": "void" },
+        }))
+        .await;
+    let id = client.worker_id;
+    assert!(
+        eventually(|| t.engine.worker_registry.get_worker_name(&id).as_deref() == Some(name)).await,
+        "`{name}` never finished engine::workers::register"
+    );
+    client
+}
+
+/// Closes `client` and waits until the engine has torn its connection down,
+/// so its worker name is free again.
+async fn leave(t: &TestEngine, client: Client) {
+    let id = client.worker_id;
+    client.disconnect().await;
+    assert!(
+        eventually(|| t.engine.worker_registry.get_worker(&id).is_none()).await,
+        "the engine still holds connection {id}"
+    );
+}
+
+/// A worker back on a new connection (a restarted process, which has no
+/// reattach token) observes under the ids it used before (decision 51). Its
+/// `observe` replaces the suspended observer its earlier connection left:
+/// the host let that one go when the worker left and hears nothing more
+/// about it, the new one is announced like any new observer, and a call
+/// reaches the new target once. The end of the earlier connection's grace
+/// period leaves the new observer alone.
+#[tokio::test]
+async fn a_worker_back_on_a_new_connection_replaces_its_suspended_observer() {
+    let grace = std::time::Duration::from_millis(1_500);
+    let t = spawn_engine(ObserversConfig {
+        observer_grace_ms: grace.as_millis() as u64,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut watcher,
+        stable(1, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+    watcher.disconnect().await;
+    let left = std::time::Instant::now();
+    removed(&mut orders, "obs-stable").await;
+    assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Suspended));
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    let announced = acked_observer(
+        &mut orders,
+        &mut restarted,
+        stable(2, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+    assert_eq!(announced["observer"]["id"], "obs-stable");
+    let info = get(&mut orders, "obs-stable").await;
+    assert_eq!(info["worker"]["worker_id"], restarted.worker_id.to_string());
+    assert_eq!(info["fires"], 0, "a new observer: {info}");
+
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders.reply(&invoke, json!({ "id": 1 })).await;
+    checkout.result(call).await;
+    let delivered = sink.invoked("sink::orders").await;
+    assert_eq!(delivered["metadata"], json!({ "generation": 2 }));
+    sink.reply(&delivered, Value::Null).await;
+    assert!(eventually(|| t.engine.observers.fires("obs-stable") == Some(1)).await);
+
+    // Past the earlier connection's grace period.
+    tokio::time::sleep(
+        grace.saturating_sub(left.elapsed()) + std::time::Duration::from_millis(300),
+    )
+    .await;
+    assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Active));
+    get(&mut orders, "barrier").await;
+    get(&mut sink, "barrier").await;
+    assert!(
+        !orders.has_seen(|f| (is_removal(f) && f["id"] == "obs-stable")
+            || (f["type"] == "observeradded" && f["observer"]["id"] == "obs-stable")),
+        "one observerremoved at the close, one observeradded for the new observer"
+    );
+    assert!(
+        !sink.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "sink::orders"),
+        "one delivery"
+    );
+    assert!(!restarted.has_seen(|f| f["type"] == "observerstatechanged"
+        && f["id"] == "obs-stable"
+        && f["state"] != "active"));
+}
+
+/// Only the worker that left takes its suspended observer's id (decision
+/// 51). A connection under another worker name, or under the same name in
+/// another namespace, gets `OBSERVER_ID_CONFLICT` while the grace period
+/// runs; the observer stays suspended, and its host hears nothing. The
+/// worker itself, back under its name, then takes the id.
+#[tokio::test]
+async fn only_the_same_worker_takes_over_a_suspended_observers_id() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let _sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut watcher,
+        stable(1, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-stable").await;
+
+    let mut other = connect(&t, "other", true).await;
+    let mut elsewhere = connect_in(&t, "watcher", "acme").await;
+    for client in [&mut other, &mut elsewhere] {
+        let refused = client.observe(stable(2, "sink::orders")).await;
+        assert_eq!(refused["state"], "error", "{}: {refused}", client.name);
+        assert_eq!(refused["error"]["code"], "OBSERVER_ID_CONFLICT");
+    }
+    assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Suspended));
+    get(&mut orders, "barrier").await;
+    assert!(!orders.has_seen(|f| f["type"] == "observeradded"));
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut restarted,
+        stable(3, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+}
+
+/// The observer a worker's new connection replaced stays disposed (decision
+/// 51). Its earlier connection, reattaching later with its token, has the
+/// replayed `observe` answered `disposed`, as for any observer disposed
+/// while its worker was away; the host hears nothing about it, and its
+/// target receives nothing. The replacement keeps working.
+#[tokio::test]
+async fn the_earlier_connection_finds_its_replaced_observer_disposed() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::old", "sink::new"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut watcher,
+        stable(1, "sink::old"),
+        "orders::create",
+    )
+    .await;
+    let earlier = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-stable").await;
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut restarted,
+        stable(2, "sink::new"),
+        "orders::create",
+    )
+    .await;
+    // The new connection leaves too, which frees the worker name for the
+    // earlier connection's return.
+    let replacing = (restarted.worker_id, restarted.reattach_token.clone());
+    leave(&t, restarted).await;
+    removed(&mut orders, "obs-stable").await;
+
+    let mut back = Client::connect_with(t.port, "watcher", true, Some(earlier)).await;
+    let replay = back.observe(stable(1, "sink::old")).await;
+    assert_eq!(replay["state"], "disposed", "{replay}");
+    assert_eq!(replay["error"]["code"], "OBSERVER_DISCONNECTED");
+    get(&mut orders, "barrier").await;
+    assert!(
+        !orders.has_seen(|f| f["type"] == "observeradded"),
+        "the host is told nothing about the replaced observer"
+    );
+    leave(&t, back).await;
+
+    // The replacement's worker reattaches: its observer comes back, and a
+    // call reaches its target only.
+    let mut again = Client::connect_with(t.port, "watcher", true, Some(replacing)).await;
+    let announced = added(&mut orders, "obs-stable").await;
+    ack(
+        &mut orders,
+        "orders::create",
+        "obs-stable",
+        &announced["revision"],
+    )
+    .await;
+    again.state_becomes("obs-stable", "active").await;
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders.reply(&invoke, json!({ "id": 1 })).await;
+    checkout.result(call).await;
+    let delivered = sink.invoked("sink::new").await;
+    assert_eq!(delivered["metadata"], json!({ "generation": 2 }));
+    sink.reply(&delivered, Value::Null).await;
+    assert!(eventually(|| t.engine.observers.fires("obs-stable") == Some(1)).await);
+    get(&mut sink, "barrier").await;
+    assert!(!sink.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "sink::old"));
+}
+
 #[tokio::test]
 async fn an_owner_without_observe_v1_hears_nothing() {
     let t = spawn_engine(ObserversConfig::default()).await;

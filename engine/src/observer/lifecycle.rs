@@ -204,13 +204,17 @@ struct Status {
 }
 
 /// Who observes: the connection that created the observer (re-parented on
-/// `Reattach`), and the RBAC session it was authorized under, which every
-/// later registration of the observed function or the target is checked
-/// against again.
+/// `Reattach`), the worker name and namespace that connection registered
+/// with, and the RBAC session it was authorized under, which every later
+/// registration of the observed function or the target is checked against
+/// again. The name and namespace identify the worker: a new connection
+/// under both may replace the observer while its connection is away
+/// (decision 51).
 #[derive(Clone)]
 pub(crate) struct Observing {
     pub connection: Uuid,
     pub worker_name: Option<String>,
+    pub namespace: String,
     pub session: Option<Arc<crate::workers::worker::rbac_session::Session>>,
 }
 

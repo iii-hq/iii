@@ -140,35 +140,35 @@ impl ObserverRegistry {
         // A replay: the same spec from the observing connection is a no-op
         // that answers with the current state.
         let spec = request.spec(self.config().default_max_in_flight);
-        if let Some(existing) = self.get(&request.id) {
-            if existing.observing().connection == worker.id && existing.spec == spec {
-                let (state, reason) = existing.snapshot_state();
-                let error = (state == ObserverState::Error).then_some(reason).flatten();
-                self.notify(
-                    worker.id,
-                    Message::ObserveResult {
-                        id: request.id,
-                        state,
-                        error,
-                        warnings: existing.warnings.clone(),
-                    },
-                );
-                return Ok(());
-            }
-            return Err(reject(
-                observe_codes::OBSERVER_ID_CONFLICT,
-                if existing.observing().connection == worker.id {
+        let existing = self.get(&request.id);
+        if let Some(existing) = &existing
+            && existing.observing().connection == worker.id
+        {
+            if existing.spec != spec {
+                return Err(reject(
+                    observe_codes::OBSERVER_ID_CONFLICT,
                     format!(
                         "observer `{}` already exists with a different spec",
                         request.id
-                    )
-                } else {
-                    format!("observer `{}` is owned by another connection", request.id)
+                    ),
+                ));
+            }
+            let (state, reason) = existing.snapshot_state();
+            let error = (state == ObserverState::Error).then_some(reason).flatten();
+            self.notify(
+                worker.id,
+                Message::ObserveResult {
+                    id: request.id,
+                    state,
+                    error,
+                    warnings: existing.warnings.clone(),
                 },
-            ));
+            );
+            return Ok(());
         }
         // A replay of an observer disposed meanwhile (max_fires, expiry, an
-        // admin's dispose while the worker was away): it stays disposed.
+        // admin's dispose while the worker was away, a new connection of its
+        // worker replacing it) stays disposed, whichever observer holds the id.
         if let Some(tombstone) = self.tombstones.get(&request.id)
             && tombstone.connection == worker.id
             && tombstone.until > Instant::now()
@@ -185,6 +185,17 @@ impl ObserverRegistry {
                 },
             );
             return Ok(());
+        }
+        // Another connection's observer holds the id. Its own worker, back
+        // on a new connection while it is away, replaces it (decision 51);
+        // anyone else waits for the grace period to end.
+        if let Some(existing) = existing
+            && !self.replace_left_behind(&existing, worker)
+        {
+            return Err(reject(
+                observe_codes::OBSERVER_ID_CONFLICT,
+                format!("observer `{}` is owned by another connection", request.id),
+            ));
         }
 
         for (field, function_id) in [
@@ -438,13 +449,14 @@ impl ObserverRegistry {
                 max_queue: config.max_queue_per_observer,
             },
             warnings: warnings.clone(),
-            observing: Observing {
-                connection: worker.id,
-                worker_name: self
-                    .deps
-                    .get()
-                    .and_then(|deps| deps.workers.get_worker_name(&worker.id)),
-                session: worker.session.clone(),
+            observing: {
+                let (worker_name, namespace) = self.worker_identity(worker.id);
+                Observing {
+                    connection: worker.id,
+                    worker_name,
+                    namespace,
+                    session: worker.session.clone(),
+                }
             },
             flags: Flags {
                 observing_connected: true,
@@ -561,6 +573,65 @@ impl ObserverRegistry {
             }
         });
         observer.set_expiry_timer(handle.abort_handle());
+    }
+
+    /// The worker name and namespace `connection` registered with
+    /// (`engine::workers::register`), which identify its worker across
+    /// connections. No name until it registered one.
+    fn worker_identity(&self, connection: Uuid) -> (Option<String>, String) {
+        match self.deps.get() {
+            Some(deps) => (
+                deps.workers.get_worker_name(&connection),
+                deps.workers.get_namespace(&connection),
+            ),
+            None => (None, DEFAULT_NAMESPACE.to_string()),
+        }
+    }
+
+    /// `worker` observes under the id of `existing`, another connection's
+    /// observer. When `existing`'s observing connection is away (closed,
+    /// within its grace period) and `worker` runs under the same worker name
+    /// in the same namespace, the worker is back on a new connection:
+    /// `existing` is disposed, and the id is free for the `observe` being
+    /// handled (decision 51). The host let `existing` go when the worker
+    /// left, so nothing more is sent to it. The disposal leaves a tombstone:
+    /// the earlier connection, reattaching later, finds the observer
+    /// disposed. Returns whether the id is free.
+    fn replace_left_behind(&self, existing: &Arc<Observer>, worker: &WorkerConnection) -> bool {
+        if existing.is_engine_owned() {
+            return false;
+        }
+        let observing = existing.observing();
+        let (worker_name, namespace) = self.worker_identity(worker.id);
+        if worker_name.is_none()
+            || observing.worker_name != worker_name
+            || observing.namespace != namespace
+        {
+            return false;
+        }
+        let mut replaced = false;
+        let mut free = false;
+        // Under the observer's status lock, which a `Reattach` takes too: an
+        // observer whose connection came back first stays.
+        self.update(existing, |flags| {
+            if flags.disposed.is_none() && !flags.observing_connected {
+                flags.disposed = Some(ErrorBody::new(
+                    observe_codes::OBSERVER_DISCONNECTED,
+                    "replaced by an observe under its id from a new connection of its worker",
+                ));
+                replaced = true;
+            }
+            free = flags.disposed.is_some();
+        });
+        if replaced {
+            tracing::info!(
+                observer_id = %existing.id,
+                previous = %observing.connection,
+                connection = %worker.id,
+                "a new connection of the observing worker replaces its observer"
+            );
+        }
+        free
     }
 
     /// Handles `unobserve` from `connection`: only the observing connection may
@@ -724,6 +795,7 @@ impl ObserverRegistry {
             observer.set_observing(Observing {
                 connection,
                 worker_name: observing.worker_name,
+                namespace: observing.namespace,
                 session: new_connection.session.clone(),
             });
             self.by_connection

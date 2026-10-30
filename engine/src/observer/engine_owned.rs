@@ -187,6 +187,7 @@ impl ObserverRegistry {
             observing: Observing {
                 connection: ENGINE_CONNECTION,
                 worker_name: Some(ENGINE_CALLER_NAME.to_string()),
+                namespace: DEFAULT_NAMESPACE.to_string(),
                 session: None,
             },
             flags: Flags {
