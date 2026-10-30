@@ -790,12 +790,17 @@ def test_a_late_rejection_is_re_acked_with_the_announced_revision_until_a_fresh_
     engine: FakeEngine, connect: Any
 ) -> None:
     client = connect(engine)
+    log: list[str] = []
+    client.on_observer_added("late-reject::fn", lambda obs: log.append(f"added {obs.id}"))
+    client.on_observer_removed("late-reject::fn", lambda obs: log.append(f"removed {obs.id}"))
     ref = client.register_function("late-reject::fn", lambda d: d)
     engine.deliver(function_registered("late-reject::fn", [observer_info("o", "t")], revision=4))
     engine.wait_for(lambda: acks(engine), what="the ack")
     obs = ref.observers()[0]
     engine.clear()
     obs.reject("UNKNOWN_DB", "the database was removed by a config reload")
+    # the removed hook runs now: no observerremoved has to arrive
+    wait_until(lambda: log == ["added o", "removed o"], what="on_observer_removed")
     engine.wait_for(lambda: acks(engine), what="the late rejection")
     assert acks(engine)[0] == {
         "type": "observerack",
@@ -814,12 +819,43 @@ def test_a_late_rejection_is_re_acked_with_the_announced_revision_until_a_fresh_
     assert (acks(engine)[0]["revision"], acks(engine)[0]["error"]["code"]) == (9, "UNKNOWN_DB")
     assert ref.is_observed() is False
 
-    # a fresh observeradded starts it over
+    # a fresh observeradded starts it over, and the removal of the rejected one runs no hook again
     engine.clear()
     engine.deliver(observer_added("late-reject::fn", 10, observer_info("o", "t")))
     engine.wait_for(lambda: acks(engine), what="the fresh ack")
     assert "error" not in acks(engine)[0]
     assert ref.is_observed() is True
+    assert log == ["added o", "removed o", "added o"]
+
+
+def test_a_late_rejection_while_disconnected_runs_the_removed_hooks_once(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    log: list[str] = []
+    client.on_observer_added(lambda obs: log.append(f"worker added {obs.id}"))
+    client.on_observer_removed(lambda obs: log.append(f"worker removed {obs.id}"))
+    client.on_observer_added("offline::fn", lambda obs: log.append(f"added {obs.id}"))
+    client.on_observer_removed("offline::fn", lambda obs: log.append(f"removed {obs.id}"))
+    ref = client.register_function("offline::fn", lambda d: d)
+    engine.deliver(function_registered("offline::fn", [observer_info("o", "t")], revision=1))
+    engine.wait_for(lambda: acks(engine), what="the ack")
+    obs = ref.observers()[0]
+    engine.drop()
+    wait_until(lambda: client.get_connection_state() != "connected", what="the disconnect")
+    obs.reject("UNKNOWN_DB", "removed while offline")
+    # the function's removed hook, then the worker's, at once
+    wait_until(lambda: len(log) == 4, what="the removed hooks")
+    assert log == ["worker added o", "added o", "removed o", "worker removed o"]
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    # the replay lists it: the rejection is sent again, which the engine answers with no observerremoved
+    engine.deliver(function_registered("offline::fn", [observer_info("o", "t")], revision=3))
+    engine.wait_for(
+        lambda: [a for a in acks(engine) if a["revision"] == 3 and a.get("error")], what="the re-sent rejection"
+    )
+    assert ref.is_observed() is False
+    # an observerremoved after all runs nothing again
+    engine.deliver(observer_removed("offline::fn", 4, "o"))
+    settle(client, engine)
+    assert log == ["worker added o", "added o", "removed o", "worker removed o"]
 
 
 # ── releases: namespace conflict, unregister ───────────────────────────────
@@ -970,7 +1006,7 @@ def test_a_fresh_re_add_after_a_late_rejection_does_not_run_once_the_function_wa
     engine.wait_for(lambda: acks(engine), what="the ack")
     ref.observers()[0].reject("GONE", "rejected late")
     engine.wait_for(lambda: len(acks(engine)) == 2, what="the late rejection")
-    # a fresh add of the rejected observer: its old self is removed first (the hook blocks) ...
+    # the late rejection's removed hook runs (and blocks); a fresh add of the observer waits behind it ...
     engine.deliver(observer_added("readd::fn", 2, observer_info("o", "t")))
     assert removing.wait(5)
     # ... and the function is released meanwhile

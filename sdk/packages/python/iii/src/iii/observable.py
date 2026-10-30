@@ -113,6 +113,47 @@ def _same_json(a: Any, b: Any) -> bool:
         return bool(a == b)
 
 
+def same_data(a: Any, b: Any) -> bool:
+    """Whether two copies of a value hold the same JSON data: ``None``,
+    ``bool``, ``int``, ``float``, ``str``, lists and dicts with string keys,
+    compared member by member in one walk (``True`` and ``1`` differ, as they
+    do in JSON). Any other object is the same only as itself, and so is a
+    list or dict the walk reaches twice (a shared member or a cycle). A local
+    call compares the handler's copy of its input with the copy its delivery
+    took when the call started."""
+    left: list[Any] = [a]
+    right: list[Any] = [b]
+    seen: set[int] = set()
+    while left:
+        x = left.pop()
+        y = right.pop()
+        if x is y:
+            continue
+        if type(x) is not type(y):
+            return False
+        if isinstance(x, (str, int, float)) or x is None:
+            if x != y and not (isinstance(x, float) and x != x and y != y):
+                return False
+            continue
+        if not isinstance(x, (list, dict)) or id(x) in seen:
+            return False
+        seen.add(id(x))
+        if isinstance(x, list):
+            if len(x) != len(y):
+                return False
+            left.extend(x)
+            right.extend(y)
+            continue
+        if len(x) != len(y):
+            return False
+        for key, value in x.items():
+            if not isinstance(key, str) or key not in y:
+                return False
+            left.append(value)
+            right.append(y[key])
+    return True
+
+
 def _same_view(obs: Observer, info: ObserverInfoWire) -> bool:
     """Whether ``obs`` is served with the view ``info`` announces: its
     filters, target, capture and ``on``."""
@@ -328,9 +369,13 @@ class Observer:
     def reject(self, code: str, message: str) -> None:
         """Late rejection of an active observer (e.g. after a config reload).
 
-        The observer leaves the active set at once; ``on_observer_removed``
-        runs when the engine removes it. Called while its
-        ``on_observer_added`` runs, the rejection wins once the hook returns.
+        The observer leaves the active set at once, and its
+        ``on_observer_removed`` hooks run next on the function's hook queue,
+        connected or not; the engine's ``observerremoved`` that follows runs
+        none again. The rejection is sent again when the engine lists the
+        observer after a reconnect. Called while its ``on_observer_added``
+        runs, the rejection wins once the hook returns, and the
+        ``on_observer_removed`` of each level whose hook resolved runs.
         """
         self._owner.reject(self, code, message)
 
@@ -974,6 +1019,22 @@ class FunctionObservers:
             obs._rejection = {"code": code, "message": message}
         self._deactivate(obs)
         self._ack(obs, obs._revision, self.namespace, obs._rejection)
+        # The engine sends no `observerremoved` for a rejection that answers an
+        # announcement it has not seen acked (a replay after a reconnect): the
+        # removed hooks run now, once, and the observer stays known with its
+        # rejection.
+        self.host.call_soon(lambda: self._enqueue(lambda: self._tear_down(obs)))
+
+    async def _tear_down(self, obs: Observer) -> None:
+        """Runs the ``on_observer_removed`` hooks of an observer rejected late,
+        the function's then the worker's, once. It stays known (inactive)
+        until the engine removes it or announces it afresh, and that removal
+        runs no hook again."""
+        if self._known.get(obs.id) is not obs or not obs._accepted or obs._active:
+            return
+        obs._accepted = False
+        obs._setup.clear()
+        await self._run_removed(obs, ("function", "worker"))
 
 
 class Delivery:

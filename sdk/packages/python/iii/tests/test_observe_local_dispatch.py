@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from iii import Call, CallAction, InvocationError, current_invocation
 from iii.iii import III
+from iii.observable import same_data
 
 
 def _confirm(
@@ -618,6 +619,62 @@ def test_the_reported_input_and_metadata_are_the_callers_at_call_start(
     # the payload and metadata as the caller passed them, apart from what the handler did to its copies
     assert (item["input"], item["metadata"]) == ({"n": 1}, {"tenant": "acme"})
     assert item["output"] == {"n": 1, "touched": True} and "output_is_input" not in item
+
+
+def test_a_non_private_handler_that_returns_its_own_input_unchanged_reports_it_once(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    client.register_function("echo::fn", lambda data: data)
+    _confirm(client, engine, "echo::fn", [observer_info("o", "audit::echo")])
+    engine.clear()
+    payload = {"n": 3, "tags": ["a"]}
+    out = client.call({"function_id": "echo::fn", "payload": payload})
+    assert out == payload and out is not payload
+    [item] = engine.wait_for(lambda: reported_items(engine), what="the report")
+    assert item["input"] == {"n": 3, "tags": ["a"]}
+    assert item.get("output_is_input") is True and "output" not in item
+
+
+def _bump(data: dict[str, Any]) -> dict[str, Any]:
+    data["n"] += 1
+    return data
+
+
+@pytest.mark.parametrize(
+    ("handler", "output"),
+    [
+        pytest.param(_bump, {"n": 4}, id="changes its input before returning it"),
+        pytest.param(lambda data: dict(data), {"n": 3}, id="returns an equal object of its own"),
+    ],
+)
+def test_a_non_private_handler_that_does_not_return_its_input_unchanged_reports_both(
+    engine: FakeEngine, connect: Any, handler: Any, output: dict[str, Any]
+) -> None:
+    client = connect(engine)
+    client.register_function("echo::fn", handler)
+    _confirm(client, engine, "echo::fn", [observer_info("o", "audit::echo")])
+    engine.clear()
+    assert client.call({"function_id": "echo::fn", "payload": {"n": 3}}) == output
+    [item] = engine.wait_for(lambda: reported_items(engine), what="the report")
+    # the input as the call started
+    assert (item["input"], item["output"]) == ({"n": 3}, output)
+    assert "output_is_input" not in item
+
+
+def test_same_data_compares_json_data_in_one_walk() -> None:
+    assert same_data({"a": [1, {"b": None}], "n": float("nan")}, {"n": float("nan"), "a": [1, {"b": None}]})
+    assert not same_data({"a": [1]}, {"a": [1, 2]})
+    assert not same_data({"a": 1}, {"a": True})
+    assert not same_data({"a": 1}, {"a": 1.0})
+    assert not same_data({"at": object()}, {"at": object()})
+    cycle: dict[str, Any] = {}
+    cycle["self"] = cycle
+    other: dict[str, Any] = {}
+    other["self"] = other
+    assert not same_data(cycle, other)
+    shared = {"n": 1}
+    assert not same_data({"x": shared, "y": shared}, {"x": {"n": 1}, "y": {"n": 1}})
 
 
 def test_reports_nothing_for_a_call_no_filter_matches_and_nothing_for_an_unobserved_function(

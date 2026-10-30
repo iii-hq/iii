@@ -860,9 +860,9 @@ def test_an_event_source_reports_the_event_once_with_output_is_input(engine: Fak
     assert all(s["output_is_input"] is True and "output" not in s for s in sources)
     [other] = _items(engine, "events::other")
     assert other["output"] == {"n": 2} and "output_is_input" not in other
-    # not private: the report carries the caller's payload, and the handler returned its own copy
+    # not private: the handler returned its own copy unchanged, so the report carries the value once too
     [shared] = _items(engine, "events::shared")
-    assert shared["input"] == shared["output"] == {"n": 4} and "output_is_input" not in shared
+    assert shared["input"] == {"n": 4} and shared["output_is_input"] is True and "output" not in shared
 
 
 def test_an_engine_without_observe_v2_gets_output_not_output_is_input(engine_factory: Any, connect: Any) -> None:

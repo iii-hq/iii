@@ -94,6 +94,7 @@ from .observable import (
     Level,
     Observer,
     is_async_callable,
+    same_data,
 )
 from .observe_types import (
     AddedHook,
@@ -2890,7 +2891,8 @@ class III:
         input reports it once (``output_is_input``). Any other function's
         handler gets copies, and its delivery a copy of the payload and the
         metadata as the caller passed them, taken here, at call start, when
-        the call is delivered. The delivery sees channel refs as the caller
+        the call is delivered; a handler that returns its own copy unchanged
+        reports the value once too (``_local_delivery``). The delivery sees channel refs as the caller
         passed them; the handler gets readers and writers. Raises what
         copying the payload raises."""
         state = cast(FunctionObservers, call.state)
@@ -2933,6 +2935,17 @@ class III:
         observes it and it has no deliver hook."""
         if not local.delivers:
             return None
+        if (
+            handler_error is None
+            and not local.state.private
+            and output is local.input
+            and isinstance(output, (dict, list))
+            and same_data(local.call_input, local.input)
+        ):
+            # The handler returned its own copy of the input unchanged: the
+            # call is delivered with the input it started with as its output,
+            # so the report carries the value once (``output_is_input``).
+            output = local.call_input
         return Delivery(
             local.state,
             Call(
