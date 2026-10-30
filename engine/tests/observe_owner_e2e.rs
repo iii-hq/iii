@@ -1889,6 +1889,254 @@ async fn the_earlier_connection_finds_its_replaced_observer_disposed() {
     assert!(!sink.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "sink::old"));
 }
 
+/// A restarted worker's `observe` that the engine refuses replaces nothing
+/// (decision 51): the suspended observer keeps its id, so another worker
+/// still gets `OBSERVER_ID_CONFLICT`, and the host hears nothing. The
+/// worker's next valid `observe` replaces it.
+#[tokio::test]
+async fn a_refused_observe_leaves_the_suspended_observer_its_id() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let _sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut watcher,
+        stable(1, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-stable").await;
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    let mut no_fires = stable(2, "sink::orders");
+    no_fires["max_fires"] = json!(0);
+    for (frame, code) in [
+        (no_fires, "INVALID_ARGS"),
+        (stable(2, "orders::create"), "SELF_TARGET"),
+    ] {
+        let refused = restarted.observe(frame).await;
+        assert_eq!(refused["state"], "error", "{refused}");
+        assert_eq!(refused["error"]["code"], code, "{refused}");
+        assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Suspended));
+    }
+    let mut other = connect(&t, "other", true).await;
+    let taken = other.observe(stable(3, "sink::orders")).await;
+    assert_eq!(taken["error"]["code"], "OBSERVER_ID_CONFLICT", "{taken}");
+    get(&mut orders, "barrier").await;
+    assert!(!orders.has_seen(|f| f["type"] == "observeradded"));
+
+    acked_observer(
+        &mut orders,
+        &mut restarted,
+        stable(4, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+}
+
+/// An in-process registration hook that accepts every observer. Armed with
+/// [`HookGate::hold_next`], it holds its next call until
+/// [`HookGate::release`].
+struct HookGate {
+    hold: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    entered: std::sync::Arc<tokio::sync::Notify>,
+    release: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl HookGate {
+    fn install(t: &TestEngine, id: &str) -> Self {
+        use iii::engine::{EngineTrait, Handler, RegisterFunctionRequest};
+        use iii::function::FunctionResult;
+        let gate = Self {
+            hold: Default::default(),
+            entered: Default::default(),
+            release: Default::default(),
+        };
+        let (hold, entered, release) = (
+            gate.hold.clone(),
+            gate.entered.clone(),
+            gate.release.clone(),
+        );
+        t.engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(move |_input: Value| {
+                let (hold, entered, release) = (hold.clone(), entered.clone(), release.clone());
+                async move {
+                    if hold.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    FunctionResult::Success(Some(json!({})))
+                }
+            }),
+        );
+        gate
+    }
+
+    fn hold_next(&self) {
+        self.hold.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Waits until the held call has entered the hook.
+    async fn entered(&self) {
+        tokio::time::timeout(observe_support::WAIT, self.entered.notified())
+            .await
+            .expect("the registration hook was never called");
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+/// The suspended observer keeps its id while the RBAC registration hook
+/// runs for the restarted worker's `observe` (decision 51): another
+/// worker's `observe` meanwhile gets `OBSERVER_ID_CONFLICT`, and the
+/// restarted worker's observer replaces the suspended one once the hook
+/// answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_suspended_observer_keeps_its_id_while_the_registration_hook_runs() {
+    let rbac = json!({
+        "on_observer_registration_function_id": "test::hook",
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let gate = HookGate::install(&t, "test::hook");
+    let (mut orders, _) = owner(&t, "orders", &["api::orders"]).await;
+    let _sink = host(&t, "sink", &["api::sink"]).await;
+    let frame = |generation: u64| {
+        let mut frame = observer(
+            "obs-stable",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        );
+        frame["metadata"] = json!({ "generation": generation });
+        frame
+    };
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(&mut orders, &mut watcher, frame(1), "api::orders").await;
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-stable").await;
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    let mut other = connect(&t, "other", true).await;
+    gate.hold_next();
+    let mut held = frame(2);
+    held["type"] = json!("observe");
+    restarted.send(held).await;
+    gate.entered().await;
+    assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Suspended));
+    let taken = other.observe(frame(3)).await;
+    assert_eq!(taken["error"]["code"], "OBSERVER_ID_CONFLICT", "{taken}");
+    assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Suspended));
+
+    gate.release();
+    let result = restarted
+        .expect("observeresult", |f| {
+            f["type"] == "observeresult" && f["id"] == "obs-stable"
+        })
+        .await;
+    assert_eq!(result["state"], "pending", "{result}");
+    let announced = added(&mut orders, "obs-stable").await;
+    ack(
+        &mut orders,
+        "api::orders",
+        "obs-stable",
+        &announced["revision"],
+    )
+    .await;
+    restarted.state_becomes("obs-stable", "active").await;
+}
+
+/// Only a `suspended` observer is replaced (decision 51). An observer its
+/// host rejected is in `error`, and keeps its id while its worker is away,
+/// from that worker too, until the grace period ends.
+#[tokio::test]
+async fn an_observer_in_error_keeps_its_id_until_the_grace_period_ends() {
+    let t = spawn_engine(ObserversConfig {
+        observer_grace_ms: 1_500,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let _sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let created = watcher.observe(stable(1, "sink::orders")).await;
+    assert_eq!(created["state"], "pending", "{created}");
+    let announced = added(&mut orders, "obs-stable").await;
+    reject(
+        &mut orders,
+        "orders::create",
+        "obs-stable",
+        &announced["revision"],
+        "UNSUPPORTED_FILTER",
+    )
+    .await;
+    watcher.state_becomes("obs-stable", "error").await;
+    leave(&t, watcher).await;
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    let refused = restarted.observe(stable(2, "sink::orders")).await;
+    assert_eq!(
+        refused["error"]["code"], "OBSERVER_ID_CONFLICT",
+        "{refused}"
+    );
+    assert_eq!(state(&t, "obs-stable"), Some(ObserverState::Error));
+
+    assert!(
+        eventually(|| state(&t, "obs-stable").is_none()).await,
+        "the grace period never ended"
+    );
+    acked_observer(
+        &mut orders,
+        &mut restarted,
+        stable(3, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+}
+
+/// The observer a restarted worker replaces leaves the function's count as
+/// the new one joins: at `observers.max_per_function` the replacement is
+/// accepted.
+#[tokio::test]
+async fn a_replacement_at_the_function_limit_is_accepted() {
+    let t = spawn_engine(ObserversConfig {
+        max_per_function: 1,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let _sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut watcher,
+        stable(1, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-stable").await;
+
+    let mut restarted = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut restarted,
+        stable(2, "sink::orders"),
+        "orders::create",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn an_owner_without_observe_v1_hears_nothing() {
     let t = spawn_engine(ObserversConfig::default()).await;

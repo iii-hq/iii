@@ -203,7 +203,7 @@ impl ObserverRegistry {
             },
             function,
         }));
-        if !self.publish(&observer, ENGINE_CONNECTION, Vec::new()) {
+        if !self.publish(&observer, ENGINE_CONNECTION, Vec::new(), None) {
             return Err(ErrorBody::new(
                 observe_codes::OBSERVER_ID_CONFLICT,
                 format!("observer `{id}` was created concurrently"),
