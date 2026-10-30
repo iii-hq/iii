@@ -53,7 +53,7 @@ describe('SharedEngineConnection handshake headers', () => {
 })
 
 describe('SharedEngineConnection shutdown', () => {
-  it('detaches its socket listeners, so a close landing after shutdown() resolves logs nothing', async () => {
+  it('stays silent when the socket closes after shutdown() resolved', async () => {
     const connection = new SharedEngineConnection('ws://engine.test/otel')
     const [socket] = sockets
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
