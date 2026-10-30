@@ -46,6 +46,7 @@ import {
   OBSERVE_HOOK_TIMEOUT_MS,
   type ObserveHost,
   type ObserverImpl,
+  sameData,
 } from './observable'
 import type {
   AddedHook,
@@ -1202,13 +1203,14 @@ class Sdk implements ISdk {
     const startedAt = Date.now()
     const t0 = performance.now()
     let delivery: Delivery | undefined
-    const settle = (outcome: HandlerOutcome): unknown => {
+    const settle = (handled: HandlerOutcome): unknown => {
       const duration = performance.now() - t0
-      this.reporter.recordLocal(function_id, outcome.ok, duration)
+      this.reporter.recordLocal(function_id, handled.ok, duration)
       if (!delivering) {
-        if (outcome.ok) return outcome.value
-        throw outcome.error
+        if (handled.ok) return handled.value
+        throw handled.error
       }
+      const outcome = byReference ? handled : this.deliveredOutcome(handled, input, callInput)
       delivery = new Delivery(observe, {
         call: this.callOf(function_id, ctx.invocation_id, outcome, callInput, ctx.caller, callMetadata),
         thrown: outcome.ok ? undefined : outcome.error,
@@ -1278,6 +1280,18 @@ class Sdk implements ISdk {
         reject(new InvocationTimeoutError(effectiveTimeout, function_id))
       }, effectiveTimeout)
     })
+  }
+
+  /**
+   * The outcome a local call of a function that is not private is delivered
+   * with: a handler that returns its own input unchanged is delivered with
+   * the input the call started with as its output, so the report carries the
+   * value once (`output_is_input`, decision 4).
+   */
+  private deliveredOutcome(outcome: HandlerOutcome, input: unknown, callInput: unknown): HandlerOutcome {
+    if (!outcome.ok) return outcome
+    const ownInput = outcome.value === input && input !== null && typeof input === 'object'
+    return ownInput && sameData(callInput, input) ? { ok: true, value: callInput } : outcome
   }
 
   /** The {@link Call} a finished handler made: what it was called with, and what it returned or threw. */

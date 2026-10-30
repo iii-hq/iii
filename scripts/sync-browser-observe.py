@@ -463,6 +463,15 @@ LOCAL_DISPATCH = UNIT + [
   })""",
         1,
     ),
+    # ... and so the hooks of a private function read its result as the handler returned it.
+    (
+        re.compile(
+            r"  it\('in development the result is frozen before the hooks read it: .*?\n  \}\)\n\n",
+            re.S,
+        ),
+        '',
+        1,
+    ),
 ]
 
 PROTOCOL_FIXTURES = UNIT + [
