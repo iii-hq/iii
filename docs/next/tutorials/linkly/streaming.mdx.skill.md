@@ -3,11 +3,11 @@
 # Ch. 5: Stream live clicks
 
 
-Real-time delivery means pushing data to whoever is listening the moment it changes, like a live
-click counter on a dashboard. On iii there is no special channel for this: a worker declares its
-own **trigger type**, and anyone who wants to hear about clicks binds a function to it, the same way
-you bound functions to `http` and `durable:subscriber` in earlier chapters. You'll give that job to a
-dedicated `click-streamer` worker so the `link` worker stays focused on links.
+Real-time delivery pushes data to listeners the moment the data changes, for example a live click
+counter on a dashboard. On iii, a worker declares its own **trigger type**. Each listener binds a
+function to that trigger type, the same way you bound functions to `http` and `durable:subscriber`
+in earlier chapters. In this chapter, a dedicated `click-streamer` worker does this job, so the
+`link` worker stays focused on links.
 
 A notification is not storage. The clicks already live in the `clicks` table from Chapter 3, so a
 listener that joins late reads the current total with a query, then counts the notifications that
@@ -31,8 +31,8 @@ click-streamer:
 
 A trigger type has a provider: the worker that registered it. When another worker binds a function
 to the type, the engine calls the provider's `registerTrigger` with that binding, and calls
-`unregisterTrigger` when the binding goes away or its worker disconnects. The provider keeps its
-own table of bindings and invokes their functions when something happens.
+`unregisterTrigger` when the binding goes away or its worker disconnects. The provider keeps its own
+table of bindings and invokes their functions when something happens.
 
 Create `click-streamer/src/index.ts`:
 
@@ -57,7 +57,8 @@ const listeners = new Map<string, TriggerConfig<ClickFilter>>();
 worker.registerTriggerType<ClickFilter>(
   {
     id: "click-streamer::click",
-    description: "Fires after a click is recorded. Config: { code? }. Payload: { id, code, clicked_at }.",
+    description:
+      "Fires after a click is recorded. Config: { code? }. Payload: { id, code, clicked_at }.",
   },
   {
     async registerTrigger(binding) {
@@ -110,8 +111,8 @@ logger.info("click-streamer ready");
 A few things in there are the provider's job, because nobody else can do them:
 
 - **Validate the filter.** A listener can pass `{ code }` to hear about one link only, and leave it
-  out to hear every click. A `code` that is present always filters, even `""`. Anything that is
-  not a string is rejected at bind time instead of failing later.
+  out to hear every click. A `code` that is present always filters, even `""`. Anything that is not
+  a string is rejected at bind time instead of failing later.
 - **Bound the fan-out.** The table has a cap, and each delivery uses `TriggerAction.Void()`, so a
   slow listener never holds up the others.
 - **Deliver to the listener's namespace.** Passing `binding.namespace` matters in Chapter 7, when a
@@ -120,9 +121,11 @@ A few things in there are the provider's job, because nobody else can do them:
 ## Announce clicks from `link`
 
 Now have `link::record_click` hand each click to `click-streamer::broadcast`, after the row is
-written. `database::execute` returns the new row's id as `last_insert_id`; it travels with the
-click so listeners can tell a new click from one they have already counted. Replace
-`link::record_click` in `link/src/index.ts`:
+written. `database::execute` returns the new row's id as `last_insert_id`; it travels with the click
+so listeners can tell a new click from one they have already counted. In `link/src/index.ts`,
+comment out the `Ch. 3 | link::record_click` block. Then uncomment the `Ch. 5 | link::record_click`
+block that replaces it. For more information, see
+[The worker entry point](./foundations#the-worker-entry-point).
 
 ```typescript link/src/index.ts {4-7,15-20}
 worker.registerFunction(
@@ -151,10 +154,10 @@ worker.registerFunction(
 ```
 
 <Info>
-  In the new code above we didn't use `await` and set the `action` to `TriggerAction.Void()`. This
-  causes the function to return immediately before the broadcast completes. A live counter is best
-  effort: if a notification is lost, the listener's next read of the total corrects it, so the click
-  write never waits on the listeners.
+  The new `click-streamer::broadcast` call has no `await`, and its `action` is
+  `TriggerAction.Void()`. The SDK sends the call and does not wait for the broadcast to complete. A
+  live counter is best effort: if a notification is lost, the listener's next read of the total
+  corrects it, so the click write never waits on the listeners.
 </Info>
 
 ## Read the current total
@@ -250,7 +253,8 @@ click #2: stream-2 at 2026-05-27T10:15:02.169Z
 click #3: stream-3 at 2026-05-27T10:15:02.221Z
 ```
 
-The total is always one query away:
+The total is always one query away. The queue writes each click to the table a moment after the
+redirect, so wait a few seconds, then read the total:
 
 ```bash
 iii trigger link::click_summary
@@ -266,7 +270,6 @@ its table.
 ## Conclusion
 
 Linkly now pushes every click to its listeners in real time through a dedicated `click-streamer`
-worker that owns the `click-streamer::click` trigger type, while the `clicks` table stays the
-source of truth behind `link::click_summary`. Next, in
-[Ch. 6: Move bulk data with channels](/tutorials/linkly/channels), you bulk-load links from a CSV in
-a single streamed upload.
+worker that owns the `click-streamer::click` trigger type, while the `clicks` table stays the source
+of truth behind `link::click_summary`. Next, in [Ch. 6: Move bulk data with channels](./channels),
+you bulk-load links from a CSV in a single streamed upload.

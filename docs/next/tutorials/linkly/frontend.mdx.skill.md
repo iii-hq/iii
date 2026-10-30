@@ -3,16 +3,16 @@
 # Ch. 7: Bring in the browser
 
 
-In this chapter the browser becomes a worker. It connects to the engine over WebSocket, calls
-`link::create` directly (no REST API Gateway), binds to the live click feed from Chapter 5 to update
-a counter, and registers a `user::confirm_destructive_op` function the server calls when a delete
-needs a human's go-ahead.
+In this chapter the browser becomes a worker. It connects over WebSocket through the `rbac-proxy`
+worker and calls `link::create` directly, with no REST API gateway. It binds to the live click feed
+from Chapter 5 to update a counter. It also registers a `user::confirm_destructive_op` function. The
+server calls that function when a delete needs a human's approval.
 
 ## Add the workers
 
-A browser worker connects through the `rbac-proxy` RBAC-gated port, separate from the trusted port
-your local workers use. The `auth` worker holds the authentication logic that gates those
-connections. Uncomment the Ch. 7 block in `worker-compose.yaml`:
+This chapter adds two workers. The `auth` worker holds the logic that admits browser connections.
+The `rbac-proxy` worker opens the port that browsers use (you set it up in the next section). The
+Ch. 7 block in `worker-compose.yaml` holds both. Uncomment the `auth` entry now:
 
 ```yaml worker-compose.yaml
 auth:
@@ -34,7 +34,7 @@ this value for anything beyond your machine.
 The engine's port at `49134` is the **trusted** listener; local workers (link worker, analytics
 worker) connect there. The browser must not. The `rbac-proxy` worker opens a separate public port
 and reverse-proxies to the engine, authenticating every connection and gating every call it makes.
-Uncomment the Ch. 7 `rbac-proxy` container:
+Uncomment the `rbac-proxy` entry of the Ch. 7 block:
 
 ```yaml worker-compose.yaml
 rbac-proxy:
@@ -53,24 +53,23 @@ rbac-proxy:
         - match("link::click_summary")
 ```
 
-Restart Compose so it starts the proxy:
-
-```bash
-iii trigger compose::restart
-```
-
-`expose_functions` is an allowlist of which functions a browser session can call. The browser hears
-about clicks through the `click-streamer::click` trigger type, not a function call, and reads the
-starting total with `link::click_summary`, so that query is on the list too. `auth_function_id`
-names a function `rbac-proxy` invokes on every connection to admit or reject it; you write that
-next.
+`expose_functions` lists the functions that a browser can call. `link::request_delete` is on the
+list so that a browser can also start a delete. In this chapter you start the delete from the CLI.
+The browser reads the starting click total with `link::click_summary`, so that query is on the list
+too. The browser hears about each new click through the `click-streamer::click` trigger type, which
+calls its own `ui::on_click` function. A trigger bound to a function of the same tab needs no entry
+in the list. `auth_function_id` names the function that admits each browser connection. You write it
+next. The [rbac-proxy worker docs](https://workers.iii.dev/workers/rbac-proxy) define each config
+field.
 
 ## Gate connections with an auth function
 
 The `auth` worker owns connection gating, so the `link` worker stays focused on links.
-`auth::browser` runs once per browser connection: it receives the request's `headers`,
-`query_params`, and `ip_address`, and returns the session's permissions (allow/deny additions,
-arbitrary context). Throw to reject. Create `auth/src/index.ts`:
+`auth::browser` runs once for each browser connection. It receives the `headers`, `query_params`,
+and `ip_address` of the request. It returns the permissions of the session: registration flags,
+optional allowed or forbidden functions, and a `context` object. This one reads the token from the
+query parameters and throws an error to reject the connection. Uncomment the Ch. 7 block in
+`auth/src/index.ts`:
 
 ```typescript auth/src/index.ts
 import { registerWorker } from "iii-sdk";
@@ -94,9 +93,8 @@ worker.registerFunction(
     if (!expected || token !== expected) {
       throw new Error("unauthorized");
     }
-    // Each tab sends a unique session id and registers in its own
-    // `browser-<session>` namespace, so the functions two tabs register never
-    // collide. Granting only that namespace key keeps a tab out of `default`.
+    // Each tab sends a unique session id and registers its functions in its own
+    // browser-<session> namespace, so the functions of two tabs never collide.
     const session = input.query_params.session?.[0];
     if (!session) {
       throw new Error("missing session");
@@ -106,9 +104,6 @@ worker.registerFunction(
       // The tab may listen to the live click feed and nothing else.
       allowed_trigger_types: ["click-streamer::click"],
       allow_function_registration: true,
-      namespaces: {
-        [`browser-${session}`]: ["ui::on_click", "user::confirm_destructive_op"],
-      },
       context: { source: "browser" },
     };
   },
@@ -117,16 +112,26 @@ worker.registerFunction(
 logger.info("auth worker ready");
 ```
 
-The client sends the same token as `VITE_LINKLY_TOKEN`, which you set below. A real deployment would
-look the token up in a session store; the shape stays the same. The token travels in a query
+The scaffold's block also returns a `namespaces` key. Delete that key, because `rbac-proxy` ignores
+it.
+
+The client sends the same token. `frontend/src/iii.ts` reads it from `VITE_LINKLY_TOKEN` in
+`frontend/.env.local`, which you create later in this chapter. The token travels in a query
 parameter because browsers cannot send custom WebSocket headers.
 
-Each tab also sends a unique `session` id. The engine allows one function per id in a namespace, so
-two tabs both registering `ui::on_click` in `default` would collide. `namespaces` gives each session
-its own `browser-<session>` namespace and permits registration only there: the tab's functions live
-in isolation, and it still calls `link::*` in `default` through the `expose_functions` allowlist.
-`allowed_trigger_types` does the same for bindings: the tab may bind the live click feed and no other
-trigger type.
+Each tab also sends a unique `session` id. The engine allows one function per id in a namespace. If
+two tabs both register `ui::on_click` in `default`, the engine refuses the second registration. So
+each tab connects in its own `browser-<session>` namespace, with the `namespace` option in
+`frontend/src/iii.ts`. The tab sets this namespace itself, and `rbac-proxy` does not check it.
+
+`allowed_trigger_types` limits the trigger types that a tab can bind. The tab can bind only the live
+click feed, `click-streamer::click`.
+
+Restart Compose so it starts the proxy and the `auth` worker:
+
+```bash
+iii trigger compose::restart
+```
 
 ## Add a server-initiated delete
 
@@ -148,11 +153,10 @@ worker.registerFunction("link::delete", async (payload: { code: string }) => {
 });
 ```
 
-Now add a wrapper that asks the connected browser first, then deletes only if the browser confirms.
-The server-side `worker.trigger` of a browser-registered function is the same primitive you've used
-between server workers, in reverse. This lets us reverse the typical pattern: instead of the browser
-asking the server for confirmation, the server asks the browser. Other implementations would achieve
-this with SSE but here it works like normal synchronous code.
+Now add a wrapper. It asks the connected browser first, and it deletes the link only if the browser
+confirms. The server uses `worker.trigger` to call the function that the browser registered. It is
+the same call that you use between server workers. The server asks the browser for confirmation, and
+the code reads like normal synchronous code.
 
 ```typescript link/src/index.ts
 worker.registerFunction(
@@ -176,6 +180,8 @@ worker.registerFunction(
 );
 ```
 
+The `link` worker reloads when you save `link/src/index.ts`. You do not need to restart.
+
 ## Scaffold the frontend
 
 ### Initialize a Vite project
@@ -188,9 +194,9 @@ npm create vite@latest frontend -- --template react-ts --no-interactive
 ```
 
 <Note>
-  `--no-interactive` makes `create-vite` skip its questions: it scaffolds `frontend/` with its
-  default linter and neither installs nor starts anything, since `iii-browser-sdk` has to be
-  installed first. npm may first ask "Ok to proceed?" to download `create-vite`; answer yes.
+  `--no-interactive` makes `create-vite` skip its questions. It scaffolds `frontend/` with its
+  default linter, and it does not install or start anything. You install `iii-browser-sdk` first.
+  npm can first ask "Ok to proceed?" to download `create-vite`. Answer yes.
 </Note>
 
 Now install the dependencies:
@@ -215,8 +221,9 @@ VITE_LINKLY_PROXY_URL=ws://localhost:3110
 
 ### Setup a client-side worker
 
-Connect the SDK to our iii instance in `frontend/src/iii.ts`. Note how we're using a different URL
-format and port, this goes back to the setup we did with `rbac-proxy` and RBAC.
+Connect the SDK in `frontend/src/iii.ts`. The URL comes from `VITE_LINKLY_PROXY_URL` and points at
+port `3110`, the `rbac-proxy` port that you set up above. It carries the token and the session id as
+query parameters.
 
 ```typescript src/iii.ts
 import { registerWorker } from "iii-browser-sdk";
@@ -240,8 +247,9 @@ export const worker = registerWorker(
 
 ### Create the application
 
-We'll build `src/App.tsx` in pieces. You can replace the template's `src/App.tsx` with the code
-samples below.
+Build `src/App.tsx` in pieces. Replace the template's `src/App.tsx` with the blocks below, in order.
+The state block opens the `App` function. Put the next blocks inside `App`. The UI block closes
+`App`.
 
 #### Add imports
 
@@ -263,11 +271,11 @@ click counter.
 
 ```tsx src/App.tsx
 export default function App() {
-  const [url, setUrl] = useState('')
-  const [code, setCode] = useState('')
-  const [created, setCreated] = useState<{ code: string; url: string } | null>(null)
-  const [clicks, setClicks] = useState(0)
-  const [latest, setLatest] = useState<Click | null>(null)
+  const [url, setUrl] = useState("");
+  const [code, setCode] = useState("");
+  const [created, setCreated] = useState<{ code: string; url: string } | null>(null);
+  const [clicks, setClicks] = useState(0);
+  const [latest, setLatest] = useState<Click | null>(null);
 ```
 
 #### Count clicks live
@@ -365,10 +373,7 @@ useEffect(() => {
 
 Submit the form by calling `link::create` directly.
 
-<Note>
-  There is no `fetch` or REST API in the way here, the client worker in the browser works the exact
-  same as every other worker.
-</Note>
+<Note>The browser worker calls `link::create` the same way every other worker does.</Note>
 
 ```tsx src/App.tsx
 async function onSubmit(e: React.FormEvent) {
@@ -417,7 +422,7 @@ Finally, the UI: a link shortener form, the last-created link, and the live clic
         <small>This tab is session <code>{SESSION}</code>.</small>
       </footer>
     </main>
-  )
+  );
 }
 ```
 
@@ -429,32 +434,33 @@ Start the UI:
 npm run dev
 ```
 
-Open your browser, Vite typically hosts local websites at
-[http://localhost:5173](http://localhost:5173).
+Open the URL that `npm run dev` prints. By default, it is `http://localhost:5173`. When that port is
+in use, Vite prints a different port.
 
 ### Shorten a link, then watch the clicks arrive in real time
 
-Shorten a link from the form, then visit `http://localhost:3111/s/<code>` a few times. You'll see
-the "Live clicks" counter go up in real time. Reload the tab and the counter starts from the stored
-total, not from zero.
+Shorten a link from the form. Then visit `http://localhost:3111/s/<code>` a few times. The "Live
+clicks" counter goes up in real time. When you reload the tab, the counter starts from the stored
+total.
 
 ### Request user confirmation directly from the backend
 
-Copy the session id the tab prints, then trigger the delete for one of your links, naming that
-session so the server calls back the right tab:
+Copy the session id that the tab shows. Then trigger the delete for one of your links. Put your link
+code in place of `<code>` and the session id in place of `<session-id>`:
 
 ```bash
-iii trigger link::request_delete code=<code> session=<session from the tab>
+iii trigger link::request_delete code=<code> session=<session-id>
 ```
 
-That tab shows a confirm prompt, and the server deletes only after you click OK. The `session` names
-the tab's namespace, so the server asks exactly the browser that owns it, never another tab.
+The tab shows a confirm prompt. The server deletes the link only after you click OK. Answer the
+prompt within 30 seconds. After 30 seconds the call times out, and the link stays. The `session`
+names the namespace of the tab, so the server asks only the tab that owns it.
 
 ## Conclusion
 
 The client is a worker that is exactly the same as every other worker. We connected it through an
 RBAC-gated port (via `rbac-proxy`) that uses an auth function to admit it because the browser isn't
-trusted like our other workers. However any other worker can be gated this same way.
+trusted like our other workers.
 
 Once everything is set up our client calls server functions directly, binds a trigger type for live
 updates, and registers functions the server calls back, all on the same iii bus as the rest of
