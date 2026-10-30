@@ -980,7 +980,7 @@ class III:
             f"reason={getattr(ws, 'close_reason', None)!r})"
         )
         # A fatal registration rejection already set the terminal `failed`
-        # state and cleared `_running`; the socket close it triggers must not
+        # state and cleared `_running`; the socket close it causes must not
         # regress the state back to `disconnected`.
         if self._fatal_error is None:
             self._set_connection_state("disconnected")

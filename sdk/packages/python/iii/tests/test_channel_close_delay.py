@@ -19,7 +19,7 @@ def _make_ref(direction: str = "write") -> StreamChannelRef:
 
 
 def _make_writer() -> ChannelWriter:
-    """Create a ChannelWriter without triggering a real WebSocket connection."""
+    """Create a ChannelWriter without opening a real WebSocket connection."""
     return ChannelWriter(engine_ws_base="ws://localhost:9999", ref=_make_ref())
 
 
