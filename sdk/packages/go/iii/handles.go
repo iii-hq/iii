@@ -44,6 +44,7 @@ func (r *FunctionRef) Unregister() error {
 	current := ok && fn.observe == r.observe
 	if current {
 		delete(c.functions, r.ID)
+		c.observeByID.Delete(r.ID)
 		delete(c.unsupportedWarned, r.ID)
 	}
 	c.mu.Unlock()
@@ -55,9 +56,9 @@ func (r *FunctionRef) Unregister() error {
 	return nil
 }
 
-// IsObserved reports whether any observer is active on the function (one load: check
-// it before building an event nobody would receive). False for a handle that does not
-// control the function's current registration.
+// IsObserved reports whether any observer is active on the function: one atomic load,
+// so a source checks it before building an event nobody would receive. False for a
+// handle that does not control the function's current registration.
 func (r *FunctionRef) IsObserved() bool {
 	if r == nil || r.observe == nil {
 		return false

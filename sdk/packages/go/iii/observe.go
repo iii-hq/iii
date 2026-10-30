@@ -166,7 +166,8 @@ func (c *Client) ObserveFunction(functionID, target string, opts ...ObserverOpti
 }
 
 // IsObserved reports whether functionID, registered by this worker, has active
-// observers: one atomic load, so a source can skip building an event nobody wants.
+// observers, so a source can skip building an event nobody wants. It takes no lock: a
+// lookup of functionID and one atomic load. [FunctionRef.IsObserved] is the load alone.
 func (c *Client) IsObserved(functionID string) bool {
 	f := c.functionObservers(functionID)
 	return f != nil && f.isObserved()
@@ -200,11 +201,11 @@ func (c *Client) LocalDispatchActive(functionID string) bool {
 	return f != nil && f.state.Load().local
 }
 
+// functionObservers is the observe state of functionID's current registration, or nil;
+// it takes no lock.
 func (c *Client) functionObservers(functionID string) *functionObservers {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if fn, ok := c.functions[functionID]; ok {
-		return fn.observe
+	if f, ok := c.observeByID.Load(functionID); ok {
+		return f.(*functionObservers)
 	}
 	return nil
 }

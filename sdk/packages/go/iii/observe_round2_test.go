@@ -21,6 +21,7 @@ func wedgedClient(t *testing.T) (*Client, *functionObservers) {
 	f := newFunctionObservers(c, "w::fn", true, false)
 	f.confirmedEpoch, f.syncedEpoch = 1, 1
 	c.functions["w::fn"] = registeredFunction{message: &RegisterFunctionMessage{ID: "w::fn"}, handler: echoHandler, observe: f}
+	c.observeByID.Store("w::fn", f)
 	c.mu.Unlock()
 	c.replyMu.Lock()
 	c.reply, c.replyEpoch, c.replyDone, c.replyQueued = make(chan []byte), 1, make(chan struct{}), new(atomic.Int64)

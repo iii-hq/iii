@@ -506,9 +506,10 @@ if client.IsObservedFor("database::on-row-changed", &iii.Call{Input: change}) {
 }
 ```
 
-`IsObserved(id)` is one atomic load. `IsObservedFor(id, call)` on a function matched by
-keys is one lookup per call key; on any other function it is `IsObserved(id)`. A match
-hook set while the function has active observers rebuilds the index from them.
+`ref.IsObserved()` is one atomic load; `client.IsObserved(id)` adds a lock-free lookup of
+the id. `IsObservedFor(id, call)` on a function matched by keys is one lookup per call
+key; on any other function it is `IsObserved(id)`. A match hook set while the function
+has active observers rebuilds the index from them.
 
 #### Delivering yourself
 

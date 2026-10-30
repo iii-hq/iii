@@ -104,6 +104,10 @@ type Client struct {
 
 	// functions is the in-memory registry, replayed on every (re)connect. Keyed by id.
 	functions map[string]registeredFunction
+	// observeByID maps the id of each function in functions to its observe state:
+	// stored and deleted under mu with functions, read without a lock (IsObserved and
+	// the other by-id reads of a function's observers).
+	observeByID sync.Map // string -> *functionObservers
 
 	// Observer hooks, guarded by mu: the worker's, and each function's by id (they
 	// stay across Unregister and a later registration of the id). hookGen counts the
@@ -595,6 +599,7 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 	}
 	fn := registeredFunction{message: msg, handler: handler, observe: observe, standby: cfg.Standby}
 	c.functions[id] = fn
+	c.observeByID.Store(id, observe)
 	if h := c.functionHooks[id]; h != nil {
 		// before the registration is sent: no call reaches the function without them
 		observe.installHooks(h)
