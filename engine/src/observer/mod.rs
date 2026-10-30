@@ -316,6 +316,126 @@ impl ObserverRegistry {
 /// The engine metrics, when the meter is initialized (it is on every serve
 /// path; unit tests that never call `ensure_default_meter` get `None`).
 pub(crate) fn metrics() -> Option<&'static EngineMetrics> {
+    #[cfg(test)]
+    if let Some(recorded) = test_metrics::RECORDING.with(std::cell::Cell::get) {
+        return Some(recorded);
+    }
     crate::workers::observability::metrics::get_meter()
         .map(|_| crate::workers::observability::metrics::get_engine_metrics())
+}
+
+/// Reads back the observer metrics a test emits: [`test_metrics::record`]
+/// sends this thread's to a meter of its own, which the test reads.
+#[cfg(test)]
+pub(crate) mod test_metrics {
+    use std::{
+        cell::Cell,
+        sync::{Arc, Mutex},
+    };
+
+    use opentelemetry::{KeyValue, metrics::MeterProvider as _};
+    use opentelemetry_sdk::{
+        error::OTelSdkResult,
+        metrics::{
+            PeriodicReader, SdkMeterProvider, Temporality,
+            data::{AggregatedMetrics, MetricData, ResourceMetrics},
+            exporter::PushMetricExporter,
+        },
+    };
+
+    use crate::workers::observability::metrics::EngineMetrics;
+
+    thread_local! {
+        pub(super) static RECORDING: Cell<Option<&'static EngineMetrics>> =
+            const { Cell::new(None) };
+    }
+
+    /// The `u64` sums of the last export: `(metric, attributes, value)`.
+    #[derive(Clone, Default)]
+    struct Exported(Arc<Mutex<Vec<(String, Vec<KeyValue>, u64)>>>);
+
+    impl PushMetricExporter for Exported {
+        fn export(
+            &self,
+            metrics: &ResourceMetrics,
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+            let mut sums = Vec::new();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
+                        for point in sum.data_points() {
+                            sums.push((
+                                metric.name().to_string(),
+                                point.attributes().cloned().collect(),
+                                point.value(),
+                            ));
+                        }
+                    }
+                }
+            }
+            *self.0.lock().unwrap() = sums;
+            std::future::ready(Ok(()))
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _: std::time::Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+
+    /// The metrics this thread emitted since [`record`].
+    pub(crate) struct Recorded {
+        provider: SdkMeterProvider,
+        exported: Exported,
+    }
+
+    impl Recorded {
+        /// The sum of counter `name` over its series carrying every one of
+        /// `attributes`.
+        pub(crate) fn sum(&self, name: &str, attributes: &[(&str, &str)]) -> u64 {
+            self.provider.force_flush().expect("export the metrics");
+            self.exported
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(metric, series, _)| {
+                    metric == name
+                        && attributes.iter().all(|(key, value)| {
+                            series
+                                .iter()
+                                .any(|kv| kv.key.as_str() == *key && kv.value.as_str() == *value)
+                        })
+                })
+                .map(|(_, _, value)| value)
+                .sum()
+        }
+    }
+
+    impl Drop for Recorded {
+        fn drop(&mut self) {
+            RECORDING.with(|slot| slot.set(None));
+        }
+    }
+
+    /// Sends the observer metrics this thread emits from now on to a meter
+    /// the returned [`Recorded`] reads. Async tests use a current-thread
+    /// runtime, so the tasks they spawn emit on this thread too.
+    pub(crate) fn record() -> Recorded {
+        let exported = Exported::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exported.clone()).build())
+            .build();
+        let metrics: &'static EngineMetrics =
+            Box::leak(Box::new(EngineMetrics::with_meter(&provider.meter("iii"))));
+        RECORDING.with(|slot| slot.set(Some(metrics)));
+        Recorded { provider, exported }
+    }
 }
