@@ -216,6 +216,11 @@ impl Worker for SandboxRouter {
         let binding = config
             .map(serde_json::from_value::<SandboxRouterConfig>)
             .transpose()?;
+        // `EngineBuilder` callers skip `EngineConfig::config_file`, so check here too:
+        // an `adapter: sandbox` binding would forward the router to itself.
+        if let Some(b) = &binding {
+            b.validate()?;
+        }
         Ok(Box::new(SandboxRouter {
             engine,
             binding,
