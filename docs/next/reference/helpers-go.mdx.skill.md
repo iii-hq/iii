@@ -49,7 +49,7 @@ func NewStreamResponse(ctx context.Context, writer *iii.ChannelWriter) *StreamRe
 
 ### Wrap
 
-Wrap adapts an HTTP-style handler into an `iii.Handler` for a function behind an http trigger; it is the Go counterpart of the Node http() helper. Register the result with `iii.Client.RegisterFunction`.
+Wrap adapts an HTTP-style handler into an `iii.Handler` for the target of an http::on-request observer; it is the Go counterpart of the Node http() helper. Register the result with `iii.Client.RegisterFunction`.
 
 For each invocation Wrap decodes the `InternalRequest`, opens the request body channel for reading and the response channel for writing with `iii.Client.OpenReader` and `iii.Client.OpenWriter` (so the dials use the client's engine address and send its `iii.WithHeaders`, plus III_TOKEN), and calls fn with the `StreamRequest` and `StreamResponse`. When fn returns, Wrap closes the request body reader and finishes the response like a net/http handler:
 
@@ -145,7 +145,7 @@ fmt.Println(string(out))
 
 ### HandlerFunc
 
-HandlerFunc is an HTTP-style handler for a function behind an http trigger, the callback of the Node http() helper. Adapt it with `Wrap`.
+HandlerFunc is an HTTP-style handler for the target of an http::on-request observer, the callback of the Node http() helper. Adapt it with `Wrap`.
 
 Write the response to res and return nil to stream it, or return a `Response` (any non-nil value with status_code, headers and body) to answer buffered without touching res. A returned error is reported as the invocation error, which the http worker answers with a 500; if body bytes were already streamed, `Wrap` aborts the response instead of ending it, so the truncated body is not taken for a complete one.
 
@@ -157,7 +157,7 @@ type HandlerFunc func(ctx context.Context, req *StreamRequest, res *StreamRespon
 
 ### InternalRequest
 
-InternalRequest is the payload the http worker sends to a function behind an http trigger, Node InternalHttpRequest: the parsed request plus the two channel refs. The Node SDK resolves the refs into a reader and a writer before it calls the handler; in Go they stay refs, opened by `Wrap` or by hand with `iii.Client.OpenReader` and `iii.Client.OpenWriter`.
+InternalRequest is the payload the http worker sends to the target of an http::on-request observer, Node InternalHttpRequest: the parsed request plus the two channel refs. The Node SDK resolves the refs into a reader and a writer before it calls the handler; in Go they stay refs, opened by `Wrap` or by hand with `iii.Client.OpenReader` and `iii.Client.OpenWriter`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -196,7 +196,7 @@ type InvocationConfig = iii.HTTPInvocationRef
 
 ### Method
 
-Method is an HTTP method accepted by `InvocationConfig` (Node HttpMethod). It is an alias of string so the constants assign directly to `iii.HTTPInvocationRef`.Method. It is distinct from the http trigger's http_method, which also accepts HEAD and OPTIONS.
+Method is an HTTP method accepted by `InvocationConfig` (Node HttpMethod). It is an alias of string so the constants assign directly to `iii.HTTPInvocationRef`.Method. It is distinct from the method arg of an http::on-request observer, which also accepts HEAD and OPTIONS.
 
 ```go
 type Method = string
@@ -230,7 +230,7 @@ type MultiValue []string
 
 ### Request
 
-Request is the buffered HTTP request a function behind an http trigger receives, Node HttpRequest&lt;TBody&gt; and Rust HttpRequest&lt;T&gt;. T is the type of the parsed body; use json.RawMessage to keep it raw. Decode the handler payload into it, or register the function with `iii.RegisterFunctionTyped`.
+Request is the buffered HTTP request the target of an http::on-request observer receives, Node HttpRequest&lt;TBody&gt; and Rust HttpRequest&lt;T&gt;. T is the type of the parsed body; use json.RawMessage to keep it raw. Decode the handler payload into it, or register the function with `iii.RegisterFunctionTyped`.
 
 ```go
 type order struct {
@@ -261,7 +261,7 @@ fmt.Println(req.QueryParams["tag"], req.Headers["accept"].First())
 
 ### Response
 
-Response is a buffered HTTP response returned from a function behind an http trigger, Node HttpResponse and Rust HttpResponse&lt;T&gt;. T is the type of the body: the http worker sends a string Body verbatim when Headers sets a content-type, and encodes anything else as JSON (a []byte encodes as a base64 string, so stream binary bodies through a `StreamResponse`). A `Wrap` handler returns a Response to answer without streaming.
+Response is a buffered HTTP response returned from the target of an http::on-request observer, Node HttpResponse and Rust HttpResponse&lt;T&gt;. T is the type of the body: the http worker sends a string Body verbatim when Headers sets a content-type, and encodes anything else as JSON (a []byte encodes as a base64 string, so stream binary bodies through a `StreamResponse`). A `Wrap` handler returns a Response to answer without streaming.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -318,7 +318,7 @@ import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
 
 ### EnqueueResult
 
-EnqueueResult is the result returned when a function is invoked with iii.EnqueueAction (TriggerAction.Enqueue in the Node SDK). Decode the json.RawMessage returned by iii.Client.Trigger into it.
+EnqueueResult is the result returned when a function is invoked with iii.EnqueueAction (CallAction.Enqueue in the Node SDK). Decode the json.RawMessage returned by iii.Client.Call into it.
 
 ```go
 raw := json.RawMessage(`{"messageReceiptId":"7d0c1f9e-receipt"}`)
@@ -334,7 +334,7 @@ fmt.Println(receipt.MessageReceiptID)
 client := iii.RegisterWorker(iii.DefaultEngineURL)
 defer client.Close()
 
-res, err := client.Trigger(context.Background(), iii.TriggerRequest{
+res, err := client.Call(context.Background(), iii.CallRequest{
 	FunctionID: "emails::send",
 	Payload:    json.RawMessage(`{"to":"ada@example.com"}`),
 	Action:     iii.EnqueueAction("emails"),
@@ -365,7 +365,7 @@ import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/workerconnection"
 
 ### Types
 
-[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult)
 
 ### AuthInput
 
@@ -383,7 +383,7 @@ AuthInput is the input passed to the RBAC auth function during the WebSocket upg
 
 AuthResult is the value the RBAC auth function returns. It controls which functions the authenticated worker can invoke and what context is forwarded to the middleware.
 
-Every field is optional; the zero value of a field means "use the engine default": no namespace-scoped grants, no extra allowed or forbidden functions, every trigger type allowed, trigger type registration denied, function registration allowed, an empty context and no function ID prefix.
+Every field is optional; the zero value of a field means "use the engine default": no namespace-scoped grants, no extra allowed or forbidden functions, function registration allowed, an empty context and no function ID prefix.
 
 ```go
 res, err := authorize(context.Background(), workerconnection.AuthInput{
@@ -403,8 +403,6 @@ fmt.Println(string(out))
 | `Namespaces` | `map[string][]string` | No | Namespaces grants functions scoped to one namespace each, for example \{"orders": ["svc::\*"]\}. A value is an exact function ID or a wildcard, in either the bare (svc::\*) or the match("svc::\*") spelling.<br /><br />The keys are also the namespaces the session may declare on engine::workers::register. Leave it nil to add no namespace-scoped grants: the session may then declare any namespace, and only AllowedFunctions and the expose_functions config apply. |
 | `AllowedFunctions` | `[]string` | No | AllowedFunctions lists additional function IDs to allow beyond the expose_functions config, in the default namespace only. Put per-namespace grants in Namespaces. Empty means none. |
 | `ForbiddenFunctions` | `[]string` | No | ForbiddenFunctions lists function IDs to deny even if they match expose_functions. It takes precedence over the allowed lists. Empty means none. |
-| `AllowedTriggerTypes` | `[]string` | Yes | AllowedTriggerTypes lists the trigger type IDs the worker may register triggers for. nil (sent as null) allows every trigger type; a non-nil empty slice (sent as []) allows none. |
-| `AllowTriggerTypeRegistration` | `bool` | No | AllowTriggerTypeRegistration reports whether the worker may register new trigger types. The default is false. |
 | `AllowFunctionRegistration` | `*bool` | No | AllowFunctionRegistration reports whether the worker may register new functions. nil means the engine default, true; set it to new(bool) to deny function registration. |
 | `Context` | `json.RawMessage` | No | Context is arbitrary JSON forwarded to the middleware function on every invocation (iii.MiddlewareFunctionInput.Context). nil means an empty object. |
 | `FunctionRegistrationPrefix` | `string` | No | FunctionRegistrationPrefix is an optional prefix applied to every function ID this worker registers (the engine registers prefix::id). Empty means no prefix. |
@@ -422,6 +420,9 @@ OnFunctionRegistrationInput is the input passed to the on_function_registration_
 | `Metadata` | `json.RawMessage` | No | Metadata is the arbitrary metadata attached to the function, if any (the engine sends null when there is none). |
 | `Namespace` | `string` | No | Namespace is the namespace the function registers in. The same ID can exist in several namespaces, so the hook needs it to authorize per namespace. Empty means "default". |
 | `Context` | `json.RawMessage` | Yes | Context is the auth context from `AuthResult`.Context for this session. |
+| `Private` | `bool` | Yes | Private is the registration's private option: only the registering connection may call the function. |
+| `Observable` | `bool` | Yes | Observable is the registration's observable option: false refuses every observer of the function. |
+| `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the function's observer args, when the registration sets one. |
 
 ---
 
@@ -448,58 +449,9 @@ _, _ = iii.RegisterFunctionTyped(client, "auth::on-function-registration",
 | `FunctionID` | `string` | No | FunctionID is the mapped function ID. Empty keeps the original. |
 | `Description` | `*string` | No | Description is the mapped description. nil keeps the original; a pointer to "" clears it. |
 | `Metadata` | `json.RawMessage` | No | Metadata is the mapped metadata. nil keeps the original; any value that is set, including the JSON literal null, replaces it. |
-
----
-
-### OnTriggerRegistrationInput
-
-OnTriggerRegistrationInput is the input passed to the on_trigger_registration_function_id hook when a worker attempts to register a trigger through the RBAC port. Return an `OnTriggerRegistrationResult` with the (possibly mapped) fields, or an error to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `TriggerID` | `string` | Yes | TriggerID is the ID of the trigger being registered. |
-| `TriggerType` | `string` | Yes | TriggerType is the trigger type identifier. |
-| `FunctionID` | `string` | Yes | FunctionID is the ID of the function this trigger is bound to. |
-| `Config` | `json.RawMessage` | Yes | Config is the trigger-specific configuration. |
-| `Metadata` | `json.RawMessage` | No | Metadata is the arbitrary metadata attached to the trigger, if any (the engine sends null when there is none). |
-| `Namespace` | `string` | No | Namespace is the namespace the trigger's target resolves in (explicit, or "default" when the registration names none). The same function ID can exist in several namespaces, so the hook needs it to authorize per target namespace. Empty means "default". |
-| `Context` | `json.RawMessage` | Yes | Context is the auth context from `AuthResult`.Context for this session. |
-
----
-
-### OnTriggerRegistrationResult
-
-OnTriggerRegistrationResult is the result returned from the on_trigger_registration_function_id hook. Every field is optional; an omitted field keeps the original value from the registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `TriggerID` | `string` | No | TriggerID is the mapped trigger ID. Empty keeps the original. |
-| `TriggerType` | `string` | No | TriggerType is the mapped trigger type. Empty keeps the original. |
-| `FunctionID` | `string` | No | FunctionID is the mapped function ID. Empty keeps the original. |
-| `Config` | `json.RawMessage` | No | Config is the mapped trigger configuration. nil keeps the original. |
-
----
-
-### OnTriggerTypeRegistrationInput
-
-OnTriggerTypeRegistrationInput is the input passed to the on_trigger_type_registration_function_id hook when a worker attempts to register a new trigger type through the RBAC port. Return an `OnTriggerTypeRegistrationResult` with the (possibly mapped) fields, or an error to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `TriggerTypeID` | `string` | Yes | TriggerTypeID is the ID of the trigger type being registered. |
-| `Description` | `string` | Yes | Description is the human-readable description of the trigger type. |
-| `Context` | `json.RawMessage` | Yes | Context is the auth context from `AuthResult`.Context for this session. |
-
----
-
-### OnTriggerTypeRegistrationResult
-
-OnTriggerTypeRegistrationResult is the result returned from the on_trigger_type_registration_function_id hook. Every field is optional; an omitted field keeps the original value from the registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `TriggerTypeID` | `string` | No | TriggerTypeID is the mapped trigger type ID. Empty keeps the original. |
-| `Description` | `*string` | No | Description is the mapped description. nil keeps the original; a pointer to "" clears it. |
+| `Private` | `*bool` | No | Private replaces the registration's private option. nil keeps the original. |
+| `Observable` | `*bool` | No | Observable replaces the registration's observable option. nil keeps the original. |
+| `ArgsFormat` | `json.RawMessage` | No | ArgsFormat replaces the registration's args_format. nil keeps the original. |
 
 ## observability
 
@@ -939,7 +891,7 @@ func SafeStringify(v any) string
 
 ### SetBaggageEntry
 
-SetBaggageEntry returns ctx with the baggage member key set to value (Node setBaggageEntry). The baggage travels with every Trigger made with the returned ctx and is copied onto the spans started under it. An invalid key is an error.
+SetBaggageEntry returns ctx with the baggage member key set to value (Node setBaggageEntry). The baggage travels with every Call made with the returned ctx and is copied onto the spans started under it. An invalid key is an error.
 
 **Signature**
 
@@ -1008,7 +960,7 @@ func SetCurrentSpanError(ctx context.Context, message string)
 
 ### WithSpan
 
-WithSpan runs fn inside a new span named name and returns fn's result (Node withSpan). The span is a child of opts.Traceparent when set, else of the span in ctx; fn receives the span and a ctx carrying it, to pass on to Trigger, the Logger or nested spans. The span ends with an OK status when fn returns a nil error, and with an ERROR status and an exception event when fn returns an error or panics (the panic is re-raised). Without running telemetry the global tracer provider is used.
+WithSpan runs fn inside a new span named name and returns fn's result (Node withSpan). The span is a child of opts.Traceparent when set, else of the span in ctx; fn receives the span and a ctx carrying it, to pass on to Call, the Logger or nested spans. The span ends with an OK status when fn returns a nil error, and with an ERROR status and an exception event when fn returns an error or panics (the panic is re-raised). Without running telemetry the global tracer provider is used.
 
 **Signature**
 

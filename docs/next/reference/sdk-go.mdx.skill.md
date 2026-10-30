@@ -16,7 +16,7 @@ go get github.com/iii-hq/iii/sdk/packages/go/iii@latest
 
 ### RegisterWorker
 
-RegisterWorker creates a `Client` for the engine at url and starts the connection lifecycle in the background, returning immediately. An empty url means `EngineURLFromEnv`, as with `New`. It is the idiomatic entry point, matching registerWorker in the Node SDK and register_worker in the Rust SDK. Register functions and triggers on the returned client; they are (re)sent on each connection. Call `Client.Close` to stop.
+RegisterWorker creates a `Client` for the engine at url and starts the connection lifecycle in the background, returning immediately. An empty url means `EngineURLFromEnv`, as with `New`. It is the idiomatic entry point, matching registerWorker in the Node SDK and register_worker in the Rust SDK. Register functions and observers on the returned client; they are (re)sent on each connection. Call `Client.Close` to stop.
 
 To wait for the first connection (or fail fast on a bad URL), call `Client.Connect` instead of (or after) RegisterWorker; it blocks until connected, ctx is done, or the reconnect budget is exhausted. Use `New` if you want to build a client without starting the connection.
 
@@ -42,7 +42,7 @@ func RegisterWorker(url string, opts ...Option) *Client
       WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
     </ParamField>
     <ParamField body="WithInvocationTimeout" type="func(d time.Duration) Option" required>
-      WithInvocationTimeout sets how long `Client.Trigger` waits for a result when `TriggerRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
+      WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
     </ParamField>
     <ParamField body="WithMetricsReporting" type="func(enabled bool) Option" required>
       WithMetricsReporting turns the worker resource gauges on or off (Node enableMetricsReporting): the iii.worker.memory.\*, iii.worker.cpu.\*, iii.worker.event_loop.lag_ms and iii.worker.uptime_seconds metrics, tagged with worker.id and worker.name. The default is true. The gauges start when the engine acknowledges the worker and stop when the connection drops; they need telemetry and its metrics to be enabled (see `OtelConfig`).
@@ -90,11 +90,10 @@ if err != nil {
 	log.Fatal(err)
 }
 
-if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-	Type:       "http",
-	FunctionID: greet.ID,
-	Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
-}); err != nil {
+if _, err := client.Observe(iii.Source{
+	FunctionID: "http::on-request",
+	Args:       iii.Args{"method": "POST", "path": "/greet"},
+}, greet.ID); err != nil {
 	log.Fatal(err)
 }
 
@@ -110,57 +109,11 @@ defer client.Close()
 
 ## Methods
 
-### Client.RegisterTrigger
-
-<Warning>
-  **Deprecated.** Use `Client.Observe` instead: client.Observe(iii.Source\{FunctionID: "orders::create"\}, functionID) for the invocations of a function, or iii.Source\{FunctionID: iii.FnOnWorkersChanged, Deliver: iii.DeliverInput\} for an engine-hosted source. Built-in trigger providers (http, cron, queue, ...) keep RegisterTrigger until they ship their source functions. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x)
-</Warning>
-
-RegisterTrigger registers a trigger instance described by input, fire input.FunctionID when a trigger of input.Type matches input.Config, and returns its handle; `Trigger.Unregister` removes it. An empty input.ID makes the SDK generate one (a random UUID), nil Config is sent as \{\}, an empty Namespace means this worker's namespace and an empty TriggerNamespace lets the engine resolve the type's provider. Config and Metadata must be valid JSON. The registration is kept in memory and sent again on every reconnect; registering the same ID again replaces it. It mirrors registerTrigger in the Node SDK.
-
-It keeps working (through a live trigger-type provider or the engine's legacy shim), and logs a deprecation warning once per process.
-
-**Signature**
-
-```go
-func (c *Client) RegisterTrigger(input RegisterTriggerInput) (*Trigger, error)
-```
-
-#### Parameters
-
-<ParamField body="input" type="RegisterTriggerInput" required>
-
-  <Expandable title="`RegisterTriggerInput` fields">
-    <ParamField body="ID" type="string">
-      ID identifies the trigger. Empty means the SDK generates one (a random UUID, as the Node and Python SDKs always do); `Trigger.ID` reports it.
-    </ParamField>
-    <ParamField body="Type" type="string" required>
-      Type is the trigger type, for example "http", "cron" or "durable:subscriber".
-    </ParamField>
-    <ParamField body="FunctionID" type="string" required>
-      FunctionID is the function the trigger invokes when it fires.
-    </ParamField>
-    <ParamField body="Config" type="json.RawMessage">
-      Config is the trigger-type-specific configuration, as raw JSON. Nil is sent as \{\}.
-    </ParamField>
-    <ParamField body="Metadata" type="json.RawMessage">
-      Metadata is arbitrary JSON delivered to the triggered function on every invocation. Nil omits it.
-    </ParamField>
-    <ParamField body="Namespace" type="string">
-      Namespace is the namespace FunctionID resolves in, sent as "namespace". Empty means this worker's namespace (not the engine's default); a namespace that is set but blank is refused.
-    </ParamField>
-    <ParamField body="TriggerNamespace" type="string">
-      TriggerNamespace is the namespace to find the trigger type's provider in, sent as "trigger_namespace". Empty asks the engine to resolve it: this worker's namespace first, then the engine's own. A namespace named here is strict.
-    </ParamField>
-  </Expandable>
-</ParamField>
-
-
----
-
 ### Client.RegisterFunction
 
-RegisterFunction registers a function this worker can handle and returns its handle; `FunctionRef.Unregister` removes it. It may be called before or after Connect; the registration is sent on the next (re)connect. As in the Node, Python and Rust SDKs, an empty id is refused ("id is required") and so is an id this client already registered ("function id already registered"): to replace a function, unregister it first. Pass a single `RegisterFunctionOptions` value for a description, request and response formats, metadata, observe hooks or the local dispatch setting.
+RegisterFunction registers a function this worker can handle and returns its handle; `FunctionRef.Unregister` removes it. It may be called before or after Connect; the registration is sent on the next (re)connect. As in the Node, Python and Rust SDKs, an empty id is refused ("id is required") and so is an id this client already registered ("function id already registered"): to replace a function, unregister it first. Pass a single `RegisterFunctionOptions` value for a description, request and response formats, metadata, args_format, private, observable, standby or the local dispatch setting.
+
+The handler's return value is what observers observe. Every call of the function, local or routed, runs the handler and is then delivered to the observers that want it (`Client.OnObserverMatchFor`; by default all of them): by the function's deliver hook (`Client.OnObserverDeliverFor`), or by iii, to those whose on and filters match. Set hooks by id before registering: the SDK acks no observer before RegisterFunction returns, but a hook set on the returned handle can miss observers already accepted, and is caught up for them.
 
 Handlers read the optional per-invocation metadata sidecar from their ctx with `MetadataFromContext`.
 
@@ -185,11 +138,8 @@ func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFu
     <ParamField body="Metadata" type="json.RawMessage">
       Metadata is arbitrary JSON attached to the function registration. It is stored with the function and is distinct from the per-invocation metadata passed to handlers.
     </ParamField>
-    <ParamField body="Observe" type="*ObserveHooks">
-      Observe declares how the function's observers are delivered and the hooks that run when one is added or removed. nil: delivery auto, no hooks (the function is still observable).
-    </ParamField>
     <ParamField body="LocalDispatch" type="*bool">
-      LocalDispatch false keeps every Trigger of this function on the engine path; nil or true lets Trigger run it in-process once the engine confirms it (see `Client.Trigger`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed).
+      LocalDispatch false keeps every Call of this function on the engine path; nil or true lets Call run it in-process once the engine confirms it (see `Client.Call`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed).
     </ParamField>
     <ParamField body="Description" type="string">
       Description is a human/LLM-readable summary of the function, sent as "description" and surfaced by engine::functions::list and engine::functions::info. Empty omits it.
@@ -198,7 +148,19 @@ func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFu
       RequestFormat is the JSON Schema of the function's request, sent as "request_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Req.
     </ParamField>
     <ParamField body="ResponseFormat" type="json.RawMessage">
-      ResponseFormat is the JSON Schema of the function's response, sent as "response_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp.
+      ResponseFormat is the JSON Schema of the function's response, sent as "response_format": the handler's return value, which is what observers observe. It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp.
+    </ParamField>
+    <ParamField body="ArgsFormat" type="json.RawMessage">
+      ArgsFormat is the JSON Schema of the observers' args, sent as "args_format": the engine validates every observer's args against it (INVALID_ARGS), and refuses a schema that is not valid (INVALID_ARGS_FORMAT). It must be valid JSON; nil means the function takes no args.
+    </ParamField>
+    <ParamField body="Private" type="bool">
+      Private lets only this worker call the function (the engine answers anyone else with FORBIDDEN); other workers may observe it, and it cannot be an observer's target. A call this worker makes to it passes the input and the result by reference: the handler and the hooks treat both as read-only.
+    </ParamField>
+    <ParamField body="Observable" type="*bool">
+      Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true.
+    </ParamField>
+    <ParamField body="Standby" type="bool">
+      Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -225,18 +187,18 @@ client.RegisterFunction("orders::create", handler, iii.RegisterFunctionOptions{
 
 ---
 
-### Client.Trigger
+### Client.Call
 
-Trigger invokes a function on the engine. With the default (nil) or an enqueue action it waits for the matching invocation result and returns it, mapping a remote error to `InvocationError` and a missed deadline to `ErrTimeout`. With a `VoidAction` it is fire-and-forget and returns immediately with a nil result.
+Call invokes a function. With the default (nil) or an enqueue action it waits for the matching invocation result and returns it, mapping a remote error to `InvocationError` and a missed deadline to `ErrTimeout`. With a `VoidAction` it is fire-and-forget and returns immediately with a nil result. With `CallRequest`.Observer it calls through that observer.
 
-ctx bounds the wait independently of `TriggerRequest.Timeout`: if ctx is cancelled first, its error is returned and the pending entry is reclaimed. Inside a handler, pass the handler's ctx: the call then carries the handler as its caller (and the observe depth), which observers' filters and the engine's loop guard read.
+ctx bounds the wait independently of `CallRequest.Timeout`: if ctx is cancelled first, its error is returned and the pending entry is reclaimed. Inside a handler or a deliver hook, pass its ctx: the call then carries that invocation as its caller (and the observe depth), which observers' filters and the engine's loop guard read.
 
-A function this worker hosts runs in-process, without touching the wire, once the engine confirmed it for local dispatch, unless the action is enqueue or Dispatch is `DispatchRemote`. The handler gets its own copy of the payload and the caller a fresh encoding of the result; errors and timeouts look as on the remote path. Observers of a local call see the payload and metadata as they were when the call started (snapshots), whatever the caller or the handler does with them afterwards. The handler runs on a goroutine of its own, so the caller always returns on its Timeout or ctx deadline, even when the handler blocks and ignores its ctx; the handler then runs to completion (as a remote one would on its worker), its result is discarded, and the call is still counted and reported to observers. A handler that can block for long should honor its ctx (cancelled on Close), or opt out with `RegisterFunctionOptions`.LocalDispatch.
+A function this worker hosts runs in-process, without touching the wire, once the engine confirmed it for local dispatch, unless the action is enqueue or Dispatch is `DispatchRemote`. The handler gets its own copy of the payload and the caller its own encoding of the result, except for a `RegisterFunctionOptions`.Private function, whose input and result pass by reference; errors and timeouts look as on the remote path. The call is delivered to the function's observers as a routed one is, from snapshots of the payload and metadata taken when it started. The handler runs on a goroutine of its own, so the caller always returns on its Timeout or ctx deadline, even when the handler blocks and ignores its ctx; the handler then runs to completion (as a remote one would on its worker), its result is discarded, and the call is still counted and delivered. A handler that can block for long should honor its ctx (cancelled on Close), or opt out with `RegisterFunctionOptions`.LocalDispatch.
 
 **Signature**
 
 ```go
-func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error)
+func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, error)
 ```
 
 <Tabs>
@@ -245,11 +207,14 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 <ParamField body="ctx" type="context.Context" required>
 </ParamField>
 
-<ParamField body="req" type="TriggerRequest" required>
+<ParamField body="req" type="CallRequest" required>
 
-  <Expandable title="`TriggerRequest` fields">
-    <ParamField body="FunctionID" type="string" required>
-      FunctionID is the engine function to invoke (e.g. an EngineFunctions constant).
+  <Expandable title="`CallRequest` fields">
+    <ParamField body="FunctionID" type="string">
+      FunctionID is the function to invoke (e.g. an EngineFunctions constant). Empty with Observer.
+    </ParamField>
+    <ParamField body="Observer" type="*Observer">
+      Observer calls through an observer of a function this worker hosts: the engine runs the observer's target with Payload as given, after checking that this worker hosts the observer's function (NOT_FUNCTION_OWNER) and that the observer exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop guard. The call goes out on the current connection, after the acks already sent on it; FunctionID, Namespace and an enqueue action do not apply. A deliver hook that calls targets itself applies the observer's filters with `Observer.Matches`.
     </ParamField>
     <ParamField body="Payload" type="json.RawMessage">
       Payload is the JSON input of the function (payload in the Node, Python and Rust SDKs). Nil is sent as \{\}.
@@ -260,7 +225,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
     <ParamField body="Metadata" type="json.RawMessage">
       Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the payload on the wire's metadata channel, not folded into it. nil is omitted.
     </ParamField>
-    <ParamField body="Action" type="*TriggerAction">
+    <ParamField body="Action" type="*CallAction">
       Action selects void/enqueue semantics; nil means the default await path.
     </ParamField>
     <ParamField body="Timeout" type="time.Duration">
@@ -283,7 +248,7 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 client := iii.RegisterWorker(iii.DefaultEngineURL)
 defer client.Close()
 
-res, err := client.Trigger(context.Background(), iii.TriggerRequest{
+res, err := client.Call(context.Background(), iii.CallRequest{
 	FunctionID: "orders::create",
 	Payload:    json.RawMessage(`{"item":"widget"}`),
 })
@@ -306,74 +271,117 @@ default:
 
 ---
 
-### Client.RegisterTriggerType
+### Client.Observe
 
-<Warning>
-  **Deprecated.** Register a function with an observe descriptor instead: RegisterFunction(id, handler, iii.RegisterFunctionOptions\{Observe: &iii.ObserveHooks\{ Delivery: iii.DeliveryOwner, OnObserverAdded: ..., OnObserverRemoved: ...\}\}). Its observers are what trigger instances were. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x)
-</Warning>
+Observe observes a function: when source.FunctionID runs, target runs, for every call that the function's worker delivers to the observer and that passes source.Filters. target is a function registered by some worker (until it is, the observer stays pending). source.Args go to the worker that hosts the function, which reads them in its hooks (a cron expression, a route).
 
-RegisterTriggerType registers a custom trigger type (for example "webhook") with the handler the engine calls to start and stop individual trigger instances of it, and returns its handle: `TriggerTypeRef.RegisterTrigger` and `TriggerTypeRef.RegisterFunction` bind triggers of the type, and `TriggerTypeRef.Unregister` removes it. Nonempty schemas in input must contain valid JSON; JSON Schema semantics are not checked. The SDK copies the schema bytes and resends them on reconnect. Registering the same id again replaces the registration; an invalid registration leaves an existing one unchanged.
-
-It keeps working, and logs a deprecation warning once per process.
+It returns the handle at once, also before the connection is up; the observer is replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS, INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and UNSUPPORTED against an engine without observe) show up as state error and fail `ObserverHandle.Ready`. The returned error is for a request that cannot be sent at all: a missing function or target, a reused id, a blank namespace, args or filters that are not JSON.
 
 **Signature**
 
 ```go
-func (c *Client) RegisterTriggerType(input RegisterTriggerTypeInput, handler TriggerHandler) (*TriggerTypeRef, error)
+func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) (*ObserverHandle, error)
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
-<ParamField body="input" type="RegisterTriggerTypeInput" required>
+<ParamField body="source" type="Source" required>
 
-  <Expandable title="`RegisterTriggerTypeInput` fields">
-    <ParamField body="ID" type="string" required>
-      ID is the trigger type id, for example "webhook".
+  <Expandable title="`Source` fields">
+    <ParamField body="FunctionID" type="string" required>
+      FunctionID is the observed function.
     </ParamField>
-    <ParamField body="Description" type="string" required>
-      Description is a human-readable description of the trigger type.
+    <ParamField body="Namespace" type="string">
+      Namespace defaults to this worker's (engine::\* and configuration::\* resolve to the engine's default namespace).
     </ParamField>
-    <ParamField body="TriggerRequestFormat" type="json.RawMessage">
-      TriggerRequestFormat is the JSON Schema of a trigger instance's config. engine::triggers::info exposes it as configuration_schema. Nil omits it.
+    <ParamField body="Args" type="Args" required>
+      Args go to the worker that hosts the function, which reads them in its hooks (a cron expression, a route, a table). A function without args_format takes none.
     </ParamField>
-    <ParamField body="CallRequestFormat" type="json.RawMessage">
-      CallRequestFormat is the JSON Schema of the payload sent to the bound function when the trigger fires. engine::triggers::info exposes it as request_schema. Nil omits it.
+    <ParamField body="Filters" type="Filters">
+      Filters decide which calls reach the target; nil matches every call.
+    </ParamField>
+    <ParamField body="On" type="On">
+      On selects calls by status; empty means `OnSuccess`.
+    </ParamField>
+    <ParamField body="Capture" type="[]Capture">
+      Capture is what the envelope carries. nil means the default (input, output, caller); an empty, non-nil slice captures nothing.
+    </ParamField>
+    <ParamField body="Deliver" type="Deliver">
+      Deliver is what the target receives when iii delivers; empty means `DeliverEnvelope`.
     </ParamField>
   </Expandable>
 </ParamField>
 
-<ParamField body="handler" type="TriggerHandler" required>
+<ParamField body="target" type="string" required>
+</ParamField>
 
-  <Expandable title="`TriggerHandler` fields">
-    <ParamField body="RegisterTrigger" type="func(ctx context.Context, cfg TriggerConfig) error" required>
-      RegisterTrigger is called when a trigger instance is registered. The handler should begin delivering invocations for cfg.FunctionID per cfg.Config.
+<ParamField body="opts" type="...ObserverOptions">
+
+  <Expandable title="`ObserverOptions` fields">
+    <ParamField body="ID" type="string">
+      ID defaults to a random UUID, stable across replays.
     </ParamField>
-    <ParamField body="UnregisterTrigger" type="func(ctx context.Context, cfg TriggerConfig) error" required>
-      UnregisterTrigger is called when a trigger instance is removed. The handler should stop and clean up whatever RegisterTrigger started for cfg.ID.
+    <ParamField body="MaxFires" type="uint64" required>
+      MaxFires disposes the observer after this many activations.
+    </ParamField>
+    <ParamField body="ExpiresIn" type="time.Duration" required>
+      ExpiresIn disposes the observer after this long (millisecond precision).
+    </ParamField>
+    <ParamField body="MaxInFlight" type="uint64" required>
+      MaxInFlight bounds the observer's concurrent activations.
+    </ParamField>
+    <ParamField body="Metadata" type="json.RawMessage">
+      Metadata is delivered as the metadata sidecar of every activation (a JSON object).
+    </ParamField>
+    <ParamField body="TargetNamespace" type="string">
+      TargetNamespace is the namespace of the target function; it defaults to this worker's.
     </ParamField>
   </Expandable>
 </ParamField>
 
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+client.RegisterFunction("alerts::payment-failed", notify)
+failures, err := client.Observe(iii.Source{
+    FunctionID: "payments::charge",
+    On:         iii.OnError,
+    Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
+}, "alerts::payment-failed")
+if err == nil {
+    err = failures.Ready(ctx)
+}
+```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
-### Client.UnregisterTriggerType
+### Client.Trigger
 
 <Warning>
-  **Deprecated.** Trigger types are replaced by functions with an observe descriptor; unregister the function with `FunctionRef.Unregister` instead. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x)
+  **Deprecated.** Use `Client.Call`.
 </Warning>
 
-UnregisterTriggerType removes the trigger type registered under id with `Client.RegisterTriggerType`, as `TriggerTypeRef.Unregister` does: the engine retires it (when this connection provides it), and a reconnect does not register it again. It mirrors the Node SDK's unregisterTriggerType. It returns an error when no trigger type with id is registered.
+Trigger is `Client.Call` under its 0.25 name.
 
 **Signature**
 
 ```go
-func (c *Client) UnregisterTriggerType(id string) error
+func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessage, error)
 ```
 
 #### Parameters
 
-<ParamField body="id" type="string" required>
+<ParamField body="ctx" type="context.Context" required>
+</ParamField>
+
+<ParamField body="req" type="TriggerRequest" required>
 </ParamField>
 
 
@@ -393,7 +401,7 @@ func (c *Client) Address() string
 
 ### Client.Close
 
-Close shuts the client down at once: it stops the reconnect loop, gives buffered observe reports and telemetry a short, fixed time to go out (250ms for the reports, at most 10s for the telemetry flush), cancels all pending Trigger calls with ErrNotConnected, and drops the socket without a closing handshake. It does not send unregister frames (matching the reference SDKs). Use `Client.Shutdown` to wait for the flushes under a deadline of your own and close the socket gracefully.
+Close shuts the client down at once: it stops the reconnect loop, gives buffered observe reports and telemetry a short, fixed time to go out (250ms for the reports, at most 10s for the telemetry flush), cancels all pending calls with ErrNotConnected, and drops the socket without a closing handshake. It does not send unregister frames (matching the reference SDKs). Use `Client.Shutdown` to wait for the flushes under a deadline of your own and close the socket gracefully.
 
 Close is idempotent and implements io.Closer; it always returns nil. Called while a Shutdown runs, it cuts that Shutdown short (as http.Server.Close does) and returns once it has finished.
 
@@ -470,7 +478,7 @@ func (c *Client) FatalError() error
 
 ### Client.IsObserved
 
-IsObserved reports whether functionID, registered by this worker, has active observers: one atomic load, for the emit fast path.
+IsObserved reports whether functionID, registered by this worker, has active observers: one atomic load, so a source can skip building an event nobody wants.
 
 **Signature**
 
@@ -486,9 +494,55 @@ func (c *Client) IsObserved(functionID string) bool
 
 ---
 
+### Client.IsObservedFor
+
+IsObservedFor reports whether call of functionID, registered by this worker, would reach an observer. On a function matched by keys (`MatchKeys`) it is true when an observer is filed under one of the call's keys (one lookup per key); on any other function call is ignored, and it is `Client.IsObserved`. Set what the keys read (Input, Metadata).
+
+**Signature**
+
+```go
+func (c *Client) IsObservedFor(functionID string, call *Call) bool
+```
+
+#### Parameters
+
+<ParamField body="functionID" type="string" required>
+</ParamField>
+
+<ParamField body="call" type="*Call" required>
+
+  <Expandable title="`Call` fields">
+    <ParamField body="FunctionID" type="string" required>
+    </ParamField>
+    <ParamField body="InvocationID" type="string" required>
+    </ParamField>
+    <ParamField body="Status" type="string">
+      Status is "success" or "error". Empty reads as "error" when Error is set, and "success" otherwise.
+    </ParamField>
+    <ParamField body="Input" type="json.RawMessage">
+      Input is the call's input, as the handler received it.
+    </ParamField>
+    <ParamField body="Output" type="json.RawMessage">
+      Output is the handler's return value as JSON: what observers observe. Nil on an error.
+    </ParamField>
+    <ParamField body="Error" type="*ErrorBody">
+      Error is the error the handler returned. Nil on success.
+    </ParamField>
+    <ParamField body="Caller" type="*Caller">
+      Caller is who made the call; nil for a call made outside any handler.
+    </ParamField>
+    <ParamField body="Metadata" type="json.RawMessage">
+      Metadata is the call's metadata sidecar; nil when it carries none.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
 ### Client.LocalDispatchActive
 
-LocalDispatchActive reports whether Trigger runs functionID in-process: it is registered here, the engine confirmed it with local_dispatch, and RegisterFunctionOptions.LocalDispatch did not opt out.
+LocalDispatchActive reports whether Call runs functionID in-process: it is registered here, the engine confirmed it with local_dispatch, and RegisterFunctionOptions.LocalDispatch did not opt out.
 
 **Signature**
 
@@ -504,46 +558,20 @@ func (c *Client) LocalDispatchActive(functionID string) bool
 
 ---
 
-### Client.Observe
+### Client.ObserveFunction
 
-Observe observes a function: every event of source (an invocation of an auto function, or what its owner hands over) that passes source.Filters invokes target, a function registered by some worker (until it is, the observer stays pending).
-
-It returns the handle at once, also before the connection is up; the observer is replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS, INVALID_FILTER, FORBIDDEN, SELF_TARGET, an owner's rejection, and UNSUPPORTED against an engine without observe) show up as state error and fail `ObserverHandle.Ready`. The returned error is for a request that cannot be sent at all: a missing function or target, a reused id, a blank namespace, args or filters that are not JSON.
+ObserveFunction observes functionID with target, every call and the observer defaults: `Client.Observe` with Source\{FunctionID: functionID\}.
 
 **Signature**
 
 ```go
-func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) (*ObserverHandle, error)
+func (c *Client) ObserveFunction(functionID, target string, opts ...ObserverOptions) (*ObserverHandle, error)
 ```
 
 <Tabs>
   <Tab title="Parameters">
 
-<ParamField body="source" type="Source" required>
-
-  <Expandable title="`Source` fields">
-    <ParamField body="FunctionID" type="string" required>
-      FunctionID is the observed function.
-    </ParamField>
-    <ParamField body="Namespace" type="string">
-      Namespace defaults to this worker's (engine::\* and configuration::\* resolve to the engine's default namespace).
-    </ParamField>
-    <ParamField body="Args" type="Args" required>
-      Args go to the owner of an owner-delivered function.
-    </ParamField>
-    <ParamField body="Filters" type="Filters">
-      Filters decide which events reach the target; nil matches every event.
-    </ParamField>
-    <ParamField body="On" type="On">
-      On is for auto functions only; empty means `OnSuccess`.
-    </ParamField>
-    <ParamField body="Capture" type="[]Capture">
-      Capture is for auto functions and obs.Emit. nil means the default (input, output, caller); an empty, non-nil slice captures nothing.
-    </ParamField>
-    <ParamField body="Deliver" type="Deliver">
-      Deliver is for auto functions and obs.Emit; empty means `DeliverEnvelope`.
-    </ParamField>
-  </Expandable>
+<ParamField body="functionID" type="string" required>
 </ParamField>
 
 <ParamField body="target" type="string" required>
@@ -578,14 +606,19 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
   <Tab title="Example">
 
 ```go
-client.RegisterFunction("alerts::payment-failed", notify)
-failures, err := client.Observe(iii.Source{
-    FunctionID: "payments::charge",
-    On:         iii.OnError,
-    Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
-}, "alerts::payment-failed")
-if err == nil {
-    err = failures.Ready(ctx)
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+client.RegisterFunction("alerts::new-order", func(ctx context.Context, data json.RawMessage) (any, error) {
+	var event iii.Observed
+	if err := json.Unmarshal(data, &event); err != nil {
+		return nil, err
+	}
+	log.Printf("order created: %s", event.Output)
+	return nil, nil
+})
+if _, err := client.ObserveFunction("orders::create", "alerts::new-order"); err != nil {
+	log.Fatal(err)
 }
 ```
 
@@ -597,7 +630,7 @@ if err == nil {
 
 ### Client.Observers
 
-Observers returns the active observers of functionID, registered by this worker, as its owner sees them.
+Observers returns the active observers of functionID, registered by this worker, as its host sees them.
 
 **Signature**
 
@@ -646,9 +679,182 @@ func (c *Client) OnConnectionStateChange(listener func(ConnectionState)) (unsubs
 
 ---
 
+### Client.OnObserverAdded
+
+OnObserverAdded sets the hook that runs when an observer is added to any function this worker hosts, before the function's own; nil removes it. A hook set while functions have active observers runs for each of them at once (see `Client.OnObserverAddedFor`). It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObserverAdded(hook AddedHook) *Client
+```
+
+#### Parameters
+
+<ParamField body="hook" type="AddedHook" required>
+</ParamField>
+
+
+---
+
+### Client.OnObserverAddedFor
+
+OnObserverAddedFor sets the hook that runs when an observer is added to functionID, after the worker's; nil removes it. Hooks are stored by function id: set them before RegisterFunction, so they run for every observer, and they stay across `FunctionRef.Unregister` and a later registration of the id.
+
+A hook set once the function already has active observers is caught up: it runs for each of them at once, an error late-rejects that observer, and the SDK logs one warning naming the function and how many observers were active without it. It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObserverAddedFor(functionID string, hook AddedHook) *Client
+```
+
+#### Parameters
+
+<ParamField body="functionID" type="string" required>
+</ParamField>
+
+<ParamField body="hook" type="AddedHook" required>
+</ParamField>
+
+
+---
+
+### Client.OnObserverDeliverFor
+
+OnObserverDeliverFor sets the hook that delivers each call of functionID itself; nil restores iii's delivery, which delivers each call to every matched observer whose on and filters accept it, and gives the caller the handler's result. It is stored by id, as `Client.OnObserverAddedFor` is. A function with a deliver hook needs an engine with observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED once. A deliver hook does not run for a function registered with `Client.RegisterHTTPFunction`: the engine delivers its calls. It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObserverDeliverFor(functionID string, hook DeliverHook) *Client
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="functionID" type="string" required>
+</ParamField>
+
+<ParamField body="hook" type="DeliverHook" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+commandOf := func(call *iii.Call) string {
+	var req struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(call.Input, &req)
+	return req.Command
+}
+client.OnObserverMatchFor("chat::on-command", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+	return obs.Args["command"] == commandOf(call)
+}))
+client.OnObserverDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+	if len(observers) == 0 {
+		return map[string]string{"reply": "unknown command /" + commandOf(call)}, nil
+	}
+	obs := observers[0]
+	if !obs.Matches(call) {
+		return map[string]string{"reply": "/" + commandOf(call) + " is not available"}, nil
+	}
+	// what this hook returns is what the caller gets back
+	return client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+})
+
+if _, err := client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{
+	ArgsFormat: json.RawMessage(`{"type":"object","required":["command"],"properties":{"command":{"type":"string"}}}`),
+	Private:    true,
+}); err != nil {
+	log.Fatal(err)
+}
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### Client.OnObserverMatchFor
+
+OnObserverMatchFor sets which observers want each call of functionID: `MatchFunc` or `MatchKeys`; nil restores the default, where every observer wants every call. It is stored by id, as `Client.OnObserverAddedFor` is. A match hook set on a registered function takes effect on the function's hook queue, after the hooks queued before it, and calls use the previous one until then. A hook by keys set while the function has active observers rebuilds the index from them; an observer whose keys panic is late-rejected with OBSERVE_REJECTED. A function with a match hook needs an engine with observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED once. It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client
+```
+
+#### Parameters
+
+<ParamField body="functionID" type="string" required>
+</ParamField>
+
+<ParamField body="m" type="*MatchHook" required>
+
+  <Expandable title="`MatchHook` fields">
+    <ParamField body="MatchFunc" type="func(predicate func(obs *Observer, call *Call) bool) *MatchHook" required>
+      MatchFunc is a match hook that asks predicate, once per active observer per call, whether the observer wants the call. A predicate that panics counts as no match, and the SDK logs it once per function. A nil predicate gives a nil MatchHook.
+    </ParamField>
+    <ParamField body="MatchKeys" type="func(observerKeys func(obs *Observer) []string, callKeys func(call *Call) []string) *MatchHook" required>
+      MatchKeys is a match hook by keys: an observer wants a call when they share a key, and the SDK keeps an index of the active observers by key instead of asking each of them. observerKeys says what an observer listens for: the SDK computes it once, when the observer is accepted, files the observer under each key and unfiles it when it is removed. An observer whose observerKeys panics is rejected with OBSERVE_REJECTED. callKeys says what a call is: the call matches the observers filed under any of its keys, each once; a callKeys that panics matches nothing, and the SDK logs it once per function. Keys express wildcards by listing them: an observer of every table is filed under "primary|\*|insert", and a change matches "primary|orders|insert", "primary|orders|\*", "primary|\*|insert" and "primary|\*|\*". A nil function gives a nil MatchHook.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
+### Client.OnObserverRemoved
+
+OnObserverRemoved sets the hook that runs when an observer is removed from any function this worker hosts, after the function's own; nil removes it. It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObserverRemoved(hook RemovedHook) *Client
+```
+
+#### Parameters
+
+<ParamField body="hook" type="RemovedHook" required>
+</ParamField>
+
+
+---
+
+### Client.OnObserverRemovedFor
+
+OnObserverRemovedFor sets the hook that runs when an observer is removed from functionID, before the worker's; nil removes it. It is stored by function id, as `Client.OnObserverAddedFor` is. It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Client
+```
+
+#### Parameters
+
+<ParamField body="functionID" type="string" required>
+</ParamField>
+
+<ParamField body="hook" type="RemovedHook" required>
+</ParamField>
+
+
+---
+
 ### Client.OpenReader
 
-OpenReader returns a reader for the read end described by ref (typically received in a trigger payload), against this client's engine address. Like the ends returned by `Client.CreateChannel`, its handshake sends the client's `WithHeaders` plus "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no Authorization header. The socket connects on first read.
+OpenReader returns a reader for the read end described by ref (typically received in a call payload), against this client's engine address. Like the ends returned by `Client.CreateChannel`, its handshake sends the client's `WithHeaders` plus "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no Authorization header. The socket connects on first read.
 
 **Signature**
 
@@ -675,7 +881,7 @@ func (c *Client) OpenReader(ref StreamChannelRef) *ChannelReader
 
 ### Client.OpenWriter
 
-OpenWriter returns a writer for the write end described by ref (typically received in a trigger payload), against this client's engine address. Like the ends returned by `Client.CreateChannel`, its handshake sends the client's `WithHeaders` plus "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no Authorization header. The socket connects on first send.
+OpenWriter returns a writer for the write end described by ref (typically received in a call payload), against this client's engine address. Like the ends returned by `Client.CreateChannel`, its handshake sends the client's `WithHeaders` plus "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no Authorization header. The socket connects on first send.
 
 **Signature**
 
@@ -702,7 +908,7 @@ func (c *Client) OpenWriter(ref StreamChannelRef) *ChannelWriter
 
 ### Client.RegisterHTTPFunction
 
-RegisterHTTPFunction registers a function that has no handler in this process: the engine invokes it by sending an HTTP request as described by invocation, which travels as the registration's "invocation" field. invocation.URL is required; an empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid JSON; build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`. Pass at most one `RegisterFunctionOptions` for the description, formats, metadata or observe hooks; LocalDispatch does not apply, since there is nothing to run in-process.
+RegisterHTTPFunction registers a function that has no handler in this process: the engine invokes it by sending an HTTP request as described by invocation, which travels as the registration's "invocation" field. invocation.URL is required; an empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid JSON; build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`. Pass at most one `RegisterFunctionOptions` for the description, formats, metadata, args_format, private, observable or standby; LocalDispatch does not apply, since there is nothing to run in-process. The engine delivers the function's calls itself, so a deliver hook does not run for it; the added and removed hooks do.
 
 Like every registration it is kept in memory and sent again on each reconnect. An empty id, or one this client already registered, is refused as in `Client.RegisterFunction`; `FunctionRef.Unregister` on the returned handle removes it.
 
@@ -744,11 +950,8 @@ func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, o
     <ParamField body="Metadata" type="json.RawMessage">
       Metadata is arbitrary JSON attached to the function registration. It is stored with the function and is distinct from the per-invocation metadata passed to handlers.
     </ParamField>
-    <ParamField body="Observe" type="*ObserveHooks">
-      Observe declares how the function's observers are delivered and the hooks that run when one is added or removed. nil: delivery auto, no hooks (the function is still observable).
-    </ParamField>
     <ParamField body="LocalDispatch" type="*bool">
-      LocalDispatch false keeps every Trigger of this function on the engine path; nil or true lets Trigger run it in-process once the engine confirms it (see `Client.Trigger`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed).
+      LocalDispatch false keeps every Call of this function on the engine path; nil or true lets Call run it in-process once the engine confirms it (see `Client.Call`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed).
     </ParamField>
     <ParamField body="Description" type="string">
       Description is a human/LLM-readable summary of the function, sent as "description" and surfaced by engine::functions::list and engine::functions::info. Empty omits it.
@@ -757,7 +960,19 @@ func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, o
       RequestFormat is the JSON Schema of the function's request, sent as "request_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Req.
     </ParamField>
     <ParamField body="ResponseFormat" type="json.RawMessage">
-      ResponseFormat is the JSON Schema of the function's response, sent as "response_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp.
+      ResponseFormat is the JSON Schema of the function's response, sent as "response_format": the handler's return value, which is what observers observe. It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp.
+    </ParamField>
+    <ParamField body="ArgsFormat" type="json.RawMessage">
+      ArgsFormat is the JSON Schema of the observers' args, sent as "args_format": the engine validates every observer's args against it (INVALID_ARGS), and refuses a schema that is not valid (INVALID_ARGS_FORMAT). It must be valid JSON; nil means the function takes no args.
+    </ParamField>
+    <ParamField body="Private" type="bool">
+      Private lets only this worker call the function (the engine answers anyone else with FORBIDDEN); other workers may observe it, and it cannot be an observer's target. A call this worker makes to it passes the input and the result by reference: the handler and the hooks treat both as read-only.
+    </ParamField>
+    <ParamField body="Observable" type="*bool">
+      Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true.
+    </ParamField>
+    <ParamField body="Standby" type="bool">
+      Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -765,48 +980,9 @@ func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, o
 
 ---
 
-### Client.RegisterTriggerNamespaced
-
-<Warning>
-  **Deprecated.** Use `Client.Observe` with `ObserverOptions.TargetNamespace`, or `Client.RegisterTrigger` with `RegisterTriggerInput`.Namespace for a built-in trigger provider. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x)
-</Warning>
-
-RegisterTriggerNamespaced registers a trigger with id that fires functionID, resolved in namespace (empty: this worker's), when a trigger of triggerType matches config. It is `Client.RegisterTrigger` with the input spelled out, without the handle.
-
-It keeps working, and logs the RegisterTrigger deprecation warning once per process.
-
-**Signature**
-
-```go
-func (c *Client) RegisterTriggerNamespaced(id, triggerType, functionID, namespace string, config json.RawMessage, metadata ...json.RawMessage) error
-```
-
-#### Parameters
-
-<ParamField body="id" type="string" required>
-</ParamField>
-
-<ParamField body="triggerType" type="string" required>
-</ParamField>
-
-<ParamField body="functionID" type="string" required>
-</ParamField>
-
-<ParamField body="namespace" type="string" required>
-</ParamField>
-
-<ParamField body="config" type="json.RawMessage" required>
-</ParamField>
-
-<ParamField body="metadata" type="...json.RawMessage">
-</ParamField>
-
-
----
-
 ### Client.Shutdown
 
-Shutdown shuts the client down gracefully, as the Node SDK's shutdown does, bounded by ctx like http.Server.Shutdown: it stops the reconnect loop, waits until the buffered observe reports and counters are written, stops the worker gauges, flushes and stops the telemetry exporters, cancels all pending Trigger calls with ErrNotConnected, and closes the socket with a normal-closure handshake.
+Shutdown shuts the client down gracefully, as the Node SDK's shutdown does, bounded by ctx like http.Server.Shutdown: it stops the reconnect loop, waits until the buffered observe reports and counters are written, stops the worker gauges, flushes and stops the telemetry exporters, cancels all pending calls with ErrNotConnected, and closes the socket with a normal-closure handshake.
 
 When ctx is done before those steps finish, the remaining work is cut short (the socket is closed at once, also when the engine never answers the close handshake) and ctx.Err() is returned; the client is shut down either way and nil means everything was delivered. A `Client.Close` called meanwhile cuts it short the same way, and Shutdown then returns context.Canceled. Like Close it does not send unregister frames. Shutdown is idempotent: a later Shutdown returns once the first shutdown has finished, or ctx.Err() if its own ctx ends first.
 
@@ -960,7 +1136,7 @@ EnqueueAction routes an invocation through a named queue; the engine acknowledge
 **Signature**
 
 ```go
-func EnqueueAction(queue string) *TriggerAction
+func EnqueueAction(queue string) *CallAction
 ```
 
 #### Parameters
@@ -973,7 +1149,7 @@ func EnqueueAction(queue string) *TriggerAction
 
 ### ExtractChannelRefs
 
-ExtractChannelRefs recursively walks a JSON value and returns every StreamChannelRef found, keyed by its dotted path (e.g. "reader", "data.writer"). A node is a ref iff it is an object with string channel_id, access_key, and direction fields. Mirrors extract_channel_refs and is_channel_ref in the Rust SDK: the receiving worker uses it to find a ref another worker embedded in a trigger payload.
+ExtractChannelRefs recursively walks a JSON value and returns every StreamChannelRef found, keyed by its dotted path (e.g. "reader", "data.writer"). A node is a ref iff it is an object with string channel_id, access_key, and direction fields. Mirrors extract_channel_refs and is_channel_ref in the Rust SDK: the receiving worker uses it to find a ref another worker embedded in a call payload.
 
 **Signature**
 
@@ -1002,6 +1178,27 @@ func HMACAuth(secretKey string) json.RawMessage
 #### Parameters
 
 <ParamField body="secretKey" type="string" required>
+</ParamField>
+
+
+---
+
+### Identity
+
+Identity is a handler that returns the input it is called with. An event source registers it: its observers observe each event as both input and output.
+
+**Signature**
+
+```go
+func Identity(_ context.Context, data json.RawMessage) (any, error)
+```
+
+#### Parameters
+
+<ParamField body="_" type="context.Context" required>
+</ParamField>
+
+<ParamField body="data" type="json.RawMessage" required>
 </ParamField>
 
 
@@ -1069,6 +1266,264 @@ func MarshalMessage(msg any) ([]byte, error)
 <ParamField body="msg" type="any" required>
 </ParamField>
 
+
+---
+
+### MatchFunc
+
+MatchFunc is a match hook that asks predicate, once per active observer per call, whether the observer wants the call. A predicate that panics counts as no match, and the SDK logs it once per function. A nil predicate gives a nil MatchHook.
+
+**Signature**
+
+```go
+func MatchFunc(predicate func(obs *Observer, call *Call) bool) *MatchHook
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="predicate" type="func(obs *Observer, call *Call) bool" required>
+
+  <Expandable title="`Call` fields">
+    <ParamField body="FunctionID" type="string" required>
+    </ParamField>
+    <ParamField body="InvocationID" type="string" required>
+    </ParamField>
+    <ParamField body="Status" type="string">
+      Status is "success" or "error". Empty reads as "error" when Error is set, and "success" otherwise.
+    </ParamField>
+    <ParamField body="Input" type="json.RawMessage">
+      Input is the call's input, as the handler received it.
+    </ParamField>
+    <ParamField body="Output" type="json.RawMessage">
+      Output is the handler's return value as JSON: what observers observe. Nil on an error.
+    </ParamField>
+    <ParamField body="Error" type="*ErrorBody">
+      Error is the error the handler returned. Nil on success.
+    </ParamField>
+    <ParamField body="Caller" type="*Caller">
+      Caller is who made the call; nil for a call made outside any handler.
+    </ParamField>
+    <ParamField body="Metadata" type="json.RawMessage">
+      Metadata is the call's metadata sidecar; nil when it carries none.
+    </ParamField>
+  </Expandable>
+
+  <Expandable title="`Observer` fields">
+    <ParamField body="ID" type="string" required>
+    </ParamField>
+    <ParamField body="FunctionID" type="string" required>
+      FunctionID is the observed function (the one this worker hosts).
+    </ParamField>
+    <ParamField body="Args" type="map[string]any">
+      Args are the observer's args, validated against args_format by the engine (numbers decode as float64; see DecodeArgs).
+    </ParamField>
+    <ParamField body="Filters" type="map[string]any">
+      Filters are the observer's filters in normal form; iii's delivery and Matches apply them.
+    </ParamField>
+    <ParamField body="Target" type="string" required>
+      Target is the target function id.
+    </ParamField>
+    <ParamField body="Capture" type="[]Capture">
+    </ParamField>
+    <ParamField body="On" type="On" required>
+      On selects the calls the observer receives by status.
+    </ParamField>
+    <ParamField body="Accepted" type="func(ctx context.Context) error" required>
+      Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call through the observer made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once.
+    </ParamField>
+    <ParamField body="DecodeArgs" type="func(v any) error" required>
+      DecodeArgs unmarshals the observer's args into v (a struct, typically).
+    </ParamField>
+    <ParamField body="Matches" type="func(call *Call) bool" required>
+      Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own.
+    </ParamField>
+    <ParamField body="Reject" type="func(code, message string)" required>
+      Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it; the removed hooks run when the engine's observerremoved arrives. The rejection is sent again when the engine replays the observer after a reconnect.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+// an observer of expression X gets the ticks of expression X
+client.OnObserverMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+	var tick struct{ Expression string `json:"expression"` }
+	_ = json.Unmarshal(call.Input, &tick)
+	return obs.Args["expression"] == tick.Expression
+}))
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### MatchKeys
+
+MatchKeys is a match hook by keys: an observer wants a call when they share a key, and the SDK keeps an index of the active observers by key instead of asking each of them. observerKeys says what an observer listens for: the SDK computes it once, when the observer is accepted, files the observer under each key and unfiles it when it is removed. An observer whose observerKeys panics is rejected with OBSERVE_REJECTED. callKeys says what a call is: the call matches the observers filed under any of its keys, each once; a callKeys that panics matches nothing, and the SDK logs it once per function. Keys express wildcards by listing them: an observer of every table is filed under "primary|\*|insert", and a change matches "primary|orders|insert", "primary|orders|\*", "primary|\*|insert" and "primary|\*|\*". A nil function gives a nil MatchHook.
+
+On a function matched by keys, `Client.IsObservedFor` answers with one lookup per call key.
+
+**Signature**
+
+```go
+func MatchKeys(observerKeys func(obs *Observer) []string, callKeys func(call *Call) []string) *MatchHook
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="observerKeys" type="func(obs *Observer) []string" required>
+
+  <Expandable title="`Observer` fields">
+    <ParamField body="ID" type="string" required>
+    </ParamField>
+    <ParamField body="FunctionID" type="string" required>
+      FunctionID is the observed function (the one this worker hosts).
+    </ParamField>
+    <ParamField body="Args" type="map[string]any">
+      Args are the observer's args, validated against args_format by the engine (numbers decode as float64; see DecodeArgs).
+    </ParamField>
+    <ParamField body="Filters" type="map[string]any">
+      Filters are the observer's filters in normal form; iii's delivery and Matches apply them.
+    </ParamField>
+    <ParamField body="Target" type="string" required>
+      Target is the target function id.
+    </ParamField>
+    <ParamField body="Capture" type="[]Capture">
+    </ParamField>
+    <ParamField body="On" type="On" required>
+      On selects the calls the observer receives by status.
+    </ParamField>
+    <ParamField body="Accepted" type="func(ctx context.Context) error" required>
+      Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call through the observer made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once.
+    </ParamField>
+    <ParamField body="DecodeArgs" type="func(v any) error" required>
+      DecodeArgs unmarshals the observer's args into v (a struct, typically).
+    </ParamField>
+    <ParamField body="Matches" type="func(call *Call) bool" required>
+      Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own.
+    </ParamField>
+    <ParamField body="Reject" type="func(code, message string)" required>
+      Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it; the removed hooks run when the engine's observerremoved arrives. The rejection is sent again when the engine replays the observer after a reconnect.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="callKeys" type="func(call *Call) []string" required>
+
+  <Expandable title="`Call` fields">
+    <ParamField body="FunctionID" type="string" required>
+    </ParamField>
+    <ParamField body="InvocationID" type="string" required>
+    </ParamField>
+    <ParamField body="Status" type="string">
+      Status is "success" or "error". Empty reads as "error" when Error is set, and "success" otherwise.
+    </ParamField>
+    <ParamField body="Input" type="json.RawMessage">
+      Input is the call's input, as the handler received it.
+    </ParamField>
+    <ParamField body="Output" type="json.RawMessage">
+      Output is the handler's return value as JSON: what observers observe. Nil on an error.
+    </ParamField>
+    <ParamField body="Error" type="*ErrorBody">
+      Error is the error the handler returned. Nil on success.
+    </ParamField>
+    <ParamField body="Caller" type="*Caller">
+      Caller is who made the call; nil for a call made outside any handler.
+    </ParamField>
+    <ParamField body="Metadata" type="json.RawMessage">
+      Metadata is the call's metadata sidecar; nil when it carries none.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+type timerArgs struct {
+	EveryMs int64 `json:"every_ms"`
+}
+keyOf := func(everyMs int64) string { return fmt.Sprint(everyMs) }
+stops := map[string]chan struct{}{} // one ticker per interval, used on the hook queue only
+
+client.OnObserverAddedFor("timer::on-tick", func(ctx context.Context, obs *iii.Observer) error {
+	var args timerArgs
+	if err := obs.DecodeArgs(&args); err != nil || args.EveryMs <= 0 {
+		return iii.ObserveRejection("INVALID_ARGS", "every_ms must be a positive integer")
+	}
+	if _, running := stops[keyOf(args.EveryMs)]; running {
+		return nil
+	}
+	stop := make(chan struct{})
+	stops[keyOf(args.EveryMs)] = stop
+	go func() {
+		ticker := time.NewTicker(time.Duration(args.EveryMs) * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case now := <-ticker.C:
+				tick, _ := json.Marshal(map[string]int64{"every_ms": args.EveryMs, "fired_at_ms": now.UnixMilli()})
+				if !client.IsObservedFor("timer::on-tick", &iii.Call{Input: tick}) {
+					continue
+				}
+				client.Call(context.Background(), iii.CallRequest{FunctionID: "timer::on-tick", Payload: tick, Action: iii.VoidAction()})
+			}
+		}
+	}()
+	return nil
+})
+client.OnObserverRemovedFor("timer::on-tick", func(ctx context.Context, obs *iii.Observer) {
+	var args timerArgs
+	_ = obs.DecodeArgs(&args)
+	for _, other := range client.Observers("timer::on-tick") {
+		var o timerArgs
+		if other != obs && other.DecodeArgs(&o) == nil && o.EveryMs == args.EveryMs {
+			return // the interval is still observed
+		}
+	}
+	if stop, ok := stops[keyOf(args.EveryMs)]; ok {
+		close(stop)
+		delete(stops, keyOf(args.EveryMs))
+	}
+})
+client.OnObserverMatchFor("timer::on-tick", iii.MatchKeys(
+	func(obs *iii.Observer) []string { // what the observer listens for
+		var args timerArgs
+		_ = obs.DecodeArgs(&args)
+		return []string{keyOf(args.EveryMs)}
+	},
+	func(call *iii.Call) []string { // what the call is: the tick carries every_ms too
+		var tick timerArgs
+		_ = json.Unmarshal(call.Input, &tick)
+		return []string{keyOf(tick.EveryMs)}
+	},
+))
+
+if _, err := client.RegisterFunction("timer::on-tick", iii.Identity, iii.FunctionOptions{
+	Description: "One call per tick. Observe it with args { every_ms }.",
+	ArgsFormat:  json.RawMessage(`{"type":"object","required":["every_ms"],"properties":{"every_ms":{"type":"integer","minimum":1}}}`),
+	Private:     true,
+}); err != nil {
+	log.Fatal(err)
+}
+```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -1142,7 +1597,7 @@ func New(url string, opts ...Option) *Client
       WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
     </ParamField>
     <ParamField body="WithInvocationTimeout" type="func(d time.Duration) Option" required>
-      WithInvocationTimeout sets how long `Client.Trigger` waits for a result when `TriggerRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
+      WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
     </ParamField>
     <ParamField body="WithMetricsReporting" type="func(enabled bool) Option" required>
       WithMetricsReporting turns the worker resource gauges on or off (Node enableMetricsReporting): the iii.worker.memory.\*, iii.worker.cpu.\*, iii.worker.event_loop.lag_ms and iii.worker.uptime_seconds metrics, tagged with worker.id and worker.name. The default is true. The gauges start when the engine acknowledges the worker and stop when the connection drops; they need telemetry and its metrics to be enabled (see `OtelConfig`).
@@ -1170,7 +1625,7 @@ func New(url string, opts ...Option) *Client
 
 ### ObserveRejection
 
-ObserveRejection builds the error an OnObserverAdded hook returns to reject an observer with code (any other error rejects it with OBSERVE_REJECTED).
+ObserveRejection builds the error an `AddedHook` returns to reject an observer with code (any other error rejects it with OBSERVE_REJECTED).
 
 **Signature**
 
@@ -1255,7 +1710,7 @@ RegisterFunctionTyped registers a function whose request and response schemas ar
 
 It returns the function's handle, as `Client.RegisterFunction` does.
 
-Use `Client.RegisterFunction` directly for schemaless functions. See `InferSchema` to obtain a type's schema on its own. Pass a single `RegisterFunctionOptions` value to attach a description, registration metadata or observe hooks; its RequestFormat and ResponseFormat, when set, are sent instead of the inferred schemas (that type is then not reflected).
+Use `Client.RegisterFunction` directly for schemaless functions. See `InferSchema` to obtain a type's schema on its own. Pass a single `RegisterFunctionOptions` value to attach a description, registration metadata, args_format, private, observable or standby; its RequestFormat and ResponseFormat, when set, replace the inferred schemas (that type is then not reflected). Its handle sets the function's hooks, as `Client.RegisterFunction`'s does.
 
 **Signature**
 
@@ -1281,11 +1736,8 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
     <ParamField body="Metadata" type="json.RawMessage">
       Metadata is arbitrary JSON attached to the function registration. It is stored with the function and is distinct from the per-invocation metadata passed to handlers.
     </ParamField>
-    <ParamField body="Observe" type="*ObserveHooks">
-      Observe declares how the function's observers are delivered and the hooks that run when one is added or removed. nil: delivery auto, no hooks (the function is still observable).
-    </ParamField>
     <ParamField body="LocalDispatch" type="*bool">
-      LocalDispatch false keeps every Trigger of this function on the engine path; nil or true lets Trigger run it in-process once the engine confirms it (see `Client.Trigger`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed).
+      LocalDispatch false keeps every Call of this function on the engine path; nil or true lets Call run it in-process once the engine confirms it (see `Client.Call`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed).
     </ParamField>
     <ParamField body="Description" type="string">
       Description is a human/LLM-readable summary of the function, sent as "description" and surfaced by engine::functions::list and engine::functions::info. Empty omits it.
@@ -1294,7 +1746,19 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
       RequestFormat is the JSON Schema of the function's request, sent as "request_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Req.
     </ParamField>
     <ParamField body="ResponseFormat" type="json.RawMessage">
-      ResponseFormat is the JSON Schema of the function's response, sent as "response_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp.
+      ResponseFormat is the JSON Schema of the function's response, sent as "response_format": the handler's return value, which is what observers observe. It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp.
+    </ParamField>
+    <ParamField body="ArgsFormat" type="json.RawMessage">
+      ArgsFormat is the JSON Schema of the observers' args, sent as "args_format": the engine validates every observer's args against it (INVALID_ARGS), and refuses a schema that is not valid (INVALID_ARGS_FORMAT). It must be valid JSON; nil means the function takes no args.
+    </ParamField>
+    <ParamField body="Private" type="bool">
+      Private lets only this worker call the function (the engine answers anyone else with FORBIDDEN); other workers may observe it, and it cannot be an observer's target. A call this worker makes to it passes the input and the result by reference: the handler and the hooks treat both as read-only.
+    </ParamField>
+    <ParamField body="Observable" type="*bool">
+      Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true.
+    </ParamField>
+    <ParamField body="Standby" type="bool">
+      Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1344,12 +1808,12 @@ func UnmarshalMessage(data []byte) (*DecodedMessage, error)
 
 ### VoidAction
 
-VoidAction returns the fire-and-forget action. A trigger with this action carries no invocation_id, so the engine sends no reply (see `Client.Trigger`).
+VoidAction returns the fire-and-forget action. A call with this action carries no invocation_id, so the engine sends no reply (see `Client.Call`).
 
 **Signature**
 
 ```go
-func VoidAction() *TriggerAction
+func VoidAction() *CallAction
 ```
 
 ---
@@ -1392,7 +1856,7 @@ func WithHeaders(h http.Header) Option
 
 ### WithInvocationTimeout
 
-WithInvocationTimeout sets how long `Client.Trigger` waits for a result when `TriggerRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
+WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
 
 **Signature**
 
@@ -1448,7 +1912,7 @@ func WithName(name string) Option
 
 WithNamespace sets the namespace this worker registers into. Takes precedence over the III_NAMESPACE environment variable.
 
-A namespace named and left blank is refused, not read as "no namespace": the client is put in a terminal failed state, so `Client.Connect` returns the reason and `Client.FatalError` reports it. Absent and blank ask for opposite things: absent asks for the engine's `default`, blank names a namespace and gives nothing to name it with. Read as absent, the worker registers in `default`, and since a worker's calls and triggers follow its namespace, the whole project quietly serves from a place its declaration never named.
+A namespace named and left blank is refused, not read as "no namespace": the client is put in a terminal failed state, so `Client.Connect` returns the reason and `Client.FatalError` reports it. Absent and blank ask for opposite things: absent asks for the engine's `default`, blank names a namespace and gives nothing to name it with. Read as absent, the worker registers in `default`, and since a worker's calls and observers follow its namespace, the whole project quietly serves from a place its declaration never named.
 
 To register in the engine's default namespace, do not call this.
 
@@ -1678,9 +2142,7 @@ func ParseNormalized(data []byte) (*Filter, error)
 
 ### iii
 
-EngineFunctions are the engine's built-in function paths a worker can invoke via Trigger. Mirrors EngineFunctions in the Node SDK.
-
-Naming note (kept verbatim from the Node SDK so the two read the same): ListTriggers / InfoTriggers cover trigger TYPES (templates); ListRegisteredTriggers / InfoRegisteredTriggers cover trigger INSTANCES (subscriber rows).
+EngineFunctions are the engine's built-in function paths a worker can invoke with `Client.Call`. Mirrors EngineFunctions in the Node SDK. A function row of engine::functions::list and engine::functions::info carries observer_count, and args_format, private and observable when set.
 
 | Name | Value | Description |
 | --- | --- | --- |
@@ -1688,31 +2150,24 @@ Naming note (kept verbatim from the Node SDK so the two read the same): ListTrig
 | `FnInfoFunctions` | `"engine::functions::info"` | - |
 | `FnListWorkers` | `"engine::workers::list"` | - |
 | `FnInfoWorkers` | `"engine::workers::info"` | - |
-| `FnListTriggers` | `"engine::triggers::list"` | - |
-| `FnInfoTriggers` | `"engine::triggers::info"` | - |
-| `FnListRegisteredTriggers` | `"engine::registered-triggers::list"` | - |
-| `FnInfoRegisteredTriggers` | `"engine::registered-triggers::info"` | - |
 | `FnRegisterWorker` | `"engine::workers::register"` | - |
 | `FnCreateChannel` | `"engine::channels::create"` | - |
 
-Engine trigger types. Mirrors EngineTriggers in the Node SDK.
+Engine-hosted sources: private functions of the engine whose handler returns the event, so input and output are both the event. Observe them with `Client.Observe` and filters on input; only the engine calls them. `EngineSources` names them as the other SDKs do.
 
 | Name | Value | Description |
 | --- | --- | --- |
-| `TriggerFunctionsAvailable` | `"engine::functions-available"` | **Deprecated.** Observe the engine-hosted function `FnOnFunctionsChanged` with `Client.Observe` instead. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x). TriggerFunctionsAvailable is the trigger type fired when the function set changes. |
-| `TriggerLog` | `"log"` | **Deprecated.** Observe `FnOnLog` with `Client.Observe` (filter on input.level) instead. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x). TriggerLog is the trigger type fired for each engine log record. |
+| `FnOnFunctionsChanged` | `"engine::on-functions-changed"` | FnOnFunctionsChanged is called when the function set changes: \{ event: "functions_changed", functions: [...] \}. |
+| `FnOnWorkersChanged` | `"engine::on-workers-changed"` | FnOnWorkersChanged is called when a worker connects, disconnects or updates its metadata: \{ event, worker_id \}. |
+| `FnOnObserversChanged` | `"engine::on-observers-changed"` | FnOnObserversChanged is called once per observer state change: \{ observer_id, function_id, target, state, reason? \}. |
+| `FnOnLog` | `"observability::on-log"` | FnOnLog is called once per log record. |
+| `FnOnSpan` | `"observability::on-span"` | FnOnSpan is called once per window of recorded spans: \{ trace_ids \}. |
+| `FnOnConfigurationUpdate` | `"configuration::on-updated"` | FnOnConfigurationUpdate is called when a configuration entry is registered, updated or deleted. |
+| `FnOnStreamChanged` | `"stream::on-changed"` | FnOnStreamChanged is called on every change of a stream item (iii-stream). |
+| `FnOnStreamJoin` | `"stream::on-join"` | FnOnStreamJoin is called when a client joins a stream group (iii-stream). |
+| `FnOnStreamLeave` | `"stream::on-leave"` | FnOnStreamLeave is called when a client leaves a stream group (iii-stream). |
 
-Engine-hosted source functions (auto delivery): observe them with `Client.Observe` and filters, in place of the engine trigger types.
-
-| Name | Value | Description |
-| --- | --- | --- |
-| `FnOnFunctionsChanged` | `"engine::on-functions-changed"` | - |
-| `FnOnWorkersChanged` | `"engine::on-workers-changed"` | - |
-| `FnOnLog` | `"observability::on-log"` | - |
-| `FnOnSpan` | `"observability::on-span"` | - |
-| `FnOnConfigurationUpdate` | `"configuration::on-updated"` | - |
-
-Log function paths. Mirrors LogFunctions in the Node SDK. Invoke these with Trigger (fire-and-forget) to write to the engine log.
+Log function paths. Mirrors LogFunctions in the Node SDK. Call these with `VoidAction` (fire-and-forget) to write to the engine log.
 
 | Name | Value | Description |
 | --- | --- | --- |
@@ -1721,11 +2176,12 @@ Log function paths. Mirrors LogFunctions in the Node SDK. Invoke these with Trig
 | `LogError` | `"engine::log::error"` | - |
 | `LogDebug` | `"engine::log::debug"` | - |
 
-Features this SDK declares in its engine::workers::register payload. The engine advertises the first two in WorkerRegistered. FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it messages of that size whatever version it reports.
+Features this SDK declares in its engine::workers::register payload. The engine advertises the first three in WorkerRegistered: observe.v2 includes observe.v1 and makes this worker deliver the routed calls of the functions it hosts. FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it messages of that size whatever version it reports.
 
 | Name | Value | Description |
 | --- | --- | --- |
 | `FeatureObserveV1` | `"observe.v1"` | - |
+| `FeatureObserveV2` | `"observe.v2"` | - |
 | `FeatureLocalDispatchV1` | `"local-dispatch.v1"` | - |
 | `FeatureLargeMessagesV1` | `"large-messages.v1"` | - |
 
@@ -1740,7 +2196,7 @@ Engine functions of the observer registry.
 | Name | Value | Description |
 | --- | --- | --- |
 | `DefaultEngineURL` | `"ws://127.0.0.1:49134"` | DefaultEngineURL is the worker WebSocket endpoint of a locally-running engine, used when neither an explicit address nor III_URL is set (see `EngineURLFromEnv`). The engine listens for workers here by default; its HTTP API is on :3111. The IPv4 loopback is spelled out on purpose: "localhost" can resolve to ::1 on a host whose engine only listens on IPv4. Same value as DEFAULT_ENGINE_URL in the Node, Python and Rust SDKs. |
-| `DefaultInvocationTimeout` | `30 * time.Second` | DefaultInvocationTimeout bounds how long Trigger waits for an InvocationResult before failing with ErrTimeout, unless `WithInvocationTimeout` or `TriggerRequest`.Timeout says otherwise. Same default (30000 ms) as DEFAULT_INVOCATION_TIMEOUT_MS in the Node SDK. |
+| `DefaultInvocationTimeout` | `30 * time.Second` | DefaultInvocationTimeout bounds how long Call waits for an InvocationResult before failing with ErrTimeout, unless `WithInvocationTimeout` or `CallRequest`.Timeout says otherwise. Same default (30000 ms) as DEFAULT_INVOCATION_TIMEOUT_MS in the Node SDK. |
 
 ### iii/filter
 
@@ -1765,8 +2221,22 @@ Sentinel errors for the two failure modes that carry no payload. Compare with er
 
 | Name | Value | Description |
 | --- | --- | --- |
-| `ErrNotConnected` | `errors.New("iii: not connected")` | ErrNotConnected is returned by Trigger when the client has no live connection and the call cannot be buffered (e.g. an await-style Trigger needs a round trip). |
+| `ErrNotConnected` | `errors.New("iii: not connected")` | ErrNotConnected is returned by Call when the client has no live connection and the call cannot be buffered (a call through an observer, or one cancelled by shutdown). |
 | `ErrTimeout` | `errors.New("iii: invocation timed out")` | ErrTimeout is returned when no InvocationResult arrives within the call's timeout (DefaultInvocationTimeout unless overridden). |
+
+| Name | Value | Description |
+| --- | --- | --- |
+| `EngineSources` | `struct {
+	FunctionsChanged     string
+	WorkersChanged       string
+	ObserversChanged     string
+	Log                  string
+	Span                 string
+	ConfigurationUpdated string
+	StreamChanged        string
+	StreamJoin           string
+	StreamLeave          string
+}{FunctionsChanged: FnOnFunctionsChanged, WorkersChanged: FnOnWorkersChanged, ObserversChanged: FnOnObserversChanged, Log: FnOnLog, Span: FnOnSpan, ConfigurationUpdated: FnOnConfigurationUpdate, StreamChanged: FnOnStreamChanged, StreamJoin: FnOnStreamJoin, StreamLeave: FnOnStreamLeave}` | EngineSources are the ids of the engine-hosted sources under the names every SDK gives them (EngineSources in the Node, browser, Python and Rust SDKs): EngineSources.FunctionsChanged is `FnOnFunctionsChanged`, and so on.<br /><br />`client.ObserveFunction(iii.EngineSources.FunctionsChanged, "catalog::refresh")` |
 
 ## Types
 
@@ -1774,7 +2244,7 @@ Sentinel errors for the two failure modes that carry no payload. Compare with er
 
 Package iii is a Go SDK for the iii worker protocol.
 
-[`Activation`](#activation) · [`Args`](#args) · [`Caller`](#caller) · [`Capture`](#capture) · [`Channel`](#channel) · [`ChannelDirection`](#channeldirection) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ConnectionState`](#connectionstate) · [`DecodedMessage`](#decodedmessage) · [`Deliver`](#deliver) · [`Delivery`](#delivery) · [`Dispatch`](#dispatch) · [`DroppedReports`](#droppedreports) · [`ErrorBody`](#errorbody) · [`Filters`](#filters) · [`FunctionOptions`](#functionoptions) · [`FunctionRef`](#functionref) · [`FunctionRegisteredMessage`](#functionregisteredmessage) · [`HTTPInvocationRef`](#httpinvocationref) · [`Handler`](#handler) · [`Invocation`](#invocation) · [`InvocationError`](#invocationerror) · [`InvocationResultMessage`](#invocationresultmessage) · [`InvocationsObservedMessage`](#invocationsobservedmessage) · [`InvokeFunctionMessage`](#invokefunctionmessage) · [`LegacyTrigger`](#legacytrigger) · [`LocalFunctionStats`](#localfunctionstats) · [`LocalInvocationStatsMessage`](#localinvocationstatsmessage) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`ObserveDescriptor`](#observedescriptor) · [`ObserveDoc`](#observedoc) · [`ObserveHooks`](#observehooks) · [`ObserveMessage`](#observemessage) · [`ObserveMessageSource`](#observemessagesource) · [`ObserveMessageTarget`](#observemessagetarget) · [`ObserveReason`](#observereason) · [`ObserveRejectionError`](#observerejectionerror) · [`ObserveResultMessage`](#observeresultmessage) · [`Observed`](#observed) · [`ObservedItem`](#observeditem) · [`Observer`](#observer) · [`ObserverAckMessage`](#observerackmessage) · [`ObserverAddedMessage`](#observeraddedmessage) · [`ObserverHandle`](#observerhandle) · [`ObserverInfo`](#observerinfo) · [`ObserverOptions`](#observeroptions) · [`ObserverRemovedMessage`](#observerremovedmessage) · [`ObserverState`](#observerstate) · [`ObserverStateChangedMessage`](#observerstatechangedmessage) · [`On`](#on) · [`Op`](#op) · [`Option`](#option) · [`OtelConfig`](#otelconfig) · [`PingMessage`](#pingmessage) · [`PongMessage`](#pongmessage) · [`ReattachMessage`](#reattachmessage) · [`ReconnectConfig`](#reconnectconfig) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceMessage`](#registerservicemessage) · [`RegisterTriggerInput`](#registertriggerinput) · [`RegisterTriggerMessage`](#registertriggermessage) · [`RegisterTriggerTypeMessage`](#registertriggertypemessage) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedMessage`](#registrationrejectedmessage) · [`Source`](#source) · [`StreamChannelRef`](#streamchannelref) · [`TelemetryOptions`](#telemetryoptions) · [`Trigger`](#trigger) · [`TriggerAction`](#triggeraction) · [`TriggerRegistrationResultMessage`](#triggerregistrationresultmessage) · [`TriggerRequest`](#triggerrequest) · [`TriggerTypeRef`](#triggertyperef) · [`TypedHandler`](#typedhandler) · [`UnobserveMessage`](#unobservemessage) · [`UnregisterFunctionMessage`](#unregisterfunctionmessage) · [`UnregisterTriggerMessage`](#unregistertriggermessage) · [`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage) · [`WorkerRegisteredMessage`](#workerregisteredmessage)
+[`Activation`](#activation) · [`AddedHook`](#addedhook) · [`Args`](#args) · [`Call`](#call) · [`CallAction`](#callaction) · [`CallRequest`](#callrequest) · [`Caller`](#caller) · [`Capture`](#capture) · [`Channel`](#channel) · [`ChannelDirection`](#channeldirection) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ConnectionState`](#connectionstate) · [`DecodedMessage`](#decodedmessage) · [`Deliver`](#deliver) · [`DeliverHook`](#deliverhook) · [`Dispatch`](#dispatch) · [`DroppedReports`](#droppedreports) · [`ErrorBody`](#errorbody) · [`Filters`](#filters) · [`FunctionOptions`](#functionoptions) · [`FunctionRef`](#functionref) · [`FunctionRegisteredMessage`](#functionregisteredmessage) · [`HTTPInvocationRef`](#httpinvocationref) · [`Handler`](#handler) · [`Invocation`](#invocation) · [`InvocationError`](#invocationerror) · [`InvocationResultMessage`](#invocationresultmessage) · [`InvocationsObservedMessage`](#invocationsobservedmessage) · [`InvokeFunctionMessage`](#invokefunctionmessage) · [`LocalFunctionStats`](#localfunctionstats) · [`LocalInvocationStatsMessage`](#localinvocationstatsmessage) · [`MatchHook`](#matchhook) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`ObserveMessage`](#observemessage) · [`ObserveMessageSource`](#observemessagesource) · [`ObserveMessageTarget`](#observemessagetarget) · [`ObserveReason`](#observereason) · [`ObserveRejectionError`](#observerejectionerror) · [`ObserveResultMessage`](#observeresultmessage) · [`Observed`](#observed) · [`ObservedItem`](#observeditem) · [`Observer`](#observer) · [`ObserverAckMessage`](#observerackmessage) · [`ObserverAddedMessage`](#observeraddedmessage) · [`ObserverHandle`](#observerhandle) · [`ObserverInfo`](#observerinfo) · [`ObserverOptions`](#observeroptions) · [`ObserverRemovedMessage`](#observerremovedmessage) · [`ObserverState`](#observerstate) · [`ObserverStateChangedMessage`](#observerstatechangedmessage) · [`On`](#on) · [`Op`](#op) · [`Option`](#option) · [`OtelConfig`](#otelconfig) · [`PingMessage`](#pingmessage) · [`PongMessage`](#pongmessage) · [`ReattachMessage`](#reattachmessage) · [`ReconnectConfig`](#reconnectconfig) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceMessage`](#registerservicemessage) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedMessage`](#registrationrejectedmessage) · [`RemovedHook`](#removedhook) · [`Source`](#source) · [`StreamChannelRef`](#streamchannelref) · [`TelemetryOptions`](#telemetryoptions) · [`TypedHandler`](#typedhandler) · [`UnobserveMessage`](#unobservemessage) · [`UnregisterFunctionMessage`](#unregisterfunctionmessage) · [`WorkerRegisteredMessage`](#workerregisteredmessage)
 
 #### Activation
 
@@ -1787,13 +2257,71 @@ Activation marks the invocation of an observer's target.
 
 ---
 
+#### AddedHook
+
+AddedHook runs when an observer is added to a function this worker hosts, before the SDK acks it. Returning nil accepts the observer; an error built with `ObserveRejection` rejects it with that code, any other error with OBSERVE_REJECTED. ctx is cancelled after 30 s, when the observer fails with OWNER_TIMEOUT.
+
+```go
+type AddedHook func(ctx context.Context, obs *Observer) error
+```
+
+---
+
 #### Args
 
-Args are an observer's arguments, for the observed function's owner (owner-delivered functions only; validated against its args_format by the engine).
+Args are an observer's arguments, for the worker that hosts the observed function: validated against the function's args_format by the engine, and read by its hooks.
 
 ```go
 type Args map[string]any
 ```
+
+---
+
+#### Call
+
+Call is one call of a function, as its host sees it in a `MatchHook`, a `DeliverHook` and `Observer.Matches`. The fields of a call the SDK hands over are read-only.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FunctionID` | `string` | Yes | - |
+| `InvocationID` | `string` | Yes | - |
+| `Status` | `string` | No | Status is "success" or "error". Empty reads as "error" when Error is set, and "success" otherwise. |
+| `Input` | `json.RawMessage` | No | Input is the call's input, as the handler received it. |
+| `Output` | `json.RawMessage` | No | Output is the handler's return value as JSON: what observers observe. Nil on an error. |
+| `Error` | *[`ErrorBody`](#errorbody) | No | Error is the error the handler returned. Nil on success. |
+| `Caller` | *[`Caller`](#caller) | No | Caller is who made the call; nil for a call made outside any handler. |
+| `Metadata` | `json.RawMessage` | No | Metadata is the call's metadata sidecar; nil when it carries none. |
+
+---
+
+#### CallAction
+
+CallAction mirrors the engine's CallAction enum, a "type"-tagged lowercase union: \{"type":"void"\} or \{"type":"enqueue","queue":"..."\}. It rides on InvokeFunction.Action (the wire field "action") and selects the delivery semantics of a `Client.Call`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Type` | `string` | Yes | Type is "void" (fire-and-forget) or "enqueue" (route via a named queue). |
+| `Queue` | `string` | No | Queue is set only when Type == "enqueue". |
+| `EnqueueAction` | func(queue string) *[`CallAction`](#callaction) | Yes | EnqueueAction routes an invocation through a named queue; the engine acknowledges with an enqueue receipt rather than the function's result. |
+| `VoidAction` | func() *[`CallAction`](#callaction) | Yes | VoidAction returns the fire-and-forget action. A call with this action carries no invocation_id, so the engine sends no reply (see `Client.Call`). |
+
+---
+
+#### CallRequest
+
+CallRequest is the input to `Client.Call`. The Action field selects the delivery semantics: nil/await (default) waits for the result; `VoidAction` is fire-and-forget; `EnqueueAction` routes through a named queue and awaits its receipt.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FunctionID` | `string` | No | FunctionID is the function to invoke (e.g. an EngineFunctions constant). Empty with Observer. |
+| `Observer` | *[`Observer`](#observer) | No | Observer calls through an observer of a function this worker hosts: the engine runs the observer's target with Payload as given, after checking that this worker hosts the observer's function (NOT_FUNCTION_OWNER) and that the observer exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop guard. The call goes out on the current connection, after the acks already sent on it; FunctionID, Namespace and an enqueue action do not apply. A deliver hook that calls targets itself applies the observer's filters with `Observer.Matches`. |
+| `Payload` | `json.RawMessage` | No | Payload is the JSON input of the function (payload in the Node, Python and Rust SDKs). Nil is sent as \{\}. |
+| `Data` | `json.RawMessage` | No | **Deprecated.** Use Payload. Data is the JSON input of the function, used only when Payload is nil. |
+| `Metadata` | `json.RawMessage` | No | Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the payload on the wire's metadata channel, not folded into it. nil is omitted. |
+| `Action` | *[`CallAction`](#callaction) | No | Action selects void/enqueue semantics; nil means the default await path. |
+| `Timeout` | `time.Duration` | No | Timeout bounds an await/enqueue call. Zero means the client's invocation timeout: `WithInvocationTimeout`, else `DefaultInvocationTimeout`. |
+| `Namespace` | `string` | No | Namespace routes the invocation to a specific namespace. Empty means this worker's namespace, except engine::\* and configuration::\* builtins, which resolve in the engine's default namespace. |
+| `Dispatch` | [`Dispatch`](#dispatch) | No | Dispatch selects the path to a function this worker hosts: the zero value (or `DispatchAuto`) runs it in-process once the engine confirmed it for local dispatch; `DispatchRemote` always goes through the engine. |
 
 ---
 
@@ -1831,7 +2359,7 @@ type Capture string
 
 #### Channel
 
-Channel is a freshly created channel: a live writer/reader plus the refs for each end. Pass WriterRef or ReaderRef to another worker (in a trigger payload) so it opens the opposite end with `Client.OpenReader` / `Client.OpenWriter`. Created by `Client.CreateChannel`.
+Channel is a freshly created channel: a live writer/reader plus the refs for each end. Pass WriterRef or ReaderRef to another worker (in a call payload) so it opens the opposite end with `Client.OpenReader` / `Client.OpenWriter`. Created by `Client.CreateChannel`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1909,10 +2437,6 @@ DecodedMessage is the result of UnmarshalMessage: the decoded "type" plus exactl
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `Type` | [`MessageType`](#messagetype) | Yes | - |
-| `RegisterTriggerType` | *[`RegisterTriggerTypeMessage`](#registertriggertypemessage) | No | - |
-| `RegisterTrigger` | *[`RegisterTriggerMessage`](#registertriggermessage) | No | - |
-| `TriggerRegistrationResult` | *[`TriggerRegistrationResultMessage`](#triggerregistrationresultmessage) | No | - |
-| `UnregisterTrigger` | *[`UnregisterTriggerMessage`](#unregistertriggermessage) | No | - |
 | `RegisterFunction` | *[`RegisterFunctionMessage`](#registerfunctionmessage) | No | - |
 | `UnregisterFunction` | *[`UnregisterFunctionMessage`](#unregisterfunctionmessage) | No | - |
 | `InvokeFunction` | *[`InvokeFunctionMessage`](#invokefunctionmessage) | No | - |
@@ -1922,7 +2446,6 @@ DecodedMessage is the result of UnmarshalMessage: the decoded "type" plus exactl
 | `RegistrationRejected` | *[`RegistrationRejectedMessage`](#registrationrejectedmessage) | No | - |
 | `Ping` | *[`PingMessage`](#pingmessage) | No | - |
 | `Pong` | *[`PongMessage`](#pongmessage) | No | - |
-| `UnregisterTriggerType` | *[`UnregisterTriggerTypeMessage`](#unregistertriggertypemessage) | No | - |
 | `Observe` | *[`ObserveMessage`](#observemessage) | No | - |
 | `Unobserve` | *[`UnobserveMessage`](#unobservemessage) | No | - |
 | `ObserverAck` | *[`ObserverAckMessage`](#observerackmessage) | No | - |
@@ -1953,24 +2476,19 @@ type Deliver string
 
 ---
 
-#### Delivery
+#### DeliverHook
 
-Delivery is how a function's observers are delivered.
+DeliverHook delivers each call of one function itself. It receives the call and the observers that matched it (`MatchHook`, or every active observer), as they were when the call started. What it returns is the caller's result, encoded as a handler's is; the error it returns is the caller's error. iii delivers nothing for the function: the hook calls a target through its observer (`CallRequest`.Observer) and applies the observer's on and filters with `Observer.Matches`. It runs inside the function's invocation, so calls made with ctx have that invocation as their caller.
 
 ```go
-type Delivery string
+type DeliverHook func(ctx context.Context, call *Call, observers []*Observer) (any, error)
 ```
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `DeliveryAuto` | `"auto"` | Yes | DeliveryAuto (the default): every invocation is offered to every observer. |
-| `DeliveryOwner` | `"owner"` | Yes | DeliveryOwner: the function's handler hands each event to the observers it belongs to, with `Observer.Emit` or `Observer.Call`. |
 
 ---
 
 #### Dispatch
 
-Dispatch selects how `Client.Trigger` reaches a function this worker hosts.
+Dispatch selects how `Client.Call` reaches a function this worker hosts.
 
 ```go
 type Dispatch string
@@ -1985,7 +2503,7 @@ type Dispatch string
 
 #### DroppedReports
 
-DroppedReports counts report items the SDK dropped (BUFFER_FULL, TOO_LARGE).
+DroppedReports counts report items the SDK dropped (BUFFER_FULL, TOO_LARGE, DISCONNECTED, INACTIVE).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1997,7 +2515,7 @@ DroppedReports counts report items the SDK dropped (BUFFER_FULL, TOO_LARGE).
 
 #### ErrorBody
 
-ErrorBody is the wire representation of a remote error: a code, a message and an optional stack trace. It is intentionally minimal; a `Client.Trigger` caller receives it as an `InvocationError` (read it with errors.As).
+ErrorBody is the wire representation of a remote error: a code, a message and an optional stack trace. It is intentionally minimal; a `Client.Call` caller receives it as an `InvocationError` (read it with errors.As).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2034,14 +2552,19 @@ type FunctionOptions = RegisterFunctionOptions
 
 #### FunctionRef
 
-FunctionRef is the handle of a registered function, returned by `Client.RegisterFunction`, `Client.RegisterHTTPFunction`, `RegisterFunctionTyped` and `TriggerTypeRef.RegisterFunction`. It mirrors the FunctionRef of the Node SDK.
+FunctionRef is the handle of a registered function, returned by `Client.RegisterFunction`, `Client.RegisterHTTPFunction` and `RegisterFunctionTyped`. It mirrors the FunctionRef of the Node SDK: its hook methods set the function's hooks by its id, and return the handle for chaining.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ID` | `string` | Yes | ID is the function id given at registration. |
-| `IsObserved` | `func() bool` | Yes | IsObserved reports whether any observer is active on the function (one load: check it before building an event nobody would receive). False once the handle no longer controls the registration. |
-| `Observers` | func() []*[`Observer`](#observer) | Yes | Observers returns the active observers of the function, as its owner sees them. Empty once the handle no longer controls the registration. |
-| `Unregister` | `func() error` | Yes | Unregister removes the function: the engine stops routing invocations to it, and a reconnect does not register it again. Its observe state is cleared as well: its observers are released (through the OnObserverRemoved hook of its `ObserveHooks`), calls stop running in-process, and reports it still buffered are dropped. |
+| `IsObserved` | `func() bool` | Yes | IsObserved reports whether any observer is active on the function (one load: check it before building an event nobody would receive). False for a handle that does not control the function's current registration. |
+| `IsObservedFor` | func(call *[`Call`](#call)) bool | Yes | IsObservedFor reports whether call would reach an observer, as `Client.IsObservedFor` does: on a function matched by keys (`MatchKeys`), whether an observer is filed under one of the call's keys; otherwise `FunctionRef.IsObserved`. False for a handle that does not control the function's current registration. |
+| `Observers` | func() []*[`Observer`](#observer) | Yes | Observers returns the active observers of the function, as its host sees them. Empty for a handle that does not control the function's current registration. |
+| `OnObserverAdded` | func(hook [`AddedHook`](#addedhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverAdded sets the function's added hook, as `Client.OnObserverAddedFor` does for its id, and returns the handle, for chaining. |
+| `OnObserverDeliver` | func(hook [`DeliverHook`](#deliverhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverDeliver sets the function's deliver hook, as `Client.OnObserverDeliverFor` does for its id, and returns the handle, for chaining. |
+| `OnObserverMatch` | func(m *[`MatchHook`](#matchhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverMatch sets the function's match hook, as `Client.OnObserverMatchFor` does for its id, and returns the handle, for chaining. |
+| `OnObserverRemoved` | func(hook [`RemovedHook`](#removedhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverRemoved sets the function's removed hook, as `Client.OnObserverRemovedFor` does for its id, and returns the handle, for chaining. |
+| `Unregister` | `func() error` | Yes | Unregister removes the function: the engine stops routing invocations to it, and a reconnect does not register it again. Its observe state is cleared as well: its observers are released (through the removed hooks), calls stop running in-process, and reports it still buffered are dropped. The hooks set for its id stay, for a later registration of the id. |
 
 ---
 
@@ -2123,7 +2646,7 @@ if errors.As(err, &ie) && ie.Code == "FORBIDDEN" { ... }
 
 #### InvocationResultMessage
 
-InvocationResult is the worker's reply to a non-fire-and-forget InvokeFunction. InvocationID is REQUIRED (a value, not a pointer): a result with no id cannot be routed back to its caller. Exactly one of Result/Error is set.
+InvocationResult is the worker's reply to a non-fire-and-forget InvokeFunction. InvocationID is REQUIRED (a value, not a pointer): a result with no id cannot be routed back to its caller. At most one of Result/Error is set.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2133,12 +2656,13 @@ InvocationResult is the worker's reply to a non-fire-and-forget InvokeFunction. 
 | `Error` | *[`ErrorBody`](#errorbody) | No | - |
 | `Traceparent` | `*string` | No | - |
 | `Baggage` | `*string` | No | - |
+| `Observed` | `[]string` | No | Observed lists the observers an observe.v2 host delivered the routed call to: the engine activates them with the call's input and this answer. Omitted when empty; the engine strips it before forwarding a result to the caller. |
 
 ---
 
 #### InvocationsObservedMessage
 
-InvocationsObservedMessage carries matched local invocations of auto functions and obs.Emit events of owner functions, batched.
+InvocationsObservedMessage carries the matches of the local calls this worker delivered, batched. A routed call's matches ride its answer (Observed).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2148,11 +2672,11 @@ InvocationsObservedMessage carries matched local invocations of auto functions a
 
 #### InvokeFunctionMessage
 
-InvokeFunction is the engine-&gt;worker (and worker-&gt;engine, via Trigger) call.
+InvokeFunction is the engine-&gt;worker (and worker-&gt;engine, via Call) call.
 
 InvocationID is a POINTER and omitempty: when absent, the call is fire-and-forget and no InvocationResult is expected. Traceparent/Baggage carry W3C trace context across the hop. Action selects void/enqueue semantics.
 
-Metadata is OPTIONAL per-invocation metadata (arbitrary JSON) that travels as its own channel alongside Data, NOT folded into the payload. Like the engine's skip_serializing_if optional fields it is omitted when nil; an inbound frame without a metadata key decodes to nil ("no metadata"), so older engines that never send it stay backward compatible. Distinct from RegisterFunction/RegisterTrigger's registration-level Metadata: this one is scoped to a single call.
+Metadata is OPTIONAL per-invocation metadata (arbitrary JSON) that travels as its own channel alongside Data, NOT folded into the payload. Like the engine's skip_serializing_if optional fields it is omitted when nil; an inbound frame without a metadata key decodes to nil ("no metadata"), so older engines that never send it stay backward compatible. Distinct from RegisterFunction's registration-level Metadata: this one is scoped to a single call.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2162,23 +2686,12 @@ Metadata is OPTIONAL per-invocation metadata (arbitrary JSON) that travels as it
 | `Metadata` | `json.RawMessage` | No | - |
 | `Traceparent` | `*string` | No | - |
 | `Baggage` | `*string` | No | - |
-| `Action` | *[`TriggerAction`](#triggeraction) | No | - |
+| `Action` | *[`CallAction`](#callaction) | No | - |
 | `Namespace` | `string` | No | Namespace routes this invocation to a specific namespace. Absent means the engine's default namespace, independent of the caller's own namespace. |
 | `Caller` | *[`Caller`](#caller) | No | Caller is who made the call. Worker -&gt; engine: the handler the call was made from and its own caller; engine -&gt; worker: also the calling worker, stamped by the engine. Sent and received only with observe.v1. |
 | `ObserveDepth` | `uint32` | No | ObserveDepth is the depth of the causal chain in observe hops; 0 is omitted. |
-| `Activation` | *[`Activation`](#activation) | No | Activation marks an observer activation (engine -&gt; worker) or an owner delivery, obs.Call (worker -&gt; engine). |
+| `Activation` | *[`Activation`](#activation) | No | Activation marks an observer activation (engine -&gt; worker) or a call through an observer (worker -&gt; engine, ObserverID only). |
 | `UnmarshalJSON` | `func(data []byte) error` | Yes | UnmarshalJSON decodes an InvokeFunction, reading the observe fields (caller, observe_depth, activation) leniently: a malformed value is treated as absent rather than failing the frame, so the invocation is still answered. |
-
----
-
-#### LegacyTrigger
-
-LegacyTrigger is the old trigger an observer was created from by the engine's legacy shim: the owner reads Config as the observer's args.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `TriggerType` | `string` | Yes | - |
-| `Config` | `json.RawMessage` | Yes | - |
 
 ---
 
@@ -2207,6 +2720,17 @@ LocalInvocationStatsMessage reports local invocations and SDK-side report drops,
 
 ---
 
+#### MatchHook
+
+MatchHook says which observers want each call of one function; without one, every observer wants every call. Build it with `MatchFunc` (a predicate) or `MatchKeys` (keys the SDK indexes). The observers it matches are what iii delivers the call to, after their on and filters, or what the function's `DeliverHook` receives. A nil MatchHook, and the zero one, match every observer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `MatchFunc` | func(predicate func(obs *[`Observer`](#observer), call *[`Call`](#call)) bool) *[`MatchHook`](#matchhook) | Yes | MatchFunc is a match hook that asks predicate, once per active observer per call, whether the observer wants the call. A predicate that panics counts as no match, and the SDK logs it once per function. A nil predicate gives a nil MatchHook. |
+| `MatchKeys` | func(observerKeys func(obs *[`Observer`](#observer)) []string, callKeys func(call *[`Call`](#call)) []string) *[`MatchHook`](#matchhook) | Yes | MatchKeys is a match hook by keys: an observer wants a call when they share a key, and the SDK keeps an index of the active observers by key instead of asking each of them. observerKeys says what an observer listens for: the SDK computes it once, when the observer is accepted, files the observer under each key and unfiles it when it is removed. An observer whose observerKeys panics is rejected with OBSERVE_REJECTED. callKeys says what a call is: the call matches the observers filed under any of its keys, each once; a callKeys that panics matches nothing, and the SDK logs it once per function. Keys express wildcards by listing them: an observer of every table is filed under "primary\|\*\|insert", and a change matches "primary\|orders\|insert", "primary\|orders\|\*", "primary\|\*\|insert" and "primary\|\*\|\*". A nil function gives a nil MatchHook. |
+
+---
+
 #### MessageType
 
 MessageType is the value of the envelope "type" field: the lowercase name of the message variant, as the engine expects it.
@@ -2217,10 +2741,6 @@ type MessageType string
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `MsgRegisterTriggerType` | `"registertriggertype"` | Yes | - |
-| `MsgRegisterTrigger` | `"registertrigger"` | Yes | - |
-| `MsgTriggerRegistrationResult` | `"triggerregistrationresult"` | Yes | - |
-| `MsgUnregisterTrigger` | `"unregistertrigger"` | Yes | - |
 | `MsgRegisterFunction` | `"registerfunction"` | Yes | - |
 | `MsgUnregisterFunction` | `"unregisterfunction"` | Yes | - |
 | `MsgInvokeFunction` | `"invokefunction"` | Yes | - |
@@ -2231,8 +2751,7 @@ type MessageType string
 | `MsgWorkerRegistered` | `"workerregistered"` | Yes | - |
 | `MsgReattach` | `"reattach"` | Yes | - |
 | `MsgRegistrationRejected` | `"registrationrejected"` | Yes | - |
-| `MsgUnregisterTriggerType` | `"unregistertriggertype"` | Yes | - |
-| `MsgObserve` | `"observe"` | Yes | observe messages. The engine pushes the engine -&gt; worker variants only to connections that declared observe.v1. |
+| `MsgObserve` | `"observe"` | Yes | observe messages. The engine pushes functionregistered, observeradded and observerremoved only to connections that declared observe.v1. |
 | `MsgUnobserve` | `"unobserve"` | Yes | - |
 | `MsgObserveResult` | `"observeresult"` | Yes | - |
 | `MsgObserverStateChanged` | `"observerstatechanged"` | Yes | - |
@@ -2247,11 +2766,11 @@ type MessageType string
 
 #### MiddlewareFunctionInput
 
-MiddlewareFunctionInput is the payload the engine sends to the RBAC middleware function (the worker-manager rbac.middleware_function_id) on every function invocation that arrives through the RBAC port. The middleware can inspect, modify or reject the call before it reaches the target function: forward it with `Client.Trigger`, or return an error to reject it.
+MiddlewareFunctionInput is the payload the engine sends to the RBAC middleware function (the worker-manager rbac.middleware_function_id) on every function invocation that arrives through the RBAC port. The middleware can inspect, modify or reject the call before it reaches the target function: forward it with `Client.Call`, or return an error to reject it.
 
 It mirrors MiddlewareFunctionInput in the Node and Rust SDKs field for field; the JSON names are the wire contract. Register the middleware with `RegisterFunctionTyped` to receive it decoded, or unmarshal the raw handler payload into it.
 
-When forwarding, note that an empty Namespace means the engine's default namespace, whereas an empty `TriggerRequest.Namespace` means this worker's own namespace: pass "default" explicitly when Namespace is empty and the worker is namespaced.
+When forwarding, note that an empty Namespace means the engine's default namespace, whereas an empty `CallRequest.Namespace` means this worker's own namespace: pass "default" explicitly when Namespace is empty and the worker is namespaced.
 
 ```go
 raw := []byte(`{"function_id":"orders::create","payload":{"item":"book"},"action":null,"context":{"source":"browser"},"namespace":"default"}`)
@@ -2283,7 +2802,7 @@ _, _ = iii.RegisterFunctionTyped(client, "auth::middleware",
 		if namespace == "" {
 			namespace = "default" // absent means the engine's default namespace
 		}
-		return client.Trigger(ctx, iii.TriggerRequest{
+		return client.Call(ctx, iii.CallRequest{
 			FunctionID: in.FunctionID,
 			Payload:    data,
 			Action:     in.Action,
@@ -2295,54 +2814,10 @@ _, _ = iii.RegisterFunctionTyped(client, "auth::middleware",
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `FunctionID` | `string` | Yes | FunctionID is the ID of the function being invoked. |
-| `Payload` | `json.RawMessage` | Yes | Payload is the payload sent by the caller, verbatim. Forward it as `TriggerRequest.Payload` or decode it to inspect the call. |
-| `Action` | *[`TriggerAction`](#triggeraction) | No | Action is the routing action of the call, if any (nil for a synchronous request/response). Forward it as `TriggerRequest.Action` to keep enqueue/void semantics. |
+| `Payload` | `json.RawMessage` | Yes | Payload is the payload sent by the caller, verbatim. Forward it as `CallRequest.Payload` or decode it to inspect the call. |
+| `Action` | *[`CallAction`](#callaction) | No | Action is the routing action of the call, if any (nil for a synchronous request/response). Forward it as `CallRequest.Action` to keep enqueue/void semantics. |
 | `Context` | `json.RawMessage` | Yes | Context is the auth context the RBAC auth function returned for this session (AuthResult.context in package helpers/workerconnection), as raw JSON. |
 | `Namespace` | `string` | No | Namespace is the target namespace the invocation addressed; forward the call there to stay in the caller's namespace. Empty means the engine's default namespace. |
-
----
-
-#### ObserveDescriptor
-
-ObserveDescriptor is RegisterFunction.observe: the four fields of `ObserveHooks` that travel. The callbacks stay in the SDK.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Delivery` | [`Delivery`](#delivery) | No | Delivery is "auto" (absent) or "owner". |
-| `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the observers' args (owner delivery only). |
-| `LegacyTriggerType` | `string` | No | LegacyTriggerType accepts old RegisterTrigger calls of this trigger type. |
-| `Allow` | `*bool` | No | Allow false refuses every observer (NOT_OBSERVABLE); absent means true. |
-
----
-
-#### ObserveDoc
-
-ObserveDoc is the document an observer's filters read (`Observer.Matches`). A nil field is absent; use json.RawMessage(`null`) for a JSON null.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Input` | `any` | No | - |
-| `Output` | `any` | No | - |
-| `Error` | `any` | No | - |
-| `Caller` | *[`Caller`](#caller) | No | - |
-| `Metadata` | `any` | No | - |
-
----
-
-#### ObserveHooks
-
-ObserveHooks is the Observe option of `RegisterFunctionOptions`: how the function's observers are delivered, and the callbacks that run when one is added or removed. Only Delivery, ArgsFormat, LegacyTriggerType and Allow travel to the engine.
-
-The callbacks of one function run one at a time, in revision order. A callback still running after the 30 s timeout no longer holds the queue (its observer is rejected with OWNER_TIMEOUT and its ctx cancelled), so a hung callback cannot stall the function forever: if it ignores ctx, it may overlap with the next callbacks.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Delivery` | [`Delivery`](#delivery) | No | Delivery is `DeliveryAuto` (empty) or `DeliveryOwner`. |
-| `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the observers' args (owner delivery only: the engine answers INVALID_ARGS). With auto delivery, RegisterFunction fails with INVALID_OBSERVE_DESCRIPTOR. |
-| `LegacyTriggerType` | `string` | Yes | LegacyTriggerType accepts old RegisterTrigger calls of this trigger type through the engine's legacy shim. |
-| `Allow` | `*bool` | No | Allow false refuses every observer (NOT_OBSERVABLE); nil means true. |
-| `OnObserverAdded` | func(ctx context.Context, obs *[`Observer`](#observer)) error | No | OnObserverAdded runs once per added observer, before the SDK acks it, one at a time per function. Returning an error rejects the observer (an error built with `ObserveRejection` sets the code, any other error is OBSERVE_REJECTED); after 30 s it is rejected with OWNER_TIMEOUT and ctx is cancelled. |
-| `OnObserverRemoved` | func(ctx context.Context, obs *[`Observer`](#observer)) | No | OnObserverRemoved runs once per removed observer (unobserve, dispose, the observing worker gone for good, a reconnect diff). It cannot fail. |
 
 ---
 
@@ -2402,7 +2877,7 @@ ObserveReason is why an observer is in its state: a machine-readable code and a 
 
 #### ObserveRejectionError
 
-ObserveRejectionError is an observe error carrying its code: what `ObserverHandle.Ready` returns when the observer turns error or disposed, and what an `ObserveHooks.OnObserverAdded` hook returns (built with `ObserveRejection`) to reject an observer with a code of its own. Recover it with errors.As.
+ObserveRejectionError is an observe error carrying its code: what `ObserverHandle.Ready` returns when the observer turns error or disposed, and what an `AddedHook` returns (built with `ObserveRejection`) to reject an observer with a code of its own. Recover it with errors.As.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2427,7 +2902,7 @@ ObserveResultMessage is the engine's reply to an observe (also on a replay).
 
 #### Observed
 
-Observed is what the target of an auto observer, or of obs.Emit, receives with `DeliverEnvelope` (the default). Fields not in the observer's capture are absent. Decode a target's payload into it:
+Observed is what an observer's target receives with `DeliverEnvelope` (the default) when iii delivers. Fields not in the observer's capture are absent. Decode a target's payload into it:
 
 ```go
 var ev iii.Observed
@@ -2454,7 +2929,7 @@ _ = json.Unmarshal(data, &ev)
 
 #### ObservedItem
 
-ObservedItem is one reported invocation or event. Input, Output, Error and Metadata keep JSON null apart from absent: "output": null is a function that returned null, a nil Output was not captured.
+ObservedItem is one reported call. Input, Output, Error and Metadata keep JSON null apart from absent: "output": null is a function that returned null, a nil Output was not captured or equals Input (OutputIsInput).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2473,34 +2948,35 @@ ObservedItem is one reported invocation or event. Input, Output, Error and Metad
 | `ObserveDepth` | `uint32` | Yes | - |
 | `Traceparent` | `*string` | No | - |
 | `Baggage` | `*string` | No | - |
+| `OutputIsInput` | `bool` | No | OutputIsInput: the handler returned its input, so the item carries Input once and the engine fills output from it. Sent only to engines with observe.v2. |
 
 ---
 
 #### Observer
 
-Observer is an observer as the observed function's owner sees it (in `ObserveHooks.OnObserverAdded` and `Client.Observers`): its args, filters, target, capture and on. Never its metadata, policy or the observing worker. Its fields are set when it is added; the SDK keeps its own copy of what it reads, so changing them changes nothing but the owner's view. The pointer is stable while the observer exists, so owners keep it in their own index (expression -&gt; observers, route table).
+Observer is an observer as the worker that hosts the observed function sees it (in its hooks and in `Client.Observers`): its args, filters, target, capture and on. Never its metadata, policy or the observing worker. Its fields are set when it is added; the SDK keeps its own copy of what it reads, so changing them changes nothing but the host's view. The pointer is stable while the engine announces the same view of the observer, so hosts keep it in their own index (expression -&gt; observers, route table).
+
+The engine may announce an observer again with the same args and other filters, target, capture or on (a replay): it stays the same observer and no hook runs. From then on it is served, and listed by `Client.Observers`, as a new \*Observer with that view; Reject and Accepted act on the observer through either pointer, and pointers handed out earlier keep the view they were made with.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ID` | `string` | Yes | - |
 | `FunctionID` | `string` | Yes | FunctionID is the observed function (the one this worker hosts). |
 | `Args` | `map[string]any` | No | Args are the observer's args, validated against args_format by the engine (numbers decode as float64; see DecodeArgs). |
-| `Filters` | `map[string]any` | No | Filters are the observer's filters in normal form; the SDK applies them in Emit and Call. |
+| `Filters` | `map[string]any` | No | Filters are the observer's filters in normal form; iii's delivery and Matches apply them. |
 | `Target` | `string` | Yes | Target is the target function id. |
 | `Capture` | [][`Capture`](#capture) | No | - |
-| `On` | [`On`](#on) | Yes | On is for auto functions only. |
-| `Legacy` | *[`LegacyTrigger`](#legacytrigger) | No | Legacy is set when the engine's legacy shim created the observer from an old RegisterTrigger: Legacy.Config is the old trigger config. |
-| `Call` | `func(ctx context.Context, payload any) (json.RawMessage, error)` | Yes | Call invokes the observer's target with payload through the engine and returns its result (owner delivery, request/response). ctx bounds the wait and carries the caller, as for Emit. It fails with FILTERS_NOT_MATCHED (nothing sent) when the observer's filters reject the payload, OBSERVER_NOT_ACTIVE when the observer is no longer active, and NOT_OWNER_DELIVERED on an auto function; an error the engine answers comes back as an \*InvocationError with its code. |
+| `On` | [`On`](#on) | Yes | On selects the calls the observer receives by status. |
+| `Accepted` | `func(ctx context.Context) error` | Yes | Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call through the observer made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once. |
 | `DecodeArgs` | `func(v any) error` | Yes | DecodeArgs unmarshals the observer's args into v (a struct, typically). |
-| `Emit` | `func(ctx context.Context, event any) (bool, error)` | Yes | Emit hands event to this observer, fire-and-forget (owner delivery). ctx is the handler's context: the event's caller follows it (inside the observed function's own handler the event is that invocation; inside another handler, that handler is the caller; outside any handler, this worker). It returns false and sends nothing when the observer's filters reject the event or the observer is no longer active. It fails with NOT_OWNER_DELIVERED on an auto function. |
-| `Matches` | func(doc [`ObserveDoc`](#observedoc)) bool | Yes | Matches evaluates the observer's filters on doc. |
-| `Reject` | `func(code, message string)` | Yes | Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once; OnObserverRemoved runs when the engine's observerremoved arrives. The rejection is re-sent when the engine replays the observer after a reconnect. |
+| `Matches` | func(call *[`Call`](#call)) bool | Yes | Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. |
+| `Reject` | `func(code, message string)` | Yes | Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it; the removed hooks run when the engine's observerremoved arrives. The rejection is sent again when the engine replays the observer after a reconnect. |
 
 ---
 
 #### ObserverAckMessage
 
-ObserverAckMessage is the owner's answer to one added observer, sent after its OnObserverAdded hook returned. Error rejects it; an owner may re-send it with an error for an active observer (a late rejection).
+ObserverAckMessage is the host's answer to one added observer, sent once every OnObserverAdded hook that applies to it has returned. Error rejects it; a host may re-send it with an error for an active observer (a late rejection).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2533,7 +3009,7 @@ ObserverHandle is what `Client.Observe` returns: the observing side of one obser
 | --- | --- | --- | --- |
 | `Dispose` | `func(ctx context.Context) error` | Yes | Dispose removes the observer (unobserve). It is not replayed on reconnect. An observer disposed while disconnected is unobserved on the next connection, so a Reattach does not keep it alive. ctx is reserved; Dispose does not wait for the engine. |
 | `ID` | `func() string` | Yes | ID is the observer's id, stable across replays. |
-| `OnStateChange` | func(listener func(state [`ObserverState`](#observerstate), reason *[`ObserveReason`](#observereason))) (unsubscribe func()) | Yes | OnStateChange calls listener on every state change, in order of the changes and of registration, on a goroutine of the handle's own (one change at a time; never on the SDK's read loop, so a listener may call Trigger). It returns the function that unsubscribes it; a change already queued is not delivered to it afterwards. |
+| `OnStateChange` | func(listener func(state [`ObserverState`](#observerstate), reason *[`ObserveReason`](#observereason))) (unsubscribe func()) | Yes | OnStateChange calls listener on every state change, in order of the changes and of registration, on a goroutine of the handle's own (one change at a time; never on the SDK's read loop, so a listener may call the client). It returns the function that unsubscribes it; a change already queued is not delivered to it afterwards. |
 | `Ready` | `func(ctx context.Context) error` | Yes | Ready waits until the observer is active. It returns an \*ObserveRejectionError carrying the code when the observer turns error or disposed first (INVALID_ARGS, INVALID_FILTER, FORBIDDEN, SELF_TARGET, an owner rejection, UNSUPPORTED against an engine without observe), and ctx's error when ctx is done first. |
 | `Reason` | func() *[`ObserveReason`](#observereason) | Yes | Reason is why the observer is in its state (error, suspended, disposed), or nil. |
 | `State` | func() [`ObserverState`](#observerstate) | Yes | State is the observer's current state. |
@@ -2542,7 +3018,7 @@ ObserverHandle is what `Client.Observe` returns: the observing side of one obser
 
 #### ObserverInfo
 
-ObserverInfo is an observer as the owner sees it: never its metadata, policy or the observing worker. Filters are in normal form.
+ObserverInfo is an observer as the host sees it: never its metadata, policy or the observing worker. Filters are in normal form.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2552,7 +3028,6 @@ ObserverInfo is an observer as the owner sees it: never its metadata, policy or 
 | `Target` | `string` | Yes | - |
 | `Capture` | [][`Capture`](#capture) | No | - |
 | `On` | [`On`](#on) | No | - |
-| `Legacy` | *[`LegacyTrigger`](#legacytrigger) | No | - |
 
 ---
 
@@ -2586,7 +3061,7 @@ ObserverRemovedMessage detaches one observer.
 
 #### ObserverState
 
-ObserverState is an observer's lifecycle: pending (no owner yet, waiting for the owner's ack, or no target yet) -&gt; active or error; suspended while its worker or target is away; disposed at the end.
+ObserverState is an observer's lifecycle: pending (no host yet, waiting for the host's ack, or no target yet) -&gt; active or error; suspended while its worker or target is away; disposed at the end.
 
 ```go
 type ObserverState string
@@ -2617,7 +3092,7 @@ ObserverStateChangedMessage is a lifecycle transition of an observer this connec
 
 #### On
 
-On selects which invocations of an auto function reach an observer. The default is `OnSuccess`.
+On selects which calls of a function reach an observer, by their status. The default is `OnSuccess`.
 
 ```go
 type On string
@@ -2653,7 +3128,7 @@ type Option func(*Client)
 | --- | --- | --- | --- |
 | `WithDescription` | func(description string) [`Option`](#option) | Yes | WithDescription sets a one-line, human/LLM-readable summary of what this worker does. Surfaces in engine::workers::list / engine::workers::info. |
 | `WithHeaders` | func(h http.Header) [`Option`](#option) | Yes | WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header. |
-| `WithInvocationTimeout` | func(d time.Duration) [`Option`](#option) | Yes | WithInvocationTimeout sets how long `Client.Trigger` waits for a result when `TriggerRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default. |
+| `WithInvocationTimeout` | func(d time.Duration) [`Option`](#option) | Yes | WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default. |
 | `WithMetricsReporting` | func(enabled bool) [`Option`](#option) | Yes | WithMetricsReporting turns the worker resource gauges on or off (Node enableMetricsReporting): the iii.worker.memory.\*, iii.worker.cpu.\*, iii.worker.event_loop.lag_ms and iii.worker.uptime_seconds metrics, tagged with worker.id and worker.name. The default is true. The gauges start when the engine acknowledges the worker and stop when the connection drops; they need telemetry and its metrics to be enabled (see `OtelConfig`). |
 | `WithName` | func(name string) [`Option`](#option) | Yes | WithName sets the worker name reported to the engine. A non-empty III_WORKER_NAME takes precedence. The default is "hostname:pid". |
 | `WithNamespace` | func(namespace string) [`Option`](#option) | Yes | WithNamespace sets the namespace this worker registers into. Takes precedence over the III_NAMESPACE environment variable. |
@@ -2669,7 +3144,7 @@ OtelConfig configures the OpenTelemetry pipeline a `Client` runs: spans, metrics
 
 Telemetry is enabled by default, as in the Node SDK: a client started without `WithOtel` exports unless OTEL_ENABLED is "false", "0", "no" or "off". A zero field means "not set": the environment variable named on the field, then the default, fills it in.
 
-OpenTelemetry globals: when telemetry starts, the client installs its tracer provider, its meter provider and the W3C Trace Context + Baggage propagator as the OpenTelemetry globals (otel.Tracer, otel.Meter, otel.GetTextMapPropagator), each only while that global is still the otel default. A provider or propagator the application installed earlier, or another client installed first, is never replaced: first registration wins, as in the Node SDK. `Client.Close` puts the default back into every global that still holds this client's. The client's invocation spans and worker gauges, and the observability helpers (which use the client started last), always use the client's own providers, so they reach the engine either way. Spans the application creates with its own provider are parented to the invocation span through ctx and exported wherever that provider exports. Trigger and inbound invocations always propagate W3C Trace Context and Baggage, whatever the global propagator.
+OpenTelemetry globals: when telemetry starts, the client installs its tracer provider, its meter provider and the W3C Trace Context + Baggage propagator as the OpenTelemetry globals (otel.Tracer, otel.Meter, otel.GetTextMapPropagator), each only while that global is still the otel default. A provider or propagator the application installed earlier, or another client installed first, is never replaced: first registration wins, as in the Node SDK. `Client.Close` puts the default back into every global that still holds this client's. The client's invocation spans and worker gauges, and the observability helpers (which use the client started last), always use the client's own providers, so they reach the engine either way. Spans the application creates with its own provider are parented to the invocation span through ctx and exported wherever that provider exports. Call and inbound invocations always propagate W3C Trace Context and Baggage, whatever the global propagator.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2730,7 +3205,7 @@ ReconnectConfig controls the exponential-backoff-with-jitter reconnect loop. The
 
 RegisterFunction announces a function this worker can handle. RequestFormat and ResponseFormat are optional JSON Schemas; Invocation is set only for externally HTTP-hosted functions (`Client.RegisterHTTPFunction`).
 
-Optional fields are omitted when unset, as the engine writes them (skip_serializing_if); the engine reads an absent format and a JSON null alike. Observe is the function's observe descriptor: how its observers are delivered. Absent means delivery auto, observable, no args.
+Optional fields are omitted when unset, as the engine writes them (skip_serializing_if); the engine reads an absent format and a JSON null alike. ArgsFormat, Private and Observable describe the function to the engine's observer registry; private: false and observable: true are the defaults and are omitted.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2740,7 +3215,9 @@ Optional fields are omitted when unset, as the engine writes them (skip_serializ
 | `ResponseFormat` | `json.RawMessage` | No | - |
 | `Metadata` | `json.RawMessage` | No | - |
 | `Invocation` | *[`HTTPInvocationRef`](#httpinvocationref) | No | - |
-| `Observe` | *[`ObserveDescriptor`](#observedescriptor) | No | - |
+| `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the observers' args; the engine validates them (INVALID_ARGS). Absent: the function takes no args. |
+| `Private` | `bool` | No | Private: only the connection that hosts the function may call it (FORBIDDEN for anyone else); other workers may observe it. |
+| `Observable` | `*bool` | No | Observable false refuses every observer (NOT_OBSERVABLE); absent means true. |
 
 ---
 
@@ -2748,14 +3225,19 @@ Optional fields are omitted when unset, as the engine writes them (skip_serializ
 
 RegisterFunctionOptions configures a function registration. The zero value preserves the default registration shape. `FunctionOptions` is the same type.
 
+ArgsFormat, Private and Observable false need an engine with observe.v2, as a match or deliver hook does: against an older one the function stays unregistered, and the SDK logs UNSUPPORTED once. What the worker does when the function is observed is set with hooks (`FunctionRef.OnObserverAdded` and its siblings).
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `Metadata` | `json.RawMessage` | No | Metadata is arbitrary JSON attached to the function registration. It is stored with the function and is distinct from the per-invocation metadata passed to handlers. |
-| `Observe` | *[`ObserveHooks`](#observehooks) | No | Observe declares how the function's observers are delivered and the hooks that run when one is added or removed. nil: delivery auto, no hooks (the function is still observable). |
-| `LocalDispatch` | `*bool` | No | LocalDispatch false keeps every Trigger of this function on the engine path; nil or true lets Trigger run it in-process once the engine confirms it (see `Client.Trigger`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed). |
+| `LocalDispatch` | `*bool` | No | LocalDispatch false keeps every Call of this function on the engine path; nil or true lets Call run it in-process once the engine confirms it (see `Client.Call`: observers see snapshots of the payload and metadata taken at call start, and a handler may outlive a caller whose deadline passed). |
 | `Description` | `string` | No | Description is a human/LLM-readable summary of the function, sent as "description" and surfaced by engine::functions::list and engine::functions::info. Empty omits it. |
 | `RequestFormat` | `json.RawMessage` | No | RequestFormat is the JSON Schema of the function's request, sent as "request_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Req. |
-| `ResponseFormat` | `json.RawMessage` | No | ResponseFormat is the JSON Schema of the function's response, sent as "response_format". It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp. |
+| `ResponseFormat` | `json.RawMessage` | No | ResponseFormat is the JSON Schema of the function's response, sent as "response_format": the handler's return value, which is what observers observe. It must be valid JSON; nil omits it. With `RegisterFunctionTyped` it replaces the schema inferred from Resp. |
+| `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the observers' args, sent as "args_format": the engine validates every observer's args against it (INVALID_ARGS), and refuses a schema that is not valid (INVALID_ARGS_FORMAT). It must be valid JSON; nil means the function takes no args. |
+| `Private` | `bool` | No | Private lets only this worker call the function (the engine answers anyone else with FORBIDDEN); other workers may observe it, and it cannot be an observer's target. A call this worker makes to it passes the input and the result by reference: the handler and the hooks treat both as read-only. |
+| `Observable` | `*bool` | No | Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true. |
+| `Standby` | `bool` | No | Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK. |
 
 ---
 
@@ -2769,51 +3251,6 @@ RegisterService groups functions under a service for the dashboard.
 | `Name` | `string` | Yes | - |
 | `Description` | `*string` | No | - |
 | `ParentServiceID` | `*string` | No | - |
-
----
-
-#### RegisterTriggerInput
-
-RegisterTriggerInput is the input of `Client.RegisterTrigger`: fire FunctionID when a trigger of Type matches Config. It mirrors RegisterTriggerInput in the Node SDK.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | No | ID identifies the trigger. Empty means the SDK generates one (a random UUID, as the Node and Python SDKs always do); `Trigger.ID` reports it. |
-| `Type` | `string` | Yes | Type is the trigger type, for example "http", "cron" or "durable:subscriber". |
-| `FunctionID` | `string` | Yes | FunctionID is the function the trigger invokes when it fires. |
-| `Config` | `json.RawMessage` | No | Config is the trigger-type-specific configuration, as raw JSON. Nil is sent as \{\}. |
-| `Metadata` | `json.RawMessage` | No | Metadata is arbitrary JSON delivered to the triggered function on every invocation. Nil omits it. |
-| `Namespace` | `string` | No | Namespace is the namespace FunctionID resolves in, sent as "namespace". Empty means this worker's namespace (not the engine's default); a namespace that is set but blank is refused. |
-| `TriggerNamespace` | `string` | No | TriggerNamespace is the namespace to find the trigger type's provider in, sent as "trigger_namespace". Empty asks the engine to resolve it: this worker's namespace first, then the engine's own. A namespace named here is strict. |
-
----
-
-#### RegisterTriggerMessage
-
-RegisterTrigger registers a trigger \*instance\* that fires FunctionID when its trigger type matches. The trigger type travels in the wire field "trigger_type", the name the engine reads (the Node SDK's "type" option is renamed to it on the wire).
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | - |
-| `TriggerType` | `string` | Yes | - |
-| `FunctionID` | `string` | Yes | - |
-| `Config` | `json.RawMessage` | Yes | - |
-| `Metadata` | `json.RawMessage` | No | - |
-| `Namespace` | `string` | No | Namespace the trigger's target FunctionID resolves in. Absent means the engine's default namespace, independent of the connection's namespace. |
-| `TriggerNamespace` | `string` | No | TriggerNamespace is the namespace to find the trigger type's provider in. Absent asks the engine to resolve it: the registering connection's namespace first, then the engine's own. A namespace named here is strict. |
-
----
-
-#### RegisterTriggerTypeMessage
-
-RegisterTriggerType registers a trigger \*template\* (e.g. "http", "cron"). The two \*_format fields are optional JSON Schemas describing the trigger config and the resulting function-call payload.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | - |
-| `Description` | `string` | Yes | - |
-| `TriggerRequestFormat` | `json.RawMessage` | No | - |
-| `CallRequestFormat` | `json.RawMessage` | No | - |
 
 ---
 
@@ -2853,6 +3290,16 @@ RegistrationRejectedMessage is the engine's refusal of a registration. A FUNCTIO
 
 ---
 
+#### RemovedHook
+
+RemovedHook runs once for every accepted observer when it is removed (unobserve, disposal, late rejection), and for each level whose `AddedHook` resolved when another level rejects the observer. A panic is logged; the observer is removed either way.
+
+```go
+type RemovedHook func(ctx context.Context, obs *Observer)
+```
+
+---
+
 #### Source
 
 Source is the left side of `Client.Observe`: what is observed.
@@ -2861,17 +3308,17 @@ Source is the left side of `Client.Observe`: what is observed.
 | --- | --- | --- | --- |
 | `FunctionID` | `string` | Yes | FunctionID is the observed function. |
 | `Namespace` | `string` | No | Namespace defaults to this worker's (engine::\* and configuration::\* resolve to the engine's default namespace). |
-| `Args` | [`Args`](#args) | Yes | Args go to the owner of an owner-delivered function. |
-| `Filters` | [`Filters`](#filters) | No | Filters decide which events reach the target; nil matches every event. |
-| `On` | [`On`](#on) | No | On is for auto functions only; empty means `OnSuccess`. |
-| `Capture` | [][`Capture`](#capture) | No | Capture is for auto functions and obs.Emit. nil means the default (input, output, caller); an empty, non-nil slice captures nothing. |
-| `Deliver` | [`Deliver`](#deliver) | No | Deliver is for auto functions and obs.Emit; empty means `DeliverEnvelope`. |
+| `Args` | [`Args`](#args) | Yes | Args go to the worker that hosts the function, which reads them in its hooks (a cron expression, a route, a table). A function without args_format takes none. |
+| `Filters` | [`Filters`](#filters) | No | Filters decide which calls reach the target; nil matches every call. |
+| `On` | [`On`](#on) | No | On selects calls by status; empty means `OnSuccess`. |
+| `Capture` | [][`Capture`](#capture) | No | Capture is what the envelope carries. nil means the default (input, output, caller); an empty, non-nil slice captures nothing. |
+| `Deliver` | [`Deliver`](#deliver) | No | Deliver is what the target receives when iii delivers; empty means `DeliverEnvelope`. |
 
 ---
 
 #### StreamChannelRef
 
-StreamChannelRef is a capability handle to one end of a streaming data channel. The engine's engine::channels::create returns a writer ref and a reader ref that share a channel_id and access_key; a ref travels as plain JSON inside a trigger payload or result, and the holder opens its own WebSocket to the channel with it (`Client.OpenReader`, `Client.OpenWriter`).
+StreamChannelRef is a capability handle to one end of a streaming data channel. The engine's engine::channels::create returns a writer ref and a reader ref that share a channel_id and access_key; a ref travels as plain JSON inside a call payload or result, and the holder opens its own WebSocket to the channel with it (`Client.OpenReader`, `Client.OpenWriter`).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2890,75 +3337,6 @@ TelemetryOptions is what the worker reports about its language, project and fram
 | `Language` | `string` | No | Language reported for the worker. Default: the locale of LANG (else LC_ALL) without its encoding, for example "en_US" for LANG=en_US.UTF-8, which is the Node SDK's fallback; omitted when neither variable is set. |
 | `ProjectName` | `string` | No | ProjectName is the project the worker belongs to. Default: the last element of the module path in the nearest go.mod, searched from the working directory upwards, skipping a major-version suffix such as /v2; omitted when there is no go.mod. |
 | `Framework` | `string` | No | Framework the worker is built with. Default: "iii-go". Surrounding spaces are trimmed. |
-
----
-
-#### Trigger
-
-Trigger is the handle of a registered trigger, returned by `Client.RegisterTrigger` and `TriggerTypeRef.RegisterTrigger`. It mirrors the Trigger of the Node SDK.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | ID is the trigger id: the one given in `RegisterTriggerInput`, or the one the SDK generated. |
-| `Unregister` | `func() error` | Yes | Unregister removes the trigger: the engine receives an unregistertrigger frame with the trigger's id and type, and a reconnect does not register it again. |
-
----
-
-#### TriggerAction
-
-TriggerAction mirrors the engine's TriggerAction enum, a "type"-tagged lowercase union: \{"type":"void"\} or \{"type":"enqueue","queue":"..."\}. It rides on InvokeFunction.Action and selects the delivery semantics of a Trigger call.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Type` | `string` | Yes | Type is "void" (fire-and-forget) or "enqueue" (route via a named queue). |
-| `Queue` | `string` | No | Queue is set only when Type == "enqueue". |
-| `EnqueueAction` | func(queue string) *[`TriggerAction`](#triggeraction) | Yes | EnqueueAction routes an invocation through a named queue; the engine acknowledges with an enqueue receipt rather than the function's result. |
-| `VoidAction` | func() *[`TriggerAction`](#triggeraction) | Yes | VoidAction returns the fire-and-forget action. A trigger with this action carries no invocation_id, so the engine sends no reply (see `Client.Trigger`). |
-
----
-
-#### TriggerRegistrationResultMessage
-
-TriggerRegistrationResult is the engine's ack for a RegisterTrigger; Error is set only on failure.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | - |
-| `TriggerType` | `string` | Yes | - |
-| `FunctionID` | `string` | Yes | - |
-| `Error` | *[`ErrorBody`](#errorbody) | No | - |
-
----
-
-#### TriggerRequest
-
-TriggerRequest is the input to `Client.Trigger`. The Action field selects the delivery semantics: nil/await (default) waits for the result; `VoidAction` is fire-and-forget; `EnqueueAction` routes through a named queue and awaits its receipt.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `FunctionID` | `string` | Yes | FunctionID is the engine function to invoke (e.g. an EngineFunctions constant). |
-| `Payload` | `json.RawMessage` | No | Payload is the JSON input of the function (payload in the Node, Python and Rust SDKs). Nil is sent as \{\}. |
-| `Data` | `json.RawMessage` | No | **Deprecated.** Use Payload. Data is the JSON input of the function, used only when Payload is nil. |
-| `Metadata` | `json.RawMessage` | No | Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the payload on the wire's metadata channel, not folded into it. nil is omitted. |
-| `Action` | *[`TriggerAction`](#triggeraction) | No | Action selects void/enqueue semantics; nil means the default await path. |
-| `Timeout` | `time.Duration` | No | Timeout bounds an await/enqueue call. Zero means the client's invocation timeout: `WithInvocationTimeout`, else `DefaultInvocationTimeout`. |
-| `Namespace` | `string` | No | Namespace routes the invocation to a specific namespace. Empty means this worker's namespace, except engine::\* and configuration::\* builtins, which resolve in the engine's default namespace. |
-| `Dispatch` | [`Dispatch`](#dispatch) | No | Dispatch selects the path to a function this worker hosts: the zero value (or `DispatchAuto`) runs it in-process once the engine confirmed it for local dispatch; `DispatchRemote` always goes through the engine. |
-
----
-
-#### TriggerTypeRef
-
-**Deprecated.** Trigger types are replaced by functions with an observe descriptor, and these helpers by `Client.Observe`. Migration guide: [https://iii.dev/docs/upgrading/from-0-24-x](https://iii.dev/docs/upgrading/from-0-24-x).
-
-TriggerTypeRef is the handle of a registered trigger type, returned by `Client.RegisterTriggerType`. It registers triggers and functions bound to the type without repeating its id, and removes the type. It mirrors the TriggerTypeRef of the Node SDK.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | ID is the trigger type id. |
-| `RegisterFunction` | func(id string, handler [`Handler`](#handler), config json.RawMessage, opts ...[`RegisterFunctionOptions`](#registerfunctionoptions)) (*[`FunctionRef`](#functionref), error) | Yes | RegisterFunction registers a function with handler and binds a trigger of this type to it with config (raw JSON; nil is sent as \{\}), in this worker's namespace, as the Node SDK's TriggerTypeRef.registerFunction does. Pass at most one `RegisterFunctionOptions` for the function. |
-| `RegisterTrigger` | func(functionID string, config json.RawMessage, metadata ...json.RawMessage) (*[`Trigger`](#trigger), error) | Yes | RegisterTrigger registers a trigger of this type that fires functionID with config (raw JSON; nil is sent as \{\}) and at most one metadata value. The trigger resolves functionID in this worker's namespace, as the Node SDK's TriggerTypeRef does, and logs the `Client.RegisterTrigger` deprecation warning once per process. |
-| `Unregister` | `func() error` | Yes | Unregister removes the trigger type: the engine retires it (when this connection provides it), and a reconnect does not register it again. It mirrors unregister() on the Node SDK's TriggerTypeRef. Triggers registered through the handle are not removed on the worker's side. |
 
 ---
 
@@ -2991,28 +3369,6 @@ UnregisterFunction removes a previously registered function.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ID` | `string` | Yes | - |
-
----
-
-#### UnregisterTriggerMessage
-
-UnregisterTrigger removes a trigger instance. TriggerType is optional on the wire, so it is a pointer.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | - |
-| `TriggerType` | `*string` | No | - |
-
----
-
-#### UnregisterTriggerTypeMessage
-
-UnregisterTriggerTypeMessage retires a trigger type this connection provides. The engine removes it only when the sending connection is its provider. Namespace absent means the sending connection's namespace.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `ID` | `string` | Yes | - |
-| `Namespace` | `string` | No | - |
 
 ---
 
