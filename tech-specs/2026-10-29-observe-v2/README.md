@@ -77,7 +77,7 @@ engine.
 | `delivery: 'auto' \| 'owner'` | one delivery path; a function can set `onObserverMatch` and `onObserverDeliver` |
 | `args_format` with `delivery: 'owner'` | `args_format` on any function |
 | `obs.emit(event)` | call the function; its `onObserverMatch` says which observers want it |
-| `obs.call(payload)` | `iii.call({ observer: obs, payload })` |
+| `obs.call(payload)` | in a deliver hook, `iii.call({ observer: obs, payload })`; anywhere else, a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
 | an owner-delivered function refuses calls from other workers | `private: true` (§6) |
 | `observe.allow: false` | `observable: false` |
 | `registerTrigger({ type, function_id, config, metadata })` | `iii.observe({ function_id, args, filters }, target, { metadata })` |
@@ -258,10 +258,22 @@ iii.onObserverAdded('cron::on-tick', start)
   observer is `suspended` for `observers.observer_grace_ms` and the host lets
   it go (`onObserverRemoved` runs). If the worker reattaches in that time, the
   host gets the observer again, in the order the observers were created, and
-  its `onObserverAdded` runs before it is active again. A worker that comes
-  back on a new connection (a restart) and observes under the same id
-  replaces the suspended observer, and the host gets the new one like any new
-  observer (decision 51).
+  its `onObserverAdded` runs before it is active again.
+- **Back on a new connection.** A restarted worker connects with no reattach
+  token and observes under the ids it used before. An `observe` that names a
+  suspended observer's id, from a connection under the same worker name in
+  the same namespace, replaces that observer: the engine disposes it (the
+  host already let it go, and hears nothing more about it), and the host gets
+  the new observer like any other, so its `onObserverAdded` runs. A queue
+  consumer keyed by observer id keeps its backlog this way. The replacement
+  happens when the new observer is created: an `observe` the engine refuses
+  leaves the suspended observer holding its id. From any other worker, the
+  id stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends
+  (decision 51). The worker name has to stay the same across restarts
+  (`III_WORKER_NAME`, which a supervisor sets, or the SDK's worker name
+  option). Under an SDK's default name (`hostname:pid`, or a random one in
+  the browser), a restarted worker is another worker, and its `observe` of
+  the id fails with `OBSERVER_ID_CONFLICT` until the grace period ends.
 - **One at a time.** For each function, the SDK runs observer hooks one at a
   time, in the order the engine announced the observers. Hooks of different
   functions run concurrently.
@@ -352,26 +364,22 @@ iii.onObserverMatch('database::on-row-changed', {
   `"primary|*|*"`: four lookups, whatever the number of observers.
 
 **A call for one observer.** A host sends one observer something of its own
-(its current state when it is added, an event it missed) by calling its
-function with the metadata `{ for_observer: obs.id }` once `obs.accepted()`
-resolves. The match hook gives such a call to that observer alone, and iii
-delivers it with that observer's `deliver`, `capture`, filters, `on` and
-policy, so its target receives every event of the function in one shape
-(decision 52):
+(its current state, an event it missed) as a call of the function whose
+metadata names that observer: `{ for_observer: <observer id> }` (§4.7). The
+match hook gives such a call to that observer alone. A predicate compares the
+two ids; key functions also file each observer under `"for_observer:<id>"` and
+give such a call that one key:
 
 ```ts
-iii.onObserverAdded('tmux::on-changed', (obs) => {
-  obs.accepted()
-    .then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args),
-                           metadata: { for_observer: obs.id }, action: CallAction.Void() }))
-    .catch(() => undefined)                     // a rejected observer gets nothing
+iii.onObserverMatch('tmux::on-changed', {
+  observer: (obs) => [obs.args.session, `for_observer:${obs.id}`],
+  call: (call) => call.metadata?.for_observer ? `for_observer:${call.metadata.for_observer}` : call.input.session,
 })
-iii.onObserverMatch('tmux::on-changed', (obs, call) =>
-  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
 ```
 
-With keys, the observer function also files each observer under
-`"for_observer:<id>"`, and the call function gives such a call that one key.
+`for_observer` is the match hook's convention: iii reads nothing in
+`metadata`, and a function without a match hook gives the call to every
+observer.
 
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
 can skip building an event nobody wants. Without a call it is true when the
@@ -416,9 +424,11 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
 - The call sends the payload as given, with the engine's `_caller_worker_id`
   stamp (the host's connection id) as on every call a worker makes. The hook
   applies the observer's filters with `obs.matches(call)`, as above.
-- A call through an observer belongs in a deliver hook, and the function's
-  description says what its targets receive. A host that sends one observer
-  its state calls its function for that observer (§4.5).
+- A call through an observer belongs in a deliver hook, whose function
+  documents what its targets receive. To send one observer something outside
+  delivery (its initial state, an event it missed), a host calls its own
+  function for that observer (§4.7), and iii delivers that call like every
+  other.
 
 ### 4.7 `Observer`
 
@@ -441,10 +451,26 @@ class ObserveRejection extends Error {        // thrown by onObserverAdded to re
 }
 ```
 
-`accepted()` resolves after the SDK has acked the observer, so the calls the
-host sends afterwards reach an active observer (the engine handles a
-connection's frames in order). A provider sends an observer its initial state
-then, with a call for that observer (§4.5, decision 52).
+`accepted()` lets a provider send an observer its initial state: a call made
+after it resolves reaches an active observer, since the engine handles a
+connection's frames in order. The provider calls its own function with
+`metadata: { for_observer: obs.id }`, and its match hook gives that call to
+that observer alone (§4.5), so the target receives its initial state in the
+shape it receives every call of the function, with the observer's `deliver`,
+`capture`, filters, `on` and policy:
+
+```ts
+iii.onObserverAdded('tmux::on-changed', (obs) => {
+  obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+    .catch(() => undefined)   // a rejected observer gets nothing
+})
+iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
+```
+
+The observer becomes active once its `onObserverAdded` hooks return, so the
+hook starts the call without waiting for it. An event an observer missed goes
+the same way.
 
 An observer is a record of what was asked for. The worker sees the fields
 above; who observes, the observer's metadata and its policy stay with the
@@ -520,7 +546,10 @@ iii.on_observer_added(move |_obs: Observer| {
     async move { events.retain().await; Ok(()) }
 });
 
-// through an observer
+// for one observer, under a match hook that honors for_observer (§4.7)
+iii.call(CallRequest::new("tmux::on-changed", state).metadata(json!({ "for_observer": obs.id() }))).await?;
+
+// through an observer, in a deliver hook (§4.6)
 iii.call(CallRequest::observer(&obs, payload)).await?;
 ```
 
@@ -542,6 +571,10 @@ row_changed = iii.register_function("database::on-row-changed", lambda change: c
 row_changed.on_observer_match(observer=observer_keys, call=call_keys)      # keys
 # or: row_changed.on_observer_match(lambda obs, call: obs.args["table"] == call.input["table"])
 
+# for one observer, under a match hook that honors for_observer (§4.7)
+await iii.call_async({"function_id": "tmux::on-changed", "payload": state, "metadata": {"for_observer": obs.id}})
+
+# through an observer, in a deliver hook (§4.6)
 await iii.call_async({"observer": obs, "payload": payload})
 ```
 
@@ -564,6 +597,11 @@ if err != nil {
 }
 rowChanged.OnObserverMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
 
+// for one observer, under a match hook that honors for_observer (§4.7)
+_, err = client.Call(ctx, iii.CallRequest{FunctionID: "tmux::on-changed", Payload: state,
+    Metadata: json.RawMessage(`{"for_observer":"` + obs.ID + `"}`)})
+
+// through an observer, in a deliver hook (§4.6)
 out, err := client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})
 ```
 
@@ -605,9 +643,12 @@ function's observers go `pending`; the standby registers the function,
 receives the current observers in `functionregistered`, runs its hooks for
 each, and they become active again. An observer whose observing worker is
 away is not among them; the function's host gets it when that worker
-reattaches (§4.3). With `standby: true`, the SDK does this:
-on `FUNCTION_NAMESPACE_CONFLICT` it waits on `engine::on-functions-changed` and
-registers when the id is free.
+reattaches, or gets its replacement when the worker, back on a new
+connection under the same worker name, observes under its id again (§4.3).
+With `standby: true`, the SDK does this:
+on `FUNCTION_NAMESPACE_CONFLICT` it retries the registration every second
+(±20 % jitter) until the engine accepts it or the function is unregistered
+(decision 21).
 
 ## 8. Wire protocol
 
@@ -674,6 +715,7 @@ the 0.25 messages; §4.3 says when the SDK sends `observerack`.
 | Code | When |
 |---|---|
 | `NOT_FUNCTION_OWNER` | engine: a call through an observer from a connection that does not host the observer's function |
+| `OBSERVER_ID_CONFLICT` | engine: an `observe` whose id an observer holds: the same connection's, with a different spec, or another connection's. A suspended observer's own worker, back on a new connection under the same worker name and namespace, replaces it (decision 51) |
 | `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`, `TIMEOUT` | engine: activation checks and policy, as in 0.25 §3.5 |
 | `FORBIDDEN` | engine: a call to a private function from another connection; a private function as a target; RBAC |
 | `OBSERVE_REJECTED`, `OWNER_TIMEOUT` | an `onObserverAdded` threw a plain error, or ran past 30 s |
@@ -870,7 +912,7 @@ Migrating:
 | `registerTriggerType(…)` + `TriggerHandler` | a function with `args_format`, `private: true` and hooks (§10) |
 | `observe: { delivery: 'owner', args_format, onObserverAdded, onObserverRemoved }` | `{ args_format, private: true }`, then `.onObserverAdded(…)` / `.onObserverRemoved(…)` |
 | an index from args to observers, and `obs.emit(event)` | call the function with the event; `.onObserverMatch(…)` (§10.1, §10.2) |
-| `obs.call(payload)` | `.onObserverDeliver(…)` with `iii.call({ observer: obs, payload })` (§10.3, §10.4) |
+| `obs.call(payload)` | `.onObserverDeliver(…)` with `iii.call({ observer: obs, payload })` (§10.3, §10.4); initial state and other sends to one observer: a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
 | a handler that refuses calls | a handler that returns the event, and `private: true` |
 | `observe: { allow: false }` | `{ observable: false }` |
 | `iii.trigger(request)` | `iii.call(request)` |

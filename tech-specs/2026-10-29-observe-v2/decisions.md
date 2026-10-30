@@ -179,14 +179,20 @@ differ, this file wins, and the spec is updated to match.
     and its teardown leaves the engine's source in place. `engine::workers::info`
     lists each source among the functions of the builtin worker that hosts it.
 51. **A worker back on a new connection.** An `observe` that names the id of
-    a suspended observer (decision 47), sent from a connection under the same
-    worker name in the same namespace, replaces it: the engine disposes the
+    a suspended observer (decision 47) from a connection under the same
+    worker name, in the same namespace, replaces it: the engine disposes the
     suspended observer, which its host has already let go (nothing more is
-    sent to the host for it), and adds the new observer, announced to its
-    function's host like any new observer. A restarted worker re-observes
-    under stable ids this way (queue consumers keep their backlog by id). From
-    any other worker the id stays taken (`OBSERVER_ID_CONFLICT`) until the
-    grace period ends.
+    sent to the host for it), and adds the new observer, announced to the
+    host like any new observer. This is how a restarted worker re-observes
+    under stable ids (queue consumers keep their backlog by id). From any
+    other worker the id stays taken (`OBSERVER_ID_CONFLICT`) until the grace
+    period ends. The worker name and namespace are the ones each connection
+    declared on `engine::workers::register`, the pair the engine admits one
+    live worker for (`WORKER_NAMESPACE_CONFLICT`); a connection that declared
+    no name replaces nothing. The replaced observer is disposed with
+    `OBSERVER_DISCONNECTED`, and the earlier connection, reattaching, has
+    its replayed `observe` answered `disposed`, as for any observer disposed
+    while its worker was away.
 
 ## SDKs (all five)
 
@@ -212,9 +218,10 @@ differ, this file wins, and the spec is updated to match.
     calls: the SDK delivers local calls only, sends no `observed` and no
     `output_is_input`.
 19. **`Observer.accepted()`** resolves after the SDK has acked the observer.
-    Calls sent after it resolves reach an active observer (frames are
-    processed in order). Providers send initial state after it resolves, with
-    a call for that observer (decision 52: ADE asset sync, ring-on-bind).
+    Calls through the observer sent after it resolves reach an active observer
+    (frames are processed in order), and so does a call of its function for
+    that observer alone. Providers send initial state with such a call
+    (decision 52: ADE asset sync, ring-on-bind).
 20. **`onObserverDeliver` context.** The hook runs inside the function's
     invocation context and span, so calls it makes have the function's
     invocation as caller. It receives the observers that matched
@@ -270,38 +277,32 @@ differ, this file wins, and the spec is updated to match.
 52. **Calls for one observer.** A host sends one observer something of its
     own (its current state when the observer is added, or an event it
     missed) by calling its own function with a call that only that observer
-    matches. The call carries the metadata `{ for_observer: <observer id> }`,
-    and the function's match hook gives such a call to that observer alone: a
+    matches. The call carries metadata `{ for_observer: <observer id> }`, and
+    the function's match hook gives such a call to that observer alone: a
     predicate compares `call.metadata.for_observer` with `obs.id`; key
     functions also file each observer under `"for_observer:<id>"` and give
     such a call that one key. iii delivers it like every call, with that
     observer's `deliver`, `capture`, filters, `on` and policy, so a target
-    receives every event of the function in one shape. The host makes the
+    receives every event of the function in one shape. `for_observer` is the
+    match hook's convention: iii reads nothing in `metadata`, and a function
+    without a match hook gives the call to every observer. The host makes the
     call after `obs.accepted()` resolves (decision 19). A call through an
     observer (`iii.call({ observer, payload })`) belongs in a deliver hook,
     whose function documents what its targets receive.
 
     ```ts
-    // TypeScript; each SDK has its equivalent
     iii.onObserverAdded('tmux::on-changed', (obs) => {
-      obs
-        .accepted()
-        .then(() =>
-          iii.call({
-            function_id: 'tmux::on-changed',
-            payload: stateFor(obs.args),
-            metadata: { for_observer: obs.id },
-            action: CallAction.Void(),
-          }),
-        )
-        .catch(() => undefined) // a rejected observer gets nothing
+      obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+        .catch(() => undefined)   // a rejected observer gets nothing
     })
     iii.onObserverMatch('tmux::on-changed', (obs, call) =>
-      call.metadata?.for_observer
-        ? call.metadata.for_observer === obs.id
-        : obs.args.session === call.input.session,
-    )
+      call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
     ```
+
+    Each SDK has its equivalent: Rust `CallRequest::new(id, payload)
+    .metadata(json!({ "for_observer": obs.id() }))`, Python
+    `{"function_id": id, "payload": payload, "metadata": {"for_observer": obs.id}}`,
+    Go `iii.CallRequest{FunctionID: id, Payload: payload, Metadata: ...}`.
 
 ## CLI and crates
 
