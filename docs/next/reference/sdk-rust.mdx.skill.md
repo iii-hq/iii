@@ -1491,7 +1491,7 @@ runs. Handles given out earlier keep the view they were made with, and
 | `matches` | fn(call: &[`Call`](#call)) -&gt; bool | Yes | Whether `call` reaches this observer: its `on` accepts the call's status and its filters match the call. A deliver hook that calls targets itself applies them with this. |
 | `namespace` | `fn() -> &str` | Yes | The observed function's namespace. |
 | `on` | fn() -&gt; &[`On`](#on) | Yes | Which outcomes of a call reach it. |
-| `reject` | `fn(code: impl Into<String>, message: impl Into<String>)` | Yes | Rejects this observer after it was accepted (a config reload removed what it needs). It stops receiving calls now; the engine moves it to `error` with this code and then removes it, which runs its removed hooks. The rejection holds across a reconnect: the SDK sends it again whenever the engine lists the observer, until a fresh `observeradded` brings it back. |
+| `reject` | `fn(code: impl Into<String>, message: impl Into<String>)` | Yes | Rejects this observer after it was accepted (a config reload removed what it needs). It stops receiving calls now, and its removed hooks run next on the function's hook task, connected or not; the engine moves it to `error` with this code, and its `observerremoved` that follows runs none again. The rejection holds across a reconnect: the SDK sends it again whenever the engine lists the observer, until a fresh `observeradded` brings it back. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs. |
 | `target` | `fn() -> &str` | Yes | The function each delivery invokes. |
 
 ---

@@ -371,11 +371,14 @@ impl Observer {
     }
 
     /// Rejects this observer after it was accepted (a config reload removed
-    /// what it needs). It stops receiving calls now; the engine moves it to
-    /// `error` with this code and then removes it, which runs its removed
-    /// hooks. The rejection holds across a reconnect: the SDK sends it again
-    /// whenever the engine lists the observer, until a fresh `observeradded`
-    /// brings it back.
+    /// what it needs). It stops receiving calls now, and its removed hooks
+    /// run next on the function's hook task, connected or not; the engine
+    /// moves it to `error` with this code, and its `observerremoved` that
+    /// follows runs none again. The rejection holds across a reconnect: the
+    /// SDK sends it again whenever the engine lists the observer, until a
+    /// fresh `observeradded` brings it back. Called while the observer's
+    /// added hooks run, it rejects the observer once they return, and the
+    /// removed hook of each level whose added hook resolved runs.
     pub fn reject(&self, code: impl Into<String>, message: impl Into<String>) {
         let error = ErrorBody::new(code, message);
         let state = self.state();
@@ -390,9 +393,17 @@ impl Observer {
             return;
         };
         if let Some(entry) = iii.function_entry(&self.inner.function_id) {
-            // Out of the set now; the hook task rebuilds it in order too.
+            // Out of the set now; the hook task rebuilds it in order too, and
+            // runs the removed hooks: the engine sends no `observerremoved`
+            // for a rejection that answers an announcement it has not seen
+            // acked (a replay after a reconnect).
             entry.drop_inactive();
-            entry.enqueue(&iii, HookOp::Republish);
+            entry.enqueue(
+                &iii,
+                HookOp::Rejected {
+                    id: self.id().to_string(),
+                },
+            );
         }
         let sent = iii.send_message(Message::ObserverAck {
             function_id: self.inner.function_id.clone(),
@@ -854,7 +865,7 @@ impl FunctionEntry {
     ) {
         if matches!(
             op,
-            HookOp::Reset { .. } | HookOp::Republish | HookOp::CatchUp(_)
+            HookOp::Reset { .. } | HookOp::Rejected { .. } | HookOp::CatchUp(_)
         ) {
             // Nothing was ever added: there is nothing to reset or catch up.
             return;
@@ -892,8 +903,12 @@ pub(crate) enum HookOp {
         revision: u64,
         id: String,
     },
-    /// An observer was rejected late: rebuild the compiled set.
-    Republish,
+    /// An observer was rejected late: rebuild the compiled set and run its
+    /// removed hooks. It stays held with its rejection, which a replay that
+    /// lists it gets again.
+    Rejected {
+        id: String,
+    },
     /// Drop the whole set: the function was released (a conflict, a refused
     /// or withdrawn registration), or unregistered (`last`).
     Reset {
@@ -910,6 +925,8 @@ struct Member {
     observer: Observer,
     worker: Option<u64>,
     function: Option<u64>,
+    /// Its removed hooks ran (a late rejection): its removal runs none.
+    torn_down: bool,
 }
 
 impl Member {
@@ -1050,7 +1067,10 @@ async fn run_hooks(
                 remove_member(&iii, &entry, &mut members, &id).await;
                 revision = rev;
             }
-            HookOp::Republish => entry.publish(&members),
+            HookOp::Rejected { id } => {
+                entry.publish(&members);
+                tear_down(&iii, &entry, &mut members, &id).await;
+            }
             HookOp::Reset { last } => {
                 entry.revoke();
                 let ids: Vec<String> = members.keys().cloned().collect();
@@ -1321,6 +1341,7 @@ fn admit(
             observer: observer.clone(),
             worker: resolved.worker,
             function: resolved.function,
+            torn_down: false,
         },
     );
     entry.publish(members);
@@ -1390,8 +1411,42 @@ async fn remove_member(
         }
         entry.publish(members);
     }
+    if member.torn_down {
+        return;
+    }
     for hook in iii.hooks().removed(&entry.id).into_iter().flatten() {
         run_removed(iii, entry, &hook, &member.observer).await;
+    }
+}
+
+/// Runs the removed hooks of a held observer rejected late, the function's
+/// then the worker's, once: it stays held (inactive, out of the key index)
+/// until the engine removes it or announces it afresh, and that removal runs
+/// none again.
+async fn tear_down(
+    iii: &IIIClient,
+    entry: &Arc<FunctionEntry>,
+    members: &mut BTreeMap<String, Member>,
+    id: &str,
+) {
+    let observer = {
+        let Some(member) = members.get_mut(id) else {
+            return;
+        };
+        if member.torn_down || member.observer.is_active() {
+            return;
+        }
+        member.torn_down = true;
+        member.observer.clone()
+    };
+    {
+        let _indexing = entry.lock_index();
+        if let Some(matcher) = entry.matcher() {
+            matcher.unfile(id);
+        }
+    }
+    for hook in iii.hooks().removed(&entry.id).into_iter().flatten() {
+        run_removed(iii, entry, &hook, &observer).await;
     }
 }
 

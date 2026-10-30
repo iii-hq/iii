@@ -301,6 +301,10 @@ pub(crate) fn deliver(job: Delivery) {
 /// The observing worker's record of one observer, replayed on reconnect.
 pub(crate) struct ObserverEntry {
     pub(crate) id: String,
+    /// When it was created, among this process's observers: replays send
+    /// observers in this order, so the engine announces them to their
+    /// functions' hosts in the order the worker created them.
+    pub(crate) seq: u64,
     /// The `observe` message, sent as is on every replay.
     pub(crate) message: Message,
     status: watch::Sender<ObserverStatus>,
@@ -316,6 +320,9 @@ pub(crate) struct ObserverEntry {
     pub(crate) send_lock: Mutex<()>,
 }
 
+/// The next [`ObserverEntry::seq`].
+static NEXT_OBSERVER_SEQ: AtomicU64 = AtomicU64::new(0);
+
 impl ObserverEntry {
     pub(crate) fn new(id: String, message: Message) -> Self {
         let (status, _) = watch::channel(ObserverStatus {
@@ -325,6 +332,7 @@ impl ObserverEntry {
         });
         Self {
             id,
+            seq: NEXT_OBSERVER_SEQ.fetch_add(1, Ordering::Relaxed),
             message,
             status,
             warnings: Mutex::new(Vec::new()),

@@ -1776,7 +1776,7 @@ pub(crate) struct IIIInner {
     identity_mode: WorkerIdentityMode,
     registration_changed: Notify,
     /// Observers this worker created, replayed on every connection that
-    /// supports observe.
+    /// supports observe, in creation order ([`ObserverEntry::seq`]).
     observers: Mutex<HashMap<String, Arc<ObserverEntry>>>,
     /// `ENGINE_*` on the current connection: unknown until `WorkerRegistered`.
     engine_features: AtomicU8,
@@ -3866,13 +3866,16 @@ impl IIIClient {
             .store(observe, Ordering::Relaxed);
         self.register_v2_functions(v2);
         let held = std::mem::take(&mut *self.inner.held_frames.lock_or_recover());
-        let observers: Vec<Arc<ObserverEntry>> = self
+        let mut observers: Vec<Arc<ObserverEntry>> = self
             .inner
             .observers
             .lock_or_recover()
             .values()
             .cloned()
             .collect();
+        // In creation order: the engine announces them to each function's
+        // host in the order it receives them.
+        observers.sort_unstable_by_key(|entry| entry.seq);
         if observe {
             for envelope in held {
                 let _ = self.send_prepared(envelope);

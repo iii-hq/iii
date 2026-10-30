@@ -407,6 +407,53 @@ async fn observers_are_replayed_with_the_same_id_after_functions() {
     iii.shutdown_async().await;
 }
 
+/// Observers go to the engine in the order the worker created them, on the
+/// first connection and on every replay: the engine announces them to each
+/// function's host in that order, so its hooks run in that order (Node and
+/// Python keep insertion order too).
+#[tokio::test]
+async fn observers_are_sent_and_replayed_in_creation_order() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    iii.register_function("t::target", echo());
+    let ids: Vec<String> = (0..32)
+        .map(|n| {
+            iii.observe_with(
+                Source::function("a::b").args(json!({ "n": n })),
+                "t::target",
+                ObserverOptions::default().id(format!("obs-{n:02}")),
+            )
+            .id()
+            .to_string()
+        })
+        .collect();
+    let sent = |mock: &MockEngine| -> Vec<String> {
+        frames(mock, "observe")
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    connected(&mock, &iii, true).await;
+    mock.wait_for(
+        |m| m.iter().filter(|m| is("observe")(m)).count() == ids.len(),
+        WAIT,
+    )
+    .await;
+    assert_eq!(sent(&mock), ids, "created before the connection was up");
+
+    mock.clear();
+    mock.close_active_connection();
+    connected(&mock, &iii, true).await;
+    mock.wait_for(
+        |m| m.iter().filter(|m| is("observe")(m)).count() == ids.len(),
+        WAIT,
+    )
+    .await;
+    assert_eq!(sent(&mock), ids, "replayed after a reconnect");
+    iii.shutdown_async().await;
+}
+
 // ───────────────────────────── local dispatch ────────────────────────────
 
 #[tokio::test]
@@ -1863,10 +1910,6 @@ async fn a_late_rejection_echoes_the_latest_announced_revision() {
     assert_eq!(ack["revision"], 5, "the revision the engine announced last");
     assert_eq!(function.observers().len(), 1, "out of the set at once");
     assert!(!a.is_active(), "a rejected observer is delivered nothing");
-
-    mock.send_to_client(json!({
-        "type": "observerremoved", "function_id": "lr::f", "revision": 6, "id": "a"
-    }));
     until("on_observer_removed", || {
         recorder
             .events
@@ -1875,13 +1918,35 @@ async fn a_late_rejection_echoes_the_latest_announced_revision() {
             .contains(&"remove a".to_string())
     })
     .await;
+
+    // The engine's removal that follows runs no hook again.
+    mock.send_to_client(json!({
+        "type": "observerremoved", "function_id": "lr::f", "revision": 6, "id": "a"
+    }));
+    let barrier = mock.received_messages().len();
+    mock.send_to_client(added("lr::f", 7, "c", json!({})));
+    mock.wait_for(
+        |m| {
+            m.len() > barrier
+                && m.iter()
+                    .any(|f| f["type"] == "observerack" && f["id"] == "c")
+        },
+        WAIT,
+    )
+    .await;
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec!["add a", "add b", "remove a", "add c"],
+        "one removal per accepted observer"
+    );
     assert!(observer(&recorder, "b").is_active());
     iii.shutdown_async().await;
 }
 
-/// A rejection made while disconnected is sent again when the engine lists
-/// the observer after the reconnect, and the observer stays out until a fresh
-/// `observeradded`.
+/// A rejection made while disconnected runs the removed hooks at once (the
+/// engine sends no `observerremoved` for a rejection that answers a replayed
+/// announcement), is sent again when the engine lists the observer after the
+/// reconnect, and the observer stays out until a fresh `observeradded`.
 #[tokio::test]
 async fn a_late_rejection_survives_a_reconnect() {
     let mock = MockEngine::start().await;
@@ -1902,6 +1967,14 @@ async fn a_late_rejection_survives_a_reconnect() {
     let a = observer(&recorder, "a");
     a.reject("UNKNOWN_DB", "gone while offline");
     assert!(!function.is_observed());
+    until("on_observer_removed while offline", || {
+        recorder
+            .events
+            .lock()
+            .unwrap()
+            .contains(&"remove a".to_string())
+    })
+    .await;
 
     frame(&mock, registered("ls::f")).await;
     hello(&mock, true);
@@ -1915,7 +1988,7 @@ async fn a_late_rejection_survives_a_reconnect() {
     assert!(!function.is_observed(), "not reactivated by the replay");
     assert_eq!(
         *recorder.events.lock().unwrap(),
-        vec!["add a"],
+        vec!["add a", "remove a"],
         "no hook ran again"
     );
 
@@ -2386,8 +2459,8 @@ async fn a_rejection_survives_a_changed_view_on_replay() {
     assert!(!function.is_observed(), "not reactivated");
     assert_eq!(
         *recorder.events.lock().unwrap(),
-        vec!["add a"],
-        "no hook ran"
+        vec!["add a", "remove a"],
+        "removed once, at the rejection; no hook ran on the replay"
     );
 
     mock.send_to_client(added("cv::f", 4, "a", json!({})));
