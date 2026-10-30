@@ -420,6 +420,19 @@ impl ObserverRegistry {
         Ok(routed.active.clone())
     }
 
+    /// Whether `connection` hosts `(namespace, function_id)` as a private
+    /// function: the one connection whose calls of it are its events. One
+    /// atomic load while no function is hosted privately or observed;
+    /// otherwise one hash lookup more.
+    #[inline]
+    pub fn hosts_privately(&self, namespace: &str, function_id: &str, connection: Uuid) -> bool {
+        let view = self.routed.load();
+        !view.is_empty()
+            && view
+                .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+                .is_some_and(|routed| routed.callers == Callers::Host(connection))
+    }
+
     /// `FORBIDDEN` when `target` is private: only its host invokes it, so
     /// every activation would be refused.
     pub(crate) fn check_target_invocable(&self, target: &FnKey) -> Result<(), ErrorBody> {
@@ -753,9 +766,10 @@ impl ObserverRegistry {
     /// `RegisterFunction` from `worker` was applied: the success ack an
     /// `observe.v1` owner gets (protocol.md §2.3), with the function's full
     /// observer set, each of which it must ack again. Also says whether the
-    /// SDK may run the function in-process: the global switch, a session
-    /// without RBAC middleware (a local call would bypass it), and a
-    /// connection allowed to invoke the function itself.
+    /// SDK may run the function in-process: the global switch, a connection
+    /// allowed to invoke the function itself, and a session without RBAC
+    /// middleware (a local call would bypass it) or a function it hosts
+    /// privately, whose calls from its host skip the middleware anyway.
     ///
     /// Sent once per registration: a second call for the same one (a late
     /// `engine::workers::register` racing the registration it catches up on)
@@ -774,7 +788,8 @@ impl ObserverRegistry {
         let key: FnKey = (namespace.to_string(), function_id.to_string());
         let local_dispatch = self.config().local_dispatch
             && worker.session.as_ref().is_none_or(|session| {
-                session.config.middleware_function_id.is_none()
+                (session.config.middleware_function_id.is_none()
+                    || self.hosts_privately(namespace, function_id, worker.id))
                     && engine.is_function_allowed(session, Some(namespace), function_id)
             });
 

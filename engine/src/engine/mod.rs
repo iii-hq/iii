@@ -1596,9 +1596,20 @@ impl Engine {
                     // function. A worker-registered `engine::foo` still owns a
                     // `function_owners` entry, so it does NOT bypass — the operator's
                     // middleware keeps intercepting user code.
+                    //
+                    // A call of a private function from the connection that hosts
+                    // it bypasses middleware too (v2 §6): only its host may call it,
+                    // so the middleware's forward, made from another connection,
+                    // would be refused with FORBIDDEN, and the call goes back to the
+                    // worker that made it, as a local call would.
                     if let Some(middleware_id) = &session.config.middleware_function_id
                         && !self
                             .is_engine_owned_builtin(effective_namespace(namespace), function_id)
+                        && !self.observers.hosts_privately(
+                            effective_namespace(namespace),
+                            function_id,
+                            worker.id,
+                        )
                     {
                         let inv_id = (*invocation_id).unwrap_or_else(Uuid::new_v4);
                         // Resolve the middleware in the caller's namespace and hand

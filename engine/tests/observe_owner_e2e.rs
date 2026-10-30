@@ -989,6 +989,68 @@ async fn local_dispatch_is_off_under_rbac_middleware() {
     );
 }
 
+/// Under RBAC middleware, a host's call of its own private function skips
+/// the middleware (v2 §6): the middleware's forward would come from another
+/// connection, which a private function refuses. So the host may run it
+/// in-process, and a call it sends reaches it and its observers. Its calls
+/// of every other function still go through the middleware.
+#[tokio::test]
+async fn a_hosts_call_of_its_private_function_skips_the_middleware() {
+    let t = spawn(Setup {
+        middleware_function_id: Some("test::middleware".to_string()),
+        ..Setup::default()
+    })
+    .await;
+    let intercepted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let intercepted = intercepted.clone();
+        in_process(&t.engine, "test::middleware", move |input| {
+            intercepted
+                .lock()
+                .unwrap()
+                .push(input["function_id"].clone());
+            json!("from the middleware")
+        });
+    }
+    let mut cron = connect(&t, "cron", true).await;
+    cron.register_function_with(json!({
+        "type": "registerfunction",
+        "id": "cron::on-tick",
+        "private": true,
+    }))
+    .await;
+    let private = function_registered(&mut cron, "cron::on-tick").await;
+    assert_eq!(
+        private["local_dispatch"], true,
+        "its host's calls skip the middleware: {private}"
+    );
+    cron.register_function("cron::status").await;
+    let public = function_registered(&mut cron, "cron::status").await;
+    assert_eq!(public["local_dispatch"], false, "{public}");
+
+    let mut sink = host(&t, "sink", &["sink::ticks"]).await;
+    sink.observe_active(observer(
+        "obs-ticks",
+        json!({ "function_id": "cron::on-tick", "deliver": "input" }),
+        "sink::ticks",
+    ))
+    .await;
+
+    let tick = json!({ "expression": "0 * * * * * *", "scheduled_time": "t0" });
+    let call = cron.call("cron::on-tick", tick.clone()).await;
+    let invoke = cron.invoked("cron::on-tick").await;
+    cron.reply(&invoke, tick.clone()).await;
+    let answer = cron.result(call).await;
+    assert_eq!(answer["result"], tick, "{answer}");
+    let delivered = sink.invoked("sink::ticks").await;
+    assert_eq!(delivered["data"], tick);
+    sink.reply(&delivered, Value::Null).await;
+
+    let call = cron.call("cron::status", json!({})).await;
+    assert_eq!(cron.result(call).await["result"], "from the middleware");
+    assert_eq!(*intercepted.lock().unwrap(), vec![json!("cron::status")]);
+}
+
 #[tokio::test]
 async fn local_dispatch_needs_the_connection_to_be_allowed_to_call_the_function() {
     let rbac = json!({ "expose_functions": ["match(\"api::*\")"] });
