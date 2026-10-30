@@ -23,7 +23,6 @@ use crate::workers::configuration::structs::{
 pub struct RegisterOutcome {
     pub kind: RegisterKind,
     pub entry: ConfigurationEntry,
-    pub old_value: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,13 +85,8 @@ pub struct AdapterEnsureOutcome {
 #[derive(Debug, Clone)]
 pub enum ExternalChange {
     Registered(ConfigurationEntry),
-    Updated {
-        entry: ConfigurationEntry,
-        old_value: Option<Value>,
-    },
-    Deleted {
-        entry: ConfigurationEntry,
-    },
+    Updated { entry: ConfigurationEntry },
+    Deleted { entry: ConfigurationEntry },
 }
 impl ExternalChange {
     /// The configuration id this change concerns, regardless of variant.
