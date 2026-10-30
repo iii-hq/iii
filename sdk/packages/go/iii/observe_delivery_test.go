@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -117,6 +118,113 @@ func TestMatchFuncNarrowsTheDelivery(t *testing.T) {
 	}
 	if !c.IsObservedFor("cron::on-tick", &Call{Input: json.RawMessage(`{"expression":"* * * * *"}`)}) {
 		t.Error("IsObservedFor reads the call on a function matched by a predicate")
+	}
+}
+
+// forObserver is the observer a call is for: the for_observer of its metadata
+// (decision 52), or "".
+func forObserver(call *Call) string {
+	var meta struct {
+		ForObserver string `json:"for_observer"`
+	}
+	_ = json.Unmarshal(call.Metadata, &meta)
+	return meta.ForObserver
+}
+
+// sessionOf is the session of an observer's args or of a call's input.
+func sessionOf(raw json.RawMessage) string {
+	var v struct {
+		Session string `json:"session"`
+	}
+	_ = json.Unmarshal(raw, &v)
+	return v.Session
+}
+
+// sessionMatch honors for_observer: a call for one observer goes to it alone, any other
+// call to the observers of its session. As a predicate, or as keys: each observer is
+// also filed under "for_observer:<id>". asked sees every call the hook is asked about.
+func sessionMatch(keys bool, asked func(*Call)) *MatchHook {
+	if keys {
+		return MatchKeys(
+			func(obs *Observer) []string {
+				return []string{sessionOf(obs.argsRaw), "for_observer:" + obs.ID}
+			},
+			func(call *Call) []string {
+				asked(call)
+				if id := forObserver(call); id != "" {
+					return []string{"for_observer:" + id}
+				}
+				return []string{sessionOf(call.Input)}
+			},
+		)
+	}
+	return MatchFunc(func(obs *Observer, call *Call) bool {
+		asked(call)
+		if id := forObserver(call); id != "" {
+			return id == obs.ID
+		}
+		return sessionOf(obs.argsRaw) == sessionOf(call.Input)
+	})
+}
+
+// Decision 52: a local call's metadata reaches the handler, the match hook (a predicate
+// and keys) and the report; a call with metadata.for_observer is delivered to that
+// observer alone, and a routed one lists only it on its answer.
+func TestACallForOneObserverCarriesItsMetadata(t *testing.T) {
+	for _, form := range []string{"predicate", "keys"} {
+		t.Run(form, func(t *testing.T) {
+			fe := newFakeEngine(t)
+			c := fe.client()
+			var mu sync.Mutex
+			var asked, handled []string
+			c.OnObserverMatchFor("tmux::on-changed", sessionMatch(form == "keys", func(call *Call) {
+				mu.Lock()
+				asked = append(asked, string(call.Metadata))
+				mu.Unlock()
+			}))
+			registerHost(t, c, "tmux::on-changed", func(ctx context.Context, data json.RawMessage) (any, error) {
+				md, _ := MetadataFromContext(ctx)
+				mu.Lock()
+				handled = append(handled, string(md))
+				mu.Unlock()
+				return data, nil
+			}, RegisterFunctionOptions{Private: true})
+			capture := []Capture{CaptureInput, CaptureOutput, CaptureMetadata}
+			addObserver(t, fe, "tmux::on-changed", observerInfo("a", "ui::a", `{"session":"s1"}`, "", capture...))
+			addObserver(t, fe, "tmux::on-changed", observerInfo("b", "ui::b", `{"session":"s1"}`, "", capture...))
+
+			ctx := context.Background()
+			forA := json.RawMessage(`{"for_observer":"a"}`)
+			if _, err := c.Call(ctx, CallRequest{FunctionID: "tmux::on-changed", Payload: json.RawMessage(`{"session":"s1","n":1}`), Metadata: forA}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Call(ctx, CallRequest{FunctionID: "tmux::on-changed", Payload: json.RawMessage(`{"session":"s1","n":2}`)}); err != nil {
+				t.Fatal(err)
+			}
+			items := fe.waitItems(2)
+			if !slices.Equal(items[0].Matched, []string{"a"}) || !jsonEq(t, items[0].Metadata, forA) || !jsonEq(t, items[0].Input, json.RawMessage(`{"session":"s1","n":1}`)) {
+				t.Errorf("the call for a: %+v", items[0])
+			}
+			both := slices.Sorted(slices.Values(items[1].Matched))
+			if !slices.Equal(both, []string{"a", "b"}) || items[1].Metadata != nil {
+				t.Errorf("the ordinary call: %+v", items[1])
+			}
+			mu.Lock()
+			if !slices.Equal(handled, []string{`{"for_observer":"a"}`, ""}) || !slices.Contains(asked, `{"for_observer":"a"}`) {
+				t.Errorf("handler saw %q, match hook saw %q", handled, asked)
+			}
+			mu.Unlock()
+
+			// routed: the observer it names rides the answer
+			res := fe.waitResult(fe.invoke(InvokeFunctionMessage{
+				FunctionID: "tmux::on-changed",
+				Data:       json.RawMessage(`{"session":"s1","n":3}`),
+				Metadata:   json.RawMessage(`{"for_observer":"b"}`),
+			}))
+			if !slices.Equal(res.Observed, []string{"b"}) || !jsonEq(t, res.Result, json.RawMessage(`{"session":"s1","n":3}`)) {
+				t.Errorf("routed answer %+v", res)
+			}
+		})
 	}
 }
 
