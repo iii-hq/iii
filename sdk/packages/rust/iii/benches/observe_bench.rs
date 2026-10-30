@@ -4,7 +4,8 @@
 //! - `is_observed()` with nobody observing: one atomic load, no allocation;
 //! - a local `call()` with no observers (`call_local/no_observers`), and of a
 //!   private function (`call_local/private`): the handler's own cost (compare
-//!   with `handler_alone`), no copy of input or result;
+//!   with `handler_alone`), no copy of input or result (`tests/local_call_alloc.rs`
+//!   counts the allocations);
 //! - a local call of a private function with a deliver hook and no observers
 //!   (`call_local/private_deliver_hook`, the shape of `http::on-request`
 //!   with no routes), against the same function without the hook
@@ -297,14 +298,15 @@ fn observe_benches(c: &mut Criterion) {
         b.iter(|| black_box(&host.keyed).is_observed_for(black_box(&miss)))
     });
 
-    // What the echo handler costs by itself: the sync wrapper deserializes the
-    // input and serializes the output.
+    // What the echo handler costs by itself, with its input built as each
+    // call builds it: a `Value` handler gets its input and returns its
+    // output as they are.
     c.bench_function("handler_alone/echo", |b| {
+        let echo = |input: Value| Ok::<_, Error>(input);
         let mut i = 0u64;
         b.iter(|| {
             i += 1;
-            let input: Value = serde_json::from_value(json!({ "n": i })).unwrap();
-            black_box(serde_json::to_value(&input).unwrap())
+            black_box(echo(black_box(json!({ "n": i }))).unwrap())
         })
     });
 

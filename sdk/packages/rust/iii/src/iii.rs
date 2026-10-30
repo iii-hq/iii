@@ -1295,6 +1295,30 @@ pub(crate) fn json_schema_for<T: schemars::JsonSchema>() -> Option<Value> {
     .ok()
 }
 
+/// `value` as a `B`, moved, when `A` and `B` are the same type; `value`
+/// back otherwise. No allocation either way.
+fn same_type<A: 'static, B: 'static>(value: A) -> Result<B, A> {
+    let mut slot = Some(value);
+    match (&mut slot as &mut dyn std::any::Any).downcast_mut::<Option<B>>() {
+        Some(same) => Ok(same.take().expect("the slot is filled")),
+        None => Err(slot.expect("the slot is filled")),
+    }
+}
+
+/// A handler's input as its `T`: a `Value` handler gets the value itself,
+/// any other type deserializes it.
+fn handler_input<T: serde::de::DeserializeOwned + 'static>(input: Value) -> Result<T, Error> {
+    same_type::<Value, T>(input)
+        .or_else(|input| serde_json::from_value(input).map_err(|e| Error::Serde(e.to_string())))
+}
+
+/// A handler's return value as JSON: a `Value` is the value itself, any
+/// other type serializes.
+fn handler_output<R: serde::Serialize + 'static>(output: R) -> Result<Value, Error> {
+    same_type::<R, Value>(output)
+        .or_else(|output| serde_json::to_value(&output).map_err(|e| Error::Serde(e.to_string())))
+}
+
 /// Helper trait used internally to convert a sync function into a
 /// [`RemoteFunctionHandlerWithMetadata`].
 #[doc(hidden)]
@@ -1308,7 +1332,8 @@ pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-// 1-arg sync, deserializes the entire JSON input as T.
+// 1-arg sync, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is).
 //
 // Error type is fixed to [`Error`] (instead of generic `E: Display`) so
 // closures using bare `Ok(...)` infer cleanly without explicit error
@@ -1323,12 +1348,9 @@ where
 {
     fn into_handler(self) -> RemoteFunctionHandlerWithMetadata {
         Arc::new(move |input: Value, _metadata: Option<Value>| {
-            let output = serde_json::from_value::<T>(input)
-                .map_err(|e| Error::Serde(e.to_string()))
+            let output = handler_input::<T>(input)
                 .and_then(&self)
-                .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                });
+                .and_then(handler_output);
             Box::pin(async move { output })
         })
     }
@@ -1342,8 +1364,9 @@ where
     }
 }
 
-// 2-arg sync, deserializes the entire JSON input as T and passes the
-// per-invocation metadata sidecar as the second handler argument.
+// 2-arg sync, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is) and passes the per-invocation metadata sidecar as the
+// second handler argument.
 impl<F, T, R> IntoSyncHandler<(T, Option<Value>, R)> for F
 where
     F: Fn(T, Option<Value>) -> Result<R, Error> + Send + Sync + 'static,
@@ -1352,12 +1375,9 @@ where
 {
     fn into_handler(self) -> RemoteFunctionHandlerWithMetadata {
         Arc::new(move |input: Value, metadata: Option<Value>| {
-            let output = serde_json::from_value::<T>(input)
-                .map_err(|e| Error::Serde(e.to_string()))
+            let output = handler_input::<T>(input)
                 .and_then(|arg| self(arg, metadata))
-                .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                });
+                .and_then(handler_output);
             Box::pin(async move { output })
         })
     }
@@ -1388,9 +1408,9 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-/// Build the dispatchable handler for a typed async function: deserialize
-/// the JSON input as `T`, run `f`, serialize the result. Deserialization
-/// failures surface as [`Error::Serde`].
+/// Build the dispatchable handler for a typed async function: the JSON input
+/// as `T`, `f`, and its result as JSON, a `Value` passed as is both ways.
+/// Deserialization failures surface as [`Error::Serde`].
 fn async_handler<F, T, Fut, R>(f: F) -> RemoteFunctionHandlerWithMetadata
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
@@ -1404,19 +1424,12 @@ where
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
-            match serde_json::from_value::<T>(input) {
+            match handler_input::<T>(input) {
                 Ok(arg) => {
                     let fut = f(arg);
-                    Box::pin(async move {
-                        fut.await.and_then(|val| {
-                            serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                        })
-                    })
+                    Box::pin(async move { fut.await.and_then(handler_output) })
                 }
-                Err(e) => {
-                    let err = Error::Serde(e.to_string());
-                    Box::pin(async move { Err(err) })
-                }
+                Err(err) => Box::pin(async move { Err(err) }),
             }
         },
     )
@@ -1437,25 +1450,19 @@ where
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
-            match serde_json::from_value::<T>(input) {
+            match handler_input::<T>(input) {
                 Ok(arg) => {
                     let fut = f(arg, metadata);
-                    Box::pin(async move {
-                        fut.await.and_then(|val| {
-                            serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                        })
-                    })
+                    Box::pin(async move { fut.await.and_then(handler_output) })
                 }
-                Err(e) => {
-                    let err = Error::Serde(e.to_string());
-                    Box::pin(async move { Err(err) })
-                }
+                Err(err) => Box::pin(async move { Err(err) }),
             }
         },
     )
 }
 
-// 1-arg async, deserializes the entire JSON input as T.
+// 1-arg async, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is).
 //
 // Error type is fixed to [`Error`] (see [`IntoSyncHandler`] for the
 // rationale). Use `From<E> for Error` to lift custom error types,
@@ -1480,8 +1487,9 @@ where
     }
 }
 
-// 2-arg async, deserializes the entire JSON input as T and passes the
-// per-invocation metadata sidecar as the second handler argument.
+// 2-arg async, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is) and passes the per-invocation metadata sidecar as the
+// second handler argument.
 impl<F, T, Fut, R> IntoAsyncHandler<(T, Option<Value>, Fut, R)> for F
 where
     F: Fn(T, Option<Value>) -> Fut + Send + Sync + 'static,
@@ -1520,7 +1528,8 @@ fn empty_message() -> RegisterFunctionMessage {
 /// - [`RegisterFunction::new`][]: sync function. Accepts both typed handlers
 ///   (schemas auto-extracted via `schemars`) and `Fn(Value, Option<Value>) -> Result<Value, Error>`
 ///   closures. The second argument is the per-invocation metadata sidecar and
-///   is `None` when absent.
+///   is `None` when absent. A `Value` input or result passes as is; other
+///   types go through serde.
 /// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
 /// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
@@ -1657,8 +1666,10 @@ impl RegisterFunction {
     /// as an observer's target. For event sources, whose calls from anywhere
     /// else would be forged events.
     ///
-    /// This worker's own calls pass the input and the result by move: the
-    /// SDK copies neither, as for every local call.
+    /// This worker's own calls pass the input and the result by move, as
+    /// every local call does: a handler that takes and returns [`Value`]
+    /// gets the caller's value, and the caller gets the handler's, neither
+    /// copied. A handler of other types costs its serde conversion only.
     pub fn private(mut self) -> Self {
         self.message.private = true;
         self
