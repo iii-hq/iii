@@ -3753,6 +3753,16 @@ impl Worker for ObservabilityWorker {
         ui::register_function(&engine);
     }
 
+    /// Registered by `initialize` while the worker is enabled.
+    fn hosted_sources(&self) -> Vec<&'static str> {
+        use crate::observer::events;
+        if self.current_config().enabled.unwrap_or(true) {
+            vec![events::OBSERVABILITY_ON_LOG, events::OBSERVABILITY_ON_SPAN]
+        } else {
+            Vec::new()
+        }
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         // Console UI assets are independent of whether telemetry collection is
         // enabled. Observe them before the enabled gate so the configuration

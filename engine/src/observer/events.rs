@@ -135,6 +135,9 @@ pub(crate) fn payloads_built() -> usize {
 /// its own input and output, described by `format`. Its handler refuses every
 /// call.
 pub fn register_event_source(engine: &Engine, function_id: &str, description: &str, format: Value) {
+    // The engine hosts its sources: a worker that registered the id while no
+    // engine module did (iii-stream added by a config reload) loses it.
+    engine.release_to_engine(DEFAULT_NAMESPACE, function_id);
     engine
         .observers
         .set_options(DEFAULT_NAMESPACE, function_id, FunctionOptions::private());

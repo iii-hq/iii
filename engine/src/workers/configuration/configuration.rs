@@ -62,6 +62,10 @@ impl Worker for ConfigurationWorker {
         self.register_functions(engine);
     }
 
+    fn hosted_sources(&self) -> Vec<&'static str> {
+        vec![crate::observer::events::CONFIGURATION_ON_UPDATED]
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing ConfigurationWorker");
 

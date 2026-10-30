@@ -297,3 +297,91 @@ async fn workers_info_lists_functions_and_observers() {
         .expect("observers array");
     assert!(observers.is_empty());
 }
+
+/// Each builtin worker hosts the engine-hosted sources it registers
+/// (decision 7): `engine::workers::info` lists them among its functions, and
+/// `engine::functions::list` names it as their worker.
+#[tokio::test]
+async fn engine_hosted_sources_belong_to_their_builtin_worker() {
+    let (builder, _config_dir) = boot_bare_engine().await;
+    let engine = builder.engine();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let workers = engine
+        .call("engine::workers::list", json!({ "include_internal": true }))
+        .await
+        .expect("engine::workers::list should succeed")
+        .expect("response should not be None");
+    let names: Vec<String> = workers["workers"]
+        .as_array()
+        .expect("'workers' should be an array")
+        .iter()
+        .filter_map(|worker| worker["name"].as_str().map(str::to_string))
+        .collect();
+    let listed = engine
+        .call(
+            "engine::functions::list",
+            json!({ "include_internal": true }),
+        )
+        .await
+        .expect("engine::functions::list should succeed")
+        .expect("response should not be None");
+    let worker_of = |id: &str| {
+        listed["functions"]
+            .as_array()
+            .and_then(|functions| functions.iter().find(|f| f["function_id"] == id))
+            .and_then(|f| f["worker_name"].as_str())
+            .map(str::to_string)
+    };
+
+    let mut hosts = Vec::new();
+    for source in [
+        "engine::on-functions-changed",
+        "engine::on-workers-changed",
+        "engine::on-observers-changed",
+        "configuration::on-updated",
+        "observability::on-log",
+        "observability::on-span",
+        "stream::on-changed",
+        "stream::on-join",
+        "stream::on-leave",
+    ] {
+        let host = worker_of(source).unwrap_or_else(|| panic!("{source} is not listed"));
+        assert!(
+            names.contains(&host),
+            "{source}: worker_name {host:?} is not a worker ({names:?})"
+        );
+        let info = engine
+            .call("engine::workers::info", json!({ "name": host }))
+            .await
+            .expect("engine::workers::info should succeed")
+            .expect("response should not be None");
+        let functions: Vec<&str> = info["functions"]
+            .as_array()
+            .expect("'functions' should be an array")
+            .iter()
+            .filter_map(|f| f["function_id"].as_str())
+            .collect();
+        assert!(
+            functions.contains(&source),
+            "{host} does not list {source}: {functions:?}"
+        );
+        hosts.push((source, host));
+    }
+    let host_of = |source: &str| {
+        hosts
+            .iter()
+            .find(|(s, _)| *s == source)
+            .map(|(_, host)| host.as_str())
+    };
+    assert_eq!(
+        host_of("engine::on-functions-changed"),
+        host_of("engine::on-observers-changed")
+    );
+    assert_eq!(host_of("stream::on-changed"), host_of("stream::on-leave"));
+    assert_ne!(
+        host_of("configuration::on-updated"),
+        host_of("stream::on-changed")
+    );
+}

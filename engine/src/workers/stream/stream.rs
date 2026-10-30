@@ -192,6 +192,15 @@ impl Worker for StreamWorker {
         self.register_functions(engine);
     }
 
+    fn hosted_sources(&self) -> Vec<&'static str> {
+        use crate::observer::events;
+        vec![
+            events::STREAM_ON_CHANGED,
+            events::STREAM_ON_JOIN,
+            events::STREAM_ON_LEAVE,
+        ]
+    }
+
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying StreamWorker");
         // The listener belongs to the engine, so it is stopped explicitly to

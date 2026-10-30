@@ -1101,6 +1101,15 @@ impl Worker for EngineFunctionsWorker {
         self.register_functions(engine);
     }
 
+    fn hosted_sources(&self) -> Vec<&'static str> {
+        use crate::observer::events;
+        vec![
+            events::ON_FUNCTIONS_CHANGED,
+            events::ON_WORKERS_CHANGED,
+            events::ON_OBSERVERS_CHANGED,
+        ]
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing EngineFunctionsWorker");
 

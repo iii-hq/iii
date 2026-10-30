@@ -591,6 +591,42 @@ impl Engine {
         self.runtime_workers.insert(worker.id.clone(), worker);
     }
 
+    /// An engine module is about to register `function_id` in `namespace`
+    /// itself (an engine-hosted source): the engine is that id's host. A
+    /// worker that registered the id while no engine module hosted it loses
+    /// it: its owner entry goes, so its teardown leaves the engine's
+    /// function in place, and it hears `registrationrejected`
+    /// (`FUNCTION_NAMESPACE_CONFLICT`, naming no owner), as a worker that
+    /// registers an id the engine hosts does.
+    pub(crate) fn release_to_engine(&self, namespace: &str, function_id: &str) {
+        let key = (namespace.to_string(), function_id.to_string());
+        let Some((_, (owner, _))) = self.function_owners.remove(&key) else {
+            return;
+        };
+        tracing::warn!(
+            namespace = %namespace,
+            function_id = %function_id,
+            worker_id = %owner,
+            worker_name = %self
+                .worker_registry
+                .get_worker_name(&owner)
+                .as_deref()
+                .unwrap_or("<unknown>"),
+            "'{function_id}' in namespace '{namespace}' is hosted by the engine from now on; \
+             the worker that registered it loses it"
+        );
+        self.observers.notify(
+            owner,
+            Message::RegistrationRejected {
+                code: crate::protocol::FUNCTION_NAMESPACE_CONFLICT.to_string(),
+                namespace: namespace.to_string(),
+                worker_name: None,
+                function_id: Some(function_id.to_string()),
+                owner_worker_id: String::new(),
+            },
+        );
+    }
+
     pub fn remove_runtime_worker(&self, worker_id: &str) {
         self.runtime_workers.remove(worker_id);
     }
@@ -4799,6 +4835,81 @@ mod tests {
                 "{function_id} survives the worker"
             );
         }
+    }
+
+    /// The reverse order: a worker registered a source id while no engine
+    /// module hosted it (iii-stream off), and the engine module starts later
+    /// (a config reload adds iii-stream). The engine hosts its sources: the
+    /// worker loses the id (`registrationrejected`, naming no owner), and its
+    /// teardown leaves the engine's source in place.
+    #[tokio::test]
+    async fn an_engine_source_registered_after_a_worker_took_its_id_is_the_engines() {
+        use crate::observer::events;
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        let early = Message::RegisterFunction {
+            id: events::STREAM_ON_CHANGED.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+            args_format: None,
+            private: false,
+            observable: true,
+            observe: None,
+        };
+        engine.router_msg(&worker, &early).await.unwrap();
+        let key = (
+            DEFAULT_NAMESPACE.to_string(),
+            events::STREAM_ON_CHANGED.to_string(),
+        );
+        assert!(
+            engine.function_owners.contains_key(&key),
+            "the worker holds it"
+        );
+
+        events::register_stream_event_sources(&engine);
+        assert!(
+            !engine.function_owners.contains_key(&key),
+            "the worker's lease is gone"
+        );
+        let Message::RegistrationRejected {
+            code,
+            function_id,
+            owner_worker_id,
+            ..
+        } = next_protocol_frame(&mut rx).await
+        else {
+            panic!("a rejection");
+        };
+        assert_eq!(code, crate::protocol::FUNCTION_NAMESPACE_CONFLICT);
+        assert_eq!(function_id.as_deref(), Some(events::STREAM_ON_CHANGED));
+        assert!(owner_worker_id.is_empty(), "the engine hosts it");
+
+        engine.cleanup_worker(&worker).await;
+        assert!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, events::STREAM_ON_CHANGED)
+                .is_some(),
+            "the engine's source survives the worker"
+        );
+        assert_eq!(
+            engine
+                .call(
+                    events::STREAM_ON_CHANGED,
+                    serde_json::json!({ "forged": true })
+                )
+                .await
+                .unwrap_err()
+                .code,
+            "FORBIDDEN",
+            "the engine's handler answers"
+        );
     }
 
     /// Regression: `function.unregister()` must honor
