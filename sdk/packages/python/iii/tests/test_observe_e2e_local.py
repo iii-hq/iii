@@ -104,6 +104,47 @@ def test_equivalence_dispatch_auto_and_remote_give_identical_envelopes(worker: A
     assert remote_err.data["error"]["message"] == "out of stock"
 
 
+@pytest.mark.parametrize("dispatch", ["auto", "remote"])
+def test_capture_empty_moves_no_payloads_and_deliver_output_sends_the_handlers_return_value(
+    worker: Any, fid: Any, dispatch: str
+) -> None:
+    owner = worker("cap-owner")
+    watcher = worker("cap-watcher")
+    owner.register_function(fid("py-cap::price"), lambda data: {"total": data["qty"] * 10})
+    envelopes = collector(watcher, fid("py-cap::on-envelope"))
+    outputs = collector(watcher, fid("py-cap::on-output"))
+    bare = watcher.observe({"function_id": fid("py-cap::price"), "capture": []}, fid("py-cap::on-envelope"))
+    output = watcher.observe({"function_id": fid("py-cap::price"), "deliver": "output"}, fid("py-cap::on-output"))
+    bare.ready(timeout=10)
+    output.ready(timeout=10)
+    local_dispatch_ready(owner, fid("py-cap::price"))
+    frames = FrameCounter(owner)
+
+    request = {"function_id": fid("py-cap::price"), "payload": {"qty": 3}, "metadata": {"channel": "web"}}
+    assert owner.call({**request, "dispatch": dispatch}) == {"total": 30}
+    exactly(envelopes, 1, "the envelope")
+    exactly(outputs, 1, "the output")
+
+    # A7: deliver 'output' hands the target the handler's return value
+    assert outputs[0].data == {"total": 30}
+    # A6: capture [] keeps ids, status and timing, and moves no payload
+    envelope = envelopes[0].data
+    assert not {"input", "output", "error", "caller", "metadata"} & envelope.keys()
+    assert (envelope["observer_id"], envelope["function_id"], envelope["status"]) == (
+        bare.id,
+        fid("py-cap::price"),
+        "success",
+    )
+    assert all(isinstance(envelope[k], str) for k in ("activation_id", "invocation_id"))
+    assert isinstance(envelope["started_at_ms"], int) and isinstance(envelope["duration_ms"], (int, float))
+    # the host delivered both: a report for the local call, the match on its answer for the routed one
+    observed = [sorted(f["observed"]) for f in frames.frames if f.get("type") == "invocationresult" and "observed" in f]
+    if dispatch == "auto":
+        assert "invocationsobserved" in frames.types and observed == []
+    else:
+        assert "invocationsobserved" not in frames.types and observed == [sorted([bare.id, output.id])]
+
+
 def test_zero_wire_unobserved_local_calls_send_zero_frames(worker: Any, fid: Any) -> None:
     owner = worker("zero-wire")
     owner.register_function(fid("py-zw::inc"), lambda n: n + 1)
@@ -354,12 +395,17 @@ def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_dispo
     assert owner.call({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "x"}}) == {"status": 422}
     assert owner.call({"function_id": on_request_id, "payload": {"path": "/nope"}}) == {"status": 404}
 
-    # only the worker that hosts the observed function may call through the observer
+    # D1: the function is private, so only the worker that hosts it calls it
     with pytest.raises(InvocationError) as raised:
         app.call({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "acme"}})
-    assert raised.value.code == "FORBIDDEN"  # private: no other worker calls it
+    assert raised.value.code == "FORBIDDEN"
 
+    # C3: only the worker that hosts the observed function calls through its observers
     obs = routes["/users"]
+    with pytest.raises(InvocationError) as raised:
+        app.call({"observer": obs, "payload": {"path": "/users", "tenant": "acme"}})
+    assert raised.value.code == "NOT_FUNCTION_OWNER"
+
     route_handle.dispose()
     wait_for(lambda: "/users" not in routes, "on_observer_removed")
     with pytest.raises(InvocationError) as raised:
