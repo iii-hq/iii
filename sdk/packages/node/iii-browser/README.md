@@ -57,7 +57,7 @@ const users = await iii.call({
 | Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`    | Route the call through a named queue                           |
 | Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)`  | Call `target` on every matching call of a function             |
 | Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | Change what observing a function this page hosts means         |
-| Call through an observer | `await iii.call({ observer, payload })`                                        | Run an observer's target, with its policy and metadata         |
+| Call through an observer | `await iii.call({ observer, payload })`                                        | Run an observer's target from a deliver hook                   |
 | Current invocation       | `iii.currentInvocation()` / `iii.withInvocation(inv, fn)`                      | The invocation the running handler serves (caller, activation) |
 | Create channel           | `createChannel(iii)` (from `iii-browser-sdk/helpers`)                          | Create a streaming channel pair (writer + reader)              |
 | Shutdown                 | `iii.shutdown()`                                                               | Gracefully disconnect from the engine                          |

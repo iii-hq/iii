@@ -37,7 +37,7 @@ const result = await iii.call({ function_id: 'hello::greet', payload: { name: 'w
 | Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`   | Route the call through a named queue                            |
 | Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)` | Call `target` on every matching call of a function              |
 | Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | Change what observing a function this worker hosts means       |
-| Call through an observer | `await iii.call({ observer, payload })`                                       | Run an observer's target, with its policy and metadata          |
+| Call through an observer | `await iii.call({ observer, payload })`                                       | Run an observer's target from a deliver hook                    |
 | Current invocation       | `iii.currentInvocation()`                                                     | The invocation the running handler serves (caller, activation)  |
 
 `iii.trigger`, `TriggerAction` and `TriggerRequest` are deprecated aliases of
