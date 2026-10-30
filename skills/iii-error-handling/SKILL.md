@@ -40,7 +40,7 @@ rejects with an `ObserveRejection` (Go `*iii.ObserveRejectionError`) carrying th
 | `FORBIDDEN` | RBAC denies the observed function or the target, or the registration hook denied | Fix the policy, not the call |
 | `SELF_TARGET` | The target is the observed function | Use another target |
 | `LIMIT_EXCEEDED` | `observers.max_per_connection` / `max_per_function` reached | Dispose unused observers or raise the limit |
-| `OBSERVER_ID_CONFLICT` | An `id` reused with a different spec | Use a new id |
+| `OBSERVER_ID_CONFLICT` | An `id` reused with a different spec, or held by another worker's observer | Use a new id. A restarted worker under the same name and namespace replaces its own `suspended` observer with that id |
 | `OWNER_TIMEOUT` / `OBSERVE_REJECTED` / worker codes | The hosting worker's `onObserverAdded` timed out, threw, or rejected with its own code (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...) | Read `reason.message`; fix the args |
 
 A worker that calls a target through one of its function's observers

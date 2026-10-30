@@ -610,7 +610,7 @@ itself. An activation is one run of the target.
 
 | Option          | Default                                | Meaning                                                                                                                                                                                                                                                                                                                                   |
 | --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`            | a random UUID                          | The observer id. The same id with the same options again changes nothing. The same id with different options fails with `OBSERVER_ID_CONFLICT`.                                                                                                                                                                                           |
+| `id`            | a random UUID                          | The observer id. The same id with the same options again changes nothing. The same id with different options, or an id that another worker's observer holds, fails with `OBSERVER_ID_CONFLICT`. With an id of your own, a restarted worker takes back its `suspended` observer (see [Observer states](#observer-states)).                 |
 | `max_fires`     | unlimited                              | The observer becomes `disposed` after this number of activations (reason `MAX_FIRES`).                                                                                                                                                                                                                                                    |
 | `expires_in_ms` | never                                  | The observer becomes `disposed` after this time (reason `EXPIRED`).                                                                                                                                                                                                                                                                       |
 | `max_in_flight` | `observers.default_max_in_flight` (64) | The maximum number of activations that run at the same time. More activations wait in a queue of `observers.max_queue_per_observer` (1024). When the queue is full, or when the queues of all observers hold 64 MiB of observed calls, the engine drops new activations (`OVERFLOW`). With `1`, activations run in the order they arrive. |
@@ -791,6 +791,16 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
 - An observer belongs to the connection that created it. When that worker disconnects, its observers
   become `suspended` for `observers.observer_grace_ms` (30 s by default). If the worker reconnects
   in this time, it keeps its observers and their counters. If not, the observers become `disposed`.
+- A worker that restarts connects again as a new connection. An observer with an `id` of your own
+  (see [Policy and metadata](#policy-and-metadata)) comes back with it: the restarted worker, under
+  the same worker name and namespace, observes under that `id` again, and its observer replaces the
+  `suspended` one. A queue subscriber keeps its queued messages this way. An observer with a random
+  `id` stays `suspended` until the grace period ends.
+- The worker name has to stay the same across restarts for this. Set it with `III_WORKER_NAME` or
+  the worker name option of the SDK; a worker that [iii compose](./compose) starts gets
+  `III_WORKER_NAME` from it. The default name, `hostname:pid` (a random name in the browser), changes
+  when the process restarts: the restarted worker's observe of the `id` then fails with
+  `OBSERVER_ID_CONFLICT` until the grace period ends.
 - When a worker reconnects, its SDK sends each of its observers to the engine again, with the same
   id. The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
   default). In this time, the engine does not create the observer again, and the handle becomes
@@ -1165,7 +1175,9 @@ and after `max_retries` the message moves to the topic's dead-letter queue.
   consumer.
 - The observer's filters read the message as `input`. A message that the filters reject is acked,
   and the target does not run.
-- While the observer is `suspended`, its messages stay queued.
+- While the observer is `suspended`, its messages stay queued. A restarted worker that observes
+  under the same `id`, with the same worker name (see [Observer states](#observer-states)), gets
+  them from its observer.
 - `dispose()` stops the observer's consumer.
 
 ### State changes
@@ -1493,7 +1505,7 @@ When an observer cannot be created, it becomes `error`, and `ready()` fails with
 | `FORBIDDEN`            | RBAC does not allow the session to call the observed function or the target, the registration hook refused the observer, or the target is a private function.                                                           |
 | `SELF_TARGET`          | The target is the observed function.                                                                                                                                                                                    |
 | `LIMIT_EXCEEDED`       | The worker has `observers.max_per_connection` observers (1024 by default), or the function has `observers.max_per_function` observers (4096 by default).                                                                |
-| `OBSERVER_ID_CONFLICT` | An observer with the same id and different options exists.                                                                                                                                                              |
+| `OBSERVER_ID_CONFLICT` | An observer with the same id and different options exists, or another worker's observer holds the id. A restarted worker under the same name and namespace replaces its own `suspended` observer with this id.          |
 | `OWNER_TIMEOUT`        | The worker that hosts the function did not accept the observer in 30 seconds.                                                                                                                                           |
 | `OBSERVE_REJECTED`     | The hosting worker's `onObserverAdded` threw an error other than `ObserveRejection`.                                                                                                                                    |
 

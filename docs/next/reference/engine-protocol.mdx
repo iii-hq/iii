@@ -780,8 +780,25 @@ the target, whether or not the observed function is private, and the
 `on_observer_registration_function_id` hook may rewrite or deny), that the function is observable
 (`NOT_OBSERVABLE`), args, filters (including filter paths against the function's `request_format` /
 `response_format`), the per-connection and per-function limits, that the target is not the observed
-function (`SELF_TARGET`), and that the target is not a private function (`FORBIDDEN`). A replay with
-the same `id` and a different spec fails with `OBSERVER_ID_CONFLICT`.
+function (`SELF_TARGET`), and that the target is not a private function (`FORBIDDEN`).
+
+An `Observe` whose `id` an observer already holds is a replay when it comes from the observing
+connection with the same spec: the engine answers with the observer's current state. A different
+spec, or another connection, fails with `OBSERVER_ID_CONFLICT`, except for a worker back on a new
+connection. When the observer is `suspended` because its observing worker is away, an `Observe` of
+its `id` from a connection under the same worker name in the same namespace (as declared on
+`engine::workers::register`) replaces it. A restarted worker re-observes under the ids it used
+before this way, and a queue consumer keyed by observer id keeps its backlog. The engine runs every
+check above first, and replaces the suspended observer when it creates the new one: it disposes the
+suspended observer with `OBSERVER_DISCONNECTED`, sends its host nothing more about it (the host got
+`ObserverRemoved` when the worker left), and the host gets an `ObserverAdded` for the new observer,
+as for any new `id`. An `Observe` the engine refuses leaves the suspended observer holding its `id`.
+The earlier connection, reattaching, has its replay of that observer answered with `disposed`.
+
+The takeover needs a worker name that stays the same across restarts: `III_WORKER_NAME`, which a
+supervisor sets, or the SDK's worker name option. The SDKs default the name to `hostname:pid` (the
+browser SDK to a random name), which changes when the process restarts, so a restarted worker under
+the default name gets `OBSERVER_ID_CONFLICT` until the grace period ends.
 
 ### `Unobserve`
 
@@ -833,13 +850,13 @@ Engine -> observing worker. Every lifecycle transition. `fires` is always sent; 
 
 States:
 
-| State       | Meaning                                                                                                                                                                                                                                                                                   |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                              |
-| `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                   |
-| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                               |
-| `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                          |
-| `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, or the grace period elapsed. A replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
+| State       | Meaning                                                                                                                                                                                                                                                                                                                                              |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                                                                                         |
+| `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                              |
+| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                          |
+| `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                     |
+| `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, the grace period elapsed, or replaced by an `Observe` from its worker's new connection. A replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
 
 ### `FunctionRegistered`
 
@@ -1093,34 +1110,34 @@ reason is counted as `OTHER`.
 
 `ObserveResult.error.code` and `ObserverStateChanged.reason.code` on a rejected observer:
 
-| Code                   | When                                                                                                                                                                                      |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value.                                                                   |
-| `INVALID_ARGS`         | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode. |
-| `INVALID_FILTER`       | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.                                                                                 |
-| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` / `response_format`.                                                                                                       |
-| `NOT_OBSERVABLE`       | The function registered `observable: false`.                                                                                                                                              |
-| `FORBIDDEN`            | RBAC denies the observed function or the target, the registration hook denied, or the target is a private function.                                                                       |
-| `SELF_TARGET`          | The target is the observed function.                                                                                                                                                      |
-| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` reached.                                                                                                                   |
-| `OBSERVER_ID_CONFLICT` | A replay with the same `id` and a different spec.                                                                                                                                         |
-| `OWNER_TIMEOUT`        | The host did not ack within `observers.owner_ack_timeout_ms`: an `onObserverAdded` hook ran past it.                                                                                      |
-| `OBSERVE_REJECTED`     | An `onObserverAdded` hook threw an error other than `ObserveRejection`.                                                                                                                   |
-| host codes             | Carried verbatim from `ObserverAck.error`: the code of the `ObserveRejection` a hook threw (for example `HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`).                                |
+| Code                   | When                                                                                                                                                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value.                                                                                                 |
+| `INVALID_ARGS`         | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode.                               |
+| `INVALID_FILTER`       | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.                                                                                                               |
+| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` / `response_format`.                                                                                                                                     |
+| `NOT_OBSERVABLE`       | The function registered `observable: false`.                                                                                                                                                                            |
+| `FORBIDDEN`            | RBAC denies the observed function or the target, the registration hook denied, or the target is a private function.                                                                                                     |
+| `SELF_TARGET`          | The target is the observed function.                                                                                                                                                                                    |
+| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` reached.                                                                                                                                                 |
+| `OBSERVER_ID_CONFLICT` | Another observer holds the `id`: the same connection's, with a different spec, or another connection's. A `suspended` observer's own worker, on a new connection under the same worker name and namespace, replaces it. |
+| `OWNER_TIMEOUT`        | The host did not ack within `observers.owner_ack_timeout_ms`: an `onObserverAdded` hook ran past it.                                                                                                                    |
+| `OBSERVE_REJECTED`     | An `onObserverAdded` hook threw an error other than `ObserveRejection`.                                                                                                                                                 |
+| host codes             | Carried verbatim from `ObserverAck.error`: the code of the `ObserveRejection` a hook threw (for example `HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`).                                                              |
 
 A call through an observer fails with `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`,
 `OBSERVER_NOT_ACTIVE`, `LOOP_GUARD`, `OVERFLOW`, `TIMEOUT`, or the target's own error.
 
 State reasons (`ObserverStateChanged.reason.code`):
 
-| Reason                  | Meaning                                                                                                         |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `OWNER_UNAVAILABLE`     | The observed function's host is gone; the observer waits as `pending`.                                          |
-| `TARGET_UNAVAILABLE`    | The target function is not registered: `pending` until it first registers, `suspended` when it goes away later. |
-| `OBSERVER_DISCONNECTED` | The observing worker disconnected; the grace period runs.                                                       |
-| `EXPIRED`               | `expires_in_ms` elapsed.                                                                                        |
-| `MAX_FIRES`             | `max_fires` reached.                                                                                            |
-| `UNOBSERVED`            | Disposed by `Unobserve` (or `engine::observers::dispose`).                                                      |
+| Reason                  | Meaning                                                                                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OWNER_UNAVAILABLE`     | The observed function's host is gone; the observer waits as `pending`.                                                                                         |
+| `TARGET_UNAVAILABLE`    | The target function is not registered: `pending` until it first registers, `suspended` when it goes away later.                                                |
+| `OBSERVER_DISCONNECTED` | The observing worker disconnected: `suspended` while the grace period runs, `disposed` when it ends or when the worker's new connection replaces the observer. |
+| `EXPIRED`               | `expires_in_ms` elapsed.                                                                                                                                       |
+| `MAX_FIRES`             | `max_fires` reached.                                                                                                                                           |
+| `UNOBSERVED`            | Disposed by `Unobserve` (or `engine::observers::dispose`).                                                                                                     |
 
 Drop reasons, counted per observed function in `iii.observer.dropped.total` (never silent; the
 metric is updated once a second):

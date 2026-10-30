@@ -204,13 +204,17 @@ struct Status {
 }
 
 /// Who observes: the connection that created the observer (re-parented on
-/// `Reattach`), and the RBAC session it was authorized under, which every
-/// later registration of the observed function or the target is checked
-/// against again.
+/// `Reattach`), the worker name and namespace that connection registered
+/// with, and the RBAC session it was authorized under, which every later
+/// registration of the observed function or the target is checked against
+/// again. The name and namespace identify the worker: a new connection
+/// under both may replace the observer while its connection is away
+/// (decision 51).
 #[derive(Clone)]
 pub(crate) struct Observing {
     pub connection: Uuid,
     pub worker_name: Option<String>,
+    pub namespace: String,
     pub session: Option<Arc<crate::workers::worker::rbac_session::Session>>,
 }
 
@@ -700,48 +704,83 @@ fn record_state_gauge(state: &ObserverState, count: i64) {
     }
 }
 
+/// A state change made under an observer's status lock
+/// ([`ObserverRegistry::transition`]), for [`ObserverRegistry::settle`] once
+/// the lock is released.
+#[must_use = "a transition is settled once the status lock is released"]
+pub(super) struct Transition {
+    became: ObserverState,
+    unqueued: Option<super::events::UnqueuedEvent>,
+    activeness_changed: bool,
+}
+
 impl ObserverRegistry {
     /// Applies `change` to `observer`'s flags and re-derives its state. On a
     /// change, the observing worker hears about it (`observerstatechanged`),
     /// `engine::on-observers-changed` is called, the function's active set is
     /// rebuilt when activeness changed, and a disposed observer is forgotten.
     pub(crate) fn update(&self, observer: &Arc<Observer>, change: impl FnOnce(&mut Flags)) {
-        let (became, unqueued, activeness_changed) = {
-            let mut status = lock(&observer.status);
-            change(&mut status.flags);
-            let (state, reason) = status.flags.state(observer);
-            let same_reason =
-                status.reason.as_ref().map(|r| &r.code) == reason.as_ref().map(|r| &r.code);
-            if state == status.state && same_reason {
-                return;
-            }
-            let was_active = status.state == ObserverState::Active;
-            self.state_counts.leave(&status.state);
-            self.state_counts.enter(&state);
-            if state == ObserverState::Active {
-                status.flags.activated_once = true;
-            }
-            status.state = state.clone();
-            status.reason = reason.clone();
-            // Under the status lock, so one observer's transitions reach its
-            // observing worker, and `engine::on-observers-changed`, in the
-            // order they happened.
-            self.notify(
-                observer.observing().connection,
-                Message::ObserverStateChanged {
-                    id: observer.id.clone(),
-                    state: state.clone(),
-                    reason: reason.clone(),
-                    fires: observer.fires(),
-                },
-            );
-            let unqueued = self.observer_changed(observer, &state, reason);
-            (
-                state,
-                unqueued,
-                was_active != (status.state == ObserverState::Active),
-            )
-        };
+        if let Some(transition) = self.transition(observer, change) {
+            self.settle(observer, transition);
+        }
+    }
+
+    /// The part of [`Self::update`] done under `observer`'s status lock:
+    /// applies `change`, re-derives the state and, on a change, tells the
+    /// observing worker (`observerstatechanged`) and hands
+    /// `engine::on-observers-changed` its call, so one observer's transitions
+    /// reach both in the order they happened. `None` when the state and its
+    /// reason stayed the same. The caller settles a transition
+    /// ([`Self::settle`]).
+    pub(super) fn transition(
+        &self,
+        observer: &Arc<Observer>,
+        change: impl FnOnce(&mut Flags),
+    ) -> Option<Transition> {
+        let mut status = lock(&observer.status);
+        change(&mut status.flags);
+        let (state, reason) = status.flags.state(observer);
+        let same_reason =
+            status.reason.as_ref().map(|r| &r.code) == reason.as_ref().map(|r| &r.code);
+        if state == status.state && same_reason {
+            return None;
+        }
+        let was_active = status.state == ObserverState::Active;
+        self.state_counts.leave(&status.state);
+        self.state_counts.enter(&state);
+        if state == ObserverState::Active {
+            status.flags.activated_once = true;
+        }
+        status.state = state.clone();
+        status.reason = reason.clone();
+        self.notify(
+            observer.observing().connection,
+            Message::ObserverStateChanged {
+                id: observer.id.clone(),
+                state: state.clone(),
+                reason: reason.clone(),
+                fires: observer.fires(),
+            },
+        );
+        let unqueued = self.observer_changed(observer, &state, reason);
+        Some(Transition {
+            activeness_changed: was_active != (state == ObserverState::Active),
+            became: state,
+            unqueued,
+        })
+    }
+
+    /// The part of [`Self::update`] done once `observer`'s status lock is
+    /// released: the `engine::on-observers-changed` call no evaluator took is
+    /// evaluated, an observer in `disposed` or `error` leaves its owner's set
+    /// (`observerremoved`), the function's active set is rebuilt when
+    /// activeness changed, and a disposed observer is forgotten.
+    pub(super) fn settle(&self, observer: &Arc<Observer>, transition: Transition) {
+        let Transition {
+            became,
+            unqueued,
+            activeness_changed,
+        } = transition;
         tracing::debug!(observer_id = %observer.id, state = %became, "observer state changed");
         if let Some(event) = unqueued {
             event.evaluate();

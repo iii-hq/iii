@@ -564,6 +564,67 @@ async fn observed_values_are_the_handlers_without_the_callers_stamp() {
     sink.reply(&echoed, Value::Null).await;
 }
 
+/// A call through an observer is a call the host makes: its payload reaches
+/// the target with `_caller_worker_id` set to the host's connection id, as
+/// on every call a worker makes (decision 49). iii's delivery of an observed
+/// value to the same target carries no `_caller_worker_id` (decision 40),
+/// though the call the host answered carried its caller's.
+#[tokio::test]
+async fn only_a_call_through_an_observer_carries_the_callers_stamp() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, deliver) in [("inputs", "input"), ("outputs", "output")] {
+        sink.observe_active(observer(
+            id,
+            json!({ "function_id": "orders::create", "deliver": deliver }),
+            "sink::orders",
+        ))
+        .await;
+    }
+
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    assert_eq!(
+        invoke["data"]["_caller_worker_id"],
+        checkout.worker_id.to_string()
+    );
+    // The handler returns its input, the caller's stamp included.
+    orders
+        .reply_observed(&invoke, invoke["data"].clone(), &["inputs", "outputs"])
+        .await;
+    checkout.result(call).await;
+    let mut delivered_by = Vec::new();
+    for _ in 0..2 {
+        let delivered = sink.invoked("sink::orders").await;
+        assert_eq!(delivered["data"], json!({ "n": 1 }), "{delivered}");
+        delivered_by.push(delivered["activation"]["observer_id"].clone());
+        sink.reply(&delivered, Value::Null).await;
+    }
+    delivered_by.sort_by_key(|id| id.to_string());
+    assert_eq!(delivered_by, [json!("inputs"), json!("outputs")]);
+
+    let through = orders
+        .call_with(
+            "sink::orders",
+            json!({ "initial": true }),
+            json!({ "activation": { "observer_id": "inputs" } }),
+        )
+        .await;
+    let delivered = sink.invoked("sink::orders").await;
+    assert_eq!(delivered["activation"]["observer_id"], "inputs");
+    assert_eq!(
+        delivered["data"],
+        json!({ "initial": true, "_caller_worker_id": orders.worker_id.to_string() }),
+    );
+    sink.reply(&delivered, json!({ "ok": true })).await;
+    assert_eq!(
+        orders.result(through).await["result"],
+        json!({ "ok": true })
+    );
+}
+
 /// A call to a function with no active observer costs the engine one load:
 /// nothing is copied or evaluated, whatever its host answers. An id the host
 /// lists anyway (an observer that was not active when the call began) is

@@ -187,6 +187,7 @@ impl ObserverRegistry {
             observing: Observing {
                 connection: ENGINE_CONNECTION,
                 worker_name: Some(ENGINE_CALLER_NAME.to_string()),
+                namespace: DEFAULT_NAMESPACE.to_string(),
                 session: None,
             },
             flags: Flags {
@@ -202,7 +203,7 @@ impl ObserverRegistry {
             },
             function,
         }));
-        if !self.publish(&observer, ENGINE_CONNECTION, Vec::new()) {
+        if !self.publish(&observer, ENGINE_CONNECTION, Vec::new(), None) {
             return Err(ErrorBody::new(
                 observe_codes::OBSERVER_ID_CONFLICT,
                 format!("observer `{id}` was created concurrently"),

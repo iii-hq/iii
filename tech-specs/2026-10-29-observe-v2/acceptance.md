@@ -78,6 +78,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | E11 | Every fixture in `sdk/fixtures/protocol/observe` round-trips in the engine and all five SDKs; no fixture or rule about next, per-next pooling, unchanged calls, `LATE_DELIVERY` or routed items remains. | test, grep |
 | E12 | Metrics labels `engine` / `host` / `observer_call`; telemetry heartbeat observer counts. | test |
 | E13 | RBAC: trigger keys removed (ignored with one warn); registration hook sees and may rewrite `args_format`, `private`, `observable`. | test |
+| E14 | An `observe` naming a suspended observer's id, from a connection under the same worker name in the same namespace, replaces it: the host hears nothing more about the old observer and gets the new one like any new observer, and calls reach the new target. An `observe` the engine refuses (invalid args, a target check, a limit, RBAC or the registration hook) replaces nothing, and while the registration hook runs the suspended observer keeps its id. From another worker name, or the same name in another namespace, the id stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends. An observer in `error` keeps its id until then, from its own worker too. The earlier connection, reattaching, finds the replaced observer `disposed` (decision 51). | test |
 
 ## F. Triggers removed everywhere
 
