@@ -170,8 +170,8 @@ ref, err := client.RegisterFunction("orders::create", func(ctx context.Context, 
 ```
 
 Per-invocation metadata rides on the handler's `ctx` (so the `Handler` signature never
-changes); read it with `MetadataFromContext`. `ok` is `false` when the caller attached
-none:
+changes); read it with `MetadataFromContext`. Metadata is any JSON value. `ok` is `false`
+when the caller attached none, or JSON `null`, which is the same as none:
 
 ```go
 client.RegisterFunction("orders::create", func(ctx context.Context, data json.RawMessage) (any, error) {
@@ -544,7 +544,9 @@ hook and its deliver hook receives every active observer.
 A call through an observer goes to its stored target: the engine checks that this worker
 hosts the observer's function and that the observer is active (`NOT_FUNCTION_OWNER`,
 `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`) and applies its policy (`OVERFLOW` past
-`max_in_flight`), metadata sidecar and loop guard.
+`max_in_flight`), metadata sidecar and loop guard. It takes no `Metadata`: the target's
+metadata is the observer's, and `Call` refuses a request with `Metadata` before sending
+anything.
 
 To send one observer something of its own, such as its initial state, call the function
 with metadata `{"for_observer": <obs.ID>}` once `obs.Accepted` returns nil, and let the

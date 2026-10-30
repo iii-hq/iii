@@ -756,7 +756,9 @@ type CallRequest struct {
 	// exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its
 	// policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop
 	// guard. The call goes out on the current connection, after the acks already sent
-	// on it; FunctionID, Namespace and an enqueue action do not apply. A call through
+	// on it; FunctionID, Namespace and an enqueue action do not apply. It takes no
+	// Metadata: the target's metadata is the observer's registration metadata, and Call
+	// refuses a request with Metadata before anything is sent. A call through
 	// an observer belongs in the function's [DeliverHook], which applies the observer's
 	// filters with [Observer.Matches]; to send one observer something outside delivery
 	// (its initial state), call the function with metadata {"for_observer": <obs.ID>}
@@ -769,8 +771,9 @@ type CallRequest struct {
 	//
 	// Deprecated: use Payload.
 	Data json.RawMessage
-	// Metadata is optional per-invocation metadata (arbitrary JSON) sent alongside the
-	// payload on the wire's metadata channel, not folded into it. nil is omitted.
+	// Metadata is optional per-invocation metadata (any JSON value) sent alongside the
+	// payload on the wire's metadata channel, not folded into it. nil and JSON null are
+	// no metadata: omitted, and the handler's MetadataFromContext reports none.
 	Metadata json.RawMessage
 	// Action selects void/enqueue semantics; nil means the default await path.
 	Action *CallAction
@@ -828,6 +831,8 @@ const maxLocalDepth = 64
 // still counted and delivered. A handler that can block for long should honor its ctx
 // (cancelled on Close), or opt out with [RegisterFunctionOptions].LocalDispatch.
 func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, error) {
+	// JSON null metadata is no metadata, local or routed (decision 54).
+	req.Metadata = presentMetadata(req.Metadata)
 	if req.Observer != nil {
 		return c.callThroughObserver(ctx, req)
 	}
@@ -867,6 +872,11 @@ func (c *Client) callThroughObserver(ctx context.Context, req CallRequest) (json
 	}
 	if req.FunctionID != "" || req.Namespace != "" {
 		return nil, fmt.Errorf("iii: CallRequest.FunctionID and Namespace must be empty with Observer: the call goes to observer %s's target", obs.id)
+	}
+	// Its target's metadata is the observer's: refused before anything is sent, so no
+	// metadata is lost on the way (decision 53).
+	if req.Metadata != nil {
+		return nil, errObserverCallMetadata
 	}
 	if req.Action != nil && req.Action.Type == "enqueue" {
 		return nil, fmt.Errorf("iii: a call through observer %s cannot be enqueued", obs.id)
@@ -1716,12 +1726,14 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	// Attach trace context, per-invocation metadata and the invocation itself to ctx
 	// before invoking the handler; they are delivered out-of-band on ctx (see
 	// MetadataFromContext, InvocationFromContext) so the Handler signature stays stable.
+	// JSON null metadata is none, as on the local path (decision 54).
+	metadata := presentMetadata(msg.Metadata)
 	inv := &invocation{
 		functionID:   msg.FunctionID,
 		caller:       msg.Caller,
 		activation:   msg.Activation,
 		observeDepth: msg.ObserveDepth,
-		metadata:     msg.Metadata,
+		metadata:     metadata,
 		trace:        tc,
 	}
 	if msg.InvocationID != nil {
@@ -1729,7 +1741,7 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	} else {
 		inv.invocationID = uuid.NewString()
 	}
-	hctx := withInvocation(withMetadata(injectTraceContext(ctx, tc), msg.Metadata), inv)
+	hctx := withInvocation(withMetadata(injectTraceContext(ctx, tc), metadata), inv)
 	f := fn.observe
 	// the observers active when the call started, and the hooks set then
 	st := f.state.Load()
@@ -1740,7 +1752,7 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 		}
 		answer, ids := f.deliver(ctx, &callDelivery{
 			state:   st,
-			call:    handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, msg.Metadata),
+			call:    handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, metadata),
 			handler: handler,
 			routed:  true,
 		})

@@ -845,6 +845,39 @@ func TestCallThroughAnObserver(t *testing.T) {
 	}
 }
 
+// A call through an observer takes no metadata (decision 53): Call refuses one that
+// carries any, whatever the value, before anything is sent. JSON null is no metadata,
+// and the call goes out without it.
+func TestCallThroughAnObserverTakesNoMetadata(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	registerHost(t, c, "http::on-request", Identity, RegisterFunctionOptions{Private: true})
+	addObserver(t, fe, "http::on-request", observerInfo("route", "users::get", `{"method":"GET","path":"/users"}`, ""))
+	obs := c.Observers("http::on-request")[0]
+	ctx := context.Background()
+	const message = "iii: a call through an observer takes no metadata; its target receives the observer's metadata"
+	for _, metadata := range []string{`{"route":"users"}`, `["a"]`, `"tag"`, `0`, `false`} {
+		_, err := c.Call(ctx, CallRequest{Observer: obs, Payload: json.RawMessage(`{}`), Metadata: json.RawMessage(metadata)})
+		if err == nil || err.Error() != message {
+			t.Errorf("metadata %s: err %v, want %q", metadata, err, message)
+		}
+	}
+	time.Sleep(30 * time.Millisecond)
+	if n := invokeFrames(fe, "users::get"); n != 0 {
+		t.Fatalf("%d frames sent for refused calls", n)
+	}
+	for _, null := range []string{"null", " null "} {
+		if _, err := c.Call(ctx, CallRequest{Observer: obs, Payload: json.RawMessage(`{"path":"/users"}`), Metadata: json.RawMessage(null), Action: VoidAction()}); err != nil {
+			t.Fatalf("metadata %q: %v", null, err)
+		}
+	}
+	for _, d := range fe.waitFrames(MsgInvokeFunction, 2, func(d *DecodedMessage) bool { return d.InvokeFunction.FunctionID == "users::get" }) {
+		if d.InvokeFunction.Activation == nil || d.InvokeFunction.Activation.ObserverID != "route" || d.InvokeFunction.Metadata != nil {
+			t.Errorf("frame %+v: want activation route and no metadata", d.InvokeFunction)
+		}
+	}
+}
+
 // Reject takes the observer out of delivery at once and runs its removed hooks; the
 // engine's observerremoved that follows runs none again.
 func TestRejectStopsDeliveryAtOnce(t *testing.T) {
