@@ -129,7 +129,7 @@ Each capability worker hosts a source function. Add the worker once
 | `queue::on-message` | `queue` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` | The published data. Returning acks the message; an error retries it with backoff, then moves it to the topic's DLQ |
 | `state::on-changed` | `state` | none; filter on `input.scope`, `input.key` | The envelope; `input` is `{ event_type, scope, key, old_value, new_value }` |
 | `database::on-row-changed` | `database` | `{ db, table?, ops? }` | The envelope; `input` is the row change (`db`, `table`, `op`, ...) |
-| `pubsub::publish` | `pubsub` | none; filter on `input.topic` | The envelope; `input` is `{ topic, data }` |
+| `publish`         | `pubsub` | none; filter on `input.topic` | The envelope; `input` is `{ topic, data }` |
 
 Other workers name their sources `<worker>::on-<event>` and list them in their README. Engine
 sources are [below](#engine-hosted-sources).

@@ -98,7 +98,7 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `cron`                                                     | `cron::on-tick`                                                    | `{ expression }`                                              | `input.scheduled_time`                  |
 | `database::row-changed`                                    | `database::on-row-changed`                                         | `{ db, table?, ops? }`                                        | `input.op`, `caller.parent.worker_name` |
 | `durable:subscriber`                                       | `queue::on-message`                                                | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` | `input`, the message                    |
-| `subscribe`                                                | `pubsub::publish`                                                  | none                                                          | `input.topic`                           |
+| `subscribe`                                                | `publish`                                                          | none                                                          | `input.topic`                           |
 | `state`                                                    | `state::on-changed`                                                | none                                                          | `input.scope`, `input.key`              |
 | `log`                                                      | `observability::on-log`                                            | none                                                          | `input.severity_number`                 |
 | `trace`                                                    | `observability::on-span`                                           | none                                                          |                                         |
@@ -492,7 +492,7 @@ iii.observe(
 // subscribe: observe the publish calls of one topic
 iii.observe(
   {
-    function_id: "pubsub::publish",
+    function_id: "publish",
     filters: { "input.topic": { $eq: "link.created" } },
     deliver: "input",
   },

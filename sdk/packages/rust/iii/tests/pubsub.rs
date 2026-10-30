@@ -1,5 +1,5 @@
 //! Integration tests for PubSub operations: a subscriber observes
-//! `pubsub::publish` with a filter on `input.topic`.
+//! `publish` with a filter on `input.topic`.
 //!
 //! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
 
@@ -26,12 +26,17 @@ fn unique_topic(prefix: &str) -> String {
 /// input, `{ topic, data }`.
 async fn subscribe(iii: &IIIClient, topic: &str, target: &str) -> ObserverHandle {
     let observer = iii.observe(
-        Source::function("pubsub::publish")
+        Source::function("publish")
             .filters(json!({ "input.topic": { "$eq": topic } }))
             .deliver(Deliver::Input),
         target,
     );
-    observer.ready().await.expect("subscribe");
+    // An observer of a function nobody hosts stays pending: bound the wait so a
+    // missing pubsub worker fails the test instead of hanging it.
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("`publish` is not hosted: is the pubsub worker running?")
+        .expect("subscribe");
     observer
 }
 
@@ -66,7 +71,7 @@ async fn subscribe_and_receive_published_messages() {
     common::settle().await;
 
     iii.call(CallRequest {
-        function_id: "pubsub::publish".to_string(),
+        function_id: "publish".to_string(),
         payload: json!({"topic": topic, "data": {"message": "Hello PubSub!"}}),
         action: None,
         timeout_ms: None,
@@ -137,7 +142,7 @@ async fn topic_isolation() {
     common::settle().await;
 
     iii.call(CallRequest {
-        function_id: "pubsub::publish".to_string(),
+        function_id: "publish".to_string(),
         payload: json!({"topic": topic_a, "data": {"for": "a"}}),
         action: None,
         timeout_ms: None,

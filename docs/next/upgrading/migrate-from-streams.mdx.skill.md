@@ -78,7 +78,7 @@ Deprecated with `iii-stream`:
 
 Deprecated with `pubsub` (the registry worker `pubsub`, formerly `iii-pubsub`):
 
-- Function `pubsub::publish`, which subscribers observe with a filter on `input.topic`, and the
+- Function `publish`, which subscribers observe with a filter on `input.topic`, and the
   `pubsub` configuration entry.
 
 Not deprecated, keep using them:
@@ -132,7 +132,7 @@ Find your current usage:
 | `createStream`, `create_stream` or `IStream`                                                      | Recipe 2, with storage functions your worker owns                                        |
 | Join and leave events (`stream::on-join`, `stream::on-leave`) or the `iii-stream` `auth_function` | [Authorization and tenant isolation](#authorization-and-tenant-isolation)                |
 | The dedicated Streams WebSocket (port `3112`)                                                     | Browser SDK over an RBAC listener, plus one of the recipes                               |
-| `pubsub::publish` and its subscribers                                                             | [Migrate from pubsub](#migrate-from-pubsub)                                              |
+| `publish` and its subscribers                                                                     | [Migrate from pubsub](#migrate-from-pubsub)                                              |
 
 ## Recipe 1: Ephemeral notifications
 
@@ -472,8 +472,8 @@ The Linkly tutorial and the real-time todo how-to use observable functions and t
 
 ## Checklist
 
-- [ ] List every call to `stream::*` and `pubsub::publish`, and every observer of
-      `stream::on-changed`, `stream::on-join`, `stream::on-leave` and `pubsub::publish`, including
+- [ ] List every call to `stream::*` and `publish`, and every observer of
+      `stream::on-changed`, `stream::on-join`, `stream::on-leave` and `publish`, including
       calls whose failures your code ignores.
 - [ ] Pick a recipe per use case and name the worker that owns each piece of data.
 - [ ] Move authorization to the RBAC listener and the provider's `onObserverAdded` validation.

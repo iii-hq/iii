@@ -5,7 +5,7 @@ function uniqueTopic(prefix: string): string {
   return `${prefix}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`
 }
 
-describe('PubSub: observers of pubsub::publish, filtered by topic', () => {
+describe('PubSub: observers of publish, filtered by topic', () => {
   it('should subscribe and receive published messages', async () => {
     const topic = uniqueTopic('test.topic')
     const receivedMessages: Record<string, unknown>[] = []
@@ -21,14 +21,14 @@ describe('PubSub: observers of pubsub::publish, filtered by topic', () => {
     })
 
     const subscription = iii.observe(
-      { function_id: 'pubsub::publish', filters: { 'input.topic': { $eq: topic } }, deliver: 'input' },
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topic } }, deliver: 'input' },
       fn.id,
     )
 
     await sleep(300)
 
     await iii.call({
-      function_id: 'pubsub::publish',
+      function_id: 'publish',
       payload: {
         topic,
         data: { message: 'Hello PubSub!' },
@@ -43,7 +43,7 @@ describe('PubSub: observers of pubsub::publish, filtered by topic', () => {
     ])
 
     expect(receivedMessages).toHaveLength(1)
-    // deliver: 'input' hands the target what pubsub::publish was called with
+    // deliver: 'input' hands the target what publish was called with
     expect(receivedMessages[0]).toEqual({ topic, data: { message: 'Hello PubSub!' } })
 
     fn.unregister()
@@ -73,19 +73,19 @@ describe('PubSub: observers of pubsub::publish, filtered by topic', () => {
     })
 
     const subscriptionA = iii.observe(
-      { function_id: 'pubsub::publish', filters: { 'input.topic': { $eq: topicA } }, deliver: 'input' },
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topicA } }, deliver: 'input' },
       fnA.id,
     )
 
     const subscriptionB = iii.observe(
-      { function_id: 'pubsub::publish', filters: { 'input.topic': { $eq: topicB } }, deliver: 'input' },
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topicB } }, deliver: 'input' },
       fnB.id,
     )
 
     await sleep(300)
 
     await iii.call({
-      function_id: 'pubsub::publish',
+      function_id: 'publish',
       payload: {
         topic: topicA,
         data: { for: 'a' },

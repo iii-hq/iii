@@ -132,7 +132,7 @@ iii.registerFunction(
 )
 iii.observe(
   {
-    function_id: 'pubsub::publish',
+    function_id: 'publish',
     filters: { 'input.topic': { $eq: 'orders.created' } },
     deliver: 'input',
   },

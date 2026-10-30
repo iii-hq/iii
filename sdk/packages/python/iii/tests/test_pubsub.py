@@ -1,4 +1,4 @@
-"""Integration tests for PubSub: subscribers observe ``pubsub::publish`` with a
+"""Integration tests for PubSub: subscribers observe ``publish`` with a
 filter on ``input.topic`` and receive the published input."""
 
 import asyncio
@@ -10,6 +10,10 @@ import pytest
 from iii import ObserverHandle
 from iii.iii import III
 
+# An observer of a function nobody hosts stays pending; bound the wait so a
+# missing pubsub worker fails the test instead of hanging it.
+READY_TIMEOUT_S = 10.0
+
 
 def unique_topic(prefix: str) -> str:
     return f"{prefix}.{int(time.time())}.{random.random():.10f}".replace(".", "_")
@@ -18,7 +22,7 @@ def unique_topic(prefix: str) -> str:
 def subscribe(iii_client: III, topic: str, function_id: str) -> ObserverHandle:
     """A subscriber: every publish to ``topic`` calls ``function_id`` with the published input."""
     return iii_client.observe(
-        {"function_id": "pubsub::publish", "filters": {"input.topic": {"$eq": topic}}, "deliver": "input"},
+        {"function_id": "publish", "filters": {"input.topic": {"$eq": topic}}, "deliver": "input"},
         function_id,
     )
 
@@ -37,12 +41,12 @@ async def test_subscribe_and_receive_published_messages(iii_client: III):
 
     fn = iii_client.register_function(f"test.pubsub.py.subscriber.{topic}", subscriber_handler)
     subscription = subscribe(iii_client, topic, fn.id)
-    await subscription.ready_async()
+    await asyncio.wait_for(subscription.ready_async(), timeout=READY_TIMEOUT_S)
 
     try:
         iii_client.call(
             {
-                "function_id": "pubsub::publish",
+                "function_id": "publish",
                 "payload": {"topic": topic, "data": {"message": "Hello PubSub!"}},
             }
         )
@@ -79,13 +83,13 @@ async def test_topic_isolation(iii_client: III):
     fn_b = iii_client.register_function(f"test.pubsub.py.topic_b.{topic_b}", handler_b)
     subscription_a = subscribe(iii_client, topic_a, fn_a.id)
     subscription_b = subscribe(iii_client, topic_b, fn_b.id)
-    await subscription_a.ready_async()
-    await subscription_b.ready_async()
+    await asyncio.wait_for(subscription_a.ready_async(), timeout=READY_TIMEOUT_S)
+    await asyncio.wait_for(subscription_b.ready_async(), timeout=READY_TIMEOUT_S)
 
     try:
         iii_client.call(
             {
-                "function_id": "pubsub::publish",
+                "function_id": "publish",
                 "payload": {"topic": topic_a, "data": {"for": "a"}},
             }
         )

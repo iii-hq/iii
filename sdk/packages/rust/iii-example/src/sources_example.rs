@@ -48,7 +48,7 @@ pub fn setup(iii: &IIIClient) {
         RegisterFunction::new(on_order_created).description("Processes new order events"),
     );
     iii.observe(
-        Source::function("pubsub::publish")
+        Source::function("publish")
             .filters(json!({ "input.topic": { "$eq": "orders.created" } }))
             .deliver(Deliver::Input),
         "example::on_order_created",

@@ -814,12 +814,12 @@ The standard workers represent their events as functions: an HTTP request is a c
 | `queue::on-message`        | queue               | A message is published to the observer's topic. | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` |
 | `state::on-changed`        | state               | A key is created, updated, or deleted.          | none; filter on `input.scope` and `input.key`                 |
 | `database::on-row-changed` | database            | A write commits.                                | `{ db, table?, ops? }`                                        |
-| `pubsub::publish`          | pubsub (deprecated) | A message is published.                         | none; filter on `input.topic`                                 |
+| `publish`                  | pubsub (deprecated) | A message is published.                         | none; filter on `input.topic`                                 |
 
 The other workers name their event functions `<worker>::on-<event>`, and each worker's page on
 [workers.iii.dev](https://workers.iii.dev) lists them with their `args` and events.
 
-Except `pubsub::publish`, which publishers call, these functions are private: only the worker that
+Except `publish`, which publishers call, these functions are private: only the worker that
 hosts one can call it, and a call from any other worker fails with `FORBIDDEN`. Every worker can
 observe them. A private function cannot be an observer's target.
 

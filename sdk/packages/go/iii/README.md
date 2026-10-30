@@ -766,7 +766,7 @@ observer, err := client.Observe(iii.Source{
 | `cron` | `cron::on-tick` | `{ expression }` |
 | `database::row-changed` | `database::on-row-changed` | `{ db, table?, ops? }` |
 | `durable:subscriber` | `queue::on-message` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` |
-| `subscribe` | `pubsub::publish`, filtered on `input.topic` | none |
+| `subscribe` | `publish`, filtered on `input.topic` | none |
 | `state` | `state::on-changed`, filtered on `input.scope`, `input.key` | none |
 | `log`, `trace` | `iii.FnOnLog`, `iii.FnOnSpan` | none |
 | `configuration` | `iii.FnOnConfigurationUpdate` | none |

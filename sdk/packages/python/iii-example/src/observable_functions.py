@@ -140,6 +140,6 @@ def setup(iii: IIIClient) -> None:
 
     iii.register_function("example::on_order_created", handle_order)
     iii.observe(
-        {"function_id": "pubsub::publish", "filters": {"input.topic": {"$eq": "orders.created"}}, "deliver": "input"},
+        {"function_id": "publish", "filters": {"input.topic": {"$eq": "orders.created"}}, "deliver": "input"},
         "example::on_order_created",
     )

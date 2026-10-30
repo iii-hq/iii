@@ -65,7 +65,7 @@ def test_the_example_registers_its_functions_and_observers(
         ("example::on-schedule", "example::send_report"),
         ("cron::on-tick", "example::scheduled_cleanup"),
         ("state::on-changed", "example::on_user_updated"),
-        ("pubsub::publish", "example::on_order_created"),
+        ("publish", "example::on_order_created"),
         ("http::on-request", "api.post.todo"),
     }
     engine.wait_for(
