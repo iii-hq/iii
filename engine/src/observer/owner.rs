@@ -97,6 +97,11 @@ pub(crate) struct FunctionEntry {
     /// `sync` on an entry that is not dead may use it, and it stays in the map
     /// until they let go.
     dead: AtomicBool,
+    /// The latest time an owner moved on in this function's observer hooks,
+    /// with that owner: it answered an observer, or the engine timed one out.
+    /// The SDK runs one function's hooks one at a time, so an observer's ack
+    /// timeout counts from here, not from its announcement (v2 §4.3).
+    owner_progress: Mutex<Option<(Uuid, tokio::time::Instant)>>,
 }
 
 struct OwnerSync {
@@ -156,6 +161,7 @@ impl FunctionEntry {
             }),
             announced: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            owner_progress: Mutex::new(None),
         }
     }
 
@@ -927,6 +933,7 @@ impl ObserverRegistry {
             return;
         }
         observer.cancel_ack_timer();
+        self.owner_moved_on(&observer.function, connection, tokio::time::Instant::now());
     }
 
     /// The observer left the owner's set (error, disposal): the owner hears
@@ -936,6 +943,7 @@ impl ObserverRegistry {
         let Some(entry) = self.function_entry(&observer.function) else {
             return;
         };
+        let flags = observer.flags();
         let mut sync = lock(&entry.sync);
         let (announced, rejected) = observer.take_announcement();
         let (Some(announced), Some(owner)) = (announced, sync.announced_to) else {
@@ -943,6 +951,16 @@ impl ObserverRegistry {
         };
         if rejected || announced.owner != owner {
             return;
+        }
+        let timed_out = flags
+            .failed
+            .as_ref()
+            .is_some_and(|error| error.code == observe_codes::OWNER_TIMEOUT);
+        if !flags.owner_acked && !timed_out {
+            // Its hooks may be running: the owner moves on to the next
+            // observer once they end, a full timeout from now at the latest.
+            let at = tokio::time::Instant::now() + self.ack_timeout();
+            Self::record_progress(&entry, owner, at);
         }
         sync.revision += 1;
         self.notify(
@@ -956,43 +974,130 @@ impl ObserverRegistry {
         );
     }
 
+    fn ack_timeout(&self) -> Duration {
+        Duration::from_millis(self.config().owner_ack_timeout_ms)
+    }
+
     /// `OWNER_TIMEOUT` unless the owner acks the announcement `generation`
-    /// within `observers.owner_ack_timeout_ms`. Checked under the status lock:
-    /// a timer that fires while the observer is announced again does nothing.
+    /// within `observers.owner_ack_timeout_ms` of moving on to it (see
+    /// [`Self::ack_timed_out`]). Checked under the status lock: a timer that
+    /// fires while the observer is announced again does nothing.
     fn arm_ack_timer(self: &Arc<Self>, observer: &Arc<Observer>, generation: u64) {
+        let announced_at = tokio::time::Instant::now();
+        self.arm_ack_timer_until(
+            observer,
+            generation,
+            announced_at,
+            announced_at + self.ack_timeout(),
+        );
+    }
+
+    fn arm_ack_timer_until(
+        self: &Arc<Self>,
+        observer: &Arc<Observer>,
+        generation: u64,
+        announced_at: tokio::time::Instant,
+        deadline: tokio::time::Instant,
+    ) {
         let Some(runtime) = self.runtime() else {
             return;
         };
-        let timeout = Duration::from_millis(self.config().owner_ack_timeout_ms);
         let registry = Arc::downgrade(self);
         let weak = Arc::downgrade(observer);
         let handle = runtime.spawn(async move {
-            tokio::time::sleep(timeout).await;
+            tokio::time::sleep_until(deadline).await;
             if let (Some(registry), Some(observer)) = (registry.upgrade(), weak.upgrade()) {
-                registry.ack_timed_out(&observer, generation);
+                registry.ack_timed_out(&observer, generation, announced_at);
             }
         });
         observer.set_ack_timer(handle.abort_handle());
     }
 
-    /// The ack timeout of announcement `generation` elapsed: `OWNER_TIMEOUT`,
-    /// unless the observer was acked, failed, disposed or announced again
-    /// meanwhile (checked under its status lock, as a re-announcement is).
-    fn ack_timed_out(&self, observer: &Arc<Observer>, generation: u64) {
-        self.update(observer, |flags| {
-            let waiting = flags
+    /// The ack timer of announcement `generation` fired. The SDK runs one
+    /// function's observer hooks at a time, in the order the engine announced
+    /// the observers (v2 §4.3), so the timeout counts from when the owner moved
+    /// on to this observer: its announcement, or the owner's latest answer for
+    /// the function (or ack timeout) after it. Before that deadline, or while
+    /// an observer announced to the same owner before this one still waits,
+    /// the timer is armed again. Past it, `OWNER_TIMEOUT`, unless the observer
+    /// was acked, failed, disposed or announced again meanwhile (checked under
+    /// its status lock, as a re-announcement is).
+    fn ack_timed_out(
+        self: &Arc<Self>,
+        observer: &Arc<Observer>,
+        generation: u64,
+        announced_at: tokio::time::Instant,
+    ) {
+        let Some(announced) = observer
+            .awaited_announcement()
+            .filter(|announced| announced.generation == generation)
+        else {
+            return;
+        };
+        let now = tokio::time::Instant::now();
+        let timeout = self.ack_timeout();
+        let entry = self.function_entry(&observer.function);
+        let started = entry
+            .as_deref()
+            .and_then(|entry| *lock(&entry.owner_progress))
+            .filter(|(owner, _)| *owner == announced.owner)
+            .map_or(announced_at, |(_, at)| at.max(announced_at));
+        let deadline = if started + timeout > now {
+            Some(started + timeout)
+        } else if entry
+            .as_deref()
+            .is_some_and(|entry| waits_behind(entry, observer, announced))
+        {
+            // Its hooks have not started: the owner is on an earlier one.
+            Some(now + timeout)
+        } else {
+            None
+        };
+        let waiting = |flags: &Flags| {
+            flags
                 .announced
                 .is_some_and(|announced| announced.generation == generation)
                 && !flags.owner_acked
                 && flags.failed.is_none()
-                && flags.disposed.is_none();
-            if waiting {
+                && flags.disposed.is_none()
+        };
+        if let Some(deadline) = deadline {
+            self.update(observer, |flags| {
+                if waiting(flags) {
+                    self.arm_ack_timer_until(observer, generation, announced_at, deadline);
+                }
+            });
+            return;
+        }
+        let mut failed = false;
+        self.update(observer, |flags| {
+            if waiting(flags) {
                 flags.failed = Some(ErrorBody::new(
                     observe_codes::OWNER_TIMEOUT,
                     "the function's owner did not ack the observer within \
                      observers.owner_ack_timeout_ms",
                 ));
+                failed = true;
             }
+        });
+        if failed && let Some(entry) = entry {
+            // The SDK gives up on the hook at the same deadline and moves on.
+            Self::record_progress(&entry, announced.owner, now);
+        }
+    }
+
+    /// The owner `owner` answered an observer of `function` at `at`.
+    fn owner_moved_on(&self, function: &FnKey, owner: Uuid, at: tokio::time::Instant) {
+        if let Some(entry) = self.function_entry(function) {
+            Self::record_progress(&entry, owner, at);
+        }
+    }
+
+    fn record_progress(entry: &FunctionEntry, owner: Uuid, at: tokio::time::Instant) {
+        let mut progress = lock(&entry.owner_progress);
+        *progress = Some(match *progress {
+            Some((current, latest)) if current == owner => (owner, latest.max(at)),
+            _ => (owner, at),
         });
     }
 
@@ -1093,6 +1198,19 @@ impl ObserverRegistry {
                 .with_function(&key.0, &key.1, |f| f.is_some())
         })
     }
+}
+
+/// Whether an observer of `entry`'s function announced to the same owner
+/// before `observer` (an earlier generation) still waits for its answer: the
+/// owner has not started on `observer`'s hooks yet. Read only when an ack
+/// timer passed its deadline.
+fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcement) -> bool {
+    entry.observers().iter().any(|other| {
+        other.id != observer.id
+            && other.awaited_announcement().is_some_and(|earlier| {
+                earlier.owner == announced.owner && earlier.generation < announced.generation
+            })
+    })
 }
 
 /// An observer as its function's owner sees it (CONTRACT D15).
@@ -1263,13 +1381,17 @@ mod tests {
         let second = generation(&observer);
         assert_ne!(first, second);
 
-        registry.ack_timed_out(&observer, first);
+        // Announced longer ago than the timeout: due.
+        let announced_at = tokio::time::Instant::now()
+            .checked_sub(registry.ack_timeout() * 2)
+            .expect("an instant two timeouts ago");
+        registry.ack_timed_out(&observer, first, announced_at);
         assert_eq!(
             observer.state(),
             crate::protocol::ObserverState::Pending,
             "stale timer"
         );
-        registry.ack_timed_out(&observer, second);
+        registry.ack_timed_out(&observer, second, announced_at);
         assert_eq!(observer.state(), crate::protocol::ObserverState::Error);
         assert_eq!(
             observer.reason().unwrap().code,
