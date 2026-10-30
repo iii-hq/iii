@@ -548,6 +548,11 @@ def test_a_deliver_hook_must_take_the_call_and_the_observers(engine: FakeEngine,
 def test_a_routed_call_with_no_observers_and_no_hook_sends_only_its_answer(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     client.register_function("quiet::fn", lambda d: d)
+    # The registration goes out from the SDK loop: clear only once it was sent, so it is not taken for a frame
+    # the call caused.
+    engine.wait_for(
+        lambda: any(f.get("id") == "quiet::fn" for f in engine.frames_of("registerfunction")), what="the registration"
+    )
     _confirm(client, engine, "quiet::fn")
     engine.clear()
     engine.deliver(invoke("quiet::fn", 7, "r-quiet"))
