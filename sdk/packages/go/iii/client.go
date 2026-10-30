@@ -182,6 +182,9 @@ type Client struct {
 	hookTimeout time.Duration
 	// standbyInterval overrides standbyRetryInterval (tests).
 	standbyInterval time.Duration
+	// beforeRegisterReturn runs in storeFunction once the registration is sent, before
+	// the registering call returns (tests).
+	beforeRegisterReturn func(id string)
 	// hookIDDelay overrides hookIDCheckDelay (tests).
 	hookIDDelay time.Duration
 
@@ -606,6 +609,9 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 	}
 	c.mu.Unlock()
 	c.sendFunction(fn)
+	if hook := c.beforeRegisterReturn; hook != nil {
+		hook(id)
+	}
 	return &FunctionRef{ID: id, client: c, observe: observe}, nil
 }
 
@@ -1568,6 +1574,16 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 // another connection hosts its id.
 const standbyRetryInterval = time.Second
 
+// standbyDelay is the wait before a Standby function refused with
+// FUNCTION_NAMESPACE_CONFLICT is registered again: the retry interval ±20 %.
+func (c *Client) standbyDelay() time.Duration {
+	interval := c.standbyInterval
+	if interval <= 0 {
+		interval = standbyRetryInterval
+	}
+	return time.Duration(float64(interval) * (0.8 + 0.4*rand.Float64()))
+}
+
 // rejectFunction handles the rejection of one function's registration: the engine
 // refused it, so no local dispatch, no observers for it here, and its held reports can
 // never be confirmed. A Standby function refused with FUNCTION_NAMESPACE_CONFLICT is
@@ -1587,11 +1603,7 @@ func (c *Client) rejectFunction(msg *RegistrationRejectedMessage) {
 			log.Printf("iii: function %q in namespace %q is hosted by worker %s; standing by to take it over when it leaves",
 				msg.FunctionID, msg.Namespace, msg.OwnerWorkerID)
 		}
-		interval := c.standbyInterval
-		if interval <= 0 {
-			interval = standbyRetryInterval
-		}
-		time.AfterFunc(time.Duration(float64(interval)*(0.8+0.4*rand.Float64())), func() {
+		time.AfterFunc(c.standbyDelay(), func() {
 			c.mu.Lock()
 			current, ok := c.functions[msg.FunctionID]
 			live := ok && current.observe == fn.observe && c.epoch == epoch && c.state == StateConnected

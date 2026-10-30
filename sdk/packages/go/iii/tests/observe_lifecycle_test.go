@@ -13,7 +13,8 @@ import (
 )
 
 // An observer's lifecycle in the worker that hosts its function, against the real
-// engine: the removed hooks of a rejected observer.
+// engine: the removed hooks of a rejected observer, and a standby taking over a
+// function's observers when its host leaves.
 
 // hookRecord records the added and removed hooks of one function by observer id, and
 // keeps the last Observer the added hook got.
@@ -137,5 +138,55 @@ func TestObserveRejectDuringTheAddedHook(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if added, removed, _ := rec.snapshot(); !slices.Equal(added, []string{h.ID()}) || !slices.Equal(removed, []string{h.ID()}) {
 		t.Errorf("added %v removed %v, want one of each for %s", added, removed, h.ID())
+	}
+}
+
+// Standby: a second worker registering a function another connection hosts gets
+// FUNCTION_NAMESPACE_CONFLICT and registers it again about once a second. When the
+// host leaves, the standby's registration is accepted, it runs its added hook for the
+// function's observer, and the observer is active again: the standby's calls reach the
+// target.
+func TestObserveStandbyTakesOverTheObservers(t *testing.T) {
+	host := observeWorker(t, "standby-host", nil)
+	standby := observeWorker(t, "standby-standby", nil)
+	watcher := observeWorker(t, "standby-watcher", nil)
+	fn, target := fnID(t, "go-standby::source"), fnID(t, "go-standby::target")
+	var hostHooks, standbyHooks hookRecord
+	hostHooks.set(host, fn, nil)
+	standbyHooks.set(standby, fn, nil)
+	if _, err := host.RegisterFunction(fn, iii.Identity); err != nil {
+		t.Fatal(err)
+	}
+	localDispatchReady(t, host, fn)
+	got := collector(t, watcher, target)
+	h, err := watcher.ObserveFunction(fn, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, h)
+	if _, err := standby.RegisterFunction(fn, iii.Identity, iii.RegisterFunctionOptions{Standby: true}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond) // a retry or two, refused while the host is there
+	if standby.LocalDispatchActive(fn) {
+		t.Fatal("the standby was accepted while the host is connected")
+	}
+
+	_ = host.Close()
+	waitFor(t, "the standby's registration", 10*time.Second, func() bool { return standby.LocalDispatchActive(fn) })
+	waitFor(t, "the standby's added hook", 10*time.Second, func() bool {
+		added, _, _ := standbyHooks.snapshot()
+		return slices.Equal(added, []string{h.ID()})
+	})
+	waitFor(t, "the observer active again", 10*time.Second, func() bool {
+		return standby.IsObserved(fn) && h.State() == iii.ObserverActive
+	})
+	call(t, standby, iii.CallRequest{FunctionID: fn, Payload: raw(map[string]int{"n": 7})})
+	a := exactly(t, got, 1, "the activation from the standby", 10*time.Second)[0]
+	if a.Data["observer_id"] != h.ID() || field(a.Data, "input.n") != float64(7) {
+		t.Errorf("envelope %v", a.Data)
+	}
+	if added, _, _ := hostHooks.snapshot(); !slices.Equal(added, []string{h.ID()}) {
+		t.Errorf("host added %v", added)
 	}
 }

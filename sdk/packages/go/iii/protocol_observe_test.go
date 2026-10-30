@@ -265,6 +265,19 @@ func TestObserveFixturesBuiltBySDK(t *testing.T) {
 			t.Errorf("capture = %s, want []", msg["source"]["capture"])
 		}
 	})
+	t.Run("deliver: input and output are sent", func(t *testing.T) {
+		for _, deliver := range []Deliver{DeliverInput, DeliverOutput} {
+			h, err := c.Observe(Source{FunctionID: "a::b", Deliver: deliver}, "c::d")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var msg map[string]map[string]json.RawMessage
+			_ = json.Unmarshal(h.frame, &msg)
+			if want := `"` + string(deliver) + `"`; string(msg["source"]["deliver"]) != want {
+				t.Errorf("deliver = %s, want %s", msg["source"]["deliver"], want)
+			}
+		}
+	})
 	t.Run("unobserve.json", func(t *testing.T) {
 		out, err := MarshalMessage(&UnobserveMessage{ID: "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d"})
 		if err != nil {

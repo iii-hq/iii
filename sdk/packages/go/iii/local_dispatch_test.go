@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -465,6 +466,44 @@ func TestLocalCallsOfAutoFunctionsAreReported(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if n := len(fe.reportItems()); n != 2 {
 		t.Errorf("%d items, want 2", n)
+	}
+}
+
+// capture: [] moves no payloads: a local call matched only by observers that capture
+// nothing is reported with its ids, status and timing, and no input, output, error,
+// caller or metadata, also when the handler returns its input or fails.
+func TestCaptureNoneReportsNoPayloads(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	registerLocal(t, c, "bare::fn", func(_ context.Context, data json.RawMessage) (any, error) {
+		if string(data) == `{"fail":true}` {
+			return nil, &InvocationError{Code: "NOPE", Message: "failed"}
+		}
+		return data, nil
+	})
+	for _, info := range []ObserverInfo{
+		{ID: "none", Target: "x::y", On: OnComplete, Capture: []Capture{}, Args: json.RawMessage(`{}`), Filters: json.RawMessage(`{}`)},
+		{ID: "none-too", Target: "x::y", On: OnComplete, Capture: []Capture{}, Args: json.RawMessage(`{}`), Filters: json.RawMessage(`{}`)},
+	} {
+		addObserver(t, fe, "bare::fn", info)
+	}
+	if obs := c.Observers("bare::fn"); len(obs) != 2 || obs[0].Capture == nil || len(obs[0].Capture) != 0 {
+		t.Fatalf("observers %+v, want capture []", obs)
+	}
+	call(t, c, CallRequest{FunctionID: "bare::fn", Payload: json.RawMessage(`{"n":1}`), Metadata: json.RawMessage(`{"channel":"web"}`)})
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "bare::fn", Payload: json.RawMessage(`{"fail":true}`)}); err == nil {
+		t.Fatal("no error")
+	}
+	items := fe.waitItems(2)
+	for i, status := range []string{"success", "error"} {
+		it := items[i]
+		if it.Input != nil || it.Output != nil || it.Error != nil || it.Caller != nil || it.Metadata != nil || it.OutputIsInput {
+			t.Errorf("item %d carries a payload: %+v", i, it)
+		}
+		if it.FunctionID != "bare::fn" || it.InvocationID == "" || it.Status != status || it.StartedAtMs == 0 ||
+			!slices.Equal(it.Matched, []string{"none", "none-too"}) {
+			t.Errorf("item %d %+v", i, it)
+		}
 	}
 }
 

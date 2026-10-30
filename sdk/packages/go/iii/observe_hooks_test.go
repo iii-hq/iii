@@ -512,6 +512,86 @@ func TestHooksByIDSurviveUnregisterAndChain(t *testing.T) {
 	}
 }
 
+// nil removes the worker's hooks: an observer added after the worker's added and
+// removed hooks were set to nil runs neither, while one added before still runs the
+// function's removed hook.
+func TestNilRemovesTheWorkersHooks(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	var l hookLog
+	recordLevels(c, "wk::fn", &l)
+	registerHost(t, c, "wk::fn", echoHandler)
+	addObserver(t, fe, "wk::fn", observerInfo("before", "x::y", "", ""))
+	if c.OnObserverAdded(nil).OnObserverRemoved(nil) != c {
+		t.Fatal("the client's hook methods return the client")
+	}
+	addObserver(t, fe, "wk::fn", observerInfo("after", "x::y", "", ""))
+	fe.remove("wk::fn", "before")
+	fe.remove("wk::fn", "after")
+	// the queue runs in order: once "sentinel" is acked, both removals were applied
+	addObserver(t, fe, "wk::fn", observerInfo("sentinel", "x::y", "", ""))
+	want := []string{
+		"added:worker:before", "added:function:before",
+		"added:function:after",
+		"removed:function:before",
+		"removed:function:after",
+		"added:function:sentinel",
+	}
+	if got := l.eventList(); !slices.Equal(got, want) {
+		t.Errorf("events %v, want %v", got, want)
+	}
+	c.mu.Lock()
+	added, removed := c.workerHooks.added, c.workerHooks.removed
+	c.mu.Unlock()
+	if added != nil || removed != nil {
+		t.Error("nil left a worker hook set")
+	}
+}
+
+// The SDK acks no observer of a function before the RegisterFunction that registered it
+// returns: the engine's functionregistered, listing an observer, is handled while the
+// call has not returned, and the added hook runs and the ack goes out only after it
+// returned.
+func TestNoObserverIsAckedBeforeRegisterFunctionReturns(t *testing.T) {
+	fe := newFakeEngine(t)
+	fe.setObservers("early::fn", 1, observerInfo("o1", "x::y", "", ""))
+	c := fe.client()
+	var l hookLog
+	recordHooks(c, "early::fn", &l)
+	var returned atomic.Bool
+	var addedBeforeReturn atomic.Bool
+	c.OnObserverAddedFor("early::fn", func(_ context.Context, obs *Observer) error {
+		addedBeforeReturn.Store(!returned.Load())
+		l.add(obs.ID)
+		return nil
+	})
+	c.beforeRegisterReturn = func(id string) {
+		// the engine answered the registration with its observer, and the SDK handled it
+		waitUntil(t, "functionregistered handled", func() bool {
+			f := c.functionObservers(id)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.confirmedEpoch == int64(c.currentEpoch())
+		})
+		time.Sleep(100 * time.Millisecond)
+		if n := len(fe.acks(id)); n != 0 {
+			t.Errorf("%d observeracks before RegisterFunction returned", n)
+		}
+	}
+	_, err := c.RegisterFunction("early::fn", echoHandler)
+	returned.Store(true)
+	c.beforeRegisterReturn = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := fe.waitAck("early::fn", "o1", 1); a.Error != nil {
+		t.Errorf("ack %+v", a.Error)
+	}
+	if added, _ := l.snapshot(); !slices.Equal(added, []string{"o1"}) || addedBeforeReturn.Load() {
+		t.Errorf("added %v (before the return: %v)", added, addedBeforeReturn.Load())
+	}
+}
+
 // Once the connection is registered, a hook id this worker has not registered is
 // reported once, which catches a mistyped id.
 func TestUnregisteredHookIDIsReportedOnce(t *testing.T) {
@@ -863,6 +943,58 @@ func TestStandbyRegistersWhenTheIDIsFree(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	if n := countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "nosb::fn"); n != 1 {
 		t.Errorf("%d registrations of a function without Standby, want 1", n)
+	}
+}
+
+// Standby retries every second ±20 %: the default interval is one second, every delay
+// falls within 0.8 to 1.2 of the interval, and the delays spread over that range.
+// Scaled down, the registrations the engine receives are spaced the same way.
+func TestStandbyRetriesEverySecondWithJitter(t *testing.T) {
+	if standbyRetryInterval != time.Second {
+		t.Errorf("standbyRetryInterval %s, want 1s", standbyRetryInterval)
+	}
+	c := New("ws://unused.invalid")
+	t.Cleanup(func() { _ = c.Close() })
+	lo, hi := time.Hour, time.Duration(0)
+	for range 2000 {
+		d := c.standbyDelay()
+		if d < 800*time.Millisecond || d > 1200*time.Millisecond {
+			t.Fatalf("delay %s outside 1s ±20 %%", d)
+		}
+		lo, hi = min(lo, d), max(hi, d)
+	}
+	if lo > 850*time.Millisecond || hi < 1150*time.Millisecond {
+		t.Errorf("delays span %s to %s, want them spread over 0.8s to 1.2s", lo, hi)
+	}
+
+	fe := newFakeEngine(t)
+	var mu sync.Mutex
+	var at []time.Time
+	fe.setOnFrame(func(msg map[string]json.RawMessage) {
+		if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "jit::fn" {
+			mu.Lock()
+			at = append(at, time.Now())
+			mu.Unlock()
+		}
+	})
+	fe.mu.Lock()
+	fe.conflicts["jit::fn"] = 3
+	fe.mu.Unlock()
+	sb := fe.client()
+	const interval = 200 * time.Millisecond
+	sb.standbyInterval = interval
+	registerHost(t, sb, "jit::fn", echoHandler, RegisterFunctionOptions{Standby: true})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(at) != 4 {
+		t.Fatalf("%d registrations, want 4 (three refused, one accepted)", len(at))
+	}
+	// the spacing is the delay plus a round trip: never under 0.8 of the interval, and
+	// over 1.2 of it only by that round trip
+	for i := 1; i < len(at); i++ {
+		if gap := at[i].Sub(at[i-1]); gap < interval*8/10 || gap > interval*12/10+100*time.Millisecond {
+			t.Errorf("retry %d after %s, want %s ±20 %%", i, gap, interval)
+		}
 	}
 }
 
