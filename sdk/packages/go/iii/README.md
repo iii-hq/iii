@@ -771,7 +771,9 @@ observer, err := client.Observe(iii.Source{
 | `log`, `trace` | `iii.FnOnLog`, `iii.FnOnSpan` | none |
 | `configuration` | `iii.FnOnConfigurationUpdate` | none |
 | `engine::functions-available` | `iii.FnOnFunctionsChanged` | none |
+| `engine::workers-available` | `iii.FnOnWorkersChanged` | none |
 | `stream`, `stream:join`, `stream:leave` | `iii.FnOnStreamChanged`, `iii.FnOnStreamJoin`, `iii.FnOnStreamLeave` | none |
+| none (new in 0.26) | `iii.FnOnObserversChanged` | none |
 
 `TriggerFunctionsAvailable`, `TriggerLog`, `FnListTriggers`, `FnInfoTriggers`,
 `FnListRegisteredTriggers` and `FnInfoRegisteredTriggers` are removed: the engine-hosted

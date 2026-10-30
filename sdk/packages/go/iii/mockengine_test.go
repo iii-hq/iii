@@ -187,7 +187,7 @@ func (m *mockEngine) closeActiveConnection() {
 }
 
 // clear empties the recorded-frames buffer, e.g. between asserting the initial
-// registration set and triggering a reconnect. Mirrors clear() in the Rust mock.
+// registration set and causing a reconnect. Mirrors clear() in the Rust mock.
 func (m *mockEngine) clear() {
 	m.mu.Lock()
 	m.received = nil

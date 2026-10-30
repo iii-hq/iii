@@ -413,7 +413,7 @@ func TestNoCallerToAnEngineWithoutObserve(t *testing.T) {
 // captures; on: error sees only failures. The item's caller carries the call's
 // context only: a call made outside any handler has none (the engine stamps the
 // worker), while filters see this worker as the caller.
-func TestLocalCallsOfAutoFunctionsAreReported(t *testing.T) {
+func TestMatchedLocalCallsAreReported(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	registerLocal(t, c, "pay::charge", func(_ context.Context, data json.RawMessage) (any, error) {
