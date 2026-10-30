@@ -539,8 +539,8 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
 /// The version is a range because the migration check is offline.
 pub fn sandbox_replacement(old: &serde_yaml::Value) -> String {
     let mut text = format!(
-        "containers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^{}'\n    config_override:\n",
-        iii_sandbox_contract::CONTRACT_MAJOR
+        "containers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '{}'\n    config_override:\n",
+        crate::sandbox::ADAPTER_RANGE
     );
     for line in serde_yaml::to_string(old).unwrap_or_default().lines() {
         text.push_str(&format!("      {line}\n"));

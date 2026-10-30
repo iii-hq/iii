@@ -40,6 +40,9 @@ use crate::{
     state::{Reconciliation, VmRecord},
 };
 
+/// The adapter release range that implements contract major [`CONTRACT_MAJOR`], changed together with it.
+pub const ADAPTER_RANGE: &str = "^0.2";
+
 /// Why a project needs the sandbox adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
@@ -205,14 +208,12 @@ pub(crate) fn wire_adapter(file: &mut ComposeFile) -> Result<()> {
     }
 }
 
-/// `package://<adapter>` at the newest release within this engine's contract
-/// major, pinned to that exact version.
+/// `package://<adapter>` at the newest release in [`ADAPTER_RANGE`], pinned to
+/// that exact version.
 pub(crate) async fn adapter_request(adapter: &str) -> Result<NewContainer> {
     let mut request = edit::parse_worker(adapter)?;
     if let Source::Package { reference, version } = &mut request.source {
-        let node =
-            crate::registry::resolve_node(&request.key, reference, &format!("^{CONTRACT_MAJOR}"))
-                .await?;
+        let node = crate::registry::resolve_node(&request.key, reference, ADAPTER_RANGE).await?;
         *version = Some(node.version);
     }
     Ok(request)
@@ -695,8 +696,8 @@ pub(crate) fn check_info(
             container: container.to_string(),
             message: format!(
                 "adapter {adapter} implements sandbox contract {major}.{minor}, but this engine \
-                 needs major {CONTRACT_MAJOR}; install a {adapter} release whose major version \
-                 is {CONTRACT_MAJOR}"
+                 needs major {CONTRACT_MAJOR}; install a {adapter} release that implements \
+                 sandbox contract {CONTRACT_MAJOR}.x"
             ),
         });
     }
@@ -1471,7 +1472,7 @@ pub(crate) mod tests {
         assert!(file.containers["dev"].start_after.is_empty());
     }
 
-    /// A registry whose `/resolve` answers `sandbox-libkrun` 1.2.3 for this
+    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.2.3 for this
     /// host, and serves `archive` as its artifact.
     pub(crate) async fn adapter_registry(archive: &[u8]) -> wiremock::MockServer {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -1484,7 +1485,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "graph": [{
                     "name": "sandbox-libkrun",
-                    "version": "1.2.3",
+                    "version": "0.2.3",
                     "type": "binary",
                     "binaries": { (crate::registry::host_targets()[0]): {
                         "sha256": hex::encode(Sha256::digest(archive)),
@@ -1502,9 +1503,9 @@ pub(crate) mod tests {
         server
     }
 
-    /// `text` with a generated `sandbox-libkrun` 1.2.3 appended.
+    /// `text` with a generated `sandbox-libkrun` 0.2.3 appended.
     fn with_generated_adapter(text: &str) -> String {
-        let request = edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
+        let request = edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
         let edit::Outcome::Added(text) = edit::upsert_container(text, &request).unwrap() else {
             panic!("the adapter is new");
         };
@@ -1522,12 +1523,12 @@ pub(crate) mod tests {
             request.source,
             edit::Source::Package {
                 reference: "api.workers.iii.dev/sandbox-libkrun".into(),
-                version: Some("1.2.3".into())
+                version: Some("0.2.3".into())
             }
         );
         let asked: serde_json::Value =
             serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
-        assert_eq!(asked["version"], "^1");
+        assert_eq!(asked["version"], ADAPTER_RANGE);
         let edit::Outcome::Added(text) =
             edit::upsert_container("containers: {}\n", &request).unwrap()
         else {
@@ -1791,8 +1792,8 @@ pub(crate) mod tests {
         assert_eq!(
             e.to_string(),
             "container 'app' could not start: adapter sandbox-libkrun implements sandbox contract \
-             2.0, but this engine needs major 1; install a sandbox-libkrun release whose major \
-             version is 1"
+             2.0, but this engine needs major 1; install a sandbox-libkrun release that \
+             implements sandbox contract 1.x"
         );
         let e = check_info(&info("other", 1), "sandbox-libkrun", "sb", "app").unwrap_err();
         assert_eq!(e.code(), "SANDBOX_ADAPTER_MISMATCH");

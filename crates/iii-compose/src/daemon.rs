@@ -425,7 +425,7 @@ fn workers_to_update(
                 source: crate::edit::Source::Package {
                     reference: reference.clone(),
                     version: Some(if adapter.as_ref() == Some(key) {
-                        format!("^{}", iii_sandbox_contract::CONTRACT_MAJOR)
+                        crate::sandbox::ADAPTER_RANGE.to_string()
                     } else {
                         "latest".to_string()
                     }),
@@ -3782,7 +3782,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("1.2.3"),
+            Some("0.2.3"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -3792,7 +3792,7 @@ containers:
         .unwrap();
         assert_eq!(
             lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
-            Some("1.2.3"),
+            Some("0.2.3"),
             "{lock:?}"
         );
         let held = daemon.project(&path).await.unwrap().held_file().await;
@@ -3822,7 +3822,7 @@ containers:
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "graph": [{
                         "name": "sandbox-libkrun",
-                        "version": "1.2.3",
+                        "version": "0.2.3",
                         "type": "binary",
                         "binaries": { (crate::registry::host_targets()[0]): {
                             "sha256": digest,
@@ -3886,7 +3886,7 @@ containers:
     /// restarts the adapter this same removal stopped.
     #[test]
     fn a_vm_is_removed_before_the_adapter_it_boots_through() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -3905,7 +3905,7 @@ containers:
 
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.2.3").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -3929,7 +3929,7 @@ containers:
     #[test]
     fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
         let compose = ComposeFile::parse(
-            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^1'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.2'}\n  app: {worker: package://app, version: 1.0.0}\n",
             Path::new("worker-compose.yaml"),
         )
         .unwrap();
@@ -3945,7 +3945,7 @@ containers:
             .collect();
         assert_eq!(
             versions,
-            BTreeMap::from([("app", Some("latest")), ("sb", Some("^1"))])
+            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.2"))])
         );
     }
 
@@ -3953,7 +3953,7 @@ containers:
     async fn update_all_refreshes_a_generated_adapter_that_is_the_only_package() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
 
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@1.0.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -3981,7 +3981,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("1.2.3"),
+            Some("0.2.3"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4056,7 +4056,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("1.2.3"),
+            Some("0.2.3"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
