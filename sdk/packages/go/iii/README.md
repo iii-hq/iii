@@ -436,10 +436,13 @@ How the added and removed hooks run:
   goroutine that waits on `obs.Accepted` and then calls through the observer (called
   with the hook's own `ctx`, `Accepted` returns an error at once).
 - **Rejected.** An added hook that returns an error rejects the observer with the code
-  of an `iii.ObserveRejection(code, message)`, or `OBSERVE_REJECTED` for any other error.
-  The removed hook of each level whose added hook already returned runs.
+  of an `iii.ObserveRejection(code, message)`, or `OBSERVE_REJECTED` for any other error;
+  `obs.Reject(code, message)` called while the added hooks run rejects it with that code
+  once they return. The removed hook of each level whose added hook already returned
+  runs.
 - **Removed.** The removed hooks run exactly once for every accepted observer: on
-  unobserve, on disposal, and after a late rejection with `obs.Reject(code, message)`.
+  unobserve, on disposal, and on a late rejection with `obs.Reject(code, message)`, which
+  runs them at once, whether the worker is connected or not.
 - **One at a time.** The hooks of one function run one at a time, in the order the
   engine announced the observers, also across an `Unregister` and a new registration of
   its id; hooks of different functions run concurrently. A hook past 30s fails the

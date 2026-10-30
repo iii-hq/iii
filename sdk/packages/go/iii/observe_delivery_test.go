@@ -737,8 +737,8 @@ func TestCallThroughAnObserver(t *testing.T) {
 	}
 }
 
-// Reject takes the observer out of delivery at once; the removed hooks run when the
-// engine's observerremoved arrives.
+// Reject takes the observer out of delivery at once and runs its removed hooks; the
+// engine's observerremoved that follows runs none again.
 func TestRejectStopsDeliveryAtOnce(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -762,11 +762,13 @@ func TestRejectStopsDeliveryAtOnce(t *testing.T) {
 	if n := len(fe.reportItems()); n != 0 {
 		t.Errorf("%d items delivered after Reject", n)
 	}
-	if _, removed := l.snapshot(); len(removed) != 0 {
-		t.Error("removed before observerremoved")
-	}
+	waitUntil(t, "the removed hook", func() bool { _, r := l.snapshot(); return slices.Equal(r, []string{"o1"}) })
 	fe.remove("rej::fn", "o1")
-	waitUntil(t, "removed", func() bool { _, r := l.snapshot(); return len(r) == 1 })
+	// the queue runs in order: once o2 is acked, the removal of o1 was applied
+	addObserver(t, fe, "rej::fn", observerInfo("o2", "x::y", "", ""))
+	if _, removed := l.snapshot(); !slices.Equal(removed, []string{"o1"}) {
+		t.Errorf("removed %v, want o1 once", removed)
+	}
 }
 
 func TestIsObservedAndObserversFollowTheActiveSet(t *testing.T) {

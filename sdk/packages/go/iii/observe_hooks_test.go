@@ -216,7 +216,8 @@ func TestRejectionUnwindsTheLevelsThatResolved(t *testing.T) {
 }
 
 // One removal per accepted observer, at each level: on the engine's observerremoved,
-// on a late rejection (once the engine removes it), and on Unregister. A stale
+// on a late rejection (at once; the engine's observerremoved that follows runs none
+// again), and on Unregister. A stale
 // observerremoved removes nothing twice, and an observer that was never accepted is
 // never removed.
 func TestOneRemovalPerAcceptedObserver(t *testing.T) {
@@ -1040,9 +1041,12 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	}
 }
 
-// A late rejection leaves the compiled set at once, carries the revision the engine
-// last announced, survives a reconnect (re-acked with the error on the replayed
-// functionregistered) until a fresh observeradded starts the observer over.
+// A late rejection leaves the compiled set at once and runs the removed hooks once,
+// connected or not. The fake engine answers as the engine does: observerremoved for a
+// live rejection of an acked observer, nothing for the rejection of a replayed
+// announcement the SDK had not acked yet. The rejection carries the revision the engine
+// last announced and is sent again on each replay that lists the observer, until a
+// fresh observeradded starts the observer over.
 func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	fe := newFakeEngine(t)
 	fe.setObservers("late::fn", 3, observerInfo("o1", "x::y", "", ""))
@@ -1057,8 +1061,9 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if obs.ID != "o1" {
 		t.Fatalf("observers %v", c.Observers("late::fn"))
 	}
+	removed := func() []string { _, r := l.snapshot(); return r }
 
-	// rejected while the socket is down: the ack cannot go out now
+	// rejected while the socket is down: the ack cannot go out now, the removed hook runs
 	gate := make(chan struct{})
 	fe.mu.Lock()
 	fe.gate = gate
@@ -1069,6 +1074,7 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if len(c.Observers("late::fn")) != 1 {
 		t.Error("a rejected observer stays in the compiled set")
 	}
+	waitUntil(t, "o1's removed hook while offline", func() bool { return slices.Equal(removed(), []string{"o1"}) })
 	fe.setObservers("late::fn", 7, observerInfo("o1", "x::y", "", ""), observerInfo("o2", "x::y", "", ""))
 	close(gate)
 	waitUntil(t, "registered", c.registeredNow)
@@ -1082,7 +1088,8 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if len(c.Observers("late::fn")) != 1 {
 		t.Errorf("observers %v", c.Observers("late::fn"))
 	}
-	// a late rejection on the live connection carries the last announced revision (7)
+	// a live late rejection carries the last announced revision (7) and runs the removed
+	// hook at once; the engine's observerremoved for it runs none again
 	o2 := c.Observers("late::fn")[0]
 	mark := len(fe.acks("late::fn"))
 	o2.Reject("UNKNOWN_DB", "gone too")
@@ -1090,31 +1097,38 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if last := fe.acks("late::fn")[mark]; last.ID != "o2" || last.Revision != 7 || last.Error.Code != "UNKNOWN_DB" {
 		t.Errorf("late rejection %+v", last)
 	}
-	// a fresh observeradded starts o1 over: removed, then added again
-	fe.send(&ObserverAddedMessage{FunctionID: "late::fn", Namespace: "default", Revision: 8, Observer: observerInfo("o1", "x::y", "", "")})
-	if a := fe.waitAck("late::fn", "o1", 8); a.Error != nil {
+	waitUntil(t, "o2's removed hook", func() bool { return slices.Equal(removed(), []string{"o1", "o2"}) })
+	fe.remove("late::fn", "o2") // revision 8
+	// a fresh observeradded starts o1 over: the o1 held was torn down already, so only
+	// the added hook runs
+	fe.send(&ObserverAddedMessage{FunctionID: "late::fn", Namespace: "default", Revision: 9, Observer: observerInfo("o1", "x::y", "", "")})
+	if a := fe.waitAck("late::fn", "o1", 9); a.Error != nil {
 		t.Errorf("reactivated %+v", a.Error)
 	}
 	waitUntil(t, "o1 active", func() bool { return len(c.Observers("late::fn")) == 1 && c.Observers("late::fn")[0].ID == "o1" })
-	added, removed := l.snapshot()
-	if len(added) != 3 || added[2] != "o1" || len(removed) != 1 || removed[0] != "o1" {
-		t.Errorf("hooks: added %v removed %v", added, removed)
+	added, gone := l.snapshot()
+	if !slices.Equal(added, []string{"o1", "o2", "o1"}) || !slices.Equal(gone, []string{"o1", "o2"}) {
+		t.Errorf("hooks: added %v removed %v", added, gone)
 	}
 }
 
-// A Reject made while an added hook is still running wins: the add acks with it
-// rather than activating, and the engine's observerremoved runs the removed hooks to
-// undo what the added hooks set up.
+// A Reject made while an added hook is still running wins: the add acks with it rather
+// than activating, and the removed hook of each level whose added hook resolved runs at
+// once, as the engine sends no observerremoved for an observer it never saw acked. A
+// later observerremoved, or a replay without the observer, runs none again; a replay
+// that lists it gets the rejection again.
 func TestRejectDuringOnObserverAddedWins(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	var l hookLog
+	recordLevels(c, "rej::fn", &l)
 	c.OnObserverAddedFor("rej::fn", func(_ context.Context, obs *Observer) error {
-		l.add(obs.ID)
-		obs.Reject("UNKNOWN_DB", "the db went away during setup")
+		l.event("added:function:" + obs.ID)
+		if obs.ID == "o1" {
+			obs.Reject("UNKNOWN_DB", "the db went away during setup")
+		}
 		return nil
 	})
-	c.OnObserverRemovedFor("rej::fn", func(_ context.Context, obs *Observer) { l.remove(obs.ID) })
 	registerHost(t, c, "rej::fn", echoHandler)
 	rev := fe.add("rej::fn", observerInfo("o1", "x::y", "", ""))
 	a := fe.waitAck("rej::fn", "o1", rev)
@@ -1124,8 +1138,24 @@ func TestRejectDuringOnObserverAddedWins(t *testing.T) {
 	if c.IsObserved("rej::fn") {
 		t.Error("an observer rejected during its hook was activated")
 	}
+	want := []string{"added:worker:o1", "added:function:o1", "removed:function:o1", "removed:worker:o1"}
+	waitUntil(t, "the removed hooks of both levels", func() bool { return slices.Equal(l.eventList(), want) })
+
+	// listed by a replay: re-acked with the rejection, no hook
+	fe.setObservers("rej::fn", rev, observerInfo("o1", "x::y", "", ""))
+	fe.reconnect(c)
+	acks := fe.waitFrames(MsgObserverAck, 2, func(d *DecodedMessage) bool {
+		return d.ObserverAck.FunctionID == "rej::fn" && d.ObserverAck.ID == "o1"
+	})
+	if a := acks[1].ObserverAck; a.Revision != rev || a.Error == nil || a.Error.Code != "UNKNOWN_DB" {
+		t.Errorf("replayed ack %+v", a)
+	}
 	fe.remove("rej::fn", "o1")
-	waitUntil(t, "OnObserverRemoved", func() bool { _, r := l.snapshot(); return len(r) == 1 })
+	// the queue runs in order: once o2 is acked, the removal of o1 was applied
+	addObserver(t, fe, "rej::fn", observerInfo("o2", "x::y", "", ""))
+	if got := l.eventList(); !slices.Equal(got, append(want, "added:worker:o2", "added:function:o2")) {
+		t.Errorf("events %v", got)
+	}
 }
 
 // Value semantics: an Observer keeps its own copy of the engine's capture list.
@@ -1284,6 +1314,7 @@ func TestAReplayWithTheSameArgsRunsNoHook(t *testing.T) {
 		t.Errorf("late rejection at revision %d, want 3", rejection.Revision)
 	}
 	waitUntil(t, "rejected", func() bool { return !c.IsObserved("ra::fn") })
+	waitUntil(t, "the removed hook", func() bool { return slices.Equal(l.eventList(), []string{"add a a", "remove a a"}) })
 	// listed again, whatever its args: re-acked with its rejection
 	fe.setObservers("ra::fn", 4, observerInfo("a", "x::y", `{"kind":"other"}`, ""))
 	fe.reconnect(c)
