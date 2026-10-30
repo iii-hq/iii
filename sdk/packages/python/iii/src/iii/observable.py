@@ -311,7 +311,10 @@ class Observer:
         Example::
 
             async def send_state(obs):
-                await obs.accepted_async()
+                try:
+                    await obs.accepted_async()
+                except ObserveRejection:
+                    return  # a rejected observer gets nothing
                 await iii.call_async({
                     "function_id": "tmux::on-changed",
                     "payload": state_for(obs.args),

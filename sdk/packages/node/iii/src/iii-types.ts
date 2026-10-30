@@ -282,19 +282,23 @@ export type RegisterFunctionMessage = {
    */
   id: string
   /**
-   * The description of the function.
+   * Human-readable summary of the function, listed by discovery
+   * (`engine::functions::list`).
    */
   description?: string
   /**
-   * The request format of the function.
+   * JSON Schema of the call's input.
    */
   request_format?: RegisterFunctionFormat
   /**
-   * The response format of the function.
+   * JSON Schema of the handler's return value: what the function's observers
+   * observe.
    */
   response_format?: RegisterFunctionFormat
   /**
-   * Arbitrary metadata attached to the function.
+   * Arbitrary metadata attached to the function, stored with it and listed by
+   * discovery (`engine::functions::list`). It is distinct from the per-call
+   * metadata a handler receives.
    */
   metadata?: Record<string, unknown>
   /**
@@ -302,17 +306,27 @@ export type RegisterFunctionMessage = {
    */
   invocation?: HttpInvocationConfig
   /**
-   * JSON Schema of the `args` an observer of this function passes; the
-   * engine validates them (`INVALID_ARGS`). A function without it takes no
-   * args.
+   * JSON Schema of the `args` an observer of this function passes. The
+   * engine validates every observer's args against it (`INVALID_ARGS`)
+   * before the added hooks run, and refuses a schema that is not valid
+   * (`INVALID_ARGS_FORMAT`). A function without it takes no args.
    */
   args_format?: RegisterFunctionFormat
   /**
-   * Only this worker may call the function; other workers may observe it.
-   * Sent only when `true`.
+   * Only this worker may call the function: the engine answers a call from
+   * any other connection with `FORBIDDEN`, and refuses the function as an
+   * observer's target. Any worker may observe it, and its observers receive
+   * every call this worker makes. For event sources, whose calls from
+   * anywhere else would be forged events. This worker's own calls pass the
+   * input and the result by reference: the handler and hooks treat both as
+   * read-only (frozen when `NODE_ENV` is `development`). Default `false`;
+   * sent only when `true`.
    */
   private?: boolean
-  /** `false`: every `observe` of the function fails with `NOT_OBSERVABLE`. Sent only when `false`. */
+  /**
+   * `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one
+   * whose payloads carry credentials. Default `true`; sent only when `false`.
+   */
   observable?: boolean
 }
 

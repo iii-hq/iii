@@ -201,11 +201,14 @@ receives every call of the function:
 ```python
 import asyncio
 
-from iii import CallAction
+from iii import CallAction, ObserveRejection
 
 
 async def send_state(obs):
-    await obs.accepted_async()
+    try:
+        await obs.accepted_async()
+    except ObserveRejection:
+        return  # a rejected observer gets nothing
     await iii.call_async({
         "function_id": "tmux::on-changed",
         "payload": state_for(obs.args),

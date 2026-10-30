@@ -105,9 +105,11 @@ export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'
  */
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'> & {
   /**
-   * When another connection already hosts the id, wait and take over when it
-   * leaves: the registration is retried every second until it succeeds or
-   * the function is unregistered (default `false`).
+   * When another connection already hosts the id
+   * (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the
+   * registration is retried every second (±20 %) until the engine accepts it
+   * or the function is unregistered, and the hooks run for every observer
+   * once the engine confirms it (default `false`).
    */
   standby?: boolean
   /**
@@ -121,11 +123,28 @@ export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_typ
 export interface IIIClient {
   /**
    * Registers a new function with a local handler or an HTTP invocation config.
-   * The handler's return value is what the function's observers observe.
+   * The handler's return value is what the function's observers observe; an
+   * event source's handler returns the event it is called with.
+   *
+   * Every call of the function, local or routed, runs the handler and then
+   * goes to the observers that want it (`onObserverMatch`; by default all of
+   * them): the function's `onObserverDeliver` hook delivers it, or iii does,
+   * to those whose `on` and filters match. What the worker does when the
+   * function is observed is set with the hooks (`onObserverAdded`,
+   * `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
+   * the returned {@link FunctionRef}. The SDK acks no observer before this
+   * call returns, so a hook set by id before it, chained on its result, or
+   * set later in the same synchronous block runs for every observer.
+   *
+   * A function that sets `args_format`, `private: true`, `observable: false`,
+   * an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+   * with `observe.v2`: it is registered once the connection's engine
+   * advertised it, and against an older engine it stays unregistered (logged
+   * once, `UNSUPPORTED`).
    *
    * @param functionId - Unique identifier for the function.
    * @param handler - Handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.).
-   * @param options - Optional {@link RegisterFunctionOptions}: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`.
+   * @param options - Optional {@link RegisterFunctionOptions}: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`, `localDispatch`.
    * @returns A {@link FunctionRef}: the hook methods with the id filled in, and `unregister()`.
    *
    * @example

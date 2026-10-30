@@ -89,7 +89,24 @@ const other = registerWorker('ws://localhost:49134', { workerName: 'my-worker' }
 ### registerFunction
 
 Registers a new function with a local handler or an HTTP invocation config.
-The handler's return value is what the function's observers observe.
+The handler's return value is what the function's observers observe; an
+event source's handler returns the event it is called with.
+
+Every call of the function, local or routed, runs the handler and then
+goes to the observers that want it (`onObserverMatch`; by default all of
+them): the function's `onObserverDeliver` hook delivers it, or iii does,
+to those whose `on` and filters match. What the worker does when the
+function is observed is set with the hooks (`onObserverAdded`,
+`onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
+the returned FunctionRef. The SDK acks no observer before this
+call returns, so a hook set by id before it, chained on its result, or
+set later in the same synchronous block runs for every observer.
+
+A function that sets `args_format`, `private: true`, `observable: false`,
+an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+with `observe.v2`: it is registered once the connection's engine
+advertised it, and against an older engine it stays unregistered (logged
+once, `UNSUPPORTED`).
 
 **Signature**
 
@@ -109,14 +126,14 @@ registerFunction(functionId: string, handler: HttpInvocationConfig | RemoteFunct
 </ParamField>
 
 <ParamField body="options" type="RegisterFunctionOptions">
-  Optional RegisterFunctionOptions: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`.
+  Optional RegisterFunctionOptions: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`, `localDispatch`.
 
   <Expandable title="`RegisterFunctionOptions` fields">
     <ParamField body="args_format" type="RegisterFunctionFormat">
-      JSON Schema of the `args` an observer of this function passes; the engine validates them (`INVALID_ARGS`). A function without it takes no args.
+      JSON Schema of the `args` an observer of this function passes. The engine validates every observer's args against it (`INVALID_ARGS`) before the added hooks run, and refuses a schema that is not valid (`INVALID_ARGS_FORMAT`). A function without it takes no args.
     </ParamField>
     <ParamField body="description" type="string">
-      The description of the function.
+      Human-readable summary of the function, listed by discovery (`engine::functions::list`).
     </ParamField>
     <ParamField body="invocation" type="HttpInvocationConfig">
       HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.).
@@ -125,22 +142,22 @@ registerFunction(functionId: string, handler: HttpInvocationConfig | RemoteFunct
       Calls this worker makes to its own function run in-process once the engine confirmed it (default `true`). Set `false` for a handler that must always run through the engine.
     </ParamField>
     <ParamField body="metadata" type="Record<string, unknown>">
-      Arbitrary metadata attached to the function.
+      Arbitrary metadata attached to the function, stored with it and listed by discovery (`engine::functions::list`). It is distinct from the per-call metadata a handler receives.
     </ParamField>
     <ParamField body="observable" type="boolean">
-      `false`: every `observe` of the function fails with `NOT_OBSERVABLE`. Sent only when `false`.
+      `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one whose payloads carry credentials. Default `true`; sent only when `false`.
     </ParamField>
     <ParamField body="private" type="boolean">
-      Only this worker may call the function; other workers may observe it. Sent only when `true`.
+      Only this worker may call the function: the engine answers a call from any other connection with `FORBIDDEN`, and refuses the function as an observer's target. Any worker may observe it, and its observers receive every call this worker makes. For event sources, whose calls from anywhere else would be forged events. This worker's own calls pass the input and the result by reference: the handler and hooks treat both as read-only (frozen when `NODE_ENV` is `development`). Default `false`; sent only when `true`.
     </ParamField>
     <ParamField body="request_format" type="RegisterFunctionFormat">
-      The request format of the function.
+      JSON Schema of the call's input.
     </ParamField>
     <ParamField body="response_format" type="RegisterFunctionFormat">
-      The response format of the function.
+      JSON Schema of the handler's return value: what the function's observers observe.
     </ParamField>
     <ParamField body="standby" type="boolean">
-      When another connection already hosts the id, wait and take over when it leaves: the registration is retried every second until it succeeds or the function is unregistered (default `false`).
+      When another connection already hosts the id (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the registration is retried every second (±20 %) until the engine accepts it or the function is unregistered, and the hooks run for every observer once the engine confirms it (default `false`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1612,15 +1629,15 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the `args` an observer of this function passes; the<br />engine validates them (`INVALID_ARGS`). A function without it takes no<br />args. |
-| `description` | `string` | No | The description of the function. |
+| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the `args` an observer of this function passes. The<br />engine validates every observer's args against it (`INVALID_ARGS`)<br />before the added hooks run, and refuses a schema that is not valid<br />(`INVALID_ARGS_FORMAT`). A function without it takes no args. |
+| `description` | `string` | No | Human-readable summary of the function, listed by discovery<br />(`engine::functions::list`). |
 | `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda). |
 | `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.). |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
-| `observable` | `boolean` | No | `false`: every `observe` of the function fails with `NOT_OBSERVABLE`. Sent only when `false`. |
-| `private` | `boolean` | No | Only this worker may call the function; other workers may observe it.<br />Sent only when `true`. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function. |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function, stored with it and listed by<br />discovery (`engine::functions::list`). It is distinct from the per-call<br />metadata a handler receives. |
+| `observable` | `boolean` | No | `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one<br />whose payloads carry credentials. Default `true`; sent only when `false`. |
+| `private` | `boolean` | No | Only this worker may call the function: the engine answers a call from<br />any other connection with `FORBIDDEN`, and refuses the function as an<br />observer's target. Any worker may observe it, and its observers receive<br />every call this worker makes. For event sources, whose calls from<br />anywhere else would be forged events. This worker's own calls pass the<br />input and the result by reference: the handler and hooks treat both as<br />read-only (frozen when `NODE_ENV` is `development`). Default `false`;<br />sent only when `true`. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the call's input. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the handler's return value: what the function's observers<br />observe. |
 
 ---
 
@@ -1628,16 +1645,16 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the `args` an observer of this function passes; the<br />engine validates them (`INVALID_ARGS`). A function without it takes no<br />args. |
-| `description` | `string` | No | The description of the function. |
+| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the `args` an observer of this function passes. The<br />engine validates every observer's args against it (`INVALID_ARGS`)<br />before the added hooks run, and refuses a schema that is not valid<br />(`INVALID_ARGS_FORMAT`). A function without it takes no args. |
+| `description` | `string` | No | Human-readable summary of the function, listed by discovery<br />(`engine::functions::list`). |
 | `id` | `string` | Yes | The path of the function (use :: for namespacing, e.g. external::my_lambda). |
 | `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.). |
 | `message_type` | [`MessageType`](#messagetype).RegisterFunction | Yes | - |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
-| `observable` | `boolean` | No | `false`: every `observe` of the function fails with `NOT_OBSERVABLE`. Sent only when `false`. |
-| `private` | `boolean` | No | Only this worker may call the function; other workers may observe it.<br />Sent only when `true`. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function. |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function, stored with it and listed by<br />discovery (`engine::functions::list`). It is distinct from the per-call<br />metadata a handler receives. |
+| `observable` | `boolean` | No | `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one<br />whose payloads carry credentials. Default `true`; sent only when `false`. |
+| `private` | `boolean` | No | Only this worker may call the function: the engine answers a call from<br />any other connection with `FORBIDDEN`, and refuses the function as an<br />observer's target. Any worker may observe it, and its observers receive<br />every call this worker makes. For event sources, whose calls from<br />anywhere else would be forged events. This worker's own calls pass the<br />input and the result by reference: the handler and hooks treat both as<br />read-only (frozen when `NODE_ENV` is `development`). Default `false`;<br />sent only when `true`. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the call's input. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the handler's return value: what the function's observers<br />observe. |
 
 ---
 
@@ -1654,16 +1671,16 @@ type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "i
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the `args` an observer of this function passes; the<br />engine validates them (`INVALID_ARGS`). A function without it takes no<br />args. |
-| `description` | `string` | No | The description of the function. |
+| `args_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the `args` an observer of this function passes. The<br />engine validates every observer's args against it (`INVALID_ARGS`)<br />before the added hooks run, and refuses a schema that is not valid<br />(`INVALID_ARGS_FORMAT`). A function without it takes no args. |
+| `description` | `string` | No | Human-readable summary of the function, listed by discovery<br />(`engine::functions::list`). |
 | `invocation` | `HttpInvocationConfig` | No | HTTP invocation config for external HTTP functions (Lambda, Cloudflare Workers, etc.). |
 | `localDispatch` | `boolean` | No | Calls this worker makes to its own function run in-process once the<br />engine confirmed it (default `true`). Set `false` for a handler that must<br />always run through the engine. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
-| `observable` | `boolean` | No | `false`: every `observe` of the function fails with `NOT_OBSERVABLE`. Sent only when `false`. |
-| `private` | `boolean` | No | Only this worker may call the function; other workers may observe it.<br />Sent only when `true`. |
-| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The request format of the function. |
-| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | The response format of the function. |
-| `standby` | `boolean` | No | When another connection already hosts the id, wait and take over when it<br />leaves: the registration is retried every second until it succeeds or<br />the function is unregistered (default `false`). |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function, stored with it and listed by<br />discovery (`engine::functions::list`). It is distinct from the per-call<br />metadata a handler receives. |
+| `observable` | `boolean` | No | `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one<br />whose payloads carry credentials. Default `true`; sent only when `false`. |
+| `private` | `boolean` | No | Only this worker may call the function: the engine answers a call from<br />any other connection with `FORBIDDEN`, and refuses the function as an<br />observer's target. Any worker may observe it, and its observers receive<br />every call this worker makes. For event sources, whose calls from<br />anywhere else would be forged events. This worker's own calls pass the<br />input and the result by reference: the handler and hooks treat both as<br />read-only (frozen when `NODE_ENV` is `development`). Default `false`;<br />sent only when `true`. |
+| `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the call's input. |
+| `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the handler's return value: what the function's observers<br />observe. |
+| `standby` | `boolean` | No | When another connection already hosts the id<br />(`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the<br />registration is retried every second (±20 %) until the engine accepts it<br />or the function is unregistered, and the hooks run for every observer<br />once the engine confirms it (default `false`). |
 
 ---
 
