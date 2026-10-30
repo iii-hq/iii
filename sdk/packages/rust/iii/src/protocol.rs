@@ -110,14 +110,19 @@ impl CallRequest {
     /// `payload`, as given, and applies the observer's policy, metadata
     /// sidecar and loop guard. Only the worker that hosts the observer's
     /// function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process.
+    /// It belongs in the function's deliver hook, whose function documents
+    /// what its targets receive; to send one observer something outside
+    /// delivery (its initial state), call the function with metadata
+    /// `{ "for_observer": <observer id> }` (see [`Observer::accepted`](crate::Observer::accepted)).
     ///
     /// ```rust,no_run
     /// # use iii_sdk::{CallAction, CallRequest, IIIClient, Observer};
     /// # use serde_json::json;
     /// # async fn demo(iii: &IIIClient, obs: &Observer) -> Result<(), iii_sdk::Error> {
+    /// // in the deliver hook of http::on-request
     /// let response = iii.call(CallRequest::observer(obs, json!({ "path": "/users/42" }))).await?;
     /// // fire-and-forget
-    /// iii.call(CallRequest::observer(obs, json!({ "state": "initial" })).action(CallAction::Void))
+    /// iii.call(CallRequest::observer(obs, json!({ "path": "/audit" })).action(CallAction::Void))
     ///     .await?;
     /// # Ok(()) }
     /// ```

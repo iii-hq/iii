@@ -171,7 +171,8 @@ export interface ISdk {
    *   action: CallAction.Enqueue({ queue: 'orders' }),
    * })
    *
-   * // Through an observer: runs its target, with its policy and metadata
+   * // Through an observer, in the function's deliver hook: runs its target,
+   * // with its policy and metadata
    * const response = await worker.call({ observer: route.obs, payload: request })
    * ```
    */

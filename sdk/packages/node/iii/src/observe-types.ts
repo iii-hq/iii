@@ -169,10 +169,29 @@ export interface Observer {
    */
   matches(call: Partial<Call>): boolean
   /**
-   * Resolves once the SDK has acked the observer. A call through the
-   * observer made after it resolves reaches an active observer, so a provider
-   * sends an observer its initial state from here. Rejects with an
-   * {@link ObserveRejection} when the observer is rejected instead.
+   * Resolves once the SDK has acked the observer. A call made after it
+   * resolves reaches an active observer, so a provider sends an observer its
+   * initial state from here: a call of its own function with
+   * `metadata: { for_observer: obs.id }`, which the function's match hook
+   * gives to this observer alone, delivered like every call. Rejects with an
+   * {@link ObserveRejection} when the observer is rejected first.
+   *
+   * @example
+   * ```typescript
+   * iii.onObserverAdded('tmux::on-changed', (obs) => {
+   *   void obs.accepted().then(() =>
+   *     iii.call({
+   *       function_id: 'tmux::on-changed',
+   *       payload: stateFor(obs.args),
+   *       metadata: { for_observer: obs.id },
+   *       action: CallAction.Void(),
+   *     }),
+   *   )
+   * })
+   * iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+   *   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session,
+   * )
+   * ```
    */
   accepted(): Promise<void>
   /**
@@ -216,7 +235,11 @@ export interface MatchKeys<I = unknown, O = unknown> {
  * default every observer wants every call. A predicate is asked once per
  * active observer per call (a throw counts as no match). Keys are computed
  * once per observer, when it is accepted, and once per call. The observers'
- * `on`, filters, policy and `deliver` still apply.
+ * `on`, filters, policy and `deliver` still apply. A host that sends one
+ * observer something of its own (its initial state) calls the function with
+ * `metadata: { for_observer: obs.id }`; the hook gives such a call to that
+ * observer alone (a predicate compares the ids; keys file each observer under
+ * `for_observer:<id>` too).
  */
 export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKeys<I, O>
 

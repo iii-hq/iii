@@ -28,6 +28,11 @@ type RemovedHook func(ctx context.Context, obs *Observer)
 // (keys the SDK indexes). The observers it matches are what iii delivers the call to,
 // after their on and filters, or what the function's [DeliverHook] receives. A nil
 // MatchHook, and the zero one, match every observer.
+//
+// A host that sends one observer something of its own (its initial state) calls the
+// function with metadata {"for_observer": <observer id>}, and the hook gives such a
+// call to that observer alone: a predicate compares the ids, and observerKeys also files
+// each observer under "for_observer:<id>", the one key callKeys gives such a call.
 type MatchHook struct {
 	predicate    func(*Observer, *Call) bool
 	observerKeys func(*Observer) []string

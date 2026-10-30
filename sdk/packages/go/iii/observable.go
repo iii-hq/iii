@@ -931,24 +931,34 @@ func (o *Observer) Matches(call *Call) bool {
 }
 
 // Accepted waits until the SDK has acked the observer as accepted, and returns nil. A
-// call through the observer made after that reaches an active observer, since the
-// engine handles a connection's frames in order: a host sends a new observer its
-// initial state this way. It returns an *[ObserveRejectionError] when the observer is
-// rejected first, an error when it is removed first, and ctx's error when ctx is done
-// first. Once accepted, it returns nil at once.
+// call made after that reaches an active observer, since the engine handles a
+// connection's frames in order: a host sends a new observer its initial state this way,
+// with a call of its own function whose metadata is {"for_observer": <obs.ID>}. The
+// function's [MatchHook] gives that call to this observer alone, and iii delivers it
+// like every call. It returns an *[ObserveRejectionError] when the observer is rejected
+// first, an error when it is removed first, and ctx's error when ctx is done first.
+// Once accepted, it returns nil at once.
 //
 // The ack waits for the observer's added hooks to return, so an added hook that sends
-// initial state starts a goroutine that waits on Accepted and then calls through the
-// observer:
+// initial state starts a goroutine that waits on Accepted and then calls the function
+// for the observer:
 //
 //	client.OnObserverAddedFor("prices::on-change", func(ctx context.Context, obs *iii.Observer) error {
 //		go func() {
 //			if obs.Accepted(context.Background()) == nil {
-//				_, _ = client.Call(context.Background(), iii.CallRequest{Observer: obs, Payload: prices.Current(), Action: iii.VoidAction()})
+//				meta, _ := json.Marshal(map[string]string{"for_observer": obs.ID})
+//				_, _ = client.Call(context.Background(), iii.CallRequest{
+//					FunctionID: "prices::on-change", Payload: prices.Current(), Metadata: meta, Action: iii.VoidAction(),
+//				})
 //			}
 //		}()
 //		return nil
 //	})
+//	client.OnObserverMatchFor("prices::on-change", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+//		var meta struct{ ForObserver string `json:"for_observer"` }
+//		_ = json.Unmarshal(call.Metadata, &meta)
+//		return meta.ForObserver == "" || meta.ForObserver == obs.ID
+//	}))
 //
 // Called with the ctx of the observer's own added hook (or one derived from it), which
 // ends when the hook returns, it returns an error at once.
