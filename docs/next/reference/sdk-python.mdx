@@ -257,7 +257,10 @@ with its policy (``max_fires``, expiry, ``max_in_flight``), metadata
 sidecar and loop guard, and the call resolves to the target's result.
 The payload goes as given: filters are applied where the worker
 chooses observers: iii's delivery, or ``obs.matches(call)`` in an
-``on_observer_deliver``.
+``on_observer_deliver``. A call through an observer belongs in that
+deliver hook; to send one observer something outside delivery (its
+initial state), call the function with ``"metadata": {"for_observer":
+obs.id}`` (see `Observer.accepted`).
 
 **Signature**
 
@@ -306,7 +309,7 @@ call(request: dict[str, Any] | CallRequest) -> Any
 ```python
 result = worker.call({'function_id': 'greet', 'payload': {'name': 'World'}})
 worker.call({'function_id': 'notify', 'payload': {}, 'action': CallAction.Void()})
-worker.call({'observer': obs, 'payload': request})
+worker.call({'observer': obs, 'payload': request})  # in a deliver hook
 ```
 
 
@@ -571,7 +574,10 @@ async (request: dict[str, Any] | CallRequest) -> Any
 
 ```python
 result = await worker.call_async({'function_id': 'greet', 'payload': {'name': 'World'}})
-await worker.call_async({'observer': obs, 'payload': state, 'action': CallAction.Void()})
+await worker.call_async(
+    {'function_id': 'stock::on-changed', 'payload': state,
+     'metadata': {'for_observer': obs.id}, 'action': CallAction.Void()}
+)
 ```
 
 
@@ -859,6 +865,12 @@ per function. Wildcards are keys too: file an observer of every table
 under ``"primary|*|insert"`` and give a change the keys
 ``"primary|orders|insert"``, ``"primary|orders|*"``,
 ``"primary|*|insert"`` and ``"primary|*|*"``.
+
+A host that sends one observer something of its own (its initial
+state) calls the function with ``"metadata": {"for_observer":
+obs.id}``, and the hook gives such a call to that observer alone: a
+predicate compares the ids, and key functions also file each observer
+under ``f"for_observer:{obs.id}"`` and give such a call that one key.
 
 Works as a decorator for a predicate
 (``@iii.on_observer_match("fn::id")``) and returns the hook (a
@@ -1236,7 +1248,7 @@ keeps it in its own index (route table, consumers, ...).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call through it made afterwards reaches an active observer. Use it to send a new observer its initial state, outside its ``on_observer_added`` (which runs before the ack). Use `accepted_async` in async code. |
+| `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call made afterwards reaches an active observer. Use it to send a new observer its initial state, outside its ``on_observer_added`` (which runs before the ack): a call of the function with ``"metadata": \{"for_observer": obs.id\}``, which the function's match hook gives to this observer alone, delivered like every call. Use `accepted_async` in async code. |
 | `accepted_async` | `async () -> None` | Yes | Waits until the SDK has acked this observer (on any event loop). |
 | `args` | `dict[str, Any]` | No | The observer's args, validated against ``args_format`` by the engine. |
 | `capture` | `list[str]` | No | What travels to the target when iii delivers. |

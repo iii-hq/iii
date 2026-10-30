@@ -231,7 +231,7 @@ async call(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Error>
       A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action.
     </ParamField>
     <ParamField body="observer" type="fn(observer: &Observer, payload: Value) -> CallRequestWithMetadata" required>
-      A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process.
+      A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1451,6 +1451,12 @@ Which calls of a function each observer wants: the function's match hook
 observers' args say which calls they want; iii does everything else as
 usual: the observers' filters, `on`, policy and `deliver` still apply.
 
+A host that sends one observer something of its own (its initial state)
+calls the function with metadata `{ "for_observer": <observer id> }`, and
+the hook gives such a call to that observer alone: a predicate compares
+the ids, and key functions also file each observer under
+`"for_observer:<id>"` and give such a call that one key.
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `Predicate` | (Arc&lt;dyn Fn(&[`Observer`](#observer), &[`Call`](#call)) -&gt; bool + Send + Sync&gt;) | Yes | Asked once per active observer per call, before its filters. A<br />predicate that panics counts as no match, logged once per function. |
@@ -1493,7 +1499,7 @@ runs. Handles given out earlier keep the view they were made with, and
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `accepted` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Resolves once the SDK has acked the observer, which makes it active: a call through it made after this resolves reaches an active observer, since the engine handles a connection's frames in order. A provider sends an observer its initial state this way. Fails with the rejection's code when the observer is rejected first. |
+| `accepted` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Resolves once the SDK has acked the observer, which makes it active: a call made after this resolves reaches an active observer, since the engine handles a connection's frames in order. A provider sends an observer its initial state this way: a call of its own function with metadata `{ "for_observer": <the observer's id> }`, which the function's match hook gives to this observer alone, delivered like every call. Fails with the rejection's code when the observer is rejected first. |
 | `args` | fn() -&gt; Result&lt;T, [`ObserveRejection`](#observerejection)&gt; | Yes | The observer's args as `T`. The engine validated them against the function's `args_format`; a mismatch with `T` is `INVALID_ARGS`. |
 | `args_value` | `fn() -> &Value` | Yes | The observer's args as JSON (`{}` when it has none). |
 | `capture` | fn() -&gt; &[[`Capture`](#capture)] | Yes | What deliveries ship to the target. |
@@ -1744,7 +1750,7 @@ CallRequest::new("my::function", json!({})).metadata(json!({ "tenant": "acme" })
 | `metadata` | fn(metadata: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `CallRequest` struct literals. |
 | `namespace` | fn(namespace: impl Into&lt;String&gt;) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Target a specific namespace for this invocation without adding a required field to `CallRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`. |
 | `new` | `fn(function_id: impl Into<String>, payload: Value) -> Self` | Yes | A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action. |
-| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. |
+| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`). |
 
 ---
 
