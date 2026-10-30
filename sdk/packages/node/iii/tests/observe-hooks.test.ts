@@ -1014,6 +1014,10 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
       'e::matched',
       'f::late',
     ])
+    // each line names every reason, the match and deliver hooks among them
+    for (const line of unsupported()) {
+      expect(line).toContain('(args_format, private, observable: false, onObserverMatch or onObserverDeliver)')
+    }
 
     socket.drop()
     await vi.advanceTimersByTimeAsync(50)

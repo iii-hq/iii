@@ -192,6 +192,11 @@ async def route(call, observers):
     return await iii.call_async({"observer": obs, "payload": call.input})
 ```
 
+A function that sets `args_format`, `private=True`, `observable=False`, an
+`on_observer_match` hook or an `on_observer_deliver` hook needs an engine that
+advertises `observe.v2`; against an older engine it stays unregistered, and the
+SDK logs `UNSUPPORTED` once for it.
+
 Inside any handler, `iii.current_invocation()` returns the running invocation
 (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`). Sync
 handlers and hooks run on a thread of their own started in a copy of the

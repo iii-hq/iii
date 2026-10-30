@@ -1704,6 +1704,8 @@ mod tests {
                 lines
                     .iter()
                     .filter(|l| l.contains("UNSUPPORTED") && l.contains(&format!("{id} needs")))
+                    // every reason is named, the match and deliver hooks among them
+                    .filter(|l| l.contains("on_observer_match or on_observer_deliver"))
                     .count()
             };
             match (
