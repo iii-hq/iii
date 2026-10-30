@@ -214,9 +214,7 @@ def test_bad_frames_do_not_stop_the_receive_loop(
         await _until(lambda: _registered(frames, "test::echo"))
         await ws.send("not json")
         await ws.send("[]")
-        await ws.send(
-            json.dumps({"type": "nosuchmessage", "id": "t1", "error": "boom"})
-        )
+        await ws.send(json.dumps({"type": "nosuchmessage", "id": "t1", "error": "boom"}))
         await ws.send(_probe())
 
     engine = start_engine(garbage_then_probe)

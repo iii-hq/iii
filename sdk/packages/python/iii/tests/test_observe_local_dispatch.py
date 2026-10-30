@@ -693,9 +693,7 @@ def test_a_local_calls_report_uses_the_metadata_snapshot_taken_at_call_start(eng
     _confirm(client, engine, "snap::fn", [observer_info("o", "t", capture=["input", "metadata"])])
     payload = {"n": 1}
     metadata = {"tag": "original"}
-    client.call(
-        {"function_id": "snap::fn", "payload": payload, "metadata": metadata, "action": CallAction.Void()}
-    )
+    client.call({"function_id": "snap::fn", "payload": payload, "metadata": metadata, "action": CallAction.Void()})
     # the caller changes its objects while the call is still running
     payload["n"] = 2
     metadata["tag"] = "changed"

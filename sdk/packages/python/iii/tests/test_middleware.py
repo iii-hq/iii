@@ -1,6 +1,5 @@
 """Integration tests for HTTP middleware execution via the engine."""
 
-
 import aiohttp
 import pytest
 

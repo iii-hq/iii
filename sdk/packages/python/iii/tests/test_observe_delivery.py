@@ -925,9 +925,7 @@ def test_registration_needing_observe_v2_goes_after_workerregistered_on_every_co
     settle(client, engine)
     second = engine.frames(1)
     registered_at = next(i for i, f in enumerate(second) if f["type"] == "registerfunction")
-    register_call_at = next(
-        i for i, f in enumerate(second) if f.get("function_id") == "engine::workers::register"
-    )
+    register_call_at = next(i for i, f in enumerate(second) if f.get("function_id") == "engine::workers::register")
     assert register_call_at < registered_at  # held until the engine said what it supports
     assert [f["id"] for f in second if f["type"] == "registerfunction"] == ["cron::on-tick"]
 

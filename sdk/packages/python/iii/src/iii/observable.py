@@ -1104,4 +1104,3 @@ class Delivery:
             output_is_input=(self.owner.host.delivers_v2() and call.status == "success" and call.output is call.input),
         )
         return init, captures
-

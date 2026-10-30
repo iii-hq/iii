@@ -581,9 +581,7 @@ def test_a_function_registration_rejection_keeps_the_connection(engine: FakeEngi
     assert client._fatal_error is None
 
 
-@pytest.mark.parametrize(
-    ("name", "v2"), [("workerregistered.json", True), ("workerregistered-v1.json", False)]
-)
+@pytest.mark.parametrize(("name", "v2"), [("workerregistered.json", True), ("workerregistered-v1.json", False)])
 def test_workerregistered_features_decide_whether_this_host_delivers_routed_calls(
     engine_factory: Any, connect: Any, name: str, v2: bool
 ) -> None:
