@@ -515,7 +515,7 @@ def test_invokefunction_observer_call_json_and_invocationresult_json(engine: Fak
     assert same_trace({**call, "invocation_id": expected["invocation_id"]}, expected) == expected
 
 
-def test_invokefunction_observer_call_void_json_initial_state_once_accepted(engine: FakeEngine, connect: Any) -> None:
+def test_invokefunction_observer_call_void_json_once_the_observer_is_accepted(engine: FakeEngine, connect: Any) -> None:
     expected = fixture("invokefunction-observer-call-void.json")
     client = connect(engine)
     client.register_function("inventory::on-stock-changed", lambda event: event, private=True)
