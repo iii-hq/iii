@@ -1025,8 +1025,8 @@ calls chain.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `string` | Yes | The unique function identifier. |
-| `isObserved` | (call?: Partial&lt;[`Call`](#call)&lt;I, unknown&gt;&gt;) =&gt; boolean | Yes | ISdk.isObserved for this function: skip building an event nobody receives. |
-| `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers, as this host sees them. |
+| `isObserved` | (call?: Partial&lt;[`Call`](#call)&lt;I, unknown&gt;&gt;) =&gt; boolean | Yes | ISdk.isObserved for this registration: skip building an event<br />nobody receives. Without a call it is one load of this registration's<br />active set. |
+| `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers of this registration, as this host sees them (none<br />once the function is unregistered, also after the id is registered again). |
 | `onObserverAdded` | (hook: [`AddedHook`](#addedhook) \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverAdded for this function. |
 | `onObserverDeliver` | (hook: [`DeliverHook`](#deliverhook)&lt;I, O, R&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverDeliver for this function. |
 | `onObserverMatch` | (hook: [`MatchPredicate`](#matchpredicate)&lt;I, O&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverMatch for this function. |

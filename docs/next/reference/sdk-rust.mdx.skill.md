@@ -1146,7 +1146,8 @@ Constructors:
 - `RegisterFunction::new`: sync function. Accepts both typed handlers
   (schemas auto-extracted via `schemars`) and `Fn(Value, Option<Value>) -> Result<Value, Error>`
   closures. The second argument is the per-invocation metadata sidecar and
-  is `None` when absent.
+  is `None` when absent. A `Value` input or result passes as is; other
+  types go through serde.
 - `RegisterFunction::new_async`: async equivalent of `new`.
 - `RegisterFunction::http`: function invoked over HTTP (Lambda,
   Cloudflare Workers, etc.).
@@ -1359,8 +1360,9 @@ does not carry it.
 Runs when an observer is added to a function this worker hosts, before
 the SDK accepts it: what it sets up is in place before the observer's
 first call. Returning an error rejects the observer: an
-`ObserveRejection` sets the code, and a hook still running after 30 s is
-`OWNER_TIMEOUT`.
+`ObserveRejection` sets the code, any other error (`?` on an
+`Error`, a failed call's included) is `OBSERVE_REJECTED`,
+and a hook still running after 30 s is `OWNER_TIMEOUT`.
 
 Implemented for async closures taking the `Observer` by value.
 

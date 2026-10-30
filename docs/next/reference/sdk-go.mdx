@@ -480,7 +480,7 @@ func (c *Client) FatalError() error
 
 ### Client.IsObserved
 
-IsObserved reports whether functionID, registered by this worker, has active observers: one atomic load, so a source can skip building an event nobody wants.
+IsObserved reports whether functionID, registered by this worker, has active observers, so a source can skip building an event nobody wants. It takes no lock: a lookup of functionID and one atomic load. `FunctionRef.IsObserved` is the load alone.
 
 **Signature**
 
@@ -1341,7 +1341,7 @@ func MatchFunc(predicate func(obs *Observer, call *Call) bool) *MatchHook
       Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own.
     </ParamField>
     <ParamField body="Reject" type="func(code, message string)" required>
-      Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it; the removed hooks run when the engine's observerremoved arrives. The rejection is sent again when the engine replays the observer after a reconnect.
+      Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1412,7 +1412,7 @@ func MatchKeys(observerKeys func(obs *Observer) []string, callKeys func(call *Ca
       Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own.
     </ParamField>
     <ParamField body="Reject" type="func(code, message string)" required>
-      Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it; the removed hooks run when the engine's observerremoved arrives. The rejection is sent again when the engine replays the observer after a reconnect.
+      Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -2559,7 +2559,7 @@ FunctionRef is the handle of a registered function, returned by `Client.Register
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ID` | `string` | Yes | ID is the function id given at registration. |
-| `IsObserved` | `func() bool` | Yes | IsObserved reports whether any observer is active on the function (one load: check it before building an event nobody would receive). False for a handle that does not control the function's current registration. |
+| `IsObserved` | `func() bool` | Yes | IsObserved reports whether any observer is active on the function: one atomic load, so a source checks it before building an event nobody would receive. False for a handle that does not control the function's current registration. |
 | `IsObservedFor` | func(call *[`Call`](#call)) bool | Yes | IsObservedFor reports whether call would reach an observer, as `Client.IsObservedFor` does: on a function matched by keys (`MatchKeys`), whether an observer is filed under one of the call's keys; otherwise `FunctionRef.IsObserved`. False for a handle that does not control the function's current registration. |
 | `Observers` | func() []*[`Observer`](#observer) | Yes | Observers returns the active observers of the function, as its host sees them. Empty for a handle that does not control the function's current registration. |
 | `OnObserverAdded` | func(hook [`AddedHook`](#addedhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverAdded sets the function's added hook, as `Client.OnObserverAddedFor` does for its id, and returns the handle, for chaining. |
@@ -2972,7 +2972,7 @@ The engine may announce an observer again with the same args and other filters, 
 | `Accepted` | `func(ctx context.Context) error` | Yes | Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call through the observer made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once. |
 | `DecodeArgs` | `func(v any) error` | Yes | DecodeArgs unmarshals the observer's args into v (a struct, typically). |
 | `Matches` | func(call *[`Call`](#call)) bool | Yes | Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. |
-| `Reject` | `func(code, message string)` | Yes | Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it; the removed hooks run when the engine's observerremoved arrives. The rejection is sent again when the engine replays the observer after a reconnect. |
+| `Reject` | `func(code, message string)` | Yes | Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs. |
 
 ---
 
@@ -3294,7 +3294,7 @@ RegistrationRejectedMessage is the engine's refusal of a registration. A FUNCTIO
 
 #### RemovedHook
 
-RemovedHook runs once for every accepted observer when it is removed (unobserve, disposal, late rejection), and for each level whose `AddedHook` resolved when another level rejects the observer. A panic is logged; the observer is removed either way.
+RemovedHook runs once for every accepted observer when it is removed (unobserve, disposal, late rejection with `Observer.Reject`). For an observer rejected before it is accepted (by another level's `AddedHook`, or by `Observer.Reject` while the added hooks run), it runs for each level whose `AddedHook` resolved. A panic is logged; the observer is removed either way.
 
 ```go
 type RemovedHook func(ctx context.Context, obs *Observer)

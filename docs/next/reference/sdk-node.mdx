@@ -280,7 +280,7 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
     <ParamField body="namespace" type="string">
       Defaults to this worker's namespace (`engine::*` resolves to `default`).
     </ParamField>
-    <ParamField body="on" type="'error' | 'success' | 'complete'">
+    <ParamField body="on" type="'success' | 'error' | 'complete'">
       Which outcomes reach the target; default `'success'`.
     </ParamField>
   </Expandable>
@@ -454,7 +454,7 @@ isObserved(functionId: string, call?: Partial<Call<unknown, unknown>>) => boolea
     <ParamField body="output" type="O">
       The handler's return value: what observers observe.
     </ParamField>
-    <ParamField body="status" type="'error' | 'success'" required>
+    <ParamField body="status" type="'success' | 'error'" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -710,7 +710,7 @@ the handler's return value.
 | `invocation_id` | `string` | Yes | - |
 | `metadata` | `Record<string, unknown>` | No | - |
 | `output` | `O` | No | The handler's return value: what observers observe. |
-| `status` | `"error" \| "success"` | Yes | - |
+| `status` | `"success" \| "error"` | Yes | - |
 
 ---
 
@@ -927,7 +927,7 @@ What an observer's target receives when iii delivers with
 | `observer_id` | `string` | Yes | - |
 | `output` | `O` | No | - |
 | `started_at_ms` | `number` | Yes | - |
-| `status` | `"error" \| "success"` | Yes | - |
+| `status` | `"success" \| "error"` | Yes | - |
 
 ---
 
@@ -944,7 +944,7 @@ Who observes, the observer's metadata and its policy stay with the engine.
 | `filters` | [`Filter`](#filter) | Yes | The observer's filters, normalized. |
 | `function_id` | `string` | Yes | The observed function (one this worker hosts). |
 | `id` | `string` | Yes | - |
-| `on` | `"error" \| "success" \| "complete"` | Yes | - |
+| `on` | `"success" \| "error" \| "complete"` | Yes | - |
 | `target` | `string` | Yes | The target function id. |
 | `accepted` | `() => Promise<void>` | Yes | Resolves once the SDK has acked the observer. A call through the<br />observer made after it resolves reaches an active observer, so a provider<br />sends an observer its initial state from here. Rejects with an<br />ObserveRejection when the observer is rejected instead. |
 | `matches` | (call: Partial&lt;[`Call`](#call)&gt;) =&gt; boolean | Yes | Whether `call` reaches this observer: its `on` accepts the call's<br />`status` (absent reads as `'success'`) and its filters match the call. |
@@ -1016,7 +1016,7 @@ The left side of `iii.observe`: what is observed.
 | `filters` | [`Filter`](#filter) | No | Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. |
 | `function_id` | `string` | Yes | The observed function. |
 | `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` resolves to `default`). |
-| `on` | `"error" \| "success" \| "complete"` | No | Which outcomes reach the target; default `'success'`. |
+| `on` | `"success" \| "error" \| "complete"` | No | Which outcomes reach the target; default `'success'`. |
 
 ---
 
@@ -1699,8 +1699,8 @@ calls chain.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `string` | Yes | The unique function identifier. |
-| `isObserved` | (call?: Partial&lt;[`Call`](#call)&lt;I, unknown&gt;&gt;) =&gt; boolean | Yes | IIIClient.isObserved for this function: skip building an event nobody receives. |
-| `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers, as this host sees them. |
+| `isObserved` | (call?: Partial&lt;[`Call`](#call)&lt;I, unknown&gt;&gt;) =&gt; boolean | Yes | IIIClient.isObserved for this registration: skip building an event<br />nobody receives. Without a call it is one load of this registration's<br />active set. |
+| `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers of this registration, as this host sees them (none<br />once the function is unregistered, also after the id is registered again). |
 | `onObserverAdded` | (hook: [`AddedHook`](#addedhook) \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverAdded for this function. |
 | `onObserverDeliver` | (hook: [`DeliverHook`](#deliverhook)&lt;I, O, R&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverDeliver for this function. |
 | `onObserverMatch` | (hook: [`MatchPredicate`](#matchpredicate)&lt;I, O&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverMatch for this function. |
