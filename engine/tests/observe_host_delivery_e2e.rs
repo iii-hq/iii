@@ -602,3 +602,99 @@ async fn an_unobserved_call_to_a_host_costs_nothing() {
     assert_eq!(t.engine.observers.payload_copies(), 0);
     assert_eq!(fires(&t, "late"), 0);
 }
+
+/// The observers' envelopes of one routed call, by observer: `count`
+/// activations of `function_id` on `sink`, each answered.
+async fn envelopes(sink: &mut Client, function_id: &str, count: usize) -> Vec<Value> {
+    let mut envelopes = Vec::new();
+    for _ in 0..count {
+        let activation = sink.invoked(function_id).await;
+        sink.reply(&activation, Value::Null).await;
+        envelopes.push(activation["data"].clone());
+    }
+    envelopes
+}
+
+/// `capture: []` moves no payloads (A6): the engine copies nothing for an
+/// observer that captures nothing and delivers the envelope, whether it
+/// evaluates the call (a host without `observe.v2`) or the host lists the
+/// observer. A filter on the input needs the input only where it is
+/// evaluated: the engine copies it for the host without `observe.v2`, and
+/// never for one that delivers its calls.
+#[tokio::test]
+async fn an_observer_that_captures_nothing_copies_no_payload() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut legacy = host_with(&t, "legacy", OBSERVE_V1, &["legacy::create"]).await;
+    let mut orders = host(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::counted"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, function_id) in [("legacy", "legacy::create"), ("orders", "orders::create")] {
+        sink.observe_active(observer(
+            id,
+            json!({ "function_id": function_id, "capture": [] }),
+            "sink::counted",
+        ))
+        .await;
+    }
+    let no_payloads = |envelope: &Value| {
+        ["input", "output", "error", "caller", "metadata"]
+            .iter()
+            .all(|key| envelope.get(key).is_none())
+    };
+
+    for _ in 0..5 {
+        let call = checkout.call("legacy::create", json!({ "n": 1 })).await;
+        let invoke = legacy.invoked("legacy::create").await;
+        legacy.reply(&invoke, json!({ "id": 1 })).await;
+        checkout.result(call).await;
+        let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+        let invoke = orders.invoked("orders::create").await;
+        orders
+            .reply_observed(&invoke, json!({ "id": 2 }), &["orders"])
+            .await;
+        checkout.result(call).await;
+        for envelope in envelopes(&mut sink, "sink::counted", 2).await {
+            assert!(no_payloads(&envelope), "{envelope}");
+        }
+    }
+    assert_eq!(t.engine.observers.payload_copies(), 0);
+
+    for (id, function_id) in [
+        ("legacy-n", "legacy::create"),
+        ("orders-n", "orders::create"),
+    ] {
+        sink.observe_active(observer(
+            id,
+            json!({
+                "function_id": function_id,
+                "capture": [],
+                "filters": { "input.n": { "$eq": 1 } }
+            }),
+            "sink::counted",
+        ))
+        .await;
+    }
+    let call = checkout.call("legacy::create", json!({ "n": 1 })).await;
+    let invoke = legacy.invoked("legacy::create").await;
+    legacy.reply(&invoke, json!({ "id": 1 })).await;
+    checkout.result(call).await;
+    assert_eq!(
+        t.engine.observers.payload_copies(),
+        1,
+        "the engine evaluates the filter on the input"
+    );
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders
+        .reply_observed(&invoke, json!({ "id": 2 }), &["orders", "orders-n"])
+        .await;
+    checkout.result(call).await;
+    assert_eq!(
+        t.engine.observers.payload_copies(),
+        1,
+        "the host evaluated the filter: nothing to copy"
+    );
+    for envelope in envelopes(&mut sink, "sink::counted", 4).await {
+        assert!(no_payloads(&envelope), "{envelope}");
+    }
+}

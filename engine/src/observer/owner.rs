@@ -209,13 +209,17 @@ pub(crate) fn private_refusal(function_id: &str) -> ErrorBody {
 pub struct ActiveSet {
     pub(crate) function: FnKey,
     pub(crate) observers: Vec<Arc<Observer>>,
+    /// What a call the engine evaluates needs: what the observers' filters
+    /// read, capture or deliver.
     pub(crate) needs: Needs,
+    /// What a call whose host lists the observers needs: what they capture
+    /// or deliver. The host evaluated their filters.
+    pub(crate) listed_needs: Needs,
     /// The function's hash: which evaluator shard takes its completions.
     pub(crate) shard: u64,
 }
 
-/// Which parts of an invocation the hook must keep: the union of what the
-/// observers' filters read and what they capture or deliver.
+/// Which parts of an invocation the hook must keep.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Needs {
     pub input: bool,
@@ -225,21 +229,54 @@ pub(crate) struct Needs {
     pub metadata: bool,
 }
 
+impl Needs {
+    /// What `observer` captures or delivers.
+    fn delivered(observer: &Observer) -> Self {
+        let capture = observer.capture;
+        Self {
+            input: capture.input || observer.deliver == crate::protocol::Deliver::Input,
+            output: capture.output || observer.deliver == crate::protocol::Deliver::Output,
+            error: capture.error,
+            caller: capture.caller,
+            metadata: capture.metadata,
+        }
+    }
+
+    /// What `observer`'s filters read, captures or delivers.
+    fn evaluated(observer: &Observer) -> Self {
+        let roots = observer.filter.roots();
+        let delivered = Self::delivered(observer);
+        Self {
+            input: roots.input || delivered.input,
+            output: roots.output || delivered.output,
+            error: roots.error || delivered.error,
+            caller: roots.caller || delivered.caller,
+            metadata: roots.metadata || delivered.metadata,
+        }
+    }
+
+    fn union(self, other: Self) -> Self {
+        Self {
+            input: self.input || other.input,
+            output: self.output || other.output,
+            error: self.error || other.error,
+            caller: self.caller || other.caller,
+            metadata: self.metadata || other.metadata,
+        }
+    }
+}
+
 impl ActiveSet {
     fn new(key: &FnKey, observers: Vec<Arc<Observer>>) -> Self {
-        let mut needs = Needs::default();
-        for observer in &observers {
-            let roots = observer.filter.roots();
-            let capture = observer.capture;
-            needs.input |=
-                roots.input || capture.input || observer.deliver == crate::protocol::Deliver::Input;
-            needs.output |= roots.output
-                || capture.output
-                || observer.deliver == crate::protocol::Deliver::Output;
-            needs.error |= roots.error || capture.error;
-            needs.caller |= roots.caller || capture.caller;
-            needs.metadata |= roots.metadata || capture.metadata;
-        }
+        let (needs, listed_needs) = observers.iter().fold(
+            (Needs::default(), Needs::default()),
+            |(needs, listed), observer| {
+                (
+                    needs.union(Needs::evaluated(observer)),
+                    listed.union(Needs::delivered(observer)),
+                )
+            },
+        );
         let shard = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -250,7 +287,18 @@ impl ActiveSet {
             function: key.clone(),
             observers,
             needs,
+            listed_needs,
             shard,
+        }
+    }
+
+    /// What a call needs kept: when its host delivers it, only what the
+    /// observers it lists capture or deliver.
+    pub(crate) fn needs_for(&self, host_delivers: bool) -> Needs {
+        if host_delivers {
+            self.listed_needs
+        } else {
+            self.needs
         }
     }
 }
@@ -1359,6 +1407,72 @@ mod tests {
                 .expect("refused");
             assert_eq!(refused.code, observe_codes::FORBIDDEN);
         }
+    }
+
+    /// What a call keeps: a call the engine evaluates needs what the
+    /// observers' filters read, capture or deliver; a call whose host lists
+    /// the observers needs only what they capture or deliver. `capture: []`
+    /// with the envelope needs nothing (A6).
+    #[tokio::test]
+    async fn a_call_keeps_what_its_observers_need_where_it_is_delivered() {
+        use super::super::events::test_support;
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        let engine = Arc::new(crate::engine::Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let observe = |id: &str, filters: Option<Value>, capture: Vec<Capture>, deliver| {
+            let mut request = test_support::request(id, "test::src", "test::dst", filters);
+            request.source.capture = Some(capture);
+            request.source.deliver = Some(deliver);
+            request
+        };
+        let needs = |engine: &crate::engine::Engine| {
+            let set = engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .unwrap();
+            (set.needs_for(false), set.needs_for(true))
+        };
+
+        test_support::observe_request(
+            &engine,
+            &worker,
+            observe("count", None, vec![], Deliver::Envelope),
+        )
+        .await;
+        assert_eq!(needs(&engine), (Needs::default(), Needs::default()));
+
+        test_support::observe_request(
+            &engine,
+            &worker,
+            observe(
+                "filtered",
+                Some(json!({ "input.n": { "$eq": 1 }, "caller.worker_name": { "$ne": "x" } })),
+                vec![],
+                Deliver::Envelope,
+            ),
+        )
+        .await;
+        let read = Needs {
+            input: true,
+            caller: true,
+            ..Needs::default()
+        };
+        assert_eq!(needs(&engine), (read, Needs::default()));
+
+        test_support::observe_request(
+            &engine,
+            &worker,
+            observe("outputs", None, vec![Capture::Error], Deliver::Output),
+        )
+        .await;
+        let delivered = Needs {
+            output: true,
+            error: true,
+            ..Needs::default()
+        };
+        assert_eq!(needs(&engine), (read.union(delivered), delivered));
     }
 
     /// An ack timeout fires for the announcement it was armed for only: a

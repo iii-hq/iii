@@ -54,7 +54,7 @@ use super::{
     lifecycle::{
         CANCELLED, INVALID_REPORT, Observer, PendingActivation, failure_reasons, lock, now_ms,
     },
-    owner::ActiveSet,
+    owner::{ActiveSet, Needs},
 };
 use crate::{
     protocol::{
@@ -78,6 +78,8 @@ struct Tracked {
     /// The function's host delivers its calls itself: only its answer
     /// activates the call's observers.
     host_delivers: bool,
+    /// What the call keeps (see [`ActiveSet::needs_for`]).
+    needs: Needs,
     /// The evaluator had room when the call began: what it needs was kept.
     admitted: bool,
     started: Instant,
@@ -589,20 +591,22 @@ impl ObserverRegistry {
         baggage: &Option<String>,
     ) -> ObservedCall {
         let admitted = self.evaluator_has_room(&set);
-        let input = (admitted && set.needs.input).then(|| {
+        let host_delivers = self.host_delivers(&set.function);
+        let needs = set.needs_for(host_delivers);
+        let input = (admitted && needs.input).then(|| {
             self.payload_copies.fetch_add(1, Ordering::Relaxed);
             Arc::new(unstamped(body.clone()))
         });
-        let metadata = if admitted && set.needs.metadata {
+        let metadata = if admitted && needs.metadata {
             metadata.clone().map(Arc::new)
         } else {
             None
         };
-        let host_delivers = self.host_delivers(&set.function);
         ObservedCall {
             inner: Some(Tracked {
                 set,
                 host_delivers,
+                needs,
                 admitted,
                 started: Instant::now(),
                 started_at_ms: now_ms(),
@@ -703,7 +707,7 @@ impl ObserverRegistry {
             }
             return;
         }
-        let needs = call.set.needs;
+        let needs = call.needs;
         let (success, output, error) = match result {
             Ok(Ok(output)) => (
                 true,
@@ -898,7 +902,7 @@ impl ObserverRegistry {
             ctx,
             ..
         } = evaluation;
-        let needs = set.needs;
+        let needs = set.needs_for(matches!(matching, Matching::Listed(_)));
         completed.error = error
             .and_then(|e| serde_json::to_value(e).ok())
             .map(Arc::new);
