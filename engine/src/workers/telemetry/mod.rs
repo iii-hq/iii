@@ -3239,4 +3239,27 @@ mod tests {
             "the following heartbeat starts from zero"
         );
     }
+
+    /// Every `iii call` registers under the same marked name, so the name is
+    /// not a worker identity: two calls running at once both register, and
+    /// both are counted.
+    #[tokio::test]
+    #[serial]
+    async fn concurrent_cli_connections_each_register_and_count() {
+        let engine = engine_with_worker_builtins();
+        collector::take_cli_commands();
+
+        let (first, _first_rx) = register_connection(&engine, "iii-cli:call").await;
+        let (second, _second_rx) = register_connection(&engine, "iii-cli:call").await;
+        assert_eq!(first["success"], true);
+        assert_eq!(second["success"], true, "a second live CLI connection");
+
+        let props = next_heartbeat_cli_properties();
+        assert_eq!(props["cli_commands"], serde_json::json!({ "call": 2 }));
+
+        // A worker name stays one live worker per namespace.
+        let (_, _a) = register_connection(&engine, "orders-worker").await;
+        let (duplicate, _b) = register_connection(&engine, "orders-worker").await;
+        assert_eq!(duplicate["success"], false);
+    }
 }

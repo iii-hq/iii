@@ -1527,9 +1527,13 @@ impl EngineFunctionsWorker {
         // One live worker name per namespace. Sanitize the name the same way
         // `register_worker_metadata` will store it, so the lease key matches what
         // `cleanup_worker` later releases. A worker that sends no usable name
-        // cannot collide, so it skips the claim.
+        // cannot collide, so it skips the claim. A CLI command's marked name
+        // (`iii-cli:call`) is shared by every invocation of that command and
+        // names no worker, so concurrent invocations skip the claim too.
         let worker_name = input.name.clone().and_then(sanitize_worker_text);
         if let Some(worker_name) = &worker_name
+            && !worker_name
+                .starts_with(crate::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX)
             && let Ok(uuid) = uuid::Uuid::parse_str(&worker_id)
             && let Err(conflict) = self.engine.claim_worker_name(&namespace, uuid, worker_name)
         {
