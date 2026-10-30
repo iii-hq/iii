@@ -62,13 +62,12 @@ impl fmt::Display for ObserveRejection {
 
 impl std::error::Error for ObserveRejection {}
 
-/// A remote error keeps its code; anything else is `OBSERVE_REJECTED`.
+/// Every [`Error`] is `OBSERVE_REJECTED`, a failed call's
+/// ([`Error::Remote`]) included: its code and message are in the rejection's
+/// message. Return an [`ObserveRejection`] to reject with another code.
 impl From<Error> for ObserveRejection {
     fn from(error: Error) -> Self {
-        match error {
-            Error::Remote { code, message, .. } => Self { code, message },
-            other => Self::new(observe_codes::OBSERVE_REJECTED, other.to_string()),
-        }
+        Self::new(observe_codes::OBSERVE_REJECTED, error.to_string())
     }
 }
 
@@ -1563,6 +1562,32 @@ mod tests {
         assert!(ack.get("error").is_none());
     }
 
+    /// An `ObserveRejection` keeps its code; every `Error` an added hook
+    /// returns with `?`, a failed call's included, is `OBSERVE_REJECTED`.
+    #[test]
+    fn errors_reject_with_observe_rejected() {
+        let failed_call = Error::Remote {
+            code: "FORBIDDEN".into(),
+            message: "nope".into(),
+            stacktrace: None,
+        };
+        let rejection = ObserveRejection::from(failed_call);
+        assert_eq!(rejection.code, observe_codes::OBSERVE_REJECTED);
+        assert!(
+            rejection.message.contains("FORBIDDEN") && rejection.message.contains("nope"),
+            "{}",
+            rejection.message
+        );
+        assert_eq!(
+            ObserveRejection::from(Error::Timeout).code,
+            observe_codes::OBSERVE_REJECTED
+        );
+        assert_eq!(
+            ObserveRejection::new("INVALID_CRON_EXPRESSION", "x").code,
+            "INVALID_CRON_EXPRESSION"
+        );
+    }
+
     /// The worker's and the function's added hooks share one 30 s budget.
     #[tokio::test(start_paused = true)]
     async fn the_timeout_spans_both_levels() {
@@ -2532,6 +2557,337 @@ mod tests {
         while !function.local_dispatch_active() {
             tokio::task::yield_now().await;
         }
+    }
+
+    /// Records the observers a hook runs for, as `"<what> <id>"`.
+    #[derive(Clone, Default)]
+    struct Ran(Arc<Mutex<Vec<String>>>);
+
+    impl Ran {
+        fn added(&self, what: &'static str) -> impl crate::AddedHook {
+            let ran = self.clone();
+            move |obs: Observer| {
+                ran.0.lock().unwrap().push(format!("{what} {}", obs.id()));
+                async { Ok::<_, ObserveRejection>(()) }
+            }
+        }
+
+        fn removed(&self, what: &'static str) -> impl RemovedHook {
+            let ran = self.clone();
+            move |obs: Observer| {
+                ran.0.lock().unwrap().push(format!("{what} {}", obs.id()));
+                async {}
+            }
+        }
+
+        fn now(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        async fn until(&self, n: usize) {
+            while self.0.lock().unwrap().len() < n {
+                tokio::task::yield_now().await;
+            }
+        }
+    }
+
+    /// A removed hook that panics is logged once; the observer is removed
+    /// either way, the worker's removed hook still runs for it, and later
+    /// removals run the hooks again.
+    #[tokio::test]
+    async fn a_panicking_removed_hook_is_logged_and_the_observer_removed() {
+        let warnings = Warnings::default();
+        let _capture = tracing::subscriber::set_default(warnings.clone());
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let ran = Ran::default();
+        iii.on_observer_removed_for("rp::f", {
+            let ran = ran.clone();
+            move |obs: Observer| {
+                let ran = ran.clone();
+                async move {
+                    if obs.id() == "boom" {
+                        panic!("teardown bug");
+                    }
+                    ran.0.lock().unwrap().push(format!("function {}", obs.id()));
+                }
+            }
+        })
+        .on_observer_removed(ran.removed("worker"));
+        let function = hosted(
+            &iii,
+            &mut rx,
+            "rp::f",
+            json!([view_with_args("boom", json!({}))]),
+        )
+        .await;
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "rp::f", "revision": 2, "id": "boom" }),
+        );
+        ran.until(1).await;
+        assert_eq!(ran.now(), vec!["worker boom"]);
+        assert!(!function.is_observed());
+        assert!(function.observers().is_empty());
+
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "rp::f", "revision": 3,
+                    "observer": view_with_args("later", json!({})) }),
+        );
+        assert_eq!(next_ack(&mut rx).await["id"], "later");
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "rp::f", "revision": 4, "id": "later" }),
+        );
+        ran.until(3).await;
+        assert_eq!(
+            ran.now(),
+            vec!["worker boom", "function later", "worker later"]
+        );
+        let lines = warnings.0.lock().unwrap().clone();
+        let logged: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("on_observer_removed panicked"))
+            .collect();
+        assert_eq!(logged.len(), 1, "{lines:#?}");
+        assert!(logged[0].contains("teardown bug"), "{}", logged[0]);
+    }
+
+    /// A worker's added hook set once functions have active observers runs
+    /// for each of them, with one warning per function naming how many.
+    #[tokio::test]
+    async fn a_late_worker_hook_is_caught_up_for_every_function() {
+        let warnings = Warnings::default();
+        let _capture = tracing::subscriber::set_default(warnings.clone());
+        let (iii, mut rx) = client();
+        hosted(
+            &iii,
+            &mut rx,
+            "wa::f",
+            json!([
+                view_with_args("a1", json!({})),
+                view_with_args("a2", json!({}))
+            ]),
+        )
+        .await;
+        hosted(
+            &iii,
+            &mut rx,
+            "wb::f",
+            json!([view_with_args("b1", json!({}))]),
+        )
+        .await;
+        let ran = Ran::default();
+        iii.on_observer_added(ran.added("worker"));
+        ran.until(3).await;
+        let mut caught_up = ran.now();
+        caught_up.sort();
+        assert_eq!(caught_up, vec!["worker a1", "worker a2", "worker b1"]);
+        let lines = warnings.0.lock().unwrap().clone();
+        let warned: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("were active before its on_observer_added hook was set"))
+            .collect();
+        assert_eq!(warned.len(), 2, "{lines:#?}");
+        for named in ["2 observer(s) of wa::f", "1 observer(s) of wb::f"] {
+            assert!(
+                warned.iter().any(|l| l.contains(named)),
+                "{named}: {warned:#?}"
+            );
+        }
+    }
+
+    /// Each `clear_*` removes its hook, at both levels: an observer added or
+    /// removed afterwards runs none, iii delivers once the deliver hook is
+    /// cleared, and a call reaches every observer once the match hook is.
+    #[tokio::test]
+    async fn cleared_hooks_stop_running() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let ran = Ran::default();
+        iii.on_observer_added(ran.added("worker added"))
+            .on_observer_added_for("cl::f", ran.added("function added"))
+            .on_observer_removed(ran.removed("worker removed"))
+            .on_observer_removed_for("cl::f", ran.removed("function removed"))
+            .on_observer_match_for("cl::f", kind_keys())
+            .on_observer_deliver_for("cl::f", answer_with_count);
+        hosted(
+            &iii,
+            &mut rx,
+            "cl::f",
+            json!([
+                view_with_args("a", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        let with_hooks = vec![
+            "worker added a",
+            "function added a",
+            "worker added b",
+            "function added b",
+        ];
+        assert_eq!(ran.now(), with_hooks);
+        let routed = |n: u32, input: Value| {
+            feed(
+                &iii,
+                json!({ "type": "invokefunction", "function_id": "cl::f",
+                        "invocation_id": format!("c111111{n}-2222-4333-8444-555555555555"),
+                        "data": input }),
+            );
+        };
+        sent(&mut rx);
+        routed(0, json!({ "kind": "a" }));
+        let answer = next_frame(&mut rx, "invocationresult").await;
+        assert_eq!(
+            answer["result"], 1,
+            "the deliver hook got the one of kind a"
+        );
+        assert!(answer.get("observed").is_none());
+
+        iii.clear_observer_added()
+            .clear_observer_added_for("cl::f")
+            .clear_observer_removed()
+            .clear_observer_removed_for("cl::f");
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "cl::f", "revision": 2,
+                    "observer": view_with_args("c", json!({ "kind": "b" })) }),
+        );
+        assert_eq!(next_ack(&mut rx).await["id"], "c");
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "cl::f", "revision": 3, "id": "a" }),
+        );
+        // processed in order: once d is acked, a's removal has run
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "cl::f", "revision": 4,
+                    "observer": view_with_args("d", json!({ "kind": "d" })) }),
+        );
+        assert_eq!(next_ack(&mut rx).await["id"], "d");
+        assert_eq!(ran.now(), with_hooks, "no hook ran once cleared");
+
+        // iii delivers: the match hook still picks the observers of kind b
+        iii.clear_observer_deliver_for("cl::f");
+        sent(&mut rx);
+        routed(1, json!({ "kind": "b" }));
+        let answer = next_frame(&mut rx, "invocationresult").await;
+        assert_eq!(answer["result"], json!({ "kind": "b" }), "the handler's");
+        let mut observed: Vec<String> = serde_json::from_value(answer["observed"].clone()).unwrap();
+        observed.sort();
+        assert_eq!(observed, vec!["b", "c"]);
+
+        // every observer wants every call
+        iii.clear_observer_match_for("cl::f");
+        routed(2, json!({ "kind": "b" }));
+        let answer = next_frame(&mut rx, "invocationresult").await;
+        let mut observed: Vec<String> = serde_json::from_value(answer["observed"].clone()).unwrap();
+        observed.sort();
+        assert_eq!(observed, vec!["b", "c", "d"]);
+    }
+
+    /// Matched by keys, a call's keys are computed once per call, routed or
+    /// local.
+    #[tokio::test]
+    async fn call_keys_are_computed_once_per_call() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let computed = Arc::new(AtomicUsize::new(0));
+        iii.on_observer_match_for(
+            "ck::f",
+            crate::Match::keys(|obs| obs.args_value()["kind"].as_str().into(), {
+                let computed = computed.clone();
+                move |call| {
+                    computed.fetch_add(1, Ordering::SeqCst);
+                    call.input["kind"].as_str().into()
+                }
+            }),
+        );
+        let function = hosted(
+            &iii,
+            &mut rx,
+            "ck::f",
+            json!([
+                view_with_args("a", json!({ "kind": "a" })),
+                view_with_args("b", json!({ "kind": "b" }))
+            ]),
+        )
+        .await;
+        assert_eq!(computed.load(Ordering::SeqCst), 0);
+        sent(&mut rx);
+        let observed = routed_observed(
+            &iii,
+            &mut rx,
+            "ck::f",
+            "d1111111-2222-4333-8444-555555555555",
+            json!({ "kind": "a" }),
+        )
+        .await;
+        assert_eq!(observed, json!(["a"]));
+        assert_eq!(
+            computed.load(Ordering::SeqCst),
+            1,
+            "once for the routed call"
+        );
+        while !function.local_dispatch_active() {
+            tokio::task::yield_now().await;
+        }
+        iii.call(CallRequest::new("ck::f", json!({ "kind": "b" })))
+            .await
+            .unwrap();
+        assert_eq!(
+            computed.load(Ordering::SeqCst),
+            2,
+            "once for the local call"
+        );
+    }
+
+    /// A standby registers again 1 s ±20 % after each conflict, and not once
+    /// it is unregistered.
+    #[tokio::test(start_paused = true)]
+    async fn a_standby_retries_every_second_until_unregistered() {
+        let (iii, mut rx) = client();
+        let function = iii.register_function("sb::retry", echo().standby());
+        sent(&mut rx);
+        let conflict = json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
+                               "namespace": "default", "function_id": "sb::retry",
+                               "owner_worker_id": "w2" });
+        let registrations = |frames: Vec<Value>| {
+            frames
+                .iter()
+                .filter(|m| m["type"] == "registerfunction" && m["id"] == "sb::retry")
+                .count()
+        };
+        const STEP: Duration = Duration::from_millis(5);
+        let mut delays = Vec::new();
+        for _ in 0..40 {
+            feed(&iii, conflict.clone());
+            let started = tokio::time::Instant::now();
+            loop {
+                tokio::time::sleep(STEP).await;
+                match registrations(sent(&mut rx)) {
+                    0 => assert!(started.elapsed() < Duration::from_secs(2), "no retry"),
+                    1 => break,
+                    n => panic!("{n} registrations for one conflict"),
+                }
+            }
+            delays.push(started.elapsed());
+        }
+        let (fewest, most) = (*delays.iter().min().unwrap(), *delays.iter().max().unwrap());
+        assert!(fewest >= Duration::from_millis(800), "{delays:?}");
+        assert!(most <= Duration::from_millis(1_200) + STEP, "{delays:?}");
+        assert!(
+            fewest < Duration::from_secs(1) && most > Duration::from_secs(1),
+            "jittered both ways: {delays:?}"
+        );
+
+        // unregistered while it waits: no retry
+        feed(&iii, conflict);
+        function.unregister();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(registrations(sent(&mut rx)), 0);
     }
 
     #[tokio::test]

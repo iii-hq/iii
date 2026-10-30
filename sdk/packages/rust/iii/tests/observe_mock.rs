@@ -1,6 +1,6 @@
 //! observe against a fake engine: features, `observe()` replay, local
 //! dispatch, the current invocation, reports, hooks at both levels, deliver
-//! hooks and keyed delivery, routed calls, calls through an observer,
+//! hooks and matching by keys, routed calls, calls through an observer,
 //! `private`, `standby` and reconnect, asserted on the frames the SDK puts on
 //! the socket.
 //!
@@ -872,6 +872,94 @@ async fn auto_functions_report_only_matching_local_calls() {
     iii.shutdown_async().await;
 }
 
+/// An observer with `capture: []` is reported the call's ids, status and
+/// timing, and none of its payloads: no input, output, error or caller, even
+/// for a failed call made from a handler.
+#[tokio::test]
+async fn an_empty_capture_reports_ids_status_and_timing_only() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "owner");
+    connected(&mock, &iii, true).await;
+    let invoked: Arc<Mutex<Vec<String>>> = Arc::default();
+    let counted = RegisterFunction::new({
+        let invoked = invoked.clone();
+        move |input: Value| {
+            let ctx = current_invocation().expect("the call's invocation");
+            invoked.lock().unwrap().push(ctx.invocation_id);
+            if input["fail"] == json!(true) {
+                return Err(Error::Remote {
+                    code: "DECLINED".into(),
+                    message: "declined".into(),
+                    stacktrace: None,
+                });
+            }
+            Ok::<_, Error>(json!({ "ok": true }))
+        }
+    });
+    hosted(
+        &mock,
+        &iii,
+        "c0::count",
+        counted,
+        json!([view("count", json!({}), json!([]), "complete")]),
+    )
+    .await;
+    acked(&mock, &[("count", 1)]).await;
+    hosted(
+        &mock,
+        &iii,
+        "c0::outer",
+        RegisterFunction::new_async({
+            let iii = iii.clone();
+            move |input: Value| {
+                let iii = iii.clone();
+                async move {
+                    let _ = iii.call(CallRequest::new("c0::count", input)).await;
+                    Ok::<_, Error>(Value::Null)
+                }
+            }
+        }),
+        json!([]),
+    )
+    .await;
+    mock.clear();
+    iii.call(CallRequest::new("c0::outer", json!({ "amount": 1 })))
+        .await
+        .unwrap();
+    iii.call(CallRequest::new(
+        "c0::outer",
+        json!({ "amount": 2, "fail": true }),
+    ))
+    .await
+    .unwrap();
+    let msgs = mock.wait_for(|m| report_items_in(m).len() >= 2, WAIT).await;
+    let items = report_items_in(&msgs);
+    assert_eq!(items.len(), 2, "{items:#?}");
+    let invoked = invoked.lock().unwrap().clone();
+    for (item, (status, invocation_id)) in items
+        .iter()
+        .zip([("success", &invoked[0]), ("error", &invoked[1])])
+    {
+        assert_eq!(item["function_id"], "c0::count");
+        assert_eq!(item["invocation_id"], json!(invocation_id));
+        assert_eq!(item["status"], status);
+        assert_eq!(item["matched"], json!(["count"]));
+        assert!(item["started_at_ms"].as_u64().unwrap() > 1_700_000_000_000);
+        assert!(item["duration_ms"].as_f64().unwrap() >= 0.0);
+        for part in [
+            "input",
+            "output",
+            "output_is_input",
+            "error",
+            "caller",
+            "metadata",
+        ] {
+            assert!(item.get(part).is_none(), "{part} is not captured: {item:#}");
+        }
+    }
+    iii.shutdown_async().await;
+}
+
 #[tokio::test]
 async fn reports_are_batched_by_256_and_by_linger() {
     let mock = MockEngine::start().await;
@@ -982,6 +1070,15 @@ impl AddedHook for Recorder {
         }
         if obs.args_value().get("plain_error").is_some() {
             return Err(Error::Handler("no".into()).into());
+        }
+        if let Some(code) = obs.args_value().get("call_error").and_then(Value::as_str) {
+            // `?` on a call that failed with a code
+            let failed: Result<Value, Error> = Err(Error::Remote {
+                code: code.to_string(),
+                message: "refused".into(),
+                stacktrace: None,
+            });
+            failed?;
         }
         self.events
             .lock()
@@ -1119,14 +1216,34 @@ async fn hooks_run_one_at_a_time_in_revision_order() {
     mock.send_to_client(json!({
         "type": "observerremoved", "function_id": "h::f", "revision": 2, "id": "fast"
     }));
-    // a plain error is OBSERVE_REJECTED
+    // a plain error is OBSERVE_REJECTED, and so is a failed call's error
     mock.send_to_client(added("h::f", 5, "plain", json!({ "plain_error": true })));
-    let acks = acked(&mock, &[("slow", 2), ("fast", 3), ("plain", 5)]).await;
+    mock.send_to_client(added(
+        "h::f",
+        6,
+        "call",
+        json!({ "call_error": "FORBIDDEN" }),
+    ));
+    let acks = acked(
+        &mock,
+        &[("slow", 2), ("fast", 3), ("plain", 5), ("call", 6)],
+    )
+    .await;
     assert_eq!(acks[0]["id"], "slow");
     assert_eq!(acks[0]["revision"], 2);
     assert_eq!(acks[1]["id"], "fast");
     assert_eq!(acks[2]["id"], "plain");
     assert_eq!(acks[2]["error"]["code"], "OBSERVE_REJECTED");
+    assert_eq!(acks[3]["id"], "call");
+    assert_eq!(acks[3]["error"]["code"], "OBSERVE_REJECTED");
+    assert!(
+        acks[3]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("FORBIDDEN"),
+        "{}",
+        acks[3]
+    );
     assert_eq!(
         *recorder.events.lock().unwrap(),
         vec!["add slow", "add fast", "remove slow"]
@@ -3102,6 +3219,110 @@ async fn an_engine_without_observe_v2_evaluates_routed_calls() {
     iii.shutdown_async().await;
 }
 
+/// A function that needs `observe.v2`, hosted on an `observe.v2` engine,
+/// is released when the worker reconnects to an engine without it: local
+/// dispatch goes off, its observers are removed through the removed hooks,
+/// and the reports held for its confirmation are discarded. The next
+/// `observe.v2` engine registers it again.
+#[tokio::test]
+async fn a_reconnect_to_an_engine_without_observe_v2_releases_v2_functions() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "source");
+    connected(&mock, &iii, true).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "v2::on-event", &recorder);
+    let ran = Arc::new(AtomicUsize::new(0));
+    let function = hosted(
+        &mock,
+        &iii,
+        "v2::on-event",
+        RegisterFunction::new({
+            let ran = ran.clone();
+            move |event: Value| {
+                ran.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Error>(event)
+            }
+        })
+        .private(),
+        json!([view("o", json!({}), json!(["input"]), "success")]),
+    )
+    .await;
+    acked(&mock, &[("o", 1)]).await;
+    until("observed", || function.is_observed()).await;
+
+    // reconnecting: a local call made before the engine's hello is reported
+    // once the engine confirms the function on this connection
+    mock.clear();
+    mock.close_active_connection();
+    frame(&mock, |m| {
+        m["type"] == "invokefunction" && m["function_id"] == "engine::workers::register"
+    })
+    .await;
+    iii.call(CallRequest::new("v2::on-event", json!({ "n": "held" })))
+        .await
+        .unwrap();
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "ran in-process");
+    hello_with(&mock, json!(["observe.v1", "local-dispatch.v1"]));
+    until("released", || !function.local_dispatch_active()).await;
+    until("removed", || {
+        recorder
+            .events
+            .lock()
+            .unwrap()
+            .contains(&"remove o".to_string())
+    })
+    .await;
+    assert!(!function.is_observed());
+    assert!(function.observers().is_empty());
+    iii.call(CallRequest {
+        function_id: "v2::on-event".into(),
+        payload: json!({ "n": "routed" }),
+        action: Some(CallAction::Void),
+        timeout_ms: None,
+    })
+    .await
+    .unwrap();
+    frame(&mock, |m| {
+        m["type"] == "invokefunction" && m["function_id"] == "v2::on-event"
+    })
+    .await;
+    assert_eq!(ran.load(Ordering::SeqCst), 1, "the engine routes it");
+    assert!(
+        frames(&mock, "registerfunction")
+            .iter()
+            .all(|m| m["id"] != "v2::on-event"),
+        "not registered with an engine without observe.v2"
+    );
+
+    // an observe.v2 engine again: registered, its observer added anew, and
+    // the report held across the other engine never sent
+    mock.clear();
+    mock.close_active_connection();
+    connected(&mock, &iii, true).await;
+    frame(&mock, registered("v2::on-event")).await;
+    confirm(
+        &mock,
+        "v2::on-event",
+        2,
+        true,
+        json!([view("o", json!({}), json!(["input"]), "success")]),
+    );
+    acked(&mock, &[("o", 2)]).await;
+    until("local dispatch", || function.local_dispatch_active()).await;
+    assert_eq!(
+        *recorder.events.lock().unwrap(),
+        vec!["add o", "remove o", "add o"]
+    );
+    // reports flush every 5 ms
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let reported: Vec<Value> = frames(&mock, "invocationsobserved")
+        .iter()
+        .flat_map(|f| f["items"].as_array().cloned().unwrap_or_default())
+        .collect();
+    assert!(reported.is_empty(), "{reported:#?}");
+    iii.shutdown_async().await;
+}
+
 /// The registration of a private source, as the fixture pins it: top-level
 /// `args_format` and `private`, no `observe` object, sent once this
 /// connection's engine advertised `observe.v2`.
@@ -3383,9 +3604,12 @@ async fn a_standby_takes_over_when_the_host_leaves() {
     mock.send_to_client(conflict("solo::f"));
     mock.send_to_client(conflict("solo::plain"));
     frame(&mock, registered("solo::f")).await;
+    // 1 s ±20 % after the conflict reached the worker (the timing is pinned
+    // with a paused clock in the SDK's unit tests); the slack above is the
+    // round trip
     let first = started.elapsed();
     assert!(
-        first >= Duration::from_millis(700),
+        first >= Duration::from_millis(800) && first < Duration::from_millis(2_000),
         "about a second later: {first:?}"
     );
     mock.clear();

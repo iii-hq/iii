@@ -101,7 +101,7 @@ pub fn setup(iii: &IIIClient) {
         "example::send_report",
     );
 
-    // ── Example 2: file watch (enum args, keyed by pattern) ─────────
+    // ── Example 2: file watch (enum args, matched by pattern) ───────
     iii.on_observer_added_for("example::on-file-change", |obs: Observer| async move {
         let args: FileWatchArgs = obs.args()?;
         println!("[file-watch] Watching: {}", args.pattern);
