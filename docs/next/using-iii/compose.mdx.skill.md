@@ -426,7 +426,8 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 `compose::update` without `worker` or `workers` updates every declared `package://` worker to its
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
 The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
-names) moves only to the newest release within the engine's sandbox contract major.
+names) moves only to the newest release in the range that implements the engine's sandbox contract
+major (`^0.2` for contract 1).
 
 ```bash
 iii trigger compose::update

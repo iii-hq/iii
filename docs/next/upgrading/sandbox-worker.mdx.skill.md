@@ -34,7 +34,7 @@ with `SANDBOX_CONFIG_MOVED`. The error prints the replacement with your old bloc
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^1'
+    version: '^0.2'
     config_override:
       image_allowlist:
       - python
