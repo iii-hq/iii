@@ -174,6 +174,36 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     await expect(sdk.call({ function_id: 'val::echo', payload: { a: 1, f: () => 1 } })).resolves.toEqual({ a: 1 })
   })
 
+  it('metadata is any JSON value, and null is no metadata: local, sent and received alike (decision 54)', async () => {
+    const { sdk, socket } = worker()
+    const seen: unknown[] = []
+    sdk.registerFunction('val::meta', async (_input: unknown, metadata?: unknown) => {
+      seen.push(metadata)
+      return null
+    })
+    socket.open()
+    socket.deliver(functionRegistered('val::meta'))
+    socket.clear()
+    const values = [null, ['a', 1], 'tag', 0, false, { tenant: 'acme' }]
+    const absent = [undefined, ['a', 1], 'tag', 0, false, { tenant: 'acme' }]
+    // local: the handler gets undefined for null, every other value as given
+    for (const metadata of values) await sdk.call({ function_id: 'val::meta', payload: {}, metadata })
+    expect(seen).toStrictEqual(absent)
+    expect(socket.sent).toHaveLength(0)
+    // routed: null is left off the frame
+    for (const metadata of values) {
+      await sdk.call({ function_id: 'val::meta', payload: {}, metadata, dispatch: 'remote', action: CallAction.Void() })
+    }
+    expect(invokes(socket).map((f) => ('metadata' in f ? f.metadata : undefined))).toStrictEqual(absent)
+    // received: an invokefunction with metadata null reaches the handler as undefined
+    seen.length = 0
+    for (const [i, metadata] of values.entries()) {
+      socket.deliver(fake.invokeFunction('val::meta', {}, { invocation_id: `in-${i}`, metadata: metadata as never }))
+    }
+    await settle()
+    expect(seen).toStrictEqual(absent)
+  })
+
   it('a failing handler rejects with the error body the remote path gives', async () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('err::local', async () => {

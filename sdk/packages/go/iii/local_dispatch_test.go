@@ -192,6 +192,71 @@ func TestLocalValueSemantics(t *testing.T) {
 	}
 }
 
+// Metadata is any JSON value, and JSON null is no metadata (decision 54): a local call,
+// a routed one and one the engine routes here all leave MetadataFromContext empty for it,
+// and hand every other value through as given.
+func TestNullMetadataIsNoMetadataOnEveryPath(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	var mu sync.Mutex
+	var seen []string
+	registerLocal(t, c, "meta::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		md, ok := MetadataFromContext(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		if ok {
+			seen = append(seen, string(md))
+		} else {
+			seen = append(seen, "absent")
+		}
+		return nil, nil
+	})
+	values := []string{"null", ` null `, `["a",1]`, `"tag"`, `0`, `false`, `{"tenant":"acme"}`}
+	absent := []string{"absent", "absent", `["a",1]`, `"tag"`, `0`, `false`, `{"tenant":"acme"}`}
+	took := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		out := seen
+		seen = nil
+		return out
+	}
+
+	// local
+	for _, md := range values {
+		call(t, c, CallRequest{FunctionID: "meta::fn", Metadata: json.RawMessage(md)})
+	}
+	if got := took(); !slices.Equal(got, absent) {
+		t.Errorf("local: %q, want %q", got, absent)
+	}
+	if n := invokeFrames(fe, "meta::fn"); n != 0 {
+		t.Errorf("%d frames for local calls", n)
+	}
+
+	// routed: null is left off the frame
+	for _, md := range values {
+		call(t, c, CallRequest{FunctionID: "meta::fn", Metadata: json.RawMessage(md), Dispatch: DispatchRemote, Action: VoidAction()})
+	}
+	var sent []string
+	for _, d := range fe.waitFrames(MsgInvokeFunction, len(values), func(d *DecodedMessage) bool { return d.InvokeFunction.FunctionID == "meta::fn" }) {
+		if d.InvokeFunction.Metadata == nil {
+			sent = append(sent, "absent")
+		} else {
+			sent = append(sent, string(d.InvokeFunction.Metadata))
+		}
+	}
+	if !slices.Equal(sent, absent) {
+		t.Errorf("routed frames: %q, want %q", sent, absent)
+	}
+
+	// routed here: an invokefunction with metadata null reaches the handler as none
+	for _, md := range values {
+		fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "meta::fn", Metadata: json.RawMessage(md)}))
+	}
+	if got := took(); !slices.Equal(got, absent) {
+		t.Errorf("received: %q, want %q", got, absent)
+	}
+}
+
 // A call this worker makes to its own private function passes the input and the result
 // by reference: the handler gets the caller's payload, and the caller the handler's
 // json.RawMessage, with no copy of either.

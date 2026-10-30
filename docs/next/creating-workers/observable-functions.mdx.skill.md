@@ -717,6 +717,11 @@ target's result:
   delivery.
 - The call sends the payload as given. The deliver hook applies the observer's `on` and filters with
   `obs.matches(call)` before it calls.
+- The call takes no metadata. The target's metadata argument is the observer's registration
+  metadata, as on iii's delivery. `call` refuses a call through an observer that names metadata
+  before sending anything, with the error "a call through an observer takes no metadata; its target
+  receives the observer's metadata". `null` (Python `None`) is no metadata. Put anything the target
+  needs from the call in the payload.
 - A call through an observer belongs in the function's deliver hook, and the function documents what
   its targets receive. To send one observer something outside delivery, call the function for that
   observer: see [Send an observer its initial state](#send-an-observer-its-initial-state).

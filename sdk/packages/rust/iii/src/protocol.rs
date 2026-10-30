@@ -110,6 +110,10 @@ impl CallRequest {
     /// `payload`, as given, and applies the observer's policy, metadata
     /// sidecar and loop guard. Only the worker that hosts the observer's
     /// function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process.
+    /// It takes no metadata: the target's metadata argument is the observer's
+    /// registration metadata, and [`IIIClient::call`](crate::IIIClient::call)
+    /// refuses a request given [`metadata`](CallRequestWithMetadata::metadata)
+    /// before anything is sent.
     /// It belongs in the function's deliver hook, whose function documents
     /// what its targets receive; to send one observer something outside
     /// delivery (its initial state), call the function with metadata
@@ -202,7 +206,10 @@ pub struct CallRequestWithMetadata {
 pub type TriggerRequestWithMetadata = CallRequestWithMetadata;
 
 impl CallRequestWithMetadata {
-    /// Attach per-invocation metadata.
+    /// Attach per-invocation metadata: any JSON value, which the handler
+    /// receives as its metadata argument. `Value::Null` is the same as no
+    /// metadata. A call through an observer ([`CallRequest::observer`]) takes
+    /// none.
     pub fn metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
         self

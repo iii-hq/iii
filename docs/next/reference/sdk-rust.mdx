@@ -195,7 +195,7 @@ async call(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Error>
       Choose the path this call takes; see `Dispatch`.
     </ParamField>
     <ParamField body="metadata" type="fn(metadata: Value) -> Self" required>
-      Attach per-invocation metadata.
+      Attach per-invocation metadata: any JSON value, which the handler receives as its metadata argument. `Value::Null` is the same as no metadata. A call through an observer (`CallRequest::observer`) takes none.
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
       Target a specific namespace for this invocation.
@@ -231,7 +231,7 @@ async call(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Error>
       A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action.
     </ParamField>
     <ParamField body="observer" type="fn(observer: &Observer, payload: Value) -> CallRequestWithMetadata" required>
-      A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`).
+      A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It takes no metadata: the target's metadata argument is the observer's registration metadata, and `IIIClient::call` refuses a request given `metadata` before anything is sent. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -374,7 +374,7 @@ async trigger(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Erro
       Choose the path this call takes; see `Dispatch`.
     </ParamField>
     <ParamField body="metadata" type="fn(metadata: Value) -> Self" required>
-      Attach per-invocation metadata.
+      Attach per-invocation metadata: any JSON value, which the handler receives as its metadata argument. `Value::Null` is the same as no metadata. A call through an observer (`CallRequest::observer`) takes none.
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
       Target a specific namespace for this invocation.
@@ -1750,7 +1750,7 @@ CallRequest::new("my::function", json!({})).metadata(json!({ "tenant": "acme" })
 | `metadata` | fn(metadata: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `CallRequest` struct literals. |
 | `namespace` | fn(namespace: impl Into&lt;String&gt;) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Target a specific namespace for this invocation without adding a required field to `CallRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`. |
 | `new` | `fn(function_id: impl Into<String>, payload: Value) -> Self` | Yes | A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action. |
-| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`). |
+| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It takes no metadata: the target's metadata argument is the observer's registration metadata, and `IIIClient::call` refuses a request given `metadata` before anything is sent. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`). |
 
 ---
 
@@ -1763,7 +1763,7 @@ dispatch and the observer it is made through.
 | --- | --- | --- | --- |
 | `action` | fn(action: [`CallAction`](#callaction)) -&gt; Self | Yes | How the call is routed; see `CallRequest::action`. |
 | `dispatch` | fn(dispatch: [`Dispatch`](#dispatch)) -&gt; Self | Yes | Choose the path this call takes; see `Dispatch`. |
-| `metadata` | `fn(metadata: Value) -> Self` | Yes | Attach per-invocation metadata. |
+| `metadata` | `fn(metadata: Value) -> Self` | Yes | Attach per-invocation metadata: any JSON value, which the handler receives as its metadata argument. `Value::Null` is the same as no metadata. A call through an observer (`CallRequest::observer`) takes none. |
 | `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | Target a specific namespace for this invocation. |
 | `timeout` | `fn(timeout: Duration) -> Self` | Yes | Override the default invocation timeout. |
 

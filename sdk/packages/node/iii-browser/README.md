@@ -89,8 +89,9 @@ const users = await iii.call({
 })
 ```
 
-A call can carry `metadata` (any JSON, handed to the handler as its second
-argument and readable by observer filters as `metadata.*`), and a W3C
+A call can carry `metadata` (any JSON value, handed to the handler as its
+second argument and readable by observer filters as `metadata.*`; `null` is the
+same as none, and a call through an observer takes none), and a W3C
 `traceparent` / `baggage` to continue a trace. The browser SDK has no
 OpenTelemetry: it never makes up a trace context. Inside a handler, calls
 forward the `traceparent` the handler was invoked with; a top-level call sends

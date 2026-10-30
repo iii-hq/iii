@@ -493,9 +493,9 @@ export type CallRequest<TInput = unknown> =
       /** Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. */
       namespace?: string
       /**
-       * Per-invocation metadata (any JSON). Travels beside the payload: the
+       * Per-invocation metadata (any JSON value). Travels beside the payload: the
        * handler receives it as its second argument, and observer filters read it
-       * as `metadata.*`.
+       * as `metadata.*`. `null` is the same as no metadata.
        */
       metadata?: unknown
       /**
@@ -530,6 +530,11 @@ export type CallRequest<TInput = unknown> =
       action?: CallAction
       /** Override the default invocation timeout, in milliseconds. */
       timeoutMs?: number
+      /**
+       * A call through an observer takes no metadata: its target receives the
+       * observer's registration metadata. `call` refuses one that names it.
+       */
+      metadata?: never
     }
 
 /** @deprecated Use {@link CallRequest}, the same type. */

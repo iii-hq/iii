@@ -247,10 +247,16 @@ handler raises, ``BaseException``s such as ``KeyboardInterrupt`` and
 ``__cause__`` (for a ``Void`` call nothing reaches the caller: the
 error is logged).
 
+``metadata`` is any JSON value; the handler receives it beside the
+payload, and ``None`` is no metadata.
+
 A request with ``observer`` (an `Observer` of a function this
 worker hosts) calls through it: the engine runs the observer's target
 with its policy (``max_fires``, expiry, ``max_in_flight``), metadata
 sidecar and loop guard, and the call resolves to the target's result.
+It takes no ``metadata``: the target's metadata argument is the
+observer's registration metadata, and a request that names metadata
+raises ``ValueError`` before anything is sent.
 The payload goes as given: filters are applied where the worker
 chooses observers: iii's delivery, or ``obs.matches(call)`` in an
 ``on_observer_deliver``. A call through an observer belongs in that
@@ -281,7 +287,7 @@ call(request: dict[str, Any] | CallRequest) -> Any
       ID of the function to call.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary user-specifiable metadata supplied to the called handler function on every invocation.
+      Per-invocation metadata (any JSON value) supplied to the called handler beside the payload. ``None`` is no metadata.
     </ParamField>
     <ParamField body="namespace" type="str | None">
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
@@ -446,7 +452,7 @@ trigger(request: dict[str, Any] | CallRequest) -> Any
       ID of the function to call.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary user-specifiable metadata supplied to the called handler function on every invocation.
+      Per-invocation metadata (any JSON value) supplied to the called handler beside the payload. ``None`` is no metadata.
     </ParamField>
     <ParamField body="namespace" type="str | None">
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
@@ -547,7 +553,7 @@ async (request: dict[str, Any] | CallRequest) -> Any
       ID of the function to call.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary user-specifiable metadata supplied to the called handler function on every invocation.
+      Per-invocation metadata (any JSON value) supplied to the called handler beside the payload. ``None`` is no metadata.
     </ParamField>
     <ParamField body="namespace" type="str | None">
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
@@ -1043,7 +1049,7 @@ async (request: dict[str, Any] | CallRequest) -> Any
       ID of the function to call.
     </ParamField>
     <ParamField body="metadata" type="Any | None">
-      Arbitrary user-specifiable metadata supplied to the called handler function on every invocation.
+      Per-invocation metadata (any JSON value) supplied to the called handler beside the payload. ``None`` is no metadata.
     </ParamField>
     <ParamField body="namespace" type="str | None">
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
@@ -1521,7 +1527,7 @@ the worker that hosts the observed function may make it.
 | `action` | [`CallActionEnqueue`](#callactionenqueue) \| [`CallActionVoid`](#callactionvoid) \| None | No | Sets how the call is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. ``CallAction.Enqueue(...)``, ``CallAction.Void()``). |
 | `dispatch` | `Literal['auto', 'remote'] \| None` | No | ``auto`` (default) runs a function this worker hosts in-process once the engine confirmed it; ``remote`` always goes through the engine. |
 | `function_id` | `str \| None` | No | ID of the function to call. |
-| `metadata` | `Any \| None` | No | Arbitrary user-specifiable metadata supplied to the called handler function on every invocation. |
+| `metadata` | `Any \| None` | No | Per-invocation metadata (any JSON value) supplied to the called handler beside the payload. ``None`` is no metadata. |
 | `namespace` | `str \| None` | No | Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker. |
 | `observer` | `Any` | No | An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action. |
 | `payload` | `Any` | No | Input data passed to the function. |

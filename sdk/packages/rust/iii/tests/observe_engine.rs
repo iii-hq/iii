@@ -603,6 +603,59 @@ async fn local_and_remote_calls_deliver_the_same_envelope() {
     }
 }
 
+/// Metadata is any JSON value, and `Value::Null` is no metadata (decision
+/// 54): local and routed calls hand the handler the same thing.
+#[tokio::test]
+async fn null_metadata_is_none_on_every_path() {
+    let id = uid();
+    let source = format!("it{id}::meta");
+    let owner = client(&format!("owner-{id}")).await;
+    let seen = Inbox::default();
+    let function = owner.register_function(&source, seen.function());
+    let other = client(&format!("other-{id}")).await;
+    until("local dispatch", || function.local_dispatch_active()).await;
+    let values = [
+        Value::Null,
+        json!(["a", 1]),
+        json!("tag"),
+        json!(0),
+        json!(false),
+        json!({ "tenant": "acme" }),
+    ];
+    let absent: Vec<Option<Value>> = values
+        .iter()
+        .map(|v| (!v.is_null()).then(|| v.clone()))
+        .collect();
+    for (client, dispatch) in [
+        (&owner, Dispatch::Auto),
+        (&owner, Dispatch::Remote),
+        (&other, Dispatch::Auto),
+    ] {
+        seen.0.lock().unwrap().clear();
+        for metadata in &values {
+            client
+                .call(
+                    call_req(&source, json!({}))
+                        .metadata(metadata.clone())
+                        .dispatch(dispatch),
+                )
+                .await
+                .unwrap();
+        }
+        let got: Vec<Option<Value>> = seen
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, m)| m.clone())
+            .collect();
+        assert_eq!(got, absent, "{dispatch:?}");
+    }
+    for c in [owner, other] {
+        c.shutdown_async().await;
+    }
+}
+
 /// Local calls through the counting proxy: the proxy runs on other threads
 /// and the loop yields, so nothing sent during the loop goes uncounted.
 async fn local_calls(iii: &IIIClient, function_id: &str, n: u64) {
@@ -950,8 +1003,30 @@ async fn calls_through_an_observer_return_the_targets_result() {
         .unwrap_err();
     assert_eq!(err.invocation_error().unwrap().code, "ROUTE_FILTERED");
 
-    // Only the host of the observer's function may call through it.
+    // A call through an observer takes no metadata (decision 53): refused
+    // before anything is sent. With none (null is none), the target's
+    // metadata argument is the observer's.
     let obs = host.observers(&source)[0].clone();
+    let err = host
+        .call(
+            CallRequest::observer(&obs, json!({ "path": "/users/7" }))
+                .metadata(json!({ "__binding": "forged" })),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, Error::Handler(message) if message
+            == "a call through an observer takes no metadata; its target receives the observer's metadata"),
+        "{err:?}"
+    );
+    let res = host
+        .call(CallRequest::observer(&obs, json!({ "path": "/users/7" })).metadata(Value::Null))
+        .await
+        .unwrap();
+    assert_eq!(res["path"], "/users/7");
+    assert_eq!(res["binding"], json!({ "__binding": "route-1" }));
+
+    // Only the host of the observer's function may call through it.
     let err = users
         .call(CallRequest::observer(&obs, json!({ "tenant": "acme" })))
         .await

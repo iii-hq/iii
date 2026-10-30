@@ -3,7 +3,7 @@
  * without explicit type arguments. Not executed at runtime — vitest only picks
  * up `*.test.ts` — but `tsc --noEmit` (run in CI) compiles it.
  */
-import type { Call, FunctionRef, MatchHook, Observer, TriggerRequest } from '../src/index'
+import type { Call, CallRequest, FunctionRef, MatchHook, Observer, TriggerRequest } from '../src/index'
 import { registerWorker } from '../src/index'
 
 // biome-ignore lint/correctness/noUnusedVariables: compile-only assertions
@@ -52,6 +52,16 @@ async function callTypingAssertions() {
   await worker.call({ observer, payload: { name: 'save' } })
   // @ts-expect-error: an observer call names no function
   await worker.call({ observer, function_id: 'x::y', payload: {} })
+  // @ts-expect-error: an observer call takes no metadata (its target receives the observer's)
+  await worker.call({ observer, payload: {}, metadata: { tenant: 'acme' } })
+  // A request built before the call gets no excess-property check; `metadata?: never` refuses it.
+  const viaObserverWithMetadata = { observer, payload: {}, metadata: { tenant: 'acme' } }
+  // @ts-expect-error: an observer call takes no metadata (its target receives the observer's)
+  await worker.call(viaObserverWithMetadata)
+  // On the observer variant, metadata reads as undefined.
+  const viaObserver: Extract<CallRequest, { observer: Observer }> = { observer, payload: {} }
+  const noMetadata: undefined = viaObserver.metadata
+  void noMetadata
 
   // The handler's types reach the hooks of its FunctionRef, in both match forms.
   type Click = { selector: string; x: number; y: number }

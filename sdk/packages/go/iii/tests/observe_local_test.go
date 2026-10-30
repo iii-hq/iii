@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -499,6 +500,30 @@ func TestObserveCallThroughAnObserver(t *testing.T) {
 	if sent := without(proxy.since(mark), "localinvocationstats"); len(sent) != 0 {
 		t.Errorf("frames %v for a rejected request", sent)
 	}
+
+	// Decision 53: a call through an observer takes no metadata, refused before anything
+	// is sent; with none (JSON null is none), its target's metadata is the observer's.
+	mark = proxy.mark()
+	const refusal = "iii: a call through an observer takes no metadata; its target receives the observer's metadata"
+	callCtx, callCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer callCancel()
+	if _, err := host.Call(callCtx, iii.CallRequest{Observer: obs, Payload: raw(map[string]string{"path": "/users"}), Metadata: raw(map[string]string{"route": "mine"})}); err == nil || err.Error() != refusal {
+		t.Errorf("metadata on a call through an observer: %v, want %q", err, refusal)
+	}
+	if sent := without(proxy.since(mark), "localinvocationstats"); len(sent) != 0 {
+		t.Errorf("frames %v for a refused call", sent)
+	}
+	mu.Lock()
+	seen = nil
+	mu.Unlock()
+	if out := call(t, host, iii.CallRequest{Observer: obs, Payload: raw(map[string]string{"path": "/users"}), Metadata: json.RawMessage("null")}); string(out) != `{"body":{"path":"/users"},"status":200}` {
+		t.Errorf("a call through the observer with null metadata: %s", out)
+	}
+	mu.Lock()
+	if string(seen) != `{"route":"users"}` {
+		t.Errorf("the target's metadata %s, want the observer's", seen)
+	}
+	mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = route.Dispose(ctx)
@@ -507,6 +532,50 @@ func TestObserveCallThroughAnObserver(t *testing.T) {
 	if _, err := host.Call(ctx, iii.CallRequest{Observer: obs, Payload: raw(map[string]string{"path": "/users", "tenant": "acme"})}); !errors.As(err, &ie) ||
 		(ie.Code != "OBSERVER_NOT_FOUND" && ie.Code != "OBSERVER_NOT_ACTIVE") {
 		t.Errorf("after dispose: %v", err)
+	}
+}
+
+// Decision 54: metadata is any JSON value, and JSON null is no metadata: local and
+// routed calls leave MetadataFromContext empty for it and pass every other value as given.
+func TestObserveNullMetadataIsNoMetadata(t *testing.T) {
+	owner := observeWorker(t, "meta-owner", nil)
+	other := observeWorker(t, "meta-caller", nil)
+	fn := fnID(t, "go-meta::echo")
+	var mu sync.Mutex
+	var seen []string
+	_, _ = owner.RegisterFunction(fn, func(ctx context.Context, _ json.RawMessage) (any, error) {
+		md, ok := iii.MetadataFromContext(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		if ok {
+			seen = append(seen, string(md))
+		} else {
+			seen = append(seen, "absent")
+		}
+		return nil, nil
+	})
+	localDispatchReady(t, owner, fn)
+	values := []string{"null", `["a",1]`, `"tag"`, `0`, `false`, `{"tenant":"acme"}`}
+	want := []string{"absent", `["a",1]`, `"tag"`, `0`, `false`, `{"tenant":"acme"}`}
+	for name, path := range map[string]struct {
+		c        *iii.Client
+		dispatch iii.Dispatch
+	}{
+		"local":          {owner, iii.DispatchAuto},
+		"remote":         {owner, iii.DispatchRemote},
+		"another worker": {other, iii.DispatchAuto},
+	} {
+		mu.Lock()
+		seen = nil
+		mu.Unlock()
+		for _, md := range values {
+			call(t, path.c, iii.CallRequest{FunctionID: fn, Metadata: json.RawMessage(md), Dispatch: path.dispatch})
+		}
+		mu.Lock()
+		if !slices.Equal(seen, want) {
+			t.Errorf("%s: %q, want %q", name, seen, want)
+		}
+		mu.Unlock()
 	}
 }
 

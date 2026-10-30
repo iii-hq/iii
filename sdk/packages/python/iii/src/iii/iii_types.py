@@ -476,8 +476,8 @@ class CallRequest(BaseModel):
             request/response. Specify for a specific routing scheme (e.g.
             ``CallAction.Enqueue(...)``, ``CallAction.Void()``).
         timeout_ms: Override the default invocation timeout, in milliseconds.
-        metadata: Arbitrary user-specifiable metadata supplied to the called
-            handler function on every invocation.
+        metadata: Per-invocation metadata (any JSON value) supplied to the
+            called handler beside the payload. ``None`` is no metadata.
         namespace: Target namespace for routing. Omit to inherit this worker's;
             say ``default`` to reach the engine's from a namespaced worker.
         dispatch: ``auto`` (default) runs a function this worker hosts
@@ -510,7 +510,8 @@ class CallRequest(BaseModel):
     metadata: Any | None = Field(
         default=None,
         description=(
-            "Arbitrary user-specifiable metadata supplied to the called handler function on every invocation."
+            "Per-invocation metadata (any JSON value) supplied to the called handler beside the payload. "
+            "``None`` is no metadata."
         ),
     )
     namespace: str | None = Field(

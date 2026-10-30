@@ -868,6 +868,11 @@ pub(crate) fn reject_blank_namespace(declared: &str, source: &str) {
     }
 }
 
+/// Why [`IIIClient::call`] refuses a call through an observer given metadata
+/// (v2 §4.6, decision 53); the same message in every SDK.
+pub(crate) const OBSERVER_CALL_METADATA: &str =
+    "a call through an observer takes no metadata; its target receives the observer's metadata";
+
 /// The namespace one call or one observer resolves in.
 ///
 /// `None` inherits the worker's. `Some("")` is refused: a namespace named and
@@ -2492,11 +2497,18 @@ impl IIIClient {
             dispatch,
             observer,
         } = request.into();
+        // `null` metadata is no metadata, local or routed (decision 54).
+        let metadata = metadata.filter(|metadata| !metadata.is_null());
 
         // Through an observer: the engine routes to the observer's stored
         // target, whatever namespace a request names, and checks that this
         // connection hosts the observer's function.
         if let Some(observer_id) = observer {
+            // Its target's metadata is the observer's: refused before anything
+            // is sent, so no metadata is lost on the way (decision 53).
+            if metadata.is_some() {
+                return Err(Error::Handler(OBSERVER_CALL_METADATA.to_string()));
+            }
             let (caller, observe_depth) = self.outgoing_caller();
             return self
                 .invoke_remote(RemoteCall {
@@ -2504,7 +2516,7 @@ impl IIIClient {
                     payload: req.payload,
                     action: req.action,
                     timeout: req.timeout_ms.map(Duration::from_millis),
-                    metadata,
+                    metadata: None,
                     namespace: None,
                     caller,
                     observe_depth,

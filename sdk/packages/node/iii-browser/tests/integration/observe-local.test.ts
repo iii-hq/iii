@@ -388,7 +388,20 @@ describe('functions with args and observer hooks', () => {
     await expect(request('other')).resolves.toEqual({ status: 422 })
     expect(frames.count).toBe(0)
 
+    // A call through an observer takes no metadata (decision 53): refused before
+    // anything is sent. With none (null is none), its target gets the observer's.
     const obs = routes.get('/users') as Observer
+    await expect(
+      owner.call({ observer: obs, payload: { path: '/users' }, metadata: { route: 'mine' } } as never),
+    ).rejects.toThrow("a call through an observer takes no metadata; its target receives the observer's metadata")
+    expect(frames.count).toBe(0)
+    metadataSeen = undefined
+    await expect(owner.call({ observer: obs, payload: { path: '/users' }, metadata: null } as never)).resolves.toEqual({
+      status: 200,
+      body: { path: '/users' },
+    })
+    expect(metadataSeen).toEqual({ route: 'users' })
+
     await expect(app.call({ observer: obs, payload: { path: '/users', tenant: 'acme' } })).rejects.toMatchObject({
       code: 'NOT_FUNCTION_OWNER',
     })
@@ -544,6 +557,30 @@ describe("deliver: 'output' and calls through an observer over max_in_flight", (
     // the slot is free again
     await expect(owner.call({ observer: obs, payload: { n: 3 } })).resolves.toEqual({ done: 3 })
     expect(started).toEqual([1, 3])
+  })
+})
+
+describe('call metadata (decision 54)', () => {
+  it('is any JSON value, and null is no metadata: local and routed calls reach the handler alike', async () => {
+    const owner = worker('meta-owner')
+    const other = worker('meta-caller')
+    const fn = `meta::echo-${RUN}`
+    const seen: unknown[] = []
+    owner.registerFunction(fn, async (_input: unknown, metadata?: unknown) => {
+      seen.push(metadata)
+      return null
+    })
+    await localDispatchReady(owner, fn)
+    const values = [null, ['a', 1], 'tag', 0, false, { tenant: 'acme' }]
+    const absent = [undefined, ['a', 1], 'tag', 0, false, { tenant: 'acme' }]
+    const frames = frameCounter(owner)
+    for (const metadata of values) await owner.call({ function_id: fn, payload: {}, metadata })
+    expect(frames.count).toBe(0) // local
+    expect(seen.splice(0)).toStrictEqual(absent)
+    for (const metadata of values) await owner.call({ function_id: fn, payload: {}, metadata, dispatch: 'remote' })
+    expect(seen.splice(0)).toStrictEqual(absent)
+    for (const metadata of values) await other.call({ function_id: fn, payload: {}, metadata })
+    expect(seen.splice(0)).toStrictEqual(absent)
   })
 })
 

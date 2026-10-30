@@ -1356,7 +1356,7 @@ Request object passed to IIIClient.call: a function by id, or the
 target of an observer.
 
 ```typescript
-type CallRequest = { action?: CallAction; dispatch?: "auto" | "remote"; function_id: string; metadata?: unknown; namespace?: string; observer?: never; payload: TInput; timeoutMs?: number } | { action?: CallAction; function_id?: never; observer: Observer; payload: TInput; timeoutMs?: number }
+type CallRequest = { action?: CallAction; dispatch?: "auto" | "remote"; function_id: string; metadata?: unknown; namespace?: string; observer?: never; payload: TInput; timeoutMs?: number } | { action?: CallAction; function_id?: never; metadata?: never; observer: Observer; payload: TInput; timeoutMs?: number }
 ```
 
 ---
