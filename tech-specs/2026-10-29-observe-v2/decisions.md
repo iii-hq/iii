@@ -28,9 +28,14 @@ differ, this file wins, and the spec is updated to match.
    `invocationresult` always carries the result, which the engine already uses
    as `output`. SDK detection: Node, browser and Python compare by identity
    (`output === input`, `output is input`); Rust and Go compare the serialized
-   bytes, and only when building a report item that carries both. An SDK sets
-   it only when the engine advertised `observe.v2`; to an older engine the item
-   carries `output`.
+   bytes, and only when building a report item that carries both. For a local
+   call of a function that is not private, the handler gets its own copy of
+   the input: Node, browser and Python compare its return value by identity
+   with that copy, which must still hold the same JSON data as the copy the
+   delivery took at call start, and then deliver the call-start copy as the
+   output. A private function's call passes the input by reference and is
+   compared by reference. An SDK sets it only when the engine advertised
+   `observe.v2`; to an older engine the item carries `output`.
 5. **Removed trigger frames** (`registertriggertype`, `unregistertriggertype`,
    `registertrigger`, `unregistertrigger`, `triggerregistrationresult`): the
    engine logs one `warn` per connection and message type naming the
@@ -141,6 +146,37 @@ differ, this file wins, and the spec is updated to match.
     throws is rejected (`OBSERVE_REJECTED`). A match hook set while observers
     are active rebuilds the index from them. With `onObserverDeliver` also set,
     the deliver hook receives the matched observers.
+46. **A host's call of its own private function.** It skips RBAC middleware:
+    the middleware's forward comes from another connection, which a private
+    function refuses. `functionregistered` offers `local_dispatch` for a
+    function the session hosts privately, also under middleware.
+47. **Observers whose observing worker is away.** When the observing
+    connection closes, its observers are `suspended` for
+    `observers.observer_grace_ms`, and the engine withdraws each from its
+    function's host (`observerremoved`, which runs its removed hooks). A
+    `functionregistered` lists none of them. On a `Reattach` within the grace
+    period the engine announces each again to its function's host
+    (`observeradded`, in creation order per function), and it goes `active` on
+    the ack. A host holds only observers that can become active, so
+    `accepted()` resolving means a call through the observer reaches an active
+    observer (decision 19). An observer that does not come back is disposed
+    with nothing more sent to the host.
+48. **The announced `capture`** (`observeradded`, `functionregistered`) also
+    names the part `deliver` hands the target: `input` under `deliver: input`,
+    `output` under `deliver: output`. A host's report of a local call carries
+    the parts its matched observers' announced `capture` names, so the engine
+    has what it delivers.
+49. **`_caller_worker_id` on calls through an observer.** The engine adds it
+    to the payload of a call through an observer (the host's connection id),
+    as on every call a worker makes. Decision 40 covers the observed values
+    iii delivers.
+50. **Engine-hosted ids.** The engine hosts the sources it registers. A
+    worker that registers one of their ids while the engine module that
+    hosts it is running is refused (`FUNCTION_NAMESPACE_CONFLICT`, naming no
+    owner); a worker that holds the id when the module starts (a config
+    reload adds iii-stream) loses it with the same `registrationrejected`,
+    and its teardown leaves the engine's source in place. `engine::workers::info`
+    lists each source among the functions of the builtin worker that hosts it.
 
 ## SDKs (all five)
 
@@ -195,6 +231,16 @@ differ, this file wins, and the spec is updated to match.
       `is_observed()` and `is_observed_for(&call)`. `Match::predicate(f)` and `Match::keys(observer_fn, call_fn)` are the `onObserverMatch` forms; the SDK files observers in the key index in hook-task order.
       `RegisterFunction::new(h).args_format::<T>().private().observable(false)
       .standby()`.
+    - **Every SDK.** Observers go to the engine in the order the worker
+      created them, on the first connection and on every reconnect, so the
+      engine announces them to each function's host in that order.
+    - **Late rejection (`obs.reject()`, a failed catch-up).** The observer's
+      removed hooks run on its function's hook queue at once, connected or
+      not, and run once: the engine sends no `observerremoved` for a
+      rejection that answers an announcement it has not seen acked (a replay
+      after a reconnect), and the `observerremoved` it sends for a live one
+      runs none again. The observer stays held with its rejection, which a
+      replay that lists it gets again.
     - **Node / browser.** As in the spec §4. `CallRequest`, `CallAction`,
       `ObserveRejection`, `EngineSources` exported from the package
       root.
@@ -246,7 +292,8 @@ differ, this file wins, and the spec is updated to match.
     harness counts fires itself).
 31. **rbac-proxy.** Advertises `observe.v1`, `observe.v2`; forwards the
     observer frames both ways; allows `local-dispatch.v1` only when the
-    session has no `middleware_function_id`. Removed trigger frames are
+    session has no `middleware_function_id`, or for a function the session
+    hosts privately, whose own calls it forwards directly (decision 46). Removed trigger frames are
     dropped with the engine's warn-once rule. `engine::observers::list|get`
     become discovery overrides filtered by access.
 32. **ADE console.** The Triggers screen becomes Observers (`ext:observers`,

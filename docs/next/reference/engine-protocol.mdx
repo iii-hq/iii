@@ -316,7 +316,8 @@ value. See [Namespaces](#namespaces) for the resolution rules.
 
 **Private functions.** The engine accepts an `InvokeFunction` of a function registered with
 `private: true` only from the connection that hosts it. Any other connection, and the engine itself
-(RBAC hooks, middleware), gets an `InvocationResult` error `FORBIDDEN`.
+(RBAC hooks, middleware), gets an `InvocationResult` error `FORBIDDEN`. The hosting connection's own
+`InvokeFunction` of its private function skips the session's RBAC middleware.
 
 ### Observe fields
 
@@ -431,7 +432,8 @@ It checks, in order:
    observer's `max_in_flight` fails at once with `OVERFLOW`.
 
 It then adds the observer's metadata, an `activation_id`, and `observe_depth + 1`, and routes the
-call. The payload goes as given: the deliver hook applies the observer's `on` and filters with
+call. The payload goes as given, with the engine's `_caller_worker_id` stamp (the host's connection
+id) as on every call a worker makes: the deliver hook applies the observer's `on` and filters with
 `obs.matches(call)` before it calls.
 
 ```json
@@ -865,10 +867,12 @@ function's full current observer set and whether the SDK may run the function in
 }
 ```
 
-- `observers` is sent even when empty.
-- `local_dispatch` is `true` when the engine's `observers.local_dispatch` is on, the session has no
-  RBAC middleware, and the connection may invoke the function itself. Only then may the SDK run its
-  own calls to the function in-process.
+- `observers` is sent even when empty. It lists the function's observers except those whose
+  observing worker is away (`suspended` with `OBSERVER_DISCONNECTED`): each of those comes in its
+  own `ObserverAdded` when the worker reattaches.
+- `local_dispatch` is `true` when the engine's `observers.local_dispatch` is on, the connection may
+  invoke the function itself, and the session has no RBAC middleware or hosts the function
+  privately. Only then may the SDK run its own calls to the function in-process.
 - The host must ack every observer listed, each with this message's `revision`, including the ones
   it already held before a re-registration: a new registration starts a new host relationship. The
   message replaces the set of observers the host holds for the function. An entry already held with
@@ -876,13 +880,16 @@ function's full current observer set and whether the SDK may run the function in
   once it resolves; an entry whose `args` changed counts as removed, then added; a held observer the
   message does not list is removed. A standby that takes over the function holds none of its
   observers, so it runs `onObserverAdded` for each entry and acks it the same way. Until it is acked
-  an observer stays `pending`; after `observers.owner_ack_timeout_ms` (30 s by default) it fails
-  with `OWNER_TIMEOUT`.
+  an observer stays `pending`. When it is not acked within `observers.owner_ack_timeout_ms` (30 s by
+  default) of the host moving on to it (the host runs a function's hooks one at a time, in
+  announcement order), it fails with `OWNER_TIMEOUT`.
 
 ### `ObserverAdded`
 
 Engine -> host (only to connections that declared `observe.v1`). One observer attached to a function
-this connection hosts. It waits for an `ObserverAck`.
+this connection hosts: a new observer, or one whose observing worker reattached within
+`observers.observer_grace_ms` (in the order the worker created its observers). It waits for an
+`ObserverAck`.
 
 ```json
 {
@@ -901,12 +908,14 @@ this connection hosts. It waits for an `ObserverAck`.
 }
 ```
 
-The engine always sends `capture` and `on` resolved.
+The engine always sends `capture` and `on` resolved. `capture` also names the part the observer's
+`deliver` hands its target (`input` under `deliver: input`, `output` under `deliver: output`), so
+a host that reports a local call sends it.
 
 ### `ObserverRemoved`
 
 Engine -> host (only to connections that declared `observe.v1`). One observer detached: `Unobserve`,
-disposal, the observing worker's grace period elapsed, or a late rejection.
+disposal, its observing worker disconnecting, or a late rejection.
 
 ```json
 {

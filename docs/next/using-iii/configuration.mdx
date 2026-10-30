@@ -172,7 +172,7 @@ observers:
   max_observe_depth: 8          # activations deeper than this are dropped (LOOP_GUARD)
   observer_grace_ms: 30000      # how long a disconnected worker's observers wait for it
   disposed_retention_ms: 3600000 # how long a worker back later is told they were disposed
-  owner_ack_timeout_ms: 30000   # how long the worker that hosts a function may take to accept an observer (OWNER_TIMEOUT)
+  owner_ack_timeout_ms: 30000   # per observer, counted from when the hosting worker starts on it: how long it may take to accept the observer (OWNER_TIMEOUT)
   activation_timeout_ms: 30000  # how long an activation may run before its slot is freed (TIMEOUT)
   default_max_in_flight: 64     # max_in_flight of observers that set none
   max_queue_per_observer: 1024  # activations queued behind max_in_flight before OVERFLOW

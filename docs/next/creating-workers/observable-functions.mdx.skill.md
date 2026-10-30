@@ -362,9 +362,14 @@ a mistyped id.
   error is `OBSERVE_REJECTED`. The `onObserverRemoved` of each level whose `onObserverAdded` already
   resolved runs, so a worker-wide hook that retained a resource releases it.
 - **Removed.** `onObserverRemoved` runs exactly once for every accepted observer: when the consumer
-  disposes it, when `max_fires` or expiry ends it, when the observing worker does not come back
-  within its grace period, and on a late rejection with `obs.reject()`. It runs only for accepted
-  observers. An error it throws is logged, and the observer is removed either way.
+  disposes it, when `max_fires` or expiry ends it, when the observing worker disconnects, and on a
+  late rejection with `obs.reject()`. It runs only for accepted observers. An error it throws is
+  logged, and the observer is removed either way.
+- **Away and back.** When the observing worker disconnects, its observers are `suspended` for
+  `observers.observer_grace_ms` (30 s by default), and the worker that hosts the function runs
+  `onObserverRemoved` for each. If the observing worker reconnects in that time, the host gets each
+  observer again, in the order they were created, runs `onObserverAdded`, and the observer is
+  `active` once it is accepted.
 - **One at a time.** For each function, the SDK runs observer hooks one at a time, in the order the
   engine announced the observers. Hooks of different functions run concurrently.
 - **Timeout.** A hook that runs past 30 seconds fails the observer with `OWNER_TIMEOUT`.
@@ -385,9 +390,9 @@ and the number of observers that were active without the hook.
 
 An observer that the function accepted can become invalid later. For example, a configuration reload
 can remove the resource that the observer watches. `obs.reject(code, message)` stops delivery to the
-observer immediately. The engine moves the observer to `error` with that code, and the SDK then runs
-`onObserverRemoved`. If the connection is lost, the SDK sends the rejection again after it
-reconnects.
+observer immediately, and the SDK runs `onObserverRemoved` next, connected or not. The engine moves
+the observer to `error` with that code. If the connection is lost, the SDK sends the rejection again
+after it reconnects.
 
 ```typescript
 for (const obs of feeds.observers()) {

@@ -250,14 +250,22 @@ iii.onObserverAdded('cron::on-tick', start)
   any other error. The `onObserverRemoved` of each level whose `onObserverAdded`
   already resolved runs, so a worker hook that retained a resource releases it.
 - **Removed.** `onObserverRemoved` runs exactly once for every accepted
-  observer: on `unobserve`, on disposal, and on late rejection with
-  `obs.reject()`. It never runs for an observer that was not accepted. An error
-  it throws is logged; the observer is removed either way.
+  observer: on `unobserve`, on disposal, when its observing worker
+  disconnects, and on late rejection with `obs.reject()`, which runs it at
+  once, connected or not. It never runs for an observer that was not
+  accepted. An error it throws is logged; the observer is removed either way.
+- **Away and back.** When an observer's observing worker disconnects, the
+  observer is `suspended` for `observers.observer_grace_ms` and the host lets
+  it go (`onObserverRemoved` runs). If the worker reattaches in that time, the
+  host gets the observer again, in the order the observers were created, and
+  its `onObserverAdded` runs before it is active again.
 - **One at a time.** For each function, the SDK runs observer hooks one at a
   time, in the order the engine announced the observers. Hooks of different
   functions run concurrently.
 - **Timeout.** A hook that runs past 30 s fails the observer with
-  `OWNER_TIMEOUT`, as in 0.25.
+  `OWNER_TIMEOUT`, as in 0.25. The engine counts the 30 s from when the host
+  moved on to the observer: its announcement, or the host's answer (or
+  timeout) for the observer announced before it.
 
 **When hooks take effect.** The SDK acks no observer of a function before the
 call that registered it has returned. So a hook set by id before
@@ -380,8 +388,9 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
 - The engine routes the call to the observer's stored target and applies its
   policy (`max_fires`, expiry, `max_in_flight`), metadata sidecar and loop
   guard, as for iii's delivery.
-- The call sends the payload as given. The hook applies the observer's filters
-  with `obs.matches(call)`, as above.
+- The call sends the payload as given, with the engine's `_caller_worker_id`
+  stamp (the host's connection id) as on every call a worker makes. The hook
+  applies the observer's filters with `obs.matches(call)`, as above.
 
 ### 4.7 `Observer`
 
@@ -488,10 +497,7 @@ iii.call(CallRequest::observer(&obs, payload)).await?;
 ### 5.3 Python
 
 ```python
-row_changed = iii.register_function("database::on-row-changed", lambda change: change,
-                                    {"args_format": RowChangedArgs, "private": True})
-
-@row_changed.on_observer_added
+@iii.on_observer_added("database::on-row-changed")   # by function id, before registering
 async def install(obs):
     await change_feed.watch(obs.args["db"], obs.args.get("table"))
 
@@ -501,6 +507,8 @@ async def start(obs): ...
 @iii.on_observer_added                          # every function this worker hosts
 async def retain(obs): ...
 
+row_changed = iii.register_function("database::on-row-changed", lambda change: change,
+                                    args_format=RowChangedArgs, private=True)
 row_changed.on_observer_match(observer=observer_keys, call=call_keys)      # keys
 # or: row_changed.on_observer_match(lambda obs, call: obs.args["table"] == call.input["table"])
 
@@ -539,6 +547,10 @@ carrying the source's identity.
 - A private function is observable, and its observers receive every call its
   worker makes.
 - A private function cannot be an observer's target (`FORBIDDEN` at `observe`).
+- A call of a private function from the connection that hosts it skips RBAC
+  middleware, since the middleware's forward would come from another
+  connection, and `functionregistered` offers `local_dispatch` for a function
+  the session hosts privately, also under middleware (decision 46).
 - **A worker's call to its own private function passes the input and the
   result by reference.** Nobody else can see either value, so the SDK copies
   neither, and the handler and hooks treat both as read-only. Development
@@ -557,7 +569,9 @@ database trigger is set up once however many instances of the worker run.
 A second instance serves as a standby. When the host disconnects, the
 function's observers go `pending`; the standby registers the function,
 receives the current observers in `functionregistered`, runs its hooks for
-each, and they become active again. With `standby: true`, the SDK does this:
+each, and they become active again. An observer whose observing worker is
+away is not among them; the function's host gets it when that worker
+reattaches (§4.3). With `standby: true`, the SDK does this:
 on `FUNCTION_NAMESPACE_CONFLICT` it waits on `engine::on-functions-changed` and
 registers when the id is free.
 
@@ -674,7 +688,7 @@ const rowChanged = iii.registerFunction('database::on-row-changed', (change: Row
     if (config.native(db)) await changeFeed.watch(db, table)   // CREATE TRIGGER … pg_notify(…)
   })
   .onObserverRemoved(async (obs) => {
-    await changeFeed.unwatch(obs.args.db, obs.args.table)        // drops the trigger with its last observer
+    await changeFeed.unwatch(obs.args.db, obs.args.table)        // stops watching the table with its last observer
   })
   .onObserverMatch({
     observer: ({ args }) => (args.ops ?? ['*']).map((op) => rowKey(args.db, args.table ?? '*', op)),
@@ -876,7 +890,7 @@ phase 2 baseline.
 | iii's delivery, 10 observers, none matching | < 5 µs (compiled filters) |
 | Routed call, observed | 0 extra frames (ids on `invocationresult`) |
 | Event source (handler returns its input), observed | the event serialized once |
-| Local call to a private function | no copy of input or result when nothing reads the input after the handler; one copy of the input when a match or deliver hook, a filter or a `capture` reads it |
+| Local call to a private function | no copy of input or result when nothing reads the input after the handler; one copy of the input when a match or deliver hook, a filter or a `capture` reads it (a Rust handler typed on `serde_json::Value`; one typed on its own struct also costs the serde conversion of its input and result) |
 | Call through an observer | one routed invocation |
 
 ## 14. Execution plan
