@@ -129,6 +129,28 @@ describe('observe: routed invocations (delivered by the host)', () => {
     ])
   })
 
+  it("deliver: 'output' sends the handler's return value alone, also when it is the input", async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner.registerFunction(`e2e::price-${RUN}`, async (input: { qty: number }) => ({ total: input.qty * 4 }))
+    owner.registerFunction(`e2e::echo-${RUN}`, async (input: { n: number }) => input)
+    const prices = collector(watcher, `e2e::on-price-output-${RUN}`)
+    const echoes = collector(watcher, `e2e::on-echo-output-${RUN}`)
+    const a = watcher.observe({ function_id: `e2e::price-${RUN}`, deliver: 'output' }, `e2e::on-price-output-${RUN}`)
+    const b = watcher.observe({ function_id: `e2e::echo-${RUN}`, deliver: 'output' }, `e2e::on-echo-output-${RUN}`)
+    await Promise.all([a.ready(), b.ready()])
+
+    await expect(watcher.call({ function_id: `e2e::price-${RUN}`, payload: { qty: 2 } })).resolves.toEqual({
+      total: 8,
+    })
+    await watcher.call({ function_id: `e2e::echo-${RUN}`, payload: { n: 1 } })
+    await waitFor(() => prices.length >= 1 && echoes.length >= 1, 'the activations')
+    await sleep(200)
+    // exactly the return value: no envelope, no engine stamp (`_caller_worker_id`)
+    expect(prices.map((x) => x.data)).toEqual([{ total: 8 }])
+    expect(echoes.map((x) => x.data)).toEqual([{ n: 1 }])
+  })
+
   it('a target that is not registered keeps the observer pending until it is', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
