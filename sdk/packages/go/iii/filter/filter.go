@@ -1,8 +1,6 @@
-// Package filter is the observer filter language (iii-filter v1,
-// tech-specs/2026-10-13-observe/filters.md): validation and evaluation with the
-// same semantics as the engine's Rust evaluator (crates/iii-filter) and the
-// other SDKs. The shared conformance vectors in sdk/fixtures/filters pin them
-// down; the rules the spec leaves open are listed in that directory's README.
+// Package filter is the observer filter language (iii-filter v1): validation and
+// evaluation with the same semantics as the engine's evaluator and the other SDKs,
+// pinned down by the conformance vectors all of them share.
 //
 // A filter is a JSON object of path clauses with explicit operators, plus
 // $and, $or and $not:
@@ -17,6 +15,10 @@
 // panics and answers true or false for every document.
 package filter
 
+// Spec: tech-specs/2026-10-13-observe/filters.md. Reference evaluator: the engine's
+// crates/iii-filter. Conformance vectors: sdk/fixtures/filters, whose README lists the
+// rules the spec leaves open and ("Limits") how the structural limits count.
+
 import (
 	"bytes"
 	"encoding/json"
@@ -26,7 +28,7 @@ import (
 	"unicode/utf8"
 )
 
-// Structural limits (filters.md §4; the fixtures README "Limits" defines how they count).
+// Structural limits of a filter (the conformance vectors define how they count).
 const (
 	// MaxDepth is the deepest a filter may nest; the top-level filter is at depth 1.
 	MaxDepth = 8
@@ -48,7 +50,7 @@ const (
 	MaxJSONDepth = 120
 )
 
-// ErrorCode is the protocol error code of a rejected filter (protocol.md §4).
+// ErrorCode is the protocol error code of a rejected filter.
 type ErrorCode string
 
 const (
@@ -133,7 +135,7 @@ func (r *Roots) add(root Root) {
 	}
 }
 
-// Doc is the document a filter reads (filters.md §1): the value of each root,
+// Doc is the document a filter reads: the value of each root,
 // and whether it is present. A missing root is absent; a present nil is JSON null.
 type Doc interface {
 	Root(root Root) (value any, present bool)

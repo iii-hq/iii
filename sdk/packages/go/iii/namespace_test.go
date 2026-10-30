@@ -281,7 +281,7 @@ func TestRegistrationRejectedIsFatal(t *testing.T) {
 	if re.WorkerName != "state" || re.FunctionID != "" {
 		t.Errorf("got %+v, want only worker_name=state", re)
 	}
-	if st := c.State(); st != StateFailed {
+	if st := c.ConnectionState(); st != StateFailed {
 		t.Errorf("state = %q, want failed", st)
 	}
 }
@@ -302,7 +302,7 @@ func TestFunctionRegistrationRejectedIsNonFatal(t *testing.T) {
 	if err := c.FatalError(); err != nil {
 		t.Fatalf("FatalError = %v, want nil", err)
 	}
-	if st := c.State(); st != StateConnected {
+	if st := c.ConnectionState(); st != StateConnected {
 		t.Errorf("state = %q, want connected", st)
 	}
 }
@@ -420,7 +420,7 @@ func TestAbsentCallNamespaceIsNotRefused(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
-	if err := c.RegisterTrigger("t1", "cron", "api::process", nil); err != nil {
+	if _, err := c.RegisterTrigger(RegisterTriggerInput{ID: "t1", Type: "cron", FunctionID: "api::process"}); err != nil {
 		t.Fatalf("no namespace given is not a mistake: %v", err)
 	}
 }

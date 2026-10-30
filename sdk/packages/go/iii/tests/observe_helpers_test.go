@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -123,7 +124,7 @@ func (c *collected) len() int { return len(c.all()) }
 func collector(t *testing.T, c *iii.Client, fn string) *collected {
 	t.Helper()
 	col := &collected{}
-	err := c.RegisterFunction(fn, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, err := c.RegisterFunction(fn, func(ctx context.Context, data json.RawMessage) (any, error) {
 		a := activation{Raw: append(json.RawMessage(nil), data...)}
 		_ = json.Unmarshal(data, &a.Data)
 		a.Metadata, _ = iii.MetadataFromContext(ctx)
@@ -181,7 +182,10 @@ func field(m map[string]any, path string) any {
 }
 
 // frameProxy sits between one worker and the engine: it counts the frames the worker
-// sends (the zero-wire tests) and can drop the connection (the reconnect tests).
+// sends (the zero-wire tests) and can drop the connection (the reconnect tests). It
+// forwards each connection to the same path on the engine, so the worker's telemetry
+// socket (<address>/otel) reaches the engine's /otel endpoint; only the worker endpoint's
+// frames are counted.
 type frameProxy struct {
 	t        *testing.T
 	server   *httptest.Server
@@ -220,7 +224,7 @@ func (p *frameProxy) handle(w http.ResponseWriter, r *http.Request) {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		header.Set("Authorization", auth)
 	}
-	up, _, err := websocket.Dial(ctx, p.upstream, &websocket.DialOptions{HTTPHeader: header})
+	up, _, err := websocket.Dial(ctx, p.upstreamFor(r), &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -257,12 +261,34 @@ func (p *frameProxy) handle(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	go pump(down, up, true)
+	go pump(down, up, isWorkerEndpoint(r))
 	go pump(up, down, false)
 	<-done
 	cancel()
 	_ = up.CloseNow()
 	_ = down.CloseNow()
+}
+
+// upstreamFor is the engine URL for a proxied request: the request's path and query on
+// the upstream address. The worker endpoint is the engine root; the client's telemetry
+// socket asks for /otel.
+func (p *frameProxy) upstreamFor(r *http.Request) string {
+	u, err := url.Parse(p.upstream)
+	if err != nil {
+		return p.upstream
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + r.URL.Path
+	u.RawPath = ""
+	if r.URL.RawQuery != "" {
+		u.RawQuery = r.URL.RawQuery
+	}
+	return u.String()
+}
+
+// isWorkerEndpoint reports whether r is a connection to the worker endpoint (the engine
+// root), whose frames the proxy counts.
+func isWorkerEndpoint(r *http.Request) bool {
+	return r.URL.Path == "" || r.URL.Path == "/"
 }
 
 // mark is the number of frames the worker sent so far.

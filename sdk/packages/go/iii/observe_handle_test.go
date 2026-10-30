@@ -34,7 +34,7 @@ func TestObservePendingBeforeConnectThenSentAfterFunctions(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := New(fe.m.url, WithName("observe-test"))
 	t.Cleanup(func() { _ = c.Close() })
-	_ = c.RegisterFunction("local::target", echoHandler)
+	_, _ = c.RegisterFunction("local::target", echoHandler)
 	h, err := c.Observe(Source{FunctionID: "orders::create"}, "local::target")
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func TestStateListenersDoNotRunOnTheReadLoop(t *testing.T) {
 		mu.Unlock()
 	})
 	answered := make(chan struct{})
-	_ = c.RegisterFunction("ping::fn", func(context.Context, json.RawMessage) (any, error) {
+	_, _ = c.RegisterFunction("ping::fn", func(context.Context, json.RawMessage) (any, error) {
 		close(answered)
 		return "pong", nil
 	})

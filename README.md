@@ -201,7 +201,7 @@ The iii is licensed as such:
 | `docs/`    | [Apache License 2.0](docs/LICENSE)    |
 | `website/` | [Apache License 2.0](docs/LICENSE) |
 
-The engine runtime is licensed under the Elastic License 2.0 (ELv2). All SDKs, CLI, documentation,
-and the website are licensed under the Apache License 2.0.
+The engine runtime and the CLI are licensed under the Elastic License 2.0 (ELv2). All SDKs,
+documentation, and the website are licensed under the Apache License 2.0.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for additional details.

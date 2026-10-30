@@ -90,6 +90,20 @@ You bind triggers to functions via the `function_id`. The trigger declares its `
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 Per-type configuration is documented in each worker's Worker Docs (e.g.
@@ -99,8 +113,9 @@ Per-type configuration is documented in each worker's Worker Docs (e.g.
 
 The optional `metadata` field on a trigger registration (omitted in the examples above) is
 arbitrary JSON stored with the trigger and delivered to the receiving function as a distinct
-argument alongside the payload. It is useful for providing contextual information about the trigger
-or execution context to the receiving function.
+argument alongside the payload (in Go, on the handler's `ctx`, read with `iii.MetadataFromContext`).
+It is useful for providing contextual information about the trigger or execution context to the
+receiving function.
 
 A target function shared by many triggers can use it to recover which registration fired and with
 what context. See
@@ -156,6 +171,19 @@ registration and stores it:
         json!({ "api_path": "/math/add", "http_method": "POST" }),
     ))?;
     ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // http worker not started
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
   </Tab>
 </Tabs>
 
@@ -248,6 +276,27 @@ a queue message.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    // Same handler runs for an HTTP POST and a weekly cron tick.
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "reports::generate",
+        Config:     json.RawMessage(`{"api_path":"/reports/generate","http_method":"POST"}`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "cron",
+        FunctionID: "reports::generate",
+        Config:     json.RawMessage(`{"expression":"0 0 9 * * 1"}`), // Every Monday at 09:00
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Gate a trigger with a condition
@@ -334,6 +383,32 @@ is a regular registered function.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("orders::is-priority", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            CustomerTier string `json:"customer_tier"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return payload.CustomerTier == "gold", nil
+    })
+
+    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "orders::expedite",
+        Config: json.RawMessage(`{
+            "api_path": "/orders/expedite",
+            "http_method": "POST",
+            "condition_function_id": "orders::is-priority"
+        }`),
+    }); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Unregister a trigger
@@ -378,6 +453,23 @@ runtime; when the worker disconnects, all of its triggers are removed automatica
     ))?;
 
     trigger.unregister();
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    trigger, err := client.RegisterTrigger(iii.RegisterTriggerInput{
+        Type:       "http",
+        FunctionID: "math::add",
+        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := trigger.Unregister(); err != nil {
+        log.Fatal(err)
+    }
     ```
 
   </Tab>

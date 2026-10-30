@@ -84,7 +84,7 @@ func TestRegisterFunctionTypedSendsSchema(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	err := RegisterFunctionTyped[greetReq, greetResp](c, "typed::greet",
+	_, err := RegisterFunctionTyped[greetReq, greetResp](c, "typed::greet",
 		func(ctx context.Context, req greetReq) (greetResp, error) {
 			gotReq <- req
 			return greetResp{Message: "hi " + req.Name}, nil
@@ -129,7 +129,7 @@ func TestRegisterFunctionTypedDeliversMetadata(t *testing.T) {
 	}
 
 	c := connectClient(t, m)
-	err := RegisterFunctionTyped[greetReq, greetResp](c, "typed::meta",
+	_, err := RegisterFunctionTyped[greetReq, greetResp](c, "typed::meta",
 		func(ctx context.Context, req greetReq) (greetResp, error) {
 			metadata, _ := MetadataFromContext(ctx)
 			gotReq <- req
@@ -169,12 +169,12 @@ func TestRegisterWorkerConnects(t *testing.T) {
 	// Wait for connection by polling State (RegisterWorker connects in the background).
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if c.State() == StateConnected {
+		if c.ConnectionState() == StateConnected {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("RegisterWorker did not reach connected; state = %s", c.State())
+	t.Fatalf("RegisterWorker did not reach connected; state = %s", c.ConnectionState())
 }
 
 // TestConnectFailsFastWhenRetriesExhausted verifies Connect returns (rather than

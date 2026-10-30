@@ -9,7 +9,7 @@ import (
 
 // This file holds the public types of observe (tech-specs/2026-10-13-observe/sdk.md):
 // the observing side ([Source], [ObserverOptions], [ObserverHandle]) and the owner side
-// ([ObserveHooks], [Observer]). The wire shapes live in protocol.go.
+// ([ObserveHooks], [Observer]). The wire shapes are in protocol.go.
 
 // Capture names a part of an observed invocation shipped to an observer's target.
 // The default is input, output and caller.
@@ -43,7 +43,7 @@ const (
 	DeliverOutput   Deliver = "output"
 )
 
-// Delivery is how a function's observers are delivered (README §4.2).
+// Delivery is how a function's observers are delivered.
 type Delivery string
 
 const (
@@ -83,7 +83,7 @@ const (
 type Args map[string]any
 
 // Filters is a declarative filter over input, output, error, caller and metadata, with
-// explicit operators only (filters.md):
+// explicit operators only (the language of the filter subpackage):
 //
 //	iii.Filters{"input.amount": iii.Op{"$gte": 500}}
 type Filters map[string]any
@@ -130,8 +130,8 @@ type ObserverOptions struct {
 	TargetNamespace string
 }
 
-// ObserveReason is why an observer is in its state: a machine-readable code (protocol.md
-// §4) and a message.
+// ObserveReason is why an observer is in its state: a machine-readable code and a
+// message.
 type ObserveReason struct {
 	Code    string
 	Message string
@@ -186,7 +186,8 @@ type ObserveHooks struct {
 	OnObserverRemoved func(ctx context.Context, obs *Observer)
 }
 
-// FunctionOptions is the name sdk.md uses for [RegisterFunctionOptions].
+// FunctionOptions is another name for [RegisterFunctionOptions], the one the cross-SDK
+// specification uses.
 type FunctionOptions = RegisterFunctionOptions
 
 // ObserveDoc is the document an observer's filters read ([Observer.Matches]). A nil

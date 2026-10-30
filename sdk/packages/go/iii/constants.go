@@ -1,12 +1,31 @@
 package iii
 
-import "time"
+import (
+	"os"
+	"strings"
+	"time"
+)
 
-// DefaultEngineURL is the worker WebSocket endpoint of a locally-running engine.
-// The engine listens for workers here by default; its HTTP API is on :3111.
-// Mirrors the address used throughout the Node and Rust SDK docs
-// (sdk/packages/node/iii/src/iii.ts, sdk/packages/rust/iii/src/iii.rs).
-const DefaultEngineURL = "ws://localhost:49134"
+// DefaultEngineURL is the worker WebSocket endpoint of a locally-running engine, used
+// when neither an explicit address nor III_URL is set (see [EngineURLFromEnv]). The
+// engine listens for workers here by default; its HTTP API is on :3111. The IPv4
+// loopback is spelled out on purpose: "localhost" can resolve to ::1 on a host whose
+// engine only listens on IPv4. Same value as DEFAULT_ENGINE_URL in the Node, Python
+// and Rust SDKs.
+const DefaultEngineURL = "ws://127.0.0.1:49134"
+
+// EngineURLFromEnv returns the engine address a worker connects to when its code names
+// none: the III_URL environment variable, trimmed, when it is not blank, else
+// [DefaultEngineURL]. The supervisor that spawned the process (iii compose, a container
+// runtime, systemd) sets III_URL the same way it sets III_NAMESPACE and
+// III_WORKER_NAME. [New] and [RegisterWorker] call it when their url argument is empty,
+// so an explicit address wins, then III_URL, then the default, as in the Node SDK.
+func EngineURLFromEnv() string {
+	if url := strings.TrimSpace(os.Getenv("III_URL")); url != "" {
+		return url
+	}
+	return DefaultEngineURL
+}
 
 // runtimeTag is this SDK's value for the worker-metadata "runtime" field, sent on
 // engine::workers::register. The engine tags each worker by the SDK that registered
@@ -15,7 +34,7 @@ const DefaultEngineURL = "ws://localhost:49134"
 const runtimeTag = "go"
 
 // EngineFunctions are the engine's built-in function paths a worker can invoke via
-// Trigger. Mirrors EngineFunctions in sdk/packages/node/iii/src/iii-constants.ts.
+// Trigger. Mirrors EngineFunctions in the Node SDK.
 //
 // Naming note (kept verbatim from the Node SDK so the two read the same): ListTriggers
 // / InfoTriggers cover trigger TYPES (templates); ListRegisteredTriggers /
@@ -33,7 +52,7 @@ const (
 	FnCreateChannel          = "engine::channels::create"
 )
 
-// Engine trigger types. Mirrors EngineTriggers in iii-constants.ts.
+// Engine trigger types. Mirrors EngineTriggers in the Node SDK.
 const (
 	// TriggerFunctionsAvailable is the trigger type fired when the function set
 	// changes.
@@ -59,7 +78,7 @@ const (
 	FnOnConfigurationUpdate = "configuration::on-updated"
 )
 
-// Log function paths. Mirrors LogFunctions in iii-constants.ts. Invoke these with
+// Log function paths. Mirrors LogFunctions in the Node SDK. Invoke these with
 // Trigger (fire-and-forget) to write to the engine log.
 const (
 	LogInfo  = "engine::log::info"
@@ -69,14 +88,14 @@ const (
 )
 
 // DefaultInvocationTimeout bounds how long Trigger waits for an InvocationResult
-// before failing with ErrTimeout. Mirrors DEFAULT_INVOCATION_TIMEOUT_MS (30000) in
-// iii-constants.ts.
+// before failing with ErrTimeout, unless [WithInvocationTimeout] or
+// [TriggerRequest].Timeout says otherwise. Same default (30000 ms) as
+// DEFAULT_INVOCATION_TIMEOUT_MS in the Node SDK.
 const DefaultInvocationTimeout = 30 * time.Second
 
 // ReconnectConfig controls the exponential-backoff-with-jitter reconnect loop. The
-// defaults below match the Node SDK's DEFAULT_BRIDGE_RECONNECTION_CONFIG
-// (iii-constants.ts) exactly, so a Go worker reconnects on the same schedule as a
-// Node one.
+// defaults below match the Node SDK's DEFAULT_BRIDGE_RECONNECTION_CONFIG exactly, so
+// a Go worker reconnects on the same schedule as a Node one.
 type ReconnectConfig struct {
 	// InitialDelay is the delay before the first reconnect attempt.
 	InitialDelay time.Duration
@@ -104,7 +123,7 @@ func DefaultReconnectConfig() ReconnectConfig {
 }
 
 // ConnectionState is the lifecycle state of a Client's WebSocket. Mirrors
-// IIIConnectionState in iii-constants.ts.
+// IIIConnectionState in the Node SDK.
 type ConnectionState string
 
 const (

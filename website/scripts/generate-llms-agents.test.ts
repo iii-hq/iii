@@ -58,7 +58,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <section id="final-cta" aria-labelledby="final-cta-title"><div><h2 id="final-cta-title">Make anything callable.</h2><p>Start building your iii system.</p><div><button type="button">curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</button></div></div></section>
 </main>
 <footer class="border-t">
-  <div><a href="#hero"><svg viewBox="0 0 933.61 1050.31"></svg></a><p>A next-generation software system. Workers. Triggers. Functions.</p><p>Pronounced "three eye"</p></div>
+  <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. Workers. Triggers. Functions.</p><p>Pronounced "three eye"</p></div>
   <nav aria-label="Footer">
     <div><h3>Product</h3><ul><li><a href="https://iii.dev/docs">Docs</a></li><li><a href="/roadmap">Roadmap</a></li><li><a href="https://workers.iii.dev/" target="_blank">Worker registry<span class="sr-only">(opens in a new tab)</span></a></li></ul></div>
     <div><h3>Community</h3><ul><li><a href="https://github.com/iii-hq/iii">GitHub</a></li></ul></div>

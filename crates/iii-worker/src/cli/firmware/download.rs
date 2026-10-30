@@ -348,18 +348,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ensure_libkrunfw_errors_when_not_embedded_and_not_installed() {
-        let result = ensure_libkrunfw().await;
-        if super::super::libkrunfw_bytes::LIBKRUNFW_BYTES.is_empty() {
-            if resolve_libkrunfw_dir().is_none() {
-                // Without embedded bytes and no local install, the function attempts
-                // a download which will fail in test environments (no matching release).
-                // It should error with either a download failure or a connection error.
-                assert!(
-                    result.is_err(),
-                    "should error when not embedded and not installed"
-                );
+    async fn test_ensure_libkrunfw_uses_local_firmware_override() {
+        let _home = crate::cli::test_support::lock_home();
+        let tmp = tempfile::tempdir().unwrap();
+        let firmware = tmp.path().join(libkrunfw_filename());
+        std::fs::write(&firmware, b"test firmware").unwrap();
+
+        struct RestoreFirmwarePath(Option<std::ffi::OsString>);
+        impl Drop for RestoreFirmwarePath {
+            fn drop(&mut self) {
+                // SAFETY: the shared environment lock is held until restoration.
+                unsafe {
+                    match &self.0 {
+                        Some(value) => std::env::set_var("III_LIBKRUNFW_PATH", value),
+                        None => std::env::remove_var("III_LIBKRUNFW_PATH"),
+                    }
+                }
             }
         }
+        let _restore = RestoreFirmwarePath(std::env::var_os("III_LIBKRUNFW_PATH"));
+        // SAFETY: this test holds the shared lock for environment readers/writers.
+        unsafe { std::env::set_var("III_LIBKRUNFW_PATH", &firmware) };
+
+        // A missing local install can legitimately download a published release.
+        // Use a local fixture instead of depending on GitHub or the user's cache.
+        let resolved = ensure_libkrunfw().await.unwrap();
+        assert_eq!(resolved, tmp.path());
+        assert_eq!(std::fs::read(firmware).unwrap(), b"test firmware");
     }
 }

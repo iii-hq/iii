@@ -75,6 +75,23 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            A float64 `json:"a"`
+            B float64 `json:"b"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return map[string]float64{"c": payload.A + payload.B}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Attach request and response schemas
@@ -181,6 +198,28 @@ the function. The schemas are stored with the function and surface in the iii co
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    type AddInput struct {
+        A float64 `json:"a"`
+        B float64 `json:"b"`
+    }
+
+    type AddOutput struct {
+        C float64 `json:"c"`
+    }
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    // Go infers `request_format` and `response_format` from the handler's
+    // request and response types; fields without `omitempty` are required.
+    // Shape the schemas with `json` and `jsonschema` struct tags.
+    iii.RegisterFunctionTyped(client, "math::add", func(ctx context.Context, input AddInput) (AddOutput, error) {
+        return AddOutput{C: input.A + input.B}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 The schemas also feed the iii console and the agent-readable skills.
@@ -234,6 +273,14 @@ you gate access on the fields you define.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("math::add", handler, iii.RegisterFunctionOptions{
+        Metadata: json.RawMessage(`{"owner":"math-team","public":true}`),
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 ## Receive per-invocation metadata
@@ -274,6 +321,16 @@ use this `metadata` object to provide trigger or execution context to the receiv
             Ok(serde_json::json!({ "ok": true, "metadata": metadata }))
         }),
     );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // MetadataFromContext reports false when the invocation carries none.
+    client.RegisterFunction("audit::write", func(ctx context.Context, data json.RawMessage) (any, error) {
+        metadata, _ := iii.MetadataFromContext(ctx)
+        return map[string]any{"ok": true, "metadata": metadata}, nil
+    })
     ```
 
   </Tab>
@@ -377,6 +434,26 @@ trigger type (queue, cron, state, http) all work without any other changes.
       ));
       ```
     </Tab>
+    <Tab title="Go">
+      ```go
+      client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+      timeoutMs := uint64(5000)
+      _, err := client.RegisterHTTPFunction("notifications::send", iii.HTTPInvocationRef{
+          URL:       "https://hooks.provider.example.com/notify",
+          Method:    "POST",
+          TimeoutMs: &timeoutMs,
+          Headers:   map[string]string{"X-Service": "iii-worker"},
+          Auth:      iii.BearerAuth("PROVIDER_API_TOKEN"),
+      }, iii.RegisterFunctionOptions{
+          Description: "POST a notification to the provider webhook",
+      })
+      if err != nil {
+          log.Fatal(err)
+      }
+      ```
+
+    </Tab>
 
   </Tabs>
 </Accordion>
@@ -384,7 +461,8 @@ trigger type (queue, cron, state, http) all work without any other changes.
 ### `HttpInvocationConfig` fields
 
 While a normal function takes an `id` and a `handler`, http invokeable functions take an `id` and a
-`HttpInvocationConfig`.
+`HttpInvocationConfig` (in Go, `client.RegisterHTTPFunction` takes an `iii.HTTPInvocationRef` with
+the same fields).
 
 | Field        | Type                                              | Default    | Description                                                                                             |
 | ------------ | ------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------- |
@@ -412,10 +490,12 @@ discoverable through the console exactly like in-process handlers.
 A function returns either a value (which the handler is responsible for shaping to match its
 documented [response schema](#attach-request-and-response-schemas)) or an error. Errors raised
 inside the handler are propagated to the caller as invocation errors with the worker's stack trace
-attached: Node forwards `error.stack`, Python forwards `traceback.format_exc()`, and Rust forwards
-the underlying error's stack trace. The engine doesn't swallow them. Use this distinction to express
-expected failures (return a structured error value) versus unexpected ones (throw / raise / return
-`Err`).
+attached: Node forwards `error.stack`, Python forwards `traceback.format_exc()`, Rust forwards the
+underlying error's stack trace, and Go forwards the `Stacktrace` of a returned
+`*iii.InvocationError` (any other `error` arrives as its message, with the code
+`invocation_failed`). The engine doesn't swallow them. Use this distinction to express expected
+failures (return a structured error value) versus unexpected ones (throw / raise / return `Err` /
+return an `error`).
 
 ## Unregister a function
 
@@ -449,6 +529,28 @@ pending invocations error out.
     }));
 
     add.unregister();
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    add, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var payload struct {
+            A float64 `json:"a"`
+            B float64 `json:"b"`
+        }
+        if err := json.Unmarshal(data, &payload); err != nil {
+            return nil, err
+        }
+        return map[string]float64{"c": payload.A + payload.B}, nil
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := add.Unregister(); err != nil {
+        log.Fatal(err)
+    }
     ```
 
   </Tab>
