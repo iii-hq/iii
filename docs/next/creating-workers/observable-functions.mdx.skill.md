@@ -856,6 +856,11 @@ each, and they become active again. With `standby: true`, the SDK does this for 
 `FUNCTION_NAMESPACE_CONFLICT` it retries the registration every second (±20 % jitter) until it
 succeeds or the function is unregistered.
 
+The engine admits one live worker per worker name and namespace, so the standby connects under a
+name of its own (`III_WORKER_NAME`, or the worker name option of the SDK). A second instance under
+the host's name is refused with `WORKER_NAMESPACE_CONFLICT`, and its SDK stops without
+reconnecting.
+
 ## The `Observer` object
 
 Hooks get an `Observer`: the record of what the consumer asked for. Who observes, the observer's
