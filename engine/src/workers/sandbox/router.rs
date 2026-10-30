@@ -156,7 +156,7 @@ impl SandboxRouter {
             return Err(sandbox_error(
                 SandboxErrorCode::S302,
                 &format!(
-                    "adapter {adapter} implements sandbox contract {}.{}, but this engine needs major {CONTRACT_MAJOR}; install a {adapter} release whose major version is {CONTRACT_MAJOR}",
+                    "adapter {adapter} implements sandbox contract {}.{}, but this engine needs major {CONTRACT_MAJOR}; install a {adapter} release that implements sandbox contract {CONTRACT_MAJOR}.x",
                     info.contract.major,
                     info.contract.minor,
                     adapter = b.adapter,
