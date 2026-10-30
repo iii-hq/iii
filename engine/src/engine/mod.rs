@@ -8967,5 +8967,21 @@ mod tests {
             options.args_format,
             Some(serde_json::json!({ "type": "object" }))
         );
+
+        // A registration that sets them hands them over as it set them.
+        let frame = fixture_frame("registerfunction-private");
+        let Message::RegisterFunction {
+            args_format: Some(args_format),
+            ..
+        } = &frame
+        else {
+            panic!("the fixture sets args_format");
+        };
+        engine.router_msg(&worker, &frame).await.unwrap();
+        let input = input_rx.recv().await.expect("the hook ran");
+        assert_eq!(input["function_id"], "cron::on-tick");
+        assert_eq!(input["private"], true);
+        assert_eq!(input["observable"], true);
+        assert_eq!(&input["args_format"], args_format, "sent when set");
     }
 }
