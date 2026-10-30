@@ -40,8 +40,8 @@ const result = await iii.call({ function_id: 'hello::greet', payload: { name: 'w
 | Call through an observer | `await iii.call({ observer, payload })`                                       | Run an observer's target, with its policy and metadata          |
 | Current invocation       | `iii.currentInvocation()`                                                     | The invocation the running handler serves (caller, activation)  |
 
-`iii.trigger` and `TriggerAction` are the same function and object as
-`iii.call` and `CallAction`.
+`iii.trigger`, `TriggerAction` and `TriggerRequest` are deprecated aliases of
+`iii.call`, `CallAction` and `CallRequest`: the same function, object and type.
 
 ### Registering Functions
 
@@ -156,6 +156,15 @@ iii.onObserverDeliver('http::on-request', async (call) => {
   return iii.call({ observer: route.obs, payload: call.input })
 })
 ```
+
+A worker's own call to its private function passes the input and the result
+by reference: the handler and the hooks treat both as read-only, and with
+`NODE_ENV=development` the SDK freezes them, so a write throws.
+
+A function that sets `args_format`, `private: true`, `observable: false`, a
+match hook or a deliver hook needs an engine that advertises `observe.v2`;
+against an older engine it stays unregistered, and the SDK logs `UNSUPPORTED`
+once for it.
 
 ## Resources
 

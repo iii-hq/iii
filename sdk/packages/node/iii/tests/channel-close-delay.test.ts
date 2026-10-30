@@ -5,7 +5,7 @@ import type { StreamChannelRef } from '../src/iii-types'
 // ---------------------------------------------------------------------------
 // Inline mock for the 'ws' module.
 // We need a controllable WebSocket stand-in so we can inspect close() calls
-// and trigger 'open' events without a real network.
+// and emit 'open' events without a real network.
 // ---------------------------------------------------------------------------
 
 class MockWebSocket extends EventEmitter {

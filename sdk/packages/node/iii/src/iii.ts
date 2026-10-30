@@ -1932,7 +1932,7 @@ class Sdk implements IIIClient {
     }
     this.invocations.clear()
 
-    // Tear down the socket without triggering the reconnect path.
+    // Tear down the socket without starting the reconnect path.
     if (this.ws) {
       this.ws.removeAllListeners()
       this.ws.on('error', () => {})

@@ -1,9 +1,7 @@
 /**
- * Helper free functions that operate on an {@link ISdk} instance.
- *
- * These were previously instance methods on the SDK. They take the iii
- * instance as the first argument so the public API surface of `ISdk` stays
- * focused on the core lifecycle and registration methods.
+ * Helper free functions that operate on an {@link ISdk} instance: each one
+ * takes the client as its first argument, so `ISdk` itself keeps to the
+ * connection lifecycle, functions, calls and observers.
  */
 import type { Channel, ISdk } from './types'
 import type { IStream } from './stream'
@@ -18,8 +16,6 @@ type IIIWithHelperShims = ISdk & {
 
 /**
  * Create a streaming channel pair for worker-to-worker data transfer.
- *
- * Free-function form of the previous `ISdk.createChannel` instance method.
  */
 export function createChannel(iii: ISdk, bufferSize?: number): Promise<Channel> {
   return (iii as IIIWithHelperShims).__helpers_create_channel(bufferSize)
@@ -28,8 +24,6 @@ export function createChannel(iii: ISdk, bufferSize?: number): Promise<Channel> 
 /**
  * Register a custom stream implementation by wiring its 5 callable methods
  * to `stream::get/set/delete/list/list_groups`.
- *
- * Free-function form of the previous `ISdk.createStream` instance method.
  *
  * @deprecated createStream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */

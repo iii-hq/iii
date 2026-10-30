@@ -158,7 +158,7 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     socket.open()
     socket.deliver(functionRegistered('val::mutate'))
     const payload = { list: [1, 2], at: new Date(0) }
-    const result = await sdk.trigger<typeof payload, { list: number[] }>({ function_id: 'val::mutate', payload })
+    const result = await sdk.call<typeof payload, { list: number[] }>({ function_id: 'val::mutate', payload })
     expect(payload.list).toEqual([1, 2])
     expect(result).toEqual({ list: [1] })
     expect(result).not.toBe(kept)
