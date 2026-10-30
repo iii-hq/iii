@@ -132,9 +132,10 @@ For the full set of `sandbox::fs::*` functions and for large or binary file tran
 ## Error codes
 
 A failed `sandbox::*` call returns the same error shape from every sandbox adapter: a stable `code`
-(S-code), a `type`, and a `retryable` flag. The codes are part of the sandbox contract of the engine
-and of the public `sandbox::*` API that every caller sees. The router returns S301-S303. The adapter
-returns all other codes. The `docs_url` in the error payload links to the matching entry below.
+(S-code), a `type`, and a `retryable` flag. The iii sandbox contract defines these codes. They are
+the same for every adapter and every worker, and they are part of the public `sandbox::*` API that
+every caller sees. The router returns S301-S303. The adapter returns all other codes. The `docs_url`
+in each error payload links to the matching entry below.
 
 - <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed
   sandbox_id)
