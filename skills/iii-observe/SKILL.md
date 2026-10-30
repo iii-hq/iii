@@ -502,7 +502,8 @@ How hooks behave:
   then makes the call with `CallAction.Void()`. `accepted()` fails for an observer rejected first
   (a match key function that throws, `obs.reject`), and the task then sends nothing: in Node and
   the browser, end the chain with `.catch`. Python awaits `accepted_async()` in a task
-  (`asyncio.create_task`), since `accepted()` blocks the calling thread; Rust awaits
+  (`asyncio.create_task`), since `accepted()` blocks the calling thread, and catches
+  `ObserveRejection` around it; Rust awaits
   `obs.accepted()` in a spawned task; Go runs `obs.Accepted(ctx)` in a goroutine with a context of
   its own, since the hook's `ctx` makes it return an error at once.
 
