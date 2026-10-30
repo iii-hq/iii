@@ -87,6 +87,25 @@ iii trigger sandbox::catalog::list | jq -r '.images[].name'
 The `sandbox::fs::*` triggers manipulate files inside a running sandbox. Each takes a `sandbox_id`
 plus operation-specific fields.
 
+Each sandbox boots from a read-only erofs image of the cached image rootfs plus a private,
+in-memory writable layer. Writes made inside the guest never reach the shared image cache. They are
+invisible to other sandboxes, disappear when the sandbox stops, and are bounded by the sandbox's
+memory. The first `sandbox::create` of an image builds its erofs, which can take a few seconds for a
+large image. Later creates reuse it.
+
+Filesystem isolation requires an `iii-worker` build with the embedded guest init, which every
+official release includes. Without it, `sandbox::create` fails with `S300` instead of booting a
+sandbox without isolation.
+
+<Warning>
+  Image caches created by earlier releases may have been modified by guests. After upgrading,
+  consider re-pulling sandbox images by deleting their cache entries:
+
+  ```bash
+  rm -rf ~/.iii/cache/<slug>*
+  ```
+</Warning>
+
 ```bash
 # boot a sandbox and capture its id
 SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
