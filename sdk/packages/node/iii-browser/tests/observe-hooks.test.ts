@@ -1175,6 +1175,10 @@ describe('FunctionObservers edge cases', () => {
     first.unregister() // stale: the id belongs to `second` now
     expect(reporter.size).toBe(1)
     expect(second.isObserved()).toBe(true)
+    // each ref reads its own registration
+    expect(first.isObserved()).toBe(false)
+    expect(first.observers()).toEqual([])
+    expect(second.observers().map((o) => o.id)).toEqual(['o'])
     await fake.elapse(1500)
     const next = fake.lastSocket()
     next.open()

@@ -567,8 +567,9 @@ class Sdk implements IIIClient {
         this.onObserverDeliver(functionId, hook)
         return ref
       },
-      observers: () => this.observers(functionId),
-      isObserved: (call) => this.isObserved(functionId, call as Partial<Call>),
+      // This registration's observers: one load, no lookup by id.
+      observers: () => observe.observers(),
+      isObserved: (call) => observe.isObserved(call as Partial<Call>),
       unregister: () => {
         // A stale ref (the id was unregistered and registered again) must not
         // touch the registration that replaced it: nothing to do.
