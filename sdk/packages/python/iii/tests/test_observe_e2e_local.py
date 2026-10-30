@@ -4,6 +4,7 @@ observer, event sources and private functions."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -21,7 +22,7 @@ from observe_e2e_utils import (
     wait_for,
 )
 
-from iii import Call, InvocationError, Observer, ObserveRejection
+from iii import Call, CallAction, InvocationError, Observer, ObserveRejection
 from iii.iii import III
 
 ALL = ["input", "output", "error", "caller", "metadata"]
@@ -411,6 +412,87 @@ def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_dispo
     with pytest.raises(InvocationError) as raised:
         owner.call({"observer": obs, "payload": {"path": "/users", "tenant": "acme"}})
     assert raised.value.code in ("OBSERVER_NOT_FOUND", "OBSERVER_NOT_ACTIVE")
+
+
+@pytest.mark.parametrize("form", ["predicate", "keys"])
+def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_call(
+    worker: Any, fid: Any, form: str
+) -> None:
+    """Decision 52: a host sends one observer something of its own (here, the
+    state of its session once it is accepted) by calling its own function with
+    ``metadata.for_observer``. That call reaches the observer's target alone,
+    in the shape every call gives it: A gets the envelope, B (``deliver:
+    output``) the output. An ordinary call reaches both."""
+    owner = worker("d52-owner")
+    watcher = worker("d52-watcher")
+    source = fid("py-d52::on-changed")
+
+    def for_observer(call: Call[Any, Any]) -> Any:
+        return (call.metadata or {}).get("for_observer")
+
+    async def send_state(obs: Observer) -> None:
+        await obs.accepted_async()
+        await owner.call_async(
+            {
+                "function_id": source,
+                "payload": {"session": obs.args["session"], "n": 0},
+                "metadata": {"for_observer": obs.id},
+                "action": CallAction.Void(),
+            }
+        )
+
+    @owner.on_observer_added(source)
+    async def on_added(obs: Observer) -> None:
+        # a new observer gets the state of its session once it is active
+        asyncio.get_running_loop().create_task(send_state(obs))
+
+    if form == "predicate":
+        owner.on_observer_match(
+            source,
+            lambda obs, call: (
+                for_observer(call) == obs.id if for_observer(call) else obs.args["session"] == call.input["session"]
+            ),
+        )
+    else:
+        owner.on_observer_match(
+            source,
+            observer=lambda obs: [obs.args["session"], f"for_observer:{obs.id}"],
+            call=lambda call: f"for_observer:{for_observer(call)}" if for_observer(call) else call.input["session"],
+        )
+    owner.register_function(
+        source,
+        lambda change: change,
+        args_format={"type": "object", "required": ["session"], "properties": {"session": {"type": "string"}}},
+        private=True,
+    )
+    local_dispatch_ready(owner, source)
+    got_a = collector(watcher, fid("py-d52::envelope"))
+    got_b = collector(watcher, fid("py-d52::output"))
+
+    a = watcher.observe({"function_id": source, "args": {"session": "s1"}}, fid("py-d52::envelope"))
+    a.ready(timeout=10)
+    exactly(got_a, 1, "A's state")
+    b = watcher.observe({"function_id": source, "args": {"session": "s1"}, "deliver": "output"}, fid("py-d52::output"))
+    b.ready(timeout=10)
+    exactly(got_b, 1, "B's state")
+    assert len(got_a) == 1
+
+    # an ordinary call reaches both
+    owner.call({"function_id": source, "payload": {"session": "s1", "n": 1}})
+    exactly(got_a, 2, "the ordinary call at A")
+    exactly(got_b, 2, "the ordinary call at B")
+    # a call for A reaches A alone
+    owner.call({"function_id": source, "payload": {"session": "s1", "n": 2}, "metadata": {"for_observer": a.id}})
+    exactly(got_a, 3, "the call for A")
+    assert len(got_b) == 2
+
+    state, ordinary, for_a = (g.data for g in got_a)
+    for envelope in (state, for_a):
+        assert sorted(envelope) == sorted(ordinary)
+        assert envelope["observer_id"] == a.id
+        assert stable(envelope) == {**stable(ordinary), "input": envelope["input"], "output": envelope["output"]}
+    assert [e["output"] for e in (state, ordinary, for_a)] == [{"session": "s1", "n": n} for n in (0, 1, 2)]
+    assert [g.data for g in got_b] == [{"session": "s1", "n": n} for n in (0, 1)]
 
 
 def test_an_event_source_sends_each_event_once_and_its_observers_observe_the_event(worker: Any, fid: Any) -> None:

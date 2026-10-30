@@ -322,6 +322,12 @@ type CallKeys = dyn for<'a> Fn(&'a Call) -> Keys<'a> + Send + Sync;
 /// ([`IIIClient::on_observer_match_for`]). A worker sets it when its
 /// observers' args say which calls they want; iii does everything else as
 /// usual: the observers' filters, `on`, policy and `deliver` still apply.
+///
+/// A host that sends one observer something of its own (its initial state)
+/// calls the function with metadata `{ "for_observer": <observer id> }`, and
+/// the hook gives such a call to that observer alone: a predicate compares
+/// the ids, and key functions also file each observer under
+/// `"for_observer:<id>"` and give such a call that one key.
 #[derive(Clone)]
 pub enum Match {
     /// Asked once per active observer per call, before its filters. A

@@ -476,8 +476,7 @@ within `observers.activation_timeout_ms` fails with `TIMEOUT`:
 
 A fire-and-forget call through an observer (`action: { "type": "void" }`, no `invocation_id`) gets
 no answer. The engine drops a refused one, counts it in `iii.observer.dropped.total` with its code
-as the reason, and logs it at `debug`. A provider uses this shape to send a new observer its initial
-state once `obs.accepted()` resolves:
+as the reason, and logs it at `debug`:
 
 ```json
 {
@@ -488,6 +487,13 @@ state once `obs.accepted()` resolves:
   "activation": { "observer_id": "868c8f79-e34f-4390-8ca6-7904b54ba84a" }
 }
 ```
+
+A host sends one observer something of its own, such as its initial state once `obs.accepted()`
+resolves, as a call of its own function with `metadata: { "for_observer": "<observer id>" }`. The
+function's match hook gives that call to that observer alone, and it reaches the engine as every
+call of the function does: an `InvocationsObserved` item for a local call, `observed` on the
+`InvocationResult` of a routed one. See
+[Send an observer its initial state](../creating-workers/observable-functions#send-an-observer-its-initial-state).
 
 ## `InvocationResult`
 

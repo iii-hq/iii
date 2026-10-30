@@ -309,6 +309,158 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
   })
 })
 
+describe('calls for one observer: metadata.for_observer (decision 52)', () => {
+  type Change = { session: string; n: number }
+  const forObserver: MatchPredicate<Change, Change> = (obs, call) =>
+    call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session
+  const forObserverKeys: MatchKeys<Change, Change> = {
+    observer: (obs) => [obs.args.session as string, `for_observer:${obs.id}`],
+    call: (call) => (call.metadata?.for_observer ? `for_observer:${call.metadata.for_observer}` : call.input.session),
+  }
+  const watch = (id: string) =>
+    observerInfo(id, `ui::${id}`, { args: { session: 's1' }, capture: ['input', 'output', 'metadata'] })
+
+  for (const [form, match] of [
+    ['a predicate', forObserver],
+    ['keys', forObserverKeys],
+  ] as const) {
+    it(`${form}: the call's metadata reaches the handler, the match hook and the report; only that observer gets it`, async () => {
+      const { sdk, socket } = worker()
+      const handlerMetadata: unknown[] = []
+      const matchMetadata: unknown[] = []
+      const recording: MatchPredicate<Change, Change> | MatchKeys<Change, Change> =
+        typeof match === 'function'
+          ? (obs, call) => {
+              matchMetadata.push(call.metadata)
+              return match(obs, call)
+            }
+          : {
+              observer: match.observer,
+              call: (call: Call<Change, Change>) => {
+                matchMetadata.push(call.metadata)
+                return match.call(call)
+              },
+            }
+      sdk
+        .registerFunction(
+          'tmux::on-changed',
+          (change: Change, metadata?: unknown) => {
+            handlerMetadata.push(metadata)
+            return change
+          },
+          { private: true },
+        )
+        .onObserverMatch(recording)
+      socket.deliver(functionRegistered('tmux::on-changed', [watch('a'), watch('b')], { revision: 1 }))
+      await settle()
+      socket.clear()
+
+      await sdk.call({
+        function_id: 'tmux::on-changed',
+        payload: { session: 's1', n: 1 },
+        metadata: { for_observer: 'a' },
+      })
+      await sdk.call({ function_id: 'tmux::on-changed', payload: { session: 's1', n: 2 } })
+      await flushed()
+      expect(handlerMetadata).toEqual([{ for_observer: 'a' }, undefined])
+      expect(matchMetadata).toContainEqual({ for_observer: 'a' })
+      expect(reportedItems(socket).map((i) => [(i.matched as string[]).sort(), i.input, i.metadata])).toEqual([
+        [['a'], { session: 's1', n: 1 }, { for_observer: 'a' }],
+        [['a', 'b'], { session: 's1', n: 2 }, undefined],
+      ])
+
+      // routed: the observer it names rides the answer
+      socket.deliver(
+        invokeFunction(
+          'tmux::on-changed',
+          { session: 's1', n: 3 },
+          { invocation_id: 'for-b', metadata: { for_observer: 'b' } },
+        ),
+      )
+      await settle()
+      expect(fake.resultOf(socket, 'for-b')).toMatchObject({ result: { session: 's1', n: 3 }, observed: ['b'] })
+      expect(matchMetadata).toContainEqual({ for_observer: 'b' })
+    })
+  }
+
+  it('without a match hook, such a call reaches every observer whose filters match, metadata included', async () => {
+    const { sdk, socket } = worker()
+    sdk.registerFunction('tmux::on-changed', (change: Change) => change, { private: true })
+    const ordinary = observerInfo('ordinary', 'ui::ordinary', {
+      args: { session: 's1' },
+      capture: ['input', 'metadata'],
+      filters: { 'metadata.for_observer': { $exists: false } },
+    })
+    socket.deliver(functionRegistered('tmux::on-changed', [watch('a'), ordinary, watch('c')], { revision: 1 }))
+    await settle()
+    socket.clear()
+
+    await sdk.call({
+      function_id: 'tmux::on-changed',
+      payload: { session: 's1', n: 1 },
+      metadata: { for_observer: 'a' },
+    })
+    await sdk.call({ function_id: 'tmux::on-changed', payload: { session: 's1', n: 2 } })
+    await flushed()
+    expect(reportedItems(socket).map((i) => [(i.matched as string[]).sort(), i.metadata])).toEqual([
+      [['a', 'c'], { for_observer: 'a' }],
+      [['a', 'c', 'ordinary'], undefined],
+    ])
+  })
+
+  it('the documented added hook: an accepted observer gets its state, a rejected one nothing, and no rejection goes unhandled', async () => {
+    const unhandled: unknown[] = []
+    const record = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', record)
+    try {
+      const { sdk, socket } = worker()
+      const added: Observer[] = []
+      sdk
+        .registerFunction('tmux::on-changed', (change: Change) => change, { private: true })
+        .onObserverAdded((obs) => {
+          added.push(obs)
+          // as observable-functions.mdx, the README and Observer.accepted() give it
+          void obs
+            .accepted()
+            .then(() =>
+              sdk.call({
+                function_id: 'tmux::on-changed',
+                payload: { session: obs.args.session, n: 0 },
+                metadata: { for_observer: obs.id },
+                action: CallAction.Void(),
+              }),
+            )
+            .catch(() => {
+              // a rejected observer gets nothing
+            })
+        })
+        .onObserverMatch({
+          // throws for an observer without a session: rejected after its added hook returned
+          observer: (obs) => {
+            if (typeof obs.args.session !== 'string') throw new Error('no session')
+            return [obs.args.session, `for_observer:${obs.id}`]
+          },
+          call: forObserverKeys.call,
+        })
+      const sessionless = observerInfo('sessionless', 'ui::sessionless', { capture: ['input', 'metadata'] })
+      socket.deliver(functionRegistered('tmux::on-changed', [watch('a'), sessionless], { revision: 1 }))
+      await settle()
+      await flushed()
+      await settle()
+
+      await expect(added.find((o) => o.id === 'sessionless')?.accepted()).rejects.toMatchObject({
+        code: 'OBSERVE_REJECTED',
+      })
+      expect(reportedItems(socket).map((i) => [i.matched, i.input, i.metadata])).toEqual([
+        [['a'], { session: 's1', n: 0 }, { for_observer: 'a' }],
+      ])
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', record)
+    }
+  })
+})
+
 describe('onObserverDeliver', () => {
   it('what the hook returns or throws is what the caller gets back; iii delivers nothing for the function', async () => {
     const { sdk, socket } = worker()

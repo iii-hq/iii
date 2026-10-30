@@ -28,8 +28,10 @@ type: "reference"
     observers that matched, and what it returns or throws is what the caller gets back.
     `iii.call({ observer, payload })` runs one observer's target from the hook and resolves to the
     target's result, such as an HTTP route's response or a queue message's acknowledgement.
-    `obs.accepted()` resolves once the SDK has acknowledged the observer; a call through it made
-    afterwards reaches an active observer, so a provider can send it initial state.
+    `obs.accepted()` resolves once the SDK has acknowledged the observer; a call made afterwards
+    reaches an active observer. A provider sends a new observer its initial state as a call of its
+    own function with `metadata: { for_observer: obs.id }`, which its match hook gives to that
+    observer alone, so the target receives it in the shape of every call.
   - Hooks are methods on the client, by function id, and on the `FunctionRef` that
     `registerFunction` returns. Rust names the by-id forms with `_for` (`on_observer_added_for`,
     `on_observer_match_for`) and builds a match hook with `Match::predicate` or `Match::keys`.

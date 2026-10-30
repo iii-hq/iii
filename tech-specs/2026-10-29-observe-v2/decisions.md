@@ -218,8 +218,9 @@ differ, this file wins, and the spec is updated to match.
     `output_is_input`.
 19. **`Observer.accepted()`** resolves after the SDK has acked the observer.
     Calls through the observer sent after it resolves reach an active observer
-    (frames are processed in order). Providers send initial state this way
-    (ADE asset sync, ring-on-bind).
+    (frames are processed in order), and so does a call of its function for
+    that observer alone. Providers send initial state with such a call
+    (decision 52: ADE asset sync, ring-on-bind).
 20. **`onObserverDeliver` context.** The hook runs inside the function's
     invocation context and span, so calls it makes have the function's
     invocation as caller. It receives the observers that matched
@@ -271,6 +272,33 @@ differ, this file wins, and the spec is updated to match.
       `client.OnObserverAdded(h)`, `client.OnObserverAddedFor(id, h)`,
       `client.OnObserverDeliverFor(id, h)`, `ref.OnObserverDeliver(h)`,
       `client.OnObserverMatchFor(id, m)` and `ref.OnObserverMatch(m)` with `iii.MatchFunc(func(*Observer, *Call) bool)` or `iii.MatchKeys(observerKeys, callKeys)`.
+
+52. **Calls for one observer.** A host sends one observer something of its
+    own (its current state when the observer is added, or an event it
+    missed) by calling its own function with a call that only that observer
+    matches. The call carries metadata `{ for_observer: <observer id> }`, and
+    the function's match hook gives such a call to that observer alone: a
+    predicate compares `call.metadata.for_observer` with `obs.id`; key
+    functions also file each observer under `"for_observer:<id>"` and give
+    such a call that one key. iii delivers it like every call, with that
+    observer's `deliver`, `capture`, filters, `on` and policy, so a target
+    receives every event of the function in one shape. The host makes the
+    call after `obs.accepted()` resolves (decision 19). A call through an
+    observer (`iii.call({ observer, payload })`) belongs in a deliver hook,
+    whose function documents what its targets receive.
+
+    ```ts
+    iii.onObserverAdded('tmux::on-changed', (obs) => {
+      obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+    })
+    iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+      call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
+    ```
+
+    Each SDK has its equivalent: Rust `CallRequest::new(id, payload)
+    .metadata(json!({ "for_observer": obs.id() }))`, Python
+    `{"function_id": id, "payload": payload, "metadata": {"for_observer": obs.id}}`,
+    Go `iii.CallRequest{FunctionID: id, Payload: payload, Metadata: ...}`.
 
 ## CLI and crates
 

@@ -694,15 +694,24 @@ def test_a_call_through_an_observer_takes_no_function_id_namespace_metadata_or_e
 def test_accepted_resolves_once_the_observer_is_acked_and_raises_when_it_is_rejected(
     engine: FakeEngine, connect: Any
 ) -> None:
+    """A host sends a new observer its initial state once it is accepted: a call
+    of its own function with ``metadata.for_observer`` (decision 52), reported
+    for that observer alone, after its ack."""
     client = connect(engine)
-    calls = _answer_observer_calls(engine)
     release = threading.Event()
     got: list[Observer] = []
     initial: list[str] = []
 
     async def send_initial_state(obs: Observer) -> None:
         await obs.accepted_async()
-        await client.call_async({"observer": obs, "payload": {"state": "initial"}, "action": CallAction.Void()})
+        await client.call_async(
+            {
+                "function_id": "stock::on-changed",
+                "payload": {"state": "initial"},
+                "metadata": {"for_observer": obs.id},
+                "action": CallAction.Void(),
+            }
+        )
         initial.append(obs.id)
 
     @client.on_observer_added("stock::on-changed")
@@ -714,23 +723,40 @@ def test_accepted_resolves_once_the_observer_is_acked_and_raises_when_it_is_reje
         while not release.is_set():
             await asyncio.sleep(0.005)
 
+    client.on_observer_match(
+        "stock::on-changed",
+        lambda obs, call: (call.metadata or {}).get("for_observer", obs.id) == obs.id,
+    )
     client.register_function("stock::on-changed", lambda e: e, private=True)
-    engine.deliver(function_registered("stock::on-changed", [observer_info("o", "t")], revision=1))
+    engine.deliver(
+        function_registered("stock::on-changed", [observer_info("o", "t"), observer_info("p", "t")], revision=1)
+    )
     wait_until(lambda: got, what="the hook")
     with pytest.raises(TimeoutError):
         got[0].accepted(timeout=0.05)
-    assert calls == []  # nothing goes through it before its ack
+    assert initial == []  # nothing is sent for it before its ack
     release.set()
     got[0].accepted(timeout=5)
-    wait_until(lambda: initial == ["o"], what="the initial state")
+    wait_until(lambda: initial == ["o", "p"], what="the initial states")
+    settle(client, engine)
+    assert [(i["matched"], i["input"]) for i in _items(engine, "stock::on-changed")] == [
+        (["o"], {"state": "initial"}),
+        (["p"], {"state": "initial"}),
+    ]
     frames = engine.frames()
-    ack_at = next(i for i, f in enumerate(frames) if f["type"] == "observerack")
-    call_at = next(i for i, f in enumerate(frames) if f["type"] == "invokefunction" and f.get("activation"))
-    assert ack_at < call_at
+    for observer_id in ("o", "p"):
+        ack_at = next(i for i, f in enumerate(frames) if f["type"] == "observerack" and f["id"] == observer_id)
+        report_at = next(
+            i
+            for i, f in enumerate(frames)
+            if f["type"] == "invocationsobserved" and any(observer_id in item["matched"] for item in f["items"])
+        )
+        assert ack_at < report_at
+    assert not [f for f in engine.frames_of("invokefunction") if f.get("activation")]  # no call through an observer
     engine.deliver(observer_added("stock::on-changed", 2, observer_info("r", "t", args={"refuse": True})))
-    wait_until(lambda: len(got) == 2, what="the second hook")
+    wait_until(lambda: len(got) == 3, what="the third hook")
     with pytest.raises(ObserveRejection) as raised:
-        got[1].accepted(timeout=5)
+        got[2].accepted(timeout=5)
     assert raised.value.code == "REFUSED"
 
     async def on_the_sdk_loop() -> None:
@@ -738,6 +764,66 @@ def test_accepted_resolves_once_the_observer_is_acked_and_raises_when_it_is_reje
             got[0].accepted()
 
     client._run_on_loop(on_the_sdk_loop())
+
+
+# ── calls for one observer (decision 52) ───────────────────────────────────
+
+
+def _for_observer(call: Call[Any, Any]) -> Any:
+    return (call.metadata or {}).get("for_observer")
+
+
+@pytest.mark.parametrize("form", ["predicate", "keys"])
+def test_a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_report(
+    engine: FakeEngine, connect: Any, form: str
+) -> None:
+    """A local call's metadata reaches the handler, the match hook and the
+    report; a call with ``metadata.for_observer`` reaches that observer alone,
+    and a routed one lists only it on its answer."""
+    client = connect(engine)
+    handled: list[Any] = []
+    seen: list[Any] = []
+
+    def changed(change: dict[str, Any], metadata: Any = None) -> dict[str, Any]:
+        handled.append(metadata)
+        return change
+
+    def wants(obs: Observer, call: Call[Any, Any]) -> bool:
+        seen.append(call.metadata)
+        target = _for_observer(call)
+        return bool(target == obs.id) if target else bool(obs.args["session"] == call.input["session"])
+
+    def call_keys(call: Call[Any, Any]) -> str:
+        seen.append(call.metadata)
+        target = _for_observer(call)
+        return f"for_observer:{target}" if target else str(call.input["session"])
+
+    ref = client.register_function("tmux::on-changed", changed, private=True)
+    if form == "predicate":
+        ref.on_observer_match(wants)
+    else:
+        ref.on_observer_match(observer=lambda obs: [obs.args["session"], f"for_observer:{obs.id}"], call=call_keys)
+    watch = {"args": {"session": "s1"}, "capture": ["input", "output", "metadata"]}
+    _confirm(
+        client, engine, "tmux::on-changed", observer_info("a", "t::a", **watch), observer_info("b", "t::b", **watch)
+    )
+
+    client.call(
+        {"function_id": "tmux::on-changed", "payload": {"session": "s1", "n": 1}, "metadata": {"for_observer": "a"}}
+    )
+    client.call({"function_id": "tmux::on-changed", "payload": {"session": "s1", "n": 2}})
+    settle(client, engine)
+    assert handled == [{"for_observer": "a"}, None]
+    assert {"for_observer": "a"} in seen
+    assert [(sorted(i["matched"]), i["input"], i.get("metadata")) for i in _items(engine, "tmux::on-changed")] == [
+        (["a"], {"session": "s1", "n": 1}, {"for_observer": "a"}),
+        (["a", "b"], {"session": "s1", "n": 2}, None),
+    ]
+
+    # routed: the observer it names rides the answer
+    engine.deliver(invoke("tmux::on-changed", {"session": "s1", "n": 3}, "for-b", metadata={"for_observer": "b"}))
+    [answer] = engine.wait_for(lambda: answers(engine, "for-b"), what="the answer")
+    assert (answer["result"], answer["observed"]) == ({"session": "s1", "n": 3}, ["b"])
 
 
 # ── private and output_is_input ────────────────────────────────────────────

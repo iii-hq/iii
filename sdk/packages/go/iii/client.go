@@ -756,8 +756,11 @@ type CallRequest struct {
 	// exists and is active (OBSERVER_NOT_FOUND, OBSERVER_NOT_ACTIVE), and applies its
 	// policy (max_fires, expiry, max_in_flight: OVERFLOW), metadata sidecar and loop
 	// guard. The call goes out on the current connection, after the acks already sent
-	// on it; FunctionID, Namespace and an enqueue action do not apply. A deliver hook
-	// that calls targets itself applies the observer's filters with [Observer.Matches].
+	// on it; FunctionID, Namespace and an enqueue action do not apply. A call through
+	// an observer belongs in the function's [DeliverHook], which applies the observer's
+	// filters with [Observer.Matches]; to send one observer something outside delivery
+	// (its initial state), call the function with metadata {"for_observer": <obs.ID>}
+	// (see [Observer.Accepted]).
 	Observer *Observer
 	// Payload is the JSON input of the function (payload in the Node, Python and Rust
 	// SDKs). Nil is sent as {}.

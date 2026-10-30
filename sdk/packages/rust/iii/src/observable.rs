@@ -335,28 +335,40 @@ impl Observer {
     }
 
     /// Resolves once the SDK has acked the observer, which makes it active:
-    /// a call through it made after this resolves reaches an active observer,
-    /// since the engine handles a connection's frames in order. A provider
-    /// sends an observer its initial state this way. Fails with the
-    /// rejection's code when the observer is rejected first.
+    /// a call made after this resolves reaches an active observer, since the
+    /// engine handles a connection's frames in order. A provider sends an
+    /// observer its initial state this way: a call of its own function with
+    /// metadata `{ "for_observer": <the observer's id> }`, which the
+    /// function's match hook gives to this observer alone, delivered like
+    /// every call. Fails with the rejection's code when the observer is
+    /// rejected first.
     ///
     /// ```rust,no_run
-    /// # use iii_sdk::{CallAction, CallRequest, IIIClient, Observer};
+    /// # use iii_sdk::{CallAction, CallRequest, IIIClient, Match, Observer};
     /// # use serde_json::json;
     /// # fn demo(iii: &IIIClient) {
-    /// let iii = iii.clone();
-    /// iii.clone().on_observer_added_for("stock::on-changed", move |obs: Observer| {
-    ///     let iii = iii.clone();
+    /// let client = iii.clone();
+    /// iii.on_observer_added_for("stock::on-changed", move |obs: Observer| {
+    ///     let iii = client.clone();
     ///     async move {
     ///         tokio::spawn(async move {
     ///             if obs.accepted().await.is_ok() {
-    ///                 let initial = CallRequest::observer(&obs, json!({ "available": 12 }));
+    ///                 let initial = CallRequest::new("stock::on-changed", json!({ "available": 12 }))
+    ///                     .metadata(json!({ "for_observer": obs.id() }));
     ///                 let _ = iii.call(initial.action(CallAction::Void)).await;
     ///             }
     ///         });
     ///         Ok(())
     ///     }
     /// });
+    /// // a call for one observer goes to it alone; every other call to every observer
+    /// iii.on_observer_match_for(
+    ///     "stock::on-changed",
+    ///     Match::predicate(|obs, call| {
+    ///         let for_observer = call.metadata.as_ref().and_then(|m| m["for_observer"].as_str());
+    ///         for_observer.is_none_or(|id| id == obs.id())
+    ///     }),
+    /// );
     /// # }
     /// ```
     pub async fn accepted(&self) -> Result<(), Error> {

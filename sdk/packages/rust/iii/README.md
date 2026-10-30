@@ -249,6 +249,45 @@ iii.on_observer_deliver_for("http::on-request", {
 });
 ```
 
+To send one observer something of its own, such as its initial state, call
+the function with metadata `{ "for_observer": <observer id> }` once
+`obs.accepted()` resolves, and let the match hook give that call to that
+observer alone. iii delivers it like every call, so the target receives it in
+the shape it receives every call of the function:
+
+```rust
+use iii_sdk::{CallAction, CallRequest, Match, Observer};
+
+iii.on_observer_added_for("tmux::on-changed", {
+    let iii = iii.clone();
+    move |obs: Observer| {
+        let iii = iii.clone();
+        async move {
+            tokio::spawn(async move {
+                if obs.accepted().await.is_ok() {
+                    let state = CallRequest::new("tmux::on-changed", state_for(obs.args_value()))
+                        .metadata(json!({ "for_observer": obs.id() }));
+                    let _ = iii.call(state.action(CallAction::Void)).await;
+                }
+            });
+            Ok(())
+        }
+    }
+});
+iii.on_observer_match_for(
+    "tmux::on-changed",
+    Match::predicate(|obs, call| {
+        match call.metadata.as_ref().and_then(|m| m["for_observer"].as_str()) {
+            Some(id) => id == obs.id(),
+            None => obs.args_value()["session"] == call.input["session"],
+        }
+    }),
+);
+```
+
+With keys, file each observer under `for_observer:<id>` as well, and give such
+a call that one key.
+
 Functions with `args_format`, `private`, `observable(false)`, a match hook or
 a deliver hook need an engine that advertises `observe.v2`; against an older
 one they stay unregistered and the SDK logs `UNSUPPORTED` once.

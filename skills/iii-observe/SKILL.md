@@ -486,13 +486,50 @@ How hooks behave:
   under one of the call's keys. Python `is_observed(call=None)`, Rust `is_observed()` /
   `is_observed_for(&call)`, Go `IsObserved()` / `IsObservedFor(call)`. `observers()` lists the
   active ones.
-- **`obs.accepted()`** resolves once the SDK has acknowledged the observer. A call through the
-  observer made afterwards reaches an active observer, so a source sends initial state this way.
-  The observer becomes active after `onObserverAdded` returns, so the hook starts a task that waits
-  and then calls through the observer with `CallAction.Void()`. Python awaits `accepted_async()` in
-  a task (`asyncio.create_task`), since `accepted()` blocks the calling thread; Rust awaits
+- **A call for one observer.** To send one observer something of its own (its initial state, an
+  event it missed), a source calls its own function with `metadata: { for_observer: obs.id }`, and
+  its match hook gives that call to that observer alone: a predicate compares
+  `call.metadata.for_observer` with `obs.id`; key functions also file each observer under
+  `for_observer:<id>` and give such a call that one key. iii delivers it like every call, with the
+  observer's `deliver`, `capture`, filters, `on`, and policy, so its target receives every event of
+  the function in one shape. Under RBAC middleware, a host's call of a function it does not host
+  privately goes through the middleware, which receives the metadata as its own: make the function
+  private, or have the middleware forward the call's metadata. A call through an observer belongs
+  in a deliver hook.
+- **`obs.accepted()`** resolves once the SDK has acknowledged the observer. A call made afterwards
+  reaches an active observer, so a source sends initial state as a call for that observer. The
+  observer becomes active after `onObserverAdded` returns, so the hook starts a task that waits and
+  then makes the call with `CallAction.Void()`. `accepted()` fails for an observer rejected first
+  (a match key function that throws, `obs.reject`), and the task then sends nothing: in Node and
+  the browser, end the chain with `.catch`. Python awaits `accepted_async()` in a task
+  (`asyncio.create_task`), since `accepted()` blocks the calling thread; Rust awaits
   `obs.accepted()` in a spawned task; Go runs `obs.Accepted(ctx)` in a goroutine with a context of
   its own, since the hook's `ctx` makes it return an error at once.
+
+```typescript
+// a new observer gets the state of its session; every other change goes to the session's observers
+iii.onObserverAdded("tmux::on-changed", (obs) => {
+  void obs
+    .accepted()
+    .then(() =>
+      iii.call({
+        function_id: "tmux::on-changed",
+        payload: stateFor(obs.args),
+        metadata: { for_observer: obs.id },
+        action: CallAction.Void(),
+      }),
+    )
+    .catch(() => {
+      // a rejected observer gets nothing
+    });
+});
+iii.onObserverMatch("tmux::on-changed", (obs, call) =>
+  call.metadata?.for_observer
+    ? call.metadata.for_observer === obs.id
+    : obs.args.session === call.input.session,
+);
+```
+
 - **Registration options.** `args_format` (JSON Schema for observers' args; `INVALID_ARGS` when
   they fail it). `private: true`: only this worker may call the function, others may observe it,
   and the worker's own calls pass input and result by reference. `observable: false`: nobody may

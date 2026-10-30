@@ -2417,6 +2417,12 @@ class III:
         ``"primary|orders|insert"``, ``"primary|orders|*"``,
         ``"primary|*|insert"`` and ``"primary|*|*"``.
 
+        A host that sends one observer something of its own (its initial
+        state) calls the function with ``"metadata": {"for_observer":
+        obs.id}``, and the hook gives such a call to that observer alone: a
+        predicate compares the ids, and key functions also file each observer
+        under ``f"for_observer:{obs.id}"`` and give such a call that one key.
+
         Works as a decorator for a predicate
         (``@iii.on_observer_match("fn::id")``) and returns the hook (a
         :class:`MatchKeys` for the keys form); ``None`` removes it. A match
@@ -2626,7 +2632,10 @@ class III:
         sidecar and loop guard, and the call resolves to the target's result.
         The payload goes as given: filters are applied where the worker
         chooses observers: iii's delivery, or ``obs.matches(call)`` in an
-        ``on_observer_deliver``.
+        ``on_observer_deliver``. A call through an observer belongs in that
+        deliver hook; to send one observer something outside delivery (its
+        initial state), call the function with ``"metadata": {"for_observer":
+        obs.id}`` (see :meth:`Observer.accepted`).
 
         Args:
             request: A ``CallRequest`` or dict with ``function_id`` (or
@@ -2650,7 +2659,7 @@ class III:
         Examples:
             >>> result = worker.call({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> worker.call({'function_id': 'notify', 'payload': {}, 'action': CallAction.Void()})
-            >>> worker.call({'observer': obs, 'payload': request})
+            >>> worker.call({'observer': obs, 'payload': request})  # in a deliver hook
         """
         req = self._prepare_call(request)
         if req.local is not None:
@@ -2691,7 +2700,10 @@ class III:
 
         Examples:
             >>> result = await worker.call_async({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> await worker.call_async({'observer': obs, 'payload': state, 'action': CallAction.Void()})
+            >>> await worker.call_async(
+            ...     {'function_id': 'stock::on-changed', 'payload': state,
+            ...      'metadata': {'for_observer': obs.id}, 'action': CallAction.Void()}
+            ... )
         """
         req = self._prepare_call(request)
         if req.local is not None:

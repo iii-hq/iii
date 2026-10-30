@@ -602,3 +602,123 @@ func TestObserveConflictOnReplayDisablesLocalDispatch(t *testing.T) {
 		t.Errorf("after the conflict the call must reach the new owner, got %s", out)
 	}
 }
+
+// Decision 52: a host sends one observer something of its own (here, the state of its
+// session once it is accepted) by calling its own function with metadata.for_observer.
+// With a match hook that honors it (a predicate, and keys), that call reaches the
+// observer's target alone, in the shape every call gives it: A gets the envelope, B
+// (deliver: output) the output. An ordinary call reaches both.
+func TestObserveCallForOneObserver(t *testing.T) {
+	forObserver := func(call *iii.Call) string {
+		var meta struct {
+			ForObserver string `json:"for_observer"`
+		}
+		_ = json.Unmarshal(call.Metadata, &meta)
+		return meta.ForObserver
+	}
+	session := func(raw json.RawMessage) string {
+		var v struct {
+			Session string `json:"session"`
+		}
+		_ = json.Unmarshal(raw, &v)
+		return v.Session
+	}
+	for _, form := range []string{"predicate", "keys"} {
+		t.Run(form, func(t *testing.T) {
+			owner := observeWorker(t, "d52-owner", nil)
+			watcher := observeWorker(t, "d52-watcher", nil)
+			fn, toA, toB := fnID(t, "go-d52::on-changed"), fnID(t, "go-d52::envelope"), fnID(t, "go-d52::output")
+			match := iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+				if id := forObserver(call); id != "" {
+					return id == obs.ID
+				}
+				return obs.Args["session"] == session(call.Input)
+			})
+			if form == "keys" {
+				match = iii.MatchKeys(
+					func(obs *iii.Observer) []string {
+						s, _ := obs.Args["session"].(string)
+						return []string{s, "for_observer:" + obs.ID}
+					},
+					func(call *iii.Call) []string {
+						if id := forObserver(call); id != "" {
+							return []string{"for_observer:" + id}
+						}
+						return []string{session(call.Input)}
+					},
+				)
+			}
+			owner.OnObserverMatchFor(fn, match)
+			owner.OnObserverAddedFor(fn, func(_ context.Context, obs *iii.Observer) error {
+				// a new observer gets the state of its session once it is active
+				go func() {
+					if obs.Accepted(context.Background()) != nil {
+						return
+					}
+					_, _ = owner.Call(context.Background(), iii.CallRequest{
+						FunctionID: fn,
+						Payload:    raw(map[string]any{"session": obs.Args["session"], "n": 0}),
+						Metadata:   raw(map[string]string{"for_observer": obs.ID}),
+						Action:     iii.VoidAction(),
+					})
+				}()
+				return nil
+			})
+			if _, err := owner.RegisterFunction(fn, iii.Identity, iii.FunctionOptions{
+				ArgsFormat: json.RawMessage(`{"type":"object","required":["session"],"properties":{"session":{"type":"string"}}}`),
+				Private:    true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			localDispatchReady(t, owner, fn)
+			gotA, gotB := collector(t, watcher, toA), collector(t, watcher, toB)
+
+			a, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}}, toA)
+			ready(t, a)
+			exactly(t, gotA, 1, "A's state", 10*time.Second)
+			b, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}, Deliver: iii.DeliverOutput}, toB)
+			ready(t, b)
+			exactly(t, gotB, 1, "B's state", 10*time.Second)
+			if n := gotA.len(); n != 1 {
+				t.Fatalf("B's state reached A: %d activations", n)
+			}
+
+			// an ordinary call reaches both
+			call(t, owner, iii.CallRequest{FunctionID: fn, Payload: raw(map[string]any{"session": "s1", "n": 1})})
+			exactly(t, gotA, 2, "the ordinary call at A", 10*time.Second)
+			exactly(t, gotB, 2, "the ordinary call at B", 10*time.Second)
+			// a call for A reaches A alone
+			call(t, owner, iii.CallRequest{
+				FunctionID: fn,
+				Payload:    raw(map[string]any{"session": "s1", "n": 2}),
+				Metadata:   raw(map[string]string{"for_observer": a.ID()}),
+			})
+			envelopes := exactly(t, gotA, 3, "the call for A", 10*time.Second)
+			if n := gotB.len(); n != 2 {
+				t.Fatalf("the call for A reached B: %d activations", n)
+			}
+
+			ordinary := envelopes[1].Data
+			for _, env := range []map[string]any{envelopes[0].Data, envelopes[2].Data} {
+				if env["observer_id"] != a.ID() {
+					t.Errorf("observer_id %v, want %s", env["observer_id"], a.ID())
+				}
+				same := stable(env)
+				same["input"], same["output"] = ordinary["input"], ordinary["output"]
+				if want := stable(ordinary); !reflect.DeepEqual(same, want) {
+					t.Errorf("the call for A has another shape:\n got  %v\n want %v", stable(env), want)
+				}
+			}
+			for i, env := range envelopes {
+				if want := map[string]any{"session": "s1", "n": float64(i)}; !reflect.DeepEqual(env.Data["output"], want) {
+					t.Errorf("A's activation %d: output %v, want %v", i, env.Data["output"], want)
+				}
+			}
+			for i, got := range gotB.all() {
+				if want := map[string]any{"session": "s1", "n": float64(i)}; !reflect.DeepEqual(got.Data, want) {
+					t.Errorf("B's activation %d: %v, want %v", i, got.Data, want)
+				}
+			}
+		})
+	}
+}

@@ -57,7 +57,7 @@ const users = await iii.call({
 | Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`    | Route the call through a named queue                           |
 | Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)`  | Call `target` on every matching call of a function             |
 | Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | Change what observing a function this page hosts means         |
-| Call through an observer | `await iii.call({ observer, payload })`                                        | Run an observer's target, with its policy and metadata         |
+| Call through an observer | `await iii.call({ observer, payload })`                                        | Run an observer's target from a deliver hook                   |
 | Current invocation       | `iii.currentInvocation()` / `iii.withInvocation(inv, fn)`                      | The invocation the running handler serves (caller, activation) |
 | Create channel           | `createChannel(iii)` (from `iii-browser-sdk/helpers`)                          | Create a streaming channel pair (writer + reader)              |
 | Shutdown                 | `iii.shutdown()`                                                               | Gracefully disconnect from the engine                          |
@@ -218,9 +218,36 @@ iii.onObserverDeliver('ui::on-command', async (call) => {
 })
 ```
 
-`obs.accepted()` resolves once the SDK acked the observer; a call through the
-observer made then reaches it, which is how a source sends a new observer its
-initial state.
+`obs.accepted()` resolves once the SDK acked the observer; a call made then
+reaches it. A source sends a new observer its initial state as a call of the
+function with `metadata: { for_observer: obs.id }`, which the match hook gives
+to that observer alone, so the target receives it in the shape of every call:
+
+```typescript
+import { CallAction } from 'iii-browser-sdk'
+
+iii.onObserverAdded('ui::on-click', (obs) => {
+  void obs
+    .accepted()
+    .then(() =>
+      iii.call({
+        function_id: 'ui::on-click',
+        payload: lastClick(obs.args.selector as string),
+        metadata: { for_observer: obs.id },
+        action: CallAction.Void(),
+      }),
+    )
+    .catch(() => {
+      // a rejected observer gets nothing
+    })
+})
+iii.onObserverMatch('ui::on-click', (obs, call) =>
+  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.selector === call.input.selector,
+)
+```
+
+With keys, file each observer under `for_observer:<id>` as well, and give such
+a call that one key.
 
 With `standby: true`, a second page that registers a function another
 connection already hosts waits and takes it over (with its observers) when that
