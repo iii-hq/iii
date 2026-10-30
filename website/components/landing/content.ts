@@ -344,6 +344,22 @@ export const ownership = {
   ],
 }
 
+/**
+ * Contributors (2026-10-28): the people behind the showcased repositories, read from GitHub at build time
+ * (scripts/generate-contributors.ts). The count and the repository links come from the data; only the words are here.
+ */
+export const contributors = {
+  eyebrow: 'Contributors',
+  title: 'Built in the open.',
+  /* Follows the count and repository links: "61 people have landed commits in … ." */
+  copy: 'The next name could be yours.',
+  /* Two ways in, as buttons: the quick one (a star, with the live count) and the real one (a pull request). */
+  star: { label: 'Star on GitHub', href: 'https://github.com/iii-hq/iii' },
+  pr: { label: 'Open a pull request', href: 'https://github.com/iii-hq/iii/blob/main/CONTRIBUTING.md' },
+  /* The row's pinned last cell: where the reader's own name would go. Same destination as the pull request button. */
+  you: 'Your name here',
+}
+
 export const finalCta = {
   title: 'Make anything callable.',
   copy: 'Start building your iii system.',

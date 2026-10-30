@@ -8,10 +8,10 @@ import (
 // This file is the ergonomic error surface over the wire ErrorBody (protocol.go).
 // It mirrors the two reference SDKs' error models, mapped to Go idiom:
 //
-//   - Node's IIIInvocationError (errors.ts) — a single typed error carrying the
-//     engine's {code, message, stacktrace} plus the targeted function_id — becomes
+//   - Node's IIIInvocationError (errors.ts), a single typed error carrying the
+//     engine's {code, message, stacktrace} plus the targeted function_id, becomes
 //     InvocationError below.
-//   - Rust's IIIError enum (error.rs) — NotConnected, Timeout, Remote{...} — becomes
+//   - Rust's IIIError enum (error.rs: NotConnected, Timeout, Remote{...}) becomes
 //     the ErrNotConnected / ErrTimeout sentinels plus InvocationError for the Remote
 //     case, so callers use errors.Is for the flag-like failures and errors.As to read
 //     a remote error's code/stacktrace.
@@ -55,7 +55,7 @@ func (e *InvocationError) Error() string {
 }
 
 // RegistrationRejectedError is the terminal error the engine returns when a
-// worker's registration is refused for good — typically a WORKER_NAMESPACE_CONFLICT,
+// worker's registration is refused for good, typically a WORKER_NAMESPACE_CONFLICT,
 // where another live worker already owns this name in the namespace. It is
 // delivered to every pending invocation and reported by [Client.FatalError];
 // the worker stops and does not reconnect. Mirrors the Node/Python/Rust SDKs.

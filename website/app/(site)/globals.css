@@ -654,9 +654,9 @@
   content: "";
   display: block;
   height: 16px;
-  aspect-ratio: 933.61 / 1050.31;
+  aspect-ratio: 1;
   background: var(--foreground);
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 933.61 1050.31'%3E%3Crect width='233.4' height='233.4'/%3E%3Crect y='350.1' width='233.4' height='700.21'/%3E%3Crect x='350.1' width='233.4' height='233.4'/%3E%3Crect x='350.1' y='350.1' width='233.4' height='700.21'/%3E%3Crect x='700.21' width='233.4' height='233.4'/%3E%3Crect x='700.21' y='350.1' width='233.4' height='700.21'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1075.74 1075.74'%3E%3Crect y='0.05' width='268.94' height='268.94'/%3E%3Crect y='403.45' width='268.94' height='672.24'/%3E%3Crect x='403.4' y='0.05' width='268.94' height='268.94'/%3E%3Crect x='403.4' y='403.45' width='268.94' height='672.24'/%3E%3Crect x='806.81' y='0.05' width='268.94' height='268.94'/%3E%3Crect x='806.81' y='403.45' width='268.94' height='672.24'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 .prose .verdict-card[data-highlight] .verdict-tool::before {
   height: 28px;

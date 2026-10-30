@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseGodoc, parseHelpersGodoc } from './parsers/parse-godoc.mjs'
 import { parseHelpersGriffe, parseGriffe } from './parsers/parse-griffe.mjs'
 import { parseHelpersRustdoc, parseRustdoc } from './parsers/parse-rustdoc.mjs'
 import { parseBrowserTypedoc, parseHelpersTypedoc, parseNodeTypedoc } from './parsers/parse-typedoc.mjs'
@@ -48,6 +49,15 @@ const targets: GenerationTarget[] = [
     helpersJsonPath: resolve(ROOT, 'target/doc/iii_helpers.json'),
   },
   {
+    // One go/doc dump (docs/next/scripts/godoc-json) covers the whole module:
+    // this page takes package iii and its non-helper subpackages.
+    name: 'Go SDK',
+    jsonPath: resolve(ROOT, 'sdk/packages/go/iii/api-docs.json'),
+    outputPath: resolve(DOCS_OUTPUT, 'sdk-go.mdx'),
+    parser: parseGodoc,
+    sourcePath: 'sdk/packages/go/iii',
+  },
+  {
     name: 'Browser SDK',
     jsonPath: resolve(ROOT, 'sdk/packages/node/iii-browser/api-docs.json'),
     outputPath: resolve(DOCS_OUTPUT, 'sdk-browser.mdx'),
@@ -75,6 +85,14 @@ const targets: GenerationTarget[] = [
     outputPath: resolve(DOCS_OUTPUT, 'helpers-rust.mdx'),
     parser: parseHelpersRustdoc,
     sourcePath: 'sdk/packages/rust/helpers/src',
+  },
+  {
+    // Same go/doc dump as the Go SDK page: iii/helpers/... and iii/observability.
+    name: 'Helpers (Go)',
+    jsonPath: resolve(ROOT, 'sdk/packages/go/iii/api-docs.json'),
+    outputPath: resolve(DOCS_OUTPUT, 'helpers-go.mdx'),
+    parser: parseHelpersGodoc,
+    sourcePath: 'sdk/packages/go/iii',
   },
 ]
 

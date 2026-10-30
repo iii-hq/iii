@@ -5,33 +5,41 @@ package iii_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Mirrors sdk/packages/rust/iii/tests/registration_dedup.rs: registering the same
-// function id twice (e.g. across a re-register) must not create duplicate entries on the
-// engine. We assert the function appears exactly once in engine::functions::list.
+// Registering a function id that is already registered fails (as in the Node, Python and
+// Rust SDKs), and re-registering it after Unregister must not create duplicate entries
+// on the engine: the function appears exactly once in engine::functions::list.
 
 func TestRegistrationDoesNotDuplicate(t *testing.T) {
 	c := connect(t)
 	const fnID = "test::dedup::go::fn"
 
 	handler := func(_ context.Context, _ json.RawMessage) (any, error) { return nil, nil }
-	// Register the same id twice; the second replaces the first, not duplicates it.
-	if err := c.RegisterFunction(fnID, handler); err != nil {
+	first, err := c.RegisterFunction(fnID, handler)
+	if err != nil {
 		t.Fatalf("RegisterFunction #1: %v", err)
 	}
-	if err := c.RegisterFunction(fnID, handler); err != nil {
-		t.Fatalf("RegisterFunction #2: %v", err)
+	if _, err := c.RegisterFunction(fnID, handler); err == nil || !strings.Contains(err.Error(), "function id already registered") {
+		t.Fatalf("RegisterFunction #2: %v, want function id already registered", err)
+	}
+	settle()
+	if err := first.Unregister(); err != nil {
+		t.Fatalf("Unregister: %v", err)
+	}
+	if _, err := c.RegisterFunction(fnID, handler); err != nil {
+		t.Fatalf("RegisterFunction after Unregister: %v", err)
 	}
 	settle()
 
 	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
 		FunctionID: iii.FnListFunctions,
-		Data:       json.RawMessage(`{}`),
+		Payload:    json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("engine::functions::list: %v", err)

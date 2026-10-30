@@ -48,7 +48,10 @@
     "light": "/assets/iii-black.svg",
     "dark": "/assets/iii-white.svg"
   },
-  "favicon": "/assets/favicon.svg",
+  "favicon": {
+    "light": "/assets/favicon-black.svg",
+    "dark": "/assets/favicon-white.svg"
+  },
   "navbar": {
     "links": [
       {
@@ -91,8 +94,8 @@
                 "pages": [
                   "next/using-iii/workers",
                   "next/using-iii/workers-registry",
-                  "next/using-iii/triggers",
                   "next/using-iii/observers",
+                  "next/using-iii/triggers",
                   "next/using-iii/functions",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
@@ -130,8 +133,8 @@
                   },
                   "next/creating-workers/workers",
                   "next/creating-workers/worker-manifest",
-                  "next/creating-workers/triggers",
                   "next/creating-workers/observable-functions",
+                  "next/creating-workers/triggers",
                   "next/creating-workers/functions",
                   "next/creating-workers/channels"
                 ]
@@ -184,6 +187,7 @@
                   "next/reference/sdk-node",
                   "next/reference/sdk-python",
                   "next/reference/sdk-rust",
+                  "next/reference/sdk-go",
                   "next/reference/sdk-browser"
                 ]
               },
@@ -193,7 +197,8 @@
                 "pages": [
                   "next/reference/helpers-node",
                   "next/reference/helpers-python",
-                  "next/reference/helpers-rust"
+                  "next/reference/helpers-rust",
+                  "next/reference/helpers-go"
                 ]
               },
               {
@@ -234,8 +239,8 @@
                 "pages": [
                   "using-iii/workers",
                   "using-iii/workers-registry",
-                  "using-iii/triggers",
                   "using-iii/observers",
+                  "using-iii/triggers",
                   "using-iii/functions",
                   "using-iii/namespaces",
                   "using-iii/engine",
@@ -273,8 +278,8 @@
                   },
                   "creating-workers/workers",
                   "creating-workers/worker-manifest",
-                  "creating-workers/triggers",
                   "creating-workers/observable-functions",
+                  "creating-workers/triggers",
                   "creating-workers/functions",
                   "creating-workers/channels"
                 ]

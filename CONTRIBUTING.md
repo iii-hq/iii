@@ -10,15 +10,15 @@ for contributing to this project and the licensing terms that apply to all contr
 
 This applies to every part of this repository, including but not limited to:
 
-- The **iii engine** (which is distributed under the [Elastic License 2.0](engine/LICENSE))
-- Workers, SDKs, frameworks, and CLI tools
+- The **iii engine** and **CLI** (which are distributed under the [Elastic License 2.0](engine/LICENSE))
+- Workers, SDKs, and frameworks
 - Documentation, examples, tests, and configuration
 - Build scripts, CI workflows, and tooling
 
-The iii engine runtime is distributed under the Elastic License 2.0 (ELv2), but all
+The iii engine runtime and CLI are distributed under the Elastic License 2.0 (ELv2), but all
 contributions to it are licensed under Apache 2.0. This means that by contributing, you
 grant a license that permits your contributions to be incorporated into and distributed
-as part of the ELv2-licensed engine, as well as any Apache 2.0-licensed components of
+as part of the ELv2-licensed engine and CLI, as well as any Apache 2.0-licensed components of
 the project.
 
 ### What this means for you
@@ -28,7 +28,7 @@ the project.
 - **You license your contributions** under Apache 2.0, which grants the project
   (and the public) a perpetual, worldwide, royalty-free, non-exclusive, irrevocable
   license to use, reproduce, modify, distribute, and sublicense your contributions.
-- **Your contributions may be distributed** as part of the iii engine under the
+- **Your contributions may be distributed** as part of the iii engine and CLI under the
   Elastic License 2.0 or as part of other iii components under the Apache License 2.0.
 - **You can still use your own contributions** for any other purpose. The Apache 2.0
   license you grant does not restrict how you use your own work elsewhere.

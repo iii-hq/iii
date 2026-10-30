@@ -166,4 +166,4 @@ See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tut
 
 ## License
 
-[Elastic License 2.0 (ELv2)](LICENSE)
+The engine and CLI are licensed under the [Elastic License 2.0 (ELv2)](LICENSE).

@@ -75,6 +75,7 @@ sdk/packages/node/iii-browser/api-docs.json
 sdk/packages/node/helpers/api-docs.json
 sdk/packages/python/iii/api-docs.json
 sdk/packages/python/helpers/api-docs.json
+sdk/packages/go/iii/api-docs.json
 graphify-out
 
 docs/plans/

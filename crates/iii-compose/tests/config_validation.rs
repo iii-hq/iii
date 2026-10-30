@@ -1173,7 +1173,7 @@ fn the_pre_0_26_sandbox_block_fails_with_its_replacement() {
     assert_eq!(
         error.to_string(),
         format!(
-            "{MOVED}\n\ncontainers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^1'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
+            "{MOVED}\n\ncontainers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^0.2'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
         )
     );
 }
@@ -1191,7 +1191,7 @@ fn replacement_yaml_parses_and_keeps_the_old_block() {
         };
         let file = ComposeFile::parse(&replacement, "/tmp/worker-compose.yaml").unwrap();
         let adapter = &file.containers["sandbox-libkrun"];
-        assert_eq!(adapter.version.as_deref(), Some("^1"));
+        assert_eq!(adapter.version.as_deref(), Some("^0.2"));
         let old: serde_yaml::Mapping = serde_yaml::from_str(block).unwrap();
         assert_eq!(adapter.config_override.as_ref(), old.values().next());
     }

@@ -183,7 +183,7 @@ func TestOverflowingNumbersAreReportedAsNull(t *testing.T) {
 		return json.RawMessage(`{"out":-1e999}`), nil
 	})
 	fe.waitAck("big::fn", "o1", 1)
-	trigger(t, c, TriggerRequest{FunctionID: "big::fn", Data: json.RawMessage(`{"in":` + huge + `}`), Metadata: json.RawMessage(`{"m":1E400}`)})
+	trigger(t, c, TriggerRequest{FunctionID: "big::fn", Payload: json.RawMessage(`{"in":` + huge + `}`), Metadata: json.RawMessage(`{"m":1E400}`)})
 	owner := newCronOwner(t, fe, c, "big::owner")
 	addCronObserver(t, fe, "big::owner", "e1", "x", "", CaptureInput)
 	if ok, err := owner.observers("x")[0].Emit(context.Background(), json.RawMessage(`{"event":1e400}`)); !ok || err != nil {

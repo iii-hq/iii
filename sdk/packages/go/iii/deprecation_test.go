@@ -24,14 +24,14 @@ func TestDeprecatedTriggerAPIsWarnOncePerProcessAndKeepWorking(t *testing.T) {
 	other := connectClient(t, m)
 	handler := &stubTriggerHandler{registered: make(chan TriggerConfig, 4), unregistered: make(chan TriggerConfig, 4)}
 
-	if err := c.RegisterTriggerType("webhook", "Webhooks", handler); err != nil {
+	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "webhook", Description: "Webhooks"}, handler); err != nil {
 		t.Fatal(err)
 	}
-	_ = c.RegisterTriggerType("webhook-2", "Webhooks 2", handler)
-	_ = c.RegisterTrigger("t-a", "webhook", "hooks::in", json.RawMessage(`{"path":"/a"}`))
+	_, _ = c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "webhook-2", Description: "Webhooks 2"}, handler)
+	_, _ = c.RegisterTrigger(RegisterTriggerInput{ID: "t-a", Type: "webhook", FunctionID: "hooks::in", Config: json.RawMessage(`{"path":"/a"}`)})
 	_ = c.RegisterTriggerNamespaced("t-b", "webhook", "hooks::in", "ops", json.RawMessage(`{"path":"/b"}`))
-	_ = other.RegisterTrigger("t-c", "webhook", "hooks::in", nil)
-	_ = other.RegisterTriggerType("webhook-3", "", handler)
+	_, _ = other.RegisterTrigger(RegisterTriggerInput{ID: "t-c", Type: "webhook", FunctionID: "hooks::in"})
+	_, _ = other.RegisterTriggerType(RegisterTriggerTypeInput{ID: "webhook-3", Description: ""}, handler)
 
 	const trigger = "RegisterTrigger is deprecated and will be removed in a future release. Use client.Observe(source, target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x"
 	const triggerType = "RegisterTriggerType is deprecated and will be removed in a future release. Register a function with an observe descriptor (RegisterFunction(id, handler, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{ ... }})) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x"

@@ -119,11 +119,38 @@ export interface ModuleDoc {
   description: string
   functions: FunctionDoc[]
   types: TypeDoc[]
+  /** Package-level constants (Go), rendered after the functions. */
+  constants?: ValueGroupDoc[]
+  /** Package-level variables (Go), rendered after the constants. */
+  variables?: ValueGroupDoc[]
+}
+
+/** One package-level constant or variable (Go): its name, source value and doc. */
+export interface ValueDoc {
+  name: string
+  value: string
+  description: string
+}
+
+/**
+ * A `const ( ... )` or `var ( ... )` declaration group (Go). The group's doc
+ * comment introduces its table of values.
+ */
+export interface ValueGroupDoc {
+  description: string
+  values: ValueDoc[]
+}
+
+/** The constants and variables one package (e.g. `iii`, `iii/filter`) declares. */
+export interface PackageValues {
+  subpath: string
+  constants: ValueGroupDoc[]
+  variables: ValueGroupDoc[]
 }
 
 export interface SdkDoc {
   metadata: {
-    language: 'node' | 'python' | 'rust'
+    language: 'node' | 'python' | 'rust' | 'go'
     languageLabel: string
     title: string
     description: string
@@ -165,4 +192,11 @@ export interface SdkDoc {
   subpathExports?: SubpathExport[]
   loggerSection?: LoggerDoc
   modules?: ModuleDoc[]
+  /**
+   * Package-level constants and variables per package (Go), rendered in
+   * Constants and Variables sections between Functions and Types.
+   */
+  packageValues?: PackageValues[]
+  /** Library page only: shown in place of the modules when there are none. */
+  libraryEmptyNote?: string
 }

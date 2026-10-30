@@ -1370,6 +1370,11 @@ fn installed_binary(install_dir: &Path) -> Option<PathBuf> {
         entries.sort_by_key(|entry| entry.file_name());
 
         for entry in &entries {
+            // Inherited ACLs can make the integrity marker executable, but it
+            // is cache metadata, never the worker program.
+            if entry.file_name() == INTEGRITY_FILE {
+                continue;
+            }
             let path = entry.path();
             if path.is_file() && is_executable(&path) {
                 return Some(path);
@@ -2089,6 +2094,49 @@ mod tests {
         }
 
         assert_eq!(installed_binary(tmp.path()), Some(binary));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_integrity_marker_does_not_hide_worker_binary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for layout in ["", "bin"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let binary_dir = tmp.path().join(layout);
+            std::fs::create_dir_all(&binary_dir).unwrap();
+            let binary = binary_dir.join("state");
+            std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let cancel = crate::shutdown::BlockingCancellation::default();
+            let digest = "a".repeat(64);
+            write_integrity_marker(tmp.path(), &digest, &cancel).unwrap();
+
+            // Simulate inherited execute permission without requiring ZFS.
+            let marker = tmp.path().join(INTEGRITY_FILE);
+            std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o770)).unwrap();
+
+            assert!(cache_matches(tmp.path(), &digest, &cancel).unwrap());
+            assert_eq!(
+                installed_binary(tmp.path()),
+                Some(binary),
+                "layout={layout:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_integrity_marker_alone_is_not_a_worker_binary() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cancel = crate::shutdown::BlockingCancellation::default();
+        write_integrity_marker(tmp.path(), &"a".repeat(64), &cancel).unwrap();
+        let marker = tmp.path().join(INTEGRITY_FILE);
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o770)).unwrap();
+
+        assert_eq!(installed_binary(tmp.path()), None);
     }
 
     #[test]

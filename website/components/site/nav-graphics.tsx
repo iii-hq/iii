@@ -6,10 +6,10 @@ import { easeInOut } from '@/lib/motion'
 
 /** The iii mark; on hover the three dots hop in sequence. */
 export function NavLogo() {
-  const dots = [0, 350.1, 700.21]
+  const dots = [0, 403.4, 806.81]
   return (
     <motion.svg
-      viewBox="0 -140 933.61 1190.31"
+      viewBox="0 -160 1075.74 1235.74"
       aria-hidden
       className="h-[18px] w-auto fill-foreground"
       initial="rest"
@@ -21,14 +21,15 @@ export function NavLogo() {
         <g key={x}>
           <motion.rect
             x={x}
-            width="233.4"
-            height="233.4"
+            y="0.05"
+            width="268.94"
+            height="268.94"
             variants={{
-              rest: { y: 0 },
-              hover: { y: [0, -120, 0], transition: { duration: 0.5, delay: i * 0.07, ease: easeInOut } },
+              rest: { y: 0.05 },
+              hover: { y: [0.05, -140, 0.05], transition: { duration: 0.5, delay: i * 0.07, ease: easeInOut } },
             }}
           />
-          <rect x={x} y="350.1" width="233.4" height="700.21" />
+          <rect x={x} y="403.45" width="268.94" height="672.24" />
         </g>
       ))}
     </motion.svg>

@@ -53,6 +53,10 @@ jobs:
       # and the generated llms.txt, AGENTS.md, and sitemap.xml.
       - name: Build site (Astro + roadmap → website/dist/)
         run: pnpm --filter iii-website build
+        env:
+          # Lifts the 60 requests/hour unauthenticated GitHub API limit (shared
+          # per runner IP) for scripts/generate-contributors.ts.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4

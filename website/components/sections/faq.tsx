@@ -49,7 +49,7 @@ export const faqs: { q: string; a: string }[] = [
   },
   {
     q: 'What is the licensing?',
-    a: 'The engine is source-available under the Elastic License 2.0. The SDKs and the workers in `iii-hq/workers` are Apache 2.0.',
+    a: 'The engine and CLI are source-available under the Elastic License 2.0. The SDKs and the workers in `iii-hq/workers` are Apache 2.0.',
   },
 ]
 

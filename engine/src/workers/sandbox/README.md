@@ -114,7 +114,7 @@ engine:
   are not engine config. They go under `containers.sandbox-libkrun.config_override` with the same
   keys they had under `engine.workers.iii-sandbox`.
 - The router reads `adapter::info` again whenever the adapter registers it anew (a restart or a
-  swap), so an adapter of another major gets `S302` on its first call.
+  swap), so an adapter that implements another contract major gets `S302` on its first call.
 
 Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-libkrun`.
 

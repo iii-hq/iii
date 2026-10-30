@@ -10,17 +10,17 @@ import (
 // trigger instances. It mirrors TriggerConfig / TriggerHandler in
 // sdk/packages/node/iii/src/triggers.ts.
 //
-// Two different "trigger" concepts live in this SDK; keep them distinct:
+// Two different "trigger" concepts exist in this SDK; keep them distinct:
 //
 //   - Registering a trigger INSTANCE on the engine ("fire FunctionID when this http
 //     route is hit") is done with Client.RegisterTrigger and the RegisterTriggerMessage
 //     wire type in protocol.go.
-//   - Implementing a custom trigger TYPE — being the worker the engine calls to set up
-//     and tear down instances of that type — is what TriggerHandler below is for.
+//   - Implementing a custom trigger TYPE (being the worker the engine calls to set up
+//     and tear down instances of that type) is what TriggerHandler below is for.
 
 // TriggerConfig describes a single trigger instance handed to a TriggerHandler when
 // the engine asks the worker to start or stop it. Mirrors TriggerConfig<TConfig> in
-// triggers.ts.
+// the Node SDK.
 //
 // Deprecated: trigger instances are observers: an owner receives an [Observer] (its
 // Args, Filters and Target) in [ObserveHooks.OnObserverAdded]. Migration guide:
@@ -49,7 +49,7 @@ type TriggerConfig struct {
 // TriggerHandler is implemented by a worker that owns a custom trigger type. When the
 // engine registers a trigger instance of that type, it calls RegisterTrigger; when it
 // removes one, it calls UnregisterTrigger. Mirrors the TriggerHandler interface in
-// triggers.ts.
+// the Node SDK.
 //
 // The context is cancelled when the Client shuts down, so a handler that starts
 // background work (a ticker, an HTTP listener) should tie that work's lifetime to it.

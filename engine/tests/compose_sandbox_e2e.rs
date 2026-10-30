@@ -26,7 +26,7 @@ use nix::{
 use serde_json::{Value, json};
 
 /// Pinned so a new registry release cannot turn iii's CI red (D5).
-const SANDBOX_LIBKRUN: &str = "1.0.0";
+const SANDBOX_LIBKRUN: &str = "0.2.0";
 const ONBOARDING: &str = "0.1.20";
 
 const NAMESPACE: &str = "sbx-e2e";
@@ -162,7 +162,7 @@ struct Project {
 impl Project {
     /// `containers` is the operator's share of the `containers:` mapping, each
     /// entry indented two spaces. The adapter follows exactly as Compose writes
-    /// it, pre-declared because `up` would resolve `^1` against the live
+    /// it, pre-declared because `up` would resolve `^0.2` against the live
     /// registry, which a required check cannot depend on (D5).
     fn new(containers: &str) -> Self {
         let dir = tempfile::Builder::new()

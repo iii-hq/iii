@@ -23,7 +23,7 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	charge, checkout, target := fnID(t, "go-e2e::charge"), fnID(t, "go-e2e::checkout"), fnID(t, "go-e2e::on-big-charge")
-	_ = owner.RegisterFunction(charge, func(_ context.Context, data json.RawMessage) (any, error) {
+	_, _ = owner.RegisterFunction(charge, func(_ context.Context, data json.RawMessage) (any, error) {
 		var in struct {
 			Amount int `json:"amount"`
 		}
@@ -31,10 +31,10 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 		return map[string]int{"charged": in.Amount}, nil
 	})
 	got := collector(t, watcher, target)
-	_ = watcher.RegisterFunction(checkout, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, _ = watcher.RegisterFunction(checkout, func(ctx context.Context, data json.RawMessage) (any, error) {
 		var amount int
 		_ = json.Unmarshal(data, &amount)
-		return watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: charge, Data: raw(map[string]int{"amount": amount})})
+		return watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": amount})})
 	})
 	h, err := watcher.Observe(iii.Source{
 		FunctionID: charge,
@@ -53,9 +53,9 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 		t.Fatalf("state %s", h.State())
 	}
 
-	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Data: raw(750)})
-	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Data: raw(10)})                          // filtered out by input
-	call(t, watcher, iii.TriggerRequest{FunctionID: charge, Data: raw(map[string]int{"amount": 900})}) // no caller.function_id
+	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Payload: raw(750)})
+	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Payload: raw(10)})                          // filtered out by input
+	call(t, watcher, iii.TriggerRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": 900})}) // no caller.function_id
 	acts := exactly(t, got, 1, "one activation", 10*time.Second)
 	a := acts[0]
 	if a.Data["observer_id"] != h.ID() || a.Data["function_id"] != charge || a.Data["namespace"] != "default" || a.Data["status"] != "success" {
@@ -85,7 +85,7 @@ func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	flaky := fnID(t, "go-e2e::flaky")
-	_ = owner.RegisterFunction(flaky, func(_ context.Context, data json.RawMessage) (any, error) {
+	_, _ = owner.RegisterFunction(flaky, func(_ context.Context, data json.RawMessage) (any, error) {
 		var in struct {
 			Fail bool `json:"fail"`
 			N    int  `json:"n"`
@@ -103,10 +103,10 @@ func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
 	ready(t, a)
 	ready(t, b)
 
-	call(t, watcher, iii.TriggerRequest{FunctionID: flaky, Data: raw(map[string]any{"fail": false, "n": 1})})
+	call(t, watcher, iii.TriggerRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": false, "n": 1})})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: flaky, Data: raw(map[string]any{"fail": true, "n": 2})}); err == nil {
+	if _, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": true, "n": 2})}); err == nil {
 		t.Fatal("the failing call succeeded")
 	}
 	e := exactly(t, errs, 1, "the error activation", 10*time.Second)[0]
@@ -134,7 +134,7 @@ func TestObserveRoutedPendingUntilTheTargetIsRegistered(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	tick, target := fnID(t, "go-e2e::tick"), fnID(t, "go-e2e::late-target")
-	_ = owner.RegisterFunction(tick, func(context.Context, json.RawMessage) (any, error) { return "ok", nil })
+	_, _ = owner.RegisterFunction(tick, func(context.Context, json.RawMessage) (any, error) { return "ok", nil })
 	h, _ := watcher.Observe(iii.Source{FunctionID: tick}, target)
 	time.Sleep(300 * time.Millisecond)
 	if h.State() != iii.ObserverPending {
@@ -160,8 +160,8 @@ func TestObserveRoutedErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {
 			owner := observeWorker(t, "routed-owner", nil)
-			_ = owner.RegisterFunction(self, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
-			_ = owner.RegisterFunction(other, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+			_, _ = owner.RegisterFunction(self, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+			_, _ = owner.RegisterFunction(other, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
 			h, err := owner.Observe(tc.source, tc.target)
 			if err != nil {
 				t.Fatal(err)
@@ -180,7 +180,7 @@ func TestObserveRoutedDisposeAndMaxFires(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	ping := fnID(t, "go-e2e::ping")
-	_ = owner.RegisterFunction(ping, func(context.Context, json.RawMessage) (any, error) { return "pong", nil })
+	_, _ = owner.RegisterFunction(ping, func(context.Context, json.RawMessage) (any, error) { return "pong", nil })
 	disposed := collector(t, watcher, fnID(t, "go-e2e::on-ping-a"))
 	once := collector(t, watcher, fnID(t, "go-e2e::on-ping-b"))
 	a, _ := watcher.Observe(iii.Source{FunctionID: ping}, fnID(t, "go-e2e::on-ping-a"))
@@ -207,7 +207,7 @@ func TestObserveRoutedSurvivesAReconnectOfItsWorker(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", proxy)
 	work, target := fnID(t, "go-e2e::work"), fnID(t, "go-e2e::on-work")
-	_ = owner.RegisterFunction(work, func(context.Context, json.RawMessage) (any, error) { return "done", nil })
+	_, _ = owner.RegisterFunction(work, func(context.Context, json.RawMessage) (any, error) { return "done", nil })
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: work}, target)
 	ready(t, h)
@@ -226,7 +226,7 @@ func TestObserveRoutedExpiresIn(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	lease, target := fnID(t, "go-e2e::lease"), fnID(t, "go-e2e::on-lease")
-	_ = owner.RegisterFunction(lease, func(context.Context, json.RawMessage) (any, error) { return "ok", nil })
+	_, _ = owner.RegisterFunction(lease, func(context.Context, json.RawMessage) (any, error) { return "ok", nil })
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: lease}, target, iii.ObserverOptions{ExpiresIn: 300 * time.Millisecond})
 	ready(t, h)
@@ -245,10 +245,10 @@ func TestObserveRoutedLoopGuard(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	loop, onLoop := fnID(t, "go-e2e::loop"), fnID(t, "go-e2e::on-loop")
-	_ = owner.RegisterFunction(loop, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
+	_, _ = owner.RegisterFunction(loop, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
 	var mu sync.Mutex
 	var depths []uint32
-	_ = watcher.RegisterFunction(onLoop, func(ctx context.Context, data json.RawMessage) (any, error) {
+	_, _ = watcher.RegisterFunction(onLoop, func(ctx context.Context, data json.RawMessage) (any, error) {
 		inv, _ := iii.InvocationFromContext(ctx)
 		mu.Lock()
 		depths = append(depths, inv.ObserveDepth)
@@ -257,12 +257,12 @@ func TestObserveRoutedLoopGuard(t *testing.T) {
 			Input int `json:"input"`
 		}
 		_ = json.Unmarshal(data, &env)
-		_, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: loop, Data: raw(env.Input + 1)})
+		_, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: loop, Payload: raw(env.Input + 1)})
 		return nil, err
 	})
 	h, _ := watcher.Observe(iii.Source{FunctionID: loop, Capture: []iii.Capture{iii.CaptureInput}}, onLoop)
 	ready(t, h)
-	call(t, watcher, iii.TriggerRequest{FunctionID: loop, Data: raw(0)})
+	call(t, watcher, iii.TriggerRequest{FunctionID: loop, Payload: raw(0)})
 	time.Sleep(2 * time.Second)
 	mu.Lock()
 	defer mu.Unlock()
@@ -284,7 +284,7 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", proxy)
 	work, target := fnID(t, "go-e2e::fires"), fnID(t, "go-e2e::on-fires")
-	_ = owner.RegisterFunction(work, func(context.Context, json.RawMessage) (any, error) { return "done", nil })
+	_, _ = owner.RegisterFunction(work, func(context.Context, json.RawMessage) (any, error) { return "done", nil })
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: work}, target, iii.ObserverOptions{MaxFires: 3})
 	ready(t, h)
