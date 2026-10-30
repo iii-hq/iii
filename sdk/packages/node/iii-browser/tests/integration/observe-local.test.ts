@@ -417,14 +417,19 @@ describe('calls for one observer (decision 52)', () => {
         })
         // a new observer gets the current state of its session once it is active
         .onObserverAdded((obs) => {
-          void obs.accepted().then(() =>
-            owner.call({
-              function_id: fn,
-              payload: { session: obs.args.session as string, n: state.get(obs.args.session as string) ?? 0 },
-              metadata: { for_observer: obs.id },
-              action: CallAction.Void(),
-            }),
-          )
+          void obs
+            .accepted()
+            .then(() =>
+              owner.call({
+                function_id: fn,
+                payload: { session: obs.args.session as string, n: state.get(obs.args.session as string) ?? 0 },
+                metadata: { for_observer: obs.id },
+                action: CallAction.Void(),
+              }),
+            )
+            .catch(() => {
+              // a rejected observer gets nothing
+            })
         })
         .onObserverMatch(
           form === 'predicate'

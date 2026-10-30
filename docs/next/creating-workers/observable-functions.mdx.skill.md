@@ -732,8 +732,10 @@ call of the function.
 `obs.accepted()` resolves once the SDK has acknowledged the observer. A call made after it resolves
 reaches an active observer, since the engine handles a connection's messages in order. The observer
 becomes active after its `onObserverAdded` returns, so the hook starts a task that waits for
-`accepted()` and then makes the call. Here each observer of `tmux::on-changed` names a session in
-its args, and gets that session's current state when it is added:
+`accepted()` and then makes the call. `accepted()` fails for an observer rejected first, such as one
+whose match key function throws, and the task then sends nothing. Here each observer of
+`tmux::on-changed` names a session in its args, and gets that session's current state when it is
+added:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -742,14 +744,19 @@ its args, and gets that session's current state when it is added:
 
     worker.onObserverAdded("tmux::on-changed", (obs) => {
       // send the session's current state once the observer is active
-      void obs.accepted().then(() =>
-        worker.call({
-          function_id: "tmux::on-changed",
-          payload: sessions.state(obs.args.session as string),
-          metadata: { for_observer: obs.id },
-          action: CallAction.Void(),
-        }),
-      );
+      void obs
+        .accepted()
+        .then(() =>
+          worker.call({
+            function_id: "tmux::on-changed",
+            payload: sessions.state(obs.args.session as string),
+            metadata: { for_observer: obs.id },
+            action: CallAction.Void(),
+          }),
+        )
+        .catch(() => {
+          // a rejected observer gets nothing
+        });
     });
 
     // a call for one observer goes to it alone, any other call to the observers of its session

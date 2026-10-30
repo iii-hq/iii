@@ -445,15 +445,19 @@ shape it receives every call of the function, with the observer's `deliver`,
 
 ```ts
 iii.onObserverAdded('tmux::on-changed', (obs) => {
-  obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+  obs.accepted()
+    .then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+    .catch(() => {})   // a rejected observer gets nothing
 })
 iii.onObserverMatch('tmux::on-changed', (obs, call) =>
   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
 ```
 
 The observer becomes active once its `onObserverAdded` hooks return, so the
-hook starts the call without waiting for it. An event an observer missed goes
-the same way.
+hook starts the call without waiting for it. `accepted()` rejects with an
+`ObserveRejection` when the observer is rejected first (a key function that
+throws, `obs.reject`, the function released), and the host sends nothing. An
+event an observer missed goes the same way.
 
 An observer is a record of what was asked for. The worker sees the fields
 above; who observes, the observer's metadata and its policy stay with the

@@ -408,6 +408,57 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
     ])
   })
 
+  it('the documented added hook: an accepted observer gets its state, a rejected one nothing, and no rejection goes unhandled', async () => {
+    const unhandled: unknown[] = []
+    const record = (reason: unknown) => unhandled.push(reason)
+    process.on('unhandledRejection', record)
+    try {
+      const { sdk, socket } = worker()
+      const added: Observer[] = []
+      sdk
+        .registerFunction('tmux::on-changed', (change: Change) => change, { private: true })
+        .onObserverAdded((obs) => {
+          added.push(obs)
+          // as observable-functions.mdx, the README and Observer.accepted() give it
+          void obs
+            .accepted()
+            .then(() =>
+              sdk.call({
+                function_id: 'tmux::on-changed',
+                payload: { session: obs.args.session, n: 0 },
+                metadata: { for_observer: obs.id },
+                action: CallAction.Void(),
+              }),
+            )
+            .catch(() => {
+              // a rejected observer gets nothing
+            })
+        })
+        .onObserverMatch({
+          // throws for an observer without a session: rejected after its added hook returned
+          observer: (obs) => {
+            if (typeof obs.args.session !== 'string') throw new Error('no session')
+            return [obs.args.session, `for_observer:${obs.id}`]
+          },
+          call: forObserverKeys.call,
+        })
+      const sessionless = observerInfo('sessionless', 'ui::sessionless', { capture: ['input', 'metadata'] })
+      socket.deliver(functionRegistered('tmux::on-changed', [watch('a'), sessionless], { revision: 1 }))
+      await settle()
+      await flushed()
+      await settle()
+
+      await expect(added.find((o) => o.id === 'sessionless')?.accepted()).rejects.toMatchObject({
+        code: 'OBSERVE_REJECTED',
+      })
+      expect(reportedItems(socket).map((i) => [i.matched, i.input, i.metadata])).toEqual([
+        [['a'], { session: 's1', n: 0 }, { for_observer: 'a' }],
+      ])
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', record)
+    }
+  })
 })
 
 describe('onObserverDeliver', () => {

@@ -180,14 +180,19 @@ export interface Observer {
    * @example
    * ```typescript
    * iii.onObserverAdded('tmux::on-changed', (obs) => {
-   *   void obs.accepted().then(() =>
-   *     iii.call({
-   *       function_id: 'tmux::on-changed',
-   *       payload: stateFor(obs.args),
-   *       metadata: { for_observer: obs.id },
-   *       action: CallAction.Void(),
-   *     }),
-   *   )
+   *   void obs
+   *     .accepted()
+   *     .then(() =>
+   *       iii.call({
+   *         function_id: 'tmux::on-changed',
+   *         payload: stateFor(obs.args),
+   *         metadata: { for_observer: obs.id },
+   *         action: CallAction.Void(),
+   *       }),
+   *     )
+   *     .catch(() => {
+   *       // a rejected observer gets nothing
+   *     })
    * })
    * iii.onObserverMatch('tmux::on-changed', (obs, call) =>
    *   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session,

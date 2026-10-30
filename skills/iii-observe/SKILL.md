@@ -496,7 +496,9 @@ How hooks behave:
 - **`obs.accepted()`** resolves once the SDK has acknowledged the observer. A call made afterwards
   reaches an active observer, so a source sends initial state as a call for that observer. The
   observer becomes active after `onObserverAdded` returns, so the hook starts a task that waits and
-  then makes the call with `CallAction.Void()`. Python awaits `accepted_async()` in a task
+  then makes the call with `CallAction.Void()`. `accepted()` fails for an observer rejected first
+  (a match key function that throws, `obs.reject`), and the task then sends nothing: in Node and
+  the browser, end the chain with `.catch`. Python awaits `accepted_async()` in a task
   (`asyncio.create_task`), since `accepted()` blocks the calling thread; Rust awaits
   `obs.accepted()` in a spawned task; Go runs `obs.Accepted(ctx)` in a goroutine with a context of
   its own, since the hook's `ctx` makes it return an error at once.
@@ -504,14 +506,19 @@ How hooks behave:
 ```typescript
 // a new observer gets the state of its session; every other change goes to the session's observers
 iii.onObserverAdded("tmux::on-changed", (obs) => {
-  void obs.accepted().then(() =>
-    iii.call({
-      function_id: "tmux::on-changed",
-      payload: stateFor(obs.args),
-      metadata: { for_observer: obs.id },
-      action: CallAction.Void(),
-    }),
-  );
+  void obs
+    .accepted()
+    .then(() =>
+      iii.call({
+        function_id: "tmux::on-changed",
+        payload: stateFor(obs.args),
+        metadata: { for_observer: obs.id },
+        action: CallAction.Void(),
+      }),
+    )
+    .catch(() => {
+      // a rejected observer gets nothing
+    });
 });
 iii.onObserverMatch("tmux::on-changed", (obs, call) =>
   call.metadata?.for_observer

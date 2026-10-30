@@ -227,14 +227,19 @@ to that observer alone, so the target receives it in the shape of every call:
 import { CallAction } from 'iii-browser-sdk'
 
 iii.onObserverAdded('ui::on-click', (obs) => {
-  void obs.accepted().then(() =>
-    iii.call({
-      function_id: 'ui::on-click',
-      payload: lastClick(obs.args.selector as string),
-      metadata: { for_observer: obs.id },
-      action: CallAction.Void(),
-    }),
-  )
+  void obs
+    .accepted()
+    .then(() =>
+      iii.call({
+        function_id: 'ui::on-click',
+        payload: lastClick(obs.args.selector as string),
+        metadata: { for_observer: obs.id },
+        action: CallAction.Void(),
+      }),
+    )
+    .catch(() => {
+      // a rejected observer gets nothing
+    })
 })
 iii.onObserverMatch('ui::on-click', (obs, call) =>
   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.selector === call.input.selector,
