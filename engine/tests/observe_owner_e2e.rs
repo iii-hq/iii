@@ -153,6 +153,79 @@ async fn acked_observer(
     added
 }
 
+/// A host's report of a local call carries the parts its observers'
+/// `capture` names (as announced). The part `deliver` hands the target is
+/// announced among them, so the reported call delivers it whatever the
+/// observer captures for an envelope.
+#[tokio::test]
+async fn the_announced_capture_names_the_part_the_target_receives() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut sink = host(&t, "sink", &["sink::orders"]).await;
+    for (id, deliver, capture, announced) in [
+        (
+            "obs-output",
+            "output",
+            json!(["input"]),
+            json!(["input", "output"]),
+        ),
+        ("obs-input", "input", json!([]), json!(["input"])),
+        (
+            "obs-envelope",
+            "envelope",
+            json!(["caller"]),
+            json!(["caller"]),
+        ),
+    ] {
+        let frame = observer(
+            id,
+            json!({ "function_id": "orders::create", "deliver": deliver, "capture": capture }),
+            "sink::orders",
+        );
+        assert_eq!(sink.observe(frame).await["state"], "pending");
+        let added = added(&mut orders, id).await;
+        assert_eq!(added["observer"]["capture"], announced, "{id}: {added}");
+        ack(&mut orders, "orders::create", id, &added["revision"]).await;
+        sink.state_becomes(id, "active").await;
+    }
+    let announced = |frame: &Value, id: &str| {
+        frame["observers"]
+            .as_array()
+            .and_then(|observers| observers.iter().find(|o| o["id"] == id))
+            .map(|o| o["capture"].clone())
+    };
+
+    // A report that carries what `obs-output` asked for, as announced.
+    let mut reported = item("orders::create", &["obs-output"], "success");
+    reported.as_object_mut().unwrap().remove("input");
+    orders.send(report(vec![reported])).await;
+    let activation = sink.invoked("sink::orders").await;
+    assert_eq!(activation["data"], json!({ "ok": true }), "{activation}");
+    sink.reply(&activation, Value::Null).await;
+
+    // A new registration announces the same.
+    orders.disconnect().await;
+    assert!(
+        eventually(|| t
+            .engine
+            .functions
+            .get("default", "orders::create")
+            .is_none())
+        .await
+    );
+    let (_orders, registrations) = owner(&t, "orders-2", &["orders::create"]).await;
+    assert_eq!(
+        announced(&registrations[0], "obs-output"),
+        Some(json!(["input", "output"])),
+        "{}",
+        registrations[0]
+    );
+    assert_eq!(
+        announced(&registrations[0], "obs-envelope"),
+        Some(json!(["caller"]))
+    );
+}
+
 #[tokio::test]
 async fn an_observer_waits_for_its_owners_ack() {
     let t = spawn_engine(ObserversConfig::default()).await;

@@ -62,6 +62,19 @@ impl CaptureSet {
         set
     }
 
+    /// The parts the host of the observed function sends the engine for an
+    /// observer: what it captures, and the part `deliver` hands the target
+    /// (`input` or `output`), which the engine has no other way to get for
+    /// a call the host reports.
+    pub fn with_delivered(mut self, deliver: &Deliver) -> Self {
+        match deliver {
+            Deliver::Input => self.input = true,
+            Deliver::Output => self.output = true,
+            Deliver::Envelope | Deliver::Unknown(_) => {}
+        }
+        self
+    }
+
     pub fn to_list(self) -> Vec<Capture> {
         [
             (self.input, Capture::Input),

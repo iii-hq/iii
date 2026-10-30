@@ -1352,14 +1352,16 @@ fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcem
     })
 }
 
-/// An observer as its function's owner sees it (CONTRACT D15).
+/// An observer as its function's owner sees it (CONTRACT D15). `capture`
+/// also names the part `deliver` gives the target, so the host's report of
+/// a local call carries it.
 pub(crate) fn view(observer: &Observer) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),
         args: observer.args.clone(),
         filters: observer.filter.normalized().clone(),
         target: observer.target.1.clone(),
-        capture: observer.capture.to_list(),
+        capture: observer.capture.with_delivered(&observer.deliver).to_list(),
         on: observer.on.clone(),
     }
 }
