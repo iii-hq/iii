@@ -336,7 +336,7 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
             }
           : {
               observer: match.observer,
-              call: (call) => {
+              call: (call: Call<Change, Change>) => {
                 matchMetadata.push(call.metadata)
                 return match.call(call)
               },
