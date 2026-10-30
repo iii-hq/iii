@@ -30,7 +30,7 @@ from observe_fake_engine import (
     wait_until,
 )
 
-from iii import Call, CallAction, InvocationError, Observer, ObserveRejection
+from iii import Call, CallAction, CallRequest, InvocationError, Observer, ObserveRejection
 from iii.iii import III
 
 
@@ -674,13 +674,14 @@ def test_a_refused_call_through_an_observer_raises_the_engines_code(engine: Fake
     assert answer["error"] == {"code": "OVERFLOW", "message": "max_in_flight reached"}
 
 
-def test_a_call_through_an_observer_takes_no_function_id_namespace_metadata_or_enqueue(
+def test_a_call_through_an_observer_takes_no_function_id_namespace_or_enqueue(
     engine: FakeEngine, connect: Any
 ) -> None:
     client = connect(engine)
     _router(client, engine)
     obs = client.observers("http::on-request")[0]
-    for extra in ({"function_id": "x::y"}, {"namespace": "acme"}, {"metadata": {"a": 1}}):
+    engine.clear()
+    for extra in ({"function_id": "x::y"}, {"namespace": "acme"}):
         with pytest.raises(ValueError):
             client.call({"observer": obs, "payload": {}, **extra})
     with pytest.raises(ValueError):
@@ -689,6 +690,29 @@ def test_a_call_through_an_observer_takes_no_function_id_namespace_metadata_or_e
         client.call({"observer": "route-1", "payload": {}})
     with pytest.raises(ValueError):
         client.call({"payload": {}})
+    assert engine.frames_of("invokefunction") == []
+
+
+def test_a_call_through_an_observer_takes_no_metadata_and_none_is_no_metadata(engine: FakeEngine, connect: Any) -> None:
+    """Decision 53: refused before anything is sent, whatever the value, as a dict or a CallRequest."""
+    client = connect(engine)
+    calls = _answer_observer_calls(engine, result={"status_code": 200})
+    _router(client, engine)
+    obs = client.observers("http::on-request")[0]
+    engine.clear()
+    message = "a call through an observer takes no metadata; its target receives the observer's metadata"
+    for metadata in ({"route": "users"}, ["a"], "tag", 0, False):
+        with pytest.raises(ValueError) as raised:
+            client.call({"observer": obs, "payload": {}, "metadata": metadata})
+        assert str(raised.value) == message
+        with pytest.raises(ValueError) as raised:
+            client.call(CallRequest(observer=obs, payload={}, metadata=metadata))
+        assert str(raised.value) == message
+    assert calls == [] and engine.frames_of("invokefunction") == []
+    # None is no metadata: the call goes out without it
+    assert client.call({"observer": obs, "payload": {"path": "/users"}, "metadata": None}) == {"status_code": 200}
+    [frame] = calls
+    assert frame["activation"] == {"observer_id": "route-1"} and "metadata" not in frame
 
 
 def test_accepted_resolves_once_the_observer_is_acked_and_raises_when_it_is_rejected(

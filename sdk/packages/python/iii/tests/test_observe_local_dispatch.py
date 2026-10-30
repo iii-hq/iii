@@ -12,7 +12,9 @@ import pytest
 from observe_fake_engine import (
     FakeEngine,
     acks,
+    answers,
     function_registered,
+    invoke,
     observer_added,
     observer_info,
     reported_items,
@@ -258,6 +260,39 @@ def test_values_deepcopy_cannot_copy_fall_back_to_their_json_form(engine: FakeEn
     assert seen[-1] == {"n": 2}
     client.call({"function_id": "copy::fn", "payload": {"m": model, "u": Uncopyable(), "n": 1}})
     assert seen[-1]["m"] == {"name": "a"} and seen[-1]["n"] == 1  # the JSON form
+
+
+def test_metadata_is_any_json_value_and_none_is_no_metadata_local_routed_and_received(
+    engine: FakeEngine, connect: Any
+) -> None:
+    """Decision 54: ``None`` is no metadata on every path; every other JSON value passes as given."""
+    client = connect(engine)
+    seen: list[Any] = []
+
+    def handler(data: Any, metadata: Any = "absent") -> None:
+        seen.append(metadata)
+
+    client.register_function("meta::fn", handler)
+    _confirm(client, engine, "meta::fn")
+    engine.clear()
+    values: list[Any] = [None, ["a", 1], "tag", 0, False, {"tenant": "acme"}]
+    # local: the handler gets None for None, every other value as given
+    for metadata in values:
+        client.call({"function_id": "meta::fn", "payload": {}, "metadata": metadata})
+    assert seen == values
+    assert _invocations(engine) == []
+    # routed: None is left off the frame
+    for metadata in values:
+        request = {"function_id": "meta::fn", "payload": {}, "metadata": metadata, "dispatch": "remote"}
+        client.call({**request, "action": CallAction.Void()})
+    sent = engine.wait_for(lambda: len(_invocations(engine)) == len(values) and _invocations(engine), what="calls")
+    assert [f.get("metadata", "absent") for f in sent] == ["absent", *values[1:]]
+    # received: an invokefunction with metadata null reaches the handler as None
+    seen.clear()
+    for i, metadata in enumerate(values):
+        engine.deliver(invoke("meta::fn", {}, f"in-{i}", metadata=metadata))
+        engine.wait_for(lambda i=i: answers(engine, f"in-{i}"), what="the answer")
+    assert seen == values
 
 
 def test_a_failing_handler_raises_the_invocation_error_the_remote_path_gives(engine: FakeEngine, connect: Any) -> None:

@@ -226,6 +226,10 @@ class _SpanOutcome:
 #: sdk.md §3: a local call nested deeper than this goes through the engine.
 _MAX_LOCAL_DEPTH = 64
 
+#: Why ``call`` refuses a call through an observer that names metadata (v2
+#: §4.6, decision 53); the same message in every SDK.
+_OBSERVER_CALL_METADATA = "a call through an observer takes no metadata; its target receives the observer's metadata"
+
 
 @dataclass
 class _Request:
@@ -2626,10 +2630,16 @@ class III:
         ``__cause__`` (for a ``Void`` call nothing reaches the caller: the
         error is logged).
 
+        ``metadata`` is any JSON value; the handler receives it beside the
+        payload, and ``None`` is no metadata.
+
         A request with ``observer`` (an :class:`Observer` of a function this
         worker hosts) calls through it: the engine runs the observer's target
         with its policy (``max_fires``, expiry, ``max_in_flight``), metadata
         sidecar and loop guard, and the call resolves to the target's result.
+        It takes no ``metadata``: the target's metadata argument is the
+        observer's registration metadata, and a request that names metadata
+        raises ``ValueError`` before anything is sent.
         The payload goes as given: filters are applied where the worker
         chooses observers: iii's delivery, or ``obs.matches(call)`` in an
         ``on_observer_deliver``. A call through an observer belongs in that
@@ -2752,9 +2762,13 @@ class III:
             # observer's stored target (no namespace) with its policy and metadata.
             if not isinstance(observer, Observer):
                 raise TypeError(f"call: observer must be an iii.Observer, got {type(observer).__name__}")
-            for name in ("function_id", "namespace", "metadata"):
+            for name in ("function_id", "namespace"):
                 if req.get(name) is not None:
                     raise ValueError(f"call: a call through an observer takes no {name}")
+            # Its target's metadata is the observer's: refused before anything
+            # is sent (decision 53). ``None`` is no metadata.
+            if req.get("metadata") is not None:
+                raise ValueError(_OBSERVER_CALL_METADATA)
             if isinstance(action, CallActionEnqueue):
                 raise ValueError("call: a call through an observer cannot be enqueued")
             return _Request(

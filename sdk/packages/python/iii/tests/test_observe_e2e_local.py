@@ -401,8 +401,22 @@ def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_dispo
         app.call({"function_id": on_request_id, "payload": {"path": "/users", "tenant": "acme"}})
     assert raised.value.code == "FORBIDDEN"
 
-    # C3: only the worker that hosts the observed function calls through its observers
+    # Decision 53: a call through an observer takes no metadata, refused before anything is
+    # sent; with none, its target's metadata argument is the observer's.
     obs = routes["/users"]
+    with pytest.raises(ValueError) as refused:
+        owner.call({"observer": obs, "payload": {"path": "/users"}, "metadata": {"route": "mine"}})
+    assert str(refused.value) == (
+        "a call through an observer takes no metadata; its target receives the observer's metadata"
+    )
+    metadata_seen.clear()
+    assert owner.call({"observer": obs, "payload": {"path": "/users"}, "metadata": None}) == {
+        "status": 200,
+        "body": {"path": "/users"},
+    }
+    assert metadata_seen == [{"route": "users"}]
+
+    # C3: only the worker that hosts the observed function calls through its observers
     with pytest.raises(InvocationError) as raised:
         app.call({"observer": obs, "payload": {"path": "/users", "tenant": "acme"}})
     assert raised.value.code == "NOT_FUNCTION_OWNER"
@@ -412,6 +426,26 @@ def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_dispo
     with pytest.raises(InvocationError) as raised:
         owner.call({"observer": obs, "payload": {"path": "/users", "tenant": "acme"}})
     assert raised.value.code in ("OBSERVER_NOT_FOUND", "OBSERVER_NOT_ACTIVE")
+
+
+def test_none_metadata_is_no_metadata_on_local_and_routed_calls(worker: Any, fid: Any) -> None:
+    """Decision 54: every other JSON value passes as given, local or routed."""
+    owner = worker("meta-owner")
+    other = worker("meta-caller")
+    fn = fid("py-meta::echo")
+    seen: list[Any] = []
+
+    def echo(data: Any, metadata: Any = "absent") -> None:
+        seen.append(metadata)
+
+    owner.register_function(fn, echo)
+    local_dispatch_ready(owner, fn)
+    values: list[Any] = [None, ["a", 1], "tag", 0, False, {"tenant": "acme"}]
+    for client, dispatch in ((owner, "auto"), (owner, "remote"), (other, "auto")):
+        seen.clear()
+        for metadata in values:
+            client.call({"function_id": fn, "payload": {}, "metadata": metadata, "dispatch": dispatch})
+        assert seen == values, (client is owner, dispatch)
 
 
 @pytest.mark.parametrize("form", ["predicate", "keys"])
