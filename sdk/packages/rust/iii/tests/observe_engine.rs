@@ -1087,3 +1087,170 @@ async fn void_local_calls_keep_their_context() {
     );
     owner.shutdown_async().await;
 }
+
+// ═════════════════════ decision 52: calls for one observer ═════════════════
+
+/// The observer a call is for: `metadata.for_observer`.
+fn for_observer(call: &Call) -> Option<&str> {
+    call.metadata
+        .as_ref()
+        .and_then(|m| m["for_observer"].as_str())
+}
+
+/// A match hook that honors `for_observer`: a call for one observer goes to
+/// it alone, any other call to the observers of its session. As a predicate,
+/// or as keys (each observer is also filed under `for_observer:<id>`).
+fn session_match(keys: bool) -> Match {
+    if keys {
+        Match::keys(
+            |obs| {
+                iii_sdk::Keys::from(vec![
+                    obs.args_value()["session"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    format!("for_observer:{}", obs.id()),
+                ])
+            },
+            |call| match for_observer(call) {
+                Some(id) => iii_sdk::Keys::from(format!("for_observer:{id}")),
+                None => iii_sdk::Keys::from(call.input["session"].as_str()),
+            },
+        )
+    } else {
+        Match::predicate(|obs, call| match for_observer(call) {
+            Some(id) => id == obs.id(),
+            None => obs.args_value()["session"] == call.input["session"],
+        })
+    }
+}
+
+/// Decision 52: a host sends one observer something of its own (here, the
+/// current state of its session once it is accepted) by calling its own
+/// function with `metadata.for_observer`. That call reaches the observer's
+/// target alone, in the shape every call of the function gives it: A gets the
+/// envelope, B (`deliver: output`) the output. An ordinary call reaches both.
+#[tokio::test]
+async fn a_call_for_one_observer_reaches_its_target_alone() {
+    for keys in [false, true] {
+        let id = uid();
+        let source = format!("it{id}::on-changed");
+        let (to_a, to_b) = (format!("it{id}::envelope"), format!("it{id}::output"));
+        let owner = client(&format!("tmux-{id}")).await;
+        owner.on_observer_match_for(&source, session_match(keys));
+        owner.on_observer_added_for(&source, {
+            let (iii, source) = (owner.clone(), source.clone());
+            move |obs: Observer| {
+                let (iii, source) = (iii.clone(), source.clone());
+                async move {
+                    // a new observer gets the state of its session once it is active
+                    tokio::spawn(async move {
+                        if obs.accepted().await.is_ok() {
+                            let session = obs.args_value()["session"].clone();
+                            let state =
+                                CallRequest::new(&source, json!({ "session": session, "n": 0 }))
+                                    .metadata(json!({ "for_observer": obs.id() }));
+                            let _ = iii.call(state.action(CallAction::Void)).await;
+                        }
+                    });
+                    Ok(())
+                }
+            }
+        });
+        let function = owner.register_function(
+            &source,
+            RegisterFunction::new(|change: Value| Ok::<_, Error>(change))
+                .args_format_value(json!({
+                    "type": "object", "required": ["session"],
+                    "properties": { "session": { "type": "string" } }
+                }))
+                .private(),
+        );
+        until("local dispatch", || function.local_dispatch_active()).await;
+
+        let watcher = client(&format!("ui-{id}")).await;
+        let (inbox_a, inbox_b) = (Inbox::default(), Inbox::default());
+        watcher.register_function(&to_a, inbox_a.function());
+        watcher.register_function(&to_b, inbox_b.function());
+        let a = watcher.observe(
+            Source::function(&source).args(json!({ "session": "s1" })),
+            &to_a,
+        );
+        tokio::time::timeout(WAIT, a.ready())
+            .await
+            .unwrap()
+            .unwrap();
+        inbox_a.wait(1).await;
+        let b = watcher.observe(
+            Source::function(&source)
+                .args(json!({ "session": "s1" }))
+                .deliver(iii_sdk::Deliver::Output),
+            &to_b,
+        );
+        tokio::time::timeout(WAIT, b.ready())
+            .await
+            .unwrap()
+            .unwrap();
+        inbox_b.wait(1).await;
+        settle().await;
+        assert_eq!(inbox_a.len(), 1, "keys {keys}: B's state reached B alone");
+
+        // an ordinary call reaches both
+        owner
+            .call(call_req(&source, json!({ "session": "s1", "n": 1 })))
+            .await
+            .unwrap();
+        inbox_a.wait(2).await;
+        inbox_b.wait(2).await;
+        // a call for A reaches A alone
+        owner
+            .call(
+                call_req(&source, json!({ "session": "s1", "n": 2 }))
+                    .metadata(json!({ "for_observer": a.id() })),
+            )
+            .await
+            .unwrap();
+        let got_a = inbox_a.wait(3).await;
+        settle().await;
+        assert_eq!(inbox_a.len(), 3, "keys {keys}");
+        assert_eq!(
+            inbox_b.len(),
+            2,
+            "keys {keys}: the call for A did not reach B"
+        );
+
+        // A gets the envelope of every call; B the output of every call
+        let ordinary = &got_a[1];
+        for envelope in [&got_a[0], &got_a[2]] {
+            let keys_of = |v: &Value| {
+                let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+                k.sort();
+                k
+            };
+            assert_eq!(
+                keys_of(envelope),
+                keys_of(ordinary),
+                "keys {keys}: {got_a:#?}"
+            );
+            assert_eq!(envelope["observer_id"], a.id());
+            let mut same = stable(envelope.clone());
+            same["input"] = ordinary["input"].clone();
+            same["output"] = ordinary["output"].clone();
+            assert_eq!(same, stable(ordinary.clone()), "keys {keys}");
+        }
+        let outputs: Vec<Value> = got_a.iter().map(|e| e["output"].clone()).collect();
+        assert_eq!(
+            outputs,
+            [0, 1, 2].map(|n| json!({ "session": "s1", "n": n })),
+            "keys {keys}"
+        );
+        assert_eq!(
+            inbox_b.inputs(),
+            [0, 1].map(|n| json!({ "session": "s1", "n": n })),
+            "keys {keys}"
+        );
+        for c in [owner, watcher] {
+            c.shutdown_async().await;
+        }
+    }
+}

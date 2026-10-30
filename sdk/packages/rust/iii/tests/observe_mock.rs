@@ -1723,10 +1723,10 @@ async fn a_call_through_an_observer_is_the_fixture_frame() {
     iii.shutdown_async().await;
 }
 
-/// A provider sends a new observer its initial state once it is accepted:
-/// the void fixture frame, after the ack.
+/// A void call through an observer, made once the observer is accepted: the
+/// void fixture frame, after the ack. A rejected observer is never accepted.
 #[tokio::test]
-async fn an_accepted_observer_gets_its_initial_state() {
+async fn a_void_call_through_an_accepted_observer_is_the_fixture_frame() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "storefront");
     connected(&mock, &iii, true).await;
@@ -1737,9 +1737,9 @@ async fn an_accepted_observer_gets_its_initial_state() {
             async move {
                 tokio::spawn(async move {
                     obs.accepted().await.expect("accepted");
-                    let initial =
+                    let call =
                         CallRequest::observer(&obs, json!({ "sku": "A-1", "available": 12 }));
-                    iii.call(initial.action(CallAction::Void)).await
+                    iii.call(call.action(CallAction::Void)).await
                 });
                 Ok(())
             }
@@ -1791,6 +1791,205 @@ async fn an_accepted_observer_gets_its_initial_state() {
     .await;
     until("refused", || refused.lock().unwrap().is_some()).await;
     assert_eq!(refused.lock().unwrap().as_deref(), Some("NO_STOCK"));
+    iii.shutdown_async().await;
+}
+
+// ───────────────────────────── calls for one observer (decision 52) ──────
+
+/// The observer a call is for: `metadata.for_observer`.
+fn for_observer(call: &Call) -> Option<&str> {
+    call.metadata
+        .as_ref()
+        .and_then(|m| m["for_observer"].as_str())
+}
+
+/// The two `onObserverMatch` forms that honor `for_observer`: a call for one
+/// observer goes to it alone, any other call to the observers of its session.
+/// Each records the metadata of the calls it is asked about.
+fn session_match(keys: bool, seen: Arc<Mutex<Vec<Option<Value>>>>) -> Match {
+    if keys {
+        Match::keys(
+            |obs| {
+                Keys::from(vec![
+                    obs.args_value()["session"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string(),
+                    format!("for_observer:{}", obs.id()),
+                ])
+            },
+            move |call| {
+                seen.lock().unwrap().push(call.metadata.clone());
+                match for_observer(call) {
+                    Some(id) => Keys::from(format!("for_observer:{id}")),
+                    None => Keys::from(call.input["session"].as_str()),
+                }
+            },
+        )
+    } else {
+        Match::predicate(move |obs, call| {
+            seen.lock().unwrap().push(call.metadata.clone());
+            match for_observer(call) {
+                Some(id) => id == obs.id(),
+                None => obs.args_value()["session"] == call.input["session"],
+            }
+        })
+    }
+}
+
+/// The routed call for observer `b`.
+const FOR_B: &str = "4c9e1b2a-7d3f-4e5a-9b8c-1d2e3f4a5b6c";
+
+/// A local call's metadata reaches the handler, the match hook (a predicate
+/// and keys) and the report; a call with `metadata.for_observer` is reported
+/// for that observer alone, and a routed one lists only it on its answer.
+#[tokio::test]
+async fn a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_report() {
+    for keys in [false, true] {
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "tmux");
+        connected(&mock, &iii, true).await;
+        let seen: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
+        let handled: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
+        iii.on_observer_match_for("tmux::on-changed", session_match(keys, seen.clone()));
+        let watch = |id: &str| {
+            json!({ "id": id, "args": { "session": "s1" }, "filters": {}, "target": format!("ui::{id}"),
+                    "capture": ["input", "output", "metadata"], "on": "success" })
+        };
+        hosted(
+            &mock,
+            &iii,
+            "tmux::on-changed",
+            RegisterFunction::new_async({
+                let handled = handled.clone();
+                move |change: Value, metadata: Option<Value>| {
+                    handled.lock().unwrap().push(metadata);
+                    async move { Ok::<_, Error>(change) }
+                }
+            })
+            .private(),
+            json!([watch("a"), watch("b")]),
+        )
+        .await;
+        acked(&mock, &[("a", 1), ("b", 1)]).await;
+        mock.clear();
+
+        iii.call(
+            CallRequest::new("tmux::on-changed", json!({ "session": "s1", "n": 1 }))
+                .metadata(json!({ "for_observer": "a" })),
+        )
+        .await
+        .unwrap();
+        iii.call(CallRequest::new(
+            "tmux::on-changed",
+            json!({ "session": "s1", "n": 2 }),
+        ))
+        .await
+        .unwrap();
+        let items = mock.wait_for(|m| report_items_in(m).len() >= 2, WAIT).await;
+        let items = report_items_in(&items);
+        assert_eq!(items.len(), 2, "keys {keys}: {items:#?}");
+        assert_eq!(items[0]["matched"], json!(["a"]), "keys {keys}");
+        assert_eq!(items[0]["input"], json!({ "session": "s1", "n": 1 }));
+        assert_eq!(items[0]["metadata"], json!({ "for_observer": "a" }));
+        let mut both: Vec<String> = serde_json::from_value(items[1]["matched"].clone()).unwrap();
+        both.sort();
+        assert_eq!(both, ["a", "b"], "keys {keys}");
+        assert!(
+            items[1].get("metadata").is_none(),
+            "an ordinary call has none"
+        );
+        assert_eq!(
+            *handled.lock().unwrap(),
+            vec![Some(json!({ "for_observer": "a" })), None]
+        );
+        assert!(
+            seen.lock()
+                .unwrap()
+                .contains(&Some(json!({ "for_observer": "a" }))),
+            "keys {keys}: the match hook reads the call's metadata"
+        );
+
+        // routed: the observer it names rides the answer
+        mock.send_to_client(json!({
+            "type": "invokefunction", "invocation_id": FOR_B, "function_id": "tmux::on-changed",
+            "data": { "session": "s1", "n": 3 }, "metadata": { "for_observer": "b" }
+        }));
+        let answer = answer_to(&mock, FOR_B).await;
+        assert_eq!(answer["result"], json!({ "session": "s1", "n": 3 }));
+        assert_eq!(answer["observed"], json!(["b"]), "keys {keys}");
+        iii.shutdown_async().await;
+    }
+}
+
+/// A host sends a new observer its initial state by calling its own function
+/// with `metadata.for_observer` once the observer is accepted: the call is
+/// reported after the ack, for that observer alone.
+#[tokio::test]
+async fn an_accepted_observer_gets_its_initial_state() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "storefront");
+    connected(&mock, &iii, true).await;
+    iii.on_observer_match_for(
+        "stock::on-changed",
+        Match::predicate(|obs, call| for_observer(call).is_none_or(|id| id == obs.id())),
+    );
+    iii.on_observer_added_for("stock::on-changed", {
+        let iii = iii.clone();
+        move |obs: Observer| {
+            let iii = iii.clone();
+            async move {
+                tokio::spawn(async move {
+                    obs.accepted().await.expect("accepted");
+                    let initial = CallRequest::new(
+                        "stock::on-changed",
+                        json!({ "sku": "A-1", "available": 12 }),
+                    )
+                    .metadata(json!({ "for_observer": obs.id() }));
+                    iii.call(initial.action(CallAction::Void)).await
+                });
+                Ok(())
+            }
+        }
+    });
+    let stock = |id: &str| {
+        json!({ "id": id, "args": {}, "filters": {}, "target": "storefront::sync-stock",
+                "capture": ["input"], "on": "success" })
+    };
+    hosted(
+        &mock,
+        &iii,
+        "stock::on-changed",
+        echo().private(),
+        json!([stock("first"), stock("second")]),
+    )
+    .await;
+    let msgs = mock.wait_for(|m| report_items_in(m).len() >= 2, WAIT).await;
+    let mut matched: Vec<Value> = report_items_in(&msgs)
+        .iter()
+        .map(|item| {
+            assert_eq!(item["input"], json!({ "sku": "A-1", "available": 12 }));
+            item["matched"].clone()
+        })
+        .collect();
+    matched.sort_by_key(|m| m.to_string());
+    assert_eq!(matched, [json!(["first"]), json!(["second"])]);
+    // each observer's state follows its ack
+    for (at, report) in msgs
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| is("invocationsobserved")(m))
+    {
+        for item in report["items"].as_array().unwrap() {
+            let id = &item["matched"][0];
+            let ack_at = msgs
+                .iter()
+                .position(|m| message_type(m) == Some("observerack") && m["id"] == *id)
+                .unwrap();
+            assert!(ack_at < at, "{id}: the report follows the ack");
+        }
+    }
+    assert_eq!(invocations(&mock), 0, "no call through an observer");
     iii.shutdown_async().await;
 }
 
