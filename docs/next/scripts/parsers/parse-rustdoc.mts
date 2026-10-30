@@ -143,8 +143,8 @@ export function rustTypeToString(type: any): string {
  * The summary prose of a doc-comment: everything before the first `# Section`
  * heading. Fence-aware, since a hidden doctest line (`# use ...` inside a
  * fence) is not a heading. `# Examples` and friends are rendered separately.
- * A fenced block inside the prose (e.g. the `for_function` example on
- * `IIITrigger`) is kept on request, with hidden doctest lines stripped;
+ * A fenced block inside the prose is kept on request (`keepCodeBlocks`), with
+ * hidden doctest lines stripped;
  * otherwise the prose is cut at the first fence.
  */
 function extractDocs(item: RustDocItem, opts?: { keepCodeBlocks?: boolean }): string {

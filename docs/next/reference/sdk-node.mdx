@@ -533,6 +533,9 @@ their filters with `obs.matches(call)`. Without it, iii delivers every
 call to the matching observers whose `on` and filters accept it, and the
 caller gets the handler's result. `null` removes the hook.
 
+A function with a deliver hook needs an engine with `observe.v2`: against
+an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+
 **Signature**
 
 ```typescript
@@ -577,6 +580,9 @@ observer wants a call when they share a key (the SDK keeps an index). The
 observers' `on`, filters, policy and `deliver` still apply. A hook set
 while observers are active rebuilds the index from them. `null` removes
 the hook.
+
+A function with a match hook needs an engine with `observe.v2`: against
+an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
 
 **Signature**
 
@@ -759,8 +765,10 @@ type Capture = "input" | "output" | "error" | "caller" | "metadata"
 
 Delivers each call of a function itself (`onObserverDeliver`): it receives
 the call and the observers that matched it (a snapshot taken when the call
-started), and what it returns (or throws) is what the caller gets back. iii
-delivers nothing for that function; the hook calls through observers
+started), and what it returns (or throws) is what the caller gets back. A
+thrown ObserveRejection, or the error of a call it made, reaches the
+caller with its code; any other error as `invocation_failed`. iii delivers
+nothing for that function; the hook calls through observers
 (`iii.call({ observer, payload })`) and applies their filters with
 `obs.matches(call)`. It runs inside the function's invocation, so the calls
 it makes have that invocation as their caller.

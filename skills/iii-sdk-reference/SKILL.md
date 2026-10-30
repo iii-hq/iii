@@ -191,7 +191,7 @@ sources.
   `Dispatch: iii.DispatchRemote`; or per function with `localDispatch: false`
   (`local_dispatch=False`, `.local_dispatch(false)`, `LocalDispatch: &off`).
 - Against an engine without `observe.v2`, a function that declares `args_format`, `private`, or
-  `observable: false`, or sets `onObserverDeliver`, stays unregistered and the SDK logs
+  `observable: false`, or sets `onObserverMatch` or `onObserverDeliver`, stays unregistered and the SDK logs
   `UNSUPPORTED` once; everything else works.
 - `trigger` is a deprecated alias of `call` in every SDK and the CLI (`trigger_async`, `Trigger`,
   `TriggerRequest`, `TriggerAction`, `iii trigger`): the same function or type, marked deprecated

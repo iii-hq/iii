@@ -92,9 +92,10 @@ type: "reference"
   - The engine functions `engine::register_trigger`, `engine::unregister_trigger`,
     `engine::triggers::list`, `engine::triggers::info`, `engine::registered-triggers::list`, and
     `engine::registered-triggers::info`.
-  - The RBAC keys `allowed_trigger_types`, `allow_trigger_type_registration`,
-    `on_trigger_registration_function_id`, and `on_trigger_type_registration_function_id`. A config
-    that still sets them loads, with a `warn` naming the replacement.
+  - The RBAC config keys `on_trigger_registration_function_id` and
+    `on_trigger_type_registration_function_id`: a config that still sets them loads, with one `warn`
+    for each at load naming the replacement. The auth result fields `allowed_trigger_types` and
+    `allow_trigger_type_registration`: the engine ignores them, with one `warn` per process.
   - 0.25 owner delivery: `observe.delivery`, `obs.emit`, `obs.call`, `legacy_trigger_type` with the
     engine's legacy shim, `Observer.legacy`, and Rust's `Observe::owner()`, `Observe::auto()`, and
     `ObserveHandler`. The engine refuses a 0.25 registration with `delivery: "owner"` with
@@ -107,7 +108,7 @@ type: "reference"
   <Callout type="warning">
     A 0.25 worker that binds with `registerTrigger` receives no events on a 0.26 engine, and a 0.26
     SDK leaves functions that declare `args_format`, `private`, or `observable: false`, or set
-    `onObserverDeliver`, unregistered on a 0.25 engine. Upgrade the engine, the iii workers, and the
+    `onObserverMatch` or `onObserverDeliver`, unregistered on a 0.25 engine. Upgrade the engine, the iii workers, and the
     SDKs together. See [Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
   </Callout>
 </Update>

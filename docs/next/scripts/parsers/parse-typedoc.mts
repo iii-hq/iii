@@ -157,7 +157,7 @@ function extractFieldsFromChildren(children: any[], indexSignatures?: any[]): Pa
     .map((f: any) => ({
       name: f.name,
       // A method has no `type`, only call signatures; render the full callable
-      // shape so parameters survive (e.g. `(functionId: string, config: TConfig) => Trigger`).
+      // shape so parameters survive (e.g. `(functionId: string, hook: AddedHook | null) => this`).
       type: f.type ? typeToString(f.type) : typeToString({ type: 'reflection', declaration: f }),
       description: extractText(f.comment?.summary ?? f.signatures?.[0]?.comment?.summary),
       required: !(f.flags?.isOptional),
@@ -261,7 +261,7 @@ function extractTypesFrom(
         fields,
       })
     } else if (child.kind === KIND_VARIABLE && child.type?.type === 'reflection' && child.type.declaration?.children?.length) {
-      // A const factory object (e.g. `TriggerAction`) documents like an
+      // A const factory object (e.g. `CallAction`) documents like an
       // interface: one row per member, function-typed members keep their
       // call signatures.
       types.push({

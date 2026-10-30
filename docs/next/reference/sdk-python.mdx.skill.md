@@ -858,7 +858,9 @@ Works as a decorator for a predicate
 :class:`MatchKeys` for the keys form); ``None`` removes it. A match
 hook set while the function has active observers is applied to them
 on the SDK loop, which rebuilds the index from them. Predicates and
-key functions are sync: they run on every call.
+key functions are sync: they run on every call. A function with a
+match hook needs an engine with ``observe.v2``: against an older one
+it stays unregistered, and ``UNSUPPORTED`` is logged once.
 
 **Signature**
 
@@ -1060,7 +1062,7 @@ One call of a function, as its observers observe it and its
 | `caller` | `dict[str, Any] \| None` | No | Who made the call: ``\{worker_id?, worker_name?, function_id?, invocation_id?, parent?\}``; ``None`` outside any handler. |
 | `error` | `dict[str, Any] \| None` | No | What the handler raised, ``\{code, message, stacktrace?\}`` (``None`` when it returned). |
 | `function_id` | `str` | Yes | The called function. |
-| `input` | `InputT` | Yes | What the function was called with. |
+| `input` | `InputT` | Yes | What the function was called with, as the caller passed it (channel refs as refs, not readers and writers). |
 | `invocation_id` | `str` | Yes | This call's id. |
 | `metadata` | `Any` | No | The call's metadata sidecar. |
 | `output` | `OutputT \| None` | No | The handler's return value: what observers observe (``None`` when it raised). |

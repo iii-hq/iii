@@ -22,7 +22,7 @@ three hold:**
    spec's particular topology.
 3. **Passes the checklist below** without deck-specific hacks.
 
-A second deck needing a deck-local diagram is the natural promotion trigger:
+When a second deck needs a deck-local diagram, that is the time to promote it:
 promote it then (props-decouple first), never copy it.
 
 **Never fork.** Don't copy a shared component into a deck to tweak it —

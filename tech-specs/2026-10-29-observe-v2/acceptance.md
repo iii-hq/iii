@@ -32,14 +32,14 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | B4 | A rejection unwinds: the `onObserverRemoved` of each level whose `onObserverAdded` resolved runs. | test |
 | B5 | `onObserverRemoved` runs exactly once per accepted observer (unobserve, disposal, `obs.reject()`), never for a rejected one; its errors are logged. | test |
 | B6 | Hooks of one function run one at a time; a hook past 30 s fails with `OWNER_TIMEOUT`. | test |
-| B7 | A hook set by id before registration, or chained on `registerFunction`, sees every observer; the SDK acks no observer before the registration call returned. A hook set later is caught up and logs one warning. | test |
+| B7 | The SDK acks no observer before the registration call returned, so a hook set by id before registration sees every observer; in Node and the browser so does a hook chained on `registerFunction` (spec §4.3). A hook set later is caught up and logs one warning. | test |
 | B8 | Hooks stored by id survive `unregister()` and re-registration; a hook id never registered logs a warning after the connection registers. | test |
 | B9 | `null` / `None` / `clear_*` removes a hook. | test |
 | B10 | `onObserverMatch` exists per function, as a predicate `(obs, call) => boolean` or keys `{ observer, call }`. iii delivers to matched observers with filters, `on`, policy and `deliver` applied. Default: every observer matches. | test |
 | B11 | Keys: computed once per accepted observer and once per call; a call matches observers under any of its keys, each once; wildcards by listing; the index rebuilds when the hook is set while observers are active; a throwing predicate is no match (logged once); a throwing observer key function rejects the observer. | test |
 | B12 | `isObserved()` is one atomic load; `isObserved(call)` on a key-matched function looks up the call's keys. | test, bench |
 | B13 | `onObserverDeliver` exists per function, takes `(call, observers)` (the matched observers, a snapshot from call start), has no `next`, runs in the function's invocation context and span, and its return/throw is what the caller gets. iii delivers nothing for that function. | test |
-| B14 | No `next`, `keyed`, `Keyed`, `as_keyed`, `defaultDeliver` anywhere. | grep |
+| B14 | No hook takes a `next` parameter or calls `next`, and no `keyed(`, `Keyed`, `as_keyed` or `defaultDeliver` identifier exists anywhere. The grep matches identifiers and hook signatures (`\bkeyed\(\|\bKeyed\b\|\bas_keyed\b\|\bdefaultDeliver\b`, `(onObserver\|on_observer_\|OnObserver)\w*\(.*\bnext\b`), not the English words "next" and "keyed" in prose. | grep |
 
 ## C. Calls
 
@@ -86,7 +86,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | F1 | Engine: no trigger registry, trigger messages (removed frames warn once per connection and type), trigger builtins, trigger RBAC hooks, legacy shim, `legacy_trigger_type`, queue compat module, owner delivery. | grep, test |
 | F2 | SDKs: no `registerTrigger`, `registerTriggerType`, `unregisterTrigger(Type)`, `TriggerHandler`, typed trigger configs, `EngineTriggers` (→ `EngineSources`), `Observer.legacy`. | grep |
 | F3 | Workers: every trigger type is an observable function per `iii-hq/workers/tech-specs/2026-10-observe-v2/functions.md`; every binding is `observe`; every `trigger()` is `call()`; UI, READMEs, SKILL.md, manifests and CI say functions and observers. | grep, test |
-| F4 | The only remaining "trigger" words are the call aliases, database triggers, CI event names, the upgrade guide, the changelog and dated historical specs. | grep |
+| F4 | The only remaining "trigger" words are: the call aliases (`trigger`, `trigger_async`, `Trigger`, `TriggerRequest`, `TriggerAction`, `iii trigger` / `t`); database triggers; CI event names; "trigger" as an English verb; the 0.25 names the engine and SDKs still decode, warn about or refuse (the removed frames, RBAC keys and builtins, `legacy_trigger_type`), with their tests and fixtures; the upgrade guides (`docs/*/upgrading/`, the SDK READMEs' "Migrating from 0.25" sections, the `iii-observe` skill's "Code written for 0.25"); the changelog; the redirects (`docs/docs.json`, the table in `docs/RELEASING.md`); the versioned and archived docs (`docs/` outside `docs/next`); dated historical specs and the superseded `tech-specs/engine-register-trigger-metadata.md`. | grep |
 
 ## G. Workers
 

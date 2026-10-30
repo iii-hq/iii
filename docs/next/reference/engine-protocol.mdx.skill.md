@@ -160,12 +160,12 @@ Rules:
   `observe()` fails with `UNSUPPORTED`. An SDK runs one of its own functions in-process only after
   the engine confirmed that function with `FunctionRegistered { local_dispatch: true }`.
 - Against an engine that did not advertise `observe.v2`, an SDK leaves each function that declares
-  `args_format`, `private: true`, or `observable: false`, or that sets an `onObserverDeliver` hook,
-  unregistered, and logs `UNSUPPORTED` once for it. It holds that registration until the current
-  connection's `WorkerRegistered` lists `observe.v2`, and decides again on every reconnect,
-  including when it replays registrations. Every other function, `call`, and `observe` work: the SDK
-  reports matches of local calls only, sends no `observed`, and sends `output` where it would set
-  `output_is_input`, and the engine evaluates routed calls itself.
+  `args_format`, `private: true`, or `observable: false`, or that sets an `onObserverMatch` or
+  `onObserverDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
+  registration until the current connection's `WorkerRegistered` lists `observe.v2`, and decides
+  again on every reconnect, including when it replays registrations. Every other function, `call`,
+  and `observe` work: the SDK reports matches of local calls only, sends no `observed`, and sends
+  `output` where it would set `output_is_input`, and the engine evaluates routed calls itself.
 - If the namespace grace timer drains before `engine::workers::register` arrives, the connection is
   treated as legacy until it does; the engine then sends `FunctionRegistered` for the functions the
   connection already registered.
@@ -1206,15 +1206,15 @@ whose handler returns its event, so a call's `input` and `output` are both the e
 args: observe them with filters on the event. Only the engine calls them; a call from a worker fails
 with `FORBIDDEN`.
 
-| Function                                                    | Event                                                                                                                                                                      |
-| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::on-functions-changed`                              | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata? }] }`; changes within about 100 ms are coalesced into one event. |
-| `engine::on-workers-changed`                                | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`.                                                               |
-| `engine::on-observers-changed`                              | `{ observer_id, function_id, target, state, reason? }`: one call per observer state change.                                                                                |
-| `configuration::on-updated`                                 | A configuration entry was registered, updated, or deleted; filter on `input.id` and `input.event_type`.                                                                    |
-| `observability::on-log`                                     | One log record; filter on `input.severity_number`.                                                                                                                         |
-| `observability::on-span`                                    | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                      |
-| `stream::on-changed`, `stream::on-join`, `stream::on-leave` | Hosted by `iii-stream` while it runs; filter on `input.stream_name` and `input.group_id`.                                                                                  |
+| Function                                                    | Event                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::on-functions-changed`                              | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`; `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
+| `engine::on-workers-changed`                                | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`.                                                                                                                                                                                                                |
+| `engine::on-observers-changed`                              | `{ observer_id, function_id, target, state, reason? }`: one call per observer state change.                                                                                                                                                                                                                                 |
+| `configuration::on-updated`                                 | A configuration entry was registered, updated, or deleted; filter on `input.id` and `input.event_type`.                                                                                                                                                                                                                     |
+| `observability::on-log`                                     | One log record; filter on `input.severity_number`.                                                                                                                                                                                                                                                                          |
+| `observability::on-span`                                    | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
+| `stream::on-changed`, `stream::on-join`, `stream::on-leave` | Hosted by `iii-stream` while it runs; filter on `input.stream_name` and `input.group_id`.                                                                                                                                                                                                                                   |
 
 A call of an engine-hosted source has `caller` `{ worker_name: "iii-engine" }`, so an envelope that
 captures `caller` carries it and a filter on `caller.worker_name` sees `iii-engine`. The

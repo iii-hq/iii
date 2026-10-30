@@ -156,7 +156,7 @@ const RD_KIND: Record<string, string> = {
 // never the public Stage-1 re-export path (`iii_sdk::channel`). So walk the
 // public module tree from the crate root, following `pub use`, and prefer the
 // clean submodule path over the impl module it's defined in.
-const RD_IMPL_MODULES = new Set(['channels', 'triggers', 'structs', 'types', 'iii', 'builtin_triggers', 'error', 'stream_provider', 'helpers'])
+const RD_IMPL_MODULES = new Set(['channels', 'structs', 'types', 'iii', 'error', 'stream_provider', 'helpers'])
 function extractRustdoc(jsonPath: string): Export[] {
   const data = JSON.parse(readFileSync(jsonPath, 'utf-8'))
   const index: Record<string, any> = data.index ?? {}

@@ -378,10 +378,10 @@ a mistyped id.
 ### When hooks take effect
 
 The SDK acknowledges no observer of a function before the call that registered the function has
-returned. So a hook set by id before `registerFunction`, or chained on its result, runs for every
-observer. In Node and the browser this also covers a hook set later in the same synchronous block,
-since inbound messages run on the event loop. In Python, Rust and Go, set hooks by id before
-registering.
+returned. So a hook set by id before `registerFunction` runs for every observer. In Node and the
+browser, a hook chained on the `registerFunction` result, or set later in the same synchronous
+block, does too, since inbound messages run on the event loop. In Python, Rust and Go, set hooks by
+id before registering: a hook set on the returned function can come after observers were accepted.
 
 A hook set once a function already has active observers is caught up: the SDK runs it for each of
 them at once, a throw late-rejects that observer, and the SDK logs one warning naming the function
@@ -1802,6 +1802,6 @@ worker.onObserverRemoved(() => cdp.release());
 
 The SDK and the engine both advertise the `observe.v2` feature. Against an engine without it,
 functions that declare `args_format`, `private: true` or `observable: false`, or that set
-`onObserverDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for each. The SDK
-registers them when the worker connects to an engine with `observe.v2`. Every other function, `call`
-and `observe` work, and the engine evaluates the filters of routed calls.
+`onObserverMatch` or `onObserverDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for
+each. The SDK registers them when the worker connects to an engine with `observe.v2`. Every other
+function, `call` and `observe` work, and the engine evaluates the filters of routed calls.
