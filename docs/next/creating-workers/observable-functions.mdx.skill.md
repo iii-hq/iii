@@ -370,6 +370,13 @@ a mistyped id.
   `onObserverRemoved` for each. If the observing worker reconnects in that time, the host gets each
   observer again, in the order they were created, runs `onObserverAdded`, and the observer is
   `active` once it is accepted.
+- **Back on a new connection.** A restarted worker connects with no reattach token and observes
+  under the ids it used before. An observe of a `suspended` observer's id, from a connection under
+  the same worker name in the same namespace, replaces that observer. The host already ran
+  `onObserverRemoved` for it when the worker left, and hears nothing more about it. It gets the new
+  observer like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a
+  queue subscriber's backlog, serves the new observer. From any other worker the id stays taken
+  (`OBSERVER_ID_CONFLICT`) until the grace period ends.
 - **One at a time.** For each function, the SDK runs observer hooks one at a time, in the order the
   engine announced the observers. Hooks of different functions run concurrently.
 - **Timeout.** A hook that runs past 30 seconds fails the observer with `OWNER_TIMEOUT`.
