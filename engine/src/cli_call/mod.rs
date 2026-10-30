@@ -71,7 +71,8 @@ pub struct CallArgs {
     pub namespace: Option<String>,
 
     /// Print help. With a FUNCTION_PATH, queries a running engine for that
-    /// function's description and request schema.
+    /// function's description, request schema and observer args, and whether
+    /// it is private (observed, not called).
     #[arg(short = 'h', long = "help", action = clap::ArgAction::SetTrue)]
     pub help: bool,
 }

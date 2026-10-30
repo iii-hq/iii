@@ -161,19 +161,17 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
     let description = description.as_str();
 
     // Drive sections individually via print_template so we can place the
-    // schema-driven Parameters table BEFORE the generic Options table that
-    // clap-help builds from the call flags.
+    // schema-driven sections BEFORE the generic Options table that clap-help
+    // builds from the call flags.
     let Some(call) = crate::cli_subcommand("call") else {
         return;
     };
 
-    let usage_template = "\n**Usage: ** `${name} [key=value ...] [--json '<obj>']`\n".to_string();
-    let parameters_md = parameters_md(meta);
-
     let mut printer = clap_help::Printer::new(call);
     printer
         .expander_mut()
-        .set("name", format!("iii call {}", fn_path));
+        .set("name", help_title(fn_path, meta));
+    printer.expander_mut().set("function", fn_path);
     if !description.is_empty() {
         printer.expander_mut().set("about", description.to_string());
     }
@@ -185,28 +183,109 @@ fn render_fn_help(fn_path: &str, meta: &Value) {
     if !description.is_empty() {
         printer.print_template("\n${about}\n");
     }
-    // Usage.
-    printer.print_template(&usage_template);
-    // Parameters (custom, schema-driven).
-    if let Some(md) = &parameters_md {
-        printer.print_template(md);
-    } else {
-        printer.print_template("\n**Parameters:**\n\n  *(no request schema published)*\n");
+    for section in help_sections(meta) {
+        printer.print_template(&section);
     }
-    // Options (clap-help default table for the call flags).
-    printer.print_template(clap_help::TEMPLATE_OPTIONS);
+    // Options (clap-help default table for the call flags): only for a
+    // function the CLI can call.
+    if !is_private(meta) {
+        printer.print_template(clap_help::TEMPLATE_OPTIONS);
+    }
+}
+
+/// `private: true` on a function row: only the worker that hosts the function
+/// calls it, and everyone else observes it (an event source).
+fn is_private(meta: &Value) -> bool {
+    meta.get("private").and_then(Value::as_bool) == Some(true)
+}
+
+/// `observable: false` on a function row: observing it fails with
+/// `NOT_OBSERVABLE`. Absent means observable.
+fn is_observable(meta: &Value) -> bool {
+    meta.get("observable").and_then(Value::as_bool) != Some(false)
+}
+
+/// The help title: the command that calls the function, or the bare id of a
+/// private one.
+fn help_title(fn_path: &str, meta: &Value) -> String {
+    if is_private(meta) {
+        fn_path.to_string()
+    } else {
+        format!("iii call {fn_path}")
+    }
+}
+
+/// The sections between the about block and the Options table, as the
+/// markdown templates `clap_help` prints. `${function}` expands to the
+/// function id.
+///
+/// A callable function gets its call usage and its Parameters. A private
+/// function is observed rather than called: its help says so, shows how to
+/// observe it, and lists its request schema as the Input every call carries.
+/// Both show the observer args (`args_format`) and the observer count of an
+/// observable function.
+fn help_sections(meta: &Value) -> Vec<String> {
+    let mut sections = Vec::new();
+    if is_private(meta) {
+        sections.push(
+            "\n**Private:** only the worker that hosts `${function}` calls it. Observe it to \
+             run a function on each of its calls:\n\n  `iii.observe('${function}', target)`\n"
+                .to_string(),
+        );
+        sections.push(
+            schema_table_md("Input", request_schema(meta))
+                .unwrap_or_else(|| "\n**Input:**\n\n  *(no request schema published)*\n".into()),
+        );
+    } else {
+        sections.push(
+            "\n**Usage: ** `iii call ${function} [key=value ...] [--json '<obj>']`\n".to_string(),
+        );
+        sections.push(parameters_md(meta).unwrap_or_else(|| {
+            "\n**Parameters:**\n\n  *(no request schema published)*\n".to_string()
+        }));
+    }
+
+    if !is_observable(meta) {
+        sections.push("\n**Not observable:** observing it fails with `NOT_OBSERVABLE`.\n".into());
+        return sections;
+    }
+    if let Some(args_format) = meta.get("args_format").filter(|v| !v.is_null()) {
+        sections.push(
+            schema_table_md("Observer args", Some(args_format)).unwrap_or_else(|| {
+                format!(
+                    "\n**Observer args:** {}\n",
+                    sanitize_cell(&schema_type(args_format)).replace('|', "\\|")
+                )
+            }),
+        );
+    }
+    if let Some(count) = meta.get("observer_count").and_then(Value::as_u64) {
+        sections.push(format!(
+            "\n**Observers:** {count}\n\n  `iii call engine::observers::list function_id=${{function}}` lists them.\n"
+        ));
+    }
+    sections
+}
+
+/// `functions::info` names the field `request_schema`; the legacy
+/// `request_format` key is the fallback for older engines.
+fn request_schema(meta: &Value) -> Option<&Value> {
+    meta.get("request_schema")
+        .or_else(|| meta.get("request_format"))
+        .filter(|v| !v.is_null())
 }
 
 /// Render the schema-driven parameters as a markdown table that termimad
 /// can display in the same style as clap-help's Options table. Returns
 /// `None` when there is nothing useful to show.
 fn parameters_md(meta: &Value) -> Option<String> {
-    // `functions::info` names the field `request_schema`; accept the legacy
-    // `request_format` key as a fallback for older engines.
-    let schema = meta
-        .get("request_schema")
-        .or_else(|| meta.get("request_format"))
-        .filter(|v| !v.is_null())?;
+    schema_table_md("Parameters", request_schema(meta))
+}
+
+/// A JSON Schema's properties as a `heading` table. `None` when the schema is
+/// absent or declares no properties.
+fn schema_table_md(heading: &str, schema: Option<&Value>) -> Option<String> {
+    let schema = schema?;
     let props = schema.get("properties").and_then(|p| p.as_object())?;
     if props.is_empty() {
         return None;
@@ -218,8 +297,8 @@ fn parameters_md(meta: &Value) -> Option<String> {
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
         .unwrap_or_default();
 
-    let mut md = String::from(
-        "\n**Parameters:**\n|:-:|:-:|:-:|:-|\n|name|type|required|description|\n|:-:|:-|:-:|:-|\n",
+    let mut md = format!(
+        "\n**{heading}:**\n|:-:|:-:|:-:|:-|\n|name|type|required|description|\n|:-:|:-|:-:|:-|\n"
     );
     for (name, prop) in props {
         // Escape `|` so multi-type values like `string|null` do not split the
@@ -270,7 +349,7 @@ fn print_static_help() {
         "{} `iii call <fn-path> --help` queries a running engine for the",
         "Tip:".bold()
     );
-    println!("  function's description and request schema.");
+    println!("  function's description, request schema and observer args.");
 }
 
 #[cfg(test)]
@@ -339,6 +418,139 @@ mod tests {
         assert!(parameters_md(&json!({ "request_schema": { "properties": {} } })).is_none());
         assert!(parameters_md(&json!({ "request_schema": null })).is_none());
         assert!(parameters_md(&json!({})).is_none());
+    }
+
+    /// `engine::functions::info` for `engine::on-observers-changed` on a 0.26
+    /// engine, trimmed: private, no args, its event as the request schema.
+    fn private_source_row() -> Value {
+        json!({
+            "function_id": "engine::on-observers-changed",
+            "description": "Engine-hosted source: an observer was created or changed state.",
+            "private": true,
+            "observer_count": 3,
+            "request_schema": {
+                "type": "object",
+                "properties": {
+                    "observer_id": { "type": "string" },
+                    "state": { "type": "string" }
+                },
+                "required": ["observer_id", "state"]
+            }
+        })
+    }
+
+    fn rendered(meta: &Value) -> String {
+        help_sections(meta)
+            .concat()
+            .replace("${function}", "x::on-y")
+    }
+
+    #[test]
+    fn a_private_function_is_observed_not_called() {
+        let meta = private_source_row();
+        let help = rendered(&meta);
+
+        assert!(is_private(&meta));
+        assert_eq!(
+            help_title("engine::on-observers-changed", &meta),
+            "engine::on-observers-changed",
+            "the title names the function, not a call"
+        );
+        assert!(
+            !help.contains("**Usage"),
+            "no call usage for a private function: {help}"
+        );
+        assert!(!help.contains("**Parameters"), "{help}");
+        assert!(help.contains("**Private:** only the worker that hosts `x::on-y` calls it"));
+        assert!(
+            help.contains("  `iii.observe('x::on-y', target)`"),
+            "{help}"
+        );
+        assert!(
+            help.contains("**Input:**") && help.contains("|`observer_id`|string|yes|"),
+            "the request schema is each call's input: {help}"
+        );
+        assert!(help.contains("**Observers:** 3"), "{help}");
+        assert!(
+            help.contains("`iii call engine::observers::list function_id=x::on-y`"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn args_format_is_shown_as_the_observer_args() {
+        let mut meta = private_source_row();
+        meta["args_format"] = json!({
+            "type": "object",
+            "properties": {
+                "expression": { "type": "string", "description": "7-field cron expression" }
+            },
+            "required": ["expression"]
+        });
+        let help = rendered(&meta);
+        assert!(help.contains("**Observer args:**"), "{help}");
+        assert!(
+            help.contains("|`expression`|string|yes|7-field cron expression|"),
+            "{help}"
+        );
+
+        // A callable function can take observer args too.
+        meta["private"] = json!(false);
+        let help = rendered(&meta);
+        assert!(help.contains("**Usage: ** `iii call x::on-y"), "{help}");
+        assert!(help.contains("|`expression`|string|yes|"), "{help}");
+
+        // An args_format without properties still says what args are.
+        meta["args_format"] = json!({ "type": "object" });
+        assert!(rendered(&meta).contains("**Observer args:** object"));
+    }
+
+    #[test]
+    fn a_callable_function_keeps_its_usage_and_parameters() {
+        let meta = json!({
+            "function_id": "orders::create",
+            "observer_count": 0,
+            "request_schema": { "properties": { "sku": { "type": "string" } } }
+        });
+        let help = rendered(&meta);
+
+        assert!(!is_private(&meta));
+        assert_eq!(
+            help_title("orders::create", &meta),
+            "iii call orders::create"
+        );
+        assert!(
+            help.starts_with("\n**Usage: ** `iii call x::on-y [key=value ...] [--json '<obj>']`"),
+            "{help}"
+        );
+        assert!(help.contains("**Parameters:**") && help.contains("|`sku`|string|no|"));
+        assert!(!help.contains("**Private"), "{help}");
+        assert!(!help.contains("**Observer args"), "{help}");
+        assert!(help.contains("**Observers:** 0"), "{help}");
+    }
+
+    #[test]
+    fn a_function_that_is_not_observable_says_so() {
+        let meta = json!({
+            "function_id": "secrets::read",
+            "observable": false,
+            "observer_count": 0,
+            "args_format": { "properties": { "a": { "type": "string" } } }
+        });
+        let help = rendered(&meta);
+        assert!(help.contains("**Not observable:**"), "{help}");
+        assert!(!help.contains("**Observer args"), "{help}");
+        assert!(!help.contains("**Observers:**"), "{help}");
+    }
+
+    #[test]
+    fn a_row_without_observe_fields_renders_as_before() {
+        // An engine that predates the observe fields on function rows.
+        let meta = json!({ "function_id": "a::b" });
+        let help = rendered(&meta);
+        assert!(help.contains("**Usage: **"), "{help}");
+        assert!(help.contains("*(no request schema published)*"), "{help}");
+        assert!(!help.contains("**Observers"), "{help}");
     }
 
     #[test]
