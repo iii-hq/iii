@@ -368,17 +368,24 @@ fn observe_benches(c: &mut Criterion) {
         event,
     );
     let before = host.received.once.load(Ordering::Relaxed);
+    // Set when the case runs: a `cargo bench` filter can leave it out.
+    let source_ran = std::cell::Cell::new(false);
     bench_call(
         c,
         "call_local/event_source_observed",
         &host.iii,
         "bench::source",
-        event,
+        |i| {
+            source_ran.set(true);
+            event(i)
+        },
     );
     // the reports of the source carried each event once
-    wait_for("the source's reports", || {
-        host.received.once.load(Ordering::Relaxed) > before
-    });
+    if source_ran.get() {
+        wait_for("the source's reports", || {
+            host.received.once.load(Ordering::Relaxed) > before
+        });
+    }
     eprintln!(
         "fake engine: {} report items, {} carrying the value once (output_is_input)",
         host.received.items.load(Ordering::Relaxed),
