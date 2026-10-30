@@ -1,0 +1,274 @@
+### compose::status and compose::list, iii 0.25.0 (released) vs this branch (d72d4c3a0), one project
+### Packages from a local cache, /resolve from a local registry (a test-only patch of the branch build sends it there;
+### not part of this PR); every https request goes to a dead proxy. Commands run in /tmp/compose-demo/project.
+
+### 1. The project, under iii 0.25.0 (released): no requested, target or targets (jq prints null for an absent key)
+
+$ cat worker-compose.yaml
+# compose::status demo: a pin, a tag, a range and a path:// worker
+namespace: default
+startup_timeout: 120s
+stop_timeout: 15s
+
+engine:
+  url: ws://127.0.0.1:49349
+
+containers:
+  state:
+    worker: package://state
+    version: "0.22.23"
+  queue:
+    worker: package://queue
+    version: latest
+  cron:
+    worker: package://cron
+    version: "^0.21.26"
+  local-fp:
+    worker: path://./workers/local-fp
+    scripts:
+      run: exec ./fp
+
+$ iii --version
+0.25.0
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::status
+{
+  "containers": [
+    {
+      "container": "state",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/state.log",
+      "owned": true,
+      "pid": 3026293,
+      "state": "ready",
+      "version": "0.22.23"
+    },
+    {
+      "container": "queue",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/queue.log",
+      "owned": true,
+      "pid": 3026330,
+      "state": "ready",
+      "version": "0.21.26"
+    },
+    {
+      "container": "cron",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/cron.log",
+      "owned": true,
+      "pid": 3026294,
+      "state": "ready",
+      "version": "0.21.27"
+    },
+    {
+      "container": "local-fp",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/local-fp.log",
+      "owned": true,
+      "pid": 3026275,
+      "state": "ready",
+      "version": "local"
+    }
+  ],
+  "daemon_pid": 3025511,
+  "file": "/tmp/compose-demo/project/worker-compose.yaml",
+  "namespace": "default",
+  "state_dir": "/tmp/compose-demo/state/project-68338e80/default"
+}
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::list | jq '{daemon_pid, target, targets, projects: [.projects[] | {file, containers: [.containers[] | {container, version, requested}]}]}'
+{
+  "daemon_pid": 3025511,
+  "target": null,
+  "targets": null,
+  "projects": [
+    {
+      "file": "/tmp/compose-demo/project/worker-compose.yaml",
+      "containers": [
+        {
+          "container": "state",
+          "version": "0.22.23",
+          "requested": null
+        },
+        {
+          "container": "queue",
+          "version": "0.21.26",
+          "requested": null
+        },
+        {
+          "container": "cron",
+          "version": "0.21.27",
+          "requested": null
+        },
+        {
+          "container": "local-fp",
+          "version": "local",
+          "requested": null
+        }
+      ]
+    }
+  ]
+}
+
+### 2. The same project and lock, under the branch build
+
+$ iii --version
+0.25.0
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::status
+{
+  "containers": [
+    {
+      "container": "state",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/state.log",
+      "owned": true,
+      "pid": 3043359,
+      "requested": "0.22.23",
+      "state": "ready",
+      "version": "0.22.23"
+    },
+    {
+      "container": "queue",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/queue.log",
+      "owned": true,
+      "pid": 3043395,
+      "requested": "latest",
+      "state": "ready",
+      "version": "0.21.26"
+    },
+    {
+      "container": "cron",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/cron.log",
+      "owned": true,
+      "pid": 3043377,
+      "requested": "^0.21.26",
+      "state": "ready",
+      "version": "0.21.27"
+    },
+    {
+      "container": "local-fp",
+      "log_path": "/tmp/compose-demo/state/project-68338e80/default/logs/local-fp.log",
+      "owned": true,
+      "pid": 3043340,
+      "state": "ready",
+      "version": "local"
+    }
+  ],
+  "daemon_pid": 3042646,
+  "file": "/tmp/compose-demo/project/worker-compose.yaml",
+  "namespace": "default",
+  "state_dir": "/tmp/compose-demo/state/project-68338e80/default",
+  "target": "x86_64-unknown-linux-gnu",
+  "targets": [
+    "x86_64-unknown-linux-gnu"
+  ]
+}
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::list | jq '{daemon_pid, target, targets, projects: [.projects[] | {file, containers: [.containers[] | {container, version, requested}]}]}'
+{
+  "daemon_pid": 3042646,
+  "target": "x86_64-unknown-linux-gnu",
+  "targets": [
+    "x86_64-unknown-linux-gnu"
+  ],
+  "projects": [
+    {
+      "file": "/tmp/compose-demo/project/worker-compose.yaml",
+      "containers": [
+        {
+          "container": "state",
+          "version": "0.22.23",
+          "requested": "0.22.23"
+        },
+        {
+          "container": "queue",
+          "version": "0.21.26",
+          "requested": "latest"
+        },
+        {
+          "container": "cron",
+          "version": "0.21.27",
+          "requested": "^0.21.26"
+        },
+        {
+          "container": "local-fp",
+          "version": "local",
+          "requested": null
+        }
+      ]
+    }
+  ]
+}
+
+### 3. A no-restart update: state pinned to 0.22.23, which is also latest; compose::update worker=state@latest
+###    changes only the selector. Nothing restarts (same pids) and compose::status reports requested: latest at once.
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::status | jq -c '.containers[] | {container, state, version, requested, pid}'
+{"container":"state","state":"ready","version":"0.22.23","requested":"0.22.23","pid":3043359}
+{"container":"queue","state":"ready","version":"0.21.26","requested":"latest","pid":3043395}
+{"container":"cron","state":"ready","version":"0.21.27","requested":"^0.21.26","pid":3043377}
+{"container":"local-fp","state":"ready","version":"local","requested":null,"pid":3043340}
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::update --json '{"worker": "state@latest", "operation_id": "demo-state-latest"}'
+{
+  "operation_id": "demo-state-latest",
+  "requested": 1,
+  "status": "accepted"
+}
+
+$ sleep 3; iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::operation --json '{"operation_id": "demo-state-latest"}'
+{
+  "completed": 0,
+  "last_event": {
+    "current": 0,
+    "detail": "all requested workers were updated",
+    "elapsed_ms": 32,
+    "operation_id": "demo-state-latest",
+    "phase": "complete",
+    "sequence": 5,
+    "terminal": true,
+    "total": 0
+  },
+  "last_sequence": 5,
+  "operation_id": "demo-state-latest",
+  "phase": "complete",
+  "requested": 1,
+  "status": "succeeded",
+  "total": 0
+}
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::status | jq -c '.containers[] | {container, state, version, requested, pid}'
+{"container":"state","state":"ready","version":"0.22.23","requested":"latest","pid":3043359}
+{"container":"queue","state":"ready","version":"0.21.26","requested":"latest","pid":3043395}
+{"container":"cron","state":"ready","version":"0.21.27","requested":"^0.21.26","pid":3043377}
+{"container":"local-fp","state":"ready","version":"local","requested":null,"pid":3043340}
+
+$ grep -m1 -A2 '^  state:' worker-compose.yaml; grep -m1 -A2 '^  state:' worker-compose.lock
+  state:
+    worker: package://state
+    version: "latest"
+  state:
+    worker: package://state
+    requested: latest
+
+### 4. An empty version is refused (branch build)
+
+$ cat /tmp/compose-demo/empty-version/worker-compose.yaml
+namespace: default
+engine:
+  url: ws://127.0.0.1:49349
+containers:
+  state:
+    worker: package://state
+    version: ""
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::up --json '{"file": "/tmp/compose-demo/empty-version/worker-compose.yaml"}'
+Error: {
+  "code": "MISSING_VERSION_FOR_PACKAGE",
+  "message": "container 'state': package workers require an explicit 'version'",
+  "stacktrace": null
+}
+[exit 1]
+
+$ iii --no-update-check trigger --engine ws://127.0.0.1:49349 compose::list | jq '[.projects[].file]'
+[
+  "/tmp/compose-demo/project/worker-compose.yaml"
+]
+
