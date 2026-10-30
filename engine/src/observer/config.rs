@@ -33,7 +33,10 @@ pub struct ObserversConfig {
     /// restart. `0` forgets them at once.
     pub disposed_retention_ms: u64,
     /// An added observer the function's host does not ack in time (its
-    /// `onObserverAdded` hooks) fails with `OWNER_TIMEOUT`.
+    /// `onObserverAdded` hooks) fails with `OWNER_TIMEOUT`. The host runs one
+    /// function's hooks one at a time, so the time counts from when it moved
+    /// on to the observer: its announcement, or the host's answer for the
+    /// observer before it.
     pub owner_ack_timeout_ms: u64,
     /// `max_in_flight` of an observer that sets none.
     pub default_max_in_flight: u32,

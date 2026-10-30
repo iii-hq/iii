@@ -54,7 +54,7 @@ use super::{
     lifecycle::{
         CANCELLED, INVALID_REPORT, Observer, PendingActivation, failure_reasons, lock, now_ms,
     },
-    owner::ActiveSet,
+    owner::{ActiveSet, Needs},
 };
 use crate::{
     protocol::{
@@ -78,6 +78,8 @@ struct Tracked {
     /// The function's host delivers its calls itself: only its answer
     /// activates the call's observers.
     host_delivers: bool,
+    /// What the call keeps (see [`ActiveSet::needs_for`]).
+    needs: Needs,
     /// The evaluator had room when the call began: what it needs was kept.
     admitted: bool,
     started: Instant,
@@ -589,20 +591,22 @@ impl ObserverRegistry {
         baggage: &Option<String>,
     ) -> ObservedCall {
         let admitted = self.evaluator_has_room(&set);
-        let input = (admitted && set.needs.input).then(|| {
+        let host_delivers = self.host_delivers(&set.function);
+        let needs = set.needs_for(host_delivers);
+        let input = (admitted && needs.input).then(|| {
             self.payload_copies.fetch_add(1, Ordering::Relaxed);
             Arc::new(unstamped(body.clone()))
         });
-        let metadata = if admitted && set.needs.metadata {
+        let metadata = if admitted && needs.metadata {
             metadata.clone().map(Arc::new)
         } else {
             None
         };
-        let host_delivers = self.host_delivers(&set.function);
         ObservedCall {
             inner: Some(Tracked {
                 set,
                 host_delivers,
+                needs,
                 admitted,
                 started: Instant::now(),
                 started_at_ms: now_ms(),
@@ -703,7 +707,7 @@ impl ObserverRegistry {
             }
             return;
         }
-        let needs = call.set.needs;
+        let needs = call.needs;
         let (success, output, error) = match result {
             Ok(Ok(output)) => (
                 true,
@@ -898,7 +902,7 @@ impl ObserverRegistry {
             ctx,
             ..
         } = evaluation;
-        let needs = set.needs;
+        let needs = set.needs_for(matches!(matching, Matching::Listed(_)));
         completed.error = error
             .and_then(|e| serde_json::to_value(e).ok())
             .map(Arc::new);
@@ -2654,6 +2658,81 @@ mod tests {
         for _ in 0..4 {
             test_support::next(&mut delivered).await;
         }
+    }
+
+    /// `iii.observer.activations.total` counts each activation under the
+    /// delivery that started it (decision 12): `engine` for a call the engine
+    /// evaluated, `host` for one whose host listed the observer, and
+    /// `observer_call` for a call through the observer.
+    #[tokio::test]
+    async fn the_activation_counter_is_labelled_by_delivery() {
+        let recorded = super::super::test_metrics::record();
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let mut delivered = test_support::capture(&engine, "test::dst");
+        let (host, _socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &host,
+            test_support::request("obs", "test::src", "test::dst", None),
+        )
+        .await;
+        let count = |delivery: &str| {
+            recorded.sum(
+                "iii.observer.activations.total",
+                &[("function_id", "test::src"), ("delivery", delivery)],
+            )
+        };
+
+        complete_call(&engine, json!({ "n": 1 }));
+        test_support::next(&mut delivered).await;
+        assert_eq!(count(super::ENGINE_DELIVERY), 1);
+
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+            (host.id, crate::engine::InvocationKind::Regular),
+        );
+        complete_delivered(&engine, 2, host.id, &["obs"]);
+        test_support::next(&mut delivered).await;
+        assert_eq!(count(super::HOST_DELIVERY), 1);
+
+        engine
+            .observers
+            .observer_call(
+                &host,
+                super::ObserverCall {
+                    invocation_id: Some(Uuid::new_v4()),
+                    data: json!({ "n": 3 }),
+                    caller: None,
+                    observe_depth: None,
+                    activation: crate::protocol::Activation {
+                        observer_id: "obs".to_string(),
+                        activation_id: None,
+                    },
+                    traceparent: None,
+                    baggage: None,
+                    fire_and_forget: false,
+                },
+            )
+            .await
+            .expect("the target answers");
+        assert_eq!(test_support::next(&mut delivered).await, json!({ "n": 3 }));
+        assert_eq!(
+            [
+                count(super::ENGINE_DELIVERY),
+                count(super::HOST_DELIVERY),
+                count(super::OBSERVER_CALL_DELIVERY),
+            ],
+            [1, 1, 1]
+        );
+        assert_eq!(
+            recorded.sum(
+                "iii.observer.activations.total",
+                &[("function_id", "test::src")]
+            ),
+            3,
+            "no other label"
+        );
     }
 
     /// Every observer an event matched queues the same event, not a copy of

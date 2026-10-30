@@ -94,6 +94,52 @@ async fn all_functions_on_bare_engine_are_iii_builtins() {
     }
 }
 
+/// The trigger builtins are removed (decision 6): a booted engine registers
+/// none of them, so `engine::functions::list` does not list them and a call of
+/// one is `function_not_found`.
+#[tokio::test]
+async fn the_trigger_builtins_are_not_registered() {
+    const REMOVED: [&str; 6] = [
+        "engine::register_trigger",
+        "engine::unregister_trigger",
+        "engine::triggers::list",
+        "engine::triggers::info",
+        "engine::registered-triggers::list",
+        "engine::registered-triggers::info",
+    ];
+    let (builder, _config_dir) = boot_bare_engine().await;
+    let engine = builder.engine();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let listed = engine
+        .call(
+            "engine::functions::list",
+            json!({ "include_internal": true }),
+        )
+        .await
+        .expect("engine::functions::list should succeed")
+        .expect("response should not be None");
+    let ids: Vec<&str> = listed["functions"]
+        .as_array()
+        .expect("'functions' should be an array")
+        .iter()
+        .filter_map(|function| function["function_id"].as_str())
+        .collect();
+    assert!(
+        ids.contains(&"engine::observers::list"),
+        "the observer builtins replace them: {ids:?}"
+    );
+    for id in REMOVED {
+        assert!(!ids.contains(&id), "{id} is listed");
+        let error = engine
+            .call(id, json!({}))
+            .await
+            .expect_err("no such function");
+        assert_eq!(error.code, "function_not_found", "{id}: {error:?}");
+    }
+}
+
 /// Smoke-test the new `engine::functions::info` builtin against a known engine
 /// function. The response must include the schemas under their new
 /// `request_schema` / `response_schema` keys.

@@ -653,9 +653,12 @@ mod tests {
     }
 
     /// The registration hooks of earlier engines still load, and are
-    /// ignored: the config parses, and nothing reads them.
-    #[test]
-    fn removed_registration_hooks_are_ignored() {
+    /// ignored: the config parses, nothing reads them, and loading it logs
+    /// one warning per key, naming what replaces it.
+    #[tokio::test]
+    async fn removed_registration_hooks_are_ignored_with_one_warning_each() {
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        tracing::callsite::rebuild_interest_cache();
         let yaml = r#"
             on_trigger_registration_function_id: my-project::on-reg
             on_trigger_type_registration_function_id: my-project::on-type-reg
@@ -667,12 +670,39 @@ mod tests {
             config.on_observer_registration_function_id,
             Some("my-project::on-observe".to_string())
         );
-        let raw: Value = serde_yaml::from_str(yaml).unwrap();
-        warn_removed_keys(&raw);
         let reencoded = serde_json::to_value(&config).unwrap();
         for (key, _) in REMOVED_KEYS {
             assert!(reencoded.get(key).is_none(), "{key}");
         }
+
+        let raw: Value = serde_yaml::from_str(yaml).unwrap();
+        let engine = std::sync::Arc::new(crate::engine::Engine::new());
+        <super::super::WorkerManager as crate::workers::traits::Worker>::create(
+            engine,
+            Some(serde_json::json!({ "host": "127.0.0.1", "port": 0, "rbac": raw })),
+        )
+        .await
+        .expect("the config loads");
+        let logs = logs.contents();
+        for (key, replacement) in [
+            (
+                "on_trigger_registration_function_id",
+                "on_observer_registration_function_id",
+            ),
+            (
+                "on_trigger_type_registration_function_id",
+                "on_function_registration_function_id",
+            ),
+        ] {
+            let lines: Vec<&str> = logs
+                .lines()
+                .filter(|line| line.contains(&format!("rbac.{key} is ignored")))
+                .collect();
+            assert_eq!(lines.len(), 1, "{key}: {logs}");
+            assert!(lines[0].contains("WARN"), "{}", lines[0]);
+            assert!(lines[0].contains(replacement), "{}", lines[0]);
+        }
+        assert_eq!(logs.lines().count(), 2, "nothing else: {logs}");
     }
 
     #[test]

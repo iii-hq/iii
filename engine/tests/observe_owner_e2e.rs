@@ -345,6 +345,107 @@ async fn an_owner_that_never_acks_times_out() {
     assert_eq!(removal["revision"], 3, "told about it, so told it is gone");
 }
 
+/// An SDK runs one function's observer hooks one at a time, in announcement
+/// order (v2 §4.3), so an observer's ack timeout counts from when its owner
+/// moved on to it, not from the announcement: observers announced together
+/// whose hooks each stay under the timeout are accepted though the hooks take
+/// longer than it in total. A hook that runs past the timeout still fails.
+#[tokio::test]
+async fn the_ack_timeout_counts_from_when_the_owner_moves_on_to_the_observer() {
+    let timeout = std::time::Duration::from_millis(1_000);
+    let hook = std::time::Duration::from_millis(600);
+    let t = spawn_engine(ObserversConfig {
+        owner_ack_timeout_ms: timeout.as_millis() as u64,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let mut sink = host(&t, "sink", &["sink::orders"]).await;
+    let ids = ["a", "b", "c", "d"];
+    for id in ids {
+        let result = sink
+            .observe(observer(
+                id,
+                json!({ "function_id": "orders::create" }),
+                "sink::orders",
+            ))
+            .await;
+        assert_eq!(result["state"], "pending", "{result}");
+    }
+
+    // The function's host arrives: all four in one announcement.
+    let (mut orders, announced) = owner(&t, "orders", &["orders::create"]).await;
+    let listed: Vec<&str> = announced[0]["observers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, ids);
+    let revision = announced[0]["revision"].clone();
+
+    let mut moved_on = std::time::Instant::now();
+    for id in ["a", "b", "c"] {
+        tokio::time::sleep(hook).await;
+        ack(&mut orders, "orders::create", id, &revision).await;
+        moved_on = std::time::Instant::now();
+        sink.state_becomes(id, "active").await;
+    }
+    assert!(
+        hook * 3 > timeout,
+        "the hooks took longer than the timeout in total"
+    );
+
+    // `d`'s hooks start once `c` was acked, and never end.
+    let error = sink.state_becomes("d", "error").await;
+    assert_eq!(error["reason"]["code"], "OWNER_TIMEOUT", "{error}");
+    assert!(
+        moved_on.elapsed() >= timeout,
+        "timed out {:?} after its hooks started",
+        moved_on.elapsed()
+    );
+    for id in ["a", "b", "c"] {
+        assert_eq!(state(&t, id), Some(ObserverState::Active), "{id}");
+    }
+}
+
+/// An observer disposed before its owner answered may still have its hooks
+/// running: the SDK moves on to the next observer when they end, a full
+/// timeout later at the latest, so the next observer's ack timeout counts
+/// from then.
+#[tokio::test]
+async fn an_observer_disposed_mid_hook_holds_the_next_ones_clock() {
+    let timeout = std::time::Duration::from_millis(1_000);
+    let t = spawn_engine(ObserversConfig {
+        owner_ack_timeout_ms: timeout.as_millis() as u64,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let mut sink = host(&t, "sink", &["sink::orders"]).await;
+    for id in ["first", "second"] {
+        sink.observe(observer(
+            id,
+            json!({ "function_id": "orders::create" }),
+            "sink::orders",
+        ))
+        .await;
+    }
+    let (mut orders, announced) = owner(&t, "orders", &["orders::create"]).await;
+    let revision = announced[0]["revision"].clone();
+    let started = std::time::Instant::now();
+
+    // `first`'s hooks are running when its observer goes.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    sink.send(json!({ "type": "unobserve", "id": "first" }))
+        .await;
+    removed(&mut orders, "first").await;
+    // They end at 800 ms; `second`'s take 700 ms more, past the timeout
+    // from the announcement but within it from when `first` went.
+    tokio::time::sleep(std::time::Duration::from_millis(1_500).saturating_sub(started.elapsed()))
+        .await;
+    ack(&mut orders, "orders::create", "second", &revision).await;
+    sink.state_becomes("second", "active").await;
+}
+
 #[tokio::test]
 async fn revisions_increase_by_one_per_add_and_remove() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -987,6 +1088,68 @@ async fn local_dispatch_is_off_under_rbac_middleware() {
         announced[0]["local_dispatch"], false,
         "a local call would skip the middleware"
     );
+}
+
+/// Under RBAC middleware, a host's call of its own private function skips
+/// the middleware (v2 §6): the middleware's forward would come from another
+/// connection, which a private function refuses. So the host may run it
+/// in-process, and a call it sends reaches it and its observers. Its calls
+/// of every other function still go through the middleware.
+#[tokio::test]
+async fn a_hosts_call_of_its_private_function_skips_the_middleware() {
+    let t = spawn(Setup {
+        middleware_function_id: Some("test::middleware".to_string()),
+        ..Setup::default()
+    })
+    .await;
+    let intercepted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    {
+        let intercepted = intercepted.clone();
+        in_process(&t.engine, "test::middleware", move |input| {
+            intercepted
+                .lock()
+                .unwrap()
+                .push(input["function_id"].clone());
+            json!("from the middleware")
+        });
+    }
+    let mut cron = connect(&t, "cron", true).await;
+    cron.register_function_with(json!({
+        "type": "registerfunction",
+        "id": "cron::on-tick",
+        "private": true,
+    }))
+    .await;
+    let private = function_registered(&mut cron, "cron::on-tick").await;
+    assert_eq!(
+        private["local_dispatch"], true,
+        "its host's calls skip the middleware: {private}"
+    );
+    cron.register_function("cron::status").await;
+    let public = function_registered(&mut cron, "cron::status").await;
+    assert_eq!(public["local_dispatch"], false, "{public}");
+
+    let mut sink = host(&t, "sink", &["sink::ticks"]).await;
+    sink.observe_active(observer(
+        "obs-ticks",
+        json!({ "function_id": "cron::on-tick", "deliver": "input" }),
+        "sink::ticks",
+    ))
+    .await;
+
+    let tick = json!({ "expression": "0 * * * * * *", "scheduled_time": "t0" });
+    let call = cron.call("cron::on-tick", tick.clone()).await;
+    let invoke = cron.invoked("cron::on-tick").await;
+    cron.reply(&invoke, tick.clone()).await;
+    let answer = cron.result(call).await;
+    assert_eq!(answer["result"], tick, "{answer}");
+    let delivered = sink.invoked("sink::ticks").await;
+    assert_eq!(delivered["data"], tick);
+    sink.reply(&delivered, Value::Null).await;
+
+    let call = cron.call("cron::status", json!({})).await;
+    assert_eq!(cron.result(call).await["result"], "from the middleware");
+    assert_eq!(*intercepted.lock().unwrap(), vec![json!("cron::status")]);
 }
 
 #[tokio::test]

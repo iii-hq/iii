@@ -604,6 +604,16 @@ impl Observer {
         lock(&self.status).flags.clone()
     }
 
+    /// The announcement the observer waits for its owner to answer: told,
+    /// and neither acked, failed nor disposed since. `None` otherwise.
+    pub(crate) fn awaited_announcement(&self) -> Option<Announcement> {
+        let status = lock(&self.status);
+        let flags = &status.flags;
+        flags
+            .announced
+            .filter(|_| !flags.owner_acked && flags.failed.is_none() && flags.disposed.is_none())
+    }
+
     /// Clears the owner announcement (no state depends on it) and returns
     /// it, with whether the owner had rejected the observer.
     pub(crate) fn take_announcement(&self) -> (Option<Announcement>, bool) {

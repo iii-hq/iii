@@ -75,15 +75,19 @@ pub(crate) struct AuthResult {
 /// Auth result fields this engine ignores, with one warning per process.
 const REMOVED_FIELDS: [&str; 2] = ["allowed_trigger_types", "allow_trigger_type_registration"];
 
-/// Logs one `warn` per process when an auth function's result sets a removed
-/// field: registering an event source is registering a function, gated by
-/// `allow_function_registration` and the registration hook.
-fn warn_removed_fields(result: &Value) {
-    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Set once the removed auth result fields were warned about.
+static REMOVED_FIELDS_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Logs one `warn` (per process: `warned` is [`REMOVED_FIELDS_WARNED`]) when
+/// an auth function's result sets a removed field: registering an event
+/// source is registering a function, gated by `allow_function_registration`
+/// and the registration hook.
+fn warn_removed_fields(result: &Value, warned: &std::sync::atomic::AtomicBool) {
     if REMOVED_FIELDS
         .iter()
         .any(|field| result.get(field).is_some())
-        && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        && !warned.swap(true, std::sync::atomic::Ordering::Relaxed)
     {
         tracing::warn!(
             fields = ?REMOVED_FIELDS,
@@ -133,7 +137,7 @@ impl Session {
             ));
         };
 
-        warn_removed_fields(&value);
+        warn_removed_fields(&value, &REMOVED_FIELDS_WARNED);
         serde_json::from_value(value).map_err(|e| ErrorBody::new("AUTH_ERROR", e.to_string()))
     }
 }
@@ -171,4 +175,84 @@ pub async fn handle_session(
         context: auth.context,
         function_registration_prefix: auth.function_registration_prefix,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use super::*;
+    use crate::engine::{Handler, RegisterFunctionRequest};
+    use crate::function::FunctionResult;
+
+    fn removed_fields() -> Value {
+        json!({
+            "allowed_functions": ["orders::create"],
+            "allow_function_registration": false,
+            "allowed_trigger_types": ["cron"],
+            "allow_trigger_type_registration": true,
+        })
+    }
+
+    /// An auth function written for an earlier engine still authenticates:
+    /// the removed fields are ignored, and the others apply.
+    #[tokio::test]
+    async fn an_auth_result_with_removed_fields_still_authenticates() {
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = Engine::new();
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: "test::auth".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(|_: Value| async move { FunctionResult::Success(Some(removed_fields())) }),
+        );
+        let rbac = RbacConfig {
+            auth_function_id: Some("test::auth".to_string()),
+            expose_functions: vec![],
+            on_function_registration_function_id: None,
+            on_observer_registration_function_id: None,
+        };
+        let auth = Session::authenticate(
+            &engine,
+            Some(rbac),
+            "/".parse().unwrap(),
+            HeaderMap::new(),
+            "127.0.0.1".to_string(),
+        )
+        .await
+        .expect("authenticates");
+        assert_eq!(auth.allowed_functions, vec!["orders::create".to_string()]);
+        assert!(!auth.allow_function_registration);
+    }
+
+    /// The removed fields log one warning, naming them and what gates event
+    /// sources instead, however many results carry them; a result without
+    /// them logs nothing.
+    #[test]
+    fn removed_auth_fields_log_one_warning() {
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        tracing::callsite::rebuild_interest_cache();
+        let warned = AtomicBool::new(false);
+        warn_removed_fields(&json!({ "allowed_functions": [] }), &warned);
+        assert!(logs.contents().is_empty(), "{}", logs.contents());
+        for _ in 0..3 {
+            warn_removed_fields(&removed_fields(), &warned);
+        }
+        let logs = logs.contents();
+        let lines: Vec<&str> = logs.lines().collect();
+        assert_eq!(lines.len(), 1, "{logs}");
+        for expected in [
+            "WARN",
+            "allowed_trigger_types",
+            "allow_trigger_type_registration",
+            "allow_function_registration",
+            "on_function_registration_function_id",
+        ] {
+            assert!(lines[0].contains(expected), "{expected}: {}", lines[0]);
+        }
+    }
 }

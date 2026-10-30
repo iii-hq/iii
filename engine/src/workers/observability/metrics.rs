@@ -289,7 +289,11 @@ impl EngineMetrics {
     /// Panics if `GLOBAL_METER` has not been initialized via `init_metrics()`.
     pub fn new() -> Self {
         let meter = get_meter().expect("GLOBAL_METER not initialized - call init_metrics() first");
+        Self::with_meter(meter)
+    }
 
+    /// The engine metrics, created on `meter`.
+    pub(crate) fn with_meter(meter: &Meter) -> Self {
         Self {
             invocations_total: meter
                 .u64_counter("iii.invocations.total")
