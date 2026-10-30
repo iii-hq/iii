@@ -74,6 +74,7 @@ import {
   OBSERVE_HOOK_TIMEOUT_MS,
   type ObserveHost,
   type ObserverImpl,
+  sameData,
 } from './observable'
 import type {
   AddedHook,
@@ -566,8 +567,9 @@ class Sdk implements IIIClient {
         this.onObserverDeliver(functionId, hook)
         return ref
       },
-      observers: () => this.observers(functionId),
-      isObserved: (call) => this.isObserved(functionId, call as Partial<Call>),
+      // This registration's observers: one load, no lookup by id.
+      observers: () => observe.observers(),
+      isObserved: (call) => observe.isObserved(call as Partial<Call>),
       unregister: () => {
         // A stale ref (the id was unregistered and registered again) must not
         // touch the registration that replaced it: nothing to do.
@@ -1296,13 +1298,14 @@ class Sdk implements IIIClient {
     const startedAt = Date.now()
     const t0 = performance.now()
     let delivery: Delivery | undefined
-    const settle = (outcome: HandlerOutcome): unknown => {
+    const settle = (handled: HandlerOutcome): unknown => {
       const duration = performance.now() - t0
-      this.reporter.recordLocal(function_id, outcome.ok, duration)
+      this.reporter.recordLocal(function_id, handled.ok, duration)
       if (!delivering) {
-        if (outcome.ok) return outcome.value
-        throw outcome.error
+        if (handled.ok) return handled.value
+        throw handled.error
       }
+      const outcome = this.deliveredOutcome(handled, input, callInput, byReference)
       delivery = new Delivery(observe, {
         call: this.callOf(function_id, ctx.invocation_id, outcome, callInput, ctx.caller, callMetadata),
         thrown: outcome.ok ? undefined : outcome.error,
@@ -1357,6 +1360,29 @@ class Sdk implements IIIClient {
         },
       )
     })
+  }
+
+  /**
+   * The outcome a local call is delivered with. A private function's result
+   * is frozen in development, before the match and deliver hooks and the
+   * report read it, so a write from any of them throws. A handler that
+   * returns its own input unchanged is delivered with the input the call
+   * started with as its output, so the report carries the value once
+   * (`output_is_input`, decision 4).
+   */
+  private deliveredOutcome(
+    outcome: HandlerOutcome,
+    input: unknown,
+    callInput: unknown,
+    byReference: boolean,
+  ): HandlerOutcome {
+    if (!outcome.ok) return outcome
+    if (byReference) {
+      if (this.freezePrivate) freezePlain(outcome.value)
+      return outcome
+    }
+    const ownInput = outcome.value === input && input !== null && typeof input === 'object'
+    return ownInput && sameData(callInput, input) ? { ok: true, value: callInput } : outcome
   }
 
   /** The {@link Call} a finished handler made: what it was called with, and what it returned or threw. */
@@ -1906,7 +1932,7 @@ class Sdk implements IIIClient {
     }
     this.invocations.clear()
 
-    // Tear down the socket without triggering the reconnect path.
+    // Tear down the socket without starting the reconnect path.
     if (this.ws) {
       this.ws.removeAllListeners()
       this.ws.on('error', () => {})

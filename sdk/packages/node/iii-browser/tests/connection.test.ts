@@ -37,7 +37,7 @@ describe('addConnectionStateListener', () => {
     sdk.addConnectionStateListener((s) => a.push(s))
     sdk.addConnectionStateListener((s) => b.push(s))
 
-    // Trigger a transition by waiting for the open event the engine schedules.
+    // Cause a transition by waiting for the open event the engine schedules.
     await engine.waitForOpen()
 
     expect(a.length).toBe(b.length)
@@ -56,7 +56,7 @@ describe('addConnectionStateListener', () => {
 
     unsub()
 
-    // Trigger another transition (close should drive a state change).
+    // Cause another transition (close should drive a state change).
     engine.socket.simulateClose()
 
     expect(calls.length).toBe(beforeUnsub)

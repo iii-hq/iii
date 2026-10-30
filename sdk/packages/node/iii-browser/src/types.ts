@@ -450,9 +450,16 @@ export interface FunctionRef<I = any, O = any> {
   onObserverMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
   /** {@link ISdk.onObserverDeliver} for this function. */
   onObserverDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
-  /** The active observers, as this host sees them. */
+  /**
+   * The active observers of this registration, as this host sees them (none
+   * once the function is unregistered, also after the id is registered again).
+   */
   observers(): readonly Observer[]
-  /** {@link ISdk.isObserved} for this function: skip building an event nobody receives. */
+  /**
+   * {@link ISdk.isObserved} for this registration: skip building an event
+   * nobody receives. Without a call it is one load of this registration's
+   * active set.
+   */
   isObserved(call?: Partial<Call<I>>): boolean
   /** Removes this function from the engine. Its hooks stay in place for a later registration of the id. */
   unregister(): void

@@ -94,6 +94,49 @@ function onAccepts(on: string, ok: boolean): boolean {
   return on === 'complete' || (on === 'success' ? ok : on === 'error' ? !ok : false)
 }
 
+/**
+ * Whether two copies of a value hold the same JSON data: primitives, arrays
+ * and plain objects, compared member by member in one walk. Any other object
+ * (a `Date`, a class instance, a channel reader) is the same only as itself,
+ * and so is an object the walk reaches twice (a shared member or a cycle).
+ * A local call compares the handler's copy of its input with the copy the
+ * delivery took when the call started.
+ */
+export function sameData(a: unknown, b: unknown): boolean {
+  const left: unknown[] = [a]
+  const right: unknown[] = [b]
+  const seen = new Set<object>()
+  while (left.length > 0) {
+    const x = left.pop()
+    const y = right.pop()
+    if (x === y || (Number.isNaN(x) && Number.isNaN(y))) continue
+    if (x === null || y === null || typeof x !== 'object' || typeof y !== 'object' || seen.has(x)) return false
+    seen.add(x)
+    if (Array.isArray(x)) {
+      if (!Array.isArray(y) || x.length !== y.length) return false
+      for (let i = 0; i < x.length; i++) {
+        left.push(x[i])
+        right.push(y[i])
+      }
+      continue
+    }
+    if (Array.isArray(y) || !isPlainObject(x) || !isPlainObject(y)) return false
+    const keys = Object.keys(x)
+    if (keys.length !== Object.keys(y).length) return false
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(y, key)) return false
+      left.push(x[key])
+      right.push(y[key])
+    }
+  }
+  return true
+}
+
+function isPlainObject(value: object): value is Record<string, unknown> {
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
 /** What filters read from a call; a call without `status` reads as a successful one. */
 function filterDoc(call: Partial<Call>): FilterDoc {
   const doc: FilterDoc = { input: call.input, caller: call.caller, metadata: call.metadata }

@@ -62,8 +62,8 @@ const users = await iii.call({
 | Create channel           | `createChannel(iii)` (from `iii-browser-sdk/helpers`)                          | Create a streaming channel pair (writer + reader)              |
 | Shutdown                 | `iii.shutdown()`                                                               | Gracefully disconnect from the engine                          |
 
-`iii.trigger` and `TriggerAction` are the same function and object as
-`iii.call` and `CallAction`.
+`iii.trigger`, `TriggerAction` and `TriggerRequest` are deprecated aliases of
+`iii.call`, `CallAction` and `CallRequest`: the same function, object and type.
 
 ### Registering Functions
 
@@ -226,9 +226,10 @@ With `standby: true`, a second page that registers a function another
 connection already hosts waits and takes it over (with its observers) when that
 one leaves.
 
-A function that sets `args_format`, `private: true`, `observable: false` or a
-deliver hook needs an engine that advertises `observe.v2`; against an older
-engine it stays unregistered, and the SDK logs `UNSUPPORTED` once for it.
+A function that sets `args_format`, `private: true`, `observable: false`, a
+match hook or a deliver hook needs an engine that advertises `observe.v2`;
+against an older engine it stays unregistered, and the SDK logs `UNSUPPORTED`
+once for it.
 
 ### The current invocation across `await`
 

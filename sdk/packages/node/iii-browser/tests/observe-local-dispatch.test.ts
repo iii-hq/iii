@@ -1,6 +1,7 @@
 // Derived from sdk/packages/node/iii/tests/observe-local-dispatch.test.ts by scripts/sync-browser-observe.py; edit those, not this file.
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CallAction, registerWorker } from '../src/index'
+import { sameData } from '../src/observable'
 import type { InvocationContext } from '../src/observe-types'
 import type { FunctionRef, ISdk } from '../src/types'
 import { utf8ByteLength } from '../src/utils'
@@ -157,7 +158,7 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     socket.open()
     socket.deliver(functionRegistered('val::mutate'))
     const payload = { list: [1, 2], at: new Date(0) }
-    const result = await sdk.trigger<typeof payload, { list: number[] }>({ function_id: 'val::mutate', payload })
+    const result = await sdk.call<typeof payload, { list: number[] }>({ function_id: 'val::mutate', payload })
     expect(payload.list).toEqual([1, 2])
     expect(result).toEqual({ list: [1] })
     expect(result).not.toBe(kept)
@@ -842,17 +843,61 @@ describe('a handler that returns its input (output_is_input, decision 4)', () =>
     expect(item).not.toHaveProperty('output_is_input')
   })
 
-  it('a non-private handler that returns its input reports both: the delivery sees a copy of the input', async () => {
+  it('a non-private handler that returns its own input unchanged reports it once, with output_is_input', async () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
-    sdk.registerFunction('echo::fn', (input: { n: number }) => input)
+    sdk.registerFunction('echo::fn', (input: { n: number; tags: string[] }) => input)
     socket.open()
     socket.deliver(functionRegistered('echo::fn', [observerInfo('o', 'audit::echo')]))
     await settle()
     socket.clear()
-    await sdk.call({ function_id: 'echo::fn', payload: { n: 3 } })
+    const payload = { n: 3, tags: ['a'] }
+    const out = await sdk.call<typeof payload, typeof payload>({ function_id: 'echo::fn', payload })
+    expect(out).toEqual(payload)
+    expect(out).not.toBe(payload)
     await fake.elapse(10)
-    expect(reportedItems(socket)[0]).toMatchObject({ input: { n: 3 }, output: { n: 3 } })
+    const [item] = reportedItems(socket)
+    expect(item).toMatchObject({ input: { n: 3, tags: ['a'] }, output_is_input: true })
+    expect(item).not.toHaveProperty('output')
+  })
+
+  it.each([
+    [
+      'changes its input before returning it',
+      (input: { n: number }) => {
+        input.n += 1
+        return input
+      },
+      { n: 4 },
+    ],
+    ['returns an equal object of its own', (input: { n: number }) => ({ ...input }), { n: 3 }],
+  ] as const)('a non-private handler that %s reports both: the input as the call started', async (_name, handler, output) => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    sdk.registerFunction('echo::fn', handler)
+    socket.open()
+    socket.deliver(functionRegistered('echo::fn', [observerInfo('o', 'audit::echo')]))
+    await settle()
+    socket.clear()
+    await expect(sdk.call({ function_id: 'echo::fn', payload: { n: 3 } })).resolves.toEqual(output)
+    await fake.elapse(10)
+    const [item] = reportedItems(socket)
+    expect(item).toMatchObject({ input: { n: 3 }, output })
+    expect(item).not.toHaveProperty('output_is_input')
+  })
+
+  it('compares the two copies as JSON data in one walk; any other object, or one reached twice, counts as changed', () => {
+    expect(sameData({ a: [1, { b: null }], n: Number.NaN }, { n: Number.NaN, a: [1, { b: null }] })).toBe(true)
+    expect(sameData({ a: [1] }, { a: [1, 2] })).toBe(false)
+    expect(sameData({ a: 1 }, { a: 1, b: undefined })).toBe(false)
+    expect(sameData({ at: new Date(0) }, { at: new Date(0) })).toBe(false)
+    const cycle: Record<string, unknown> = {}
+    cycle.self = cycle
+    const other: Record<string, unknown> = {}
+    other.self = other
+    expect(sameData(cycle, other)).toBe(false)
+    const shared = { n: 1 }
+    expect(sameData({ x: shared, y: shared }, { x: { n: 1 }, y: { n: 1 } })).toBe(false)
   })
 })
 

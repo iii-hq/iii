@@ -94,6 +94,32 @@ describe('equivalence: local and routed calls look the same to observers', () =>
   })
 })
 
+describe('observable functions (A1, D3)', () => {
+  it('every function is observable unless registered observable: false, which fails observe with NOT_OBSERVABLE', async () => {
+    const owner = worker('observable-owner')
+    const watcher = worker('observable-watcher')
+    owner.registerFunction(`observable::plain-${RUN}`, async (n: number) => n + 1)
+    owner.registerFunction(`observable::secret-${RUN}`, async (n: number) => n + 2, { observable: false })
+    const got = collector(watcher, `observable::target-${RUN}`)
+    await localDispatchReady(owner, `observable::plain-${RUN}`)
+    await localDispatchReady(owner, `observable::secret-${RUN}`)
+
+    const plain = watcher.observe(`observable::plain-${RUN}`, `observable::target-${RUN}`)
+    await plain.ready()
+    expect(plain.state).toBe('active')
+    const secret = watcher.observe(`observable::secret-${RUN}`, `observable::target-${RUN}`)
+    await expect(secret.ready()).rejects.toMatchObject({ code: 'NOT_OBSERVABLE' })
+    expect(secret.state).toBe('error')
+    expect(secret.reason?.code).toBe('NOT_OBSERVABLE')
+
+    // both stay callable; only the observable one's calls reach an observer
+    await expect(watcher.call({ function_id: `observable::secret-${RUN}`, payload: 1 })).resolves.toBe(3)
+    await expect(watcher.call({ function_id: `observable::plain-${RUN}`, payload: 1 })).resolves.toBe(2)
+    await exactly(got, 1, 'the activation of the observable function')
+    expect(got[0].data).toMatchObject({ function_id: `observable::plain-${RUN}`, input: 1, output: 2 })
+  })
+})
+
 describe('zero-wire and the activation race', () => {
   it('unobserved local calls send zero frames', { timeout: 60_000 }, async () => {
     // Zero frames is the property under test; the unit suites already run 1M
@@ -371,6 +397,65 @@ describe('functions with args and observer hooks', () => {
     await expect(owner.call({ observer: obs, payload: { path: '/users', tenant: 'acme' } })).rejects.toMatchObject({
       code: expect.stringMatching(/^OBSERVER_NOT_(FOUND|ACTIVE)$/),
     })
+  })
+})
+
+describe("deliver: 'output' and calls through an observer over max_in_flight", () => {
+  it("deliver: 'output' of a private event source's local call: the target receives the event, reported once", async () => {
+    const owner = worker('output-owner')
+    const watcher = worker('output-watcher')
+    const fn = `source::on-event-${RUN}`
+    owner.registerFunction(fn, (event: { id: number; kind: string }) => event, { private: true })
+    const got = collector(watcher, `source::on-output-${RUN}`)
+    const handle = watcher.observe({ function_id: fn, deliver: 'output' }, `source::on-output-${RUN}`)
+    await handle.ready()
+    await localDispatchReady(owner, fn)
+    const frames = frameCounter(owner)
+    await owner.call({ function_id: fn, payload: { id: 1, kind: 'created' } })
+    await exactly(got, 1, 'the activation')
+    expect(got[0].data).toEqual({ id: 1, kind: 'created' })
+    // the report item carried the event once: the engine filled output from input
+    const items = frames.frames
+      .filter((f) => f.type === 'invocationsobserved')
+      .flatMap((f) => f.items as Record<string, unknown>[])
+    expect(items).toHaveLength(1)
+    expect(items[0]).toMatchObject({ input: { id: 1, kind: 'created' }, output_is_input: true })
+    expect(items[0]).not.toHaveProperty('output')
+  })
+
+  it('a call through an observer over its max_in_flight fails with OVERFLOW', async () => {
+    const owner = worker('overflow-owner')
+    const fn = `overflow::on-request-${RUN}`
+    let route: Observer | undefined
+    owner
+      .registerFunction(fn, (request: { n: number }) => request, { private: true })
+      .onObserverAdded((obs) => {
+        route = obs
+      })
+    const app = worker('overflow-app')
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const started: number[] = []
+    app.registerFunction(`overflow::slow-${RUN}`, async (request: { n: number }) => {
+      started.push(request.n)
+      await gate
+      return { done: request.n }
+    })
+    const handle = app.observe(fn, `overflow::slow-${RUN}`, { max_in_flight: 1 })
+    await handle.ready()
+    const obs = await waitFor(() => route, 'the observer')
+    await obs.accepted()
+
+    const first = owner.call({ observer: obs, payload: { n: 1 } })
+    await waitFor(() => started.length === 1, 'the first call to reach the target')
+    await expect(owner.call({ observer: obs, payload: { n: 2 } })).rejects.toMatchObject({ code: 'OVERFLOW' })
+    release()
+    await expect(first).resolves.toEqual({ done: 1 })
+    // the slot is free again
+    await expect(owner.call({ observer: obs, payload: { n: 3 } })).resolves.toEqual({ done: 3 })
+    expect(started).toEqual([1, 3])
   })
 })
 
