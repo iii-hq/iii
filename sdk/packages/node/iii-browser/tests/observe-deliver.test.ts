@@ -379,6 +379,32 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
       expect(matchMetadata).toContainEqual({ for_observer: 'b' })
     })
   }
+
+  it('without a match hook, such a call reaches every observer whose filters match, metadata included', async () => {
+    const { sdk, socket } = worker()
+    sdk.registerFunction('tmux::on-changed', (change: Change) => change, { private: true })
+    const ordinary = observerInfo('ordinary', 'ui::ordinary', {
+      args: { session: 's1' },
+      capture: ['input', 'metadata'],
+      filters: { 'metadata.for_observer': { $exists: false } },
+    })
+    socket.deliver(functionRegistered('tmux::on-changed', [watch('a'), ordinary, watch('c')], { revision: 1 }))
+    await settle()
+    socket.clear()
+
+    await sdk.call({
+      function_id: 'tmux::on-changed',
+      payload: { session: 's1', n: 1 },
+      metadata: { for_observer: 'a' },
+    })
+    await sdk.call({ function_id: 'tmux::on-changed', payload: { session: 's1', n: 2 } })
+    await flushed()
+    expect(reportedItems(socket).map((i) => [(i.matched as string[]).sort(), i.metadata])).toEqual([
+      [['a', 'c'], { for_observer: 'a' }],
+      [['a', 'c', 'ordinary'], undefined],
+    ])
+  })
+
 })
 
 describe('onObserverDeliver', () => {

@@ -881,9 +881,9 @@ worker.onObserverMatch("tmux::on-changed", {
 });
 ```
 
-`for_observer` is the match hook's convention: iii reads nothing in `metadata`, and a function
-without a match hook gives such a call to every observer. An observer that captures `metadata` sees
-`for_observer` in its envelope, as it sees the metadata of every call.
+iii gives `for_observer` no meaning of its own: a function without a match hook gives such a call
+to every observer. An observer that captures `metadata` sees `for_observer` in its envelope, as it
+sees the metadata of every call.
 
 ## Registration options
 

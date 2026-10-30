@@ -362,9 +362,8 @@ iii.onObserverMatch('tmux::on-changed', {
 })
 ```
 
-`for_observer` is the match hook's convention: iii reads nothing in
-`metadata`, and a function without a match hook gives the call to every
-observer.
+iii gives `for_observer` no meaning of its own: a function without a match
+hook gives such a call to every observer.
 
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
 can skip building an event nobody wants. Without a call it is true when the

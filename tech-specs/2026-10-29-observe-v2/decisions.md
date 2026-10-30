@@ -267,9 +267,7 @@ differ, this file wins, and the spec is updated to match.
     functions also file each observer under `"for_observer:<id>"` and give
     such a call that one key. iii delivers it like every call, with that
     observer's `deliver`, `capture`, filters, `on` and policy, so a target
-    receives every event of the function in one shape. `for_observer` is the
-    match hook's convention: iii reads nothing in `metadata`, and a function
-    without a match hook gives the call to every observer. The host makes the
+    receives every event of the function in one shape. The host makes the
     call after `obs.accepted()` resolves (decision 19). A call through an
     observer (`iii.call({ observer, payload })`) belongs in a deliver hook,
     whose function documents what its targets receive.
