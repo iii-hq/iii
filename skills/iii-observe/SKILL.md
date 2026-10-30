@@ -483,6 +483,11 @@ How hooks behave:
   `CallRequest::observer(&obs, payload)`, Go `iii.CallRequest{Observer: obs, ...}`), which resolves
   to the target's result. Only the worker that hosts the function may call through its observers
   (`NOT_FUNCTION_OWNER`).
+- **Match or deliver.** Choose observers in `onObserverMatch` when an observer's args and the call
+  settle it (a cron expression, a table, a subscriber id). Choose them in `onObserverDeliver` when
+  choosing compares observers with each other or produces part of the payload: `http::on-request`
+  picks the most specific route pattern that fits the path and puts its path parameters in the
+  target's request, so it sets no match hook and its deliver hook receives every active observer.
 - **What the caller gets.** The handler's return value is what observers observe and what the
   caller gets back. With `onObserverDeliver`, the caller gets what the hook returns or throws: an
   HTTP source returns the route target's response.
