@@ -566,6 +566,10 @@ of every table under `"primary|*|insert"`, and gives a change the keys `"primary
 observers. Keys suit sources whose observers each want a slice of many calls: row changes by table,
 frames by session, messages by subscriber.
 
+A source that sends one observer a call of its own, such as its initial state, names that observer
+in the call's metadata, and its match hook gives the call to that observer alone. See
+[Send an observer its initial state](#send-an-observer-its-initial-state).
+
 `isObserved(call)` answers whether a call would reach anyone, so a source can skip building an event
 nobody wants. Without a call, it is true when the function has any active observer: one atomic load.
 With a call, on a function matched by keys, it is true when an observer is filed under one of the
@@ -656,7 +660,8 @@ one observer. The [HTTP](#http-routes) example shows a deliver hook, and the
 
 ### Call through an observer
 
-A call that names an observer runs that observer's target and resolves to the target's result:
+In a deliver hook, a call that names an observer runs that observer's target and resolves to the
+target's result:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -702,6 +707,9 @@ A call that names an observer runs that observer's target and resolves to the ta
   delivery.
 - The call sends the payload as given. The deliver hook applies the observer's `on` and filters with
   `obs.matches(call)` before it calls.
+- A call through an observer belongs in the function's deliver hook, and the function documents what
+  its targets receive. To send one observer something outside delivery, call the function for that
+  observer: see [Send an observer its initial state](#send-an-observer-its-initial-state).
 
 A call through an observer fails with the target's own error, or with one of these codes:
 
@@ -720,23 +728,42 @@ counted as a drop under its code, with a `debug` log.
 
 ### Send an observer its initial state
 
-`obs.accepted()` resolves once the SDK has acknowledged the observer. A call through the observer
-made after it resolves reaches an active observer, since the engine handles a connection's messages
-in order. A source uses it to give a new observer the current state right away. The observer becomes
-active after its `onObserverAdded` returns, so the hook starts a task that waits for `accepted()`
-and then calls through the observer:
+A source sends one observer something of its own, such as its current state when the observer is
+added or an event it missed, as a call of the function that only that observer matches. The call
+carries `metadata: { for_observer: obs.id }`, and the function's match hook gives such a call to
+that observer alone. iii delivers it like every call, with the observer's `deliver`, `capture`,
+filters, `on` and policy, so the target receives the initial state in the shape it receives every
+call of the function.
+
+`obs.accepted()` resolves once the SDK has acknowledged the observer. A call made after it resolves
+reaches an active observer, since the engine handles a connection's messages in order. The observer
+becomes active after its `onObserverAdded` returns, so the hook starts a task that waits for
+`accepted()` and then makes the call. Here each observer of `tmux::on-changed` names a session in
+its args, and gets that session's current state when it is added:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
     import { CallAction } from "iii-sdk";
 
-    worker.onObserverAdded("prices::on-change", (obs) => {
-      // send the latest price once the observer is active
-      void obs
-        .accepted()
-        .then(() => worker.call({ observer: obs, payload: latest, action: CallAction.Void() }));
+    worker.onObserverAdded("tmux::on-changed", (obs) => {
+      // send the session's current state once the observer is active
+      void obs.accepted().then(() =>
+        worker.call({
+          function_id: "tmux::on-changed",
+          payload: sessions.state(obs.args.session as string),
+          metadata: { for_observer: obs.id },
+          action: CallAction.Void(),
+        }),
+      );
     });
+
+    // a call for one observer goes to it alone, any other call to the observers of its session
+    worker.onObserverMatch("tmux::on-changed", (obs, call) =>
+      call.metadata?.for_observer
+        ? call.metadata.for_observer === obs.id
+        : obs.args.session === call.input.session,
+    );
     ```
 
   </Tab>
@@ -746,56 +773,117 @@ and then calls through the observer:
 
     from iii import CallAction
 
-    async def send_latest(obs):
+    async def send_state(obs):
         await obs.accepted_async()
-        await worker.call_async({"observer": obs, "payload": latest, "action": CallAction.Void()})
+        await worker.call_async({
+            "function_id": "tmux::on-changed",
+            "payload": sessions.state(obs.args["session"]),
+            "metadata": {"for_observer": obs.id},
+            "action": CallAction.Void(),
+        })
 
-    @worker.on_observer_added("prices::on-change")
+    @worker.on_observer_added("tmux::on-changed")
     async def on_added(obs):
-        # send the latest price once the observer is active
-        asyncio.create_task(send_latest(obs))
+        # send the session's current state once the observer is active
+        asyncio.create_task(send_state(obs))
+
+    # a call for one observer goes to it alone, any other call to the observers of its session
+    @worker.on_observer_match("tmux::on-changed")
+    def wants(obs, call):
+        for_observer = (call.metadata or {}).get("for_observer")
+        if for_observer:
+            return for_observer == obs.id
+        return obs.args["session"] == call.input["session"]
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{CallAction, CallRequest, Observer};
+    use iii_sdk::{CallAction, CallRequest, Match, Observer};
+    use serde_json::json;
 
     let iii = worker.clone();
-    worker.on_observer_added_for("prices::on-change", move |obs: Observer| {
+    worker.on_observer_added_for("tmux::on-changed", move |obs: Observer| {
         let iii = iii.clone();
         async move {
-            // send the latest price once the observer is active
+            // send the session's current state once the observer is active
             tokio::spawn(async move {
                 if obs.accepted().await.is_ok() {
-                    let request = CallRequest::observer(&obs, latest_price());
+                    let request = CallRequest::new("tmux::on-changed", session_state(obs.args_value()))
+                        .metadata(json!({ "for_observer": obs.id() }));
                     let _ = iii.call(request.action(CallAction::Void)).await;
                 }
             });
             Ok(())
         }
     });
+
+    // a call for one observer goes to it alone, any other call to the observers of its session
+    worker.on_observer_match_for(
+        "tmux::on-changed",
+        Match::predicate(|obs, call| {
+            match call.metadata.as_ref().and_then(|m| m["for_observer"].as_str()) {
+                Some(id) => id == obs.id(),
+                None => obs.args_value()["session"] == call.input["session"],
+            }
+        }),
+    );
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    worker.OnObserverAddedFor("prices::on-change", func(ctx context.Context, obs *iii.Observer) error {
-        // send the latest price once the observer is active
+    worker.OnObserverAddedFor("tmux::on-changed", func(ctx context.Context, obs *iii.Observer) error {
+        // send the session's current state once the observer is active
         go func() {
-            if obs.Accepted(context.Background()) == nil {
-                worker.Call(context.Background(), iii.CallRequest{Observer: obs, Payload: latest, Action: iii.VoidAction()})
+            if obs.Accepted(context.Background()) != nil {
+                return
             }
+            meta, _ := json.Marshal(map[string]string{"for_observer": obs.ID})
+            worker.Call(context.Background(), iii.CallRequest{
+                FunctionID: "tmux::on-changed",
+                Payload:    sessions.State(obs.Args["session"]),
+                Metadata:   meta,
+                Action:     iii.VoidAction(),
+            })
         }()
         return nil
     })
+
+    // a call for one observer goes to it alone, any other call to the observers of its session
+    worker.OnObserverMatchFor("tmux::on-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+        var meta struct {
+            ForObserver string `json:"for_observer"`
+        }
+        _ = json.Unmarshal(call.Metadata, &meta)
+        if meta.ForObserver != "" {
+            return meta.ForObserver == obs.ID
+        }
+        var change struct {
+            Session string `json:"session"`
+        }
+        _ = json.Unmarshal(call.Input, &change)
+        return obs.Args["session"] == change.Session
+    }))
     ```
 
   </Tab>
 </Tabs>
 
-The target receives the payload as given, so send it in the shape the function's other calls give
-that observer.
+With keys, the observer key function also files each observer under `for_observer:<id>`, and the
+call key function gives a call for one observer that one key:
+
+```typescript
+worker.onObserverMatch("tmux::on-changed", {
+  observer: (obs) => [obs.args.session as string, `for_observer:${obs.id}`],
+  call: (call) =>
+    call.metadata?.for_observer ? `for_observer:${call.metadata.for_observer}` : call.input.session,
+});
+```
+
+`for_observer` is the match hook's convention: iii reads nothing in `metadata`, and a function
+without a match hook gives such a call to every observer. An observer that captures `metadata` sees
+`for_observer` in its envelope, as it sees the metadata of every call.
 
 ## Registration options
 
@@ -907,7 +995,7 @@ awaitable form, for hooks and other async code.
 | `output`        | The handler's return value: what observers observe.                                         |
 | `error`         | `{ code, message }`, what the handler threw.                                                |
 | `caller`        | Who made the call. See [Caller and causality](../using-iii/observers#caller-and-causality). |
-| `metadata`      | The call's metadata.                                                                        |
+| `metadata`      | The call's metadata, such as `for_observer` on a call for one observer.                     |
 
 Language specifics: Python's `Call` is a dataclass; Rust's is a struct with `input: Value` and
 `output: Option<Value>`, and `Call { input, ..Call::default() }` builds one for `is_observed_for`;
