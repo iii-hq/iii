@@ -123,10 +123,7 @@ async fn metadata_registration_and_watcher_echo_do_not_persist_or_clear_injectio
         .unwrap();
     let base = adapter.get("test").await.unwrap().unwrap();
     store
-        .apply_external(&ExternalChange::Updated {
-            entry: base,
-            old_value: Some(json!({"b":1})),
-        })
+        .apply_external(&ExternalChange::Updated { entry: base })
         .await;
     assert_eq!(
         store.get_active("test").await.unwrap().value,
@@ -138,10 +135,7 @@ async fn metadata_registration_and_watcher_echo_do_not_persist_or_clear_injectio
     );
     let edited = adapter.set("test", json!({"b":4})).await.unwrap().entry;
     store
-        .apply_external(&ExternalChange::Updated {
-            entry: edited,
-            old_value: Some(json!({"b":1})),
-        })
+        .apply_external(&ExternalChange::Updated { entry: edited })
         .await;
     assert_eq!(
         store.get_active("test").await.unwrap().value,
@@ -234,7 +228,6 @@ async fn migration_moves_active_source_without_persisting_it_or_leaving_old_id_r
             store
                 .apply_external(&ExternalChange::Updated {
                     entry: adapter.get("new").await.unwrap().unwrap(),
-                    old_value: Some(json!({"b": 90})),
                 })
                 .await;
             assert_eq!(store.get_active("new").await.unwrap().value, active);

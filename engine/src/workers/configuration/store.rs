@@ -182,7 +182,6 @@ pub struct EnsureOutcome {
     pub action: EnsureAction,
     pub register_kind: Option<RegisterKind>,
     pub entry: ConfigurationEntry,
-    pub old_value: Option<Value>,
 }
 
 /// The persistence result stays raw for bridge consumers. Event delivery uses
@@ -443,7 +442,6 @@ impl ConfigurationStore {
             action,
             register_kind: Some(outcome.kind),
             entry: outcome.entry,
-            old_value: outcome.old_value,
         })
     }
 
@@ -486,7 +484,6 @@ impl ConfigurationStore {
             // must NOT double-fire, so no local register_kind is reported.
             register_kind: None,
             entry: outcome.entry,
-            old_value: None,
         })
     }
 
@@ -2023,7 +2020,6 @@ mod tests {
         // The watcher captured an external update to {port: 2} and queued it.
         let queued = ExternalChange::Updated {
             entry: mk_entry("demo", json!({ "port": 2 })),
-            old_value: Some(json!({ "port": 1 })),
         };
 
         // A newer local set to {port: 3} commits before the queued event is
@@ -2112,7 +2108,6 @@ mod tests {
             .unwrap();
         let queued = ExternalChange::Updated {
             entry: mk_entry("demo", json!({ "port": 2 })),
-            old_value: Some(json!({ "port": 1 })),
         };
         store.set("demo", json!({ "port": 3 })).await.unwrap();
         assert_eq!(
@@ -2185,7 +2180,6 @@ mod tests {
             .unwrap();
         let change = ExternalChange::Updated {
             entry: mk_entry("demo", json!({ "port": 9 })),
-            old_value: Some(json!({ "port": 1 })),
         };
         assert_eq!(store.apply_external(&change).await, ExternalApply::Fanout);
         assert_eq!(store.get("demo").await.unwrap().value, json!({ "port": 9 }));
@@ -2238,7 +2232,6 @@ mod tests {
         fail.fail.store(true, Ordering::SeqCst);
         let change = ExternalChange::Updated {
             entry: mk_entry("demo", json!({ "port": 2 })),
-            old_value: Some(json!({ "port": 1 })),
         };
         assert_eq!(
             store.apply_external(&change).await,

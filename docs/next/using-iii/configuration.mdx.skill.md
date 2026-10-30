@@ -220,6 +220,11 @@ workers use to hot-apply their own settings. See the
 [configuration worker docs](https://workers.iii.dev/workers/configuration) for the trigger's config
 fields and event types.
 
+The event names the entry that changed, never its value, which may hold secrets: the bound function
+reads the new value with `configuration::get`. For the same reason, the functions that read or write
+a value (`configuration::get`, `set`, `register`, `ensure`, and `migrate`) refuse observers with
+`NOT_OBSERVABLE`.
+
 From 0.25 you can observe `configuration::on-updated` instead, with a filter on the entry and the
 event type. The `configuration` trigger type keeps working.
 

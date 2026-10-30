@@ -19,7 +19,7 @@ use crate::{
     condition::check_condition,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    protocol::ErrorBody,
+    protocol::{DEFAULT_NAMESPACE, ErrorBody, ObserveDescriptor},
     trigger::TriggerType,
     workers::{
         configuration::{
@@ -65,6 +65,25 @@ impl Worker for ConfigurationWorker {
     }
 
     fn register_functions(&self, engine: Arc<Engine>) {
+        // Their input or output is a configuration value, secrets included,
+        // which an observer would copy. Set before registering, so an observer
+        // already waiting for one is refused too.
+        for function_id in [
+            "configuration::register",
+            "configuration::ensure",
+            "configuration::set",
+            "configuration::get",
+            "configuration::migrate",
+        ] {
+            engine.observers.set_descriptor(
+                DEFAULT_NAMESPACE,
+                function_id,
+                Some(ObserveDescriptor {
+                    allow: Some(false),
+                    ..ObserveDescriptor::default()
+                }),
+            );
+        }
         self.register_functions(engine);
     }
 
@@ -317,24 +336,15 @@ impl ConfigurationWorker {
             return;
         }
         let event = match change {
-            ExternalChange::Registered(entry) => entry_to_event(
-                &entry,
-                ConfigurationEventType::Registered,
-                None,
-                Some(entry.value.clone()),
-            ),
-            ExternalChange::Updated { entry, old_value } => entry_to_event(
-                &entry,
-                ConfigurationEventType::Updated,
-                old_value,
-                Some(entry.value.clone()),
-            ),
-            ExternalChange::Deleted { entry } => entry_to_event(
-                &entry,
-                ConfigurationEventType::Deleted,
-                Some(entry.value.clone()),
-                None,
-            ),
+            ExternalChange::Registered(entry) => {
+                entry_to_event(&entry, ConfigurationEventType::Registered)
+            }
+            ExternalChange::Updated { entry } => {
+                entry_to_event(&entry, ConfigurationEventType::Updated)
+            }
+            ExternalChange::Deleted { entry } => {
+                entry_to_event(&entry, ConfigurationEventType::Deleted)
+            }
         };
         // Make hot-reload observable: an operator who edits a file on disk
         // should see that the engine picked it up.
@@ -363,12 +373,7 @@ impl ConfigurationWorker {
     pub(crate) async fn expire_configuration(&self, id: &str) -> anyhow::Result<()> {
         match self.store.delete(id).await {
             Ok(Some(entry)) => {
-                let event = entry_to_event(
-                    &entry,
-                    ConfigurationEventType::Deleted,
-                    Some(entry.value.clone()),
-                    None,
-                );
+                let event = entry_to_event(&entry, ConfigurationEventType::Deleted);
                 self.fan_out(event).await;
                 Ok(())
             }
@@ -386,14 +391,11 @@ fn event_value(event: &ConfigurationEventData) -> Option<Value> {
     serde_json::to_value(event).ok()
 }
 
-/// Build a `ConfigurationEventData` from an entry + event semantics.
-/// `new_value` is expanded for the wire (subscribers should see resolved
-/// `${VAR:default}` values); the caller chooses the `old_value`.
+/// Build a `ConfigurationEventData` from an entry + event semantics. The value
+/// stays out: it may hold secrets, and subscribers read it with `get`.
 fn entry_to_event(
     entry: &ConfigurationEntry,
     event_type: ConfigurationEventType,
-    old_value: Option<Value>,
-    new_value_raw: Option<Value>,
 ) -> ConfigurationEventData {
     ConfigurationEventData {
         message_type: "configuration".to_string(),
@@ -402,11 +404,6 @@ fn entry_to_event(
         name: entry.name.clone(),
         description: entry.description.clone(),
         schema: entry.schema.clone(),
-        // Best-effort fan-out: subscribers see resolved `${VAR:default}` values.
-        // Unresolved vars are surfaced on the `get` path, not here, so the
-        // `missing` list is intentionally dropped.
-        old_value: old_value.map(|v| expand_value(&v).0),
-        new_value: new_value_raw.map(|v| expand_value(&v).0),
         metadata: entry.metadata.clone(),
     }
 }
@@ -462,20 +459,10 @@ impl ConfigurationWorker {
         {
             let mut previous = entry.clone();
             previous.id = input.from_id;
-            self.fan_out(entry_to_event(
-                &previous,
-                ConfigurationEventType::Deleted,
-                Some(previous.value.clone()),
-                None,
-            ))
-            .await;
-            self.fan_out(entry_to_event(
-                entry,
-                ConfigurationEventType::Registered,
-                None,
-                Some(entry.value.clone()),
-            ))
-            .await;
+            self.fan_out(entry_to_event(&previous, ConfigurationEventType::Deleted))
+                .await;
+            self.fan_out(entry_to_event(entry, ConfigurationEventType::Registered))
+                .await;
         }
         FunctionResult::Success(outcome.persisted)
     }
@@ -509,12 +496,7 @@ impl ConfigurationWorker {
             RegisterKind::Created => ConfigurationEventType::Registered,
             RegisterKind::Replaced => ConfigurationEventType::Updated,
         };
-        let event = entry_to_event(
-            &outcome.entry,
-            event_type,
-            outcome.old_value.clone(),
-            Some(outcome.entry.value.clone()),
-        );
+        let event = entry_to_event(&outcome.entry, event_type);
         if !self.store.is_injected(&outcome.entry.id).await {
             self.fan_out(event).await;
         }
@@ -558,12 +540,7 @@ impl ConfigurationWorker {
                 RegisterKind::Created => ConfigurationEventType::Registered,
                 RegisterKind::Replaced => ConfigurationEventType::Updated,
             };
-            let event = entry_to_event(
-                &outcome.entry,
-                event_type,
-                outcome.old_value.clone(),
-                Some(outcome.entry.value.clone()),
-            );
+            let event = entry_to_event(&outcome.entry, event_type);
             self.fan_out(event).await;
         }
 
@@ -591,12 +568,7 @@ impl ConfigurationWorker {
             Err(err) => return FunctionResult::Failure(store_error_to_failure(err)),
         };
 
-        let event = entry_to_event(
-            &outcome.entry,
-            ConfigurationEventType::Updated,
-            outcome.old_value.clone(),
-            Some(outcome.entry.value.clone()),
-        );
+        let event = entry_to_event(&outcome.entry, ConfigurationEventType::Updated);
         self.fan_out(event).await;
 
         FunctionResult::Success(ConfigurationSetResult {
@@ -787,8 +759,85 @@ mod tests {
         assert_eq!(event["type"], "configuration");
         assert_eq!(event["id"], "iii-stream", "the filter skipped iii-other");
         assert_eq!(event["event_type"], "configuration:registered");
-        assert_eq!(event["new_value"], json!({ "port": 3112 }));
         assert!(sink.try_recv().is_err());
+    }
+
+    /// An event says which configuration changed, never its value: whoever may
+    /// observe events would otherwise read every secret a configuration holds.
+    #[tokio::test]
+    async fn configuration_events_carry_no_values() {
+        use crate::observer::events::{
+            CONFIGURATION_ON_UPDATED, register_configuration_event_source, test_support,
+        };
+        let (engine, worker, _dir) = setup().await;
+        register_configuration_event_source(&engine);
+        let mut sink = test_support::capture(&engine, "test::config-sink");
+        let _socket = test_support::observe(
+            &engine,
+            "obs-values",
+            CONFIGURATION_ON_UPDATED,
+            "test::config-sink",
+            None,
+        )
+        .await;
+
+        let _ = worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 3112 }))))
+            .await;
+        let _ = worker
+            .set_fn(ConfigurationSetInput {
+                id: "iii-stream".into(),
+                value: json!({ "port": 4242 }),
+                flush: true,
+            })
+            .await;
+        for event_type in ["configuration:registered", "configuration:updated"] {
+            let event = test_support::next(&mut sink).await;
+            assert_eq!(event["event_type"], event_type);
+            assert!(event.get("old_value").is_none(), "{event}");
+            assert!(event.get("new_value").is_none(), "{event}");
+        }
+    }
+
+    /// The functions that read or write a configuration's value refuse
+    /// observers, which would otherwise copy that value, secrets included.
+    #[tokio::test]
+    async fn value_functions_refuse_observers() {
+        use crate::{
+            engine::Outbound,
+            observer::events::test_support,
+            protocol::{Message, observe_codes},
+        };
+        let (engine, worker, _dir) = setup().await;
+        <ConfigurationWorker as Worker>::register_functions(&worker, engine.clone());
+        let _sink = test_support::capture(&engine, "test::config-sink");
+        let (observer, mut socket) = test_support::worker(&engine);
+        for function in [
+            "configuration::register",
+            "configuration::ensure",
+            "configuration::set",
+            "configuration::get",
+            "configuration::migrate",
+        ] {
+            let request = test_support::request(function, function, "test::config-sink", None);
+            engine.observers.observe(&engine, &observer, request).await;
+            let error = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Some(Outbound::Protocol(Message::ObserveResult { error, .. })) =
+                        socket.recv().await
+                    {
+                        break error;
+                    }
+                }
+            })
+            .await
+            .expect("an observe result");
+            assert_eq!(
+                error.map(|e| e.code).as_deref(),
+                Some(observe_codes::NOT_OBSERVABLE),
+                "{function}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1138,8 +1187,8 @@ mod tests {
 
     // --- hot-reload: external file-edit validation ---
 
-    /// Build a queued watcher update with matching schema and old/new values for reconciliation tests.
-    fn updated_change(value: Value, old: Value) -> ExternalChange {
+    /// Build a queued watcher update with matching schema and value for reconciliation tests.
+    fn updated_change(value: Value) -> ExternalChange {
         ExternalChange::Updated {
             entry: ConfigurationEntry {
                 id: "iii-stream".into(),
@@ -1149,7 +1198,6 @@ mod tests {
                 value,
                 metadata: None,
             },
-            old_value: Some(old),
         }
     }
 
@@ -1170,7 +1218,7 @@ mod tests {
             .await
             .unwrap();
         worker
-            .handle_external_change(updated_change(json!({ "port": 2 }), json!({ "port": 1 })))
+            .handle_external_change(updated_change(json!({ "port": 2 })))
             .await;
 
         let entry = worker.store.get("iii-stream").await.expect("entry");
@@ -1189,10 +1237,7 @@ mod tests {
             .await;
 
         worker
-            .handle_external_change(updated_change(
-                json!({ "port": "not-an-integer" }),
-                json!({ "port": 1 }),
-            ))
+            .handle_external_change(updated_change(json!({ "port": "not-an-integer" })))
             .await;
 
         let entry = worker.store.get("iii-stream").await.expect("entry");
@@ -1215,10 +1260,7 @@ mod tests {
             .await;
 
         worker
-            .handle_external_change(updated_change(
-                json!({ "port": "${CFG_EXT_MISSING}" }),
-                json!({ "port": 1 }),
-            ))
+            .handle_external_change(updated_change(json!({ "port": "${CFG_EXT_MISSING}" })))
             .await;
 
         let entry = worker.store.get("iii-stream").await.expect("entry");
