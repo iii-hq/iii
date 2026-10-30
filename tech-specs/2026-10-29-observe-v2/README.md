@@ -77,7 +77,7 @@ engine.
 | `delivery: 'auto' \| 'owner'` | one delivery path; a function can set `onObserverMatch` and `onObserverDeliver` |
 | `args_format` with `delivery: 'owner'` | `args_format` on any function |
 | `obs.emit(event)` | call the function; its `onObserverMatch` says which observers want it |
-| `obs.call(payload)` | `iii.call({ observer: obs, payload })` |
+| `obs.call(payload)` | in a deliver hook, `iii.call({ observer: obs, payload })`; anywhere else, a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
 | an owner-delivered function refuses calls from other workers | `private: true` (§6) |
 | `observe.allow: false` | `observable: false` |
 | `registerTrigger({ type, function_id, config, metadata })` | `iii.observe({ function_id, args, filters }, target, { metadata })` |
@@ -348,6 +348,24 @@ iii.onObserverMatch('database::on-row-changed', {
   `"primary|orders|insert"`, `"primary|orders|*"`, `"primary|*|insert"` and
   `"primary|*|*"`: four lookups, whatever the number of observers.
 
+**A call for one observer.** A host sends one observer something of its own
+(its current state, an event it missed) as a call of the function whose
+metadata names that observer: `{ for_observer: <observer id> }` (§4.7). The
+match hook gives such a call to that observer alone. A predicate compares the
+two ids; key functions also file each observer under `"for_observer:<id>"` and
+give such a call that one key:
+
+```ts
+iii.onObserverMatch('tmux::on-changed', {
+  observer: (obs) => [obs.args.session, `for_observer:${obs.id}`],
+  call: (call) => call.metadata?.for_observer ? `for_observer:${call.metadata.for_observer}` : call.input.session,
+})
+```
+
+`for_observer` is the match hook's convention: iii reads nothing in
+`metadata`, and a function without a match hook gives the call to every
+observer.
+
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
 can skip building an event nobody wants. Without a call it is true when the
 function has any active observer: one atomic load. With a call, on a function
@@ -391,6 +409,11 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
 - The call sends the payload as given, with the engine's `_caller_worker_id`
   stamp (the host's connection id) as on every call a worker makes. The hook
   applies the observer's filters with `obs.matches(call)`, as above.
+- A call through an observer belongs in a deliver hook, whose function
+  documents what its targets receive. To send one observer something outside
+  delivery (its initial state, an event it missed), a host calls its own
+  function for that observer (§4.7), and iii delivers that call like every
+  other.
 
 ### 4.7 `Observer`
 
@@ -413,9 +436,25 @@ class ObserveRejection extends Error {        // thrown by onObserverAdded to re
 }
 ```
 
-`accepted()` lets a provider send an observer its initial state: a call
-through the observer made after it resolves reaches an active observer, since
-the engine handles a connection's frames in order.
+`accepted()` lets a provider send an observer its initial state: a call made
+after it resolves reaches an active observer, since the engine handles a
+connection's frames in order. The provider calls its own function with
+`metadata: { for_observer: obs.id }`, and its match hook gives that call to
+that observer alone (§4.5), so the target receives its initial state in the
+shape it receives every call of the function, with the observer's `deliver`,
+`capture`, filters, `on` and policy:
+
+```ts
+iii.onObserverAdded('tmux::on-changed', (obs) => {
+  obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
+})
+iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
+```
+
+The observer becomes active once its `onObserverAdded` hooks return, so the
+hook starts the call without waiting for it. An event an observer missed goes
+the same way.
 
 An observer is a record of what was asked for. The worker sees the fields
 above; who observes, the observer's metadata and its policy stay with the
@@ -490,7 +529,10 @@ iii.on_observer_added(move |_obs: Observer| {
     async move { events.retain().await; Ok(()) }
 });
 
-// through an observer
+// for one observer (§4.7)
+iii.call(CallRequest::new("database::on-row-changed", change).metadata(json!({ "for_observer": obs.id() }))).await?;
+
+// through an observer, in a deliver hook (§4.6)
 iii.call(CallRequest::observer(&obs, payload)).await?;
 ```
 
@@ -512,6 +554,10 @@ row_changed = iii.register_function("database::on-row-changed", lambda change: c
 row_changed.on_observer_match(observer=observer_keys, call=call_keys)      # keys
 # or: row_changed.on_observer_match(lambda obs, call: obs.args["table"] == call.input["table"])
 
+# for one observer (§4.7)
+await iii.call_async({"function_id": "database::on-row-changed", "payload": change, "metadata": {"for_observer": obs.id}})
+
+# through an observer, in a deliver hook (§4.6)
 await iii.call_async({"observer": obs, "payload": payload})
 ```
 
@@ -530,7 +576,12 @@ client.OnObserverAddedFor("cron::on-tick", start)   // by function id
 client.OnObserverAdded(retain)                      // every function this worker hosts
 rowChanged.OnObserverMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
 
-out, err := client.Call(ctx, iii.CallRequest{Observer: obs, Data: payload})
+// for one observer (§4.7)
+_, err := client.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: change,
+    Metadata: json.RawMessage(`{"for_observer":"` + obs.ID + `"}`)})
+
+// through an observer, in a deliver hook (§4.6)
+out, err := client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})
 ```
 
 ## 6. `private` functions
@@ -834,7 +885,7 @@ Migrating:
 | `registerTriggerType(…)` + `TriggerHandler` | a function with `args_format`, `private: true` and hooks (§10) |
 | `observe: { delivery: 'owner', args_format, onObserverAdded, onObserverRemoved }` | `{ args_format, private: true }`, then `.onObserverAdded(…)` / `.onObserverRemoved(…)` |
 | an index from args to observers, and `obs.emit(event)` | call the function with the event; `.onObserverMatch(…)` (§10.1, §10.2) |
-| `obs.call(payload)` | `.onObserverDeliver(…)` with `iii.call({ observer: obs, payload })` (§10.3, §10.4) |
+| `obs.call(payload)` | `.onObserverDeliver(…)` with `iii.call({ observer: obs, payload })` (§10.3, §10.4); initial state and other sends to one observer: a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
 | a handler that refuses calls | a handler that returns the event, and `private: true` |
 | `observe: { allow: false }` | `{ observable: false }` |
 | `iii.trigger(request)` | `iii.call(request)` |
