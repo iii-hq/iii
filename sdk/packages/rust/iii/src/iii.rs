@@ -549,6 +549,11 @@ use iii_helpers::observability::OtelConfig;
 
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
+/// The stack of the `iii-connection` thread, on which this worker's handlers,
+/// observer hooks and calls run: 8 MiB, the main thread's stack on Linux and
+/// macOS (a spawned thread gets 2 MiB by default).
+const CONNECTION_THREAD_STACK: usize = 8 * 1024 * 1024;
+
 /// Wall-clock milliseconds since the Unix epoch.
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -2094,6 +2099,9 @@ impl IIIClient {
         // run_connection() can exit cleanly before main() returns.
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
+            // Every handler, hook and call this worker serves runs on this
+            // thread: it gets the stack a process's main thread has.
+            .stack_size(CONNECTION_THREAD_STACK)
             .spawn(move || {
                 // Lets `iii ps` find this worker while the connection loop runs.
                 let _marker = crate::process_marker::Marker::announce(
