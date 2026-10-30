@@ -97,7 +97,13 @@ class IIIClient(Protocol):
 
     async def call_async(self, request: dict[str, Any] | CallRequest) -> Any: ...
 
-    def trigger(self, request: dict[str, Any] | CallRequest) -> Any: ...
+    def trigger(self, request: dict[str, Any] | CallRequest) -> Any:
+        """Call a function: :meth:`call` under its 0.25 name.
+
+        .. deprecated:: 0.26.0
+            Use :meth:`call`.
+        """
+        ...
 
     def observe(self, source: Any, target: Any, options: Any = None) -> Any: ...
 

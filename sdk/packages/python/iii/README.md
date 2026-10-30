@@ -44,8 +44,8 @@ print(result)  # {"message": "Hello, world!"}
 | Shutdown                 | `iii.shutdown()`                                                                           | Disconnect and stop background thread                    |
 
 `register_worker()` creates the SDK instance and auto-connects to the engine.
-`trigger` and `trigger_async` are `call` and `call_async` under their 0.25
-names.
+`trigger` and `trigger_async` are deprecated aliases of `call` and
+`call_async`.
 
 ### Registering Functions
 

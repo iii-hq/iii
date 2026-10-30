@@ -33,7 +33,11 @@ def test_trigger_and_trigger_async_call_without_a_warning(engine: FakeEngine, co
             )
 
         assert asyncio.run(from_a_loop()) == (8, 10)
-    assert "deprecated" in (III.trigger.__doc__ or "") and "deprecated" in (III.trigger_async.__doc__ or "")
+
+
+def test_the_trigger_aliases_are_documented_as_deprecated() -> None:
+    for alias in (III.trigger, III.trigger_async, iii.IIIClient.trigger):
+        assert ".. deprecated:: 0.26.0" in (alias.__doc__ or ""), alias.__qualname__
 
 
 def test_the_trigger_apis_are_gone() -> None:
