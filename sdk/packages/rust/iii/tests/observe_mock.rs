@@ -1723,6 +1723,150 @@ async fn a_call_through_an_observer_is_the_fixture_frame() {
     iii.shutdown_async().await;
 }
 
+/// A call through an observer takes no metadata (decision 53): `call`
+/// refuses one given metadata before anything is sent, whatever the value.
+/// `Value::Null` is no metadata, and the call goes out without it.
+#[tokio::test]
+async fn a_call_through_an_observer_takes_no_metadata() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "http");
+    connected(&mock, &iii, true).await;
+    let recorder = Recorder::default();
+    set_hooks(&iii, "http::on-request", &recorder);
+    hosted(
+        &mock,
+        &iii,
+        "http::on-request",
+        echo().private(),
+        json!([{
+            "id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c", "args": { "method": "GET", "path": "/users" },
+            "filters": {}, "target": "users::get", "capture": ["input"], "on": "success"
+        }]),
+    )
+    .await;
+    acked(&mock, &[("b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c", 1)]).await;
+    mock.clear();
+    let obs = observer(&recorder, "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c");
+    for metadata in [
+        json!({ "route": "users" }),
+        json!(["a"]),
+        json!("tag"),
+        json!(0),
+        json!(false),
+    ] {
+        let err = iii
+            .call(CallRequest::observer(&obs, json!({})).metadata(metadata))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Handler(message) if message
+                == "a call through an observer takes no metadata; its target receives the observer's metadata"),
+            "{err:?}"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(invocations(&mock), 0, "nothing is sent");
+
+    iii.call(
+        CallRequest::observer(&obs, json!({ "path": "/users" }))
+            .metadata(Value::Null)
+            .action(CallAction::Void),
+    )
+    .await
+    .unwrap();
+    let sent = frame(&mock, |m| m["function_id"] == "users::get").await;
+    assert_eq!(
+        sent["activation"],
+        json!({ "observer_id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c" })
+    );
+    assert!(sent.get("metadata").is_none(), "{sent:#}");
+    iii.shutdown_async().await;
+}
+
+/// Metadata is any JSON value, and `Value::Null` is no metadata (decision
+/// 54): a local call, a routed one and one the engine routes here all hand
+/// the handler `None` for it, and every other value as given.
+#[tokio::test]
+async fn metadata_is_any_json_value_and_null_is_none() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "meta");
+    connected(&mock, &iii, true).await;
+    let seen: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
+    hosted(
+        &mock,
+        &iii,
+        "val::meta",
+        RegisterFunction::new({
+            let seen = seen.clone();
+            move |_input: Value, metadata: Option<Value>| {
+                seen.lock().unwrap().push(metadata);
+                Ok::<_, Error>(Value::Null)
+            }
+        }),
+        json!([]),
+    )
+    .await;
+    mock.clear();
+    let values = [
+        Value::Null,
+        json!(["a", 1]),
+        json!("tag"),
+        json!(0),
+        json!(false),
+        json!({ "tenant": "acme" }),
+    ];
+    let absent: Vec<Option<Value>> = values
+        .iter()
+        .map(|v| (!v.is_null()).then(|| v.clone()))
+        .collect();
+
+    // local
+    for metadata in &values {
+        iii.call(CallRequest::new("val::meta", json!({})).metadata(metadata.clone()))
+            .await
+            .unwrap();
+    }
+    assert_eq!(*seen.lock().unwrap(), absent);
+    assert_eq!(invocations(&mock), 0, "local calls put nothing on the wire");
+
+    // routed: null is left off the frame
+    for metadata in &values {
+        iii.call(
+            CallRequest::new("val::meta", json!({}))
+                .metadata(metadata.clone())
+                .dispatch(Dispatch::Remote)
+                .action(CallAction::Void),
+        )
+        .await
+        .unwrap();
+    }
+    let sent = mock
+        .wait_for(
+            |m| m.iter().filter(|f| f["function_id"] == "val::meta").count() == values.len(),
+            WAIT,
+        )
+        .await;
+    let sent: Vec<Option<Value>> = sent
+        .iter()
+        .filter(|f| f["function_id"] == "val::meta")
+        .map(|f| f.get("metadata").cloned())
+        .collect();
+    assert_eq!(sent, absent);
+
+    // routed here: an invokefunction with metadata null reaches the handler as None
+    seen.lock().unwrap().clear();
+    for (i, metadata) in values.iter().enumerate() {
+        let id = format!("5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b{i:02}");
+        mock.send_to_client(json!({
+            "type": "invokefunction", "invocation_id": id,
+            "function_id": "val::meta", "data": {}, "metadata": metadata,
+        }));
+        answer_to(&mock, &id).await;
+    }
+    assert_eq!(*seen.lock().unwrap(), absent);
+    iii.shutdown_async().await;
+}
+
 /// A void call through an observer, made once the observer is accepted: the
 /// void fixture frame, after the ack. A rejected observer is never accepted.
 #[tokio::test]
