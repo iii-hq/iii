@@ -886,6 +886,15 @@ iii gives `for_observer` no meaning of its own: a function without a match hook 
 to every observer. An observer that captures `metadata` sees `for_observer` in its envelope, as it
 sees the metadata of every call.
 
+A host that connects through a listener with a
+[`middleware_function_id`](./worker-manager#intercept-calls-with-middleware) makes its calls through
+the middleware, except calls of a function it hosts privately. The middleware receives the call's
+metadata as its own, and the call reaches the function with `for_observer` only when the middleware
+forwards that metadata. Without it, the match hook takes the call for an ordinary one, and every
+observer of the session gets that state. Make a function whose host sends calls for one observer
+[private](#private-functions), as event sources are, or have its middleware forward the call's
+metadata.
+
 ## Registration options
 
 These options of `registerFunction` describe the function to the engine:

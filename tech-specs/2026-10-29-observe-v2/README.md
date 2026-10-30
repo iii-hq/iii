@@ -459,6 +459,13 @@ hook starts the call without waiting for it. `accepted()` rejects with an
 throws, `obs.reject`, the function released), and the host sends nothing. An
 event an observer missed goes the same way.
 
+Under RBAC middleware, a host's call of a function it does not host
+privately goes through the middleware (§6, decision 46), which receives the
+call's metadata as its own, and the call reaches the function with
+`for_observer` only when the middleware forwards that metadata. A function
+whose host sends calls for one observer is private, or its middleware
+forwards the call's metadata.
+
 An observer is a record of what was asked for. The worker sees the fields
 above; who observes, the observer's metadata and its policy stay with the
 engine.

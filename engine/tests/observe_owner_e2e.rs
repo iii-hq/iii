@@ -1225,6 +1225,69 @@ async fn a_hosts_call_of_its_private_function_skips_the_middleware() {
     assert_eq!(*intercepted.lock().unwrap(), vec![json!("cron::status")]);
 }
 
+/// A call for one observer (decision 52) under RBAC middleware. The host's
+/// call of its own private function skips the middleware and reaches the
+/// function with its metadata, where the match hook reads `for_observer`. A
+/// call of a function it does not host privately reaches the middleware,
+/// whose own invocation carries that metadata: the function sees
+/// `for_observer` only when the middleware forwards it.
+#[tokio::test]
+async fn under_middleware_a_call_for_one_observer_keeps_its_metadata_on_a_private_function() {
+    let t = spawn(Setup {
+        middleware_function_id: Some("test::middleware".to_string()),
+        ..Setup::default()
+    })
+    .await;
+    let mut middleware = host(&t, "middleware", &["test::middleware"]).await;
+    let mut tmux = connect(&t, "tmux", true).await;
+    tmux.register_function_with(json!({
+        "type": "registerfunction",
+        "id": "tmux::on-changed",
+        "private": true,
+    }))
+    .await;
+    function_registered(&mut tmux, "tmux::on-changed").await;
+    tmux.register_function("tmux::status").await;
+    function_registered(&mut tmux, "tmux::status").await;
+
+    let for_a = json!({ "for_observer": "obs-a" });
+    let change = json!({ "session": "s1", "n": 0 });
+    let call = tmux
+        .call_with(
+            "tmux::on-changed",
+            change.clone(),
+            json!({ "metadata": for_a }),
+        )
+        .await;
+    let invoke = tmux.invoked("tmux::on-changed").await;
+    assert_eq!(invoke["metadata"], for_a, "{invoke}");
+    tmux.reply(&invoke, change.clone()).await;
+    assert_eq!(tmux.result(call).await["result"], change);
+
+    let call = tmux
+        .call_with(
+            "tmux::status",
+            json!({ "session": "s1" }),
+            json!({ "metadata": for_a }),
+        )
+        .await;
+    let intercepted = middleware.invoked("test::middleware").await;
+    assert_eq!(intercepted["data"]["function_id"], "tmux::status");
+    assert_eq!(intercepted["data"]["payload"], json!({ "session": "s1" }));
+    assert_eq!(
+        intercepted["metadata"], for_a,
+        "the middleware's own metadata: {intercepted}"
+    );
+    middleware
+        .reply(&intercepted, json!("from the middleware"))
+        .await;
+    assert_eq!(tmux.result(call).await["result"], "from the middleware");
+    assert!(
+        !tmux.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "tmux::status"),
+        "the middleware did not forward the call"
+    );
+}
+
 #[tokio::test]
 async fn local_dispatch_needs_the_connection_to_be_allowed_to_call_the_function() {
     let rbac = json!({ "expose_functions": ["match(\"api::*\")"] });

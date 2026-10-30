@@ -492,7 +492,10 @@ How hooks behave:
   `call.metadata.for_observer` with `obs.id`; key functions also file each observer under
   `for_observer:<id>` and give such a call that one key. iii delivers it like every call, with the
   observer's `deliver`, `capture`, filters, `on`, and policy, so its target receives every event of
-  the function in one shape. A call through an observer belongs in a deliver hook.
+  the function in one shape. Under RBAC middleware, a host's call of a function it does not host
+  privately goes through the middleware, which receives the metadata as its own: make the function
+  private, or have the middleware forward the call's metadata. A call through an observer belongs
+  in a deliver hook.
 - **`obs.accepted()`** resolves once the SDK has acknowledged the observer. A call made afterwards
   reaches an active observer, so a source sends initial state as a call for that observer. The
   observer becomes active after `onObserverAdded` returns, so the hook starts a task that waits and
