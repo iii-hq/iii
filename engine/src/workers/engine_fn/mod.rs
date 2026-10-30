@@ -3235,7 +3235,7 @@ mod tests {
                     detail.observers.is_empty(),
                     "an in-process worker observes nothing"
                 );
-                assert!(detail.worker.internal == false);
+                assert!(!detail.worker.internal);
             }
             _ => panic!("expected success"),
         }
