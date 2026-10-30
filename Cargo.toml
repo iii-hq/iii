@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Keep the upstream snapshot out of workspace tests and formatting.
+exclude = ["vendor/msb_krun_vmm"]
 members = [
   "engine",
   "engine/function-macros",
@@ -60,6 +62,12 @@ ctrlc = "3"
 wiremock = "0.6"
 tempfile = "3"
 serial_test = "3"
+
+# msb_krun 0.1.16 requires zstd 0.13, which has no patched release.
+# Keep the VMM source unchanged and update only its zstd requirement.
+# Provenance and removal criteria: vendor/msb_krun_vmm/README.iii.md.
+[patch.crates-io]
+msb_krun_vmm = { path = "vendor/msb_krun_vmm" }
 
 [profile.release]
 strip = true
