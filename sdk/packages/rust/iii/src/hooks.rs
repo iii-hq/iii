@@ -83,8 +83,9 @@ use crate::{
 /// Runs when an observer is added to a function this worker hosts, before
 /// the SDK accepts it: what it sets up is in place before the observer's
 /// first call. Returning an error rejects the observer: an
-/// [`ObserveRejection`] sets the code, and a hook still running after 30 s is
-/// `OWNER_TIMEOUT`.
+/// [`ObserveRejection`] sets the code, any other error (`?` on an
+/// [`Error`](crate::Error), a failed call's included) is `OBSERVE_REJECTED`,
+/// and a hook still running after 30 s is `OWNER_TIMEOUT`.
 ///
 /// Implemented for async closures taking the [`Observer`] by value.
 // async_trait injects #[must_use] on boxed Future-returning trait methods.

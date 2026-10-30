@@ -62,13 +62,12 @@ impl fmt::Display for ObserveRejection {
 
 impl std::error::Error for ObserveRejection {}
 
-/// A remote error keeps its code; anything else is `OBSERVE_REJECTED`.
+/// Every [`Error`] is `OBSERVE_REJECTED`, a failed call's
+/// ([`Error::Remote`]) included: its code and message are in the rejection's
+/// message. Return an [`ObserveRejection`] to reject with another code.
 impl From<Error> for ObserveRejection {
     fn from(error: Error) -> Self {
-        match error {
-            Error::Remote { code, message, .. } => Self { code, message },
-            other => Self::new(observe_codes::OBSERVE_REJECTED, other.to_string()),
-        }
+        Self::new(observe_codes::OBSERVE_REJECTED, error.to_string())
     }
 }
 
@@ -1561,6 +1560,32 @@ mod tests {
         let ack = next_ack(&mut rx).await;
         assert_eq!(ack["id"], "fine");
         assert!(ack.get("error").is_none());
+    }
+
+    /// An `ObserveRejection` keeps its code; every `Error` an added hook
+    /// returns with `?`, a failed call's included, is `OBSERVE_REJECTED`.
+    #[test]
+    fn errors_reject_with_observe_rejected() {
+        let failed_call = Error::Remote {
+            code: "FORBIDDEN".into(),
+            message: "nope".into(),
+            stacktrace: None,
+        };
+        let rejection = ObserveRejection::from(failed_call);
+        assert_eq!(rejection.code, observe_codes::OBSERVE_REJECTED);
+        assert!(
+            rejection.message.contains("FORBIDDEN") && rejection.message.contains("nope"),
+            "{}",
+            rejection.message
+        );
+        assert_eq!(
+            ObserveRejection::from(Error::Timeout).code,
+            observe_codes::OBSERVE_REJECTED
+        );
+        assert_eq!(
+            ObserveRejection::new("INVALID_CRON_EXPRESSION", "x").code,
+            "INVALID_CRON_EXPRESSION"
+        );
     }
 
     /// The worker's and the function's added hooks share one 30 s budget.

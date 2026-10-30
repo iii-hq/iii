@@ -983,6 +983,15 @@ impl AddedHook for Recorder {
         if obs.args_value().get("plain_error").is_some() {
             return Err(Error::Handler("no".into()).into());
         }
+        if let Some(code) = obs.args_value().get("call_error").and_then(Value::as_str) {
+            // `?` on a call that failed with a code
+            let failed: Result<Value, Error> = Err(Error::Remote {
+                code: code.to_string(),
+                message: "refused".into(),
+                stacktrace: None,
+            });
+            failed?;
+        }
         self.events
             .lock()
             .unwrap()
@@ -1119,14 +1128,34 @@ async fn hooks_run_one_at_a_time_in_revision_order() {
     mock.send_to_client(json!({
         "type": "observerremoved", "function_id": "h::f", "revision": 2, "id": "fast"
     }));
-    // a plain error is OBSERVE_REJECTED
+    // a plain error is OBSERVE_REJECTED, and so is a failed call's error
     mock.send_to_client(added("h::f", 5, "plain", json!({ "plain_error": true })));
-    let acks = acked(&mock, &[("slow", 2), ("fast", 3), ("plain", 5)]).await;
+    mock.send_to_client(added(
+        "h::f",
+        6,
+        "call",
+        json!({ "call_error": "FORBIDDEN" }),
+    ));
+    let acks = acked(
+        &mock,
+        &[("slow", 2), ("fast", 3), ("plain", 5), ("call", 6)],
+    )
+    .await;
     assert_eq!(acks[0]["id"], "slow");
     assert_eq!(acks[0]["revision"], 2);
     assert_eq!(acks[1]["id"], "fast");
     assert_eq!(acks[2]["id"], "plain");
     assert_eq!(acks[2]["error"]["code"], "OBSERVE_REJECTED");
+    assert_eq!(acks[3]["id"], "call");
+    assert_eq!(acks[3]["error"]["code"], "OBSERVE_REJECTED");
+    assert!(
+        acks[3]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("FORBIDDEN"),
+        "{}",
+        acks[3]
+    );
     assert_eq!(
         *recorder.events.lock().unwrap(),
         vec!["add slow", "add fast", "remove slow"]
