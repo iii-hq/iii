@@ -2100,9 +2100,9 @@ impl Engine {
                 // id in any other namespace: otherwise it would inherit the
                 // infrastructure RBAC carve-out AND the `engine::*` middleware
                 // bypass (both keyed by bare id) that are meant only for the real
-                // builtins. In `default` the ownership conflict with the builtin
-                // already blocks the shadow; outside it there is nothing to
-                // conflict with, so reserve the prefix here.
+                // builtins. In `default` the claim below refuses an id the engine
+                // hosts (`claim_in`); outside it there is nothing to conflict
+                // with, so reserve the prefix here.
                 if reg_id.starts_with("engine::")
                     && namespace != DEFAULT_NAMESPACE
                     && !is_namespace_scoped_queue_function(&reg_id)
@@ -3193,7 +3193,9 @@ impl Engine {
     /// ambiguous routing, and silently letting the newcomer win would strand
     /// the incumbent's handler. A lease held by a worker that has already gone
     /// away is taken over (the fast-restart path), and a re-claim by the same
-    /// worker is idempotent.
+    /// worker is idempotent. An id the engine registered itself (a builtin,
+    /// an engine-hosted source) has the engine as its host, so it is never
+    /// free.
     ///
     /// The check and the write share one `DashMap` entry lock, so two
     /// concurrent claims cannot both observe a free lease.
@@ -3342,6 +3344,13 @@ impl Engine {
     /// which is what the prior two-map design allowed. On takeover (a departed
     /// or tearing-down previous owner) the entry is overwritten with the new
     /// `(worker_id, kind)`, so a later restart that changes kind is reflected.
+    ///
+    /// A key with no owner entry whose function is registered anyway was
+    /// registered by the engine (only worker registrations take an entry):
+    /// the engine hosts it, so the claim fails and the engine's function
+    /// stays. A worker's own registrations leave the registry before their
+    /// entry does, under the entry's lock, so a key a worker released is
+    /// never mistaken for one the engine hosts.
     fn claim_in(
         &self,
         namespace: &str,
@@ -3369,10 +3378,47 @@ impl Engine {
                 occupied.insert((worker_id, kind));
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                if self
+                    .functions
+                    .with_function(namespace, function_id, |function| function.is_some())
+                {
+                    return Err(self.engine_hosted_conflict(
+                        kind_label,
+                        namespace,
+                        function_id,
+                        worker_id,
+                    ));
+                }
                 vacant.insert((worker_id, kind));
             }
         }
         Ok(())
+    }
+
+    /// The conflict of a worker registering an id the engine hosts. No
+    /// worker owns the id, so the rejection names none.
+    fn engine_hosted_conflict(
+        &self,
+        kind: &str,
+        namespace: &str,
+        function_id: &str,
+        rejected: Uuid,
+    ) -> NamespaceConflict {
+        let rejected_name = self.worker_registry.get_worker_name(&rejected);
+        tracing::warn!(
+            namespace = %namespace,
+            function_id = %function_id,
+            rejected_worker_name = %rejected_name.as_deref().unwrap_or("<unknown>"),
+            rejected_worker_id = %rejected,
+            "{kind} '{function_id}' in namespace '{namespace}' is hosted by the engine; \
+             rejecting registration from worker {rejected}. Register the function under \
+             another id."
+        );
+        NamespaceConflict {
+            namespace: namespace.to_string(),
+            name: function_id.to_string(),
+            owner_worker_id: String::new(),
+        }
     }
 
     fn conflict(
@@ -4524,8 +4570,8 @@ mod tests {
     /// `engine::*` is reserved for infrastructure (which lives in `default`). A
     /// worker registering an `engine::*` id in another namespace is refused, so
     /// it cannot inherit the infra RBAC carve-out / middleware bypass keyed by
-    /// bare id. In `default` the ownership conflict with the real builtin guards
-    /// it instead, so `engine::*` there is allowed.
+    /// bare id. In `default` the claim refuses the ids the engine hosts, so an
+    /// `engine::*` id the engine does not host is allowed there.
     #[tokio::test]
     async fn register_function_reserves_non_provider_engine_prefix_outside_default() {
         ensure_default_meter();
@@ -4617,6 +4663,131 @@ mod tests {
                 .is_some(),
             "engine::* in default is allowed"
         );
+    }
+
+    /// An id the engine registered has the engine as its host (v2 §7): a
+    /// worker registering it in `default` is refused with
+    /// `FUNCTION_NAMESPACE_CONFLICT`, naming no owner, and the engine's
+    /// function and its options stay. Holds for every engine-hosted source
+    /// and for a builtin.
+    #[tokio::test]
+    async fn a_worker_cannot_register_an_id_the_engine_hosts() {
+        use crate::observer::events;
+        ensure_default_meter();
+        let engine = Engine::new();
+        events::register_engine_event_sources(&engine);
+        events::register_configuration_event_source(&engine);
+        events::register_observability_event_sources(&engine);
+        events::register_stream_event_sources(&engine);
+        engine.register_function_handler(
+            super::RegisterFunctionRequest {
+                function_id: "engine::functions::list".to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            super::Handler::new(|_: serde_json::Value| async move {
+                FunctionResult::Success(Some(serde_json::json!({ "from": "engine" })))
+            }),
+        );
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+
+        let sources = [
+            events::ON_FUNCTIONS_CHANGED,
+            events::ON_WORKERS_CHANGED,
+            events::ON_OBSERVERS_CHANGED,
+            events::CONFIGURATION_ON_UPDATED,
+            events::OBSERVABILITY_ON_LOG,
+            events::OBSERVABILITY_ON_SPAN,
+            events::STREAM_ON_CHANGED,
+            events::STREAM_ON_JOIN,
+            events::STREAM_ON_LEAVE,
+        ];
+        for function_id in sources.iter().chain(&["engine::functions::list"]) {
+            let shadow = Message::RegisterFunction {
+                id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+                invocation: None,
+                args_format: None,
+                private: false,
+                observable: true,
+                observe: None,
+            };
+            engine.router_msg(&worker, &shadow).await.unwrap();
+            let Message::RegistrationRejected {
+                code,
+                namespace,
+                function_id: rejected,
+                owner_worker_id,
+                ..
+            } = next_protocol_frame(&mut rx).await
+            else {
+                panic!("{function_id}: a rejection");
+            };
+            assert_eq!(
+                code,
+                crate::protocol::FUNCTION_NAMESPACE_CONFLICT,
+                "{function_id}"
+            );
+            assert_eq!(namespace, DEFAULT_NAMESPACE);
+            assert_eq!(rejected.as_deref(), Some(*function_id));
+            assert!(owner_worker_id.is_empty(), "no worker owns {function_id}");
+            assert!(
+                !engine
+                    .function_owners
+                    .contains_key(&(DEFAULT_NAMESPACE.to_string(), function_id.to_string())),
+                "{function_id}: the claim left no lease"
+            );
+            assert!(
+                !worker
+                    .get_regular_function_ids()
+                    .await
+                    .iter()
+                    .any(|id| id == function_id),
+                "{function_id}: not one of the worker's functions"
+            );
+        }
+
+        for source in sources {
+            assert!(
+                engine.observers.options(DEFAULT_NAMESPACE, source).private,
+                "{source} stays private"
+            );
+            assert_eq!(
+                engine
+                    .call(source, serde_json::json!({ "forged": true }))
+                    .await
+                    .unwrap_err()
+                    .code,
+                "FORBIDDEN",
+                "{source}: the engine's handler answers"
+            );
+        }
+        assert_eq!(
+            engine
+                .call("engine::functions::list", serde_json::json!({}))
+                .await
+                .unwrap(),
+            Some(serde_json::json!({ "from": "engine" }))
+        );
+
+        // Its teardown leaves the engine's functions in place.
+        engine.cleanup_worker(&worker).await;
+        for function_id in sources.iter().chain(&["engine::functions::list"]) {
+            assert!(
+                engine
+                    .functions
+                    .get(DEFAULT_NAMESPACE, function_id)
+                    .is_some(),
+                "{function_id} survives the worker"
+            );
+        }
     }
 
     /// Regression: `function.unregister()` must honor
@@ -5815,6 +5986,16 @@ mod tests {
         let (tx, _rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
 
+        // Ownership gate on UnregisterFunction requires the worker to be the
+        // recorded owner. This test sidesteps `router_msg` to seed state, so
+        // it claims the id before registering it, as the registration does.
+        engine
+            .claim_external_function(
+                crate::protocol::DEFAULT_NAMESPACE,
+                worker.id,
+                "external.cleanup",
+            )
+            .expect("uncontested claim");
         engine.register_function_handler(
             make_request("external.cleanup"),
             super::Handler::new(|_input| async move { FunctionResult::Success(None) }),
@@ -5826,16 +6007,6 @@ mod tests {
         worker
             .include_external_function_id("external.cleanup")
             .await;
-        // Ownership gate on UnregisterFunction requires the worker to be the
-        // recorded owner. This test sidesteps `router_msg` to seed state, so
-        // populate the owner map directly to match the production invariant.
-        engine
-            .claim_external_function(
-                crate::protocol::DEFAULT_NAMESPACE,
-                worker.id,
-                "external.cleanup",
-            )
-            .expect("uncontested claim");
 
         engine
             .router_msg(

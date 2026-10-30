@@ -180,6 +180,84 @@ async fn an_event_source_is_observed_not_called() {
     );
 }
 
+/// The engine hosts its sources (v2 §7): a worker registering one's id is
+/// refused, the source keeps refusing calls, and its observers keep getting
+/// the engine's events, before and after that worker leaves.
+#[tokio::test]
+async fn a_worker_cannot_host_an_engine_hosted_source() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut sink = host(&t, "sink", &["sink::workers"]).await;
+    sink.observe_active(observer(
+        "obs-connects",
+        json!({
+            "function_id": "engine::on-workers-changed",
+            "deliver": "input",
+            "filters": { "input.event": { "$eq": "worker_connected" } }
+        }),
+        "sink::workers",
+    ))
+    .await;
+
+    let mut hijacker = connect(&t, "hijacker", true).await;
+    hijacker
+        .register_function("engine::on-workers-changed")
+        .await;
+    let rejected = hijacker
+        .expect("registrationrejected", |f| {
+            f["type"] == "registrationrejected" && f["function_id"] == "engine::on-workers-changed"
+        })
+        .await;
+    assert_eq!(
+        rejected["code"], "FUNCTION_NAMESPACE_CONFLICT",
+        "{rejected}"
+    );
+    assert_eq!(rejected["owner_worker_id"], "", "no worker owns it");
+
+    let mut caller = connect(&t, "caller", true).await;
+    let call = caller
+        .call(
+            "engine::on-workers-changed",
+            json!({ "event": "worker_connected", "worker_id": "forged" }),
+        )
+        .await;
+    assert_eq!(caller.result(call).await["error"]["code"], "FORBIDDEN");
+    assert!(
+        !hijacker.has_seen(|f| {
+            f["type"] == "functionregistered"
+                || (f["type"] == "invokefunction"
+                    && f["function_id"] == "engine::on-workers-changed")
+        }),
+        "the hijacker hosts nothing"
+    );
+
+    let hijacker_id = hijacker.worker_id;
+    hijacker.disconnect().await;
+    assert!(
+        eventually(|| !t.engine.worker_registry.workers.contains_key(&hijacker_id)).await,
+        "the hijacker is gone"
+    );
+    assert!(
+        t.engine
+            .functions
+            .get("default", "engine::on-workers-changed")
+            .is_some()
+    );
+    let visitor = connect(&t, "visitor", true).await;
+    let visitor_id = visitor.worker_id.to_string();
+    loop {
+        let event = sink.invoked("sink::workers").await;
+        sink.reply(&event, Value::Null).await;
+        assert_ne!(event["data"]["worker_id"], "forged", "{event}");
+        if event["data"]["worker_id"] == visitor_id.as_str() {
+            break;
+        }
+    }
+    assert_eq!(
+        t.engine.observers.get("obs-connects").map(|o| o.state()),
+        Some(iii::protocol::ObserverState::Active)
+    );
+}
+
 #[tokio::test]
 async fn on_workers_changed_reports_connects_and_disconnects() {
     let t = spawn_engine(ObserversConfig::default()).await;
