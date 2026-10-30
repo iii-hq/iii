@@ -8,7 +8,7 @@ const fake = await import('./observe-fake-engine')
 const { registerWorker } = await import('../src/index')
 
 const REGISTER_TRIGGER =
-  'registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source, target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x'
+  'registerTrigger is deprecated and will be removed in a future release. Use worker.observe(source, target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x'
 const REGISTER_TRIGGER_TYPE =
   'registerTriggerType is deprecated and will be removed in a future release. Register a function with an observe descriptor (registerFunction(id, handler, { observe: { ... } })) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x'
 

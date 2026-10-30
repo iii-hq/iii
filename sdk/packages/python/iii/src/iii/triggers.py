@@ -178,7 +178,7 @@ class TriggerTypeRef(Generic[C, R]):
         """
         warnings.warn(
             "TriggerTypeRef.register_function is deprecated and will be removed in a future release. Use "
-            "iii.register_function and iii.observe(source, target) instead. Migration guide: "
+            "worker.register_function and worker.observe(source, target) instead. Migration guide: "
             "https://iii.dev/docs/upgrading/from-0-24-x",
             DeprecationWarning,
             stacklevel=2,
