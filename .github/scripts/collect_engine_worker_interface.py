@@ -22,10 +22,11 @@ def count_worker_matches(workers_json: dict[str, object], worker_name: str) -> i
 
 
 def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]:
+    # `iii call` reaches the engine named by III_URL, else the local default.
     completed = subprocess.run(
         [
             "iii",
-            "trigger",
+            "call",
             function_path,
             "--json",
             json.dumps(payload),
@@ -39,9 +40,8 @@ def run_iii(function_path: str, payload: dict[str, object]) -> dict[str, object]
 
 
 def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
-    # `engine::workers::list` is lean post-rework (no per-worker `functions[]`),
-    # but we only need it to confirm the worker is reachable. The function
-    # surface is fetched via `engine::workers::info` below.
+    # `engine::workers::list` confirms the worker is connected; its function
+    # rows come from `engine::workers::info` below.
     deadline = time.monotonic() + wait_seconds
     workers_json = run_iii("engine::workers::list", {})
     while count_worker_matches(workers_json, worker_name) != 1 and time.monotonic() < deadline:
@@ -51,10 +51,9 @@ def wait_for_worker(worker_name: str, wait_seconds: int) -> dict[str, object]:
 
 
 def collect_worker_info(worker_name: str) -> dict[str, object]:
-    # The detailed info envelope is the source of truth for a worker's surface
-    # in the new engine_fn world. The `worker` field mirrors a workers::list
-    # row; `functions`, `trigger_types`, and `registered_triggers` arrays are
-    # appended.
+    # `{ worker, functions, observers }`: the `worker` envelope mirrors a
+    # `workers::list` row, `functions` are the worker's function rows and
+    # `observers` the ids of the observers it created.
     return run_iii("engine::workers::info", {"name": worker_name})
 
 
@@ -63,10 +62,11 @@ FUNCTIONS_INFO_BATCH_MAX = 32
 
 
 def collect_function_details(function_ids: list[str]) -> list[dict[str, object]]:
-    # `engine::functions::list` is lean post-rework — schemas live behind
-    # `engine::functions::info`. Its `function_ids` batch mode fetches up
-    # to 32 details per round-trip; a per-item `error` marker ("forbidden"
-    # / "not_found") fails the collection, matching the old per-id loop.
+    # `engine::functions::info` carries the schemas, the metadata and the
+    # observe fields (`args_format`, `private`, `observable`,
+    # `observer_count`). Its `function_ids` batch mode fetches up to 32
+    # details per round-trip; a per-item `error` marker ("forbidden" /
+    # "not_found") fails the collection.
     details: list[dict[str, object]] = []
     for start in range(0, len(function_ids), FUNCTIONS_INFO_BATCH_MAX):
         chunk = function_ids[start : start + FUNCTIONS_INFO_BATCH_MAX]
@@ -95,48 +95,12 @@ def collect_function_details(function_ids: list[str]) -> list[dict[str, object]]
     return details
 
 
-def collect_trigger_type_details(trigger_type_ids: list[str]) -> list[dict[str, object]]:
-    # Same shape concern as functions: `engine::triggers::list` is lean, so
-    # we fetch per-type schemas via `engine::triggers::info`. Trigger types
-    # are the primary content for infrastructure workers (iii-http, iii-cron,
-    # iii-bridge, ...) — failing closed if any lookup errors out is
-    # intentional to avoid masking the real surface of the worker.
-    details: list[dict[str, object]] = []
-    for tt_id in trigger_type_ids:
-        try:
-            details.append(run_iii("engine::triggers::info", {"id": tt_id}))
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
-            raise RuntimeError(
-                f"could not collect trigger type info for {tt_id!r}: {exc}"
-            ) from exc
-    return details
-
-
-def collect_baseline_trigger_type_ids(baseline_path: pathlib.Path) -> list[str]:
-    # The baseline snapshot is captured BEFORE the target worker is reloaded
-    # into the engine, so it contains the always-on (`mandatory`) trigger
-    # types. We use the lean `triggers::list` shape here — only ids are
-    # needed for diffing.
-    if not baseline_path.exists():
-        return []
-    raw = json.loads(baseline_path.read_text(encoding="utf-8"))
-    triggers = raw.get("triggers") or raw.get("trigger_types") or []
-    return [t.get("id") for t in triggers if isinstance(t, dict) and isinstance(t.get("id"), str)]
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=True)
     parser.add_argument("--out", default="worker-interface.json")
     parser.add_argument("--wait-seconds", type=int, default=0)
-    parser.add_argument("--trigger-types-baseline", default="")
     args = parser.parse_args()
-
-    baseline_ids: list[str] = []
-    if args.trigger_types_baseline:
-        baseline_ids = collect_baseline_trigger_type_ids(
-            pathlib.Path(args.trigger_types_baseline)
-        )
 
     wait_for_worker(args.worker, args.wait_seconds)
     worker_info = collect_worker_info(args.worker)
@@ -150,24 +114,10 @@ def main() -> int:
         if isinstance(f, dict) and isinstance(f.get("function_id"), str)
     ]
 
-    trigger_types = worker_info.get("trigger_types") or []
-    if not isinstance(trigger_types, list):
-        raise ValueError("workers::info `trigger_types` must be an array")
-    trigger_type_ids = [
-        t.get("id")
-        for t in trigger_types
-        if isinstance(t, dict) and isinstance(t.get("id"), str)
-    ]
-
-    function_details = collect_function_details(function_ids)
-    trigger_type_details = collect_trigger_type_details(trigger_type_ids)
-
     interface = normalize_worker_interface(
         worker_name=args.worker,
         worker_info=worker_info,
-        function_details=function_details,
-        trigger_type_details=trigger_type_details,
-        baseline_trigger_type_ids=baseline_ids,
+        function_details=collect_function_details(function_ids),
     )
     pathlib.Path(args.out).write_text(json.dumps(interface, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(interface, indent=2))

@@ -83,7 +83,7 @@ engine.
 | `registerTrigger({ type, function_id, config, metadata })` | `iii.observe({ function_id, args, filters }, target, { metadata })` |
 | `registerTriggerType(…)` + `TriggerHandler` | a function with `args_format` and hooks |
 | `iii.trigger(request)` | `iii.call(request)`; `trigger` is an alias |
-| CLI `iii trigger <fn>` | `iii call <fn>`; `iii trigger` is an alias |
+| CLI `iii trigger <fn>` | `iii call <fn>`; `iii trigger` and `iii t` are aliases |
 | `Observe::owner()`, `Observe::auto()`, `ObserveHandler` (Rust) | `on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` methods taking closures or types that implement the hook traits (§5.2) |
 | `observe({ function_id }, target)` | also `observe('fn::id', target)` |
 | the engine evaluates routed calls, the host evaluates local calls and emits | the host evaluates every call of its functions; the engine evaluates calls to hosts without `observe.v2` and to engine-hosted sources (§8.2) |
@@ -140,7 +140,7 @@ await iii.call({ function_id: 'audit::log', payload: entry, action: CallAction.V
 | Rust | `iii.call(CallRequest::new(id, payload))`, `CallAction` | `iii.trigger`, `TriggerRequest`, `TriggerAction` |
 | Python | `iii.call(request)`, `iii.call_async(request)` | `trigger`, `trigger_async` |
 | Go | `client.Call(ctx, iii.CallRequest{…})`, `iii.CallAction` | `client.Trigger`, `iii.TriggerRequest`, `iii.TriggerAction` |
-| CLI | `iii call <function_id>`, with the arguments `iii trigger` takes | `iii trigger` |
+| CLI | `iii call <function_id>`, with the arguments `iii trigger` takes | `iii trigger`, `iii t` |
 
 Each alias is the same function or type under its 0.25 name, so code written
 against 0.25 keeps compiling. Examples, docs and every worker use `call`.
@@ -645,7 +645,7 @@ All other codes are the 0.25 ones.
 | Activations: check observer, host and state, then policy | `engine/src/observer/` |
 | `invocationsobserved`: accept call reports only | `engine/src/observer/` |
 | Remove the trigger registry, trigger messages, trigger builtins, the trigger RBAC hook, the legacy shim and owner delivery; warn once per connection and message type on a removed trigger message | `engine/src/trigger.rs`, `engine/src/protocol.rs`, `engine/src/engine/mod.rs`, `engine/src/observer/` |
-| `iii call` subcommand, with `iii trigger` as its alias | `engine/src/main.rs`, `engine/src/cli_trigger/` |
+| `iii call` subcommand, with `iii trigger` and `iii t` as its aliases | `engine/src/main.rs`, `engine/src/cli_call/` |
 
 Registry, lifecycle, revisions, acks, policy, loop guard, observer builtins,
 metrics and the observer RBAC hook keep their 0.25 behavior.
@@ -897,7 +897,7 @@ phase 2 baseline.
    order at both levels, rejection unwinding, one removal per accepted
    observer, hooks one at a time per function, catch-up and its warning, and
    key indexing under add and remove.
-3. **CLI.** `iii call`, with `iii trigger` as its alias.
+3. **CLI.** `iii call`, with `iii trigger` and `iii t` as its aliases.
 4. **Workers.** database, cron, http and queue (§10), then every other trigger
    type and every binding in `iii-hq/workers`. *Done when* each worker's suite
    passes against the v2 engine and SDKs and no trigger code remains.
