@@ -1,7 +1,6 @@
 """Unit tests for the 10ms delay before WebSocket close frame in ChannelWriter.close_async()."""
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
