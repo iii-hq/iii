@@ -1216,10 +1216,15 @@ next `.await`) so the function's next callback can run; anything it
 spawned keeps running and may overlap that next callback. Callbacks run on
 the connection's runtime: do not block in them.
 
+Implement the callbacks with plain `async fn`; both may borrow `self` and
+`obs` across `.await`. Their futures must be `Send`. The trait is not
+dyn-compatible: hand the concrete handler (or an `Arc` of it) to
+`Observe::handler`.
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_observer_added` | fn(obs: &'life1 [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | No | An observer was attached to the function. Index it by its args here. |
-| `on_observer_removed` | fn(obs: &'life1 [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | No | An observer was detached (unobserve, disposal, its worker left for good, a reconnect that no longer lists it). Cannot fail. |
+| `on_observer_added` | fn(_obs: &'a [`Observer`](#observer)) -&gt; impl Future + Send | No | An observer was attached to the function. Index it by its args here. |
+| `on_observer_removed` | fn(_obs: &'a [`Observer`](#observer)) -&gt; impl Future + Send | No | An observer was detached (unobserve, disposal, its worker left for good, a reconnect that no longer lists it). Cannot fail. |
 
 ---
 

@@ -65,7 +65,6 @@ impl WebhookRoutes {
     }
 }
 
-#[async_trait::async_trait]
 impl ObserveHandler for WebhookRoutes {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         let WebhookArgs { url, .. } = obs.args()?;

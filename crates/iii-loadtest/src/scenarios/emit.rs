@@ -17,7 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use async_trait::async_trait;
 use iii_sdk::{
     Error, Observe, ObserveHandler, ObserveRejection, Observer, RegisterFunction, Source,
 };
@@ -41,7 +40,6 @@ const SUSTAINED: f64 = 0.95;
 #[derive(Clone, Default)]
 struct Registry(Arc<Mutex<Vec<Observer>>>);
 
-#[async_trait]
 impl ObserveHandler for Registry {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         self.0.lock().unwrap().push(obs.clone());

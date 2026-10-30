@@ -37,7 +37,6 @@ pub struct ScheduleFired {
 
 struct Scheduler;
 
-#[async_trait::async_trait]
 impl ObserveHandler for Scheduler {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         let args: ScheduleArgs = obs.args()?;
@@ -82,7 +81,6 @@ pub struct FileChanged {
 
 struct FileWatcher;
 
-#[async_trait::async_trait]
 impl ObserveHandler for FileWatcher {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         let args: FileWatchArgs = obs.args()?;

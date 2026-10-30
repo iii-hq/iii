@@ -668,7 +668,6 @@ The example moves a `timer` trigger type, which fires each binding every `every_
     #[derive(Clone, Default)]
     struct Timers(Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>); // observer id → its task
 
-    #[async_trait::async_trait]
     impl ObserveHandler for Timers {
         async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
             // An observer made from an old register_trigger has its config in legacy().

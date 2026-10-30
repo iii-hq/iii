@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use common::{engine_ws_url, proxy::CountingProxy};
@@ -764,7 +763,6 @@ impl Topics {
     }
 }
 
-#[async_trait]
 impl ObserveHandler for Topics {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         self.added.lock().unwrap().push(obs.args_value().clone());
