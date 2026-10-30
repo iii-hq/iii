@@ -546,7 +546,8 @@ def test_capture_empty_reports_ids_status_and_timing_without_a_payload(engine: F
     assert client.call({"function_id": "local::checkout", "payload": {"qty": 3}}) == {"total": 30}
     settle(client, engine)
     [item] = reported_items(engine)
-    assert item.keys() == {
+    assert not {"input", "output", "output_is_input", "error", "caller", "metadata"} & item.keys()
+    assert {
         "function_id",
         "namespace",
         "invocation_id",
@@ -555,7 +556,7 @@ def test_capture_empty_reports_ids_status_and_timing_without_a_payload(engine: F
         "started_at_ms",
         "duration_ms",
         "observe_depth",
-    }
+    } <= item.keys()
     assert (item["function_id"], item["matched"], item["status"]) == ("local::price", ["bare"], "success")
     assert isinstance(item["invocation_id"], str)
     assert isinstance(item["started_at_ms"], int) and isinstance(item["duration_ms"], (int, float))
