@@ -799,15 +799,34 @@ mod tests {
         }
     }
 
+    /// Sends `request` from `observer` and returns the error code of its
+    /// `observeresult`, `None` when it was accepted.
+    async fn observe_error_code(
+        engine: &Arc<Engine>,
+        observer: &crate::worker_connections::WorkerConnection,
+        socket: &mut tokio::sync::mpsc::Receiver<crate::engine::Outbound>,
+        request: crate::observer::ObserveRequest,
+    ) -> Option<String> {
+        use crate::{engine::Outbound, protocol::Message};
+        engine.observers.observe(engine, observer, request).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(Outbound::Protocol(Message::ObserveResult { error, .. })) =
+                    socket.recv().await
+                {
+                    break error.map(|e| e.code);
+                }
+            }
+        })
+        .await
+        .expect("an observe result")
+    }
+
     /// The functions that read or write a configuration's value refuse
     /// observers, which would otherwise copy that value, secrets included.
     #[tokio::test]
     async fn value_functions_refuse_observers() {
-        use crate::{
-            engine::Outbound,
-            observer::events::test_support,
-            protocol::{Message, observe_codes},
-        };
+        use crate::{observer::events::test_support, protocol::observe_codes};
         let (engine, worker, _dir) = setup().await;
         <ConfigurationWorker as Worker>::register_functions(&worker, engine.clone());
         let _sink = test_support::capture(&engine, "test::config-sink");
@@ -820,24 +839,88 @@ mod tests {
             "configuration::migrate",
         ] {
             let request = test_support::request(function, function, "test::config-sink", None);
-            engine.observers.observe(&engine, &observer, request).await;
-            let error = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    if let Some(Outbound::Protocol(Message::ObserveResult { error, .. })) =
-                        socket.recv().await
-                    {
-                        break error;
-                    }
-                }
-            })
-            .await
-            .expect("an observe result");
             assert_eq!(
-                error.map(|e| e.code).as_deref(),
+                observe_error_code(&engine, &observer, &mut socket, request)
+                    .await
+                    .as_deref(),
                 Some(observe_codes::NOT_OBSERVABLE),
                 "{function}"
             );
         }
+    }
+
+    /// An observer that asked for a value function before it registered is
+    /// refused once it does: the opt-out is in place before the function lands.
+    #[tokio::test]
+    async fn a_waiting_observer_is_refused_when_value_functions_register() {
+        use crate::{
+            observer::events::test_support,
+            protocol::{ObserverState, observe_codes},
+        };
+        let (engine, worker, _dir) = setup().await;
+        let _sink = test_support::capture(&engine, "test::config-sink");
+        let (observer, _socket) = test_support::worker(&engine);
+        let request =
+            test_support::request("early", "configuration::set", "test::config-sink", None);
+        engine.observers.observe(&engine, &observer, request).await;
+        let early = engine.observers.get("early").expect("stored while waiting");
+        assert_eq!(early.state(), ObserverState::Pending);
+
+        <ConfigurationWorker as Worker>::register_functions(&worker, engine.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while early.state() == ObserverState::Pending {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("left pending");
+        assert_eq!(early.state(), ObserverState::Error);
+        assert_eq!(
+            early.reason().map(|e| e.code).as_deref(),
+            Some(observe_codes::NOT_OBSERVABLE)
+        );
+    }
+
+    /// Listing ids and reading schemas carry no value: they stay observable.
+    #[tokio::test]
+    async fn listing_functions_stay_observable() {
+        use crate::observer::events::test_support;
+        let (engine, worker, _dir) = setup().await;
+        <ConfigurationWorker as Worker>::register_functions(&worker, engine.clone());
+        let _sink = test_support::capture(&engine, "test::config-sink");
+        let (observer, _socket) = test_support::worker(&engine);
+        for function in ["configuration::list", "configuration::schema"] {
+            let request = test_support::request(function, function, "test::config-sink", None);
+            test_support::observe_request(&engine, &observer, request).await;
+        }
+    }
+
+    /// A filter on a value the event no longer carries is refused instead of
+    /// silently matching nothing.
+    #[tokio::test]
+    async fn an_observer_filtering_on_a_value_is_refused() {
+        use crate::{
+            observer::events::{
+                CONFIGURATION_ON_UPDATED, register_configuration_event_source, test_support,
+            },
+            protocol::observe_codes,
+        };
+        let (engine, _worker, _dir) = setup().await;
+        register_configuration_event_source(&engine);
+        let _sink = test_support::capture(&engine, "test::config-sink");
+        let (observer, mut socket) = test_support::worker(&engine);
+        let request = test_support::request(
+            "by-value",
+            CONFIGURATION_ON_UPDATED,
+            "test::config-sink",
+            Some(json!({ "input.new_value.port": { "$eq": 3112 } })),
+        );
+        assert_eq!(
+            observe_error_code(&engine, &observer, &mut socket, request)
+                .await
+                .as_deref(),
+            Some(observe_codes::INVALID_FILTER_PATH)
+        );
     }
 
     #[tokio::test]
