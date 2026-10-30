@@ -208,7 +208,9 @@ client.Observe(iii.Source{
   Only captured fields are present. `deliver: 'input'` or `'output'` sends that value alone.
 - The observer's `options.metadata` arrives as the handler's metadata argument (Node and browser
   second argument, Python `metadata` parameter, the `Option<Value>` of a Rust
-  `Fn(Value, Option<Value>)` handler, Go `iii.MetadataFromContext(ctx)`).
+  `Fn(Value, Option<Value>)` handler, Go `iii.MetadataFromContext(ctx)`), on iii's delivery and on
+  a call through the observer alike. The observed call's own metadata reaches the target only in
+  the envelope's `metadata` field, when `capture` includes `metadata`.
 - iii's delivery is fire-and-forget and at most once: the target's result is discarded, and drops
   are counted. A source whose worker calls targets itself documents what its target receives and
   what its result does (an `http::on-request` target returns the response; a `queue::on-message`
@@ -482,7 +484,9 @@ How hooks behave:
   `iii.call({ observer: obs, payload })` (Python `call_async({"observer": obs, ...})`, Rust
   `CallRequest::observer(&obs, payload)`, Go `iii.CallRequest{Observer: obs, ...}`), which resolves
   to the target's result. Only the worker that hosts the function may call through its observers
-  (`NOT_FUNCTION_OWNER`).
+  (`NOT_FUNCTION_OWNER`). A call through an observer takes no metadata: its target's metadata
+  argument is the observer's `options.metadata`, and every SDK refuses a request that names
+  metadata before sending it. Anything the target needs from the call goes in the payload.
 - **Match or deliver.** Choose observers in `onObserverMatch` when an observer's args and the call
   settle it (a cron expression, a table, a subscriber id). Choose them in `onObserverDeliver` when
   choosing compares observers with each other or produces part of the payload: `http::on-request`

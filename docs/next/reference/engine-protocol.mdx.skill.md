@@ -299,10 +299,11 @@ No 0.26 SDK sends this object.
 ```
 
 `invocation_id` is omitted on `Void` invocations from a caller (the caller has no result channel to
-reply on). `metadata` is arbitrary JSON delivered to the receiving function as a distinct argument
-alongside the payload: the call's metadata sidecar. On an activation it is the observer's
-`metadata`, which lets a target shared by many observers recover which one fired and with what
-context.
+reply on). `metadata` is any JSON value delivered to the receiving function as a distinct argument
+alongside the payload: the call's metadata sidecar. `null` is the same as no metadata: the engine
+reads it as absent, and every SDK leaves the field out and hands its handler no metadata. On an
+activation it is the observer's `metadata`, which lets a target shared by many observers recover
+which one fired and with what context.
 
 `traceparent` and `baggage` contain W3C trace context. `action` is the routing flag (see
 [Invocation actions](#invocation-actions) below); absent / `null` means synchronous.
@@ -419,9 +420,10 @@ stamp.
 A function's `onObserverDeliver` hook can run an observer's target itself with
 `iii.call({ observer, payload })`, for example to route an HTTP request to one route's handler and
 return that handler's response. The SDK sends an `InvokeFunction` whose `function_id` is the
-observer's `target` and whose `activation` carries `observer_id` only, without `namespace`. The
-engine routes the call to the observer's stored target and ignores a `namespace` if one is present.
-It checks, in order:
+observer's `target` and whose `activation` carries `observer_id` only, without `namespace` or
+`metadata`. The engine routes the call to the observer's stored target and ignores a `namespace` or
+a `metadata` if one is present: the target's metadata is the observer's. Every SDK refuses a call
+through an observer that names metadata before sending it. The engine checks, in order:
 
 1. The observer exists, else `OBSERVER_NOT_FOUND`.
 2. The sender hosts the observed function, else `NOT_FUNCTION_OWNER`.

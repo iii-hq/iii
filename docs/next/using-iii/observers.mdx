@@ -598,9 +598,10 @@ With `on: "complete"`, the target runs after each call, and the envelope's `stat
 ### Metadata and the return value
 
 The observer's `metadata` option is the target's second argument (the `metadata` parameter in
-Python, `MetadataFromContext(ctx)` in Go). It is different from the `metadata` field of the
-envelope, which is the metadata of the observed call. See
-[Policy and metadata](#policy-and-metadata).
+Python, `MetadataFromContext(ctx)` in Go), on every activation, including a call through the
+observer from a function's deliver hook. It is different from the `metadata` field of the envelope,
+which is the metadata of the observed call: the envelope carries it when `capture` includes
+`metadata`. See [Policy and metadata](#policy-and-metadata).
 
 iii discards the target's return value, except for functions that use it:
 [`http::on-request`](#http-routes) answers the request with it, and

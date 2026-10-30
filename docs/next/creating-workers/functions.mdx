@@ -292,10 +292,15 @@ you gate access on the fields you define.
 
 ## Receive per-invocation metadata
 
-Distinct from the registration metadata above, each function can also receive an optional `metadata`
-object that is sent as arbitrary JSON. A caller sets it on the call, and an observer sets it once
+Distinct from the registration metadata above, each function can also receive optional
+per-invocation `metadata`: any JSON value. A caller sets it on the call, and an observer sets it once
 for every activation of its target, to give the receiving function execution context (see
-[Policy and metadata](../using-iii/observers#policy-and-metadata)).
+[Policy and metadata](../using-iii/observers#policy-and-metadata)). A call through an observer takes
+no metadata of its own: its target receives the observer's.
+
+`null` is the same as no metadata. A call with `metadata: null` (Python `None`, Rust `Value::Null`,
+Go `json.RawMessage("null")`) reaches the handler with none, whether it runs in the same worker or
+goes through the engine.
 
 <Tabs>
   <Tab title="Node / TypeScript">
