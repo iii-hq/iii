@@ -228,7 +228,7 @@ func TestUnmarshalRoundtrip(t *testing.T) {
 		jsonEqual(t, dec.InvokeFunction.Metadata, `{"tenant":"acme"}`)
 	})
 
-	t.Run("trigger frames are not part of the protocol", func(t *testing.T) {
+	t.Run("0.25 registration frames are not part of the protocol", func(t *testing.T) {
 		// the read loop ignores a frame it cannot decode
 		for _, msgType := range []string{"registertriggertype", "unregistertriggertype", "registertrigger", "unregistertrigger", "triggerregistrationresult"} {
 			if _, err := UnmarshalMessage([]byte(`{"type":"` + msgType + `","id":"abc"}`)); err == nil {

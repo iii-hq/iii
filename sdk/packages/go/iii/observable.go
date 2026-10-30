@@ -479,7 +479,6 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 	f.mu.Lock()
 	obs.adding = true
 	f.mu.Unlock()
-	var resolved []hookLevel
 	for _, level := range []hookLevel{workerLevel, functionLevel} {
 		hook, gen := f.client.addedHookGen(f.functionID, level)
 		obs.addedGen[level] = gen
@@ -488,15 +487,15 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 		}
 		outcome := f.runHook(func(ctx context.Context) error { return hook(context.WithValue(ctx, addingKey{}, obs), obs) })
 		if outcome.body == nil {
-			resolved = append(resolved, level)
+			obs.setUp[level] = true
 			continue
 		}
-		f.refuse(obs, revision, namespace, epoch, outcome.body, resolved)
+		f.refuse(obs, revision, namespace, epoch, outcome.body)
 		if outcome.late != nil {
 			// It may still finish and set something up: undo that once it does.
 			go func() {
 				if err := <-outcome.late; err == nil {
-					f.enqueue(func() { f.callRemoved(obs, []hookLevel{level}) })
+					f.enqueue(func() { f.runRemoved(obs, level) })
 				}
 			}()
 		}
@@ -507,7 +506,7 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 	if match := f.state.Load().match; match.byKeys() {
 		keys, rejection := f.observerKeys(match, obs)
 		if rejection != nil {
-			f.refuse(obs, revision, namespace, epoch, rejection, resolved)
+			f.refuse(obs, revision, namespace, epoch, rejection)
 			return
 		}
 		f.mu.Lock()
@@ -523,19 +522,23 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 		// if registered again since: as removed, no ack
 		f.mu.Unlock()
 		obs.settle(errObserverRemoved)
-		f.callRemoved(obs, resolved)
+		f.tearDown(obs)
 		return
 	}
 	f.known[obs.id] = obs
-	// Rejected (obs.Reject) while a hook was still running: the rejection wins. It
-	// stays known, so the engine's observerremoved runs the removed hooks and undoes
-	// what the added hooks set up.
+	// Rejected (obs.Reject) while a hook was still running: the rejection wins, and the
+	// removed hook of each level whose added hook resolved runs now (the engine sends no
+	// observerremoved for an observer it never saw acked). It stays known, so a replay
+	// that lists it again gets the rejection again (reack).
 	if rejection := obs.rejection; rejection != nil {
 		f.mu.Unlock()
 		f.ack(obs.id, revision, namespace, epoch, rejection)
 		obs.settle(&ObserveRejectionError{Code: rejection.Code, Message: rejection.Message})
+		f.tearDown(obs)
 		return
 	}
+	// Accepted: set up at both levels, so its removal runs the removed hooks of both.
+	obs.setUp = [2]bool{true, true}
 	// In the active set before the ack: the first call after "active" is delivered.
 	f.activateLocked(obs)
 	f.mu.Unlock()
@@ -544,14 +547,15 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 }
 
 // refuse rejects an observer whose add failed with body: it is acked with the error,
-// Accepted returns it, and the removed hook of each level in resolved runs.
-func (f *functionObservers) refuse(obs *Observer, revision uint64, namespace string, epoch uint64, body *ErrorBody, resolved []hookLevel) {
+// Accepted returns it, and the removed hook of each level whose added hook resolved
+// runs.
+func (f *functionObservers) refuse(obs *Observer, revision uint64, namespace string, epoch uint64, body *ErrorBody) {
 	f.mu.Lock()
 	obs.adding = false
 	f.mu.Unlock()
 	f.ack(obs.id, revision, namespace, epoch, body)
 	obs.settle(&ObserveRejectionError{Code: body.Code, Message: body.Message})
-	f.callRemoved(obs, resolved)
+	f.tearDown(obs)
 }
 
 // reack acks again, at revision and without running any hook, an observer this SDK
@@ -644,26 +648,35 @@ func (f *functionObservers) remove(id string) {
 	f.deactivateLocked(obs)
 	f.mu.Unlock()
 	obs.settle(errObserverRemoved)
-	f.callRemoved(obs, []hookLevel{workerLevel, functionLevel})
+	f.tearDown(obs)
 }
 
-// callRemoved runs the removed hooks of levels, the function's before the worker's.
-func (f *functionObservers) callRemoved(obs *Observer, levels []hookLevel) {
+// tearDown runs the removed hook of each level obs is set up at, the function's before
+// the worker's, and marks the level torn down: each level's removed hook runs once per
+// observer, whichever of a removal, a late rejection or a refusal comes first. It runs
+// on the function's queue.
+func (f *functionObservers) tearDown(obs *Observer) {
 	for _, level := range []hookLevel{functionLevel, workerLevel} {
-		if !slices.Contains(levels, level) {
+		if !obs.setUp[level] {
 			continue
 		}
-		hook := f.client.removedHook(f.functionID, level)
-		if hook == nil {
-			continue
-		}
-		outcome := f.runHook(func(ctx context.Context) error {
-			hook(ctx, obs)
-			return nil
-		})
-		if outcome.body != nil {
-			log.Printf("iii: OnObserverRemoved failed for observer %s of %q: %s", obs.id, f.functionID, outcome.body.Message)
-		}
+		obs.setUp[level] = false
+		f.runRemoved(obs, level)
+	}
+}
+
+// runRemoved runs the removed hook of level for obs; a failure is logged.
+func (f *functionObservers) runRemoved(obs *Observer, level hookLevel) {
+	hook := f.client.removedHook(f.functionID, level)
+	if hook == nil {
+		return
+	}
+	outcome := f.runHook(func(ctx context.Context) error {
+		hook(ctx, obs)
+		return nil
+	})
+	if outcome.body != nil {
+		log.Printf("iii: OnObserverRemoved failed for observer %s of %q: %s", obs.id, f.functionID, outcome.body.Message)
 	}
 }
 
@@ -823,6 +836,10 @@ type observerState struct {
 	// addedGen is, per level, the generation of the added hook it was accepted or
 	// caught up with (read and written on the function's queue only).
 	addedGen [2]uint64
+	// setUp is, per level, whether the observer is set up there and not torn down yet:
+	// its added hook resolved, or the observer was accepted. tearDown clears it as it
+	// runs the level's removed hook (read and written on the function's queue only).
+	setUp [2]bool
 	// guarded by owner.mu
 	revision  uint64
 	rejection *ErrorBody
@@ -956,9 +973,12 @@ func (o *Observer) Accepted(ctx context.Context) error {
 }
 
 // Reject sends a late rejection for this observer (e.g. after a config reload removed
-// what it needs). It leaves the compiled set at once, so calls stop reaching it; the
-// removed hooks run when the engine's observerremoved arrives. The rejection is sent
-// again when the engine replays the observer after a reconnect.
+// what it needs). It leaves the compiled set at once, so calls stop reaching it, and
+// its removed hooks run next on the function's hook queue, connected or not; the
+// engine's observerremoved that follows runs none again. The rejection is sent again
+// when the engine replays the observer after a reconnect. Called while the observer's
+// added hooks run, it rejects the observer once they return, and the removed hook of
+// each level whose added hook resolved runs.
 func (o *Observer) Reject(code, message string) {
 	f := o.owner
 	if f == nil {
@@ -984,6 +1004,7 @@ func (o *Observer) Reject(code, message string) {
 	if epoch >= 0 {
 		f.ack(o.id, revision, namespace, uint64(epoch), &ErrorBody{Code: code, Message: message})
 	}
+	f.enqueue(func() { f.tearDown(current) })
 }
 
 // objectOrEmpty maps an absent or null JSON value to {}.

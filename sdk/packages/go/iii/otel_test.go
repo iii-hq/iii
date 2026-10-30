@@ -685,3 +685,30 @@ func TestOtelLocalDispatchSpanParent(t *testing.T) {
 		t.Errorf("local span trace %s parent %s, want %s / %s", child.TraceID, child.ParentSpanID, parent.SpanContext().TraceID(), parent.SpanContext().SpanID())
 	}
 }
+
+// The deliver hook runs in the function's invocation span: a span it starts and a call
+// it makes are children of "execute <function id>".
+func TestOtelDeliverHookRunsInTheInvocationSpan(t *testing.T) {
+	fe := newFakeEngine(t)
+	e := newOtelEngine(t, fe.m.handle)
+	c := e.connect(t, WithName("observe-test"), otelOn(OtelConfig{}))
+	waitUntil(t, "WorkerRegistered applied", c.registeredNow)
+	c.OnObserverDeliverFor("traced::fn", func(ctx context.Context, call *Call, _ []*Observer) (any, error) {
+		_, span := otel.Tracer("user").Start(ctx, "deliver-child")
+		span.End()
+		_, err := c.Call(ctx, CallRequest{FunctionID: "audit::log", Action: VoidAction()})
+		return call.Output, err
+	})
+	registerHost(t, c, "traced::fn", echoHandler)
+	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "traced::fn", Data: json.RawMessage(`{}`)}))
+
+	execute, _, _ := waitSpan(t, e.oc, "execute traced::fn")
+	child, _, _ := waitSpan(t, e.oc, "deliver-child")
+	if child.TraceID != execute.TraceID || child.ParentSpanID != execute.SpanID {
+		t.Errorf("deliver-child trace %s parent %s, want %s / %s", child.TraceID, child.ParentSpanID, execute.TraceID, execute.SpanID)
+	}
+	sent := fe.waitFrames(MsgInvokeFunction, 1, func(d *DecodedMessage) bool { return d.InvokeFunction.FunctionID == "audit::log" })[0].InvokeFunction
+	if want := "00-" + execute.TraceID + "-" + execute.SpanID + "-01"; sent.Traceparent == nil || *sent.Traceparent != want {
+		t.Errorf("the hook's call carries traceparent %v, want %s", sent.Traceparent, want)
+	}
+}

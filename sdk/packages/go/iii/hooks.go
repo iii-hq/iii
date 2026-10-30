@@ -17,8 +17,10 @@ import (
 type AddedHook func(ctx context.Context, obs *Observer) error
 
 // RemovedHook runs once for every accepted observer when it is removed (unobserve,
-// disposal, late rejection), and for each level whose [AddedHook] resolved when another
-// level rejects the observer. A panic is logged; the observer is removed either way.
+// disposal, late rejection with [Observer.Reject]). For an observer rejected before it
+// is accepted (by another level's [AddedHook], or by [Observer.Reject] while the added
+// hooks run), it runs for each level whose [AddedHook] resolved. A panic is logged; the
+// observer is removed either way.
 type RemovedHook func(ctx context.Context, obs *Observer)
 
 // MatchHook says which observers want each call of one function; without one, every

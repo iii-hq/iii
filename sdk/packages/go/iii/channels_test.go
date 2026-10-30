@@ -506,7 +506,7 @@ func TestChannelWriterChunking(t *testing.T) {
 	if err := w.Write(ctx, payload); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	_ = w.Close() // triggers the server's read error -> closes done
+	_ = w.Close() // makes the server's read fail -> closes done
 
 	select {
 	case <-done:

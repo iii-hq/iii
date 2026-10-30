@@ -216,7 +216,8 @@ func TestRejectionUnwindsTheLevelsThatResolved(t *testing.T) {
 }
 
 // One removal per accepted observer, at each level: on the engine's observerremoved,
-// on a late rejection (once the engine removes it), and on Unregister. A stale
+// on a late rejection (at once; the engine's observerremoved that follows runs none
+// again), and on Unregister. A stale
 // observerremoved removes nothing twice, and an observer that was never accepted is
 // never removed.
 func TestOneRemovalPerAcceptedObserver(t *testing.T) {
@@ -508,6 +509,87 @@ func TestHooksByIDSurviveUnregisterAndChain(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if _, r := l.snapshot(); len(r) != 1 {
 		t.Errorf("a removed hook ran: removed %v", r)
+	}
+}
+
+// nil removes the worker's hooks: an observer added after the worker's added and
+// removed hooks were set to nil runs neither, while one added before still runs the
+// function's removed hook.
+func TestNilRemovesTheWorkersHooks(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	var l hookLog
+	recordLevels(c, "wk::fn", &l)
+	registerHost(t, c, "wk::fn", echoHandler)
+	addObserver(t, fe, "wk::fn", observerInfo("before", "x::y", "", ""))
+	if c.OnObserverAdded(nil).OnObserverRemoved(nil) != c {
+		t.Fatal("the client's hook methods return the client")
+	}
+	addObserver(t, fe, "wk::fn", observerInfo("after", "x::y", "", ""))
+	fe.remove("wk::fn", "before")
+	fe.remove("wk::fn", "after")
+	// the queue runs in order: once "sentinel" is acked, both removals were applied
+	addObserver(t, fe, "wk::fn", observerInfo("sentinel", "x::y", "", ""))
+	want := []string{
+		"added:worker:before", "added:function:before",
+		"added:function:after",
+		"removed:function:before",
+		"removed:function:after",
+		"added:function:sentinel",
+	}
+	if got := l.eventList(); !slices.Equal(got, want) {
+		t.Errorf("events %v, want %v", got, want)
+	}
+	c.mu.Lock()
+	added, removed := c.workerHooks.added, c.workerHooks.removed
+	c.mu.Unlock()
+	if added != nil || removed != nil {
+		t.Error("nil left a worker hook set")
+	}
+}
+
+// The SDK acks no observer of a function before the RegisterFunction that registered it
+// returns: the engine's functionregistered, listing an observer, is handled while the
+// call has not returned, and the added hook runs and the ack goes out only after it
+// returned.
+func TestNoObserverIsAckedBeforeRegisterFunctionReturns(t *testing.T) {
+	fe := newFakeEngine(t)
+	fe.setObservers("early::fn", 1, observerInfo("o1", "x::y", "", ""))
+	c := fe.client()
+	var l hookLog
+	recordHooks(c, "early::fn", &l)
+	var returned atomic.Bool
+	var addedBeforeReturn atomic.Bool
+	c.OnObserverAddedFor("early::fn", func(_ context.Context, obs *Observer) error {
+		addedBeforeReturn.Store(!returned.Load())
+		l.add(obs.ID)
+		return nil
+	})
+	c.beforeRegisterReturn = func(id string) {
+		// the engine answered the registration with its observer, and the SDK handled it
+		waitUntil(t, "functionregistered handled", func() bool {
+			f := c.functionObservers(id)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.confirmedEpoch == int64(c.currentEpoch())
+		})
+		time.Sleep(100 * time.Millisecond)
+		if n := len(fe.acks(id)); n != 0 {
+			t.Errorf("%d observeracks before RegisterFunction returned", n)
+		}
+		// RegisterFunction returns next: an added hook that ran before this ran early
+		returned.Store(true)
+	}
+	_, err := c.RegisterFunction("early::fn", echoHandler)
+	c.beforeRegisterReturn = nil
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := fe.waitAck("early::fn", "o1", 1); a.Error != nil {
+		t.Errorf("ack %+v", a.Error)
+	}
+	if added, _ := l.snapshot(); !slices.Equal(added, []string{"o1"}) || addedBeforeReturn.Load() {
+		t.Errorf("added %v (before the return: %v)", added, addedBeforeReturn.Load())
 	}
 }
 
@@ -865,6 +947,58 @@ func TestStandbyRegistersWhenTheIDIsFree(t *testing.T) {
 	}
 }
 
+// Standby retries every second ±20 %: the default interval is one second, every delay
+// falls within 0.8 to 1.2 of the interval, and the delays spread over that range.
+// Scaled down, the registrations the engine receives are spaced the same way.
+func TestStandbyRetriesEverySecondWithJitter(t *testing.T) {
+	if standbyRetryInterval != time.Second {
+		t.Errorf("standbyRetryInterval %s, want 1s", standbyRetryInterval)
+	}
+	c := New("ws://unused.invalid")
+	t.Cleanup(func() { _ = c.Close() })
+	lo, hi := time.Hour, time.Duration(0)
+	for range 2000 {
+		d := c.standbyDelay()
+		if d < 800*time.Millisecond || d > 1200*time.Millisecond {
+			t.Fatalf("delay %s outside 1s ±20 %%", d)
+		}
+		lo, hi = min(lo, d), max(hi, d)
+	}
+	if lo > 850*time.Millisecond || hi < 1150*time.Millisecond {
+		t.Errorf("delays span %s to %s, want them spread over 0.8s to 1.2s", lo, hi)
+	}
+
+	fe := newFakeEngine(t)
+	var mu sync.Mutex
+	var at []time.Time
+	fe.setOnFrame(func(msg map[string]json.RawMessage) {
+		if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "jit::fn" {
+			mu.Lock()
+			at = append(at, time.Now())
+			mu.Unlock()
+		}
+	})
+	fe.mu.Lock()
+	fe.conflicts["jit::fn"] = 3
+	fe.mu.Unlock()
+	sb := fe.client()
+	const interval = 200 * time.Millisecond
+	sb.standbyInterval = interval
+	registerHost(t, sb, "jit::fn", echoHandler, RegisterFunctionOptions{Standby: true})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(at) != 4 {
+		t.Fatalf("%d registrations, want 4 (three refused, one accepted)", len(at))
+	}
+	// the spacing is the delay plus a round trip: never under 0.8 of the interval, and
+	// over 1.2 of it only by that round trip
+	for i := 1; i < len(at); i++ {
+		if gap := at[i].Sub(at[i-1]); gap < interval*8/10 || gap > interval*12/10+100*time.Millisecond {
+			t.Errorf("retry %d after %s, want %s ±20 %%", i, gap, interval)
+		}
+	}
+}
+
 func TestOnObserverRemovedFailureIsLogged(t *testing.T) {
 	logs := captureLog(t)
 	fe := newFakeEngine(t)
@@ -1040,9 +1174,12 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	}
 }
 
-// A late rejection leaves the compiled set at once, carries the revision the engine
-// last announced, survives a reconnect (re-acked with the error on the replayed
-// functionregistered) until a fresh observeradded starts the observer over.
+// A late rejection leaves the compiled set at once and runs the removed hooks once,
+// connected or not. The fake engine answers as the engine does: observerremoved for a
+// live rejection of an acked observer, nothing for the rejection of a replayed
+// announcement the SDK had not acked yet. The rejection carries the revision the engine
+// last announced and is sent again on each replay that lists the observer, until a
+// fresh observeradded starts the observer over.
 func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	fe := newFakeEngine(t)
 	fe.setObservers("late::fn", 3, observerInfo("o1", "x::y", "", ""))
@@ -1057,8 +1194,9 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if obs.ID != "o1" {
 		t.Fatalf("observers %v", c.Observers("late::fn"))
 	}
+	removed := func() []string { _, r := l.snapshot(); return r }
 
-	// rejected while the socket is down: the ack cannot go out now
+	// rejected while the socket is down: the ack cannot go out now, the removed hook runs
 	gate := make(chan struct{})
 	fe.mu.Lock()
 	fe.gate = gate
@@ -1069,6 +1207,7 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if len(c.Observers("late::fn")) != 1 {
 		t.Error("a rejected observer stays in the compiled set")
 	}
+	waitUntil(t, "o1's removed hook while offline", func() bool { return slices.Equal(removed(), []string{"o1"}) })
 	fe.setObservers("late::fn", 7, observerInfo("o1", "x::y", "", ""), observerInfo("o2", "x::y", "", ""))
 	close(gate)
 	waitUntil(t, "registered", c.registeredNow)
@@ -1082,7 +1221,8 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if len(c.Observers("late::fn")) != 1 {
 		t.Errorf("observers %v", c.Observers("late::fn"))
 	}
-	// a late rejection on the live connection carries the last announced revision (7)
+	// a live late rejection carries the last announced revision (7) and runs the removed
+	// hook at once; the engine's observerremoved for it runs none again
 	o2 := c.Observers("late::fn")[0]
 	mark := len(fe.acks("late::fn"))
 	o2.Reject("UNKNOWN_DB", "gone too")
@@ -1090,31 +1230,38 @@ func TestLateRejectionSurvivesReconnect(t *testing.T) {
 	if last := fe.acks("late::fn")[mark]; last.ID != "o2" || last.Revision != 7 || last.Error.Code != "UNKNOWN_DB" {
 		t.Errorf("late rejection %+v", last)
 	}
-	// a fresh observeradded starts o1 over: removed, then added again
-	fe.send(&ObserverAddedMessage{FunctionID: "late::fn", Namespace: "default", Revision: 8, Observer: observerInfo("o1", "x::y", "", "")})
-	if a := fe.waitAck("late::fn", "o1", 8); a.Error != nil {
+	waitUntil(t, "o2's removed hook", func() bool { return slices.Equal(removed(), []string{"o1", "o2"}) })
+	fe.remove("late::fn", "o2") // revision 8
+	// a fresh observeradded starts o1 over: the o1 held was torn down already, so only
+	// the added hook runs
+	fe.send(&ObserverAddedMessage{FunctionID: "late::fn", Namespace: "default", Revision: 9, Observer: observerInfo("o1", "x::y", "", "")})
+	if a := fe.waitAck("late::fn", "o1", 9); a.Error != nil {
 		t.Errorf("reactivated %+v", a.Error)
 	}
 	waitUntil(t, "o1 active", func() bool { return len(c.Observers("late::fn")) == 1 && c.Observers("late::fn")[0].ID == "o1" })
-	added, removed := l.snapshot()
-	if len(added) != 3 || added[2] != "o1" || len(removed) != 1 || removed[0] != "o1" {
-		t.Errorf("hooks: added %v removed %v", added, removed)
+	added, gone := l.snapshot()
+	if !slices.Equal(added, []string{"o1", "o2", "o1"}) || !slices.Equal(gone, []string{"o1", "o2"}) {
+		t.Errorf("hooks: added %v removed %v", added, gone)
 	}
 }
 
-// A Reject made while an added hook is still running wins: the add acks with it
-// rather than activating, and the engine's observerremoved runs the removed hooks to
-// undo what the added hooks set up.
+// A Reject made while an added hook is still running wins: the add acks with it rather
+// than activating, and the removed hook of each level whose added hook resolved runs at
+// once, as the engine sends no observerremoved for an observer it never saw acked. A
+// later observerremoved, or a replay without the observer, runs none again; a replay
+// that lists it gets the rejection again.
 func TestRejectDuringOnObserverAddedWins(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	var l hookLog
+	recordLevels(c, "rej::fn", &l)
 	c.OnObserverAddedFor("rej::fn", func(_ context.Context, obs *Observer) error {
-		l.add(obs.ID)
-		obs.Reject("UNKNOWN_DB", "the db went away during setup")
+		l.event("added:function:" + obs.ID)
+		if obs.ID == "o1" {
+			obs.Reject("UNKNOWN_DB", "the db went away during setup")
+		}
 		return nil
 	})
-	c.OnObserverRemovedFor("rej::fn", func(_ context.Context, obs *Observer) { l.remove(obs.ID) })
 	registerHost(t, c, "rej::fn", echoHandler)
 	rev := fe.add("rej::fn", observerInfo("o1", "x::y", "", ""))
 	a := fe.waitAck("rej::fn", "o1", rev)
@@ -1124,8 +1271,24 @@ func TestRejectDuringOnObserverAddedWins(t *testing.T) {
 	if c.IsObserved("rej::fn") {
 		t.Error("an observer rejected during its hook was activated")
 	}
+	want := []string{"added:worker:o1", "added:function:o1", "removed:function:o1", "removed:worker:o1"}
+	waitUntil(t, "the removed hooks of both levels", func() bool { return slices.Equal(l.eventList(), want) })
+
+	// listed by a replay: re-acked with the rejection, no hook
+	fe.setObservers("rej::fn", rev, observerInfo("o1", "x::y", "", ""))
+	fe.reconnect(c)
+	acks := fe.waitFrames(MsgObserverAck, 2, func(d *DecodedMessage) bool {
+		return d.ObserverAck.FunctionID == "rej::fn" && d.ObserverAck.ID == "o1"
+	})
+	if a := acks[1].ObserverAck; a.Revision != rev || a.Error == nil || a.Error.Code != "UNKNOWN_DB" {
+		t.Errorf("replayed ack %+v", a)
+	}
 	fe.remove("rej::fn", "o1")
-	waitUntil(t, "OnObserverRemoved", func() bool { _, r := l.snapshot(); return len(r) == 1 })
+	// the queue runs in order: once o2 is acked, the removal of o1 was applied
+	addObserver(t, fe, "rej::fn", observerInfo("o2", "x::y", "", ""))
+	if got := l.eventList(); !slices.Equal(got, append(want, "added:worker:o2", "added:function:o2")) {
+		t.Errorf("events %v", got)
+	}
 }
 
 // Value semantics: an Observer keeps its own copy of the engine's capture list.
@@ -1284,6 +1447,7 @@ func TestAReplayWithTheSameArgsRunsNoHook(t *testing.T) {
 		t.Errorf("late rejection at revision %d, want 3", rejection.Revision)
 	}
 	waitUntil(t, "rejected", func() bool { return !c.IsObserved("ra::fn") })
+	waitUntil(t, "the removed hook", func() bool { return slices.Equal(l.eventList(), []string{"add a a", "remove a a"}) })
 	// listed again, whatever its args: re-acked with its rejection
 	fe.setObservers("ra::fn", 4, observerInfo("a", "x::y", `{"kind":"other"}`, ""))
 	fe.reconnect(c)

@@ -436,10 +436,13 @@ How the added and removed hooks run:
   goroutine that waits on `obs.Accepted` and then calls through the observer (called
   with the hook's own `ctx`, `Accepted` returns an error at once).
 - **Rejected.** An added hook that returns an error rejects the observer with the code
-  of an `iii.ObserveRejection(code, message)`, or `OBSERVE_REJECTED` for any other error.
-  The removed hook of each level whose added hook already returned runs.
+  of an `iii.ObserveRejection(code, message)`, or `OBSERVE_REJECTED` for any other error;
+  `obs.Reject(code, message)` called while the added hooks run rejects it with that code
+  once they return. The removed hook of each level whose added hook already returned
+  runs.
 - **Removed.** The removed hooks run exactly once for every accepted observer: on
-  unobserve, on disposal, and after a late rejection with `obs.Reject(code, message)`.
+  unobserve, on disposal, and on a late rejection with `obs.Reject(code, message)`, which
+  runs them at once, whether the worker is connected or not.
 - **One at a time.** The hooks of one function run one at a time, in the order the
   engine announced the observers, also across an `Unregister` and a new registration of
   its id; hooks of different functions run concurrently. A hook past 30s fails the
@@ -503,9 +506,10 @@ if client.IsObservedFor("database::on-row-changed", &iii.Call{Input: change}) {
 }
 ```
 
-`IsObserved(id)` is one atomic load. `IsObservedFor(id, call)` on a function matched by
-keys is one lookup per call key; on any other function it is `IsObserved(id)`. A match
-hook set while the function has active observers rebuilds the index from them.
+`ref.IsObserved()` is one atomic load; `client.IsObserved(id)` adds a lock-free lookup of
+the id. `IsObservedFor(id, call)` on a function matched by keys is one lookup per call
+key; on any other function it is `IsObserved(id)`. A match hook set while the function
+has active observers rebuilds the index from them.
 
 #### Delivering yourself
 
@@ -767,7 +771,9 @@ observer, err := client.Observe(iii.Source{
 | `log`, `trace` | `iii.FnOnLog`, `iii.FnOnSpan` | none |
 | `configuration` | `iii.FnOnConfigurationUpdate` | none |
 | `engine::functions-available` | `iii.FnOnFunctionsChanged` | none |
+| `engine::workers-available` | `iii.FnOnWorkersChanged` | none |
 | `stream`, `stream:join`, `stream:leave` | `iii.FnOnStreamChanged`, `iii.FnOnStreamJoin`, `iii.FnOnStreamLeave` | none |
+| none (new in 0.26) | `iii.FnOnObserversChanged` | none |
 
 `TriggerFunctionsAvailable`, `TriggerLog`, `FnListTriggers`, `FnInfoTriggers`,
 `FnListRegisteredTriggers` and `FnInfoRegisteredTriggers` are removed: the engine-hosted

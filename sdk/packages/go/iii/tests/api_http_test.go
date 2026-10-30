@@ -15,7 +15,7 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Mirrors sdk/packages/rust/iii/tests/api_triggers.rs: observe the http worker's
+// Mirrors sdk/packages/rust/iii/tests/http_routes.rs: observe the http worker's
 // http::on-request with a route and confirm a real HTTP request routes through the
 // engine to the Go handler and back. This is the full inbound path (http worker ->
 // call through the route's observer -> handler -> invocationresult -> HTTP response),
