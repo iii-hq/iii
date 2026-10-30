@@ -442,6 +442,12 @@ pub struct Engine {
     /// worker that has gone away — or whose connection is tearing down — is
     /// taken over, so a worker restart reclaims its own name.
     pub(crate) worker_name_owners: Arc<DashMap<(String, String), Uuid>>,
+    /// The `(namespace, function_id)` registrations each connection has been
+    /// refused for an id another live worker owns, so each is logged at
+    /// `warn` once: a `standby` registration retries every second until the
+    /// id is free, and its later refusals are logged at `debug`. Dropped by
+    /// `cleanup_worker`.
+    conflicts_warned: Arc<DashMap<Uuid, std::collections::HashSet<(String, String)>>>,
     /// Namespace resolution state per WS connection, seeded by
     /// `begin_namespace_resolution` when the connection is accepted and dropped
     /// by `cleanup_worker`. A connection with no entry here (in-process
@@ -523,6 +529,7 @@ impl Engine {
             configuration_listeners: Arc::new(Default::default()),
             function_owners,
             worker_name_owners: Arc::new(DashMap::new()),
+            conflicts_warned: Arc::new(DashMap::new()),
             namespace_states: Arc::new(DashMap::new()),
             namespace_grace_tasks: Arc::new(DashMap::new()),
             active_scope,
@@ -3117,6 +3124,7 @@ impl Engine {
         // release. Those would leak, with `function_owners` pointing at a dead
         // worker. Aborting stops the drain at its next message.
         self.abort_namespace_resolution(worker);
+        self.conflicts_warned.remove(&worker.id);
 
         // Observers this connection created wait (suspended) for a Reattach;
         // observers on or targeting its functions follow the function removals
@@ -3442,6 +3450,15 @@ impl Engine {
         Ok(())
     }
 
+    /// Whether `rejected` is refused `(namespace, function_id)` for the first
+    /// time on its connection (see `conflicts_warned`).
+    fn first_conflict(&self, rejected: Uuid, namespace: &str, function_id: &str) -> bool {
+        self.conflicts_warned
+            .entry(rejected)
+            .or_default()
+            .insert((namespace.to_string(), function_id.to_string()))
+    }
+
     /// The conflict of a worker registering an id the engine hosts. No
     /// worker owns the id, so the rejection names none.
     fn engine_hosted_conflict(
@@ -3487,18 +3504,30 @@ impl Engine {
         let ns_c = namespace.cyan();
         let owner_c = owner_label.green();
         let rejected_c = rejected_label.red();
-        tracing::warn!(
-            namespace = %namespace,
-            function_id = %function_id,
-            owner_worker_name = %owner_label,
-            owner_worker_id = %owner,
-            rejected_worker_name = %rejected_label,
-            rejected_worker_id = %rejected,
-            "{kind} '{fid_c}' in namespace '{ns_c}' is already owned by live worker \
-             '{owner_c}' ({owner}); rejecting registration from worker '{rejected_c}' \
-             ({rejected}). Only one worker per namespace may own a function id — rename the \
-             function or use a different namespace."
-        );
+        if self.first_conflict(rejected, namespace, function_id) {
+            tracing::warn!(
+                namespace = %namespace,
+                function_id = %function_id,
+                owner_worker_name = %owner_label,
+                owner_worker_id = %owner,
+                rejected_worker_name = %rejected_label,
+                rejected_worker_id = %rejected,
+                "{kind} '{fid_c}' in namespace '{ns_c}' is already owned by live worker \
+                 '{owner_c}' ({owner}); rejecting registration from worker '{rejected_c}' \
+                 ({rejected}). Only one worker per namespace may own a function id — rename the \
+                 function or use a different namespace. A standby registration retries until \
+                 the id is free; its later refusals are logged at debug."
+            );
+        } else {
+            tracing::debug!(
+                namespace = %namespace,
+                function_id = %function_id,
+                owner_worker_id = %owner,
+                rejected_worker_id = %rejected,
+                "{kind} '{function_id}' in namespace '{namespace}' is still owned by worker \
+                 {owner}; rejecting registration from worker {rejected} again"
+            );
+        }
         NamespaceConflict {
             namespace: namespace.to_string(),
             name: function_id.to_string(),
@@ -4320,6 +4349,57 @@ mod tests {
             .get(&("orders".to_string(), "svc::f".to_string()))
             .map(|e| e.value().0);
         assert_eq!(owner, Some(a.id), "the same worker must still own the id");
+    }
+
+    /// A standby retries its registration every second while another worker
+    /// owns the id: each refusal of one connection's `(namespace, id)` after
+    /// the first is logged at `debug`, not `warn`. Another id, or another
+    /// connection, is a first refusal of its own, and a connection's record
+    /// goes with its teardown.
+    #[tokio::test]
+    async fn a_refused_registration_is_warned_about_once_per_connection() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let owner = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(owner.clone());
+        let (tx, _standby_rx) = mpsc::channel::<Outbound>(8);
+        let standby = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(standby.clone());
+        let (tx, _other_rx) = mpsc::channel::<Outbound>(8);
+        let other = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(other.clone());
+        for id in ["svc::f", "svc::g"] {
+            engine.claim_function("orders", owner.id, id).unwrap();
+        }
+
+        let warned = |worker: &WorkerConnection| {
+            engine
+                .conflicts_warned
+                .get(&worker.id)
+                .map(|ids| ids.len())
+                .unwrap_or_default()
+        };
+        for _ in 0..3 {
+            assert!(
+                engine
+                    .claim_function("orders", standby.id, "svc::f")
+                    .is_err()
+            );
+        }
+        assert_eq!(warned(&standby), 1, "one warning for three refusals");
+        assert!(!engine.first_conflict(standby.id, "orders", "svc::f"));
+        assert!(
+            engine
+                .claim_function("orders", standby.id, "svc::g")
+                .is_err()
+        );
+        assert_eq!(warned(&standby), 2, "another id is a first refusal");
+        assert!(engine.claim_function("orders", other.id, "svc::f").is_err());
+        assert_eq!(warned(&other), 1, "another connection is a first refusal");
+
+        engine.cleanup_worker(&standby).await;
+        assert_eq!(warned(&standby), 0, "dropped with the connection");
     }
 
     #[tokio::test]
