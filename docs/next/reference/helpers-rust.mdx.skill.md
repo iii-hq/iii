@@ -322,6 +322,16 @@ Operations that can be performed atomically on a stream value
 | `Decrement` | `{ path: String, by: i64 }` | Yes | Decrement numeric value |
 | `Append` | \{ path: Option&lt;[`MergePath`](#mergepath)&gt;, value: Value \} | Yes | Append an element to an array or concatenate a string at the<br />optional path. Path may be omitted (root append), a single<br />first-level key, or an array of literal segments for nested<br />append. See `MergePath` for the variant shape. |
 | `Remove` | `{ path: String }` | Yes | Remove a field |
+| `append` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create an Append operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
+| `append_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create an Append operation at a nested path of literal segments. Convenience wrapper for `append(vec!["a", "b"], v)`. |
+| `append_root` | `fn(value: impl Into<Value>) -> Self` | Yes | Create an Append operation at the root level (no path). |
+| `decrement` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create a Decrement operation |
+| `increment` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create an Increment operation |
+| `merge` | `fn(value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at root level |
+| `merge_at` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create a Merge operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
+| `merge_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at a nested path of literal segments. Convenience wrapper for `merge_at(vec!["a", "b"], v)`. |
+| `remove` | `fn(path: impl Into<String>) -> Self` | Yes | Create a Remove operation |
+| `set` | `fn(path: impl Into<String>, value: impl Into<Option<Value>>) -> Self` | Yes | Create a Set operation |
 
 ---
 

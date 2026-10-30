@@ -108,7 +108,8 @@ function attrSafe(value: string): string {
  */
 function renderDeprecation(deprecated: NonNullable<FunctionDoc['deprecated']>): string[] {
   const since = deprecated.since ? ` since ${deprecated.since}` : ''
-  const note = deprecated.note.replace(/\s*\n\s*/g, ' ').trim()
+  // A note is a sentence: `#[deprecated(note = "use call")]` ends without a period.
+  const note = deprecated.note.replace(/\s*\n\s*/g, ' ').trim().replace(/[^.!?]$/, '$&.')
   const sentence = note ? ` ${note.charAt(0).toUpperCase()}${note.slice(1)}` : ''
   const text = escapeMdxText(`**Deprecated${since}.**${sentence}`).replace(/``(?:[^`]|`(?!`))*``|`[^`]*`|--|\u2014/g, match =>
     match.startsWith('`') ? match : match === '--' ? "{'--'}" : ',',

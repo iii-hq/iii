@@ -245,7 +245,7 @@ extract_traceparent(traceparent: str) -> Any
 
 Force-flush all OTel providers without tearing them down.
 
-Counterpart to :func:`shutdown_otel`. Use before short-lived process exits
+Counterpart to `shutdown_otel`. Use before short-lived process exits
 where you want pending spans/metrics/logs delivered but plan to keep using
 OTel afterwards.
 
@@ -695,7 +695,7 @@ Event for stream join/leave.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `Any \| None` | No | Auth context from :class:`StreamAuthResult`. |
+| `context` | `Any \| None` | No | Auth context from `StreamAuthResult`. |
 | `group_id` | `str` | Yes | Group identifier. |
 | `id` | `str \| None` | No | Item identifier (if applicable). |
 | `stream_name` | `str` | Yes | Name of the stream. |
@@ -812,7 +812,7 @@ or an empty list), a single first-level key (when ``path`` is a
 non-empty string), or an arbitrary nested location (when ``path``
 is a list of literal segments).
 
-Path forms accepted (mirrors :class:`UpdateMerge` after #1547):
+Path forms accepted (mirrors `UpdateMerge` after #1547):
   - ``None`` / ``""`` / ``[]``: append at the root.
   - ``"foo"``: append at the first-level key ``foo``. A dotted
     string like ``"a.b"`` is the literal key ``"a.b"``, *not*
@@ -839,7 +839,7 @@ append does not apply when an error is returned for that op.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `MergePath \| None` | No | Optional path to the append target. Accepts a single first-level key (legacy string) or a list of literal segments for nested append. See :data:`MergePath`. |
+| `path` | `MergePath \| None` | No | Optional path to the append target. Accepts a single first-level key (legacy string) or a list of literal segments for nested append. See `MergePath`. |
 | `type` | `str` | No | - |
 | `value` | `Any` | Yes | Value to append. String targets only accept string values. |
 
@@ -899,7 +899,7 @@ response. The merge does not apply when an error is returned.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `MergePath \| None` | No | Optional path to the merge target. See :data:`MergePath`. |
+| `path` | `MergePath \| None` | No | Optional path to the merge target. See `MergePath`. |
 | `type` | `str` | No | - |
 | `value` | `Any` | Yes | Object to merge. Must be a JSON object. |
 

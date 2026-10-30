@@ -225,7 +225,10 @@ async call(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Error>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> CallRequestWithMetadata" required>
       Target a specific namespace for this invocation without adding a required field to `CallRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`.
     </ParamField>
-    <ParamField body="observer" type="fn(observer: &crate::Observer, payload: Value) -> CallRequestWithMetadata" required>
+    <ParamField body="new" type="fn(function_id: impl Into<String>, payload: Value) -> Self" required>
+      A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action.
+    </ParamField>
+    <ParamField body="observer" type="fn(observer: &Observer, payload: Value) -> CallRequestWithMetadata" required>
       A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process.
     </ParamField>
   </Expandable>
@@ -346,7 +349,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
 ### trigger
 
 <Warning>
-  **Deprecated since 0.26.0.** Use call
+  **Deprecated since 0.26.0.** Use call.
 </Warning>
 
 `call` under its 0.25 name.
@@ -879,6 +882,12 @@ on_observer_match_for(function_id: &str, rule: Match) -> &Self
     </ParamField>
     <ParamField body="Keys" type="{ observer: Arc<dyn Fn(&'a Observer) -> Keys<'a> + Send + Sync>, call: Arc<dyn Fn(&'a Call) -> Keys<'a> + Send + Sync> }" required>
       An observer wants a call when they share a key. The SDK computes an observer's keys once, when it is accepted, and files it under each (an observer whose key function panics is rejected with `OBSERVE_REJECTED`); a call's keys once per call. A call matches the observers filed under any of its keys, each once. Keys express wildcards by listing them: an observer of every table filed under `"primary|*|insert"`, and a change matching `"primary|orders|insert"`, `"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four lookups, whatever the number of observers.
+    </ParamField>
+    <ParamField body="keys" type="fn(observer: O, call: C) -> Self" required>
+      The keys an observer is filed under, and the keys a call matches. With them, `FunctionRef::is_observed_for` answers with one hash lookup per call key.
+    </ParamField>
+    <ParamField body="predicate" type="fn(f: impl Fn(&Observer, &Call) -> bool + Send + Sync + 'static) -> Self" required>
+      Does `obs` want `call`?
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1444,6 +1453,8 @@ usual: the observers' filters, `on`, policy and `deliver` still apply.
 | --- | --- | --- | --- |
 | `Predicate` | (Arc&lt;dyn Fn(&[`Observer`](#observer), &[`Call`](#call)) -&gt; bool + Send + Sync&gt;) | Yes | Asked once per active observer per call, before its filters. A<br />predicate that panics counts as no match, logged once per function. |
 | `Keys` | \{ observer: Arc&lt;dyn Fn(&'a [`Observer`](#observer)) -&gt; [`Keys`](#keys)&lt;'a&gt; + Send + Sync&gt;, call: Arc&lt;dyn Fn(&'a [`Call`](#call)) -&gt; [`Keys`](#keys)&lt;'a&gt; + Send + Sync&gt; \} | Yes | An observer wants a call when they share a key. The SDK computes an<br />observer's keys once, when it is accepted, and files it under each<br />(an observer whose key function panics is rejected with<br />`OBSERVE_REJECTED`); a call's keys once per call. A call matches the<br />observers filed under any of its keys, each once. Keys express<br />wildcards by listing them: an observer of every table filed under<br />`"primary|*|insert"`, and a change matching `"primary|orders|insert"`,<br />`"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four<br />lookups, whatever the number of observers. |
+| `keys` | `fn(observer: O, call: C) -> Self` | Yes | The keys an observer is filed under, and the keys a call matches. With them, `FunctionRef::is_observed_for` answers with one hash lookup per call key. |
+| `predicate` | fn(f: impl Fn(&[`Observer`](#observer), &[`Call`](#call)) -&gt; bool + Send + Sync + 'static) -&gt; Self | Yes | Does `obs` want `call`? |
 
 ---
 
@@ -1505,6 +1516,7 @@ the observer's `ready()` fails with. Any other error is `OBSERVE_REJECTED`.
 | --- | --- | --- | --- |
 | `code` | `String` | Yes | - |
 | `message` | `String` | Yes | - |
+| `new` | `fn(code: impl Into<String>, message: impl Into<String>) -> Self` | Yes | A rejection with a code of the hook's own (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...) and a message. |
 
 ### iii_sdk::observe
 
@@ -1729,7 +1741,8 @@ CallRequest::new("my::function", json!({})).metadata(json!({ "tenant": "acme" })
 | `dispatch` | fn(dispatch: [`Dispatch`](#dispatch)) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Choose the path this call takes: `Dispatch::Auto` (the default) runs a function this worker hosts in-process when the engine allows it; `Dispatch::Remote` always goes through the engine. |
 | `metadata` | fn(metadata: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `CallRequest` struct literals. |
 | `namespace` | fn(namespace: impl Into&lt;String&gt;) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Target a specific namespace for this invocation without adding a required field to `CallRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`. |
-| `observer` | fn(observer: &crate::[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. |
+| `new` | `fn(function_id: impl Into<String>, payload: Value) -> Self` | Yes | A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action. |
+| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. |
 
 ---
 
@@ -1825,6 +1838,7 @@ SDK-side report drops in `localinvocationstats`.
 | `code` | `String` | Yes | - |
 | `message` | `String` | Yes | - |
 | `stacktrace` | `Option<String>` | No | - |
+| `new` | `fn(code: impl Into<String>, message: impl Into<String>) -> Self` | Yes | An error body without a stacktrace. |
 
 ---
 
@@ -2023,6 +2037,8 @@ Which outcomes of a call activate an observer.
 | `private` | `bool` | Yes | See `RegisterFunction::private`. |
 | `observable` | `bool` | Yes | See `RegisterFunction::observable`. |
 | `to_message` | fn() -&gt; [`Message`](#message) | Yes | - |
+| `with_description` | `fn(description: String) -> Self` | Yes | - |
+| `with_id` | `fn(name: String) -> Self` | Yes | - |
 
 ### iii_sdk::runtime
 

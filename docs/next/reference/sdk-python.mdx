@@ -251,7 +251,7 @@ handler raises, ``BaseException``s such as ``KeyboardInterrupt`` and
 ``__cause__`` (for a ``Void`` call nothing reaches the caller: the
 error is logged).
 
-A request with ``observer`` (an :class:`Observer` of a function this
+A request with ``observer`` (an `Observer` of a function this
 worker hosts) calls through it: the engine runs the observer's target
 with its policy (``max_fires``, expiry, ``max_in_flight``), metadata
 sidecar and loop guard, and the call resolves to the target's result.
@@ -288,7 +288,7 @@ call(request: dict[str, Any] | CallRequest) -> Any
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
     </ParamField>
     <ParamField body="observer" type="Any">
-      An :class:`~iii.Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
+      An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
     </ParamField>
     <ParamField body="payload" type="Any">
       Input data passed to the function.
@@ -330,7 +330,7 @@ is replayed with the same id on every reconnect. Errors
 (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
 ``NOT_OBSERVABLE``, the rejection of the source's worker,
 ``UNSUPPORTED`` against an engine without observe) show up as state
-``error`` and make ``ready()`` raise :class:`ObserveRejection`.
+``error`` and make ``ready()`` raise `ObserveRejection`.
 
 **Signature**
 
@@ -345,22 +345,25 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
   What is observed: a function id, or ``function_id``, ``namespace``, ``args`` (read by the worker that hosts the function, validated against its ``args_format``), ``filters``, and ``on`` / ``capture`` / ``deliver``.
 
   <Expandable title="`ObserveSource` fields">
-    <ParamField body="args" type="dict[str, Any]" required>
+    <ParamField body="function_id" type="str" required>
+      The observed function.
+    </ParamField>
+    <ParamField body="args" type="dict[str, Any]">
       For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none.
     </ParamField>
-    <ParamField body="capture" type="list[Capture]" required>
+    <ParamField body="capture" type="list[Capture]">
       Default ``["input", "output", "caller"]``.
     </ParamField>
-    <ParamField body="deliver" type="Literal['envelope', 'input', 'output']" required>
+    <ParamField body="deliver" type="Literal['envelope', 'input', 'output']">
       What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``.
     </ParamField>
-    <ParamField body="filters" type="Filter" required>
+    <ParamField body="filters" type="Filter">
       Which calls reach the target; ``{}`` (or absent) = every call.
     </ParamField>
-    <ParamField body="namespace" type="str" required>
+    <ParamField body="namespace" type="str">
       Defaults to this worker's (``engine::*`` resolves to ``default``).
     </ParamField>
-    <ParamField body="on" type="Literal['success', 'error', 'complete']" required>
+    <ParamField body="on" type="Literal['success', 'error', 'complete']">
       ``"success"`` (default), ``"error"`` or ``"complete"``.
     </ParamField>
   </Expandable>
@@ -374,19 +377,19 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
   ``id``, ``max_fires``, ``expires_in_ms``, ``max_in_flight``, ``metadata`` (the activation's metadata sidecar).
 
   <Expandable title="`ObserverOptions` fields">
-    <ParamField body="expires_in_ms" type="int" required>
+    <ParamField body="expires_in_ms" type="int">
       Disposed after this long.
     </ParamField>
-    <ParamField body="id" type="str" required>
+    <ParamField body="id" type="str">
       Default: a random UUID, stable across replays.
     </ParamField>
-    <ParamField body="max_fires" type="int" required>
+    <ParamField body="max_fires" type="int">
       Disposed after this many activations.
     </ParamField>
-    <ParamField body="max_in_flight" type="int" required>
+    <ParamField body="max_in_flight" type="int">
       Activations running at once (the engine queues the rest).
     </ParamField>
-    <ParamField body="metadata" type="dict[str, Any]" required>
+    <ParamField body="metadata" type="dict[str, Any]">
       Delivered as the metadata sidecar of every activation.
     </ParamField>
   </Expandable>
@@ -418,10 +421,10 @@ failures.dispose()
 ### trigger
 
 <Warning>
-  **Deprecated since 0.26.0.** Use :meth:`call`.
+  **Deprecated since 0.26.0.** Use `call`.
 </Warning>
 
-Call a function: :meth:`call` under its 0.25 name.
+Call a function: `call` under its 0.25 name.
 
 **Signature**
 
@@ -450,7 +453,7 @@ trigger(request: dict[str, Any] | CallRequest) -> Any
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
     </ParamField>
     <ParamField body="observer" type="Any">
-      An :class:`~iii.Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
+      An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
     </ParamField>
     <ParamField body="payload" type="Any">
       Input data passed to the function.
@@ -520,7 +523,7 @@ A function this worker registered with a handler, once the engine
 confirmed it, runs in-process on the calling loop (a sync handler on
 a thread of its own); ``dispatch="remote"`` (or ``action=Enqueue``)
 always goes through the engine. A request with ``observer`` calls
-through it, as for :meth:`call`.
+through it, as for `call`.
 
 **Signature**
 
@@ -551,7 +554,7 @@ async (request: dict[str, Any] | CallRequest) -> Any
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
     </ParamField>
     <ParamField body="observer" type="Any">
-      An :class:`~iii.Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
+      An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
     </ParamField>
     <ParamField body="payload" type="Any">
       Input data passed to the function.
@@ -621,7 +624,7 @@ def create_order(order):
 Return the engine address this worker resolved to.
 
 The explicit ``register_worker`` argument, else ``III_URL``, else
-:data:`DEFAULT_ENGINE_URL`. Mirrors the Rust SDK's ``address()`` and the
+`DEFAULT_ENGINE_URL`. Mirrors the Rust SDK's ``address()`` and the
 Node SDK's ``getAddress()``.
 
 **Signature**
@@ -659,7 +662,7 @@ Whether a call of a function this worker hosts would reach anyone,
 so a source can skip building an event nobody wants.
 
 Without ``call``: whether the function has any active observer (one
-load). With ``call`` (a :class:`Call` or a partial one,
+load). With ``call`` (a `Call` or a partial one,
 ``{"input": ...}``) on a function matched by keys
 (``on_observer_match``): whether an observer is filed under one of
 the call's keys. On any other function the call is ignored.
@@ -735,7 +738,7 @@ returns the hook; ``None`` removes it.
 
 The worker's hook runs, then the function's; the observer is accepted
 (acked, then active) once both resolved. A hook that raises rejects
-the observer with the :class:`ObserveRejection` it raised, or
+the observer with the `ObserveRejection` it raised, or
 ``OBSERVE_REJECTED``; one still running after 30 s rejects it with
 ``OWNER_TIMEOUT``. Then the ``on_observer_removed`` of each level whose
 hook already resolved runs. Hooks may be sync (on a thread of their
@@ -752,7 +755,7 @@ warning names each hook id this worker has not registered.
 **Signature**
 
 ```python
-on_observer_added(function_id_or_hook: Any, hook: Any = [object Object]) -> Any
+on_observer_added(function_id_or_hook: Any, hook: Any = ...) -> Any
 ```
 
 <Tabs>
@@ -786,7 +789,7 @@ def start(obs):
 ### on_observer_deliver
 
 Delivers each call of one function itself: ``hook(call,
-observers)`` receives the :class:`Call` and the observers that matched
+observers)`` receives the `Call` and the observers that matched
 it (``on_observer_match``, or all of them), as a snapshot taken when
 the call started, and what it returns (or raises) is what the caller
 gets back. iii delivers nothing for that function: the hook calls
@@ -803,7 +806,7 @@ its own. A function with a deliver hook needs an engine with
 **Signature**
 
 ```python
-on_observer_deliver(function_id: str, hook: Any = [object Object]) -> Any
+on_observer_deliver(function_id: str, hook: Any = ...) -> Any
 ```
 
 <Tabs>
@@ -859,7 +862,7 @@ under ``"primary|*|insert"`` and give a change the keys
 
 Works as a decorator for a predicate
 (``@iii.on_observer_match("fn::id")``) and returns the hook (a
-:class:`MatchKeys` for the keys form); ``None`` removes it. A match
+`MatchKeys` for the keys form); ``None`` removes it. A match
 hook set while the function has active observers is applied to them
 on the SDK loop, which rebuilds the index from them. Predicates and
 key functions are sync: they run on every call. A function with a
@@ -869,7 +872,7 @@ it stays unregistered, and ``UNSUPPORTED`` is logged once.
 **Signature**
 
 ```python
-on_observer_match(function_id: str, hook: Any = [object Object], *, observer: Any = None, call: Any = None) -> Any
+on_observer_match(function_id: str, hook: Any = ..., *, observer: Any = None, call: Any = None) -> Any
 ```
 
 <Tabs>
@@ -912,7 +915,7 @@ iii.on_observer_match(
 
 Sets what runs when an accepted observer goes (on ``unobserve``, on
 disposal, after a late rejection): for every function this worker
-hosts, or for one. The same forms as :meth:`on_observer_added`.
+hosts, or for one. The same forms as `on_observer_added`.
 
 It runs exactly once for every accepted observer, the function's hook
 and then the worker's, and never for an observer that was not
@@ -922,7 +925,7 @@ either way.
 **Signature**
 
 ```python
-on_observer_removed(function_id_or_hook: Any, hook: Any = [object Object]) -> Any
+on_observer_removed(function_id_or_hook: Any, hook: Any = ...) -> Any
 ```
 
 <Tabs>
@@ -1006,10 +1009,10 @@ await worker.shutdown_async()
 ### trigger_async
 
 <Warning>
-  **Deprecated since 0.26.0.** Use :meth:`call_async`.
+  **Deprecated since 0.26.0.** Use `call_async`.
 </Warning>
 
-Call a function: :meth:`call_async` under its 0.25 name.
+Call a function: `call_async` under its 0.25 name.
 
 **Signature**
 
@@ -1038,7 +1041,7 @@ async (request: dict[str, Any] | CallRequest) -> Any
       Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker.
     </ParamField>
     <ParamField body="observer" type="Any">
-      An :class:`~iii.Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
+      An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action.
     </ParamField>
     <ParamField body="payload" type="Any">
       Input data passed to the function.
@@ -1119,7 +1122,11 @@ one level only.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `parent` | `CallerParent` | Yes | - |
+| `function_id` | `str` | No | - |
+| `invocation_id` | `str` | No | - |
+| `worker_id` | `str` | No | - |
+| `worker_name` | `str` | No | - |
+| `parent` | `CallerParent` | No | - |
 
 ---
 
@@ -1201,19 +1208,19 @@ default). Fields not in the observer's ``capture`` are absent.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `activation_id` | `str` | Yes | - |
-| `caller` | [`Caller`](#caller) | Yes | - |
-| `duration_ms` | `float` | Yes | - |
-| `error` | `dict[str, Any]` | Yes | - |
-| `function_id` | `str` | Yes | - |
-| `input` | `Any` | Yes | - |
-| `invocation_id` | `str` | Yes | - |
-| `metadata` | `dict[str, Any]` | Yes | - |
-| `namespace` | `str` | Yes | - |
-| `observer_id` | `str` | Yes | - |
-| `output` | `Any` | Yes | - |
-| `started_at_ms` | `int` | Yes | - |
-| `status` | `Literal['success', 'error']` | Yes | - |
+| `activation_id` | `str` | No | - |
+| `caller` | [`Caller`](#caller) | No | - |
+| `duration_ms` | `float` | No | - |
+| `error` | `dict[str, Any]` | No | - |
+| `function_id` | `str` | No | - |
+| `input` | `Any` | No | - |
+| `invocation_id` | `str` | No | - |
+| `metadata` | `dict[str, Any]` | No | - |
+| `namespace` | `str` | No | - |
+| `observer_id` | `str` | No | - |
+| `output` | `Any` | No | - |
+| `started_at_ms` | `int` | No | - |
+| `status` | `Literal['success', 'error']` | No | - |
 
 ---
 
@@ -1229,14 +1236,14 @@ keeps it in its own index (route table, consumers, ...).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call through it |
+| `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call through it made afterwards reaches an active observer. Use it to send a new observer its initial state, outside its ``on_observer_added`` (which runs before the ack). Use `accepted_async` in async code. |
 | `accepted_async` | `async () -> None` | Yes | Waits until the SDK has acked this observer (on any event loop). |
 | `args` | `dict[str, Any]` | No | The observer's args, validated against ``args_format`` by the engine. |
 | `capture` | `list[str]` | No | What travels to the target when iii delivers. |
-| `filters` | `dict[str, Any]` | No | The observer's filters, normalized; iii's delivery and :meth:`matches` apply them. |
+| `filters` | `dict[str, Any]` | No | The observer's filters, normalized; iii's delivery and `matches` apply them. |
 | `function_id` | `str` | No | The observed function (one this worker hosts). |
 | `id` | `str` | No | The observer's id. |
-| `matches` | `(call: CallLike) -> bool` | Yes | Whether ``call`` passes this observer's ``on`` and filters: what |
+| `matches` | `(call: CallLike) -> bool` | Yes | Whether ``call`` passes this observer's ``on`` and filters: what iii's delivery checks, for a deliver hook that calls targets itself. |
 | `on` | `str` | No | ``success``, ``error`` or ``complete``. |
 | `reject` | `(code: str, message: str) -> None` | Yes | Late rejection of an active observer (e.g. after a config reload). |
 | `target` | `str` | No | The target function id. |
@@ -1256,10 +1263,10 @@ call the sync API.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `dispose` | `() -> None` | Yes | Removes the observer (``unobserve``). It is not replayed on reconnect. |
-| `dispose_async` | `async () -> None` | Yes | The async form of :meth:`dispose` (it does not wait for the engine). |
+| `dispose_async` | `async () -> None` | Yes | The async form of `dispose` (it does not wait for the engine). |
 | `id` | `Any` | No | The observer's id (stable across replays). |
-| `on_state_change` | `(listener: StateListener) -> Callable[[], None]` | Yes | Calls ``listener(state, reason)`` on every state change, in order, |
-| `ready` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the observer is ``active``. Use :meth:`ready_async` in async code. |
+| `on_state_change` | `(listener: StateListener) -> Callable[[], None]` | Yes | Calls ``listener(state, reason)`` on every state change, in order, on the SDK's callback thread. Returns the unsubscribe function. |
+| `ready` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the observer is ``active``. Use `ready_async` in async code. |
 | `ready_async` | `async () -> None` | Yes | Waits until the observer is ``active`` (on any event loop). |
 | `reason` | `ObserveReason \| None` | Yes | Why the observer is in its state (``error``, ``suspended``, ``disposed``). |
 | `state` | `ObserverState` | Yes | ``pending``, ``active``, ``suspended``, ``error`` or ``disposed``. |
@@ -1272,11 +1279,11 @@ The observer itself: its id, policy and metadata (the third argument of ``iii.ob
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `expires_in_ms` | `int` | Yes | Disposed after this long. |
-| `id` | `str` | Yes | Default: a random UUID, stable across replays. |
-| `max_fires` | `int` | Yes | Disposed after this many activations. |
-| `max_in_flight` | `int` | Yes | Activations running at once (the engine queues the rest). |
-| `metadata` | `dict[str, Any]` | Yes | Delivered as the metadata sidecar of every activation. |
+| `expires_in_ms` | `int` | No | Disposed after this long. |
+| `id` | `str` | No | Default: a random UUID, stable across replays. |
+| `max_fires` | `int` | No | Disposed after this many activations. |
+| `max_in_flight` | `int` | No | Activations running at once (the engine queues the rest). |
+| `metadata` | `dict[str, Any]` | No | Delivered as the metadata sidecar of every activation. |
 
 ---
 
@@ -1286,12 +1293,13 @@ The left side of ``iii.observe``: what is observed.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `args` | `dict[str, Any]` | Yes | For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none. |
-| `capture` | `list[Capture]` | Yes | Default ``["input", "output", "caller"]``. |
-| `deliver` | `Literal['envelope', 'input', 'output']` | Yes | What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``. |
-| `filters` | `Filter` | Yes | Which calls reach the target; ``\{\}`` (or absent) = every call. |
-| `namespace` | `str` | Yes | Defaults to this worker's (``engine::*`` resolves to ``default``). |
-| `on` | `Literal['success', 'error', 'complete']` | Yes | ``"success"`` (default), ``"error"`` or ``"complete"``. |
+| `function_id` | `str` | Yes | The observed function. |
+| `args` | `dict[str, Any]` | No | For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none. |
+| `capture` | `list[Capture]` | No | Default ``["input", "output", "caller"]``. |
+| `deliver` | `Literal['envelope', 'input', 'output']` | No | What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``. |
+| `filters` | `Filter` | No | Which calls reach the target; ``\{\}`` (or absent) = every call. |
+| `namespace` | `str` | No | Defaults to this worker's (``engine::*`` resolves to ``default``). |
+| `on` | `Literal['success', 'error', 'complete']` | No | ``"success"`` (default), ``"error"`` or ``"complete"``. |
 
 ---
 
@@ -1507,7 +1515,7 @@ the worker that hosts the observed function may make it.
 | `function_id` | `str \| None` | No | ID of the function to call. |
 | `metadata` | `Any \| None` | No | Arbitrary user-specifiable metadata supplied to the called handler function on every invocation. |
 | `namespace` | `str \| None` | No | Target namespace for routing. Omit to inherit this worker's; say ``default`` to reach the engine's from a namespaced worker. |
-| `observer` | `Any` | No | An :class:`~iii.Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action. |
+| `observer` | `Any` | No | An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action. |
 | `payload` | `Any` | No | Input data passed to the function. |
 | `timeout_ms` | `int \| None` | No | Override the default invocation timeout, in milliseconds. |
 
@@ -1620,9 +1628,9 @@ observer, set them on the client by id before ``register_function``.
 | `observers` | () -&gt; list[[`Observer`](#observer)] | Yes | The function's active observers, as this worker sees them. |
 | `on_observer_added` | `(hook: AddedHook \| None) -> AddedHook \| None` | Yes | This function's ``on_observer_added`` (see ``III.on_observer_added``). |
 | `on_observer_deliver` | `(hook: DeliverHook \| None) -> DeliverHook \| None` | Yes | This function's ``on_observer_deliver`` (see ``III.on_observer_deliver``). |
-| `on_observer_match` | `(hook: Any = [object Object], *, observer: Any = None, call: Any = None) -> Any` | Yes | This function's ``on_observer_match``: a predicate ``(obs, call) -> |
+| `on_observer_match` | `(hook: Any = ..., *, observer: Any = None, call: Any = None) -> Any` | Yes | This function's ``on_observer_match``: a predicate ``(obs, call) -> bool``, or ``observer=`` and ``call=`` key functions (see ``III.on_observer_match``). |
 | `on_observer_removed` | `(hook: RemovedHook \| None) -> RemovedHook \| None` | Yes | This function's ``on_observer_removed`` (see ``III.on_observer_removed``). |
-| `unregister` | `() -> None` | Yes | Removes the function from the engine; ``on_observer_removed`` runs |
+| `unregister` | `() -> None` | Yes | Removes the function from the engine; ``on_observer_removed`` runs for each of its accepted observers. |
 
 ### iii.state
 
@@ -1767,7 +1775,7 @@ Abstract interface for stream operations.
     IStream is deprecated (iii-stream) and will be removed in an upcoming release.
     Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
-Defining a subclass emits a :class:`FutureWarning` attributed to the line of the
+Defining a subclass emits a `FutureWarning` attributed to the line of the
 ``class`` statement (once per subclass definition, never per request). Importing
 this module does not warn.
 

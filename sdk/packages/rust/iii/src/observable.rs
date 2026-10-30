@@ -46,6 +46,8 @@ pub struct ObserveRejection {
 }
 
 impl ObserveRejection {
+    /// A rejection with a code of the hook's own (`HTTP_ROUTE_CONFLICT`,
+    /// `INVALID_CRON_EXPRESSION`, ...) and a message.
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),

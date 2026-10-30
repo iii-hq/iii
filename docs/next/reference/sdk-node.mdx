@@ -496,10 +496,14 @@ warning.
 
 ```typescript
 onObserverAdded(hook: AddedHook | null) => IIIClient
+onObserverAdded(functionId: string, hook: AddedHook | null) => IIIClient
 ```
 
 <Tabs>
   <Tab title="Parameters">
+
+<ParamField body="functionId" type="string">
+</ParamField>
 
 <ParamField body="hook" type="AddedHook | null" required>
 </ParamField>
@@ -588,6 +592,8 @@ an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
 
 ```typescript
 onObserverMatch(functionId: string, hook: MatchPredicate<I, O> | null) => IIIClient
+onObserverMatch(functionId: string, hook: MatchKeys<I, O>) => IIIClient
+onObserverMatch(functionId: string, hook: MatchHook<I, O> | null) => IIIClient
 ```
 
 <Tabs>
@@ -596,7 +602,7 @@ onObserverMatch(functionId: string, hook: MatchPredicate<I, O> | null) => IIICli
 <ParamField body="functionId" type="string" required>
 </ParamField>
 
-<ParamField body="hook" type="MatchPredicate<I, O> | null" required>
+<ParamField body="hook" type="MatchHook<I, O> | null" required>
 </ParamField>
 
 
@@ -631,9 +637,13 @@ error it throws is logged. `null` removes the hook.
 
 ```typescript
 onObserverRemoved(hook: RemovedHook | null) => IIIClient
+onObserverRemoved(functionId: string, hook: RemovedHook | null) => IIIClient
 ```
 
 #### Parameters
+
+<ParamField body="functionId" type="string">
+</ParamField>
 
 <ParamField body="hook" type="RemovedHook | null" required>
 </ParamField>
@@ -1703,7 +1713,7 @@ calls chain.
 | `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers of this registration, as this host sees them (none<br />once the function is unregistered, also after the id is registered again). |
 | `onObserverAdded` | (hook: [`AddedHook`](#addedhook) \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverAdded for this function. |
 | `onObserverDeliver` | (hook: [`DeliverHook`](#deliverhook)&lt;I, O, R&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverDeliver for this function. |
-| `onObserverMatch` | (hook: [`MatchPredicate`](#matchpredicate)&lt;I, O&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverMatch for this function. |
+| `onObserverMatch` | (hook: [`MatchHook`](#matchhook)&lt;I, O&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverMatch for this function. |
 | `onObserverRemoved` | (hook: [`RemovedHook`](#removedhook) \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | IIIClient.onObserverRemoved for this function. |
 | `unregister` | `() => void` | Yes | Removes this function from the engine. Its hooks stay in place for a later registration of the id. |
 

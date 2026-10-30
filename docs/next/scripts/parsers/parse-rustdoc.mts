@@ -39,6 +39,11 @@ const SIMPLIFY_PATHS: Record<string, string> = {
   'std::string::String': 'String',
 }
 
+/** `crate::Observer`, `crate::protocol::CallRequest`, `super::Call`, ... -> last path segment. */
+function stripCratePath(name: string): string {
+  return name.replace(/^(?:crate|self|super)::(?:\w+::)*/, '')
+}
+
 /** `::core::pin::Pin`, `alloc::boxed::Box`, ... -> last path segment. */
 function simplifyPathName(name: string): string {
   const mapped = SIMPLIFY_PATHS[name]
@@ -54,7 +59,7 @@ export function rustTypeToString(type: any): string {
   if (type.resolved_path != null) {
     const rp = type.resolved_path
     let name = rp.path ?? rp.name ?? 'unknown'
-    name = name.replace(/^crate::[\w:]+::/, '')
+    name = stripCratePath(name)
     name = simplifyPathName(name)
     if (rp.args?.angle_bracketed?.args?.length) {
       const args = rp.args.angle_bracketed.args
@@ -88,7 +93,7 @@ export function rustTypeToString(type: any): string {
         if (b.trait_bound) {
           const t = b.trait_bound.trait
           let name = t.path ?? t.name ?? '?'
-          name = simplifyPathName(name.replace(/^crate::[\w:]+::/, ''))
+          name = simplifyPathName(stripCratePath(name))
           if (t.args?.parenthesized) {
             const { inputs, output } = t.args.parenthesized
             const params = (inputs ?? []).map(rustTypeToString).join(', ')
@@ -101,6 +106,8 @@ export function rustTypeToString(type: any): string {
           }
           return name
         }
+        // A lifetime bound (`+ 'static`).
+        if (typeof b.outlives === 'string') return b.outlives
         return '?'
       })
       .join(' + ')
@@ -112,7 +119,7 @@ export function rustTypeToString(type: any): string {
       ?.map((b: any) => {
         const t = b.trait
         let name = t?.path ?? t?.name ?? '?'
-        name = simplifyPathName(name.replace(/^crate::[\w:]+::/, ''))
+        name = simplifyPathName(stripCratePath(name))
         if (t?.args?.parenthesized) {
           const { inputs, output } = t.args.parenthesized
           const params = (inputs ?? []).map(rustTypeToString).join(', ')
@@ -375,10 +382,11 @@ function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>
 
 /**
  * Whether a method row is a fluent builder setter/constructor (returns `Self`
- * or the owning type). On a type that also has data fields these duplicate or
- * shadow the fields (e.g. a `stream_name(self) -> Self` setter next to the
- * `stream_name` field), so they are dropped there; on a pure builder with no
- * data fields (e.g. `RegisterFunction`) they are the real API and kept.
+ * or the owning type). On a struct with data fields, a setter named after a
+ * field duplicates it (e.g. a `stream_name(self) -> Self` setter next to the
+ * `stream_name` field) and is dropped; constructors (`CallRequest::new`,
+ * `ObserveRejection::new`) and every builder of a pure builder with no data
+ * fields (e.g. `RegisterFunction`) are the real API and kept.
  */
 function isBuilderRow(rowType: string, typeName: string): boolean {
   return new RegExp(`->\\s*(Self|${typeName})$`).test(rowType)
@@ -386,9 +394,13 @@ function isBuilderRow(rowType: string, typeName: string): boolean {
 
 function withMethodRows(item: RustDocItem, index: Record<string, RustDocItem>, dataFields: ParamDoc[]): ParamDoc[] {
   const methodRows = extractMethodRows(item, index)
-  const kept = dataFields.length
-    ? methodRows.filter(m => !isBuilderRow(m.type, item.name ?? ''))
-    : methodRows
+  // An enum's constructors (`Match::predicate`, `Match::keys`) are how a value
+  // is built, so they stay; a struct drops the setters named after its fields.
+  const fieldNames = new Set(dataFields.map(f => f.name))
+  const kept =
+    dataFields.length && getItemKind(item) !== 'enum'
+      ? methodRows.filter(m => !isBuilderRow(m.type, item.name ?? '') || !fieldNames.has(m.name))
+      : methodRows
   return [...dataFields, ...kept]
 }
 
