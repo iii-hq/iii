@@ -219,7 +219,13 @@ client.Observe(iii.Source{
 `pending` (no host, no ack, or no target yet) → `active` or `error`. `suspended` while the target
 is away, or while the observing worker is disconnected (30 s grace, then `disposed`). `disposed`
 after `dispose()`, `max_fires`, or expiry. `observe()` returns synchronously, works before the
-connection is up, and is replayed with the same id on reconnect. `onStateChange(listener)` (Python
+connection is up, and is replayed with the same id on reconnect. A worker back on a new connection
+(a restart), under the same worker name in the same namespace, takes over its own `suspended`
+observer's `id`: its `observe` of that `id` replaces the suspended observer, and the host gets the
+new one through `onObserverAdded`. So an observer under a stable `id` keeps its identity across a
+restart, and a queue consumer its backlog. Any other worker gets `OBSERVER_ID_CONFLICT` for that
+`id` until the grace period ends; under the default worker name, `hostname:pid`, a restarted worker
+is another worker, so set `III_WORKER_NAME`. `onStateChange(listener)` (Python
 `on_state_change`, Go `OnStateChange`, Rust `on_state_change`) reports every transition with a
 reason code.
 
