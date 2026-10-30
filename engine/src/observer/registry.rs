@@ -583,6 +583,13 @@ impl ObserverRegistry {
             observe_codes::UNOBSERVED,
             "disposed by its observing worker",
         );
+        // A tombstone answers a replay of an observer disposed while its worker
+        // was not looking. This worker asked for the disposal and replays no
+        // handle it disposed, so the id is free for a new observer of its own
+        // at once: a queue subscriber observing again under its stable id
+        // finds its backlog.
+        self.tombstones
+            .remove_if(id, |_, tombstone| tombstone.connection == connection);
     }
 
     /// The observing connection is gone: its observers are `suspended` for

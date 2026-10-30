@@ -471,6 +471,43 @@ async fn lang_observation_identity_close_stops_activations() {
     );
 }
 
+/// The observing worker unobserves, then observes again under the same id:
+/// the new observer is created and fires. Only a replay of an observer
+/// disposed without the worker asking answers with the disposal.
+#[tokio::test]
+async fn an_id_its_worker_unobserved_is_free_for_a_new_observer() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", true, &["orders::complete"]).await;
+    let mut sink = host(&t, "sink", true, &["receipts::render"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let frame = observer(
+        "watch-again",
+        json!({ "function_id": "orders::complete" }),
+        "receipts::render",
+    );
+
+    sink.observe_active(frame.clone()).await;
+    sink.send(json!({ "type": "unobserve", "id": "watch-again" }))
+        .await;
+    sink.state_becomes("watch-again", "disposed").await;
+    assert!(t.engine.observers.get("watch-again").is_none());
+
+    sink.observe_active(frame).await;
+    assert_eq!(state(&t, "watch-again"), Some(ObserverState::Active));
+    round_trip(
+        &t,
+        &mut checkout,
+        &mut orders,
+        "orders::complete",
+        json!({ "order": 7 }),
+        json!({}),
+    )
+    .await;
+    let activation = sink.invoked("receipts::render").await;
+    sink.reply(&activation, Value::Null).await;
+    assert_eq!(fires(&t, "watch-again"), 1);
+}
+
 #[tokio::test]
 async fn max_fires_disposes_after_the_last_fire() {
     let t = spawn_engine(ObserversConfig::default()).await;
