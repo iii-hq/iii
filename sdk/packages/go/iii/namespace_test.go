@@ -290,6 +290,34 @@ func TestRegistrationRejectedIsFatal(t *testing.T) {
 	}
 }
 
+// TestCallAfterFatalRejectionFailsAtOnce pins down that a call made after a fatal
+// rejection (two clients in one process with the same name) fails with it at once,
+// rather than waiting out its timeout for an engine that will never answer.
+func TestCallAfterFatalRejectionFailsAtOnce(t *testing.T) {
+	c := New("ws://127.0.0.1:0", WithName("state"), WithNamespace("orders"))
+	c.handleRegistrationRejected(&RegistrationRejectedMessage{
+		Code:          "WORKER_NAMESPACE_CONFLICT",
+		Namespace:     "orders",
+		WorkerName:    "state",
+		OwnerWorkerID: "owner-123",
+	})
+	for _, action := range []*CallAction{nil, {Type: "void"}} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := c.Call(ctx, CallRequest{FunctionID: "engine::functions::info", Action: action, Timeout: time.Minute})
+		cancel()
+		var re *RegistrationRejectedError
+		if !errors.As(err, &re) || re.Code != "WORKER_NAMESPACE_CONFLICT" {
+			t.Fatalf("action %v: Call = %v, want the RegistrationRejectedError", action, err)
+		}
+	}
+	c.mu.Lock()
+	pending := len(c.pending)
+	c.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("%d pending calls, want none", pending)
+	}
+}
+
 func TestFunctionRegistrationRejectedIsNonFatal(t *testing.T) {
 	c := New("ws://127.0.0.1:0", WithName("state"), WithNamespace("orders"))
 	c.mu.Lock()

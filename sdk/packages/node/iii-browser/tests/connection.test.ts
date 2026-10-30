@@ -124,6 +124,14 @@ describe('RegistrationRejected handling', () => {
     expect(states).not.toContain('reconnecting')
     // Exactly one socket was ever created — no reconnect attempt.
     expect(engine.sockets.length).toBe(1)
+
+    // A call made afterwards fails with it at once instead of waiting out its timeout.
+    await expect(sdk.call({ function_id: 'orders::get', payload: { id: '2' }, timeoutMs: 5000 })).rejects.toThrow(
+      /WORKER_NAMESPACE_CONFLICT/,
+    )
+    await expect(
+      sdk.call({ function_id: 'orders::get', payload: { id: '3' }, action: { type: 'void' } }),
+    ).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
   })
 
   it('an unknown rejection code is fatal, like WORKER_NAMESPACE_CONFLICT', async () => {

@@ -331,6 +331,16 @@ describe('registrationrejected — code decides severity', () => {
     await expect(pending).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
     expect(sdk.isShuttingDown).toBe(true)
     expect(sdk.connectionState).toBe('failed')
+
+    // A call made afterwards fails with it at once instead of waiting out its timeout.
+    const started = Date.now()
+    await expect(sdk.call({ function_id: 'orders::get', payload: {}, timeoutMs: 5000 })).rejects.toThrow(
+      /WORKER_NAMESPACE_CONFLICT/,
+    )
+    await expect(
+      sdk.call({ function_id: 'orders::get', payload: {}, action: { type: 'void' } } as never),
+    ).rejects.toThrow(/WORKER_NAMESPACE_CONFLICT/)
+    expect(Date.now() - started).toBeLessThan(1000)
   })
 
   it('FUNCTION_NAMESPACE_CONFLICT is non-fatal: worker keeps serving, no shutdown, no reconnect disable', async () => {

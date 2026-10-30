@@ -1048,6 +1048,8 @@ class Sdk implements ISdk {
     namespace: string | undefined,
     activation?: ActivationWire,
   ): Promise<TOutput> {
+    // The engine refused this worker for good: nothing reaches it.
+    if (this.fatalError) return Promise.reject(this.fatalError)
     const { function_id, payload, action, timeoutMs, metadata } = request
     const effectiveTimeout = timeoutMs ?? this.invocationTimeoutMs
     const outgoing = this.outgoingFields(request)

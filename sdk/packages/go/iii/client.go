@@ -878,6 +878,10 @@ func (c *Client) callThroughObserver(ctx context.Context, req CallRequest) (json
 // connection's own channel, behind the observer acks sent on it, and fails with
 // ErrNotConnected without one.
 func (c *Client) invokeRemote(ctx context.Context, req CallRequest, namespace string, activation *Activation) (json.RawMessage, error) {
+	// The engine refused this worker for good: nothing reaches it.
+	if err := c.FatalError(); err != nil {
+		return nil, err
+	}
 	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -926,6 +930,11 @@ func (c *Client) invokeRemote(ctx context.Context, req CallRequest, namespace st
 	id := uuid.New()
 	resultCh := make(chan invocationOutcome, 1)
 	c.mu.Lock()
+	// A fatal rejection that failed the pending calls before this one went in.
+	if err := c.fatalErr; err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
 	c.pending[id] = resultCh
 	c.mu.Unlock()
 

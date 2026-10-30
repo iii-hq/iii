@@ -2571,6 +2571,10 @@ impl IIIClient {
             activation,
         } = call;
         let (tp, bg) = inject_trace_headers();
+        // The engine refused this worker for good: nothing reaches it.
+        if let Some(error) = self.fatal_error() {
+            return Err(error);
+        }
 
         // Void is fire-and-forget, no invocation_id, no response
         if matches!(action, Some(CallAction::Void)) {
@@ -2599,6 +2603,11 @@ impl IIIClient {
             .pending
             .lock_or_recover()
             .insert(invocation_id, tx);
+        // A fatal rejection that drained `pending` before the entry went in.
+        if let Some(error) = self.fatal_error() {
+            self.inner.pending.lock_or_recover().remove(&invocation_id);
+            return Err(error);
+        }
 
         if let Err(error) = self.send_message(Message::InvokeFunction {
             invocation_id: Some(invocation_id),
@@ -3672,6 +3681,10 @@ impl IIIClient {
             owner_worker_id,
         };
         tracing::error!(error = %err, "worker registration rejected; not reconnecting");
+        // Recorded first: a call that starts from here on fails with it
+        // (`invoke_remote` checks it once its pending entry is in), and one
+        // already waiting is failed below.
+        *self.inner.fatal_error.lock_or_recover() = Some(err.clone());
         // Fail every in-flight invocation now with the fatal error, so a
         // `call()` awaiting a response returns `RegistrationRejected`
         // immediately instead of sitting on its oneshot until the invocation
@@ -3686,7 +3699,6 @@ impl IIIClient {
         for sender in drained {
             let _ = sender.send(Err(err.clone()));
         }
-        *self.inner.fatal_error.lock_or_recover() = Some(err);
         self.set_connection_state(IIIConnectionState::Failed);
         self.inner.running.store(false, Ordering::SeqCst);
         self.inner.registration_changed.notify_waiters();
@@ -4852,6 +4864,38 @@ mod tests {
                 assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
             }
             other => panic!("expected RegistrationRejected, got {other:?}"),
+        }
+        assert!(iii.inner.pending.lock().unwrap().is_empty());
+    }
+
+    /// A call made after a fatal rejection fails at once with it, rather
+    /// than waiting out its timeout for an engine that will never answer
+    /// (two clients in one process with the default `hostname:pid` name).
+    #[tokio::test]
+    async fn a_call_after_a_fatal_rejection_fails_at_once_with_it() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        iii.fail_registration_fatal(
+            "WORKER_NAMESPACE_CONFLICT".to_string(),
+            "default".to_string(),
+            Some("host:42".to_string()),
+            None,
+            "owner-1".to_string(),
+        );
+        for action in [None, Some(CallAction::Void)] {
+            let mut request = CallRequest::new("engine::functions::info", json!({}));
+            request.action = action.clone();
+            let outcome = tokio::time::timeout(Duration::from_secs(1), iii.call(request))
+                .await
+                .unwrap_or_else(|_| panic!("{action:?}: waited for its timeout"));
+            match outcome {
+                Err(Error::RegistrationRejected {
+                    code, worker_name, ..
+                }) => {
+                    assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
+                    assert_eq!(worker_name.as_deref(), Some("host:42"));
+                }
+                other => panic!("{action:?}: expected RegistrationRejected, got {other:?}"),
+            }
         }
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
