@@ -1,7 +1,7 @@
 // Derived from sdk/packages/node/iii/tests/observe-e2e-local.test.ts by scripts/sync-browser-observe.py; edit those, not this file.
 import { afterEach, describe, expect, it } from 'vitest'
-import { ObserveRejection } from '../../src/index'
-import type { Observer } from '../../src/observe-types'
+import { CallAction, ObserveRejection } from '../../src/index'
+import type { Call, Observer } from '../../src/observe-types'
 import {
   type Activation,
   closeWorkers,
@@ -400,6 +400,87 @@ describe('functions with args and observer hooks', () => {
       code: expect.stringMatching(/^OBSERVER_NOT_(FOUND|ACTIVE)$/),
     })
   })
+})
+
+describe('calls for one observer (decision 52)', () => {
+  type Change = { session: string; n: number }
+  for (const form of ['predicate', 'keys'] as const) {
+    it(`${form}: a call with metadata.for_observer reaches only that observer's target, in the shape an ordinary call gives it`, async () => {
+      const owner = worker(`d52-${form}-owner`)
+      const watcher = worker(`d52-${form}-watcher`)
+      const fn = `tmux::on-changed-${form}-${RUN}`
+      const state = new Map<string, number>([['s1', 0]])
+      owner
+        .registerFunction(fn, (change: Change) => change, {
+          args_format: { type: 'object', required: ['session'], properties: { session: { type: 'string' } } },
+          private: true,
+        })
+        // a new observer gets the current state of its session once it is active
+        .onObserverAdded((obs) => {
+          void obs.accepted().then(() =>
+            owner.call({
+              function_id: fn,
+              payload: { session: obs.args.session as string, n: state.get(obs.args.session as string) ?? 0 },
+              metadata: { for_observer: obs.id },
+              action: CallAction.Void(),
+            }),
+          )
+        })
+        .onObserverMatch(
+          form === 'predicate'
+            ? (obs, call: Call<Change>) =>
+                call.metadata?.for_observer
+                  ? call.metadata.for_observer === obs.id
+                  : obs.args.session === call.input.session
+            : {
+                observer: (obs) => [obs.args.session as string, `for_observer:${obs.id}`],
+                call: (call: Call<Change>) =>
+                  call.metadata?.for_observer ? `for_observer:${call.metadata.for_observer}` : call.input.session,
+              },
+        )
+      const gotA = collector(watcher, `d52::envelope-${form}-${RUN}`)
+      const gotB = collector(watcher, `d52::output-${form}-${RUN}`)
+      await localDispatchReady(owner, fn)
+
+      const a = watcher.observe({ function_id: fn, args: { session: 's1' } }, `d52::envelope-${form}-${RUN}`)
+      await a.ready()
+      await exactly(gotA, 1, "A's initial state")
+      const b = watcher.observe(
+        { function_id: fn, args: { session: 's1' }, deliver: 'output' },
+        `d52::output-${form}-${RUN}`,
+      )
+      await b.ready()
+      await exactly(gotB, 1, "B's initial state")
+      expect(gotA).toHaveLength(1)
+
+      // an ordinary call reaches both
+      await owner.call({ function_id: fn, payload: { session: 's1', n: 1 } })
+      await exactly(gotA, 2, 'the ordinary call at A')
+      await exactly(gotB, 2, 'the ordinary call at B')
+      // a call for A reaches A alone
+      await owner.call({ function_id: fn, payload: { session: 's1', n: 2 }, metadata: { for_observer: a.id } })
+      await exactly(gotA, 3, 'the call for A')
+      expect(gotB).toHaveLength(2)
+
+      // A receives the envelope it receives for every call: same fields, the observer's own id
+      const [initial, ordinary, forA] = gotA.map((g) => g.data)
+      for (const envelope of [initial, forA]) {
+        expect(Object.keys(envelope).sort()).toEqual(Object.keys(ordinary).sort())
+        expect(stable(envelope)).toEqual({ ...stable(ordinary), input: envelope.input, output: envelope.output })
+        expect(envelope.observer_id).toBe(a.id)
+      }
+      expect([initial, ordinary, forA].map((e) => e.output)).toEqual([
+        { session: 's1', n: 0 },
+        { session: 's1', n: 1 },
+        { session: 's1', n: 2 },
+      ])
+      // B receives the output, as for every call
+      expect(gotB.map((g) => g.data)).toEqual([
+        { session: 's1', n: 0 },
+        { session: 's1', n: 1 },
+      ])
+    })
+  }
 })
 
 describe("deliver: 'output' and calls through an observer over max_in_flight", () => {
