@@ -3165,4 +3165,78 @@ mod tests {
         assert_eq!(TEMPLATE_POLL_INTERVAL_SECS, 3);
         assert_eq!(TEMPLATE_POLL_TIMEOUT_SECS, 60 * 60);
     }
+
+    // =========================================================================
+    // CLI commands, counted from the name a CLI connection registers with
+    // =========================================================================
+
+    /// An engine with the `engine::workers::*` builtins registered.
+    fn engine_with_worker_builtins() -> Arc<Engine> {
+        crate::workers::observability::metrics::ensure_default_meter();
+        let engine = make_test_engine();
+        crate::workers::engine_fn::EngineFunctionsWorker::new(engine.clone())
+            .register_functions(engine.clone());
+        engine
+    }
+
+    /// Connects a worker and announces it with `engine::workers::register`
+    /// under `name`, as `iii call` does. Returns the result and the
+    /// connection's outbound queue, which has to outlive the test's calls.
+    async fn register_connection(
+        engine: &Arc<Engine>,
+        name: &str,
+    ) -> (Value, mpsc::Receiver<crate::engine::Outbound>) {
+        use crate::engine::EngineTrait;
+        let (tx, rx) = mpsc::channel(64);
+        let worker = WorkerConnection::new(tx);
+        let worker_id = worker.id.to_string();
+        engine.worker_registry.register_worker(worker);
+        let result = engine
+            .call(
+                "engine::workers::register",
+                serde_json::json!({
+                    "_caller_worker_id": worker_id,
+                    "runtime": "rust",
+                    "name": name,
+                }),
+            )
+            .await
+            .expect("engine::workers::register succeeds")
+            .expect("engine::workers::register returns a result");
+        (result, rx)
+    }
+
+    /// The CLI properties the next heartbeat carries (both heartbeats insert
+    /// them with `insert_cli_commands`).
+    fn next_heartbeat_cli_properties() -> serde_json::Map<String, Value> {
+        let mut props = serde_json::Map::new();
+        insert_cli_commands(&mut props);
+        props
+    }
+
+    /// `iii call` (and its `trigger` and `t` aliases) registers as
+    /// `iii-cli:call`; the next heartbeat counts it as `call`, and a worker
+    /// with any other name counts nothing.
+    #[tokio::test]
+    #[serial]
+    async fn the_heartbeat_counts_a_cli_connection_as_call() {
+        let engine = engine_with_worker_builtins();
+        collector::take_cli_commands();
+
+        let (cli, _cli_rx) = register_connection(&engine, "iii-cli:call").await;
+        assert_eq!(cli["success"], true);
+        let (worker, _worker_rx) = register_connection(&engine, "orders-worker").await;
+        assert_eq!(worker["success"], true);
+
+        let props = next_heartbeat_cli_properties();
+        assert_eq!(props["cli_commands_total"], serde_json::json!(1));
+        assert_eq!(props["cli_commands"], serde_json::json!({ "call": 1 }));
+
+        let props = next_heartbeat_cli_properties();
+        assert_eq!(
+            props["cli_commands_total"],
+            serde_json::json!(0),
+            "the following heartbeat starts from zero"
+        );
+    }
 }
