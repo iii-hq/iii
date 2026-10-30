@@ -529,8 +529,8 @@ iii.on_observer_added(move |_obs: Observer| {
     async move { events.retain().await; Ok(()) }
 });
 
-// for one observer (§4.7)
-iii.call(CallRequest::new("database::on-row-changed", change).metadata(json!({ "for_observer": obs.id() }))).await?;
+// for one observer, under a match hook that honors for_observer (§4.7)
+iii.call(CallRequest::new("tmux::on-changed", state).metadata(json!({ "for_observer": obs.id() }))).await?;
 
 // through an observer, in a deliver hook (§4.6)
 iii.call(CallRequest::observer(&obs, payload)).await?;
@@ -554,8 +554,8 @@ row_changed = iii.register_function("database::on-row-changed", lambda change: c
 row_changed.on_observer_match(observer=observer_keys, call=call_keys)      # keys
 # or: row_changed.on_observer_match(lambda obs, call: obs.args["table"] == call.input["table"])
 
-# for one observer (§4.7)
-await iii.call_async({"function_id": "database::on-row-changed", "payload": change, "metadata": {"for_observer": obs.id}})
+# for one observer, under a match hook that honors for_observer (§4.7)
+await iii.call_async({"function_id": "tmux::on-changed", "payload": state, "metadata": {"for_observer": obs.id}})
 
 # through an observer, in a deliver hook (§4.6)
 await iii.call_async({"observer": obs, "payload": payload})
@@ -576,8 +576,8 @@ client.OnObserverAddedFor("cron::on-tick", start)   // by function id
 client.OnObserverAdded(retain)                      // every function this worker hosts
 rowChanged.OnObserverMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
 
-// for one observer (§4.7)
-_, err := client.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: change,
+// for one observer, under a match hook that honors for_observer (§4.7)
+_, err := client.Call(ctx, iii.CallRequest{FunctionID: "tmux::on-changed", Payload: state,
     Metadata: json.RawMessage(`{"for_observer":"` + obs.ID + `"}`)})
 
 // through an observer, in a deliver hook (§4.6)
