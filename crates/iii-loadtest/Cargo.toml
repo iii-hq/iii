@@ -27,7 +27,7 @@ tokio-tungstenite = "0.28"
 [target.'cfg(target_os = "linux")'.dependencies]
 iii-filesystem = { path = "../iii-filesystem" }
 # Same pin as iii-worker and iii-filesystem.
-msb_krun = { version = "=0.1.16" }
+msb_krun = { version = "=0.1.42" }
 
 [dev-dependencies]
 serde_yaml = { workspace = true }
