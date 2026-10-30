@@ -51,7 +51,7 @@ use iii_sdk::{
 };
 
 /// Observers filed under keys no benchmark call has, plus one under `hit`.
-const KEYED_OBSERVERS: usize = 10_000;
+const MATCH_KEY_OBSERVERS: usize = 10_000;
 
 /// Observers the fake engine sends with each function's `functionregistered`.
 fn observers_for(function_id: &str) -> Value {
@@ -72,8 +72,8 @@ fn observers_for(function_id: &str) -> Value {
             "filters": { "$and": [{ "input.n": { "$gte": 0 } }] },
             "capture": ["input", "output"], "on": "success"
         }]),
-        "bench::keyed" => Value::Array(
-            (0..KEYED_OBSERVERS)
+        "bench::match-keys" => Value::Array(
+            (0..MATCH_KEY_OBSERVERS)
                 .map(|i| {
                     let expression = if i == 0 {
                         "hit".to_string()
@@ -81,7 +81,7 @@ fn observers_for(function_id: &str) -> Value {
                         format!("expr-{i}")
                     };
                     json!({
-                        "id": format!("keyed-{i}"), "args": { "expression": expression },
+                        "id": format!("match-key-{i}"), "args": { "expression": expression },
                         "target": "bench::target", "filters": {},
                         "capture": ["input"], "on": "success"
                     })
@@ -183,7 +183,7 @@ struct Host {
     iii: IIIClient,
     plain: FunctionRef,
     one_match: FunctionRef,
-    keyed: FunctionRef,
+    match_keys: FunctionRef,
     received: Received,
 }
 
@@ -206,7 +206,7 @@ fn host() -> Host {
         },
     );
     iii.on_observer_match_for(
-        "bench::keyed",
+        "bench::match-keys",
         Match::keys(
             |obs| obs.args_value()["expression"].as_str().into(),
             |call| call.input["expression"].as_str().into(),
@@ -219,7 +219,7 @@ fn host() -> Host {
         "bench::one-match",
         RegisterFunction::new(|input: Value| Ok::<_, Error>(json!({ "seen": input["n"] }))),
     );
-    let keyed = iii.register_function("bench::keyed", echo().private());
+    let match_keys = iii.register_function("bench::match-keys", echo().private());
     let source = iii.register_function("bench::source", echo().private());
     let event = iii.register_function("bench::private-event", echo().private());
     iii.on_observer_deliver_for(
@@ -228,21 +228,28 @@ fn host() -> Host {
     );
     let delivered = iii.register_function("bench::private-deliver", echo().private());
     for function in [
-        &plain, &private, &ten_none, &one_match, &keyed, &source, &event, &delivered,
+        &plain,
+        &private,
+        &ten_none,
+        &one_match,
+        &match_keys,
+        &source,
+        &event,
+        &delivered,
     ] {
         wait_for("local dispatch", || function.local_dispatch_active());
     }
     wait_for("the observers", || {
         ten_none.observers().len() == 10
             && one_match.observers().len() == 1
-            && keyed.observers().len() == KEYED_OBSERVERS
+            && match_keys.observers().len() == MATCH_KEY_OBSERVERS
             && source.observers().len() == 1
     });
     Host {
         iii,
         plain,
         one_match,
-        keyed,
+        match_keys,
         received,
     }
 }
@@ -293,9 +300,9 @@ fn observe_benches(c: &mut Criterion) {
         input: json!({ "expression": "never-filed" }),
         ..Call::default()
     };
-    assert!(!host.keyed.is_observed_for(&miss));
+    assert!(!host.match_keys.is_observed_for(&miss));
     c.bench_function("is_observed_for/key_miss_of_10000", |b| {
-        b.iter(|| black_box(&host.keyed).is_observed_for(black_box(&miss)))
+        b.iter(|| black_box(&host.match_keys).is_observed_for(black_box(&miss)))
     });
 
     // What the echo handler costs by itself, with its input built as each
@@ -342,7 +349,7 @@ fn observe_benches(c: &mut Criterion) {
         c,
         "call_local/match_keys_1_of_10000",
         &host.iii,
-        "bench::keyed",
+        "bench::match-keys",
         |i| json!({ "expression": "hit", "n": i }),
     );
     let event = |i: u64| json!({ "table": "invoices", "op": "update", "row": { "id": i, "status": "paid" } });

@@ -32,7 +32,7 @@ use crate::protocol::{Caller, InvocationStatus, observe_codes};
 pub(crate) const MAX_ITEMS: usize = 10_000;
 /// Estimated bytes kept at most before dropping the newest.
 pub(crate) const MAX_BYTES: usize = 8 * 1024 * 1024;
-/// Items per `invocationsobserved` frame, and the count that triggers a flush.
+/// Items per `invocationsobserved` frame, and the count that starts a flush.
 pub(crate) const BATCH_ITEMS: usize = 256;
 /// How long the first item of a batch may wait for more.
 pub(crate) const LINGER: Duration = Duration::from_millis(5);

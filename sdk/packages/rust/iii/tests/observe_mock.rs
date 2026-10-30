@@ -1,6 +1,6 @@
 //! observe against a fake engine: features, `observe()` replay, local
 //! dispatch, the current invocation, reports, hooks at both levels, deliver
-//! hooks and keyed delivery, routed calls, calls through an observer,
+//! hooks and matching by keys, routed calls, calls through an observer,
 //! `private`, `standby` and reconnect, asserted on the frames the SDK puts on
 //! the socket.
 //!

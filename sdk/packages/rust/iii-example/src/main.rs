@@ -67,8 +67,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // logs and streams
     sources_example::setup(&iii);
 
-    // More sources: schedule and file-watch (typed args, hooks, keyed
-    // delivery), and a function observed with filters
+    // More sources: schedule and file-watch (typed args, hooks, matching by
+    // keys), and a function observed with filters
     custom_source_example::setup(&iii);
 
     // List the functions and how many observers each has

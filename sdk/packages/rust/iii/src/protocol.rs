@@ -626,8 +626,8 @@ where
 pub mod observe_codes {
     /// The engine lacks the observe feature a call needs: `observe.v1` for
     /// `observe()`, `observe.v2` for a function that declares `args_format`,
-    /// `private` or `observable: false`, or sets a deliver hook (raised by
-    /// the SDK).
+    /// `private` or `observable: false`, or sets a deliver hook or a match
+    /// hook (raised by the SDK).
     pub const UNSUPPORTED: &str = "UNSUPPORTED";
     /// Args fail the function's `args_format`, or args on a function without one.
     pub const INVALID_ARGS: &str = "INVALID_ARGS";
