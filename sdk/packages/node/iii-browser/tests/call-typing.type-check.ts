@@ -52,6 +52,8 @@ async function callTypingAssertions() {
   await worker.call({ observer, payload: { name: 'save' } })
   // @ts-expect-error: an observer call names no function
   await worker.call({ observer, function_id: 'x::y', payload: {} })
+  // @ts-expect-error: an observer call takes no metadata (its target receives the observer's)
+  await worker.call({ observer, payload: {}, metadata: { tenant: 'acme' } })
 
   // The handler's types reach the hooks of its FunctionRef, in both match forms.
   type Click = { selector: string; x: number; y: number }

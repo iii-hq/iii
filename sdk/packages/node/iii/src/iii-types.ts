@@ -380,7 +380,10 @@ export type CallRequest<TInput = unknown> =
       action?: CallAction
       /** Override the default invocation timeout, in milliseconds. */
       timeoutMs?: number
-      /** Arbitrary user-specifiable metadata supplied to the called handler function on every invocation. */
+      /**
+       * Per-invocation metadata (any JSON value), supplied to the called handler
+       * beside the payload. `null` is the same as no metadata.
+       */
       metadata?: unknown
       /**
        * Target namespace for routing. Omit to inherit this worker's; say `default`
@@ -410,6 +413,11 @@ export type CallRequest<TInput = unknown> =
       action?: CallAction
       /** Override the default invocation timeout, in milliseconds. */
       timeoutMs?: number
+      /**
+       * A call through an observer takes no metadata: its target receives the
+       * observer's registration metadata. `call` refuses one that names it.
+       */
+      metadata?: never
     }
 
 /** @deprecated Use {@link CallRequest}, the same type. */

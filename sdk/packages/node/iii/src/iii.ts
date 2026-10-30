@@ -146,6 +146,10 @@ const FUNCTION_REJECTIONS: ReadonlySet<string> = new Set(['INVALID_ARGS_FORMAT',
 /** A standby function retries its registration this often (decision 21), ±20 %. */
 const STANDBY_RETRY_MS = 1000
 
+/** Why `call` refuses a call through an observer that names metadata (v2 §4.6, decision 53); the same in every SDK. */
+const OBSERVER_CALL_METADATA =
+  "a call through an observer takes no metadata; its target receives the observer's metadata"
+
 function getOsInfo(): string {
   return `${os.platform()} ${os.release()} (${os.arch()})`
 }
@@ -1048,7 +1052,9 @@ class Sdk implements IIIClient {
    * target, with the observer's policy (`max_fires`, expiry,
    * `max_in_flight`), metadata and loop guard. Only the worker that hosts the
    * observed function may call through it (`NOT_FUNCTION_OWNER`); the
-   * payload goes as given.
+   * payload goes as given. It takes no metadata: the target's metadata
+   * argument is the observer's registration metadata, and a request that
+   * names metadata is refused before anything is sent.
    *
    * @param request - The call request.
    * @param request.function_id - ID of the function to invoke.
@@ -1056,8 +1062,9 @@ class Sdk implements IIIClient {
    * @param request.payload - Payload to pass to the function.
    * @param request.action - Routing action. Omit for synchronous request/response.
    * @param request.timeoutMs - Override the default invocation timeout.
-   * @param request.metadata - Optional per-invocation metadata (arbitrary JSON)
-   *   surfaced to the target handler as its second argument.
+   * @param request.metadata - Optional per-invocation metadata (any JSON value)
+   *   surfaced to the target handler as its second argument. `null` is the
+   *   same as no metadata: the handler receives `undefined`.
    * @returns The result of the function invocation.
    *
    * @example
@@ -1092,22 +1099,27 @@ class Sdk implements IIIClient {
   call = async <TInput = unknown, TOutput = any>(request: CallRequest<TInput>): Promise<TOutput> => {
     if (request.observer !== undefined) {
       const { observer, payload, action, timeoutMs } = request
+      // Its target's metadata is the observer's: refused before anything is
+      // sent, so no metadata is lost on the way (decision 53). `null` is none.
+      if ((request as { metadata?: unknown }).metadata != null) throw new Error(OBSERVER_CALL_METADATA)
       // The engine routes to the observer's stored target and is the one that
       // checks it (decision 13); no namespace travels.
       return this.invokeRemote<TOutput>({ function_id: observer.target, payload, action, timeoutMs }, undefined, {
         observer_id: observer.id,
       })
     }
-    const { function_id, action } = request
+    // `metadata: null` is no metadata, local or routed (decision 54).
+    const req = request.metadata === null ? { ...request, metadata: undefined } : request
+    const { function_id, action } = req
     // Engine-owned builtins stay in `default`. Other implicit calls stay in
     // this worker's namespace. An explicit request namespace always wins.
-    const namespace = invocationNamespace(request.namespace, this.namespace, function_id)
+    const namespace = invocationNamespace(req.namespace, this.namespace, function_id)
 
     // Local dispatch (sdk.md §3): a function this worker hosts, confirmed by
     // the engine for in-process calls, in the namespace it registered in.
     // `enqueue` expects a queue receipt, so it always goes to the engine, and
     // so does a call already MAX_LOCAL_DEPTH local calls deep.
-    if (request.dispatch !== 'remote' && action?.type !== 'enqueue') {
+    if (req.dispatch !== 'remote' && action?.type !== 'enqueue') {
       const fn = this.functions.get(function_id)
       const observe = fn?.observe
       if (
@@ -1116,10 +1128,10 @@ class Sdk implements IIIClient {
         (namespace === undefined || namespace === observe.namespace) &&
         (currentContext()?.localDepth ?? 0) < MAX_LOCAL_DEPTH
       ) {
-        return this.invokeLocal<TOutput>(function_id, fn, request)
+        return this.invokeLocal<TOutput>(function_id, fn, req)
       }
     }
-    return this.invokeRemote<TOutput>(request, namespace)
+    return this.invokeRemote<TOutput>(req, namespace)
   }
 
   /**

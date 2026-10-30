@@ -755,6 +755,27 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
     await expect(response).resolves.toEqual({ status_code: 200, body: [] })
   })
 
+  it('takes no metadata: refused before anything is sent, whatever the value; null is no metadata (decision 53)', async () => {
+    const { sdk, socket } = await http()
+    const [obs] = sdk.observers('http::on-request')
+    for (const metadata of [{ route: 'users' }, ['a'], 'tag', 0, false]) {
+      await expect(sdk.call({ observer: obs, payload: { path: '/users' }, metadata } as never)).rejects.toThrow(
+        new Error("a call through an observer takes no metadata; its target receives the observer's metadata"),
+      )
+    }
+    expect(socket.framesOf('invokefunction')).toEqual([])
+    await sdk.call({ observer: obs, payload: { path: '/users' }, metadata: null, action: CallAction.Void() } as never)
+    expect(socket.framesOf('invokefunction')).toEqual([
+      {
+        type: 'invokefunction',
+        function_id: 'users::get',
+        data: { path: '/users' },
+        action: { type: 'void' },
+        activation: { observer_id: 'users' },
+      },
+    ])
+  })
+
   it("the hook applies the observer's filters with obs.matches; nothing is sent for a miss", async () => {
     const { sdk, socket } = await http()
     await expect(
