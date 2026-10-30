@@ -531,6 +531,36 @@ def test_reports_a_matched_call_once_with_the_union_of_the_matched_captures(engi
     assert _invocations(engine) == []
 
 
+def test_capture_empty_reports_ids_status_and_timing_without_a_payload(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+
+    def checkout(data: dict[str, Any]) -> dict[str, Any]:
+        return client.call({"function_id": "local::price", "payload": data, "metadata": {"channel": "web"}})
+
+    client.register_function("local::price", lambda d: {"total": d["qty"] * 10})
+    client.register_function("local::checkout", checkout)
+    _confirm(client, engine, "local::price", [observer_info("bare", "t", capture=[])])
+    _confirm(client, engine, "local::checkout")
+    engine.clear()
+    # made from a handler, so the call has a caller too
+    assert client.call({"function_id": "local::checkout", "payload": {"qty": 3}}) == {"total": 30}
+    settle(client, engine)
+    [item] = reported_items(engine)
+    assert item.keys() == {
+        "function_id",
+        "namespace",
+        "invocation_id",
+        "matched",
+        "status",
+        "started_at_ms",
+        "duration_ms",
+        "observe_depth",
+    }
+    assert (item["function_id"], item["matched"], item["status"]) == ("local::price", ["bare"], "success")
+    assert isinstance(item["invocation_id"], str)
+    assert isinstance(item["started_at_ms"], int) and isinstance(item["duration_ms"], (int, float))
+
+
 def test_on_error_sees_only_failures_with_the_error_and_the_caller(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
 

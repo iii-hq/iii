@@ -8,7 +8,15 @@ import time
 from typing import Any
 
 import pytest
-from observe_e2e_utils import FrameCounter, collector, drop_connection, exactly, settle_engine, wait_for
+from observe_e2e_utils import (
+    FrameCounter,
+    collector,
+    drop_connection,
+    exactly,
+    local_dispatch_ready,
+    settle_engine,
+    wait_for,
+)
 
 from iii import ObserveRejection
 
@@ -139,6 +147,30 @@ def test_errors_turn_the_observer_to_error_and_ready_raises(
     assert raised.value.code == code
     assert handle.state == "error"
     assert handle.reason is not None and handle.reason["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("code", "source_options", "target_options"),
+    [
+        ("NOT_OBSERVABLE", {"observable": False}, {}),  # D3
+        ("FORBIDDEN", {}, {"private": True}),  # D1: a private function is never a target
+    ],
+)
+def test_an_unobservable_function_or_a_private_target_turns_the_observer_to_error(
+    worker: Any, fid: Any, code: str, source_options: dict[str, Any], target_options: dict[str, Any]
+) -> None:
+    owner = worker("routed-owner")
+    watcher = worker("routed-watcher")
+    owner.register_function(fid("py-e2e::source"), lambda d: d, **source_options)
+    watcher.register_function(fid("py-e2e::target"), lambda d: None, **target_options)
+    local_dispatch_ready(owner, fid("py-e2e::source"))
+    local_dispatch_ready(watcher, fid("py-e2e::target"))
+    handle = watcher.observe(fid("py-e2e::source"), fid("py-e2e::target"))
+    with pytest.raises(ObserveRejection) as raised:
+        handle.ready(timeout=10)
+    assert raised.value.code == code
+    assert handle.state == "error"
+    assert owner.observers(fid("py-e2e::source")) == []
 
 
 def test_dispose_stops_the_activations_and_max_fires_disposes_after_the_last_one(worker: Any, fid: Any) -> None:
