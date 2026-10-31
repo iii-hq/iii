@@ -37,7 +37,7 @@ use uuid::Uuid;
 use super::{
     FnKey, ObserverRegistry,
     lifecycle::{Announcement, Flags, Observer, lock},
-    persistent::PersistentSet,
+    persistent::{Keyed, PersistentSet},
 };
 use crate::{
     engine::{Engine, InvocationKind},
@@ -436,20 +436,28 @@ impl NeedCounts {
     }
 }
 
+/// An active set orders its observers by [`Observer::seq`]: each one in a
+/// set joined its function, and its seq never changes after that.
+impl Keyed for Arc<Observer> {
+    #[inline]
+    fn key(&self) -> u64 {
+        self.seq().unwrap_or_default()
+    }
+}
+
 impl ActiveSet {
     /// The set of `observers`, which are in creation order and have joined
     /// their function's observers.
     fn new(key: &FnKey, observers: Vec<Arc<Observer>>) -> Self {
+        let observers: Vec<Arc<Observer>> = observers
+            .into_iter()
+            .filter(|observer| observer.seq().is_some())
+            .collect();
         let mut counts = NeedCounts::default();
         for observer in &observers {
             counts.count(observer, true);
         }
-        let observers = PersistentSet::from_sorted(
-            observers
-                .into_iter()
-                .filter_map(|observer| Some((observer.seq()?, observer)))
-                .collect(),
-        );
+        let observers = PersistentSet::from_sorted(observers);
         let shard = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -475,9 +483,9 @@ impl ActiveSet {
         }
     }
 
-    /// This set with `observer`, filed under `seq`.
-    fn with(&self, observer: &Arc<Observer>, seq: u64) -> Self {
-        let Some(observers) = self.observers.inserted(seq, observer.clone()) else {
+    /// This set with `observer`, filed under its seq.
+    fn with(&self, observer: &Arc<Observer>) -> Self {
+        let Some(observers) = self.observers.inserted(observer.clone()) else {
             return self.copy();
         };
         let mut counts = self.counts;
@@ -900,7 +908,7 @@ impl ObserverRegistry {
             return;
         }
         let next = match set {
-            Some(set) if wanted => set.with(observer, seq),
+            Some(set) if wanted => set.with(observer),
             Some(set) => set.without(observer, seq),
             None => ActiveSet::new(key, vec![observer.clone()]),
         };

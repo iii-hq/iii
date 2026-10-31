@@ -12,7 +12,10 @@
 //! observers of a function, in creation order (see [`super::ActiveSet`]).
 //!
 //! Each node is one allocation, its slots right after its reference count,
-//! so a scan reaches a leaf's values with one pointer from its branch.
+//! and a leaf holds the values themselves, each ordered by its own key: a
+//! scan reads a leaf as one slice of values. Up to [`MAX`] values fit in one
+//! leaf, which [`PersistentSet::leaves`] and [`PersistentSet::iter`] read
+//! without walking any branch.
 
 use std::{iter, sync::Arc};
 
@@ -26,7 +29,13 @@ const FILL: usize = MAX * 3 / 4;
 /// so 9 levels hold more than 2^40 values.
 const MAX_DEPTH: usize = 16;
 
-/// Values ordered by a `u64` key, each key at most once.
+/// What a [`PersistentSet`] orders its values by. A value's key never
+/// changes while a set holds it.
+pub(crate) trait Keyed {
+    fn key(&self) -> u64;
+}
+
+/// Values ordered by their [`Keyed::key`], each key at most once.
 pub(crate) struct PersistentSet<V> {
     root: Option<Node<V>>,
     len: usize,
@@ -34,7 +43,7 @@ pub(crate) struct PersistentSet<V> {
 
 enum Node<V> {
     /// Sorted by key.
-    Leaf(Arc<[(u64, V)]>),
+    Leaf(Arc<[V]>),
     /// Sorted by key, all at the same depth.
     Branch(Arc<[Child<V>]>),
 }
@@ -63,7 +72,7 @@ impl<V> Clone for Child<V> {
     }
 }
 
-impl<V> Child<V> {
+impl<V: Keyed> Child<V> {
     fn of(node: Node<V>) -> Self {
         Self {
             first: node.first(),
@@ -87,11 +96,13 @@ impl<V> Node<V> {
             Node::Branch(children) => children.len(),
         }
     }
+}
 
+impl<V: Keyed> Node<V> {
     /// The smallest key. Only asked of a node that is not empty.
     fn first(&self) -> u64 {
         match self {
-            Node::Leaf(values) => values[0].0,
+            Node::Leaf(values) => values[0].key(),
             Node::Branch(children) => children[0].first,
         }
     }
@@ -138,14 +149,14 @@ fn sized<T: Clone, V>(
     )
 }
 
-impl<V: Clone> PersistentSet<V> {
+impl<V: Keyed + Clone> PersistentSet<V> {
     pub(crate) fn new() -> Self {
         Self { root: None, len: 0 }
     }
 
     /// A set holding `values`, which are sorted by key with each key once.
-    pub(crate) fn from_sorted(values: Vec<(u64, V)>) -> Self {
-        debug_assert!(values.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    pub(crate) fn from_sorted(values: Vec<V>) -> Self {
+        debug_assert!(values.windows(2).all(|pair| pair[0].key() < pair[1].key()));
         let len = values.len();
         if len == 0 {
             return Self::new();
@@ -177,24 +188,24 @@ impl<V: Clone> PersistentSet<V> {
             match node {
                 Node::Leaf(values) => {
                     return values
-                        .binary_search_by_key(&key, |(k, _)| *k)
+                        .binary_search_by_key(&key, Keyed::key)
                         .ok()
-                        .map(|at| &values[at].1);
+                        .map(|at| &values[at]);
                 }
                 Node::Branch(children) => node = &children[child_for(children, key)].node,
             }
         }
     }
 
-    /// A new version with `value` under `key`; `None` when `key` is taken.
-    pub(crate) fn inserted(&self, key: u64, value: V) -> Option<Self> {
+    /// A new version with `value`; `None` when its key is taken.
+    pub(crate) fn inserted(&self, value: V) -> Option<Self> {
         let Some(root) = self.root.as_ref() else {
             return Some(Self {
-                root: Some(Node::Leaf(Arc::new([(key, value)]))),
+                root: Some(Node::Leaf(Arc::new([value]))),
                 len: 1,
             });
         };
-        let root = match insert(root, key, value, Growth::Appended)? {
+        let root = match insert(root, value, Growth::Appended)? {
             Grown::One(node) => node,
             Grown::Split(lower, upper) => {
                 Node::Branch(Arc::new([Child::of(lower), Child::of(upper)]))
@@ -222,30 +233,43 @@ impl<V: Clone> PersistentSet<V> {
             len,
         })
     }
+}
 
+impl<V> PersistentSet<V> {
     /// The values in key order.
+    #[inline]
     pub(crate) fn iter(&self) -> Iter<'_, V> {
-        let mut iter = Iter {
-            branches: std::array::from_fn(|_| [].iter()),
-            depth: 0,
-            leaf: [].iter(),
-        };
-        if let Some(root) = self.root.as_ref() {
-            iter.descend(root);
-        }
-        iter
+        let mut leaves = self.leaves();
+        let leaf = leaves.next().unwrap_or_default().iter();
+        Iter { leaves, leaf }
     }
 
-    /// The leaves in key order, each a slice of `(key, value)`: a plain
-    /// slice loop over each, for the scan the routed hook runs on every
-    /// call.
+    /// The leaves in key order, each a slice of values: a plain slice loop
+    /// over each, for the scan the routed hook runs on every call. A set
+    /// that is one leaf is read as that slice, with no walk of branches.
+    #[inline]
     pub(crate) fn leaves(&self) -> Leaves<'_, V> {
-        let mut iter = self.iter();
-        let first = self
-            .root
-            .is_some()
-            .then(|| std::mem::replace(&mut iter.leaf, [].iter()).as_slice());
-        Leaves { iter, first }
+        match &self.root {
+            None => Leaves {
+                next: None,
+                deeper: None,
+            },
+            Some(Node::Leaf(values)) => Leaves {
+                next: Some(values),
+                deeper: None,
+            },
+            Some(Node::Branch(children)) => {
+                let mut deeper = Deeper {
+                    branches: std::array::from_fn(|_| [].iter()),
+                    depth: 0,
+                };
+                let next = deeper.descend(children);
+                Leaves {
+                    next: Some(next),
+                    deeper: Some(deeper),
+                }
+            }
+        }
     }
 }
 
@@ -258,13 +282,13 @@ impl<V> Clone for PersistentSet<V> {
     }
 }
 
-impl<V: Clone> Default for PersistentSet<V> {
+impl<V: Keyed + Clone> Default for PersistentSet<V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, V: Clone> IntoIterator for &'a PersistentSet<V> {
+impl<'a, V> IntoIterator for &'a PersistentSet<V> {
     type Item = &'a V;
     type IntoIter = Iter<'a, V>;
 
@@ -291,13 +315,14 @@ fn chunks<T>(items: Vec<T>) -> Vec<Vec<T>> {
         .collect()
 }
 
-/// `node` with `value` under `key`. `last` is [`Growth::Appended`] when
-/// `node` is the last node of its level, so a key past all of its own is
-/// appended to the set.
-fn insert<V: Clone>(node: &Node<V>, key: u64, value: V, last: Growth) -> Option<Grown<V>> {
+/// `node` with `value`. `last` is [`Growth::Appended`] when `node` is the
+/// last node of its level, so a key past all of its own is appended to the
+/// set.
+fn insert<V: Keyed + Clone>(node: &Node<V>, value: V, last: Growth) -> Option<Grown<V>> {
+    let key = value.key();
     match node {
         Node::Leaf(values) => {
-            let at = values.binary_search_by_key(&key, |(k, _)| *k).err()?;
+            let at = values.binary_search_by_key(&key, Keyed::key).err()?;
             let growth = if at == values.len() {
                 last
             } else {
@@ -306,7 +331,7 @@ fn insert<V: Clone>(node: &Node<V>, key: u64, value: V, last: Growth) -> Option<
             let items = values[..at]
                 .iter()
                 .cloned()
-                .chain(iter::once((key, value)))
+                .chain(iter::once(value))
                 .chain(values[at..].iter().cloned());
             Some(sized(items, values.len() + 1, Node::Leaf, growth))
         }
@@ -317,7 +342,7 @@ fn insert<V: Clone>(node: &Node<V>, key: u64, value: V, last: Growth) -> Option<
             } else {
                 Growth::Inside
             };
-            let (lower, upper) = match insert(&children[at].node, key, value, growth)? {
+            let (lower, upper) = match insert(&children[at].node, value, growth)? {
                 Grown::One(child) => (Child::of(child), None),
                 Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
             };
@@ -335,10 +360,10 @@ fn insert<V: Clone>(node: &Node<V>, key: u64, value: V, last: Growth) -> Option<
 
 /// `node` without `key`, possibly empty or under [`MIN`] (its parent merges
 /// it); `None` when it holds no `key`.
-fn remove<V: Clone>(node: &Node<V>, key: u64) -> Option<Node<V>> {
+fn remove<V: Keyed + Clone>(node: &Node<V>, key: u64) -> Option<Node<V>> {
     match node {
         Node::Leaf(values) => {
-            let at = values.binary_search_by_key(&key, |(k, _)| *k).ok()?;
+            let at = values.binary_search_by_key(&key, Keyed::key).ok()?;
             #[cfg(test)]
             super::work::add(values.len() - 1);
             Some(Node::Leaf(
@@ -392,7 +417,7 @@ fn remove<V: Clone>(node: &Node<V>, key: u64) -> Option<Node<V>> {
 }
 
 /// Two neighbouring nodes of the same depth, `lower` first, as one.
-fn join<V: Clone>(lower: &Node<V>, upper: &Node<V>) -> Grown<V> {
+fn join<V: Keyed + Clone>(lower: &Node<V>, upper: &Node<V>) -> Grown<V> {
     match (lower, upper) {
         (Node::Leaf(a), Node::Leaf(b)) => sized(
             a.iter().chain(b.iter()).cloned(),
@@ -410,52 +435,75 @@ fn join<V: Clone>(lower: &Node<V>, upper: &Node<V>) -> Grown<V> {
     }
 }
 
-/// The values of a [`PersistentSet`] in key order.
-pub(crate) struct Iter<'a, V> {
+/// The leaves of a [`PersistentSet`] in key order (see
+/// [`PersistentSet::leaves`]).
+pub(crate) struct Leaves<'a, V> {
+    /// The leaf to yield next.
+    next: Option<&'a [V]>,
+    /// Where the leaves after it are, in a set deeper than one leaf.
+    deeper: Option<Deeper<'a, V>>,
+}
+
+/// The branches above the leaf a [`Leaves`] is at.
+struct Deeper<'a, V> {
     /// The children left to visit at each level above the current leaf.
     branches: [std::slice::Iter<'a, Child<V>>; MAX_DEPTH],
     depth: usize,
-    leaf: std::slice::Iter<'a, (u64, V)>,
 }
 
-impl<'a, V> Iter<'a, V> {
-    /// Goes down `node`'s first children to its first leaf.
-    fn descend(&mut self, mut node: &'a Node<V>) {
+impl<'a, V> Deeper<'a, V> {
+    /// Goes down the first children of `children` to its first leaf.
+    fn descend(&mut self, mut children: &'a [Child<V>]) -> &'a [V] {
         loop {
-            match node {
-                Node::Leaf(values) => {
-                    self.leaf = values.iter();
-                    return;
-                }
-                Node::Branch(children) => {
-                    let mut rest = children.iter();
-                    let Some(first) = rest.next() else {
-                        return;
-                    };
-                    assert!(self.depth < MAX_DEPTH, "a set deeper than MAX_DEPTH");
-                    self.branches[self.depth] = rest;
-                    self.depth += 1;
-                    node = &first.node;
-                }
+            let mut rest = children.iter();
+            let Some(first) = rest.next() else {
+                return &[];
+            };
+            assert!(self.depth < MAX_DEPTH, "a set deeper than MAX_DEPTH");
+            self.branches[self.depth] = rest;
+            self.depth += 1;
+            match &first.node {
+                Node::Leaf(values) => return values,
+                Node::Branch(next) => children = next,
             }
         }
     }
 
-    /// The next leaf: the next child of the nearest level that has one.
-    fn next_leaf(&mut self) -> Option<&'a [(u64, V)]> {
+    /// The next leaf: under the next child of the nearest level that has
+    /// one.
+    fn next_leaf(&mut self) -> Option<&'a [V]> {
         loop {
             if self.depth == 0 {
                 return None;
             }
             match self.branches[self.depth - 1].next() {
                 Some(child) => {
-                    self.descend(&child.node);
-                    return Some(std::mem::replace(&mut self.leaf, [].iter()).as_slice());
+                    return Some(match &child.node {
+                        Node::Leaf(values) => values,
+                        Node::Branch(children) => self.descend(children),
+                    });
                 }
                 None => self.depth -= 1,
             }
         }
     }
+}
+
+impl<'a, V> Iterator for Leaves<'a, V> {
+    type Item = &'a [V];
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a [V]> {
+        let leaf = self.next.take()?;
+        self.next = self.deeper.as_mut().and_then(Deeper::next_leaf);
+        Some(leaf)
+    }
+}
+
+/// The values of a [`PersistentSet`] in key order.
+pub(crate) struct Iter<'a, V> {
+    leaves: Leaves<'a, V>,
+    leaf: std::slice::Iter<'a, V>,
 }
 
 impl<'a, V> Iterator for Iter<'a, V> {
@@ -464,27 +512,11 @@ impl<'a, V> Iterator for Iter<'a, V> {
     #[inline]
     fn next(&mut self) -> Option<&'a V> {
         loop {
-            if let Some((_, value)) = self.leaf.next() {
+            if let Some(value) = self.leaf.next() {
                 return Some(value);
             }
-            self.leaf = self.next_leaf()?.iter();
+            self.leaf = self.leaves.next()?.iter();
         }
-    }
-}
-
-/// The leaves of a [`PersistentSet`] in key order (see
-/// [`PersistentSet::leaves`]).
-pub(crate) struct Leaves<'a, V> {
-    iter: Iter<'a, V>,
-    first: Option<&'a [(u64, V)]>,
-}
-
-impl<'a, V> Iterator for Leaves<'a, V> {
-    type Item = &'a [(u64, V)];
-
-    #[inline]
-    fn next(&mut self) -> Option<&'a [(u64, V)]> {
-        self.first.take().or_else(|| self.iter.next_leaf())
     }
 }
 
@@ -494,16 +526,27 @@ mod tests {
 
     use super::*;
 
+    impl Keyed for u64 {
+        fn key(&self) -> u64 {
+            *self
+        }
+    }
+
     /// The depth of every leaf, and whether every node but the root holds at
     /// least `MIN` and at most `MAX`, with each branch's `first` right.
-    fn check<V: Clone>(set: &PersistentSet<V>) -> usize {
-        fn walk<V>(node: &Node<V>, depth: usize, root: bool, depths: &mut Vec<usize>) -> usize {
+    fn check<V: Keyed + Clone>(set: &PersistentSet<V>) -> usize {
+        fn walk<V: Keyed>(
+            node: &Node<V>,
+            depth: usize,
+            root: bool,
+            depths: &mut Vec<usize>,
+        ) -> usize {
             let width = node.width();
             assert!(width <= MAX, "{width} > MAX");
             assert!(root || width >= MIN, "{width} < MIN below the root");
             match node {
                 Node::Leaf(values) => {
-                    assert!(values.windows(2).all(|pair| pair[0].0 < pair[1].0));
+                    assert!(values.windows(2).all(|pair| pair[0].key() < pair[1].key()));
                     depths.push(depth);
                     values.len()
                 }
@@ -536,10 +579,7 @@ mod tests {
 
     fn contents(set: &PersistentSet<u64>) -> Vec<u64> {
         let values: Vec<u64> = set.iter().copied().collect();
-        let by_leaf: Vec<u64> = set
-            .leaves()
-            .flat_map(|leaf| leaf.iter().map(|(_, value)| *value))
-            .collect();
+        let by_leaf: Vec<u64> = set.leaves().flat_map(|leaf| leaf.iter().copied()).collect();
         assert_eq!(values, by_leaf, "the leaves hold what the iterator yields");
         values
     }
@@ -576,7 +616,7 @@ mod tests {
                     None => assert!(!model.contains_key(&key)),
                 }
             } else {
-                match set.inserted(key, key) {
+                match set.inserted(key) {
                     Some(next) => {
                         assert!(model.insert(key, key).is_none());
                         set = next;
@@ -613,14 +653,14 @@ mod tests {
     fn appends_and_bulk_builds_stay_shallow() {
         let mut set = PersistentSet::new();
         for key in 0..50_000u64 {
-            set = set.inserted(key, key).unwrap();
+            set = set.inserted(key).unwrap();
         }
         let depth = check(&set);
         assert!(depth <= 5, "depth {depth}");
         assert_eq!(contents(&set), (0..50_000).collect::<Vec<_>>());
 
         for len in [0, 1, MIN - 1, MIN, FILL, MAX, MAX + 1, 1_000, 50_000] {
-            let built = PersistentSet::from_sorted((0..len as u64).map(|k| (k, k)).collect());
+            let built = PersistentSet::from_sorted((0..len as u64).collect());
             check(&built);
             assert_eq!(contents(&built), (0..len as u64).collect::<Vec<_>>());
         }
@@ -630,7 +670,7 @@ mod tests {
     /// empties out, leaving no trail of thin leaves.
     #[test]
     fn removing_from_the_front_keeps_the_tree_filled() {
-        let mut set = PersistentSet::from_sorted((0..10_000u64).map(|k| (k, k)).collect());
+        let mut set = PersistentSet::from_sorted((0..10_000u64).collect());
         for key in 0..9_990u64 {
             set = set.removed(key).unwrap();
             if key % 501 == 0 {

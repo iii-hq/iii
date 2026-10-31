@@ -923,7 +923,7 @@ impl ObserverRegistry {
                     metadata: completed.metadata.as_deref(),
                 };
                 for leaf in set.observers.leaves() {
-                    for (_, observer) in leaf {
+                    for observer in leaf {
                         if accepts(&observer.on, completed.success) && observer.filter.matches(&doc)
                         {
                             self.activate(observer, &completed);
@@ -934,7 +934,7 @@ impl ObserverRegistry {
             Matching::Listed(ids) => {
                 let mut held = vec![false; ids.len()];
                 for leaf in set.observers.leaves() {
-                    for (_, observer) in leaf {
+                    for observer in leaf {
                         let Ok(at) = ids.binary_search_by(|id| id.as_str().cmp(&observer.id))
                         else {
                             continue;
