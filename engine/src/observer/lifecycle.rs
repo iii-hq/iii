@@ -280,10 +280,28 @@ pub(crate) const MAX_TOMBSTONES: usize = 10_000;
 /// A disposed observer, remembered for `observers.observer_grace_ms`: its
 /// observing worker replaying it learns why it is gone instead of creating it
 /// again with fresh counters.
+///
+/// A worker replays its observers on a new connection, after a `Reattach`
+/// (which moves the tombstone to it). The connection the engine sent the
+/// `disposed` to replays nothing on itself: an `observe` of the id from it
+/// is a new observer (decision 56).
 pub(crate) struct Tombstone {
     pub connection: Uuid,
+    /// The connection the `disposed` was sent to, when the observing worker
+    /// was connected as the observer was disposed: an `observe` of the id
+    /// from it is a new observer.
+    pub told: Option<Uuid>,
     pub reason: Arc<ErrorBody>,
     pub until: Instant,
+}
+
+impl Tombstone {
+    /// Whether this tombstone answers an `observe` of its id from
+    /// `connection`: one from the observer's own worker, on a connection
+    /// other than the one told of the disposal, before it expires.
+    pub(crate) fn answers(&self, connection: Uuid, now: Instant) -> bool {
+        self.connection == connection && self.told != Some(connection) && self.until > now
+    }
 }
 
 /// Observers held in `Expired` records at most, across all of them.
@@ -1235,19 +1253,26 @@ impl ObserverRegistry {
     /// Drops every index entry of a disposed observer. Its observing worker
     /// replaying it later learns why it is gone from its tombstone, unless
     /// that worker disposed of it, or the engine owns it (the engine replays
-    /// nothing).
+    /// nothing). A worker that was connected heard the disposal on that
+    /// connection, which may observe under the id again at once.
     pub(super) fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
         self.by_id
             .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
         let connection = observer.observing_connection();
-        let (tombstone, reason) =
-            observer.with_flags(|flags| (flags.tombstone, flags.disposed.clone()));
+        let (tombstone, connected, reason) = observer.with_flags(|flags| {
+            (
+                flags.tombstone,
+                flags.observing_connected,
+                flags.disposed.clone(),
+            )
+        });
         if tombstone && !observer.is_engine_owned() {
             self.remember_tombstone(
                 Arc::from(observer.id.as_str()),
                 Tombstone {
                     connection,
+                    told: connected.then_some(connection),
                     reason: reason.unwrap_or_else(|| {
                         Arc::new(ErrorBody::new(
                             observe_codes::UNOBSERVED,
