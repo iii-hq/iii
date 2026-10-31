@@ -14,17 +14,22 @@
 //! function's match hook, which reads the observers' args, and its deliver
 //! hook.
 //!
-//! - A local call: its observers are matched (all of them, or those the
-//!   match hook says want it), and iii's delivery evaluates their `on` and
-//!   compiled filters, through an index of their equality conditions
-//!   ([`FilterIndex`](iii_filter::FilterIndex)), and reports the matches in
-//!   the batched `invocationsobserved` frames; or the deliver hook delivers
-//!   the call itself.
+//! - A local call: iii's delivery evaluates the `on` and compiled filters of
+//!   the function's observers and reports the matches in the batched
+//!   `invocationsobserved` frames. Without a match hook, the compiled set's
+//!   [`Plan`] for the call's outcome matches them: through an index of their
+//!   equality conditions ([`FilterIndex`](iii_filter::FilterIndex)), or by a
+//!   scan of every filter for a set of at most
+//!   [`SCAN_MAX`](crate::observable::SCAN_MAX) observers, or one most of
+//!   whose observers the index would evaluate anyway. The observers a match
+//!   hook matched are each evaluated. Or the deliver hook delivers the call
+//!   itself.
 //! - A routed call: the answer says how it is delivered. Without hooks it
 //!   carries nothing more, and the engine evaluates every active observer;
 //!   with a match hook it lists the observers the hook matched
-//!   (`invocationresult.matched`, before `on` and filters); with a deliver
-//!   hook it is the hook's answer, with `delivered: true`.
+//!   (`invocationresult.matched`, before `on` and filters; `[]` also when
+//!   the host holds no observer for it to match); with a deliver hook it is
+//!   the hook's answer, with `delivered: true`.
 //!
 //! A call with no observer and no deliver hook costs one atomic load and puts
 //! nothing on the wire.
@@ -48,7 +53,7 @@ use crate::{
         DEFAULT_TIMEOUT_MS, IIIClient, PreparedEnvelope, inject_trace_headers, now_ms, parent_of,
     },
     observable::{
-        ById, CompiledSet, DocParts, FunctionEntry, Observer, OutcomeIndex, panic_message,
+        ById, CompiledSet, DocParts, FunctionEntry, Observer, OutcomeIndex, Plan, panic_message,
     },
     observe::ObservedError,
     protocol::{
@@ -398,25 +403,29 @@ struct ReportCtx<'a> {
 }
 
 /// The observers of the function in `snapshot` that are active, accept the
-/// call's status and whose filters match it, in id order: the observers the
-/// index of the call's status does not rule out, each filter evaluated in
-/// full. The same observers as [`select`] over every observer of the set.
-fn select_indexed(
+/// call's status and whose filters match it, in id order, as the set's plan
+/// for the call's status matches them: a scan of every observer, or the
+/// observers the index of the status does not rule out, each filter
+/// evaluated in full. The same observers as [`select`] over every observer
+/// of the set. The call's `error` and `caller` are built only when a filter
+/// of an observer of its status reads them.
+fn select_compiled(
     function_id: &str,
     view: &CallView<'_>,
     snapshot: &CompiledSet,
 ) -> (Vec<String>, CaptureMask) {
-    let index = snapshot.accepting(view.success);
-    if index.is_empty() {
+    let plan = snapshot.plan(view.success);
+    if plan == Plan::Nothing {
         return (Vec::new(), CaptureMask::default());
     }
-    // What any observer of the set reads: every one the index evaluates.
-    let parts = DocParts::of(snapshot.roots, view.error, view.caller);
-    lookup(
-        function_id,
-        &parts.doc(view.input, view.output, view.metadata),
-        index,
-    )
+    let parts = DocParts::of(snapshot.reads(view.success), view.error, view.caller);
+    let doc = parts.doc(view.input, view.output, view.metadata);
+    match (plan, snapshot.observers.as_slice()) {
+        // A set that is one leaf is read as one slice.
+        (Plan::Scan, Some(observers)) => scan(function_id, view.success, &doc, [observers]),
+        (Plan::Scan, None) => scan(function_id, view.success, &doc, snapshot.observers.leaves()),
+        _ => lookup(function_id, &doc, snapshot.accepting(view.success)),
+    }
 }
 
 /// The observers of the function in `index` that are active and whose
@@ -455,7 +464,7 @@ fn select(
         function_id,
         view.success,
         &parts.doc(view.input, view.output, view.metadata),
-        leaves,
+        leaves.iter().copied(),
     )
 }
 
@@ -467,11 +476,11 @@ fn candidate(obs: &Observer, function_id: &str, success: bool) -> bool {
 /// The observers of the function among `leaves` that are active, accept a
 /// call that ended with `success` (or not) and whose filters match `doc`:
 /// each one evaluated.
-fn scan(
+fn scan<'a>(
     function_id: &str,
     success: bool,
     doc: &Doc<'_>,
-    leaves: &[&[Observer]],
+    leaves: impl IntoIterator<Item = &'a [Observer]>,
 ) -> (Vec<String>, CaptureMask) {
     let mut matched = Vec::new();
     let mut mask = CaptureMask::default();
@@ -740,8 +749,8 @@ impl IIIClient {
         if hook.is_none() && matcher.is_none() {
             // A local call, delivered by iii to every active observer whose
             // `on` and filters match: the call's parts are read in place, and
-            // the index of the call's outcome rules out the observers with an
-            // equality condition the call fails.
+            // the set's plan for the call's outcome scans its observers or
+            // looks the call up in the outcome's index.
             let error = result.as_ref().err().map(observed_error);
             let view = CallView {
                 input: input.as_ref(),
@@ -751,7 +760,7 @@ impl IIIClient {
                 metadata: invocation.metadata.as_ref(),
                 success: result.is_ok(),
             };
-            self.report(&report, &view, select_indexed(&entry.id, &view, &snapshot));
+            self.report(&report, &view, select_compiled(&entry.id, &view, &snapshot));
             return Answer {
                 result,
                 delivery: Delivery::Every,
@@ -956,12 +965,13 @@ pub(crate) async fn run_reporter(iii: IIIClient) {
 
 #[cfg(test)]
 mod tests {
-    //! Indexed matching of local calls against the evaluator: for seeded
-    //! random observers (filters, `on`, capture, active or not) and calls,
-    //! [`select_indexed`] selects exactly what [`select`] over every observer
-    //! of the set selects, in the same order and with the same capture,
-    //! through adds, replacements and removals, and every version a call may
-    //! hold keeps selecting what it held.
+    //! Matching of local calls against the evaluator: for seeded random
+    //! observers (filters, `on`, capture, active or not) and calls, each
+    //! outcome's index ([`lookup`]) and the set's plan ([`select_compiled`])
+    //! select exactly what [`select`] over every observer of the set selects,
+    //! in the same order and with the same capture, through adds,
+    //! replacements and removals, and every version a call may hold keeps
+    //! selecting what it held.
     //!
     //! Two corpora: the shared generator of `iii-filter`
     //! (`crates/iii-filter/tests/support/gen.rs`: every operator, nesting,
@@ -976,6 +986,7 @@ mod tests {
 
     use super::*;
     use crate::filter_gen::{self as generator, Rng};
+    use crate::observable::SCAN_MAX;
     use crate::observe::ObservedError;
 
     const FUNCTION: &str = "test::f";
@@ -1014,7 +1025,7 @@ mod tests {
             doc.output = None;
         }
         let leaves: Vec<&[Observer]> = set.observers.leaves().collect();
-        let expected = scan(FUNCTION, success, &doc, &leaves);
+        let expected = scan(FUNCTION, success, &doc, leaves.iter().copied());
         let got = lookup(FUNCTION, &doc, set.accepting(success));
         assert_eq!(
             got, expected,
@@ -1222,10 +1233,11 @@ mod tests {
         }
     }
 
-    /// What [`select`] over every observer and [`select_indexed`] select
-    /// agree on `parts`, as a local call is matched (its `error` and
-    /// `caller` serialized only when an observer reads them); returns how
-    /// many observers the index evaluated.
+    /// What [`select`] over every observer, [`select_compiled`] and the
+    /// index of the call's outcome select agree on `parts`, as a local call
+    /// is matched (its `error` and `caller` serialized only when an observer
+    /// of its outcome reads them); returns how many observers the index
+    /// evaluated.
     fn agree_on_call(set: &CompiledSet, parts: &Parts, context: &str) -> usize {
         let view = CallView {
             input: Some(&parts.input),
@@ -1237,18 +1249,21 @@ mod tests {
         };
         let leaves: Vec<&[Observer]> = set.observers.leaves().collect();
         let expected = select(FUNCTION, &view, &leaves);
-        let got = select_indexed(FUNCTION, &view, set);
-        assert_eq!(
-            got, expected,
+        let context = format!(
             "{context}: success {}, input {}, output {}, error {:?}, caller {:?}, metadata {:?}",
             parts.success, parts.input, parts.output, parts.error, parts.caller, parts.metadata
         );
-        let doc_parts = DocParts::of(set.roots, view.error, view.caller);
-        set.accepting(parts.success).candidates(&doc_parts.doc(
-            view.input,
-            view.output,
-            view.metadata,
-        ))
+        assert_eq!(
+            select_compiled(FUNCTION, &view, set),
+            expected,
+            "{context}, plan {:?}",
+            set.plan(parts.success)
+        );
+        let doc_parts = DocParts::of(set.reads(parts.success), view.error, view.caller);
+        let doc = doc_parts.doc(view.input, view.output, view.metadata);
+        let index = set.accepting(parts.success);
+        assert_eq!(lookup(FUNCTION, &doc, index), expected, "{context}, index");
+        index.candidates(&doc)
     }
 
     #[test]
@@ -1275,9 +1290,35 @@ mod tests {
         );
     }
 
+    /// The roots the filters of `held`'s observers of an outcome read, and
+    /// the plan a set of `held` has for it, counted from scratch.
+    fn expected_reads_and_plan(held: &[Observer], success: bool) -> (Roots, Plan) {
+        let mut reads = Roots::default();
+        let (mut of_outcome, mut scanned) = (0, 0);
+        for obs in held.iter().filter(|obs| obs.accepts(success)) {
+            let read = obs.filter().roots();
+            reads.input |= read.input;
+            reads.output |= read.output;
+            reads.error |= read.error;
+            reads.caller |= read.caller;
+            reads.metadata |= read.metadata;
+            of_outcome += 1;
+            scanned += usize::from(!obs.indexed());
+        }
+        let plan = if of_outcome == 0 {
+            Plan::Nothing
+        } else if held.len() <= SCAN_MAX || scanned * 2 > held.len() {
+            Plan::Scan
+        } else {
+            Plan::Index
+        };
+        (reads, plan)
+    }
+
     /// Adds, replacements (another filter, another `on`, another capture)
-    /// and removals keep the index exact, and every version a call may have
-    /// loaded keeps selecting what it held.
+    /// and removals keep the index exact, and the roots and plan of each
+    /// outcome, and every version a call may have loaded keeps selecting
+    /// what it held.
     #[test]
     fn changes_keep_the_index_exact_and_every_version_intact() {
         for seed in 0..30u64 {
@@ -1313,6 +1354,13 @@ mod tests {
                 let filed = |success: bool| held.iter().filter(|obs| obs.accepts(success)).count();
                 assert_eq!(set.on_success.len(), filed(true), "seed {seed} step {step}");
                 assert_eq!(set.on_error.len(), filed(false), "seed {seed} step {step}");
+                for success in [true, false] {
+                    assert_eq!(
+                        (set.reads(success), set.plan(success)),
+                        expected_reads_and_plan(&held, success),
+                        "seed {seed} step {step} success {success}"
+                    );
+                }
                 for _ in 0..3 {
                     let parts = call(&mut rng);
                     agree_on_call(&set, &parts, &format!("seed {seed} step {step}"));
@@ -1352,12 +1400,213 @@ mod tests {
             metadata: None,
             success: true,
         };
-        assert_eq!(select_indexed(FUNCTION, &view, &set).0, ["tenant-0417"]);
+        assert_eq!(set.plan(true), Plan::Index);
+        assert_eq!(select_compiled(FUNCTION, &view, &set).0, ["tenant-0417"]);
         let doc = Doc {
             input: Some(&input),
             ..Doc::default()
         };
         assert_eq!(set.on_success.candidates(&doc), 1);
         assert!(set.on_error.is_empty(), "no observer of failed calls");
+    }
+
+    /// An active observer of [`FUNCTION`] with `filters` and `on`.
+    fn with_filters(id: &str, on: &str, filters: Value) -> Observer {
+        Observer::test_view(
+            json!({ "id": id, "target": "t", "on": on, "filters": filters }),
+            0,
+            true,
+        )
+    }
+
+    fn set_of(observers: impl IntoIterator<Item = Observer>) -> CompiledSet {
+        observers
+            .into_iter()
+            .fold(CompiledSet::default(), |set, obs| set.with(&obs))
+    }
+
+    /// An observer is indexed when its filter's top-level `$and` holds an
+    /// `$eq` of a scalar, or an `$in` of scalars, on a path of the call.
+    #[test]
+    fn an_observer_is_indexed_when_the_index_files_its_filter() {
+        for (filters, indexed) in [
+            (json!({ "input.k": { "$eq": 1 } }), true),
+            (json!({ "caller.worker_name": { "$eq": "w" } }), true),
+            (
+                json!({ "input.k": { "$in": ["a", null] }, "input.n": { "$gt": 1 } }),
+                true,
+            ),
+            (json!({ "input.k": { "$eq": [1] } }), false),
+            (json!({ "input.k": { "$in": [] } }), false),
+            (json!({ "input.k": { "$in": [1, { "a": 1 }] } }), false),
+            (json!({ "$or": [{ "input.k": { "$eq": 1 } }] }), false),
+            (json!({ "input.k": { "$any": { "$eq": 1 } } }), false),
+            (json!({ "input.k": { "$gte": 1 } }), false),
+            (json!({}), false),
+        ] {
+            let obs = with_filters("o", "success", filters.clone());
+            assert_eq!(obs.indexed(), indexed, "{filters}");
+            let set = set_of([obs]);
+            assert_eq!(
+                set.on_success.candidates(&Doc::default()),
+                usize::from(!indexed),
+                "{filters}: the index scans it on every call"
+            );
+        }
+    }
+
+    /// A set of at most [`SCAN_MAX`] observers is scanned, and so is one in
+    /// which more than half are observers of the call's outcome that the
+    /// index files under no condition; any other set is matched through the
+    /// index of the call's outcome, and an outcome no observer accepts has
+    /// nothing to match. Each plan selects what a scan of every observer
+    /// selects.
+    #[test]
+    fn a_set_is_scanned_when_small_or_mostly_unindexed_and_indexed_otherwise() {
+        let keyed = |n: usize| {
+            with_filters(
+                &format!("k-{n:04}"),
+                "success",
+                json!({ "input.k": { "$eq": n } }),
+            )
+        };
+        let unfiltered = |n: usize| with_filters(&format!("u-{n:04}"), "success", json!({}));
+        let ranged = |n: usize| {
+            with_filters(
+                &format!("r-{n:04}"),
+                "error",
+                json!({ "input.k": { "$gte": n } }),
+            )
+        };
+
+        let small = set_of((0..SCAN_MAX).map(keyed));
+        assert_eq!(small.plan(true), Plan::Scan);
+        assert_eq!(
+            small.plan(false),
+            Plan::Nothing,
+            "no observer of failed calls"
+        );
+        let large = small.with(&keyed(SCAN_MAX));
+        assert_eq!(large.plan(true), Plan::Index);
+        let first = large.observers.get("k-0000").expect("held").clone();
+        assert_eq!(large.without(&first).expect("held").plan(true), Plan::Scan);
+
+        // Half of the set unindexed: the index still rules out the rest.
+        let half = (0..=SCAN_MAX).fold(large.clone(), |set, n| set.with(&unfiltered(n)));
+        assert_eq!(half.observers.len(), 2 * (SCAN_MAX + 1));
+        assert_eq!(half.plan(true), Plan::Index);
+        let most = half.with(&unfiltered(SCAN_MAX + 1));
+        assert_eq!(
+            most.plan(true),
+            Plan::Scan,
+            "the index would scan most of it"
+        );
+
+        // Deeper than one leaf, unfiltered.
+        let deep = set_of((0..300).map(unfiltered));
+        assert!(deep.observers.as_slice().is_none(), "several leaves");
+        assert_eq!(deep.plan(true), Plan::Scan);
+
+        // Unindexed observers of the other outcome do not count.
+        let mixed = set_of((0..100).map(ranged).chain((0..20).map(keyed)));
+        assert_eq!(
+            mixed.plan(true),
+            Plan::Index,
+            "every observer of success indexed"
+        );
+        assert_eq!(
+            mixed.plan(false),
+            Plan::Scan,
+            "every observer of error scanned"
+        );
+
+        let error = ObservedError {
+            code: "E".into(),
+            message: "m".into(),
+        };
+        for set in [&small, &large, &half, &most, &deep, &mixed] {
+            let leaves: Vec<&[Observer]> = set.observers.leaves().collect();
+            for (input, success) in [
+                (json!({ "k": 3 }), true),
+                (json!({ "k": SCAN_MAX }), true),
+                (json!({ "k": 50 }), false),
+                (json!({}), true),
+                (json!({}), false),
+            ] {
+                let view = CallView {
+                    input: Some(&input),
+                    output: success.then_some(&input),
+                    error: (!success).then_some(&error),
+                    caller: None,
+                    metadata: None,
+                    success,
+                };
+                assert_eq!(
+                    select_compiled(FUNCTION, &view, set),
+                    select(FUNCTION, &view, &leaves),
+                    "{input} success {success}, plan {:?}",
+                    set.plan(success)
+                );
+            }
+        }
+    }
+
+    /// A local call builds its `error` and `caller` only when a filter of an
+    /// observer of its outcome reads them: a call that succeeded does not
+    /// serialize its caller for an observer of failed calls, as observers
+    /// come, change their `on` and go.
+    #[test]
+    fn a_call_builds_what_the_observers_of_its_outcome_read() {
+        let by_caller = |on: &str| {
+            with_filters(
+                "by-caller",
+                on,
+                json!({ "caller.worker_name": { "$eq": "w" } }),
+            )
+        };
+        let set = set_of([
+            by_caller("error"),
+            with_filters("a", "success", json!({ "input.n": { "$eq": 1 } })),
+            with_filters("b", "success", json!({ "input.n": { "$eq": 2 } })),
+        ]);
+        assert!(set.roots.caller, "a filter of the set reads it");
+        assert!(set.reads(true).input && !set.reads(true).caller);
+        assert!(set.reads(false).caller && !set.reads(false).input);
+
+        let caller = Caller {
+            worker_name: Some("w".into()),
+            ..Caller::default()
+        };
+        let error = ObservedError {
+            code: "E".into(),
+            message: "m".into(),
+        };
+        let built = |set: &CompiledSet, success: bool| {
+            let error = (!success).then_some(&error);
+            DocParts::of(set.reads(success), error, Some(&caller))
+                .doc(None, None, None)
+                .caller
+                .is_some()
+        };
+        assert!(!built(&set, true), "a call that succeeded");
+        assert!(built(&set, false), "a call that failed");
+        let input = json!({ "n": 1 });
+        let view = CallView {
+            input: Some(&input),
+            output: Some(&input),
+            error: None,
+            caller: Some(&caller),
+            metadata: None,
+            success: true,
+        };
+        assert_eq!(select_compiled(FUNCTION, &view, &set).0, ["a"]);
+
+        // The same observer, of every call, then gone.
+        let complete = by_caller("complete");
+        let set = set.with(&complete);
+        assert!(built(&set, true) && built(&set, false));
+        let set = set.without(&complete).expect("held");
+        assert!(!built(&set, true) && !built(&set, false));
+        assert!(!set.roots.caller && set.reads(true).input);
     }
 }
