@@ -453,9 +453,10 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
 - The engine routes the call to the observer's stored target and applies its
   policy (`max_fires`, expiry, `max_in_flight`), metadata sidecar and loop
   guard, as for iii's delivery.
-- The call sends the payload as given, with the engine's `_caller_worker_id`
-  stamp (the host's connection id) as on every call a worker makes. The hook
-  applies the observer's filters with `obs.matches(call)`, as above.
+- The call runs as an activation of the observer: its target runs under the
+  observing worker's session, and the payload goes as given less a top-level
+  `_caller_worker_id` (decision 49). The host is the call's `caller`. The
+  hook applies the observer's filters with `obs.matches(call)`, as above.
 - It takes no metadata: its target's metadata argument is the observer's
   registration metadata (`options.metadata` of `observe`), as for iii's
   delivery. Every SDK refuses a call through an observer that names metadata

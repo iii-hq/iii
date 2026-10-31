@@ -1426,20 +1426,15 @@ impl Engine {
                 activation,
             } => {
                 // A call through an observer (v2 §4.6): checked against the
-                // observer and routed to its stored target. It runs like an
-                // activation, with no session: creation-time RBAC on the
-                // observed function and the target is the gate, and the
-                // request's `function_id` and namespace are not read (D13).
+                // observer and routed to its stored target. It runs as the
+                // observer's activations do, under the observing worker's
+                // session and with no `_caller_worker_id` stamp (decision
+                // 49); the request's `function_id` and namespace are not read
+                // (D13).
                 if let Some(activation) = activation {
                     let engine = self.clone();
                     let worker = worker.clone();
-                    let mut data = data.clone();
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.insert(
-                            "_caller_worker_id".to_string(),
-                            serde_json::json!(worker.id.to_string()),
-                        );
-                    }
+                    let data = data.clone();
                     // Nobody waits for the answer to a `void` call, or to one
                     // without an id: the engine drops a refusal of it.
                     let answer = (*invocation_id)

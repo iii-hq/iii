@@ -173,10 +173,13 @@ differ, this file wins, and the spec is updated to match.
     `output` under `deliver: output`. A host's report of a local call carries
     the parts its matched observers' announced `capture` names, so the engine
     has what it delivers.
-49. **`_caller_worker_id` on calls through an observer.** The engine adds it
-    to the payload of a call through an observer (the host's connection id),
-    as on every call a worker makes. Decision 40 covers the observed values
-    iii delivers.
+49. **A call through an observer runs as an activation of the observer.**
+    Its target runs under the observing worker's session (none for an
+    engine-owned observer), and the engine removes a top-level
+    `_caller_worker_id` from its payload, as from every observed value it
+    delivers (decision 40). The host chose the payload and the observing
+    worker chose the target, so the host's authority reaches neither the
+    target nor what the target calls. The host is the call's `caller`.
 50. **Engine-hosted ids.** The engine hosts the sources it registers. A
     worker that registers one of their ids while the engine module that
     hosts it is running is refused (`FUNCTION_NAMESPACE_CONFLICT`, naming no
