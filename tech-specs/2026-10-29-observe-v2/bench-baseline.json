@@ -381,7 +381,7 @@
    "v025_ns": 138427.36129323678,
    "v025_spread": 0.0011509971480043628,
    "delta": 3.5070882443233558,
-   "verdict": "slower than the closest 0.25 equivalent (different shape)"
+   "verdict": "regression vs 0.25"
   },
   {
    "id": "control_plane_churn/observers_add_remove/1000",
@@ -401,7 +401,7 @@
    "v025_ns": 1415979.1715767696,
    "v025_spread": 0.0012061706638041003,
    "delta": 14.169152874672406,
-   "verdict": "slower than the closest 0.25 equivalent (different shape)"
+   "verdict": "regression vs 0.25"
   },
   {
    "id": "control_plane_churn/observers_add_remove/5000",
@@ -421,7 +421,7 @@
    "v025_ns": 7562697.717857143,
    "v025_spread": 0.0007094856775270606,
    "delta": 59.33858435165606,
-   "verdict": "slower than the closest 0.25 equivalent (different shape)"
+   "verdict": "regression vs 0.25"
   },
   {
    "id": "control_plane_churn/workers_register_unregister/100",
@@ -2007,7 +2007,7 @@
    "v025_ns": 18654.212363193932,
    "v025_spread": 0.002777933481542,
    "delta": 2.035529612212955,
-   "verdict": "slower than the closest 0.25 equivalent (different shape)"
+   "verdict": "regression vs 0.25"
   },
   {
    "id": "worker_cleanup/observers/200",
@@ -2027,7 +2027,7 @@
    "v025_ns": 173527.17525097285,
    "v025_spread": 0.0025349282856899744,
    "delta": 5.709006864868407,
-   "verdict": "slower than the closest 0.25 equivalent (different shape)"
+   "verdict": "regression vs 0.25"
   },
   {
    "id": "worker_cleanup/observers/50",
@@ -2047,7 +2047,7 @@
    "v025_ns": 50504.57372218117,
    "v025_spread": 0.0036723108170316865,
    "delta": 3.2251174190183884,
-   "verdict": "slower than the closest 0.25 equivalent (different shape)"
+   "verdict": "regression vs 0.25"
   },
   {
    "id": "worker_invocation_tracking/add_remove_sequential",

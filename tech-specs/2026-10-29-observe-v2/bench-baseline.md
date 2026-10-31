@@ -17,10 +17,13 @@ commits.
 - An unobserved routed call takes one `invokefunction` and one
   `invocationresult` and costs what it cost in 0.25 (34.9 µs against 35.1 µs).
   An observed one takes the same two frames, whatever the number of observers.
-- Engine benches against 0.25: 65 rows the same within noise, 20 faster, 3
-  slower beyond noise (`observe_fanout/1`, `observe_routed/observed/8` and
-  `/64`), and 6 slower than their closest 0.25 bench, which has another shape
-  (adding, removing and cleaning up observers; see the end of this file).
+- Engine benches against 0.25: 65 rows the same within noise, 20 faster, and
+  9 slower beyond noise. Three are small (`observe_fanout/1` +13 to +15%,
+  `observe_routed/observed/8` and `/64` +7 to +9%). Six are large: adding and
+  removing observers on one source (`control_plane_churn/observers_add_remove`)
+  costs 2.9x, 5.3x and 16.5x what 0.25's triggers cost at 100, 1,000 and 5,000,
+  and grows faster than n; a worker's cleanup (`worker_cleanup/observers`)
+  costs 2.9x to 6.5x per observer what it cost per trigger.
 - Load test against 0.25: `rpc` is the same; `source` delivers 200k
   activations/s sustained where 0.25's `emit` delivered 100k; `filters` and
   `fanout` take fewer calls per second from 256 and 4 observers on, and
@@ -124,9 +127,9 @@ figures are means over three rounds of 10,000 calls.
 | `control_plane_churn/functions_register_remove/100` | 37.7 µs | 37.3 µs | -1.0% | 0.2% / 0.1% | 2 / 2 | same as 0.25 within noise |  |
 | `control_plane_churn/functions_register_remove/1000` | 382 µs | 380 µs | -0.6% | 0.1% / 0.2% | 2 / 2 | same as 0.25 within noise |  |
 | `control_plane_churn/functions_register_remove/5000` | 1.91 ms | 1.9 ms | -0.6% | 0.2% / 0.0% | 2 / 2 | same as 0.25 within noise |  |
-| `control_plane_churn/observers_add_remove/100` | 138 µs | 624 µs | +350.7% | 0.1% / 0.4% | 2 / 2 | slower than the closest 0.25 equivalent (different shape) | `control_plane_churn/triggers_register_unregister/100` (1) |
-| `control_plane_churn/observers_add_remove/1000` | 1.42 ms | 21.5 ms | +1416.9% | 0.1% / 0.1% | 2 / 2 | slower than the closest 0.25 equivalent (different shape) | `control_plane_churn/triggers_register_unregister/1000` (1) |
-| `control_plane_churn/observers_add_remove/5000` | 7.56 ms | 456 ms | +5933.9% | 0.1% / 0.2% | 2 / 2 | slower than the closest 0.25 equivalent (different shape) | `control_plane_churn/triggers_register_unregister/5000` (1) |
+| `control_plane_churn/observers_add_remove/100` | 138 µs | 624 µs | +350.7% | 0.1% / 0.4% | 2 / 2 | regression vs 0.25 | `control_plane_churn/triggers_register_unregister/100` (1) |
+| `control_plane_churn/observers_add_remove/1000` | 1.42 ms | 21.5 ms | +1416.9% | 0.1% / 0.1% | 2 / 2 | regression vs 0.25 | `control_plane_churn/triggers_register_unregister/1000` (1) |
+| `control_plane_churn/observers_add_remove/5000` | 7.56 ms | 456 ms | +5933.9% | 0.1% / 0.2% | 2 / 2 | regression vs 0.25 | `control_plane_churn/triggers_register_unregister/5000` (1) |
 | `control_plane_churn/workers_register_unregister/100` | 380 µs | 357 µs | -6.1% | 0.0% / 0.3% | 2 / 2 | improvement |  |
 | `control_plane_churn/workers_register_unregister/1000` | 6.61 ms | 4.23 ms | -36.0% | 1.9% / 0.1% | 2 / 2 | improvement |  |
 | `control_plane_churn/workers_register_unregister/5000` | 37.3 ms | 24.1 ms | -35.5% | 3.9% / 1.7% | 2 / 2 | improvement |  |
@@ -183,9 +186,9 @@ figures are means over three rounds of 10,000 calls.
 | `worker_cleanup/invocations/10` | 8.44 µs | 6.77 µs | -19.8% | 2.5% / 4.3% | 2 / 2 | improvement |  |
 | `worker_cleanup/invocations/50` | 7.87 µs | 6.54 µs | -16.9% | 0.6% / 9.0% | 2 / 2 | improvement |  |
 | `worker_cleanup/invocations/200` | 8.5 µs | 6.57 µs | -22.7% | 3.9% / 1.0% | 2 / 2 | improvement |  |
-| `worker_cleanup/observers/10` | 18.7 µs | 56.6 µs | +203.6% | 0.3% / 1.6% | 2 / 2 | slower than the closest 0.25 equivalent (different shape) | `worker_cleanup/triggers/10` (2) |
-| `worker_cleanup/observers/50` | 50.5 µs | 213 µs | +322.5% | 0.4% / 4.2% | 2 / 2 | slower than the closest 0.25 equivalent (different shape) | `worker_cleanup/triggers/50` (2) |
-| `worker_cleanup/observers/200` | 174 µs | 1.16 ms | +570.9% | 0.3% / 0.1% | 2 / 2 | slower than the closest 0.25 equivalent (different shape) | `worker_cleanup/triggers/200` (2) |
+| `worker_cleanup/observers/10` | 18.7 µs | 56.6 µs | +203.6% | 0.3% / 1.6% | 2 / 2 | regression vs 0.25 | `worker_cleanup/triggers/10` (2) |
+| `worker_cleanup/observers/50` | 50.5 µs | 213 µs | +322.5% | 0.4% / 4.2% | 2 / 2 | regression vs 0.25 | `worker_cleanup/triggers/50` (2) |
+| `worker_cleanup/observers/200` | 174 µs | 1.16 ms | +570.9% | 0.3% / 0.1% | 2 / 2 | regression vs 0.25 | `worker_cleanup/triggers/200` (2) |
 | `worker_invocation_tracking/add_remove_sequential` | 1.07 µs | 1.07 µs | -0.3% | 0.2% / 0.2% | 2 / 2 | same as 0.25 within noise |  |
 | `worker_invocation_tracking/add_with_200_existing` | 1.08 µs | 1.08 µs | +0.1% | 0.3% / 0.3% | 2 / 2 | same as 0.25 within noise |  |
 | `worker_invocation_tracking_concurrent/1` | 1.16 µs | 1.15 µs | -0.5% | 0.4% / 0.2% | 2 / 2 | same as 0.25 within noise |  |
@@ -197,8 +200,8 @@ figures are means over three rounds of 10,000 calls.
 | `ws_roundtrip_payload_sizes/10kb` | 76.8 µs | 77 µs | +0.2% | 0.1% / 0.5% | 2 / 2 | same as 0.25 within noise |  |
 | `ws_roundtrip_payload_sizes/100kb` | 296 µs | 297 µs | +0.4% | 0.5% / 0.6% | 2 / 2 | same as 0.25 within noise |  |
 
-(1) Different shape: 0.25 n triggers on n functions; 0.26 n engine observers on one function.  
-(2) Different shape: 0.25 a worker's n triggers unregistered; 0.26 a worker's n observers of one function suspended.  
+(1) 0.25's bench registers n triggers of one trigger type, each aimed at its own target; 0.26's adds n engine observers of one function, all aimed at one target. A matched bench (one source, n targets, the same observe and unobserve calls) gives 2.9x, 5.3x and 16.5x the 0.25 cost at 100, 1,000 and 5,000, so the shared target is not the cost (see "Check").  
+(2) 0.25 unregisters a worker's n triggers of one trigger type; 0.26 suspends a worker's n observers of one function. The cost per observer is 2.9x to 6.5x the cost per trigger. A bench with n distinct targets was not run.  
 
 ### Rust SDK `observe_bench`
 
@@ -339,7 +342,7 @@ runs. The extra columns read 0.25 → 0.26.
 | 1 observers/function | 76k / 70.9k | 77.8k / 76.9k | +5.4% | improvement | 238k / 269k → 218k / 242k |
 | 4 observers/function | 191k / 189k | 195k / 185k | -0.1% | same as 0.25 within noise | 295k / 316k → 44.6k / 2.75k |
 | 16 observers/function | 202k / 196k | 232k / 152k | -3.7% | same as 0.25 within noise | 9.28M / 9.29M → 8.49M / 6.73M |
-| 64 observers/function | 193k / 190k | 171k / 154k | -15.2% | regression vs 0.25 beyond noise | 41.5M / 41.6M → 27.4M / 25M |
+| 64 observers/function | 193k / 190k | 171k / 154k | -15.2% | same as 0.25 within noise over 4 runs per version (see "Check") | 41.5M / 41.6M → 27.4M / 25M |
 
 #### `filters`: calls/s, N filtered observers, each call matches one
 
@@ -445,13 +448,39 @@ runs. The extra columns read 0.25 → 0.26.
   in activations delivered, 0.26 is 9.3% and 6.5% below 0.25. With 256
   observers 0.26 is 7.8% below; with 16 the two are the same within noise.
 - **Load test `fanout`.** With 4, 16 and 64 observers a function, 0.26 takes
-  13%, 16% and 36% fewer calls per second. Activations delivered are 5% higher
-  with 1 observer, the same within noise with 4 and 16, and 15% lower with 64.
+  13%, 16% and 36% fewer calls per second (15%, 15% and 32% pooled over four
+  runs per version). Activations delivered are 5% higher with 1 observer and
+  the same within noise with 4, 16 and 64.
 - **Load test `observers`.** Engine memory per observer at rest is 8.3 KiB
   against 7.3 KiB with 4,000 observers (+13.9%) and 8.8 KiB against 7.8 KiB
-  with 64,000 (+12.3%); with 1,000 and 16,000 the two are the same within
-  noise. Creating the observers up to 64,000 and disposing of them run 14% and
-  9% slower; creating the first 1,000 and 4,000 runs 83% and 44% faster.
+  with 64,000 (+12.3%). With 1,000 observers 0.26 measured 9.7 to 9.9 KB in
+  all four runs and 0.25 7.3 KB in three of four, so the difference is most
+  likely about +33%; with 16,000 the two are the same within noise. Creating
+  the observers up to 64,000 and disposing of them run 10 to 14% and 7 to 9%
+  slower; creating the first 1,000 runs 83% faster, and the first 4,000 the
+  same within noise over four runs per version.
+
+## Check
+
+A second pass re-ran every row marked a regression or over budget, plus the
+two largest improvements (`observe_fanout/128` and the `source` load test at
+200k activations/s), at least twice each, alternating which version ran first.
+The committed numbers match the raw data. What the second pass found:
+
+- Every regression above holds, at the same size.
+- The two improvements hold.
+- `control_plane_churn/observers_add_remove`: a matched bench with one source
+  and n targets, using the same observe and unobserve calls in both versions,
+  gives 2.9x, 5.3x and 16.5x the 0.25 cost at 100, 1,000 and 5,000.
+- §13, 10 observers none matching, at 5,000 calls/s: the p99 is 7.4 to 9.1 µs
+  in all five rounds, above the 5 µs budget; mean and p90 are under it. A call
+  with no observers has a p99 above 5 µs too, so the tail comes from the paced
+  loop on this machine, and the budget's 5 µs reads as a mean.
+- The `source` load test makes `rate / 16` calls a second, each reaching 16
+  observers with the event carried once; 0.25's `emit` makes one emit per
+  activation. The two compare activations delivered, not calls.
+- Machine: one unrelated process at 100% of a core throughout, Spotlight at
+  about 90% during the load tests, load average 5 to 9.5, no thermal warning.
 
 ## Reproducing
 
