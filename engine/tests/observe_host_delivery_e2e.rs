@@ -1,12 +1,15 @@
-//! Hosts that deliver their own calls (v2 §8.2), over real WebSockets.
+//! Routed calls of hosts that declared `observe.v2` (v2 §8.2, decision 55),
+//! over real WebSockets.
 //!
-//! A worker that declared `observe.v2` lists, on its answer to every routed
-//! call (`invocationresult.observed`), the observers its delivery matched.
-//! The engine evaluates none of those calls: it activates each listed
-//! observer of the invoked function that is active, building the envelope
-//! from the input it kept and the answer, and never forwards the list. A
-//! host's local calls arrive as `invocationsobserved` items; a routed call
-//! never does (decision 38).
+//! The engine evaluates the observers' `on` and filters of every routed
+//! call, with the input it kept and the answer's result, caller and
+//! metadata. The host's answer (`invocationresult`) keeps what is worker
+//! code: without `matched` or `delivered` (a function with no match hook)
+//! the engine evaluates every active observer of the function; with
+//! `matched`, only the observers the function's match hook matched; with
+//! `delivered: true` (the function's deliver hook delivered the call), none.
+//! The engine never forwards either field. A host's local calls arrive as
+//! `invocationsobserved` items; a routed call never does (decision 38).
 
 mod observe_support;
 
@@ -58,69 +61,90 @@ fn invoked_already(client: &mut Client, function_id: &str) -> bool {
     client.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == function_id)
 }
 
-/// The host's delivery decides, not the engine's evaluation: the observer it
-/// lists is activated though its filter would not match the call, the one it
-/// leaves out is not though it has no filter, and ids that are not active
-/// observers of the invoked function activate nothing. The caller's answer
-/// never carries the list.
+/// Three observers of `orders::create` with filters on the input, the
+/// output, the caller and the metadata, one without filters, and one of
+/// another function, each with its own target on `sink`.
+async fn filtered_observers(sink: &mut Client) {
+    for (id, source) in [
+        (
+            "big",
+            json!({ "function_id": "orders::create",
+                    "filters": { "input.n": { "$gte": 10 }, "output.status": { "$eq": "placed" } } }),
+        ),
+        (
+            "small",
+            json!({ "function_id": "orders::create", "filters": { "input.n": { "$eq": 1 } } }),
+        ),
+        (
+            "from-checkout",
+            json!({ "function_id": "orders::create",
+                    "filters": { "caller.worker_name": { "$eq": "checkout" }, "metadata.tenant": { "$eq": "acme" } } }),
+        ),
+        ("every", json!({ "function_id": "orders::create" })),
+        ("foreign", json!({ "function_id": "orders::other" })),
+    ] {
+        sink.observe_active(observer(id, source, &format!("sink::{id}")))
+            .await;
+    }
+}
+
+const SINKS: [&str; 5] = [
+    "sink::big",
+    "sink::small",
+    "sink::from-checkout",
+    "sink::every",
+    "sink::foreign",
+];
+
+/// A function with no match hook and no deliver hook: its host answers with
+/// the result alone, and the engine evaluates every active observer's `on`
+/// and filters against the input it kept, the answer's result, the caller it
+/// forwarded the call with and the call's metadata (decision 55). The
+/// envelope is built from the same parts.
 #[tokio::test]
-async fn a_hosts_routed_answer_activates_the_observers_it_lists() {
+async fn an_answer_that_does_not_narrow_leaves_every_observer_to_the_engines_filters() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut orders = host(&t, "orders", &["orders::create", "orders::other"]).await;
-    let mut sink = host(
-        &t,
-        "sink",
-        &["sink::listed", "sink::unlisted", "sink::foreign"],
-    )
-    .await;
+    let mut sink = host(&t, "sink", &SINKS).await;
     let mut checkout = connect(&t, "checkout", true).await;
-    sink.observe_active(observer(
-        "listed",
-        json!({ "function_id": "orders::create", "filters": { "input.n": { "$eq": 99 } } }),
-        "sink::listed",
-    ))
-    .await;
-    sink.observe_active(observer(
-        "unlisted",
-        json!({ "function_id": "orders::create" }),
-        "sink::unlisted",
-    ))
-    .await;
-    sink.observe_active(observer(
-        "foreign",
-        json!({ "function_id": "orders::other" }),
-        "sink::foreign",
-    ))
-    .await;
+    filtered_observers(&mut sink).await;
 
     let before = t.engine.observers.evaluated();
-    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let call = checkout
+        .call_with(
+            "orders::create",
+            json!({ "n": 12 }),
+            json!({ "metadata": { "tenant": "acme" } }),
+        )
+        .await;
     let invoke = orders.invoked("orders::create").await;
     assert!(invoke["invocation_id"].is_string());
     orders
-        .reply_observed(
-            &invoke,
-            json!({ "id": 7 }),
-            &["listed", "foreign", "listed", "no-such-observer"],
-        )
+        .reply(&invoke, json!({ "id": 7, "status": "placed" }))
         .await;
-
     let answer = checkout.result(call).await;
-    assert_eq!(answer["result"], json!({ "id": 7 }));
-    assert!(answer.get("observed").is_none(), "stripped: {answer}");
+    assert_eq!(answer["result"], json!({ "id": 7, "status": "placed" }));
+    assert!(
+        answer.get("matched").is_none() && answer.get("delivered").is_none(),
+        "{answer}"
+    );
 
-    let activation = sink.invoked("sink::listed").await;
+    let activation = sink.invoked("sink::big").await;
     let envelope = &activation["data"];
-    assert_eq!(envelope["observer_id"], "listed");
+    assert_eq!(envelope["observer_id"], "big");
     assert_eq!(envelope["function_id"], "orders::create");
     assert_eq!(envelope["invocation_id"], invoke["invocation_id"]);
     assert_eq!(envelope["status"], "success");
     assert_eq!(
         envelope["input"],
-        json!({ "n": 1 }),
+        json!({ "n": 12 }),
         "as the caller sent it, without the engine's stamp"
     );
-    assert_eq!(envelope["output"], json!({ "id": 7 }), "the host's result");
+    assert_eq!(
+        envelope["output"],
+        json!({ "id": 7, "status": "placed" }),
+        "the host's result"
+    );
     assert_eq!(envelope["caller"]["worker_name"], "checkout");
     assert_eq!(
         envelope["caller"]["worker_id"],
@@ -128,14 +152,175 @@ async fn a_hosts_routed_answer_activates_the_observers_it_lists() {
         "the caller the engine forwarded the call with"
     );
     sink.reply(&activation, Value::Null).await;
-
+    for target in ["sink::from-checkout", "sink::every"] {
+        let activation = sink.invoked(target).await;
+        sink.reply(&activation, Value::Null).await;
+    }
     evaluated(&t.engine, before + 1).await;
-    assert_eq!(fires(&t, "listed"), 1, "listed twice, activated once");
-    assert_eq!(fires(&t, "unlisted"), 0, "not listed: not evaluated");
-    assert_eq!(fires(&t, "foreign"), 0, "another function's observer");
-    assert_eq!(dropped(&t, "foreign", "INACTIVE"), 0, "not charged to it");
-    assert!(!invoked_already(&mut sink, "sink::unlisted"));
+    assert_eq!(
+        ["big", "small", "from-checkout", "every", "foreign"].map(|id| fires(&t, id)),
+        [1, 0, 1, 1, 0]
+    );
+
+    // Another call: only `small` and `every` take it.
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders
+        .reply(&invoke, json!({ "id": 8, "status": "placed" }))
+        .await;
+    checkout.result(call).await;
+    for target in ["sink::small", "sink::every"] {
+        let activation = sink.invoked(target).await;
+        sink.reply(&activation, Value::Null).await;
+    }
+    evaluated(&t.engine, before + 2).await;
+    assert_eq!(
+        ["big", "small", "from-checkout", "every", "foreign"].map(|id| fires(&t, id)),
+        [1, 1, 1, 2, 0]
+    );
     assert!(!invoked_already(&mut sink, "sink::foreign"));
+}
+
+/// A function with a match hook: its host answers with the observers the
+/// hook matched (`matched`), and the engine evaluates `on` and filters of
+/// those only (decision 55). One named twice fires once; one named whose
+/// filter fails does not fire; one left out does not fire though its
+/// filters match; ids that are not observers of the invoked function
+/// activate nothing and are counted against the function.
+#[tokio::test]
+async fn an_answer_with_matched_narrows_the_engines_filters_to_those_observers() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", &["orders::create", "orders::other"]).await;
+    let mut sink = host(&t, "sink", &SINKS).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    filtered_observers(&mut sink).await;
+
+    let before = t.engine.observers.evaluated();
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders
+        .reply_matched(
+            &invoke,
+            json!({ "id": 7, "status": "placed" }),
+            &["small", "big", "foreign", "small", "no-such-observer"],
+        )
+        .await;
+    let answer = checkout.result(call).await;
+    assert_eq!(answer["result"], json!({ "id": 7, "status": "placed" }));
+    assert!(answer.get("matched").is_none(), "stripped: {answer}");
+
+    let activation = sink.invoked("sink::small").await;
+    assert_eq!(activation["data"]["observer_id"], "small");
+    assert_eq!(activation["data"]["input"], json!({ "n": 1 }));
+    sink.reply(&activation, Value::Null).await;
+    evaluated(&t.engine, before + 1).await;
+    assert_eq!(
+        ["big", "small", "from-checkout", "every", "foreign"].map(|id| fires(&t, id)),
+        [0, 1, 0, 0, 0],
+        "named twice, fired once; `big`'s filter refuses n = 1; `every` not named"
+    );
+    assert_eq!(dropped(&t, "foreign", "INACTIVE"), 0, "not charged to it");
+    assert!(!invoked_already(&mut sink, "sink::every"));
+    assert!(!invoked_already(&mut sink, "sink::big"));
+
+    // Narrowed to none: nothing is evaluated.
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders.reply_matched(&invoke, json!({}), &[]).await;
+    checkout.result(call).await;
+    let barrier = orders.call("engine::workers::list", json!({})).await;
+    orders.result(barrier).await;
+    assert_eq!(t.engine.observers.evaluated(), before + 1);
+    assert_eq!(fires(&t, "small") + fires(&t, "every"), 1);
+}
+
+/// A function with a deliver hook: its host answers with what the hook
+/// returned and `delivered: true`, and the engine activates nothing for the
+/// call, whatever the observers' filters (and whatever `matched` says beside
+/// it). The caller gets the result without the flag.
+#[tokio::test]
+async fn an_answer_the_host_delivered_activates_nothing() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", &["orders::create", "orders::other"]).await;
+    let mut sink = host(&t, "sink", &SINKS).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    filtered_observers(&mut sink).await;
+
+    let before = t.engine.observers.evaluated();
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders
+        .reply_delivered(&invoke, json!({ "routed_to": "small" }))
+        .await;
+    let answer = checkout.result(call).await;
+    assert_eq!(answer["result"], json!({ "routed_to": "small" }));
+    assert!(answer.get("delivered").is_none(), "stripped: {answer}");
+
+    let call = checkout.call("orders::create", json!({ "n": 1 })).await;
+    let invoke = orders.invoked("orders::create").await;
+    orders
+        .send(json!({
+            "type": "invocationresult",
+            "invocation_id": invoke["invocation_id"],
+            "function_id": "orders::create",
+            "result": {},
+            "matched": ["small", "every"],
+            "delivered": true,
+        }))
+        .await;
+    checkout.result(call).await;
+    let barrier = orders.call("engine::workers::list", json!({})).await;
+    orders.result(barrier).await;
+    assert_eq!(t.engine.observers.evaluated(), before);
+    for id in ["big", "small", "from-checkout", "every", "foreign"] {
+        assert_eq!(fires(&t, id), 0, "{id}");
+    }
+    for target in SINKS {
+        assert!(!invoked_already(&mut sink, target), "{target}");
+    }
+}
+
+/// Many filtered observers of one function, as the load test's `filters`
+/// scenario: each filters on its own value of `input.k`, and every routed
+/// call of an `observe.v2` host reaches the one whose value it carries.
+#[tokio::test]
+async fn each_routed_call_reaches_the_one_of_many_filtered_observers_it_matches() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut echo = host(&t, "echo", &["echo::back"]).await;
+    let mut sink = host(&t, "sink", &["sink::k"]).await;
+    let mut caller = connect(&t, "caller", true).await;
+    const N: u64 = 300;
+    for i in 0..N {
+        sink.observe_active(observer(
+            &format!("k-{i}"),
+            json!({ "function_id": "echo::back", "filters": { "input.k": { "$eq": i } }, "deliver": "input" }),
+            "sink::k",
+        ))
+        .await;
+    }
+    let before = t.engine.observers.evaluated();
+    for k in [0u64, 7, 299, 150, 7] {
+        let call = caller.call("echo::back", json!({ "k": k })).await;
+        let invoke = echo.invoked("echo::back").await;
+        echo.reply(&invoke, invoke["data"].clone()).await;
+        caller.result(call).await;
+        let activation = sink.invoked("sink::k").await;
+        assert_eq!(activation["activation"]["observer_id"], format!("k-{k}"));
+        assert_eq!(activation["data"], json!({ "k": k }));
+        sink.reply(&activation, Value::Null).await;
+    }
+    // A value no observer filters on, and a non-number spelling of one.
+    for data in [json!({ "k": N }), json!({ "k": "7" }), json!({})] {
+        let call = caller.call("echo::back", data).await;
+        let invoke = echo.invoked("echo::back").await;
+        echo.reply(&invoke, invoke["data"].clone()).await;
+        caller.result(call).await;
+    }
+    evaluated(&t.engine, before + 8).await;
+    let total: u64 = (0..N).map(|i| fires(&t, &format!("k-{i}"))).sum();
+    assert_eq!(total, 5);
+    assert_eq!(fires(&t, "k-7"), 2);
+    assert!(!invoked_already(&mut sink, "sink::k"));
 }
 
 /// The engine sends every call it routes to a host with an invocation id,
@@ -164,17 +349,18 @@ async fn a_fire_and_forget_call_is_answered_and_delivered_too() {
         .await;
     let invoke = audit.invoked("audit::log").await;
     assert!(invoke["invocation_id"].is_string(), "{invoke}");
-    audit.reply_observed(&invoke, Value::Null, &["logs"]).await;
+    audit.reply(&invoke, Value::Null).await;
     let activation = sink.invoked("sink::logs").await;
     assert_eq!(activation["data"], json!({ "entry": 1 }));
     sink.reply(&activation, Value::Null).await;
 }
 
-/// `observed` may ride an answer that carries `error`: the listed observer's
-/// envelope says `status: error` with the host's error (decision 39), and the
-/// caller gets the error alone.
+/// An answer that carries `error` is evaluated too, `matched` or not: the
+/// engine's `on: error` observers whose filters match get an envelope with
+/// `status: error` and the host's error (decision 39), and the caller gets
+/// the error alone.
 #[tokio::test]
-async fn an_error_answer_activates_the_on_error_observers_it_lists() {
+async fn an_error_answer_activates_the_on_error_observers_whose_filters_match() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", &["payments::charge"]).await;
     let mut sink = host(&t, "sink", &["sink::failures"]).await;
@@ -184,42 +370,57 @@ async fn an_error_answer_activates_the_on_error_observers_it_lists() {
         json!({
             "function_id": "payments::charge",
             "on": "error",
-            "capture": ["input", "error"]
+            "capture": ["input", "error"],
+            "filters": { "error.code": { "$eq": "CARD_DECLINED" } }
         }),
         "sink::failures",
     ))
     .await;
+    sink.observe_active(observer(
+        "successes",
+        json!({ "function_id": "payments::charge" }),
+        "sink::failures",
+    ))
+    .await;
 
-    let call = checkout
-        .call("payments::charge", json!({ "amount": 5 }))
-        .await;
-    let invoke = payments.invoked("payments::charge").await;
-    payments
-        .send(json!({
+    for matched in [None, Some(json!(["failures", "successes"]))] {
+        let before = t.engine.observers.evaluated();
+        let call = checkout
+            .call("payments::charge", json!({ "amount": 5 }))
+            .await;
+        let invoke = payments.invoked("payments::charge").await;
+        let mut answer = json!({
             "type": "invocationresult",
             "invocation_id": invoke["invocation_id"],
             "function_id": "payments::charge",
             "error": { "code": "CARD_DECLINED", "message": "declined" },
-            "observed": ["failures"],
-        }))
-        .await;
+        });
+        if let Some(matched) = &matched {
+            answer["matched"] = matched.clone();
+        }
+        payments.send(answer).await;
 
-    let answer = checkout.result(call).await;
-    assert_eq!(answer["error"]["code"], "CARD_DECLINED");
-    assert!(answer.get("observed").is_none() && answer.get("result").is_none());
+        let answer = checkout.result(call).await;
+        assert_eq!(answer["error"]["code"], "CARD_DECLINED");
+        assert!(answer.get("matched").is_none() && answer.get("result").is_none());
 
-    let activation = sink.invoked("sink::failures").await;
-    let envelope = &activation["data"];
-    assert_eq!(envelope["status"], "error");
-    assert_eq!(envelope["error"]["code"], "CARD_DECLINED");
-    assert_eq!(envelope["input"], json!({ "amount": 5 }));
-    assert!(envelope.get("output").is_none());
-    sink.reply(&activation, Value::Null).await;
+        let activation = sink.invoked("sink::failures").await;
+        let envelope = &activation["data"];
+        assert_eq!(envelope["observer_id"], "failures", "{matched:?}");
+        assert_eq!(envelope["status"], "error");
+        assert_eq!(envelope["error"]["code"], "CARD_DECLINED");
+        assert_eq!(envelope["input"], json!({ "amount": 5 }));
+        assert!(envelope.get("output").is_none());
+        sink.reply(&activation, Value::Null).await;
+        evaluated(&t.engine, before + 1).await;
+    }
+    assert_eq!(fires(&t, "failures"), 2);
+    assert_eq!(fires(&t, "successes"), 0, "`on: success`");
 }
 
-/// The list is read from the connection that hosts the function only: an
+/// `matched` is read from the connection that hosts the function only: an
 /// answer anyone else sends (here the caller answering its own call) has its
-/// result delivered as before, but activates nothing it lists
+/// result delivered as before, but activates none of the observers it names
 /// (`REPORTER_NOT_OWNER`).
 #[tokio::test]
 async fn a_list_from_a_connection_that_does_not_host_the_function_is_refused() {
@@ -242,7 +443,7 @@ async fn a_list_from_a_connection_that_does_not_host_the_function_is_refused() {
             "invocation_id": call.to_string(),
             "function_id": "orders::create",
             "result": { "forged": true },
-            "observed": ["watched"],
+            "matched": ["watched"],
         }))
         .await;
     assert_eq!(forger.result(call).await["result"]["forged"], true);
@@ -252,17 +453,16 @@ async fn a_list_from_a_connection_that_does_not_host_the_function_is_refused() {
     // The host's own answer finds nobody waiting. The engine handles one
     // connection's frames in order: once the host has the answer to a call
     // it sent next, its answer was handled.
-    orders
-        .reply_observed(&invoke, json!({}), &["watched"])
-        .await;
+    orders.reply_matched(&invoke, json!({}), &["watched"]).await;
     let barrier = orders.call("engine::workers::list", json!({})).await;
     orders.result(barrier).await;
     assert_eq!(fires(&t, "watched"), 0);
     assert!(!invoked_already(&mut sink, "sink::orders"));
 }
 
-/// A host without `observe.v2` delivers nothing: whatever it lists is
-/// ignored and the engine evaluates the call's observers itself.
+/// A host without `observe.v2` narrows nothing: whatever its answer says
+/// (`matched`, `delivered`) is ignored and the engine evaluates every active
+/// observer of the call.
 #[tokio::test]
 async fn the_engine_evaluates_the_calls_of_a_host_without_observe_v2() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -285,7 +485,16 @@ async fn the_engine_evaluates_the_calls_of_a_host_without_observe_v2() {
     let before = t.engine.observers.evaluated();
     let call = checkout.call("orders::create", json!({ "n": 1 })).await;
     let invoke = orders.invoked("orders::create").await;
-    orders.reply_observed(&invoke, json!({}), &["listed"]).await;
+    orders
+        .send(json!({
+            "type": "invocationresult",
+            "invocation_id": invoke["invocation_id"],
+            "function_id": "orders::create",
+            "result": {},
+            "matched": ["listed"],
+            "delivered": true,
+        }))
+        .await;
     checkout.result(call).await;
     let activation = sink.invoked("sink::unlisted").await;
     sink.reply(&activation, Value::Null).await;
@@ -294,9 +503,10 @@ async fn the_engine_evaluates_the_calls_of_a_host_without_observe_v2() {
     assert_eq!(fires(&t, "unlisted"), 1);
 }
 
-/// A host that declared `observe.v2` delivers its routed calls, so one that
-/// ends without its answer activates nothing (decision 2): here its caller
-/// leaves while the host runs it. The engine's `invocation_stopped` is no
+/// Only the answer of a host that declared `observe.v2` says whether its
+/// function's hooks narrowed or delivered the call, so a routed call that
+/// ends without its answer activates nothing (decisions 2, 55): here its
+/// caller leaves while the host runs it. The engine's `invocation_stopped` is no
 /// error of the function: its `on: error` observer counts a `CANCELLED` drop
 /// and does not fire, and the host's late answer finds nobody waiting.
 #[tokio::test]
@@ -317,9 +527,7 @@ async fn a_call_its_caller_left_activates_nothing_for_a_host_that_delivers() {
     checkout.disconnect().await;
     assert!(eventually(|| dropped(&t, "failures", "CANCELLED") == 1).await);
 
-    orders
-        .reply_observed(&invoke, json!({ "id": 7 }), &["failures"])
-        .await;
+    orders.reply(&invoke, json!({ "id": 7 })).await;
     let barrier = orders.call("engine::workers::list", json!({})).await;
     orders.result(barrier).await;
     assert_eq!(fires(&t, "failures"), 0);
@@ -363,11 +571,12 @@ async fn a_call_never_sent_to_a_host_that_delivers_activates_nothing() {
 }
 
 /// Every routed answer of an `observe.v2` host is read, a target's answer
-/// to an activation and to a call through an observer included (decision
-/// 36): each activates the target's own observers it lists, and the host
-/// that called through the observer gets the result without the list.
+/// to an activation and to a call through an observer included (decisions
+/// 36, 55): each delivers the call to the target's own observers as it says,
+/// and the host that called through the observer gets the result without
+/// `matched`.
 #[tokio::test]
-async fn a_targets_answer_activates_the_observers_it_lists() {
+async fn a_targets_answer_delivers_to_its_own_observers() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut orders = host(&t, "orders", &["orders::create"]).await;
     let mut audit = host(&t, "audit", &["audit::record"]).await;
@@ -386,18 +595,16 @@ async fn a_targets_answer_activates_the_observers_it_lists() {
     ))
     .await;
 
-    // An activation of `first` reaches audit::record, whose host lists
-    // `second` on its answer.
+    // An activation of `first` reaches audit::record, whose host names
+    // `second` on its answer (a match hook).
     let call = checkout.call("orders::create", json!({ "n": 1 })).await;
     let invoke = orders.invoked("orders::create").await;
-    orders
-        .reply_observed(&invoke, json!({ "id": 7 }), &["first"])
-        .await;
+    orders.reply(&invoke, json!({ "id": 7 })).await;
     checkout.result(call).await;
     let activation = audit.invoked("audit::record").await;
     assert_eq!(activation["activation"]["observer_id"], "first");
     audit
-        .reply_observed(&activation, json!({ "recorded": 1 }), &["second"])
+        .reply_matched(&activation, json!({ "recorded": 1 }), &["second"])
         .await;
     let second = sink.invoked("sink::second").await;
     assert_eq!(second["data"], json!({ "recorded": 1 }));
@@ -421,20 +628,22 @@ async fn a_targets_answer_activates_the_observers_it_lists() {
     let forwarded = audit.invoked("audit::record").await;
     assert_eq!(forwarded["activation"]["observer_id"], "first");
     audit
-        .reply_observed(&forwarded, json!({ "recorded": 2 }), &["third"])
+        .reply_matched(&forwarded, json!({ "recorded": 2 }), &["third"])
         .await;
     let answer = orders.result(through).await;
     assert_eq!(answer["result"], json!({ "recorded": 2 }));
-    assert!(answer.get("observed").is_none(), "stripped: {answer}");
+    assert!(answer.get("matched").is_none(), "stripped: {answer}");
     let third = sink.invoked("sink::third").await;
     assert_eq!(third["data"], json!({ "direct": true }));
     sink.reply(&third, Value::Null).await;
+    assert_eq!(fires(&t, "second"), 1, "not named on the second answer");
 }
 
-/// A routed call's host reports its matches on the answer only: an
+/// A routed call's host names its observers on the answer only: an
 /// `invocationsobserved` item for a call the engine routed to it is dropped
 /// as `INVALID_REPORT` (decision 38), whether it arrives before the answer or
-/// after it, while an item for a call of its own is applied.
+/// after it, while an item for a call of its own is applied. (The answer
+/// here narrows the call to no observer.)
 #[tokio::test]
 async fn report_items_for_a_routed_call_are_dropped() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -467,9 +676,7 @@ async fn report_items_for_a_routed_call_are_dropped() {
     orders
         .send(json!({ "type": "invocationsobserved", "items": [item(&routed)] }))
         .await;
-    orders
-        .reply_observed(&invoke, json!({ "id": 7 }), &[])
-        .await;
+    orders.reply_matched(&invoke, json!({ "id": 7 }), &[]).await;
     checkout.result(call).await;
     assert!(eventually(|| dropped(&t, "watched", "INVALID_REPORT") == 1).await);
     // The report linger sends items after the answer: the call is still
@@ -554,8 +761,7 @@ async fn observed_values_are_the_handlers_without_the_callers_stamp() {
         invoke["data"]["_caller_worker_id"],
         caller.worker_id.to_string()
     );
-    echo.reply_observed(&invoke, invoke["data"].clone(), &["echoes"])
-        .await;
+    echo.reply(&invoke, invoke["data"].clone()).await;
     let answer = caller.result(call).await;
     assert_eq!(answer["result"], invoke["data"]);
     let echoed = sink.invoked("sink::echoes").await;
@@ -591,9 +797,7 @@ async fn only_a_call_through_an_observer_carries_the_callers_stamp() {
         checkout.worker_id.to_string()
     );
     // The handler returns its input, the caller's stamp included.
-    orders
-        .reply_observed(&invoke, invoke["data"].clone(), &["inputs", "outputs"])
-        .await;
+    orders.reply(&invoke, invoke["data"].clone()).await;
     checkout.result(call).await;
     let mut delivered_by = Vec::new();
     for _ in 0..2 {
@@ -626,9 +830,9 @@ async fn only_a_call_through_an_observer_carries_the_callers_stamp() {
 }
 
 /// A call to a function with no active observer costs the engine one load:
-/// nothing is copied or evaluated, whatever its host answers. An id the host
-/// lists anyway (an observer that was not active when the call began) is
-/// counted, not activated.
+/// nothing is copied or evaluated, whatever its host answers. An id the
+/// host's match hook names anyway (an observer that was not active when the
+/// call began) is counted, not activated.
 #[tokio::test]
 async fn an_unobserved_call_to_a_host_costs_nothing() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -639,7 +843,7 @@ async fn an_unobserved_call_to_a_host_costs_nothing() {
     for n in 0..20 {
         let call = checkout.call("orders::create", json!({ "n": n })).await;
         let invoke = orders.invoked("orders::create").await;
-        orders.reply_observed(&invoke, json!({}), &[]).await;
+        orders.reply(&invoke, json!({})).await;
         checkout.result(call).await;
     }
     assert_eq!(t.engine.observers.payload_copies(), 0);
@@ -657,7 +861,7 @@ async fn an_unobserved_call_to_a_host_costs_nothing() {
     assert_eq!(result["state"], "pending");
     let call = checkout.call("orders::create", json!({ "n": 1 })).await;
     let invoke = orders.invoked("orders::create").await;
-    orders.reply_observed(&invoke, json!({}), &["late"]).await;
+    orders.reply_matched(&invoke, json!({}), &["late"]).await;
     checkout.result(call).await;
     assert!(eventually(|| dropped(&t, "late", "INACTIVE") == 1).await);
     assert_eq!(t.engine.observers.payload_copies(), 0);
@@ -677,11 +881,10 @@ async fn envelopes(sink: &mut Client, function_id: &str, count: usize) -> Vec<Va
 }
 
 /// `capture: []` moves no payloads (A6): the engine copies nothing for an
-/// observer that captures nothing and delivers the envelope, whether it
-/// evaluates the call (a host without `observe.v2`) or the host lists the
-/// observer. A filter on the input needs the input only where it is
-/// evaluated: the engine copies it for the host without `observe.v2`, and
-/// never for one that delivers its calls.
+/// observer without filters that captures nothing and delivers the envelope,
+/// whoever hosts the function. A filter on the input needs the input, which
+/// the engine copies once per call whoever hosts the function: it evaluates
+/// the filters of every routed call (decision 55).
 #[tokio::test]
 async fn an_observer_that_captures_nothing_copies_no_payload() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -710,9 +913,7 @@ async fn an_observer_that_captures_nothing_copies_no_payload() {
         checkout.result(call).await;
         let call = checkout.call("orders::create", json!({ "n": 1 })).await;
         let invoke = orders.invoked("orders::create").await;
-        orders
-            .reply_observed(&invoke, json!({ "id": 2 }), &["orders"])
-            .await;
+        orders.reply(&invoke, json!({ "id": 2 })).await;
         checkout.result(call).await;
         for envelope in envelopes(&mut sink, "sink::counted", 2).await {
             assert!(no_payloads(&envelope), "{envelope}");
@@ -746,14 +947,12 @@ async fn an_observer_that_captures_nothing_copies_no_payload() {
     );
     let call = checkout.call("orders::create", json!({ "n": 1 })).await;
     let invoke = orders.invoked("orders::create").await;
-    orders
-        .reply_observed(&invoke, json!({ "id": 2 }), &["orders", "orders-n"])
-        .await;
+    orders.reply(&invoke, json!({ "id": 2 })).await;
     checkout.result(call).await;
     assert_eq!(
         t.engine.observers.payload_copies(),
-        1,
-        "the host evaluated the filter: nothing to copy"
+        2,
+        "the engine evaluates the filter on the input of the v2 host's call too"
     );
     for envelope in envelopes(&mut sink, "sink::counted", 4).await {
         assert!(no_payloads(&envelope), "{envelope}");

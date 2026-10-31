@@ -146,23 +146,39 @@ where
     Option::<bool>::deserialize(deserializer).map(|flag| flag.unwrap_or(true))
 }
 
-/// Reads `invocationresult.observed` leniently: the string ids of an array,
-/// and nothing for any other value, so a malformed list never costs the
-/// caller its result.
-fn deserialize_observed<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+/// Reads `invocationresult.matched` leniently, so a malformed list never
+/// costs the caller its result: `null` is absent (the host did not narrow
+/// the call's observers), an array is its string ids (any other element is
+/// skipped), and any other value is an empty list (the host narrowed them to
+/// none).
+fn deserialize_matched<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     Ok(match Value::deserialize(deserializer)? {
-        Value::Array(ids) => ids
-            .into_iter()
-            .filter_map(|id| match id {
-                Value::String(id) => Some(id),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
+        Value::Null => None,
+        Value::Array(ids) => Some(
+            ids.into_iter()
+                .filter_map(|id| match id {
+                    Value::String(id) => Some(id),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => Some(Vec::new()),
     })
+}
+
+/// Reads a flag that only `true` sets: `null` and any other value read as
+/// `false`, like an absent field.
+fn deserialize_only_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(matches!(
+        Value::deserialize(deserializer)?,
+        Value::Bool(true)
+    ))
 }
 
 fn default_true() -> bool {
@@ -296,16 +312,32 @@ pub enum Message {
         /// W3C baggage header for cross-cutting context propagation
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
-        /// Host→engine: the observers the host's delivery matched for this
-        /// routed call. Read from a connection that declared `observe.v2`
-        /// only, and leniently: a malformed list reads as empty. The engine
-        /// never forwards it.
+        /// Host→engine: the observers the function's match hook matched for
+        /// this routed call (v2 §8.2, decision 55). The engine delivers it to
+        /// those of them that are active observers of the function and whose
+        /// `on` and filters match it. Absent when the host did not narrow the
+        /// call's observers (the function has no match hook): the engine then
+        /// evaluates every active observer of the function. Read from a
+        /// connection that declared `observe.v2` only, and leniently
+        /// (`null` is absent; a malformed list is empty). The engine never
+        /// forwards it.
         #[serde(
             default,
-            deserialize_with = "deserialize_observed",
-            skip_serializing_if = "Vec::is_empty"
+            deserialize_with = "deserialize_matched",
+            skip_serializing_if = "Option::is_none"
         )]
-        observed: Vec<String>,
+        matched: Option<Vec<String>>,
+        /// Host→engine: the function's deliver hook delivered this routed
+        /// call, and the engine delivers it to no observer (decision 55).
+        /// Sent only as `true`, which outweighs `matched`. Read from a
+        /// connection that declared `observe.v2` only; anything but `true`
+        /// reads as `false`. The engine never forwards it.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_only_true",
+            skip_serializing_if = "is_false"
+        )]
+        delivered: bool,
     },
     RegisterService {
         id: String,
@@ -473,8 +505,8 @@ pub enum Message {
 /// Engine feature: observers, `functionregistered` and the observe messages.
 pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
 /// Feature: `observe.v1`, plus a host that delivers its own functions' calls
-/// (`invocationresult.observed`, `output_is_input`) and the function options
-/// `args_format`, `private` and `observable`.
+/// (`invocationresult.matched` and `delivered`, `output_is_input`) and the
+/// function options `args_format`, `private` and `observable`.
 pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
 /// Engine feature: SDKs may run their own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
@@ -1516,7 +1548,7 @@ mod tests {
 
     /// Keys observe adds to existing variants. None of them may appear on the
     /// wire unless set.
-    const NEW_KEYS: [&str; 9] = [
+    const NEW_KEYS: [&str; 10] = [
         "observe",
         "args_format",
         "private",
@@ -1525,7 +1557,8 @@ mod tests {
         "observe_depth",
         "activation",
         "features",
-        "observed",
+        "matched",
+        "delivered",
     ];
 
     fn assert_no_new_keys(msg: &Message) {
@@ -1618,7 +1651,8 @@ mod tests {
             error: None,
             traceparent: None,
             baggage: None,
-            observed: Vec::new(),
+            matched: None,
+            delivered: false,
         });
         assert_no_new_keys(&Message::WorkerRegistered {
             worker_id: "w-1".into(),
@@ -1765,10 +1799,11 @@ mod tests {
         assert_eq!(serde_json::to_value(&descriptor).unwrap(), wire);
     }
 
-    /// `private: false`, `observable: true` and `observed: []` are the
-    /// defaults: left out on the wire, and `null` reads as the default.
+    /// `private: false`, `observable: true`, an absent `matched` and
+    /// `delivered: false` are the defaults: left out on the wire, and `null`
+    /// reads as the default.
     #[test]
-    fn function_options_and_observed_ids_default_when_absent_or_null() {
+    fn function_options_and_routed_answers_default_when_absent_or_null() {
         let register: Message = serde_json::from_value(json!({
             "type": "registerfunction", "id": "vault::read",
             "args_format": null, "private": null, "observable": null
@@ -1787,24 +1822,58 @@ mod tests {
         assert_no_new_keys(&register);
 
         let id = "8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f";
-        let result: Message = serde_json::from_value(json!({
-            "type": "invocationresult", "invocation_id": id, "function_id": "orders::create",
-            "result": 1, "observed": ["o-1", 7, null, "o-2"]
-        }))
+        let answer = |fields: Value| -> (Option<Vec<String>>, bool) {
+            let mut frame = json!({
+                "type": "invocationresult", "invocation_id": id,
+                "function_id": "orders::create", "result": 1
+            });
+            frame
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let message: Message =
+                serde_json::from_value(frame).expect("a malformed field does not cost the result");
+            let Message::InvocationResult {
+                matched, delivered, ..
+            } = message
+            else {
+                panic!("expected InvocationResult");
+            };
+            (matched, delivered)
+        };
+        let ids = |ids: &[&str]| Some(ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
+        // Not narrowed: absent, or `null`.
+        assert_eq!(answer(json!({})), (None, false));
+        assert_eq!(
+            answer(json!({ "matched": null, "delivered": null })),
+            (None, false)
+        );
+        // Narrowed: the string ids, possibly none; a malformed list is none.
+        assert_eq!(
+            answer(json!({ "matched": ["o-1", 7, null, "o-2"] })),
+            (ids(&["o-1", "o-2"]), false),
+            "a malformed id is skipped"
+        );
+        assert_eq!(answer(json!({ "matched": [] })), (ids(&[]), false));
+        assert_eq!(answer(json!({ "matched": "o-1" })), (ids(&[]), false));
+        // Delivered by the host: only `true`.
+        assert_eq!(answer(json!({ "delivered": true })), (None, true));
+        assert_eq!(answer(json!({ "delivered": "yes" })), (None, false));
+        assert_eq!(answer(json!({ "delivered": 1 })), (None, false));
+        // An empty list is sent; an absent one and `false` are not.
+        let wire = serde_json::to_value(Message::InvocationResult {
+            invocation_id: uuid::Uuid::parse_str(id).unwrap(),
+            function_id: "orders::create".into(),
+            result: Some(json!(1)),
+            error: None,
+            traceparent: None,
+            baggage: None,
+            matched: Some(Vec::new()),
+            delivered: false,
+        })
         .unwrap();
-        let Message::InvocationResult { observed, .. } = &result else {
-            panic!("expected InvocationResult");
-        };
-        assert_eq!(observed, &["o-1", "o-2"], "a malformed id is skipped");
-        let malformed: Message = serde_json::from_value(json!({
-            "type": "invocationresult", "invocation_id": id, "function_id": "orders::create",
-            "result": 1, "observed": "o-1"
-        }))
-        .expect("a malformed list does not cost the result");
-        let Message::InvocationResult { observed, .. } = malformed else {
-            panic!("expected InvocationResult");
-        };
-        assert!(observed.is_empty());
+        assert_eq!(wire["matched"], json!([]));
+        assert!(wire.get("delivered").is_none());
     }
 
     /// A value added by a newer peer decodes as `Unknown`, keeps its spelling

@@ -332,9 +332,11 @@ impl WorkerFeatures {
         self.declared.get().is_some_and(|d| d.observe_v1)
     }
 
-    /// The connection delivers the calls of the functions it hosts: it lists
-    /// the observers its delivery matched on each `invocationresult`, and the
-    /// engine evaluates none of those calls itself.
+    /// The connection runs the match and deliver hooks of the functions it
+    /// hosts: its `invocationresult` to each routed call names the observers
+    /// a match hook matched (`matched`), or says that a deliver hook
+    /// delivered the call (`delivered`), and the engine evaluates the
+    /// observers' filters (decision 55).
     pub fn observe_v2(&self) -> bool {
         self.declared.get().is_some_and(|d| d.observe_v2)
     }

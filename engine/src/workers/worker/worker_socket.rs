@@ -451,7 +451,8 @@ mod tests {
                     error: None,
                     traceparent: None,
                     baggage: None,
-                    observed: Vec::new(),
+                    matched: None,
+                    delivered: false,
                 }))
                 .await
                 .unwrap();

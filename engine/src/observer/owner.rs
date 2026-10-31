@@ -31,6 +31,7 @@ use std::{
     time::Duration,
 };
 
+use iii_filter::FilterIndex;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -356,15 +357,17 @@ pub struct ActiveSet {
     pub(crate) function: Arc<FnKey>,
     /// In creation order, by [`Observer::seq`].
     pub(crate) observers: PersistentSet<Arc<Observer>>,
-    /// How many of `observers` need each part: `needs` and `listed_needs`
-    /// follow from them as observers come and go.
+    /// The same observers by [`Observer::seq`], indexed by the equality
+    /// conditions of their filters: what the engine matches a call with
+    /// (decision 55). It yields exactly the observers whose filters match,
+    /// in creation order.
+    pub(crate) filters: FilterIndex<u64, Arc<Observer>>,
+    /// How many of `observers` need each part: `needs` follows from them as
+    /// observers come and go.
     counts: NeedCounts,
-    /// What a call the engine evaluates needs: what the observers' filters
-    /// read, capture or deliver.
+    /// What a call needs kept: what the observers' filters read, capture or
+    /// deliver. The engine evaluates the filters of every routed call.
     pub(crate) needs: Needs,
-    /// What a call whose host lists the observers needs: what they capture
-    /// or deliver. The host evaluated their filters.
-    pub(crate) listed_needs: Needs,
     /// The function's hash: which evaluator shard takes its completions.
     pub(crate) shard: u64,
 }
@@ -438,27 +441,22 @@ impl Needs {
     }
 }
 
-/// How many observers of an [`ActiveSet`] need each part (in
-/// [`Needs::parts`] order): what the engine evaluates, and what a host lists.
+/// How many observers of an [`ActiveSet`] need each part, in
+/// [`Needs::parts`] order.
 #[derive(Debug, Clone, Copy, Default)]
 struct NeedCounts {
     evaluated: [usize; 5],
-    delivered: [usize; 5],
 }
 
 impl NeedCounts {
     fn count(&mut self, observer: &Observer, joined: bool) {
-        for (counts, needs) in [
-            (&mut self.evaluated, Needs::evaluated(observer)),
-            (&mut self.delivered, Needs::delivered(observer)),
-        ] {
-            for (count, needed) in counts.iter_mut().zip(needs.parts()) {
-                if needed {
-                    if joined {
-                        *count += 1;
-                    } else {
-                        *count -= 1;
-                    }
+        let needs = Needs::evaluated(observer);
+        for (count, needed) in self.evaluated.iter_mut().zip(needs.parts()) {
+            if needed {
+                if joined {
+                    *count += 1;
+                } else {
+                    *count -= 1;
                 }
             }
         }
@@ -483,8 +481,10 @@ impl ActiveSet {
             .filter(|observer| observer.seq().is_some())
             .collect();
         let mut counts = NeedCounts::default();
+        let mut filters = FilterIndex::new();
         for observer in &observers {
             counts.count(observer, true);
+            filters.insert(observer.key(), &observer.filter, observer.clone());
         }
         let observers = PersistentSet::from_sorted(observers);
         let shard = {
@@ -493,20 +493,21 @@ impl ActiveSet {
             key.hash(&mut hasher);
             hasher.finish()
         };
-        Self::of(Arc::new(key.clone()), observers, counts, shard)
+        Self::of(Arc::new(key.clone()), observers, filters, counts, shard)
     }
 
     fn of(
         function: Arc<FnKey>,
         observers: PersistentSet<Arc<Observer>>,
+        filters: FilterIndex<u64, Arc<Observer>>,
         counts: NeedCounts,
         shard: u64,
     ) -> Self {
         Self {
             function,
             observers,
+            filters,
             needs: Needs::of_counts(&counts.evaluated),
-            listed_needs: Needs::of_counts(&counts.delivered),
             counts,
             shard,
         }
@@ -519,7 +520,15 @@ impl ActiveSet {
         };
         let mut counts = self.counts;
         counts.count(observer, true);
-        Self::of(self.function.clone(), observers, counts, self.shard)
+        let mut filters = self.filters.clone();
+        filters.insert(observer.key(), &observer.filter, observer.clone());
+        Self::of(
+            self.function.clone(),
+            observers,
+            filters,
+            counts,
+            self.shard,
+        )
     }
 
     /// This set without `observer`, filed under `seq`.
@@ -529,26 +538,44 @@ impl ActiveSet {
         };
         let mut counts = self.counts;
         counts.count(observer, false);
-        Self::of(self.function.clone(), observers, counts, self.shard)
+        let mut filters = self.filters.clone();
+        filters.remove(&seq);
+        Self::of(
+            self.function.clone(),
+            observers,
+            filters,
+            counts,
+            self.shard,
+        )
     }
 
     fn copy(&self) -> Self {
         Self::of(
             self.function.clone(),
             self.observers.clone(),
+            self.filters.clone(),
             self.counts,
             self.shard,
         )
     }
 
-    /// What a call needs kept: when its host delivers it, only what the
-    /// observers it lists capture or deliver.
-    pub(crate) fn needs_for(&self, host_delivers: bool) -> Needs {
-        if host_delivers {
-            self.listed_needs
-        } else {
-            self.needs
+    /// The observer under `id` that this set holds: the registry's, when it
+    /// is that one (`O(log n)`), and otherwise one this version still holds
+    /// under that id (replaced or gone since, decision 51: a scan).
+    pub(crate) fn held(&self, registry: &ObserverRegistry, id: &str) -> Option<Arc<Observer>> {
+        if let Some(observer) = registry.get(id)
+            && observer.function == *self.function
+            && observer
+                .seq()
+                .and_then(|seq| self.observers.get(seq))
+                .is_some_and(|held| Arc::ptr_eq(held, &observer))
+        {
+            return Some(observer);
         }
+        self.observers
+            .iter()
+            .find(|observer| observer.id == id)
+            .cloned()
     }
 }
 
@@ -1070,10 +1097,10 @@ impl ObserverRegistry {
         Some(self.owner(connection, kind))
     }
 
-    /// Whether `key`'s host delivers its calls itself (v2 §8.2): a connection
-    /// that declared `observe.v2` and hosts the function, not an HTTP-invoked
-    /// registration (decision 43). The engine evaluates the calls of every
-    /// other function.
+    /// Whether only `key`'s host's answer says how a routed call is delivered
+    /// (v2 §8.2, decision 55): a connection that declared `observe.v2` and
+    /// hosts the function, not an HTTP-invoked registration (decision 43).
+    /// Such a call that ends without its answer activates nothing.
     pub(crate) fn host_delivers(&self, key: &FnKey) -> bool {
         let Some(deps) = self.deps.get() else {
             return false;
@@ -1806,12 +1833,12 @@ mod tests {
         }
     }
 
-    /// What a call keeps: a call the engine evaluates needs what the
-    /// observers' filters read, capture or deliver; a call whose host lists
-    /// the observers needs only what they capture or deliver. `capture: []`
-    /// with the envelope needs nothing (A6).
+    /// What a call keeps: what the observers' filters read, capture or
+    /// deliver, wherever it is routed (the engine evaluates the filters of
+    /// every routed call, decision 55). `capture: []` with the envelope and
+    /// no filter needs nothing (A6).
     #[tokio::test]
-    async fn a_call_keeps_what_its_observers_need_where_it_is_delivered() {
+    async fn a_call_keeps_what_its_observers_need() {
         use super::super::events::test_support;
         use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
         let engine = Arc::new(crate::engine::Engine::new());
@@ -1825,11 +1852,11 @@ mod tests {
             request
         };
         let needs = |engine: &crate::engine::Engine| {
-            let set = engine
+            engine
                 .observers
                 .watch(DEFAULT_NAMESPACE, "test::src")
-                .unwrap();
-            (set.needs_for(false), set.needs_for(true))
+                .unwrap()
+                .needs
         };
 
         test_support::observe_request(
@@ -1838,7 +1865,7 @@ mod tests {
             observe("count", None, vec![], Deliver::Envelope),
         )
         .await;
-        assert_eq!(needs(&engine), (Needs::default(), Needs::default()));
+        assert_eq!(needs(&engine), Needs::default());
 
         test_support::observe_request(
             &engine,
@@ -1856,7 +1883,7 @@ mod tests {
             caller: true,
             ..Needs::default()
         };
-        assert_eq!(needs(&engine), (read, Needs::default()));
+        assert_eq!(needs(&engine), read);
 
         test_support::observe_request(
             &engine,
@@ -1869,7 +1896,7 @@ mod tests {
             error: true,
             ..Needs::default()
         };
-        assert_eq!(needs(&engine), (read.union(delivered), delivered));
+        assert_eq!(needs(&engine), read.union(delivered));
     }
 
     /// An ack timeout fires for the announcement it was armed for only: a
@@ -2055,6 +2082,73 @@ mod tests {
         assert_eq!(ids(), ["first"]);
     }
 
+    /// The active set's filter index holds exactly its observers, by seq: a
+    /// call is matched with one lookup among many observers filtering on
+    /// their own value, and the index follows observers as they leave. A
+    /// version a call holds keeps its index.
+    #[tokio::test]
+    async fn the_filter_index_follows_the_active_observers() {
+        use super::super::events::test_support;
+        use crate::protocol::DEFAULT_NAMESPACE;
+        let engine = Arc::new(crate::engine::Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        for i in 0..200u64 {
+            let request = test_support::request(
+                &format!("k-{i}"),
+                "test::src",
+                "test::dst",
+                Some(json!({ "input.k": { "$eq": i } })),
+            );
+            test_support::observe_request(&engine, &worker, request).await;
+        }
+        let plain = test_support::request("plain", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &worker, plain).await;
+        let set = || {
+            engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .unwrap()
+        };
+        let matched = |set: &ActiveSet, k: u64| -> Vec<String> {
+            let input = json!({ "k": k });
+            let doc = iii_filter::Doc {
+                input: Some(&input),
+                ..iii_filter::Doc::default()
+            };
+            set.filters
+                .matches(&doc)
+                .map(|(_, observer)| observer.id.clone())
+                .collect()
+        };
+        let held = set();
+        assert_eq!(held.filters.len(), 201);
+        let input = json!({ "k": 7 });
+        let doc = iii_filter::Doc {
+            input: Some(&input),
+            ..iii_filter::Doc::default()
+        };
+        assert_eq!(
+            held.filters.candidates(&doc),
+            2,
+            "k-7 and the unfiltered one"
+        );
+        assert_eq!(matched(&held, 7), ["k-7", "plain"], "in creation order");
+
+        engine.observers.unobserve(worker.id, "k-7");
+        assert_eq!(matched(&set(), 7), ["plain"]);
+        assert_eq!(set().filters.len(), 200);
+        assert_eq!(
+            matched(&held, 7),
+            ["k-7", "plain"],
+            "the version a call holds"
+        );
+        engine.observers.unobserve(worker.id, "plain");
+        assert!(matched(&set(), 7).is_empty());
+        assert_eq!(matched(&set(), 8), ["k-8"]);
+    }
+
     /// What a call keeps follows the observers that need it as they leave:
     /// once the last observer whose filter reads the input is gone, calls
     /// stop copying it.
@@ -2076,7 +2170,7 @@ mod tests {
             engine
                 .observers
                 .watch(DEFAULT_NAMESPACE, "test::src")
-                .map(|set| (set.needs_for(false), set.needs_for(true)))
+                .map(|set| set.needs)
         };
         for (id, filters) in [
             ("reads-input", Some(json!({ "input.n": { "$eq": 1 } }))),
@@ -2098,18 +2192,14 @@ mod tests {
             error: true,
             ..Needs::default()
         };
-        assert_eq!(needs(), Some((reads, delivered)));
+        assert_eq!(needs(), Some(reads));
 
         engine.observers.unobserve(worker.id, "reads-input");
-        assert_eq!(
-            needs(),
-            Some((reads, delivered)),
-            "one still reads the input"
-        );
+        assert_eq!(needs(), Some(reads), "one still reads the input");
         engine.observers.unobserve(worker.id, "reads-input-too");
-        assert_eq!(needs(), Some((delivered, delivered)));
+        assert_eq!(needs(), Some(delivered));
         engine.observers.unobserve(worker.id, "errors");
-        assert_eq!(needs(), Some((Needs::default(), Needs::default())));
+        assert_eq!(needs(), Some(Needs::default()));
         engine.observers.unobserve(worker.id, "plain");
         assert_eq!(needs(), None);
     }

@@ -47,7 +47,9 @@ use uuid::Uuid;
 
 pub use config::ObserversConfig;
 pub use context::{ENGINE_CALLER_NAME, InvocationCtx};
-pub use dispatch::{Emission, HostDelivery, ObservedCall, ObserverCall, ReportHold, RoutedAnswers};
+pub use dispatch::{
+    Emission, HostDelivery, ObservedCall, ObserverCall, ReportHold, RoutedAnswers, RoutedDelivery,
+};
 pub use engine_owned::{ENGINE_CONNECTION, EngineObserver, StandingObserver};
 pub use lifecycle::Observer;
 pub use owner::{ActiveSet, FunctionOptions, validate_args_format};

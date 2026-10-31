@@ -55,7 +55,8 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                     "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
                 ),
                 baggage: None,
-                observed: Vec::new(),
+                matched: None,
+                delivered: false,
             },
         ),
         (
@@ -71,7 +72,8 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 }),
                 traceparent: None,
                 baggage: None,
-                observed: Vec::new(),
+                matched: None,
+                delivered: false,
             },
         ),
         (
