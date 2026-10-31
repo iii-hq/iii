@@ -344,16 +344,30 @@ pub enum Message {
         traceparent: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
-        /// Host → engine, from an `observe.v2` host: the observers iii's
-        /// delivery of this routed call selected; the answer is the handler's
-        /// outcome. The engine activates them and strips the field before
-        /// forwarding the result.
+        /// Host → engine, from an `observe.v2` host's answer to a routed
+        /// call of a function with a match hook: the observers the hook
+        /// matched, before `on` and filters, each once; `[]` when it matched
+        /// none, and when the host holds no observer of the function for it
+        /// to match (the hook does not run). The engine evaluates `on` and
+        /// filters of those of them that are active observers of the
+        /// function. Absent when the function has no match hook: the engine
+        /// evaluates every active observer of the function. The
+        /// `payload_too_large` answer that replaces one too large to send
+        /// activates no observer: `[]`, or `delivered`. The engine strips it
+        /// before forwarding a result.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matched: Option<Vec<String>>,
+        /// Host → engine, from an `observe.v2` host's answer to a routed
+        /// call: the function's deliver hook delivered the call, and the
+        /// answer is what the hook returned or threw. The engine activates
+        /// nothing for it. Sent only as `true`, which outweighs `matched`;
+        /// the engine strips it before forwarding a result.
         #[serde(
             default,
             deserialize_with = "null_as_default",
-            skip_serializing_if = "Vec::is_empty"
+            skip_serializing_if = "is_false"
         )]
-        observed: Vec<String>,
+        delivered: bool,
     },
     Ping,
     Pong,
@@ -499,7 +513,7 @@ pub enum Message {
         error: Option<ErrorBody>,
     },
     /// Host → engine: what the host's delivery matched in local calls,
-    /// batched. A routed call's matches ride its `invocationresult`.
+    /// batched. The engine evaluates the observers of the calls it routes.
     InvocationsObserved {
         #[serde(default, deserialize_with = "null_as_default")]
         items: Vec<ObservedItem>,
@@ -526,10 +540,11 @@ pub enum Message {
 /// messages. The SDK declares it, and enables `observe()` only when the
 /// engine advertises it too.
 pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
-/// Protocol feature: the host delivers the calls of the functions it hosts,
-/// routed ones included (`invocationresult.observed`), and registers
-/// functions with `args_format`, `private` and `observable`. Includes
-/// [`FEATURE_OBSERVE_V1`].
+/// Protocol feature: the host runs the match and deliver hooks of the
+/// functions it hosts for their routed calls too, and says on each answer how
+/// the call is delivered (`invocationresult.matched` and `delivered`), and
+/// registers functions with `args_format`, `private` and `observable`.
+/// Includes [`FEATURE_OBSERVE_V1`].
 pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
 /// Protocol feature: the SDK runs its own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.

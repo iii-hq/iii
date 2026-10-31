@@ -20,7 +20,7 @@ use std::{
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use futures_util::FutureExt;
-use iii_filter::{Doc, Filter, Roots};
+use iii_filter::{Doc, Filter, FilterIndex, Roots};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
@@ -149,6 +149,9 @@ enum Acceptance {
 struct ObserverInner {
     view: ObserverView,
     filter: Filter,
+    /// Whether a [`FilterIndex`] files `filter` under one of its equality
+    /// conditions; one it does not is evaluated on every call.
+    indexed: bool,
     mask: CaptureMask,
     function_id: String,
     namespace: String,
@@ -230,10 +233,12 @@ impl Observer {
         state: Arc<ObserverState>,
     ) -> Self {
         let mask = capture_mask(&view.capture);
+        let indexed = filed_under_a_condition(&filter);
         Self {
             inner: Arc::new(ObserverInner {
                 view,
                 filter,
+                indexed,
                 mask,
                 function_id,
                 namespace,
@@ -463,8 +468,34 @@ impl Observer {
         )
     }
 
+    /// An observer of `test::f` announced with `view` (`id`, `filters`,
+    /// `on`, `capture`, ...), its filters compiled, active or not, and not
+    /// held by any client.
+    #[cfg(test)]
+    pub(crate) fn test_view(view: Value, seq: u64, active: bool) -> Self {
+        let view: ObserverView = serde_json::from_value(view).expect("a view");
+        let filter = Filter::parse(&view.filters).expect("a valid filter");
+        let obs = Self::new(
+            view,
+            filter,
+            "test::f",
+            "default".to_string(),
+            0,
+            seq,
+            Weak::new(),
+        );
+        obs.state().active.store(active, Ordering::Release);
+        obs
+    }
+
     pub(crate) fn mask(&self) -> CaptureMask {
         self.inner.mask
+    }
+
+    /// Whether a [`FilterIndex`] files its filter under one of its equality
+    /// conditions.
+    pub(crate) fn indexed(&self) -> bool {
+        self.inner.indexed
     }
 
     pub(crate) fn filter(&self) -> &Filter {
@@ -484,6 +515,15 @@ impl Observer {
             On::Unknown(_) => false,
         }
     }
+}
+
+/// Whether a [`FilterIndex`] files `filter` under one of its equality
+/// conditions: an index of it alone finds nothing in a document that
+/// resolves no path, where it finds every entry filed under no condition.
+fn filed_under_a_condition(filter: &Filter) -> bool {
+    let mut index: FilterIndex<(), ()> = FilterIndex::new();
+    index.insert((), filter, ());
+    index.candidates(&Doc::default()) == 0
 }
 
 /// The parts of a filter document that are built for it: `error` and
@@ -525,6 +565,71 @@ impl DocParts {
     }
 }
 
+/// An observer as a key of a [`FilterIndex`]: ordered by id, so the index
+/// yields its matches in id order, as [`ObserverSet`] holds them.
+#[derive(Clone)]
+pub(crate) struct ById(pub(crate) Observer);
+
+impl PartialEq for ById {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id() == other.0.id()
+    }
+}
+
+impl Eq for ById {}
+
+impl PartialOrd for ById {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ById {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.id().cmp(other.0.id())
+    }
+}
+
+/// The observers of a set whose `on` accepts one outcome of a call, by the
+/// equality conditions of their filters.
+pub(crate) type OutcomeIndex = FilterIndex<ById, ()>;
+
+/// A set of at most this many observers is matched by a scan: below it, the
+/// index's lookups and the merge of what they find cost more than evaluating
+/// every filter.
+pub(crate) const SCAN_MAX: usize = 16;
+
+/// How a local call that ended with one outcome is matched against a
+/// compiled set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Plan {
+    /// No observer's `on` accepts the outcome: nothing to evaluate.
+    #[default]
+    Nothing,
+    /// Every observer of the set evaluated, in id order: a set of at most
+    /// [`SCAN_MAX`] observers, or one in which more than half are observers
+    /// of the outcome the index files under no condition, which it would
+    /// evaluate too.
+    Scan,
+    /// The outcome's index: only the observers it does not rule out are
+    /// evaluated.
+    Index,
+}
+
+impl Plan {
+    /// The plan of an outcome whose observers are `index`, `scanned` of them
+    /// filed under no condition, in a set of `len` observers.
+    fn of(len: usize, index: &OutcomeIndex, scanned: usize) -> Self {
+        if index.is_empty() {
+            Plan::Nothing
+        } else if len <= SCAN_MAX || scanned * 2 > len {
+            Plan::Scan
+        } else {
+            Plan::Index
+        }
+    }
+}
+
 /// The active observers of a function, swapped whole on every change so the
 /// hot path reads it with one load. A change makes a new version that shares
 /// all but `O(log n)` nodes of its observers with the one before, which a
@@ -533,8 +638,21 @@ impl DocParts {
 pub(crate) struct CompiledSet {
     /// By id.
     pub observers: ObserverSet,
+    /// The observers whose `on` accepts a call that succeeded (`success`,
+    /// `complete`), indexed by their filters' equality conditions: what a
+    /// local call that succeeded is looked up in when its plan is
+    /// [`Plan::Index`].
+    pub on_success: OutcomeIndex,
+    /// The same for a call that failed (`error`, `complete`).
+    pub on_error: OutcomeIndex,
+    /// How a local call that succeeded, and one that failed, is matched.
+    plans: [Plan; 2],
     /// The roots any observer's filter reads.
     pub roots: Roots,
+    /// The roots the filters of the observers whose `on` accepts a call that
+    /// succeeded, and one that failed, read: what a local call of that
+    /// outcome builds of its `error` and `caller`.
+    reads: [Roots; 2],
     /// What any observer captures.
     pub capture: CaptureMask,
     /// The newest [`Observer::seq`] that joined the set: an active observer
@@ -552,23 +670,38 @@ pub(crate) struct CompiledSet {
 struct PartCounts {
     roots: [usize; 5],
     capture: [usize; 5],
+    /// `roots` of the observers whose `on` accepts a call that succeeded,
+    /// and of those that accept one that failed.
+    reads: [[usize; 5]; 2],
+    /// The observers whose `on` accepts a call that succeeded, and those
+    /// that accept one that failed, that the index files under no
+    /// condition.
+    scanned: [usize; 2],
 }
 
 impl PartCounts {
     fn count(&mut self, obs: &Observer, joined: bool) {
         let roots = obs.filter().roots();
+        let roots = [
+            roots.input,
+            roots.output,
+            roots.error,
+            roots.caller,
+            roots.metadata,
+        ];
         let mask = obs.mask();
-        for (counts, parts) in [
-            (
-                &mut self.roots,
-                [
-                    roots.input,
-                    roots.output,
-                    roots.error,
-                    roots.caller,
-                    roots.metadata,
-                ],
-            ),
+        for (scanned, success) in self.scanned.iter_mut().zip([true, false]) {
+            if obs.accepts(success) && !obs.indexed() {
+                if joined {
+                    *scanned += 1;
+                } else {
+                    *scanned -= 1;
+                }
+            }
+        }
+        let [on_success, on_error] = &mut self.reads;
+        for (counts, parts, counted) in [
+            (&mut self.roots, roots, true),
             (
                 &mut self.capture,
                 [
@@ -578,8 +711,14 @@ impl PartCounts {
                     mask.caller,
                     mask.metadata,
                 ],
+                true,
             ),
+            (on_success, roots, obs.accepts(true)),
+            (on_error, roots, obs.accepts(false)),
         ] {
+            if !counted {
+                continue;
+            }
             for (count, part) in counts.iter_mut().zip(parts) {
                 if part {
                     if joined {
@@ -593,16 +732,32 @@ impl PartCounts {
     }
 }
 
+/// The roots whose count is not zero.
+fn roots_of(counts: [usize; 5]) -> Roots {
+    let [input, output, error, caller, metadata] = counts.map(|count| count > 0);
+    Roots {
+        input,
+        output,
+        error,
+        caller,
+        metadata,
+    }
+}
+
 impl CompiledSet {
-    fn of(observers: ObserverSet, counts: PartCounts, seq: u64) -> Self {
-        let [input, output, error, caller, metadata] = counts.roots.map(|count| count > 0);
-        let roots = Roots {
-            input,
-            output,
-            error,
-            caller,
-            metadata,
-        };
+    fn of(
+        observers: ObserverSet,
+        [on_success, on_error]: [OutcomeIndex; 2],
+        counts: PartCounts,
+        seq: u64,
+    ) -> Self {
+        let roots = roots_of(counts.roots);
+        let reads = counts.reads.map(roots_of);
+        let [on_success_scanned, on_error_scanned] = counts.scanned;
+        let plans = [
+            Plan::of(observers.len(), &on_success, on_success_scanned),
+            Plan::of(observers.len(), &on_error, on_error_scanned),
+        ];
         let [input, output, error, caller, metadata] = counts.capture.map(|count| count > 0);
         let capture = CaptureMask {
             input,
@@ -613,31 +768,94 @@ impl CompiledSet {
         };
         Self {
             observers,
+            on_success,
+            on_error,
+            plans,
             roots,
+            reads,
             capture,
             seq,
             counts,
         }
     }
 
+    /// The index of the observers whose `on` accepts a call that succeeded
+    /// (`success`), or one that failed.
+    pub(crate) fn accepting(&self, success: bool) -> &OutcomeIndex {
+        if success {
+            &self.on_success
+        } else {
+            &self.on_error
+        }
+    }
+
+    /// How a local call that succeeded (`success`), or one that failed, is
+    /// matched.
+    #[inline]
+    pub(crate) fn plan(&self, success: bool) -> Plan {
+        self.plans[usize::from(!success)]
+    }
+
+    /// The roots the filters of the observers whose `on` accepts a call
+    /// that succeeded (`success`), or one that failed, read.
+    #[inline]
+    pub(crate) fn reads(&self, success: bool) -> Roots {
+        self.reads[usize::from(!success)]
+    }
+
+    /// The two indexes with `obs` filed in those its `on` accepts, in place
+    /// of any other view of it: `O(log n)` each.
+    fn indexes_with(&self, obs: &Observer) -> [OutcomeIndex; 2] {
+        let key = ById(obs.clone());
+        [true, false].map(|success| {
+            let mut index = self.accepting(success).clone();
+            if obs.accepts(success) {
+                index.insert(key.clone(), obs.filter(), ());
+            } else {
+                index.remove(&key);
+            }
+            index
+        })
+    }
+
+    /// The two indexes without the observer with `obs`'s id.
+    fn indexes_without(&self, obs: &Observer) -> [OutcomeIndex; 2] {
+        let key = ById(obs.clone());
+        [true, false].map(|success| {
+            let mut index = self.accepting(success).clone();
+            index.remove(&key);
+            index
+        })
+    }
+
     /// This set with `obs`, in place of any other view of it.
-    fn with(&self, obs: &Observer) -> Self {
+    pub(crate) fn with(&self, obs: &Observer) -> Self {
         let mut counts = self.counts;
         if let Some(held) = self.observers.get(obs.id()) {
             counts.count(held, false);
         }
         counts.count(obs, true);
-        Self::of(self.observers.with(obs), counts, self.seq.max(obs.seq()))
+        Self::of(
+            self.observers.with(obs),
+            self.indexes_with(obs),
+            counts,
+            self.seq.max(obs.seq()),
+        )
     }
 
     /// This set without `obs` (in any view of it); `None` when it does not
     /// hold it.
-    fn without(&self, obs: &Observer) -> Option<Self> {
+    pub(crate) fn without(&self, obs: &Observer) -> Option<Self> {
         let held = self.observers.get(obs.id()).filter(|held| held.is(obs))?;
         let mut counts = self.counts;
         counts.count(held, false);
         let observers = self.observers.without(obs.id())?;
-        Some(Self::of(observers, counts, self.seq))
+        Some(Self::of(
+            observers,
+            self.indexes_without(held),
+            counts,
+            self.seq,
+        ))
     }
 }
 
@@ -787,6 +1005,11 @@ impl FunctionEntry {
 
     pub(crate) fn matcher(&self) -> Option<Arc<Matcher>> {
         self.matcher.load_full()
+    }
+
+    /// Whether the function has a match hook.
+    pub(crate) fn has_match_hook(&self) -> bool {
+        self.matcher.load().is_some()
     }
 
     /// Replaces the match hook with the one `rule` reads under the index
@@ -2050,8 +2273,8 @@ mod tests {
     }
 
     /// A function with a deliver hook delivers its calls itself: a routed
-    /// call's answer is the hook's, with no `observed` and no report, and the
-    /// hook gets the observers its match hook says want the call.
+    /// call's answer is the hook's, with `delivered: true` and no report,
+    /// and the hook gets the observers its match hook says want the call.
     #[tokio::test]
     async fn a_deliver_hook_answers_and_iii_delivers_nothing() {
         let (iii, mut rx) = client();
@@ -2080,7 +2303,8 @@ mod tests {
         );
         let answer = next_frame(&mut rx, "invocationresult").await;
         assert_eq!(answer["result"], 2, "the two observers of kind a");
-        assert!(answer.get("observed").is_none());
+        assert_eq!(answer["delivered"], true, "{answer:#}");
+        assert!(answer.get("matched").is_none(), "delivered outweighs it");
         iii.flush_reports();
         assert!(
             sent(&mut rx)
@@ -2127,7 +2351,7 @@ mod tests {
                         "function_id": "pp::f", "data": {} }),
             );
             let answer = next_frame(&mut rx, "invocationresult").await;
-            assert_eq!(answer["observed"], json!(["fine"]));
+            assert_eq!(answer["matched"], json!(["fine"]));
         }
         let lines = warnings.0.lock().unwrap().clone();
         let logged = lines
@@ -2211,9 +2435,9 @@ mod tests {
             .into()
     }
 
-    /// The `observed` ids of the answer to a routed call of `function_id`
-    /// with `input`.
-    async fn routed_observed(
+    /// The `matched` ids of the answer to a routed call of `function_id`
+    /// with `input`: the observers its match hook matched.
+    async fn routed_matched(
         iii: &IIIClient,
         rx: &mut UnboundedReceiver<Outbound>,
         function_id: &str,
@@ -2226,7 +2450,10 @@ mod tests {
                     "function_id": function_id, "data": input }),
         );
         let answer = next_frame(rx, "invocationresult").await;
-        answer.get("observed").cloned().unwrap_or(json!([]))
+        answer
+            .get("matched")
+            .cloned()
+            .unwrap_or_else(|| panic!("no matched: {answer:#}"))
     }
 
     /// A match hook set while observers are active matches them from the
@@ -2262,7 +2489,7 @@ mod tests {
         assert!(function.is_observed_for(&call("b")));
         assert!(!function.is_observed_for(&call("c")));
         sent(&mut rx);
-        let observed = routed_observed(
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "ml::f",
@@ -2270,7 +2497,7 @@ mod tests {
             json!({ "kind": "b" }),
         )
         .await;
-        assert_eq!(observed, json!(["b"]));
+        assert_eq!(matched, json!(["b"]));
     }
 
     /// Matched by keys, an observer filed under several keys of a call is
@@ -2298,12 +2525,12 @@ mod tests {
         )
         .await;
         sent(&mut rx);
-        let sorted = |observed: Value| {
-            let mut ids: Vec<String> = serde_json::from_value(observed).unwrap();
+        let sorted = |matched: Value| {
+            let mut ids: Vec<String> = serde_json::from_value(matched).unwrap();
             ids.sort();
             ids
         };
-        let observed = routed_observed(
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "mk::f",
@@ -2311,8 +2538,8 @@ mod tests {
             json!({ "keys": ["x", "*", "x", "y"] }),
         )
         .await;
-        assert_eq!(sorted(observed), vec!["both", "star", "y"]);
-        let observed = routed_observed(
+        assert_eq!(sorted(matched), vec!["both", "star", "y"]);
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "mk::f",
@@ -2320,7 +2547,7 @@ mod tests {
             json!({ "keys": ["*"] }),
         )
         .await;
-        assert_eq!(sorted(observed), vec!["both", "star"]);
+        assert_eq!(sorted(matched), vec!["both", "star"]);
     }
 
     fn kind_keys() -> crate::Match {
@@ -2451,7 +2678,7 @@ mod tests {
             gate.notify_one();
             let answer = next_frame(&mut rx, "invocationresult").await;
             match function_id {
-                "kd::f" => assert_eq!(answer["observed"], json!(["a"])),
+                "kd::f" => assert_eq!(answer["matched"], json!(["a"])),
                 _ => assert_eq!(answer["result"], json!(["a"])),
             }
         }
@@ -2922,7 +3149,8 @@ mod tests {
             answer["result"], 1,
             "the deliver hook got the one of kind a"
         );
-        assert!(answer.get("observed").is_none());
+        assert_eq!(answer["delivered"], true);
+        assert!(answer.get("matched").is_none());
 
         iii.clear_observer_added()
             .clear_observer_added_for("cl::f")
@@ -2953,17 +3181,20 @@ mod tests {
         routed(1, json!({ "kind": "b" }));
         let answer = next_frame(&mut rx, "invocationresult").await;
         assert_eq!(answer["result"], json!({ "kind": "b" }), "the handler's");
-        let mut observed: Vec<String> = serde_json::from_value(answer["observed"].clone()).unwrap();
-        observed.sort();
-        assert_eq!(observed, vec!["b", "c"]);
+        assert!(answer.get("delivered").is_none());
+        let mut matched: Vec<String> = serde_json::from_value(answer["matched"].clone()).unwrap();
+        matched.sort();
+        assert_eq!(matched, vec!["b", "c"]);
 
-        // every observer wants every call
+        // every observer wants every call: the engine evaluates them all
         iii.clear_observer_match_for("cl::f");
         routed(2, json!({ "kind": "b" }));
         let answer = next_frame(&mut rx, "invocationresult").await;
-        let mut observed: Vec<String> = serde_json::from_value(answer["observed"].clone()).unwrap();
-        observed.sort();
-        assert_eq!(observed, vec!["b", "c", "d"]);
+        assert_eq!(answer["result"], json!({ "kind": "b" }));
+        assert!(
+            answer.get("matched").is_none() && answer.get("delivered").is_none(),
+            "{answer:#}"
+        );
     }
 
     /// Matched by keys, a call's keys are computed once per call, routed or
@@ -2995,7 +3226,7 @@ mod tests {
         .await;
         assert_eq!(computed.load(Ordering::SeqCst), 0);
         sent(&mut rx);
-        let observed = routed_observed(
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "ck::f",
@@ -3003,7 +3234,7 @@ mod tests {
             json!({ "kind": "a" }),
         )
         .await;
-        assert_eq!(observed, json!(["a"]));
+        assert_eq!(matched, json!(["a"]));
         assert_eq!(
             computed.load(Ordering::SeqCst),
             1,
