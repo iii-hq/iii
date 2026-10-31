@@ -1,5 +1,11 @@
 import { ChannelReader, ChannelWriter } from './channels'
-import { handlerErrorBody, InvocationError, InvocationTimeoutError, RegistrationRejectedError } from './errors'
+import {
+  handlerErrorBody,
+  InvocationError,
+  InvocationTimeoutError,
+  ObserveRejection,
+  RegistrationRejectedError,
+} from './errors'
 import { compileFilter, FilterError } from './filter'
 import {
   DEFAULT_BRIDGE_RECONNECTION_CONFIG,
@@ -302,8 +308,14 @@ class Sdk implements ISdk {
   private workerId?: string
   private reattachToken?: string
   private fatalError?: RegistrationRejectedError
-  // Observers this worker created, replayed (same id) on every connection.
+  // Observers this worker created, replayed (same id) on every connection:
+  // the handle that holds each id (decision 56).
   private observerHandles = new Map<string, ObserverHandleImpl>()
+  // Per id, the handles whose `observe` went out on this connection, oldest
+  // first: the engine's answers name an id, and their order says which of
+  // them each answer is about (decision 56). A disposed handle leaves once it
+  // has its `observeresult`; the holder of the id is the last.
+  private observesSent = new Map<string, ObserverHandleImpl[]>()
   // The engine's features (`WorkerRegistered.features`), kept across a
   // disconnect until the next `WorkerRegistered` replaces them.
   private engineFeatures: ReadonlySet<string> = new Set()
@@ -720,7 +732,9 @@ class Sdk implements ISdk {
    * replayed with the same id on every reconnect. Errors (`INVALID_ARGS`,
    * `INVALID_FILTER`, `FORBIDDEN`, `NOT_OBSERVABLE`, the host's rejection,
    * `UNSUPPORTED` against an engine without observe) show up as state `error`
-   * and reject `ready()`.
+   * and reject `ready()`. The handle holds its id until it is disposed: an
+   * `observe` of an id a handle of this client holds throws an
+   * {@link ObserveRejection} (`OBSERVER_ID_CONFLICT`) and sends nothing.
    *
    * @param source - What is observed: a function id, or `function_id`,
    *   `args`, `filters`, and `on` / `capture` / `deliver`.
@@ -750,8 +764,9 @@ class Sdk implements ISdk {
       throw new Error('observe: target is required (the id of a registered function)')
     }
     const id = options?.id ?? randomUUID()
+    // Held by a handle of this client: refused here, nothing sent, the holder untouched.
     if (this.observerHandles.has(id)) {
-      throw new Error(`observe: observer id already in use: ${id}`)
+      throw new ObserveRejection('OBSERVER_ID_CONFLICT', `observe: observer id already in use: ${id}`)
     }
     const onDispose = (h: ObserverHandleImpl) => this.disposeObserver(h)
     const logError = (msg: string, error?: unknown) => this.logError(msg, error)
@@ -849,10 +864,17 @@ class Sdk implements ISdk {
   private sendObserve(handle: ObserverHandleImpl): void {
     this.sendMessage(MessageType.Observe, handle.message, true)
     handle.sent = true
+    handle.answered = false
+    const sent = this.observesSent.get(handle.id)
+    if (sent) sent.push(handle)
+    else this.observesSent.set(handle.id, [handle])
   }
 
   private disposeObserver(handle: ObserverHandleImpl): void {
     if (this.observerHandles.get(handle.id) === handle) this.observerHandles.delete(handle.id)
+    // Answered, it leaves the list: what the engine says about it later
+    // reaches no other handle (a newer one hears nothing before its answer).
+    if (handle.answered) this.unlistObserve(handle)
     if (!handle.sent) return
     this.sendObserveFamily(MessageType.Unobserve, { id: handle.id })
   }
@@ -1494,6 +1516,7 @@ class Sdk implements ISdk {
     // Local dispatch and the compiled observer sets survive; what was sent on
     // this connection is replayed on the next one (standby functions too).
     this.registeredOnConnection = false
+    this.observesSent.clear()
     for (const functionId of [...this.standbyTimers.keys()]) this.stopStandby(functionId)
 
     // A fatal registration rejection (or shutdown) sets `isShuttingDown` and a
@@ -1514,6 +1537,7 @@ class Sdk implements ISdk {
     this.setConnectionState('connected')
     this.connectionEpoch++
     this.registeredOnConnection = false
+    this.observesSent.clear()
 
     if (this.ws) {
       this.ws.onmessage = this.onMessage.bind(this)
@@ -1923,10 +1947,10 @@ class Sdk implements ISdk {
       if (msg.warnings && msg.warnings.length > 0) {
         this.logWarn(`Observer ${msg.id}: ${msg.warnings.join('; ')}`)
       }
-      this.onObserverState(msg.id, msg.state, msg.error)
+      this.onObserveResult(msg.id, msg.state, msg.error)
     } else if (msgType === MessageType.ObserverStateChanged) {
       const msg = decodeObserverStateChanged(message)
-      this.onObserverState(msg.id, msg.state, msg.reason)
+      this.onObserverStateChanged(msg.id, msg.state, msg.reason)
     } else if (msgType === MessageType.RegistrationRejected) {
       this.onRegistrationRejected(decodeRegistrationRejected(message))
     } else if (msgType === MessageType.WorkerRegistered) {
@@ -1969,12 +1993,54 @@ class Sdk implements ISdk {
     this.reporter.clear()
   }
 
-  private onObserverState(id: string, wireState: string, reason?: ErrorBody): void {
-    const handle = this.observerHandles.get(id)
+  /**
+   * An `observeresult`: the answer to the oldest `observe` of the id sent on
+   * this connection that has none yet. The engine answers every `observe`
+   * once, in the order it read them (decision 56).
+   */
+  private onObserveResult(id: string, wireState: string, reason?: ErrorBody): void {
+    const handle = this.observesSent.get(id)?.find((h) => !h.answered)
     if (!handle) return
+    handle.answered = true
+    // Disposed before its answer: its `unobserve` follows, and nothing
+    // the engine says about it later reaches another handle.
+    if (handle.state === 'disposed') this.unlistObserve(handle)
+    else this.applyObserverState(handle, wireState, reason)
+  }
+
+  /**
+   * An `observerstatechanged`: about the newest observer of the id whose
+   * `observeresult` arrived on this connection. One that arrives before any
+   * did is dropped: a reattached connection hears its observers resume
+   * before its replayed `observe`s are answered, and each answer carries the
+   * current state (decision 56).
+   */
+  private onObserverStateChanged(id: string, wireState: string, reason?: ErrorBody): void {
+    const sent = this.observesSent.get(id)
+    if (!sent) return
+    for (let at = sent.length - 1; at >= 0; at--) {
+      if (sent[at].answered) {
+        this.applyObserverState(sent[at], wireState, reason)
+        return
+      }
+    }
+  }
+
+  /** A state from the engine for `handle`; `disposed` frees its id. */
+  private applyObserverState(handle: ObserverHandleImpl, wireState: string, reason?: ErrorBody): void {
     const state = toObserverState(wireState)
     handle.setState(state, reason ? { code: reason.code, message: reason.message } : undefined)
-    if (state === 'disposed') this.observerHandles.delete(id)
+    if (state !== 'disposed') return
+    this.unlistObserve(handle)
+    if (this.observerHandles.get(handle.id) === handle) this.observerHandles.delete(handle.id)
+  }
+
+  private unlistObserve(handle: ObserverHandleImpl): void {
+    const sent = this.observesSent.get(handle.id)
+    const at = sent ? sent.indexOf(handle) : -1
+    if (!sent || at < 0) return
+    sent.splice(at, 1)
+    if (sent.length === 0) this.observesSent.delete(handle.id)
   }
 
   /**

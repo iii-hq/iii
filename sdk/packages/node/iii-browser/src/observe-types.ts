@@ -91,7 +91,12 @@ export interface ObserveSource {
 
 /** The observer itself: its id, policy and metadata. */
 export interface ObserverOptions {
-  /** Default: a random UUID, stable across replays. */
+  /**
+   * Default: a random UUID, stable across replays. The handle holds it until
+   * it is disposed: an `observe` of an id a handle of this client holds
+   * throws an {@link ObserveRejection} with code `OBSERVER_ID_CONFLICT` and
+   * sends nothing.
+   */
   id?: string
   /** The observer is disposed after this many activations (`MAX_FIRES`). Default: unlimited. */
   max_fires?: number
@@ -256,7 +261,7 @@ export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKe
  * thrown {@link ObserveRejection}, or the error of a call it made, reaches the
  * caller with its code; any other error as `invocation_failed`. iii delivers
  * nothing for that function; the hook calls through observers
- * (`iii.call({ observer, payload })`) and applies their filters with
+ * (`worker.call({ observer, payload })`) and applies their filters with
  * `obs.matches(call)`. It runs inside the function's invocation, so the calls
  * it makes have that invocation as their caller.
  *

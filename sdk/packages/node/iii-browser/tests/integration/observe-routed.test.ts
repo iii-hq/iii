@@ -264,6 +264,37 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     expect(b.reason?.code).toBe('MAX_FIRES')
   })
 
+  it('an id observed again at once after dispose: the new observer stays active, and its dispose stops it (decision 56)', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner.registerFunction(`e2e::reuse-${RUN}`, async (n: number) => ({ n }))
+    const got = collector(watcher, `e2e::on-reuse-${RUN}`)
+    const frames = frameCounter(watcher)
+    const id = `reuse-${RUN}`
+    const first = watcher.observe({ function_id: `e2e::reuse-${RUN}` }, `e2e::on-reuse-${RUN}`, { id })
+    await first.ready()
+    await first.dispose()
+    const second = watcher.observe({ function_id: `e2e::reuse-${RUN}` }, `e2e::on-reuse-${RUN}`, { id })
+    await second.ready()
+    // The earlier observer's disposed, sent before the engine read the new observe, came and went.
+    await sleep(200)
+    expect(second.state).toBe('active')
+    expect(first.reason?.code).toBe('UNOBSERVED')
+    await watcher.call({ function_id: `e2e::reuse-${RUN}`, payload: 1 })
+    await waitFor(() => got.length === 1, 'an activation through the new observer')
+    expect(got[0].data.observer_id).toBe(id)
+
+    await second.dispose()
+    const sent = frames.frames.filter((f) => f.type === 'observe' || f.type === 'unobserve').map((f) => f.type)
+    expect(sent).toEqual(['observe', 'unobserve', 'observe', 'unobserve'])
+    await expect(watcher.call({ function_id: 'engine::observers::get', payload: { id } })).rejects.toMatchObject({
+      code: 'OBSERVER_NOT_FOUND',
+    })
+    await watcher.call({ function_id: `e2e::reuse-${RUN}`, payload: 2 })
+    await sleep(300)
+    expect(got).toHaveLength(1)
+  })
+
   it('the observer survives a reconnect of its worker (same id, replayed)', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')

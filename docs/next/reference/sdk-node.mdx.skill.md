@@ -317,7 +317,7 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
       The observer is disposed this many milliseconds after it is created (`EXPIRED`). Default: never.
     </ParamField>
     <ParamField body="id" type="string">
-      Default: a random UUID, stable across replays.
+      Default: a random UUID, stable across replays. The handle holds it until it is disposed: an `observe` of an id a handle of this client holds throws an ObserveRejection with code `OBSERVER_ID_CONFLICT` and sends nothing.
     </ParamField>
     <ParamField body="max_fires" type="number">
       The observer is disposed after this many activations (`MAX_FIRES`). Default: unlimited.
@@ -1018,7 +1018,7 @@ The observer itself: its id, policy and metadata.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `expires_in_ms` | `number` | No | The observer is disposed this many milliseconds after it is created (`EXPIRED`). Default: never. |
-| `id` | `string` | No | Default: a random UUID, stable across replays. |
+| `id` | `string` | No | Default: a random UUID, stable across replays. The handle holds it until<br />it is disposed: an `observe` of an id a handle of this client holds<br />throws an ObserveRejection with code `OBSERVER_ID_CONFLICT` and<br />sends nothing. |
 | `max_fires` | `number` | No | The observer is disposed after this many activations (`MAX_FIRES`). Default: unlimited. |
 | `max_in_flight` | `number` | No | Activations running at once; further ones queue, then drop as `OVERFLOW`.<br />Default: the engine's `observers.default_max_in_flight` (64). |
 | `metadata` | `Record<string, unknown>` | No | Delivered as the metadata sidecar of every activation. |
