@@ -560,7 +560,7 @@ impl ObserverHandle {
             })
             .await;
         }
-        self.iii.forget_observer(&self.entry.id);
+        self.iii.forget_observer(&self.entry);
         if self.entry.state() != ObserverState::Disposed {
             self.entry.set(
                 ObserverState::Disposed,
@@ -664,7 +664,13 @@ impl IIIClient {
             entry.set(ObserverState::Error, Some(reason), None);
             return handle;
         }
-        self.track_observer(entry);
+        if !self.track_observer(entry.clone()) {
+            let reason = ObserverReason {
+                code: observe_codes::INVALID_ARGS.to_string(),
+                message: format!("observer id already in use: {}", entry.id),
+            };
+            entry.set(ObserverState::Error, Some(reason), None);
+        }
         handle
     }
 

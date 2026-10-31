@@ -4134,21 +4134,34 @@ impl IIIClient {
     /// Starts tracking a new observer: sent now when this engine supports
     /// observe, failed when it does not, and sent on `WorkerRegistered`
     /// before that.
-    pub(crate) fn track_observer(&self, entry: Arc<ObserverEntry>) {
-        self.inner
+    /// Returns false, sending nothing, when the id is already taken.
+    pub(crate) fn track_observer(&self, entry: Arc<ObserverEntry>) -> bool {
+        match self
+            .inner
             .observers
             .lock_or_recover()
-            .insert(entry.id.clone(), entry.clone());
+            .entry(entry.id.clone())
+        {
+            std::collections::hash_map::Entry::Occupied(_) => return false,
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(entry.clone()),
+        };
         match self.inner.engine_features.load(Ordering::SeqCst) {
             ENGINE_WITH_OBSERVE | ENGINE_WITH_OBSERVE_V2 => self.send_observe(&entry),
             ENGINE_WITHOUT_OBSERVE => Self::fail_unsupported(&entry),
             _ => {}
         }
+        true
     }
 
-    /// Stops replaying an observer.
-    pub(crate) fn forget_observer(&self, id: &str) {
-        self.inner.observers.lock_or_recover().remove(id);
+    /// Stops replaying an observer, unless its id now belongs to another.
+    pub(crate) fn forget_observer(&self, entry: &ObserverEntry) {
+        let mut observers = self.inner.observers.lock_or_recover();
+        if observers
+            .get(&entry.id)
+            .is_some_and(|tracked| std::ptr::eq(Arc::as_ptr(tracked), entry))
+        {
+            observers.remove(&entry.id);
+        }
     }
 
     fn observer_entry(&self, id: &str) -> Option<Arc<ObserverEntry>> {
@@ -4164,7 +4177,7 @@ impl IIIClient {
     ) {
         if state == ObserverState::Disposed {
             // Disposed by the engine (policy, expiry, grace): not replayed.
-            self.forget_observer(&entry.id);
+            self.forget_observer(entry);
         }
         entry.set(state, reason.map(ObserverReason::from), fires);
     }
