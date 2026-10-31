@@ -1066,6 +1066,81 @@ async fn hosts_get_validated_args_route_by_them_and_can_reject() {
     }
 }
 
+/// An observer its host rejected stays on the engine in `error`. After a
+/// reconnect the engine answers its replay with that state, and the handle's
+/// `dispose()` removes the observer: the engine does not list it, and the
+/// id makes a new observer on the same connection.
+#[tokio::test]
+async fn a_rejected_observer_replayed_after_a_reconnect_is_removed_by_dispose() {
+    let id = uid();
+    let source = format!("it{id}::topics");
+    let target = format!("it{id}::a");
+    let topics = Topics::default();
+    let host = topics_host(&format!("host-{id}"), &source, &topics, false).await;
+    let proxy = CountingProxy::start(&engine_ws_url()).await;
+    let observer = client_at(proxy.url(), &format!("observer-{id}")).await;
+    let inbox = Inbox::default();
+    observer.register_function(&target, inbox.function());
+    settle().await;
+    let stable = format!("rejected-{id}");
+    let topic = |topic: &str| Source::function(&source).args(json!({ "topic": topic }));
+    let rejected = observer.observe_with(
+        topic("forbidden"),
+        &target,
+        ObserverOptions::default().id(&stable),
+    );
+    let err = tokio::time::timeout(WAIT, rejected.ready())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.invocation_error().unwrap().code, "TOPIC_FORBIDDEN");
+
+    proxy.drop_connections();
+    until("disconnect", || {
+        observer.get_connection_state() != iii_sdk::runtime::IIIConnectionState::Connected
+    })
+    .await;
+    until("reconnect", || {
+        observer.get_connection_state() == iii_sdk::runtime::IIIConnectionState::Connected
+    })
+    .await;
+    // made after the replay: its answer follows the replay's
+    let barrier = observer.observe(topic("b"), &target);
+    tokio::time::timeout(WAIT, barrier.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rejected.state(), ObserverState::Error);
+
+    let started = Instant::now();
+    rejected.dispose().await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    let listed = host
+        .call(call_req("engine::observers::get", json!({ "id": stable })))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        listed.invocation_error().unwrap().code,
+        "OBSERVER_NOT_FOUND"
+    );
+
+    let again = observer.observe_with(topic("a"), &target, ObserverOptions::default().id(&stable));
+    tokio::time::timeout(WAIT, again.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    for handle in [again, barrier] {
+        handle.dispose().await.unwrap();
+    }
+    for c in [host, observer] {
+        c.shutdown_async().await;
+    }
+}
+
 /// A routed call of a function with a match hook: the host's answer names
 /// the observers the hook matched, and the engine applies their `on` and
 /// filters (decision 55). Needs an engine that evaluates routed calls.
