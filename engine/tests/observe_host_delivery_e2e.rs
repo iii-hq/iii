@@ -844,13 +844,13 @@ async fn observed_values_are_the_handlers_without_the_callers_stamp() {
     sink.reply(&echoed, Value::Null).await;
 }
 
-/// A call through an observer is a call the host makes: its payload reaches
-/// the target with `_caller_worker_id` set to the host's connection id, as
-/// on every call a worker makes (decision 49). iii's delivery of an observed
-/// value to the same target carries no `_caller_worker_id` (decision 40),
-/// though the call the host answered carried its caller's.
+/// Nothing an observer's target receives carries a `_caller_worker_id`
+/// stamp: not iii's delivery of an observed value (decision 40), though the
+/// call the host answered carried its caller's, and not a call through the
+/// observer, which runs as the observer's activations do (decision 49). The
+/// engine removes one the host put in the payload itself.
 #[tokio::test]
-async fn only_a_call_through_an_observer_carries_the_callers_stamp() {
+async fn no_payload_an_observers_target_receives_carries_a_callers_stamp() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut orders = host(&t, "orders", &["orders::create"]).await;
     let mut sink = host(&t, "sink", &["sink::orders"]).await;
@@ -886,15 +886,17 @@ async fn only_a_call_through_an_observer_carries_the_callers_stamp() {
     let through = orders
         .call_with(
             "sink::orders",
-            json!({ "initial": true }),
+            json!({ "initial": true, "_caller_worker_id": sink.worker_id.to_string() }),
             json!({ "activation": { "observer_id": "inputs" } }),
         )
         .await;
     let delivered = sink.invoked("sink::orders").await;
     assert_eq!(delivered["activation"]["observer_id"], "inputs");
+    assert_eq!(delivered["data"], json!({ "initial": true }));
     assert_eq!(
-        delivered["data"],
-        json!({ "initial": true, "_caller_worker_id": orders.worker_id.to_string() }),
+        delivered["caller"]["worker_id"],
+        orders.worker_id.to_string(),
+        "the host is the call's caller"
     );
     sink.reply(&delivered, json!({ "ok": true })).await;
     assert_eq!(

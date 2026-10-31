@@ -49,20 +49,34 @@ const REMOVED_KEYS: [(&str, &str, &str); 2] = [
     ),
 ];
 
-/// A removed key whose replacement is set is logged as a `warn`. One whose
-/// replacement is not set is an error: the old config relied on a gate this
-/// engine no longer applies under that key, and would boot with it off.
+/// Logs one `warn` for each removed key set in `rbac` whose replacement is
+/// set (see [`removed_key_warnings`]).
 pub(crate) fn warn_removed_keys(rbac: &Value) -> anyhow::Result<()> {
-    for (key, replacement_key, replacement) in REMOVED_KEYS {
-        if rbac.get(key).is_none() {
-            continue;
-        }
-        if rbac.get(replacement_key).is_none_or(Value::is_null) {
-            anyhow::bail!("rbac.{key} is no longer read and its gate would be off: {replacement}");
-        }
-        tracing::warn!(key = %key, "rbac.{key} is ignored: {replacement}");
+    for (key, message) in removed_key_warnings(rbac)? {
+        tracing::warn!(key = %key, "{message}");
     }
     Ok(())
+}
+
+/// The removed keys set in `rbac`, each with its warning. A key set to
+/// `null` (a `${VAR:}` template whose variable is unset resolves to it)
+/// counts as unset, for the removed key and for its replacement alike. A
+/// removed key whose replacement is not set is an error: the config relied
+/// on a gate this engine reads under the replacement key only, and would
+/// boot with it off.
+fn removed_key_warnings(rbac: &Value) -> anyhow::Result<Vec<(&'static str, String)>> {
+    let set = |key: &str| rbac.get(key).is_some_and(|value| !value.is_null());
+    let mut warnings = Vec::new();
+    for (key, replacement_key, replacement) in REMOVED_KEYS {
+        if !set(key) {
+            continue;
+        }
+        if !set(replacement_key) {
+            anyhow::bail!("rbac.{key} is no longer read and its gate would be off: {replacement}");
+        }
+        warnings.push((key, format!("rbac.{key} is ignored: {replacement}")));
+    }
+    Ok(warnings)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -661,13 +675,14 @@ mod tests {
         assert!(config.on_observer_registration_function_id.is_none());
     }
 
-    /// The registration hooks of earlier engines still load, and are
-    /// ignored: the config parses, nothing reads them, and loading it logs
-    /// one warning per key, naming what replaces it.
+    /// The registration hooks of earlier engines load, and are ignored: the
+    /// config parses, nothing reads them, and loading it warns once per key,
+    /// naming what replaces it. The warnings are checked as computed, not
+    /// through a log capture: tracing's callsite interest is process-wide,
+    /// and a test on another thread logging through the same callsite makes
+    /// a thread-local capture miss lines.
     #[tokio::test]
     async fn removed_registration_hooks_are_ignored_with_one_warning_each() {
-        let (_guard, logs) = crate::deprecation::test_support::capture();
-        tracing::callsite::rebuild_interest_cache();
         let yaml = r#"
             on_trigger_registration_function_id: my-project::on-reg
             on_trigger_type_registration_function_id: my-project::on-type-reg
@@ -686,15 +701,8 @@ mod tests {
         }
 
         let raw: Value = serde_yaml::from_str(yaml).unwrap();
-        let engine = std::sync::Arc::new(crate::engine::Engine::new());
-        <super::super::WorkerManager as crate::workers::traits::Worker>::create(
-            engine,
-            Some(serde_json::json!({ "host": "127.0.0.1", "port": 0, "rbac": raw })),
-        )
-        .await
-        .expect("the config loads");
-        let logs = logs.contents();
-        for (key, replacement) in [
+        let warnings = removed_key_warnings(&raw).expect("the replacements are set");
+        let expected = [
             (
                 "on_trigger_registration_function_id",
                 "on_observer_registration_function_id",
@@ -703,16 +711,53 @@ mod tests {
                 "on_trigger_type_registration_function_id",
                 "on_function_registration_function_id",
             ),
-        ] {
-            let lines: Vec<&str> = logs
-                .lines()
-                .filter(|line| line.contains(&format!("rbac.{key} is ignored")))
-                .collect();
-            assert_eq!(lines.len(), 1, "{key}: {logs}");
-            assert!(lines[0].contains("WARN"), "{}", lines[0]);
-            assert!(lines[0].contains(replacement), "{}", lines[0]);
+        ];
+        assert_eq!(warnings.len(), expected.len(), "{warnings:?}");
+        for ((key, message), (expected_key, replacement)) in warnings.iter().zip(expected) {
+            assert_eq!(*key, expected_key);
+            assert!(
+                message.starts_with(&format!("rbac.{key} is ignored")),
+                "{message}"
+            );
+            assert!(message.contains(replacement), "{message}");
         }
-        assert_eq!(logs.lines().count(), 2, "nothing else: {logs}");
+        let engine = std::sync::Arc::new(crate::engine::Engine::new());
+        <super::super::WorkerManager as crate::workers::traits::Worker>::create(
+            engine,
+            Some(serde_json::json!({ "host": "127.0.0.1", "port": 0, "rbac": raw })),
+        )
+        .await
+        .expect("the config loads");
+    }
+
+    /// A key set to `null`, as a `${VAR:}` template with the variable unset
+    /// leaves it, is unset: a removed key alone is no error and no warning,
+    /// and a replacement set to `null` does not count as set.
+    #[test]
+    fn a_null_rbac_key_counts_as_unset() {
+        for removed in [
+            "on_trigger_registration_function_id",
+            "on_trigger_type_registration_function_id",
+        ] {
+            let warnings = removed_key_warnings(&serde_json::json!({ (removed): null }))
+                .expect("a null removed key is unset");
+            assert!(warnings.is_empty(), "{removed}: {warnings:?}");
+        }
+        let both_null = serde_json::json!({
+            "on_trigger_registration_function_id": null,
+            "on_observer_registration_function_id": null,
+        });
+        assert!(removed_key_warnings(&both_null).unwrap().is_empty());
+        let replacement_null = serde_json::json!({
+            "on_trigger_registration_function_id": "hook::x",
+            "on_observer_registration_function_id": null,
+        });
+        let err = removed_key_warnings(&replacement_null).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("on_observer_registration_function_id"),
+            "{err}"
+        );
     }
 
     #[test]

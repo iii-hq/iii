@@ -638,6 +638,12 @@ impl Observer {
         observer
     }
 
+    /// The spec its observing worker asked for, when a registration hook or
+    /// a function prefix rewrote it; `None` when its own fields give it.
+    pub(crate) fn requested_spec(&self) -> Option<&ObserveSpec> {
+        self.spec.as_deref()
+    }
+
     /// Whether `spec` is the one this observer was created with: a replay
     /// with the same id must carry it (`OBSERVER_ID_CONFLICT` otherwise).
     pub(crate) fn spec_matches(&self, spec: &ObserveSpec) -> bool {
@@ -678,6 +684,23 @@ impl Observer {
 
     pub fn is_active(&self) -> bool {
         lock(&self.status).state == ObserverState::Active
+    }
+
+    /// Whether a fire it has already counted runs: it is `active`, or it
+    /// was disposed for reaching `max_fires`. That disposal keeps the queue,
+    /// so every fire counted within `max_fires` runs, including one whose
+    /// activation the last fire overtook. Any other state drops the fire.
+    pub(crate) fn runs_counted_fires(&self) -> bool {
+        let status = lock(&self.status);
+        match status.state {
+            ObserverState::Active => true,
+            ObserverState::Disposed => status
+                .flags
+                .disposed
+                .as_deref()
+                .is_some_and(|reason| reason.code == observe_codes::MAX_FIRES),
+            _ => false,
+        }
     }
 
     /// Whether it was disposed: set before its disposal takes it out of any

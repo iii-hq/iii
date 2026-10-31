@@ -434,8 +434,10 @@ through an observer that names metadata before sending it. The engine checks, in
    observer's `max_in_flight` fails at once with `OVERFLOW`.
 
 It then adds the observer's metadata, an `activation_id`, and `observe_depth + 1`, and routes the
-call. The payload goes as given, with the engine's `_caller_worker_id` stamp (the host's connection
-id) as on every call a worker makes: the deliver hook applies the observer's `on` and filters with
+call. The call runs as an activation of the observer: the target runs under the session of the
+worker that created the observer, and the payload goes as given less a top-level
+`_caller_worker_id`, so the host's identity and grants authorize nothing the target does. The host
+is the call's `caller`. The deliver hook applies the observer's `on` and filters with
 `obs.matches(call)` before it calls.
 
 ```json
