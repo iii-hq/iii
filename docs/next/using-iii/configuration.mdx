@@ -211,9 +211,9 @@ workers:
 
 <Note>
   The configuration worker also provides a `bridge` adapter for cases where multiple iii engines
-  need to share the same configuration source, and a `ttl_seconds` option that cleans up entries for
-  ephemeral workers. See the [configuration worker
-  docs](https://workers.iii.dev/workers/configuration) for both.
+  need to share the same configuration source. An entry persists until its file is removed from the
+  `fs` adapter's directory. See the [configuration worker
+  docs](https://workers.iii.dev/workers/configuration) for both adapters.
 </Note>
 
 ## Reacting to configuration changes
