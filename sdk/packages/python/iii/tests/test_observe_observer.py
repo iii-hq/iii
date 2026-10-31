@@ -718,6 +718,53 @@ def test_an_error_answer_to_the_replay_of_an_accepted_observer_keeps_it_listed(
     wait_until(lambda: "x" not in client._observe_sent, what="the engine's disposed")
 
 
+def test_an_error_answer_to_a_replay_whose_first_answer_was_lost_keeps_it_listed(
+    engine: FakeEngine, connect: Any
+) -> None:
+    """The engine created the observer and its owner rejected it, but the
+    connection dropped before either frame reached the SDK. The reattached
+    connection's replay is answered with the held observer's ``error``: the
+    handle stays listed, is replayed, and its dispose() unobserves it."""
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    engine.drop()  # no answer for x reached the SDK
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    rejected = {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"}
+    engine.deliver({"type": "observeresult", "id": "x", "state": "error", "error": rejected})
+    wait_until(lambda: handle.state == "error", what="the replay's answer")
+    assert handle.reason == rejected
+    assert client._observe_sent["x"] == [handle]
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the second reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 2), what="the second replay")
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    engine.wait_for(lambda: engine.frames_of("unobserve", 2), what="the unobserve")
+    assert _types_and_ids(engine) == [("observe", "x"), ("observe", "x"), ("observe", "x"), ("unobserve", "x")]
+
+
+def test_a_refused_handle_keeps_its_refusal_against_an_engine_without_observe(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    refused = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    kept = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    _refuse(engine, "x", "INVALID_ARGS")
+    _answer(engine, "y", "active")
+    wait_until(lambda: refused.state == "error" and kept.state == "active", what="both answers")
+    engine.features = "legacy"  # the engine comes back without observe
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2, what="the reconnect")
+    wait_until(lambda: kept.state == "error", what="the held observer's UNSUPPORTED")
+    settle(client, engine)
+    assert kept.reason is not None and kept.reason["code"] == "UNSUPPORTED"
+    assert refused.reason == {"code": "INVALID_ARGS", "message": "refused"}
+    assert engine.frames_of("observe", 1) == []
+    refused.dispose()
+    settle(client, engine)
+    assert engine.frames_of("unobserve") == []
+
+
 #: Rounds of the refusal race (about 0.5 s at a 1 µs switch interval).
 REFUSAL_RACE_ROUNDS = 500
 
