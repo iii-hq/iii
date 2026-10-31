@@ -231,6 +231,7 @@ describe('iii.observe', () => {
     const { sdk, socket } = worker()
     socket.open()
     const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { max_fires: 1 })
+    socket.deliver({ type: 'observeresult', id: handle.id, state: 'active' })
     socket.deliver({
       type: 'observerstatechanged',
       id: handle.id,
@@ -249,7 +250,7 @@ describe('iii.observe', () => {
   it('refuses a reused id and a missing source or target', () => {
     const { sdk } = worker()
     sdk.observe({ function_id: 'a::b' }, 'c::d', { id: 'same' })
-    expect(() => sdk.observe({ function_id: 'a::b' }, 'c::d', { id: 'same' })).toThrow(/already in use/)
+    expect(() => sdk.observe({ function_id: 'a::b' }, 'c::d', { id: 'same' })).toThrow(ObserveRejection)
     expect(() => sdk.observe({ function_id: '' }, 'c::d')).toThrow(/function_id/)
     expect(() => sdk.observe('', 'c::d')).toThrow(/function_id/)
     expect(() => sdk.observe({ function_id: 'a::b' }, '')).toThrow(/target/)
@@ -264,6 +265,7 @@ describe('iii.observe', () => {
       throw new Error('boom')
     })
     const off = handle.onStateChange((s) => seen.push(s))
+    socket.deliver({ type: 'observeresult', id: handle.id, state: 'pending' })
     socket.deliver({ type: 'observerstatechanged', id: handle.id, state: 'active', fires: 0 })
     await fake.settle()
     off()
@@ -284,6 +286,7 @@ describe('iii.observe', () => {
       if (state === 'error') void handle.dispose() // calling the client from a listener is fine
     })
     inside = true
+    socket.deliver({ type: 'observeresult', id: handle.id, state: 'pending' })
     socket.deliver({ type: 'observerstatechanged', id: handle.id, state: 'active', fires: 0 })
     socket.deliver({
       type: 'observerstatechanged',
@@ -304,5 +307,151 @@ describe('iii.observe', () => {
     await fake.settle()
     expect(seen).toEqual(['active', 'suspended:TARGET_UNAVAILABLE', 'error:OWNER_TIMEOUT', 'disposed:UNOBSERVED'])
     expect(socket.framesOf('unobserve')).toEqual([{ type: 'unobserve', id: handle.id }])
+  })
+})
+
+describe('observer ids (decision 56)', () => {
+  it('refuses an id a handle holds, in any state, with OBSERVER_ID_CONFLICT: nothing sent, the holder untouched', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const holder = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'held' })
+    socket.deliver({ type: 'observeresult', id: 'held', state: 'active' })
+    for (const state of ['active', 'suspended', 'error'] as const) {
+      if (state !== 'active') socket.deliver({ type: 'observerstatechanged', id: 'held', state, fires: 0 })
+      let thrown: unknown
+      try {
+        sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'held' })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(ObserveRejection)
+      expect(thrown).toMatchObject({
+        code: 'OBSERVER_ID_CONFLICT',
+        message: 'observe: observer id already in use: held',
+      })
+      expect(holder.state).toBe(state)
+    }
+    expect(socket.framesOf('observe')).toHaveLength(1)
+    expect(socket.framesOf('unobserve')).toHaveLength(0)
+    await holder.dispose()
+    expect(socket.framesOf('unobserve')).toEqual([{ type: 'unobserve', id: 'held' }])
+  })
+
+  it('an id is free once disposed: the earlier observer’s late disposed reaches the earlier handle only', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const first = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'q' })
+    socket.deliver({ type: 'observeresult', id: 'q', state: 'active' })
+    await first.dispose()
+    const second = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'q' })
+    expect(
+      socket
+        .frames()
+        .map((f) => f.type)
+        .filter((t) => t === 'observe' || t === 'unobserve'),
+    ).toEqual(['observe', 'unobserve', 'observe'])
+    // The engine read unobserve before the new observe: its disposed comes first.
+    socket.deliver({
+      type: 'observerstatechanged',
+      id: 'q',
+      state: 'disposed',
+      reason: { code: 'UNOBSERVED', message: 'unobserved' },
+      fires: 0,
+    })
+    expect(second.state).toBe('pending')
+    socket.deliver({ type: 'observeresult', id: 'q', state: 'active' })
+    await expect(second.ready()).resolves.toBeUndefined()
+    expect(second.state).toBe('active')
+    expect(first.reason?.code).toBe('UNOBSERVED')
+    socket.deliver({ type: 'observerstatechanged', id: 'q', state: 'suspended', fires: 0 })
+    expect(second.state).toBe('suspended')
+    await second.dispose()
+    expect(socket.framesOf('unobserve')).toEqual([
+      { type: 'unobserve', id: 'q' },
+      { type: 'unobserve', id: 'q' },
+    ])
+  })
+
+  it('an observeresult answers the oldest unanswered observe of the id: one disposed before its answer', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const first = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'q' })
+    await first.dispose()
+    const second = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'q' })
+    // first's answer, first's disposed, then second's answer
+    socket.deliver({ type: 'observeresult', id: 'q', state: 'active' })
+    expect(second.state).toBe('pending')
+    socket.deliver({ type: 'observerstatechanged', id: 'q', state: 'disposed', fires: 0 })
+    expect(second.state).toBe('pending')
+    socket.deliver({
+      type: 'observeresult',
+      id: 'q',
+      state: 'error',
+      error: { code: 'FORBIDDEN', message: 'no' },
+    })
+    expect(second.state).toBe('error')
+    expect(second.reason?.code).toBe('FORBIDDEN')
+    expect(first.state).toBe('disposed')
+    expect(first.reason?.code).toBe('UNOBSERVED')
+  })
+
+  it('drops an observerstatechanged that arrives before any observeresult of the id', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    // A reattached connection hears the observer resume before the replay's answer.
+    next.deliver({ type: 'observerstatechanged', id: 'r', state: 'disposed', fires: 0 })
+    expect(handle.state).toBe('active')
+    next.deliver({ type: 'observeresult', id: 'r', state: 'suspended' })
+    expect(handle.state).toBe('suspended')
+  })
+
+  it('on a new connection, the unobserve of a disposed handle goes out before the replay of its id', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    socket.open()
+    const first = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'q' })
+    socket.deliver({ type: 'observeresult', id: 'q', state: 'active' })
+    socket.drop()
+    await first.dispose()
+    const second = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'q' })
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    expect(
+      next
+        .frames()
+        .filter((f) => f.type === 'observe' || f.type === 'unobserve')
+        .map((f) => `${f.type}:${f.id}`),
+    ).toEqual(['unobserve:q', 'observe:q'])
+    // The reattached earlier observer's disposed precedes the replay's answer.
+    next.deliver({ type: 'observerstatechanged', id: 'q', state: 'disposed', fires: 0 })
+    next.deliver({ type: 'observeresult', id: 'q', state: 'active' })
+    expect(second.state).toBe('active')
+  })
+
+  it('an observer the engine disposed frees its id; its handle sends no unobserve', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const first = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'm', max_fires: 1 })
+    socket.deliver({ type: 'observeresult', id: 'm', state: 'active' })
+    socket.deliver({
+      type: 'observerstatechanged',
+      id: 'm',
+      state: 'disposed',
+      reason: { code: 'MAX_FIRES', message: 'max_fires reached' },
+      fires: 1,
+    })
+    const second = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'm' })
+    await first.dispose()
+    expect(socket.framesOf('unobserve')).toHaveLength(0)
+    socket.deliver({ type: 'observeresult', id: 'm', state: 'active' })
+    expect(second.state).toBe('active')
   })
 })

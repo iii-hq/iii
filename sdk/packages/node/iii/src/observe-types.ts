@@ -90,7 +90,12 @@ export interface ObserveSource {
 
 /** The observer itself: its id, policy and metadata. */
 export interface ObserverOptions {
-  /** Default: a random UUID, stable across replays. */
+  /**
+   * Default: a random UUID, stable across replays. The handle holds it until
+   * it is disposed: an `observe` of an id a handle of this client holds
+   * throws an {@link ObserveRejection} with code `OBSERVER_ID_CONFLICT` and
+   * sends nothing.
+   */
   id?: string
   /** The observer is disposed after this many activations (`MAX_FIRES`). Default: unlimited. */
   max_fires?: number
