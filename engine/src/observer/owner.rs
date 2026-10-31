@@ -25,19 +25,18 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
-use arc_swap::ArcSwapOption;
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
     FnKey, ObserverRegistry,
-    lifecycle::{Announcement, Flags, Observer, lock},
+    lifecycle::{Announcement, Flags, Lock, Observer, lock},
     persistent::{Keyed, PersistentSet},
 };
 use crate::{
@@ -88,12 +87,12 @@ impl FunctionOptions {
 /// options other than the defaults.
 pub(crate) struct FunctionEntry {
     /// From the current registration. `None`: the defaults.
-    options: Mutex<Option<FunctionOptions>>,
+    options: Lock<Option<FunctionOptions>>,
     /// Every live observer of the function, in any state but `disposed`.
-    observers: Mutex<Members>,
+    observers: Lock<Members>,
     /// What the current owner has been told. Every owner-sync message for the
     /// function is sent while holding it.
-    sync: Mutex<OwnerSync>,
+    sync: Lock<OwnerSync>,
     /// Mirrors `sync.announced_to.is_some()`, for [`Self::is_unused`], which
     /// runs inside a `by_function` shard lock and must not wait for `sync`.
     announced: AtomicBool,
@@ -105,7 +104,7 @@ pub(crate) struct FunctionEntry {
     /// with that owner: it answered an observer, or the engine timed one out.
     /// The SDK runs one function's hooks one at a time, so an observer's ack
     /// timeout counts from here, not from its announcement (v2 §4.3).
-    owner_progress: Mutex<Option<(Uuid, tokio::time::Instant)>>,
+    owner_progress: Lock<Option<(Uuid, tokio::time::Instant)>>,
 }
 
 /// A function's live observers, kept where only [`Members`]' own methods
@@ -196,8 +195,8 @@ struct OwnerSync {
 
 /// `entry`'s `sync`, unless the entry was dropped (between finding it and
 /// locking it): a dropped entry is never used.
-fn lock_if_live(entry: &FunctionEntry) -> Option<std::sync::MutexGuard<'_, OwnerSync>> {
-    let sync = lock(&entry.sync);
+fn lock_if_live(entry: &FunctionEntry) -> Option<dashmap::RwLockWriteGuard<'_, OwnerSync>> {
+    let sync = entry.sync.write();
     (!entry.dead.load(Ordering::Acquire)).then_some(sync)
 }
 
@@ -224,49 +223,49 @@ pub(crate) struct Owner {
 
 impl FunctionEntry {
     pub fn options(&self) -> Option<FunctionOptions> {
-        lock(&self.options).clone()
+        self.options.write().clone()
     }
 
     /// The live observers, in creation order.
     pub fn observers(&self) -> Vec<Arc<Observer>> {
-        lock(&self.observers).to_vec()
+        self.observers.write().to_vec()
     }
 
     /// Live observers.
     pub fn len(&self) -> usize {
-        lock(&self.observers).len()
+        self.observers.write().len()
     }
 
     /// Observers that count against `observers.max_per_function`: not the
     /// ones the engine owns.
     pub fn limited_observer_count(&self) -> usize {
-        lock(&self.observers).limited()
+        self.observers.write().limited()
     }
 
     /// Whether `observer` is one of the function's live observers.
     fn holds(&self, observer: &Arc<Observer>) -> bool {
-        lock(&self.observers).holds(observer)
+        self.observers.write().holds(observer)
     }
 
     /// A new entry; `revision` continues the function's revisions from an
     /// earlier entry, so they never go back within an engine's lifetime.
     fn starting_at(revision: u64) -> Self {
         Self {
-            options: Mutex::new(None),
-            observers: Mutex::new(Members::default()),
-            sync: Mutex::new(OwnerSync {
+            options: Lock::new(None),
+            observers: Lock::new(Members::default()),
+            sync: Lock::new(OwnerSync {
                 revision,
                 announced_to: None,
             }),
             announced: AtomicBool::new(false),
             dead: AtomicBool::new(false),
-            owner_progress: Mutex::new(None),
+            owner_progress: Lock::new(None),
         }
     }
 
     fn is_unused(&self) -> bool {
-        lock(&self.observers).is_empty()
-            && lock(&self.options).is_none()
+        self.observers.write().is_empty()
+            && self.options.write().is_none()
             && !self.announced.load(Ordering::Acquire)
     }
 }
@@ -317,16 +316,43 @@ fn routed_key(key: &FnKey) -> &dyn FunctionKey {
 /// The active observers change in place: the view is copied only when a
 /// function joins or leaves it, or who may call one changes.
 pub(crate) struct Routed {
-    pub(crate) active: ArcSwapOption<ActiveSet>,
+    pub(crate) active: ActiveSlot,
     pub(crate) callers: Callers,
 }
 
 impl Routed {
     fn new(active: Option<Arc<ActiveSet>>, callers: Callers) -> Arc<Self> {
         Arc::new(Self {
-            active: ArcSwapOption::new(active),
+            active: ActiveSlot(Lock::new(active)),
             callers,
         })
+    }
+}
+
+/// A function's current active set in the routed view. A reader holds the
+/// lock only to clone the `Arc`, and a call keeps the version it cloned. A
+/// change replaces the version under the lock and drops the old one after
+/// letting it go: one compare-exchange each way, however many threads the
+/// engine runs.
+pub(crate) struct ActiveSlot(Lock<Option<Arc<ActiveSet>>>);
+
+impl ActiveSlot {
+    /// The current version.
+    #[inline]
+    pub(crate) fn load_full(&self) -> Option<Arc<ActiveSet>> {
+        self.0.read().clone()
+    }
+
+    /// Whether there is a current version, read without cloning it.
+    #[inline]
+    pub(crate) fn is_some(&self) -> bool {
+        self.0.read().is_some()
+    }
+
+    /// Replaces the current version. Called under `rebuild`.
+    fn store(&self, active: Option<Arc<ActiveSet>>) {
+        let previous = std::mem::replace(&mut *self.0.write(), active);
+        drop(previous);
     }
 }
 
@@ -646,12 +672,12 @@ impl ObserverRegistry {
         let private = options.private;
         if options.is_default() {
             if let Some(entry) = self.by_function.get(&key) {
-                *lock(&entry.options) = None;
+                *entry.options.write() = None;
             }
             self.drop_entry_if_unused(&key);
         } else {
             self.with_live_entry(&key, |entry, _| {
-                *lock(&entry.options) = Some(options);
+                *entry.options.write() = Some(options);
             });
         }
         self.set_callers(&key, private);
@@ -683,7 +709,7 @@ impl ObserverRegistry {
         } else {
             Callers::Anyone
         };
-        let _serialized = lock(&self.rebuild);
+        let _serialized = self.rebuild.write();
         let current = self.routed.load();
         let routed = current.get(routed_key(key));
         if routed.map(|routed| routed.callers) == Some(callers) {
@@ -749,8 +775,8 @@ impl ObserverRegistry {
     /// calls are what its observers observe, so a call from anyone else, the
     /// engine included, would be one it never made. One atomic load while no
     /// function is observed or hosted privately by a connection; otherwise
-    /// one hash lookup more, whatever the function, and one atomic load more
-    /// for the function's set when the view holds the function.
+    /// one hash lookup more, whatever the function, and the function's set
+    /// cloned under its read lock when the view holds the function.
     #[inline]
     pub fn route(
         &self,
@@ -835,10 +861,8 @@ impl ObserverRegistry {
     fn drop_entry_if_unused(&self, key: &FnKey) {
         let mut revision = 0;
         let dropped = self.by_function.remove_if(key, |_, entry| {
-            let sync = match entry.sync.try_lock() {
-                Ok(sync) => sync,
-                Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => return false,
+            let Some(sync) = entry.sync.try_write() else {
+                return false;
             };
             if !entry.is_unused() {
                 return false;
@@ -925,7 +949,7 @@ impl ObserverRegistry {
     pub(crate) fn attach_to_function(self: &Arc<Self>, observer: &Arc<Observer>) {
         let joined = self.with_owner_sync(&observer.function, |entry, sync, owner| {
             {
-                let mut members = lock(&entry.observers);
+                let mut members = entry.observers.write();
                 if observer.is_disposed() {
                     return false;
                 }
@@ -967,7 +991,7 @@ impl ObserverRegistry {
 
     pub(crate) fn detach_from_function(&self, observer: &Arc<Observer>) {
         let unused = self.entry_of(observer).is_none_or(|entry| {
-            lock(&entry.observers).take(observer);
+            entry.observers.write().take(observer);
             entry.is_unused()
         });
         // An entry its other observers still use stays: only the last one's
@@ -993,14 +1017,14 @@ impl ObserverRegistry {
     /// and `active`. `O(log n)` in the function's active observers. The
     /// function's set is replaced by a new version (copy-on-write), and the
     /// view only when the function joins or leaves it: the hot path reads
-    /// the view, then the function's set, with one atomic load each, and a
-    /// call keeps the set it started with.
+    /// the view with one atomic load, then clones the function's set under
+    /// its read lock, and a call keeps the set it started with.
     pub(crate) fn refresh_observer(&self, observer: &Arc<Observer>) {
         // Not one of its function's observers yet: in no active set.
         let Some(seq) = observer.seq() else {
             return;
         };
-        let _serialized = lock(&self.rebuild);
+        let _serialized = self.rebuild.write();
         let key = &observer.function;
         if cfg!(debug_assertions) {
             let held = Self::active_in(&self.routed.load(), key).is_some_and(|set| {
@@ -1043,7 +1067,7 @@ impl ObserverRegistry {
         if observers.is_empty() {
             return;
         }
-        let _serialized = lock(&self.rebuild);
+        let _serialized = self.rebuild.write();
         // What changes, by function, in the order given.
         let mut changes: Vec<(&FnKey, Vec<Change<'_>>)> = Vec::new();
         for observer in observers {
@@ -1155,7 +1179,7 @@ impl ObserverRegistry {
     /// every observer of the function (a registration). One observer's
     /// change goes through [`Self::refresh_observer`].
     pub(crate) fn refresh_active(&self, key: &FnKey) {
-        let _serialized = lock(&self.rebuild);
+        let _serialized = self.rebuild.write();
         let entry = self.function_entry(key);
         let members = entry
             .as_ref()
@@ -1198,14 +1222,14 @@ impl ObserverRegistry {
         if let Some(entry) = self.function_entry(&key) {
             if !registered {
                 // The options belong to the registration that just ended.
-                *lock(&entry.options) = None;
+                *entry.options.write() = None;
                 self.set_callers(&key, false);
             }
             // Only a registration reads `function_owners`: a release calls
             // this while holding the function's shard.
             let acked = registered && self.acked_by_default(&key);
             {
-                let mut sync = lock(&entry.sync);
+                let mut sync = entry.sync.write();
                 sync.announced_to = None;
                 entry.announced.store(false, Ordering::Release);
             }
@@ -1524,7 +1548,7 @@ impl ObserverRegistry {
         let Some(entry) = self.entry_of(observer) else {
             return;
         };
-        let mut sync = lock(&entry.sync);
+        let mut sync = entry.sync.write();
         self.tell_owner_removed(&entry, &mut sync, observer);
     }
 
@@ -1722,7 +1746,7 @@ impl ObserverRegistry {
         let entry = self.function_entry(&observer.function);
         let started = entry
             .as_deref()
-            .and_then(|entry| *lock(&entry.owner_progress))
+            .and_then(|entry| *entry.owner_progress.write())
             .filter(|(owner, _)| *owner == announced.owner)
             .map_or(announced_at, |(_, at)| at.max(announced_at));
         let deadline = if started + timeout > now {
@@ -1777,7 +1801,7 @@ impl ObserverRegistry {
     }
 
     fn record_progress(entry: &FunctionEntry, owner: Uuid, at: tokio::time::Instant) {
-        let mut progress = lock(&entry.owner_progress);
+        let mut progress = entry.owner_progress.write();
         *progress = Some(match *progress {
             Some((current, latest)) if current == owner => (owner, latest.max(at)),
             _ => (owner, at),
@@ -2556,7 +2580,7 @@ mod tests {
         let key = key();
         let entry = registry.entry_for(&key);
         {
-            let _held = lock(&entry.sync);
+            let _held = entry.sync.write();
             registry.drop_entry_if_unused(&key);
             assert!(
                 registry.function_entry(&key).is_some(),
