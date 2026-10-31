@@ -81,10 +81,16 @@ impl ProgressEmitter {
             action,
             timeout_ms: Some(5_000),
         };
+        // Through the console, as every compose line: a progress event is
+        // published while a spinner turns, and a raw write past it shreds
+        // both.
         if let Err(err) = self.client.call(request).await {
-            eprintln!(
-                "compose operation progress delivery failed ({}): {err}",
-                event.operation_id
+            crate::report::daemon_line(
+                &format!(
+                    "warning: progress delivery failed ({}): {err}",
+                    event.operation_id
+                ),
+                true,
             );
         }
     }
