@@ -1072,10 +1072,21 @@ pub(crate) fn vm_reconciliation(
     }
 }
 
-/// The adapter's own words for an S-code error, else the bus error as is.
+/// An S-code error as `S501: <the adapter's words> (<docs_url>)`, else the
+/// bus error as is.
 pub(crate) fn spawn_failed_message(error: &iii_sdk::Error) -> String {
     sandbox_payload(error)
-        .and_then(|payload| payload["message"].as_str().map(str::to_string))
+        .and_then(|payload| {
+            let line = format!(
+                "{}: {}",
+                payload["code"].as_str()?,
+                payload["message"].as_str()?
+            );
+            Some(match payload["docs_url"].as_str() {
+                Some(docs) => format!("{line} ({docs})"),
+                None => line,
+            })
+        })
         .unwrap_or_else(|| error.to_string())
 }
 
@@ -1959,7 +1970,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn spawn_failed_message_prefers_the_s_code_message() {
+    fn spawn_failed_message_keeps_the_s_code_and_its_docs() {
         let e = remote(
             "invocation_failed",
             &wire_message(
@@ -1970,7 +1981,10 @@ pub(crate) mod tests {
         );
         assert_eq!(
             spawn_failed_message(&e),
-            "host_path /etc is outside the host roots"
+            format!(
+                "S501: host_path /etc is outside the host roots ({}S501)",
+                contract::DOCS_BASE
+            )
         );
         assert_eq!(
             spawn_failed_message(&remote("function_not_found", "gone")),
