@@ -1762,6 +1762,19 @@ class Sdk implements IIIClient {
     return this.ws?.readyState === WebSocket.OPEN
   }
 
+  /**
+   * The `payload_too_large` error that replaces an answer too large to send
+   * is not the handler's outcome, so it activates no observer: to an engine
+   * with `observe.v2` it says `delivered` when the deliver hook delivered the
+   * call (`answer.delivered`), and `matched: []` otherwise, whatever the
+   * function's hooks. An engine without `observe.v2` gets the bare error.
+   */
+  private oversizedAnswer(answer: Record<string, unknown>, fallback: Record<string, unknown>): Record<string, unknown> {
+    if (!this.engineFeatures.has(FEATURE_OBSERVE_V2)) return fallback
+    if (answer.delivered === true) return { ...fallback, delivered: true }
+    return { ...fallback, matched: [] }
+  }
+
   // Classify the complete serialized envelope against the inclusive message limit.
   private prepareJson(message: Record<string, unknown>): string {
     const data = JSON.stringify(message)
@@ -1771,12 +1784,14 @@ class Sdk implements IIIClient {
     const error = new InvocationError({ code: 'payload_too_large', message: detail })
     if (message.type === MessageType.InvocationResult) {
       // The wire body carries the bare message: the caller's InvocationError adds the `code: ` prefix.
-      const fallback = JSON.stringify({
-        type: MessageType.InvocationResult,
-        invocation_id: message.invocation_id,
-        function_id: message.function_id,
-        error: { code: error.code, message: detail },
-      })
+      const fallback = JSON.stringify(
+        this.oversizedAnswer(message, {
+          type: MessageType.InvocationResult,
+          invocation_id: message.invocation_id,
+          function_id: message.function_id,
+          error: { code: error.code, message: detail },
+        }),
+      )
       if (Buffer.byteLength(fallback, 'utf8') <= MAX_JSON_MESSAGE_BYTES) return fallback
     }
     if (typeof message.invocation_id === 'string') {

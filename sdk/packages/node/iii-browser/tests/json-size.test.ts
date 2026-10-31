@@ -20,6 +20,7 @@ type Internal = ISdk & {
   functions: Map<string, { message: { metadata?: unknown }; handler?: unknown }>
   registerWorkerMetadata: () => void
   sendMessage: (...args: unknown[]) => void
+  engineFeatures: ReadonlySet<string>
 }
 
 let engine: MockEngine
@@ -138,6 +139,38 @@ describe('Browser JSON frame size', () => {
     expect(socket.readyState).toBe(WebSocket.OPEN)
     await sdk.call({ function_id: 'browser::still-open', payload: {}, action: { type: 'void' } })
     expect(socket.findAllSent('invokefunction').some((entry) => entry.function_id === 'browser::still-open')).toBe(true)
+  })
+
+  it('replaces an answer too large to send with an error that activates no observer on an observe.v2 engine', () => {
+    makeSdk()
+    const answer = (fields: Record<string, unknown>) =>
+      JSON.parse(
+        sdk.prepareJson({
+          type: MessageType.InvocationResult,
+          invocation_id: 'i',
+          function_id: 'f',
+          result: 'x'.repeat(LIMIT),
+          ...fields,
+        }),
+      ) as Record<string, unknown>
+    const fields = (frame: Record<string, unknown>) => ({ matched: frame.matched, delivered: frame.delivered })
+    sdk.engineFeatures = new Set(['observe.v1', 'observe.v2'])
+    for (const [sent, expected] of [
+      // no hooks: the engine would evaluate every observer against the error
+      [{}, { matched: [], delivered: undefined }],
+      // the observers a match hook matched, or none
+      [{ matched: ['o'] }, { matched: [], delivered: undefined }],
+      [{ matched: [] }, { matched: [], delivered: undefined }],
+      // the deliver hook delivered the call
+      [{ delivered: true }, { matched: undefined, delivered: true }],
+    ] as const) {
+      const frame = answer(sent)
+      expect(frame).toMatchObject({ invocation_id: 'i', error: { code: 'payload_too_large' } })
+      expect(frame).not.toHaveProperty('result')
+      expect(fields(frame), JSON.stringify(sent)).toEqual(expected)
+    }
+    sdk.engineFeatures = new Set(['observe.v1'])
+    expect(fields(answer({}))).toEqual({ matched: undefined, delivered: undefined })
   })
 
   it('does not retain oversized registrations and snapshots accepted registration JSON independently', async () => {
