@@ -5,6 +5,7 @@ runs the function's match and deliver hooks only."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -357,3 +358,54 @@ def test_an_id_is_free_at_once_after_dispose_and_the_new_observer_hears_its_own_
         watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})
     watcher.call({"function_id": src, "payload": 2})
     exactly(got, 1, "no activation after the second dispose")
+
+
+@pytest.mark.parametrize("dispose_first", [False, True], ids=["refused-then-dispose", "dispose-then-refused"])
+def test_a_refused_observe_holds_nothing_and_its_id_observes_again(worker: Any, fid: Any, dispose_first: bool) -> None:
+    """The engine stores nothing for a refused observe and ignores an
+    unobserve for an id it does not hold: after the refusal, a dispose()
+    sends nothing, and a dispose() already on the wire reaches no observer."""
+    owner = worker("refused-owner")
+    watcher = worker("refused-watcher")
+    src, oid = fid("py-e2e::refused-src"), fid("py-e2e-refused-oid")
+    owner.register_function(src, lambda data: data)
+    got = collector(watcher, fid("py-e2e::refused-tgt"))
+    frames = FrameCounter(watcher)
+    source = {"function_id": src, "filters": {"input.op": "insert"}}
+    if dispose_first:
+
+        async def observe_and_dispose() -> float:
+            # on the SDK loop: the dispose() comes as soon as the observe is
+            # sent, so its unobserve follows the observe before any answer
+            handle = watcher.observe(source, fid("py-e2e::refused-tgt"), {"id": oid})
+            while not handle._sent:
+                await asyncio.sleep(0)
+            started = time.monotonic()
+            handle.dispose()
+            return time.monotonic() - started
+
+        assert watcher._run_on_loop(observe_and_dispose()) < 0.5
+        wait_for(lambda: oid not in watcher._observe_sent, "the refusal")
+    else:
+        refused = watcher.observe(source, fid("py-e2e::refused-tgt"), {"id": oid})
+        with pytest.raises(ObserveRejection) as raised:
+            refused.ready(timeout=10)
+        assert raised.value.code == "INVALID_FILTER"
+        assert oid not in watcher._observe_sent
+        started = time.monotonic()
+        refused.dispose()
+        assert time.monotonic() - started < 0.5
+    second = watcher.observe({"function_id": src}, fid("py-e2e::refused-tgt"), {"id": oid})
+    second.ready(timeout=10)
+    settle_engine()
+    sent = [(f["type"], f.get("id")) for f in frames.frames if f.get("type") in ("observe", "unobserve")]
+    expected_unobserves = [("unobserve", oid)] if dispose_first else []
+    assert sent == [("observe", oid), *expected_unobserves, ("observe", oid)]
+    assert second.state == "active"
+    assert watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})["state"] == "active"
+    watcher.call({"function_id": src, "payload": {"op": "update"}})
+    exactly(got, 1, "the second observer's activation")
+    second.dispose()
+    settle_engine()
+    with pytest.raises(Exception, match="OBSERVER_NOT_FOUND"):
+        watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})

@@ -1372,8 +1372,10 @@ class III:
         self._reporter.clear()
 
     def _held_observers(self) -> list[ObserverHandle]:
+        """The handles replayed on a connection: every handle that holds its
+        id, except those the engine refused (a refusal is final)."""
         with self._observers_lock:
-            return list(self._observers.values())
+            return [handle for handle in self._observers.values() if not handle._refused]
 
     def _has_observer_hooks(self, function_id: str) -> bool:
         return (
@@ -1484,7 +1486,15 @@ class III:
     def _on_observe_result(self, observer_id: str, wire_state: str, error: dict[str, Any] | None) -> None:
         """SDK loop: an ``observeresult`` answers the oldest ``observe`` of the
         id sent on this connection that has no answer yet. The handles listed
-        before it are disposed ones, which hear nothing more."""
+        before it are disposed ones, which hear nothing more.
+
+        ``error`` for a handle the engine never accepted is a refusal: the
+        engine stores nothing for it, so the answer is final. The handle
+        leaves the id's list, is not replayed, and its dispose() sends no
+        ``unobserve``. ``error`` for a handle accepted on an earlier
+        connection may be the replay's answer of an observer the engine holds
+        in ``error``, which only an ``unobserve`` removes: that handle stays
+        listed and its dispose() sends one."""
         listed = self._observe_sent.get(observer_id)
         if not listed:
             return
@@ -1495,6 +1505,15 @@ class III:
             return  # every observe of the id sent here has its answer
         handle._answered = True
         del listed[:position]
+        state = to_observer_state(wire_state)
+        if state == "error" and not handle._accepted:
+            with self._observers_lock:
+                handle._refused = True
+                listed.remove(handle)
+                if not listed:
+                    del self._observe_sent[observer_id]
+        elif state != "error":
+            handle._accepted = True
         self._apply_observer_state(handle, wire_state, error)
 
     def _on_observer_state_changed(self, observer_id: str, wire_state: str, reason: dict[str, Any] | None) -> None:
@@ -1531,7 +1550,7 @@ class III:
         """SDK loop: sends (or replays) a held observer once per connection,
         when the socket is open, and lists it for its id's answers."""
         epoch = self._connection_epoch
-        if handle._sent_epoch == epoch or self._observers.get(handle.id) is not handle:
+        if handle._sent_epoch == epoch or handle._refused or self._observers.get(handle.id) is not handle:
             return
         if self._send_frame(self._prepare_json(handle._message)):
             handle._sent = True
@@ -1568,7 +1587,7 @@ class III:
         hold. Queued while disconnected and held until the connection is
         registered, so it goes out before the replays; a reattach would
         otherwise keep the observer alive."""
-        if not handle._sent or handle._engine_disposed:
+        if not handle._sent or handle._engine_disposed or handle._refused:
             return
         frame = self._to_dict(UnobserveMessage(id=handle.id))
         if not self._is_open():
@@ -3314,7 +3333,10 @@ class III:
         (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
         ``NOT_OBSERVABLE``, the rejection of the source's worker,
         ``UNSUPPORTED`` against an engine without observe) show up as state
-        ``error`` and make ``ready()`` raise :class:`ObserveRejection`.
+        ``error`` and make ``ready()`` raise :class:`ObserveRejection`. The
+        engine's refusal is the handle's final answer: it is not replayed,
+        it holds its id until its ``dispose()``, and that ``dispose()``
+        sends nothing.
 
         Args:
             source: What is observed: a function id, or ``function_id``,
