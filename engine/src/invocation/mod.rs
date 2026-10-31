@@ -396,7 +396,10 @@ impl InvocationHandler {
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
-                    if !crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
+                    // Copied once, by the first successful user call.
+                    if acc.first_user_success_fn.get().is_none()
+                        && !crate::workers::telemetry::is_iii_builtin_function_id(&function_id)
+                    {
                         let _ = acc.first_user_success_fn.set(function_id.clone());
                     }
 
