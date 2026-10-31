@@ -25,6 +25,11 @@
 //! fake engine confirms the functions with the observers each case needs, and
 //! counts the report items it receives.
 //!
+//! After the criterion rows, each `call_local/*` case runs again paced at
+//! 5,000 calls a second for 2 seconds (`paced/5000/<case>`, the rate of the
+//! spec's budget): the latency of each call as percentiles, and the report
+//! items the fake engine received per call.
+//!
 //! `cargo bench -p iii-sdk --bench observe_bench`
 
 use std::{
@@ -284,6 +289,70 @@ fn bench_call(
     });
 }
 
+/// Calls per second of the paced pass, and its length.
+const PACED_RATE: u64 = 5_000;
+const PACED_SECS: u64 = 2;
+
+/// Calls `function_id` with `input(i)` at `PACED_RATE` a second for
+/// `PACED_SECS`, one at a time on a current-thread runtime, and prints the
+/// latency of each call as percentiles and the report items the fake engine
+/// received per call.
+fn paced(host: &Host, name: &str, function_id: &'static str, input: impl Fn(u64) -> Value) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let calls = PACED_RATE * PACED_SECS;
+    let period_ns = 1_000_000_000 / PACED_RATE;
+    let items_before = host.received.items.load(Ordering::Relaxed);
+    let once_before = host.received.once.load(Ordering::Relaxed);
+    let mut latencies: Vec<u64> = Vec::with_capacity(calls as usize);
+    let elapsed = rt.block_on(async {
+        let start = Instant::now();
+        for i in 0..calls {
+            let due = start + Duration::from_nanos(period_ns * i);
+            while Instant::now() < due {
+                tokio::task::yield_now().await;
+            }
+            let sent = Instant::now();
+            let out = host
+                .iii
+                .call(CallRequest::new(function_id, input(i)))
+                .await
+                .unwrap();
+            latencies.push(sent.elapsed().as_nanos() as u64);
+            black_box(out);
+        }
+        start.elapsed()
+    });
+    // Reports are batched: wait until the count stops growing.
+    let mut items = host.received.items.load(Ordering::Relaxed);
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        let now = host.received.items.load(Ordering::Relaxed);
+        if now == items {
+            break;
+        }
+        items = now;
+    }
+    let once = host.received.once.load(Ordering::Relaxed) - once_before;
+    latencies.sort_unstable();
+    let micros = |ns: u64| ns as f64 / 1_000.0;
+    let at = |p: f64| micros(latencies[((latencies.len() - 1) as f64 * p) as usize]);
+    let mean = micros(latencies.iter().sum::<u64>()) / latencies.len() as f64;
+    eprintln!(
+        "paced/{PACED_RATE}/{name}: {calls} calls in {:.3} s ({:.0}/s); latency µs: mean {mean:.3} p50 {:.3} p90 {:.3} p99 {:.3} max {:.3}; report items per call {:.3}, carrying the value once {:.3}",
+        elapsed.as_secs_f64(),
+        calls as f64 / elapsed.as_secs_f64(),
+        at(0.50),
+        at(0.90),
+        at(0.99),
+        micros(*latencies.last().unwrap()),
+        (items - items_before) as f64 / calls as f64,
+        once as f64 / calls as f64,
+    );
+}
+
 fn observe_benches(c: &mut Criterion) {
     let host = host();
     let numbered = |i: u64| json!({ "n": i });
@@ -390,6 +459,45 @@ fn observe_benches(c: &mut Criterion) {
         "fake engine: {} report items, {} carrying the value once (output_is_input)",
         host.received.items.load(Ordering::Relaxed),
         host.received.once.load(Ordering::Relaxed)
+    );
+
+    paced(&host, "call_local/no_observers", "bench::plain", numbered);
+    paced(&host, "call_local/private", "bench::private", numbered);
+    paced(
+        &host,
+        "call_local/10_observers_none_matching",
+        "bench::ten-none",
+        numbered,
+    );
+    paced(
+        &host,
+        "call_local/1_observer_matching",
+        "bench::one-match",
+        numbered,
+    );
+    paced(
+        &host,
+        "call_local/match_keys_1_of_10000",
+        "bench::match-keys",
+        |i| json!({ "expression": "hit", "n": i }),
+    );
+    paced(
+        &host,
+        "call_local/private_event",
+        "bench::private-event",
+        event,
+    );
+    paced(
+        &host,
+        "call_local/private_deliver_hook",
+        "bench::private-deliver",
+        event,
+    );
+    paced(
+        &host,
+        "call_local/event_source_observed",
+        "bench::source",
+        event,
     );
     host.iii.shutdown();
 }
