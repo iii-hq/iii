@@ -1022,12 +1022,14 @@ impl ObserverRegistry {
             caller: completed.caller.as_deref(),
             metadata: completed.metadata.as_deref(),
         };
+        // Read once for every observer the call may activate.
+        let max_depth = self.config.load().max_observe_depth;
         match matching {
             Matching::Filters => match &set.filters {
                 Some(filters) => {
                     for (_, observer) in filters.matches(&doc) {
                         if accepts(&observer.on, completed.success) {
-                            self.activate(observer, &completed);
+                            self.activate_within(observer, &completed, max_depth);
                         }
                     }
                 }
@@ -1038,7 +1040,7 @@ impl ObserverRegistry {
                             if accepts(&observer.on, completed.success)
                                 && observer.filter.matches(&doc)
                             {
-                                self.activate(observer, &completed);
+                                self.activate_within(observer, &completed, max_depth);
                             }
                         }
                     }
@@ -1057,7 +1059,7 @@ impl ObserverRegistry {
                 held.sort_by_key(|observer| observer.seq());
                 for observer in &held {
                     if accepts(&observer.on, completed.success) && observer.filter.matches(&doc) {
-                        self.activate(observer, &completed);
+                        self.activate_within(observer, &completed, max_depth);
                     }
                 }
             }
@@ -1069,11 +1071,22 @@ impl ObserverRegistry {
     /// expiry, `max_fires`, then an in-flight slot or the bounded queue.
     /// Returns whether the event was dropped because the queue was full.
     fn activate(self: &Arc<Self>, observer: &Arc<Observer>, completed: &Arc<Completed>) -> bool {
+        let max_depth = self.config.load().max_observe_depth;
+        self.activate_within(observer, completed, max_depth)
+    }
+
+    /// [`Self::activate`] with the loop guard's `max_depth` given: what an
+    /// evaluation reads once for all the observers it activates.
+    fn activate_within(
+        self: &Arc<Self>,
+        observer: &Arc<Observer>,
+        completed: &Arc<Completed>,
+        max_depth: u32,
+    ) -> bool {
         if !observer.is_active() {
             drop_event(observer, observe_codes::INACTIVE);
             return false;
         }
-        let max_depth = self.config.load().max_observe_depth;
         if completed.depth.saturating_add(1) > max_depth {
             drop_event(observer, observe_codes::LOOP_GUARD);
             warn_loop_guard(observer, completed.depth, max_depth);
@@ -1088,10 +1101,23 @@ impl ObserverRegistry {
             drop_event(observer, observe_codes::INACTIVE);
             return false;
         }
-        let Some(fired) = take_fire(observer) else {
-            return false;
+        // With `max_fires`, the fire is taken first, so a spent observer drops
+        // as `MAX_FIRES`; without it, the fire is counted under the flow lock
+        // once the activation has room, and a full queue's drop counts nothing
+        // else.
+        let taken = match observer.policy.max_fires {
+            Some(_) => match take_fire(observer) {
+                Some(fired) => Some(fired),
+                None => return false,
+            },
+            None => None,
         };
-        let run_now = {
+        let give_back = || {
+            if taken.is_some() {
+                observer.fires.fetch_sub(1, Ordering::AcqRel);
+            }
+        };
+        let (run_now, fired) = {
             let mut flow = observer.flow.write();
             // Disposal sets the state and then drains this queue under the
             // lock: judging again here keeps an activation that passed the
@@ -1099,11 +1125,11 @@ impl ObserverRegistry {
             // keeps the queue, and this fire is within `max_fires`: it runs.
             if !observer.runs_counted_fires() {
                 drop(flow);
-                observer.fires.fetch_sub(1, Ordering::AcqRel);
+                give_back();
                 drop_event(observer, observe_codes::INACTIVE);
                 return false;
             }
-            if flow.running < observer.policy.max_in_flight && flow.queue.is_empty() {
+            let run_now = if flow.running < observer.policy.max_in_flight && flow.queue.is_empty() {
                 flow.running += 1;
                 Some(PendingActivation::running(completed.clone()))
             } else if flow.queue.len() < observer.policy.max_queue
@@ -1116,14 +1142,16 @@ impl ObserverRegistry {
                 None
             } else {
                 drop(flow);
-                observer.fires.fetch_sub(1, Ordering::AcqRel);
+                give_back();
                 if let Some((cost, limit)) = self.queue_budget.too_large(completed) {
                     drop_too_large(observer, cost, limit, TooLarge::Queued);
                     return false;
                 }
                 drop_event(observer, observe_codes::OVERFLOW);
                 return true;
-            }
+            };
+            let fired = taken.unwrap_or_else(|| observer.fires.fetch_add(1, Ordering::AcqRel) + 1);
+            (run_now, fired)
         };
         if let Some(pending) = run_now {
             match self.runtime() {
@@ -3375,9 +3403,53 @@ mod tests {
         );
     }
 
+    /// A full queue's drop counts no fire, with or without `max_fires`; the
+    /// fire that reaches `max_fires` disposes the observer, and what comes
+    /// after it drops as `INACTIVE`.
+    #[tokio::test]
+    async fn an_overflow_counts_no_fire() {
+        for max_fires in [None, Some(10), Some(2)] {
+            let engine = Arc::new(Engine::new());
+            engine.observers.set_config(super::super::ObserversConfig {
+                max_queue_per_observer: 1,
+                ..Default::default()
+            });
+            source(&engine);
+            let (_gate, _delivered) = gated(&engine, "test::held");
+            let (worker, _socket) = test_support::worker(&engine);
+            let mut request = test_support::request("obs", "test::src", "test::held", None);
+            request.max_in_flight = Some(1);
+            request.max_fires = max_fires;
+            test_support::observe_request(&engine, &worker, request).await;
+            let observer = engine.observers.get("obs").unwrap();
+            let registry = engine.observers.clone();
+            // One runs (held by the gate), one queues, the third finds the
+            // queue full, or the observer spent.
+            let overflowed: Vec<bool> = (0..3)
+                .map(|n| registry.activate(&observer, &event(n)))
+                .collect();
+            let spent = max_fires == Some(2);
+            assert_eq!(
+                overflowed,
+                [false, false, !spent],
+                "max_fires {max_fires:?}"
+            );
+            assert_eq!(observer.fires.load(Ordering::SeqCst), 2, "{max_fires:?}");
+            let drops = observer.drops.snapshot();
+            let (reason, other) = if spent {
+                ("INACTIVE", "OVERFLOW")
+            } else {
+                ("OVERFLOW", "INACTIVE")
+            };
+            assert_eq!(drops.get(reason), Some(&1), "{max_fires:?}: {drops:?}");
+            assert_eq!(drops.get(other), None, "{max_fires:?}: {drops:?}");
+            assert_eq!(drops.get("MAX_FIRES"), None, "{max_fires:?}: {drops:?}");
+        }
+    }
+
     /// An activation that passed the state check and then waits for the
     /// observer's flow lock while the observer is disposed must not run: it is
-    /// dropped `INACTIVE` and its fire is given back. The interleaving is
+    /// dropped `INACTIVE`, with no fire counted. The interleaving is
     /// forced with the lock held, by sleeps (a late thread only makes the
     /// test pass early, never fail).
     #[tokio::test]
