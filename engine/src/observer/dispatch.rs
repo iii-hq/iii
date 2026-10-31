@@ -28,12 +28,14 @@
 //! function's match hook matched (`matched`), among which the engine
 //! evaluates, or says that its deliver hook delivered the call
 //! (`delivered`), and the engine activates nothing; an answer with neither
-//! leaves every active observer to the engine's evaluation. A routed call of
-//! such a host that ends without its answer (its caller left, the engine
-//! could not send it, the host went away) activates nothing: each of its
-//! observers counts a `CANCELLED` drop. The host matches and reports its
-//! local calls itself (`invocationsobserved`), and the engine activates the
-//! observers each report names.
+//! leaves every active observer to the engine's evaluation. Only the
+//! function's host answers for its observers: an answer from another
+//! `observe.v2` connection activates nothing (`REPORTER_NOT_OWNER`). A
+//! routed call of such a host that ends without its answer (its caller
+//! left, the engine could not send it, the host went away) activates
+//! nothing: each of its observers counts a `CANCELLED` drop. The host
+//! matches and reports its local calls itself (`invocationsobserved`), and
+//! the engine activates the observers each report names.
 //!
 //! A matched event is shared, not copied, by the observers it activates: a
 //! queued activation holds a pointer to it, and the target's argument is built
@@ -708,13 +710,22 @@ impl ObserverRegistry {
     /// evaluates those of them that are active observers of the function; or
     /// that its deliver hook delivered the call, and nothing is activated.
     /// The answer's result is the observers' `output`, and its `error` their
-    /// `error` (decisions 36, 39). An answer from a connection that does not
-    /// host the function activates none of the observers it names
-    /// (`REPORTER_NOT_OWNER`). Without `delivered`, a call whose host
+    /// `error` (decisions 36, 39). Only the function's host answers for its
+    /// observers: an answer from any other `observe.v2` connection (a caller
+    /// answering its own call by its id, say) activates nothing, whatever it
+    /// carries, and counts `REPORTER_NOT_OWNER` for each observer it names
+    /// in `matched`, or for each active observer when it names none (see
+    /// [`Self::refuse_answer`]). Without `delivered`, a call whose host
     /// declared `observe.v2` ended without its answer: each active observer
     /// counts a `CANCELLED` drop, since only the host's match and deliver
     /// hooks know which of them it is for. The engine evaluates the
     /// observers of every other call against all of them.
+    ///
+    /// When the evaluator has no room for the call, nothing is evaluated:
+    /// each observer the call could activate counts an `OVERFLOW` drop,
+    /// every active observer, or the ones the host's match hook named, their
+    /// filters unread (the input was not kept, and an overloaded engine
+    /// evaluates no filter on the caller's path).
     #[allow(clippy::too_many_arguments)]
     pub fn complete(
         self: &Arc<Self>,
@@ -737,24 +748,25 @@ impl ObserverRegistry {
                 return;
             }
             None => Matching::Filters,
-            Some(HostDelivery { host, delivery }) => match delivery {
-                RoutedDelivery::Delivered => return,
-                RoutedDelivery::Every => Matching::Filters,
-                RoutedDelivery::Matched(ids) => {
-                    if ids.is_empty() {
-                        return;
-                    }
-                    if !self.hosts(host, namespace, function_id) {
-                        let key = (namespace.to_string(), function_id.to_string());
-                        self.drop_matched(&key, &ids, observe_codes::REPORTER_NOT_OWNER);
-                        return;
-                    }
-                    let mut ids = ids;
-                    ids.sort_unstable();
-                    ids.dedup();
-                    Matching::Matched(ids)
+            Some(HostDelivery { host, delivery }) => {
+                if !self.hosts(host, namespace, function_id) {
+                    self.refuse_answer(&call.set, namespace, function_id, &delivery);
+                    return;
                 }
-            },
+                match delivery {
+                    RoutedDelivery::Delivered => return,
+                    RoutedDelivery::Every => Matching::Filters,
+                    RoutedDelivery::Matched(ids) => {
+                        if ids.is_empty() {
+                            return;
+                        }
+                        let mut ids = ids;
+                        ids.sort_unstable();
+                        ids.dedup();
+                        Matching::Matched(ids)
+                    }
+                }
+            }
         };
         if !call.admitted || !self.evaluator_has_room(&call.set) {
             for observer in call.set.observers.iter().filter(|o| matching.concerns(o)) {
@@ -811,6 +823,32 @@ impl ObserverRegistry {
             ctx: ctx.clone(),
         };
         self.enqueue(evaluation);
+    }
+
+    /// An `observe.v2` answer to a routed call of `(namespace, function_id)`
+    /// from a connection that does not host it: it activates nothing, and
+    /// each observer it names in `matched` counts `REPORTER_NOT_OWNER` (an
+    /// empty `matched` counts one against the function); without `matched`,
+    /// or with `delivered`, it names none, and each of `set`'s active
+    /// observers does, since the answer would have decided for all of them.
+    fn refuse_answer(
+        &self,
+        set: &ActiveSet,
+        namespace: &str,
+        function_id: &str,
+        delivery: &RoutedDelivery,
+    ) {
+        match delivery {
+            RoutedDelivery::Matched(ids) => {
+                let key = (namespace.to_string(), function_id.to_string());
+                self.drop_matched(&key, ids, observe_codes::REPORTER_NOT_OWNER);
+            }
+            RoutedDelivery::Every | RoutedDelivery::Delivered => {
+                for observer in &set.observers {
+                    drop_event(observer, observe_codes::REPORTER_NOT_OWNER);
+                }
+            }
+        }
     }
 
     /// Whether `connection` hosts `(namespace, function_id)` now.
@@ -2508,11 +2546,30 @@ mod tests {
         assert_eq!(engine.observers.evaluated(), before);
         assert_eq!((fires("a"), fires("b")), (2, 3));
 
-        // From anyone but the host, the named observers activate nothing.
+        // From anyone but the host, nothing is activated or evaluated: the
+        // observers a `matched` names count `REPORTER_NOT_OWNER`, and an
+        // answer that names none (no `matched`, or `delivered`) counts it
+        // for every active observer.
+        let not_owner = |id: &str| {
+            let info = engine.observers.get_info(&engine, None, id).unwrap();
+            info.dropped.get("REPORTER_NOT_OWNER").copied()
+        };
+        let before = engine.observers.evaluated();
         complete_delivered(&engine, 99, Uuid::new_v4(), matched(&["a"]));
-        let info = engine.observers.get_info(&engine, None, "a").unwrap();
-        assert_eq!(info.dropped.get("REPORTER_NOT_OWNER"), Some(&1));
-        assert_eq!(fires("a"), 2);
+        assert_eq!((not_owner("a"), not_owner("b")), (Some(1), None));
+        complete_delivered(&engine, 99, Uuid::new_v4(), super::RoutedDelivery::Every);
+        assert_eq!((not_owner("a"), not_owner("b")), (Some(2), Some(1)));
+        complete_delivered(
+            &engine,
+            99,
+            Uuid::new_v4(),
+            super::RoutedDelivery::Delivered,
+        );
+        assert_eq!((not_owner("a"), not_owner("b")), (Some(3), Some(2)));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(engine.observers.evaluated(), before);
+        assert_eq!((fires("a"), fires("b")), (2, 3));
+        assert!(a.try_recv().is_err() && b.try_recv().is_err());
     }
 
     /// When the evaluator has no room for a completion its host narrowed,
@@ -2540,6 +2597,35 @@ mod tests {
         };
         assert_eq!(dropped("a"), Some(1));
         assert_eq!(dropped("b"), None, "not listed");
+    }
+
+    /// When the evaluator has no room for a completion its host did not
+    /// narrow, nothing is evaluated: every active observer counts the
+    /// `OVERFLOW`, whatever its filters, as for every call the engine
+    /// evaluates by itself.
+    #[tokio::test]
+    async fn a_completion_without_room_that_names_none_charges_every_active_observer() {
+        let engine = Arc::new(Engine::new());
+        engine
+            .observers
+            .evaluator_capacity
+            .store(1, Ordering::SeqCst);
+        let (host, _a, _b, _socket) = hosted_source(&engine).await;
+        // No yield in between: the evaluator task cannot drain the queue.
+        // `a`'s filter takes 99 only.
+        for n in 0..2 {
+            complete_delivered(&engine, n, host, super::RoutedDelivery::Every);
+        }
+        let dropped = |id: &str| {
+            engine
+                .observers
+                .get_info(&engine, None, id)
+                .unwrap()
+                .dropped
+                .get("OVERFLOW")
+                .copied()
+        };
+        assert_eq!((dropped("a"), dropped("b")), (Some(1), Some(1)));
     }
 
     /// Completes one observed call of `test::src` with `body` as its input.

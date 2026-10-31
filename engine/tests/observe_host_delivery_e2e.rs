@@ -8,8 +8,10 @@
 //! the engine evaluates every active observer of the function; with
 //! `matched`, only the observers the function's match hook matched; with
 //! `delivered: true` (the function's deliver hook delivered the call), none.
-//! The engine never forwards either field. A host's local calls arrive as
-//! `invocationsobserved` items; a routed call never does (decision 38).
+//! The engine never forwards either field, and reads no answer for the
+//! observers from a connection that does not host the function. A host's
+//! local calls arrive as `invocationsobserved` items; a routed call never
+//! does (decision 38).
 
 mod observe_support;
 
@@ -458,6 +460,78 @@ async fn a_list_from_a_connection_that_does_not_host_the_function_is_refused() {
     orders.result(barrier).await;
     assert_eq!(fires(&t, "watched"), 0);
     assert!(!invoked_already(&mut sink, "sink::orders"));
+}
+
+/// Only the function's host answers for its observers. An `observe.v2`
+/// answer from any other connection (here the caller answering its own call
+/// by its id) that names no observer, without `matched` or with
+/// `delivered`, activates nothing and is not evaluated, though the caller
+/// gets its result: each active observer counts `REPORTER_NOT_OWNER`. That
+/// holds for a host without `observe.v2` too. The host's own answer is
+/// evaluated as usual.
+#[tokio::test]
+async fn an_answer_from_a_connection_that_does_not_host_the_function_activates_nothing() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", &["orders::refund"]).await;
+    let mut legacy = host_with(&t, "legacy", OBSERVE_V1, &["legacy::refund"]).await;
+    let mut sink = host(&t, "sink", &["sink::refunds", "sink::legacy"]).await;
+    let mut forger = connect_v2(&t, "forger").await;
+    for (id, function, target) in [
+        ("refunds", "orders::refund", "sink::refunds"),
+        ("legacy-refunds", "legacy::refund", "sink::legacy"),
+    ] {
+        sink.observe_active(observer(
+            id,
+            json!({ "function_id": function, "filters": { "output.status": { "$eq": "refunded" } } }),
+            target,
+        ))
+        .await;
+    }
+
+    let before = t.engine.observers.evaluated();
+    for (function, id, extra) in [
+        ("orders::refund", "refunds", json!({})),
+        ("orders::refund", "refunds", json!({ "delivered": true })),
+        ("legacy::refund", "legacy-refunds", json!({})),
+    ] {
+        let call = forger.call(function, json!({ "n": 1 })).await;
+        let host = if function == "orders::refund" {
+            &mut orders
+        } else {
+            &mut legacy
+        };
+        host.invoked(function).await;
+        let mut answer = json!({
+            "type": "invocationresult",
+            "invocation_id": call.to_string(),
+            "function_id": function,
+            "result": { "status": "refunded" },
+        });
+        answer
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let refused = dropped(&t, id, "REPORTER_NOT_OWNER");
+        forger.send(answer).await;
+        assert_eq!(forger.result(call).await["result"]["status"], "refunded");
+        assert!(eventually(|| dropped(&t, id, "REPORTER_NOT_OWNER") == refused + 1).await);
+    }
+    assert_eq!(t.engine.observers.evaluated(), before, "nothing evaluated");
+    assert_eq!((fires(&t, "refunds"), fires(&t, "legacy-refunds")), (0, 0));
+    assert!(!invoked_already(&mut sink, "sink::refunds"));
+    assert!(!invoked_already(&mut sink, "sink::legacy"));
+
+    // The host's own answer, with the same result, is evaluated.
+    let mut checkout = connect(&t, "checkout", true).await;
+    let call = checkout.call("orders::refund", json!({ "n": 2 })).await;
+    let invoke = orders.invoked("orders::refund").await;
+    orders.reply(&invoke, json!({ "status": "refunded" })).await;
+    checkout.result(call).await;
+    let activation = sink.invoked("sink::refunds").await;
+    assert_eq!(activation["data"]["output"]["status"], "refunded");
+    sink.reply(&activation, Value::Null).await;
+    evaluated(&t.engine, before + 1).await;
+    assert_eq!(fires(&t, "refunds"), 1);
 }
 
 /// A host without `observe.v2` narrows nothing: whatever its answer says
