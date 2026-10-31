@@ -383,6 +383,13 @@ impl ObserverRegistry {
     }
 }
 
+/// A random (version 4) UUID for the ids the observer paths make (an event's
+/// invocation, an activation and its invocation), from the thread's CSPRNG:
+/// as unpredictable as `Uuid::new_v4`, without a call into the OS for each.
+pub(crate) fn new_uuid() -> Uuid {
+    uuid::Builder::from_random_bytes(rand::random()).into_uuid()
+}
+
 /// The engine metrics, when the meter is initialized (it is on every serve
 /// path; unit tests that never call `ensure_default_meter` get `None`).
 pub(crate) fn metrics() -> Option<&'static EngineMetrics> {

@@ -549,7 +549,7 @@ impl ObserverRegistry {
                 delivery: ENGINE_DELIVERY,
                 namespace: namespace.to_string(),
                 function_id: function_id.to_string(),
-                invocation_id: Uuid::new_v4().to_string(),
+                invocation_id: super::new_uuid().to_string(),
                 success: true,
                 input: event.clone().filter(|_| set.needs.input),
                 output: event.filter(|_| set.needs.output),
@@ -963,7 +963,7 @@ impl ObserverRegistry {
             drop_event(observer, observe_codes::INACTIVE);
             return false;
         }
-        let max_depth = self.config().max_observe_depth;
+        let max_depth = self.config.load().max_observe_depth;
         if completed.depth.saturating_add(1) > max_depth {
             drop_event(observer, observe_codes::LOOP_GUARD);
             warn_loop_guard(observer, completed.depth, max_depth);
@@ -1048,7 +1048,7 @@ impl ObserverRegistry {
             metrics.observer_activations_total.add(
                 1,
                 &[
-                    KeyValue::new("function_id", observer.function.1.clone()),
+                    KeyValue::new("function_id", observer.function_label()),
                     KeyValue::new("delivery", pending.event.delivery),
                 ],
             );
@@ -1058,7 +1058,7 @@ impl ObserverRegistry {
         // answers.
         let event = pending.event.clone();
         drop(pending);
-        let activation_id = Uuid::new_v4().to_string();
+        let activation_id = super::new_uuid().to_string();
         let envelope = project(observer, &event, &activation_id);
         let ctx = InvocationCtx::activation(
             Caller {
@@ -1075,7 +1075,7 @@ impl ObserverRegistry {
         );
         let (traceparent, baggage) = (event.traceparent.clone(), event.baggage.clone());
         drop(event);
-        let invocation_id = Uuid::new_v4();
+        let invocation_id = super::new_uuid();
         let call = invocations.handle_invocation_with_handler(
             Some(invocation_id),
             None,
@@ -1089,7 +1089,7 @@ impl ObserverRegistry {
             observer.metadata.clone(),
             ctx,
         );
-        let timeout = Duration::from_millis(self.config().activation_timeout_ms);
+        let timeout = Duration::from_millis(self.config.load().activation_timeout_ms);
         let outcome = tokio::time::timeout(timeout, call).await;
         if outcome.is_err() {
             self.abandon(&observer.target, invocation_id).await;
@@ -1857,7 +1857,7 @@ fn count_failure(observer: &Observer, reason: &str) {
         metrics.observer_activation_failures_total.add(
             1,
             &[
-                KeyValue::new("function_id", observer.function.1.clone()),
+                KeyValue::new("function_id", observer.function_label()),
                 KeyValue::new("reason", reason.to_string()),
             ],
         );
@@ -2047,7 +2047,7 @@ pub(crate) fn export_drops(observer: &Observer) {
         metrics.observer_dropped_total.add(
             count,
             &[
-                KeyValue::new("function_id", observer.function.1.clone()),
+                KeyValue::new("function_id", observer.function_label()),
                 KeyValue::new("reason", reason),
             ],
         );

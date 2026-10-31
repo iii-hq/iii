@@ -505,6 +505,8 @@ pub struct Observer {
     pub id: String,
     /// The observed function, `(namespace, function_id)`.
     pub function: FnKey,
+    /// `function.1`, shared: the `function_id` label of its metrics.
+    function_label: Arc<str>,
     /// The function each activation invokes.
     pub target: FnKey,
     /// The spec its observing worker asked for, kept only when it differs
@@ -586,6 +588,7 @@ impl Observer {
         let spec = new.spec;
         let mut observer = Self {
             id: new.id,
+            function_label: Arc::from(new.function.1.as_str()),
             function: new.function,
             target: new.target,
             spec: None,
@@ -707,6 +710,11 @@ impl Observer {
     /// [`Self::observing`].
     pub(crate) fn observing_connection(&self) -> Uuid {
         lock(&self.status).observing.connection
+    }
+
+    /// The `function_id` label of its metrics: its function's id, shared.
+    pub(crate) fn function_label(&self) -> Arc<str> {
+        self.function_label.clone()
     }
 
     /// Whether the engine created this observer for one of its own modules.
