@@ -30,7 +30,8 @@ class ObserverHandle:
     """What ``iii.observe`` returns, synchronously.
 
     The observer is replayed with the same id on every reconnect until it is
-    disposed. State listeners are called in order, on a callback thread of the
+    disposed. The engine's refusal of its ``observe`` is final: the engine
+    holds nothing for it, and it is not replayed. State listeners are called in order, on a callback thread of the
     SDK (never on the event loop that reads the engine's frames), so they may
     call the sync API.
 
@@ -64,6 +65,13 @@ class ObserverHandle:
         #: whether that connection's ``observeresult`` for it arrived.
         self._sent_epoch = -1
         self._answered = False
+        #: An ``observeresult`` other than ``error`` arrived for it on some
+        #: connection: the engine created its observer and may hold it, in
+        #: any state, until it is unobserved or disposed.
+        self._accepted = False
+        #: The engine refused its ``observe`` and stores nothing: that
+        #: answer is final, it is not replayed, and its dispose() sends nothing.
+        self._refused = False
         #: The engine's ``disposed`` for it arrived: it holds nothing there.
         self._engine_disposed = False
         #: Its ``dispose()`` released the id (once, whichever thread called it).
@@ -159,7 +167,10 @@ class ObserverHandle:
         return off
 
     def dispose(self) -> None:
-        """Removes the observer (``unobserve``). It is not replayed on reconnect."""
+        """Removes the observer (``unobserve``). It is not replayed on reconnect.
+
+        Returns at once. A handle whose ``observe`` the engine refused, or
+        that the engine disposed, sends nothing."""
         if self._state == "disposed":
             return
         self._on_dispose(self)
