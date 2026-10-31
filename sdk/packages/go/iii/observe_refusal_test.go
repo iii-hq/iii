@@ -232,10 +232,11 @@ func TestRefusalOfAnOlderHandleWhileANewerIsPending(t *testing.T) {
 }
 
 // A refusal is the handle's final answer: a later connection does not send the
-// refused handle again. It keeps its state and its id, and its Dispose sends nothing;
-// disposed while away, it parks nothing for the next connection.
+// refused handle again, and one to an engine without observe leaves its state alone.
+// It keeps its state and its id, and its Dispose sends nothing; disposed while away,
+// it parks nothing for the next connection.
 func TestRefusedHandleIsNotSentAgain(t *testing.T) {
-	for _, next := range []string{"kept", "disposed while away"} {
+	for _, next := range []string{"kept", "disposed while away", "engine without observe"} {
 		t.Run(next, func(t *testing.T) {
 			const id = "refused-once"
 			fe := newFakeEngine(t)
@@ -269,6 +270,9 @@ func TestRefusedHandleIsNotSentAgain(t *testing.T) {
 				return
 			}
 
+			if next == "engine without observe" {
+				fe.oldEngine()
+			}
 			fe.reconnect(c)
 			fe.reconnect(c)
 			time.Sleep(30 * time.Millisecond)
@@ -289,6 +293,9 @@ func TestRefusedHandleIsNotSentAgain(t *testing.T) {
 			time.Sleep(30 * time.Millisecond)
 			if n := unobserveFrames(fe, id); n != 0 {
 				t.Errorf("Dispose of a refused handle sent %d unobserves", n)
+			}
+			if next == "engine without observe" {
+				return
 			}
 			second, err := c.Observe(idSource, "audit::log", ObserverOptions{ID: id})
 			if err != nil {
