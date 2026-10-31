@@ -696,7 +696,12 @@ impl Observer {
     /// was disposed for reaching `max_fires`. That disposal keeps the queue,
     /// so every fire counted within `max_fires` runs, including one whose
     /// activation the last fire overtook. Any other state drops the fire.
+    /// `active` is stored with the state under the status lock, so an
+    /// active observer answers without the lock.
     pub(crate) fn runs_counted_fires(&self) -> bool {
+        if self.is_active() {
+            return true;
+        }
         let status = self.status.read();
         match status.state {
             ObserverState::Active => true,
