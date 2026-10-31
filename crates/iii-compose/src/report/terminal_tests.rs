@@ -316,7 +316,11 @@ fn real_update_producer_preserves_panel_and_isolates_old_events() {
 const FIXTURE_OBSERVER: &str = "fixture-progress";
 
 /// The daemon called its progress source with an event `matches` accepts, and
-/// the host's delivery of that call selected the fixture's observer.
+/// the host's answer to that call leaves it to the engine's evaluation of the
+/// observers' `on` and filters (decision 55): the progress source has no
+/// match hook and no deliver hook, so the answer carries neither `matched`
+/// nor `delivered`, and an engine evaluates the fixture's observer against
+/// the event.
 fn progress_delivered(
     frames: &[serde_json::Value],
     matches: impl Fn(&serde_json::Value) -> bool,
@@ -329,7 +333,8 @@ fn progress_delivered(
     }) && frames.iter().any(|frame| {
         frame["type"] == "invocationresult"
             && frame["function_id"] == progress
-            && frame["observed"] == serde_json::json!([FIXTURE_OBSERVER])
+            && frame.get("matched").is_none()
+            && frame.get("delivered").is_none()
             && matches(&frame["result"])
     })
 }
@@ -423,7 +428,8 @@ async fn artifact_update_fixture() {
                         .and_then(|id| routed.remove(id))
                         .filter(serde_json::Value::is_string)
                 {
-                    // Answer a caller that waits; the engine strips `observed`.
+                    // Answer a caller that waits; the engine strips `matched`
+                    // and `delivered`.
                     socket.send(reply(serde_json::json!({
                         "type": "invocationresult", "invocation_id": caller,
                         "function_id": crate::operation::PROGRESS_FUNCTION_ID, "result": value["result"]
