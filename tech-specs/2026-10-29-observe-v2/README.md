@@ -1128,3 +1128,85 @@ release, tag or crate, so it lands after the release.
 - **Standby election.** Several standbys race to register when the host
   leaves; the engine accepts the first. Whether the engine should order them
   is left until a worker runs more than one standby.
+- **R2: replacing an `added` hook while observers are active.** Setting an
+  `added` hook again re-runs the new hook on every active observer in Rust
+  (`sdk/packages/rust/iii/src/hooks.rs:644-650`, `:770` bump a generation per
+  `set_added`; `observable.rs:1612` selects members whose last run is not that
+  generation) and Go (`sdk/packages/go/iii/hooks.go:174` bumps `hookGen`;
+  `observable.go:686-707` `catchUp` compares `addedGen`). Node
+  (`sdk/packages/node/iii/src/observable.ts:490`, level state `bare`) and
+  Python (`sdk/packages/python/iii/src/iii/observable.py:1002`, `level not in
+  obs._setup`) catch up only observers that had no hook, so a replacement
+  never reaches observers the old hook already set up. In Rust and Go the
+  `removed` of the old hook never runs for those observers (`hooks.go:214`
+  just overwrites it), so state the old `added` created leaks. §4.4 says a
+  hook set with active observers is caught up but not what a replacement does.
+  The same program therefore behaves differently per SDK. Options: (a) Node
+  and Python re-run on replacement and all four run the old `removed` first;
+  (b) Rust and Go catch up only observers with no hook, and the spec says a
+  replacement applies to observers added later; (c) setting a hook twice is an
+  error. Recommendation: (b), since it matches the two SDKs with the simpler
+  state and never runs `added` twice on one observer.
+- **N1: no SDK settles observers on shutdown.** `shutdown` and the fatal path
+  do not dispose observers or settle handles: Node
+  (`sdk/packages/node/iii/src/iii.ts:1493-1537`, fatal path `:1925-1960`), Rust
+  (`sdk/packages/rust/iii/src/iii.rs:2153-2200`), Python
+  (`sdk/packages/python/iii/src/iii/iii.py:701-780`) and Go
+  (`sdk/packages/go/iii/client.go:1887-1960`). `onObserverRemoved` never runs
+  for the worker's own observers, and `handle.ready()` on a pending handle
+  never resolves, so a caller awaiting it hangs past shutdown. Needs a
+  decision because a hook that runs during shutdown can block it. Options:
+  (a) reject pending `ready()` with a shutdown error and leave hooks alone;
+  (b) also run `removed` for each active observer under a bounded timeout;
+  (c) document that shutdown skips hooks. Recommendation: (a) now, (b) once a
+  worker needs the cleanup.
+- **C2: a 0.25 trigger-provider worker on a 0.26 engine fails silently.** A
+  0.25 worker (http, cron or queue pinned at 0.25) connects, and its
+  `registertriggertype` and `registertrigger` frames are dropped with one
+  `warn` per connection and type (`engine/src/engine/mod.rs:157-175` lists the
+  removed messages, `:2941-2970` drops them in `undecodable_frame`). Nothing is
+  sent back, so the worker believes it registered and its routes and schedules
+  silently stop. The warn is only in the engine log. Options: (a) answer with
+  an error frame the SDK surfaces (the 0.25 SDK must decode it, which needs a
+  frame it already knows); (b) refuse the connection by version at the
+  handshake, so the failure is loud and immediate but also rejects 0.25 workers
+  that only use functions. Recommendation: (b) for workers that send a removed
+  type, (a) if a decodable reply exists, else keep the warn and document it.
+- **E2: `engine::on-functions-changed` is not filtered per session.**
+  `functions_changed_payload` (`engine/src/workers/engine_fn/mod.rs:711-717`,
+  emitted at `:1166`) sends the whole function registry to every observer,
+  unlike `engine::functions::list`, which checks `session_allows_function`
+  (`:820`). It is not a new behavior: `engine::functions-available` did the
+  same on main. The exposure needs RBAC to allow the source explicitly for a
+  session. The other engine sources differ: `engine::on-workers-changed`
+  emits small deltas (for example `{event, worker_id}` at `:1598`),
+  `engine::on-observers-changed` emits per-observer state, and
+  `observability::on-log` carries records of every worker; only the last was
+  not checked for per-session filtering. Options: (a) filter the payload per
+  receiving session; (b) keep the payload and document that granting the
+  source grants the registry; (c) send ids only. Recommendation: (a), reusing
+  `session_allows_function`.
+- **E5: the routed map is cloned per observer change.** `store_routed`
+  (`engine/src/observer/owner.rs:676`) does `HashMap::clone(current)` of the
+  whole routed map, called under the global `rebuild` mutex (`:663`) on every
+  observer change. Cost is O(F) per change and serialized: a reconnect of
+  4,000 observers over 4,000 functions is about 16M entry copies under one
+  lock. It needs a decision because the fix changes the structure read by the
+  hot path. Options: (a) a persistent map (`im`) with structural sharing;
+  (b) shard the map by function key; (c) batch a reconnect into one rebuild.
+  Recommendation: (c) first, since the reconnect is the large case and it
+  keeps the lock-free read.
+- **N2/R7: hook-queue acks are not bound to the connection epoch.** Node
+  (`sdk/packages/node/iii/src/observable.ts:717-765`, `:858-879`), Python
+  (`sdk/packages/python/iii/src/iii/iii.py:429`, `send_ack`) and Rust
+  (`sdk/packages/rust/iii/src/observable.rs:1298`, `send_ack`) send an ack
+  from the hook queue on whatever connection is current, while Go drops it
+  when the connection is gone (`sdk/packages/go/iii/observe.go:590`,
+  `sendOnEpoch`). The engine accepts an ack when the owner is the connection
+  and `revision >= announced` (`engine/src/observer/owner.rs:1255-1257`), but
+  revisions are in memory and restart after an engine restart, so an ack for
+  an older epoch can match a new, lower announced revision and be accepted for
+  an observer it did not set up. Options: (a) bind acks to the epoch in the
+  three SDKs, as Go does; (b) persist a per-engine epoch in the announce and
+  check it in the ack. Recommendation: (a), the contract is already in Go and
+  needs no protocol change.
