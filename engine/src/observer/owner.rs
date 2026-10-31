@@ -1086,6 +1086,8 @@ impl ObserverRegistry {
                 let joining = changing.iter().filter(|(_, wanted)| *wanted);
                 kept.extend(joining.map(|(observer, _)| Arc::clone(observer)));
                 kept.sort_unstable_by_key(|observer| observer.seq());
+                // An observer given twice joins once.
+                kept.dedup_by(|a, b| Arc::ptr_eq(a, b));
                 ActiveSet::new(key, kept)
             } else {
                 let mut next = match &set {
@@ -2289,6 +2291,45 @@ mod tests {
         assert_eq!(ids(), ["first", "second"]);
         assert!(registry.unobserve_as_engine("second"));
         assert_eq!(ids(), ["first"]);
+    }
+
+    /// One change of a function's set takes many observers out and puts them
+    /// back, in creation order, whichever order they come in, and once each
+    /// when one comes twice.
+    #[tokio::test]
+    async fn a_batch_changes_a_set_once_for_each_observer() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        for id in ["a", "b", "c"] {
+            registry
+                .observe_as_engine(engine_observer(id, "test::dst"))
+                .unwrap();
+        }
+        let ids = || {
+            registry
+                .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                .map(|set| active_ids(&set))
+                .unwrap_or_default()
+        };
+        let (a, b) = (registry.get("a").unwrap(), registry.get("b").unwrap());
+        let connected = |connected: bool| {
+            for observer in [&a, &b] {
+                let transition = registry
+                    .transition(observer, |flags| flags.observing_connected = connected)
+                    .expect("a change");
+                let settled = registry.settle_deferring_refresh(observer, transition);
+                assert!(settled.refresh && !settled.disposed);
+            }
+        };
+        connected(false);
+        registry.refresh_observers(&[b.clone(), a.clone(), b.clone()]);
+        assert_eq!(ids(), ["c"]);
+        connected(true);
+        registry.refresh_observers(&[b.clone(), a.clone(), a.clone()]);
+        assert_eq!(ids(), ["a", "b", "c"]);
     }
 
     /// What a call keeps follows the observers that need it as they leave:
