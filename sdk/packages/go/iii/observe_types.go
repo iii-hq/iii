@@ -136,9 +136,11 @@ type ObserveReason struct {
 }
 
 // ObserveRejectionError is an observe error carrying its code: what
-// [ObserverHandle.Ready] returns when the observer turns error or disposed, and what an
-// [AddedHook] returns (built with [ObserveRejection]) to reject an observer with a code
-// of its own. Recover it with errors.As.
+// [ObserverHandle.Ready] returns when the observer turns error or disposed, what
+// [Client.Observe] returns for an id a handle of the client holds
+// (OBSERVER_ID_CONFLICT), and what an [AddedHook] returns (built with
+// [ObserveRejection]) to reject an observer with a code of its own. Recover it with
+// errors.As.
 type ObserveRejectionError struct {
 	Code    string
 	Message string
