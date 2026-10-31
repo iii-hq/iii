@@ -555,37 +555,79 @@ async fn each_observeresult_answers_its_own_handle_in_order() {
     iii.shutdown_async().await;
 }
 
-/// A refused observer is disposed without an engine `disposed` (the engine
-/// keeps no observer it refused): the next handle's `observeresult` still
-/// goes to the next handle.
+/// The engine's refusal of the `observe` of `id`.
+fn refuse(mock: &MockEngine, id: &str, code: &str) {
+    mock.send_to_client(json!({
+        "type": "observeresult", "id": id, "state": "error",
+        "error": { "code": code, "message": code }
+    }));
+}
+
+/// Well under the 5 s a `dispose()` waits for the engine's `disposed`.
+const AT_ONCE: Duration = Duration::from_secs(1);
+
+/// The `observe` frames of `id` the mock received, once there are `n`.
+async fn observes(mock: &MockEngine, id: &str, n: usize) {
+    mock.wait_for(
+        |m| {
+            m.iter()
+                .filter(|m| m["type"] == "observe" && m["id"] == id)
+                .count()
+                == n
+        },
+        WAIT,
+    )
+    .await;
+}
+
+fn unobserves(mock: &MockEngine, id: &str) -> usize {
+    frames(mock, "unobserve")
+        .iter()
+        .filter(|m| m["id"] == id)
+        .count()
+}
+
+/// A refused `observe` is the handle's final answer (the engine keeps no
+/// observer it refused): the handle leaves the id's list, holds the id until
+/// its `dispose()`, which sends nothing and resolves at once, and the next
+/// handle of the id gets its own answers.
 #[tokio::test]
-async fn a_newer_answer_unlists_a_disposed_handle_without_its_disposed() {
+async fn a_refused_handle_is_final_and_its_dispose_sends_nothing() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "observer");
     connected(&mock, &iii, true).await;
     let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("s"));
     frame(&mock, |m| m["type"] == "observe" && m["id"] == "s").await;
-    mock.send_to_client(json!({
-        "type": "observeresult", "id": "s", "state": "error",
-        "error": { "code": "FORBIDDEN", "message": "no" }
-    }));
+    refuse(&mock, "s", "FORBIDDEN");
     until("the refusal", || first.state() == ObserverState::Error).await;
-    let _disposing = tokio::spawn({
-        let first = first.clone();
-        async move { first.dispose().await }
-    });
-    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "s").await;
+    let err = first.ready().await.unwrap_err();
+    assert_eq!(err.invocation_error().unwrap().code, "FORBIDDEN");
+    // unlisted: a later answer for the id reaches nobody
+    state_changed(&mock, "s", "suspended", "TARGET_UNAVAILABLE");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(first.state(), ObserverState::Error);
+    assert_eq!(first.reason().unwrap().code, "FORBIDDEN");
+    // held until its dispose (decision 56)
+    let held = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("s"));
+    assert_eq!(held.reason().unwrap().code, "OBSERVER_ID_CONFLICT");
+
+    let started = Instant::now();
+    tokio::time::timeout(WAIT, first.dispose())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(started.elapsed() < AT_ONCE, "{:?}", started.elapsed());
+    assert_eq!(first.state(), ObserverState::Disposed);
+
     let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("s"));
-    mock.wait_for(
-        |m| {
-            m.iter()
-                .filter(|m| m["type"] == "observe" && m["id"] == "s")
-                .count()
-                == 2
-        },
-        WAIT,
-    )
-    .await;
+    assert_eq!(
+        second.state(),
+        ObserverState::Pending,
+        "{:?}",
+        second.reason()
+    );
+    observes(&mock, "s", 2).await;
+    assert_eq!(unobserves(&mock, "s"), 0, "nothing sent for the refusal");
     observe_result(&mock, "s", "active");
     tokio::time::timeout(WAIT, second.ready())
         .await
@@ -596,7 +638,154 @@ async fn a_newer_answer_unlists_a_disposed_handle_without_its_disposed() {
         second.state() == ObserverState::Suspended
     })
     .await;
-    assert_ne!(first.state(), ObserverState::Suspended);
+    assert_eq!(first.state(), ObserverState::Disposed);
+
+    // the next handle's dispose is an ordinary one: an unobserve, then its disposed
+    let disposing = tokio::spawn({
+        let second = second.clone();
+        async move { second.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "s").await;
+    state_changed(&mock, "s", "disposed", "UNOBSERVED");
+    tokio::time::timeout(WAIT, disposing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.reason().unwrap().code, "UNOBSERVED");
+    iii.shutdown_async().await;
+}
+
+/// A `dispose()` whose `unobserve` went out before the engine answered the
+/// `observe` resolves when the refusal arrives, not after the dispose wait.
+/// The engine ignores that `unobserve`, and the next handle of the id hears
+/// its own answers.
+#[tokio::test]
+async fn a_dispose_sent_before_the_refusal_resolves_on_it() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("v"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "v").await;
+    let disposing = tokio::spawn({
+        let first = first.clone();
+        async move { first.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "v").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!disposing.is_finished(), "waits for the engine's answer");
+
+    let started = Instant::now();
+    refuse(&mock, "v", "LIMIT_EXCEEDED");
+    tokio::time::timeout(WAIT, disposing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(started.elapsed() < AT_ONCE, "{:?}", started.elapsed());
+    assert_eq!(first.state(), ObserverState::Disposed);
+
+    let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("v"));
+    observes(&mock, "v", 2).await;
+    observe_result(&mock, "v", "active");
+    tokio::time::timeout(WAIT, second.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(second.state(), ObserverState::Active);
+    assert_eq!(first.state(), ObserverState::Disposed);
+    assert_eq!(unobserves(&mock, "v"), 1);
+    iii.shutdown_async().await;
+}
+
+/// The refusal of an older handle's `observe`, disposed before its answer,
+/// reaches that handle while a newer handle of the id is pending: the older
+/// one's `dispose()` resolves on it, and the newer one waits for its own
+/// answer.
+#[tokio::test]
+async fn a_refusal_for_an_older_handle_leaves_the_newer_one_pending() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("w"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "w").await;
+    let disposing = tokio::spawn({
+        let first = first.clone();
+        async move { first.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "w").await;
+    let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("w"));
+    observes(&mock, "w", 2).await;
+
+    let started = Instant::now();
+    refuse(&mock, "w", "FORBIDDEN");
+    tokio::time::timeout(WAIT, disposing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(started.elapsed() < AT_ONCE, "{:?}", started.elapsed());
+    assert_eq!(first.state(), ObserverState::Disposed);
+    // no listed handle of the id has its answer: a state change is dropped
+    state_changed(&mock, "w", "suspended", "TARGET_UNAVAILABLE");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        second.state(),
+        ObserverState::Pending,
+        "{:?}",
+        second.reason()
+    );
+
+    observe_result(&mock, "w", "active");
+    tokio::time::timeout(WAIT, second.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    state_changed(&mock, "w", "suspended", "TARGET_UNAVAILABLE");
+    until("the suspension", || {
+        second.state() == ObserverState::Suspended
+    })
+    .await;
+    assert_eq!(first.state(), ObserverState::Disposed);
+    iii.shutdown_async().await;
+}
+
+/// A refused handle has its final answer: a later connection does not
+/// replay it, and its `dispose()` there sends nothing.
+#[tokio::test]
+async fn a_refused_handle_is_not_replayed() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let refused = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("y"));
+    let kept = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("z"));
+    observes(&mock, "z", 1).await;
+    refuse(&mock, "y", "INVALID_ARGS");
+    observe_result(&mock, "z", "active");
+    tokio::time::timeout(WAIT, kept.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(refused.state(), ObserverState::Error);
+
+    mock.clear();
+    mock.close_active_connection();
+    until("the disconnect", || iii.engine_supports_observe().is_none()).await;
+    connected(&mock, &iii, true).await;
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "z").await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let replayed: Vec<Value> = frames(&mock, "observe");
+    assert_eq!(replayed.len(), 1, "{replayed:?}");
+    assert_eq!(refused.reason().unwrap().code, "INVALID_ARGS");
+
+    let started = Instant::now();
+    tokio::time::timeout(WAIT, refused.dispose())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(started.elapsed() < AT_ONCE, "{:?}", started.elapsed());
+    assert!(frames(&mock, "unobserve").is_empty());
     iii.shutdown_async().await;
 }
 
