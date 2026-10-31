@@ -727,7 +727,9 @@ is (decision 55):
 
   With `matched`, the engine evaluates only the named observers that are
   active observers of the invoked function. The envelope carries the call's
-  input and, as `output`, the handler's return value.
+  input and, as `output`, the handler's return value. Only the function's
+  host answers for its observers: an answer from another connection
+  activates nothing (`REPORTER_NOT_OWNER`, decision 55).
 - **Through an observer.** An `invokefunction` with `activation.observer_id`.
   The engine checks that the observer exists, that the sender hosts its
   function, and that it is active, then applies policy and routes to the
