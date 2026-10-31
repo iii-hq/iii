@@ -525,12 +525,15 @@ pub struct Observer {
     pub created_at_ms: u64,
     /// Filter paths that could not be verified at creation.
     pub(crate) warnings: Vec<String>,
-    status: Mutex<Status>,
+    status: Lock<Status>,
+    /// `status.state` is `active`: set with it, under the status lock, and
+    /// read without the lock (the routed hook reads it on every activation).
+    active: AtomicBool,
     pub(crate) fires: AtomicU64,
     pub(crate) drops: DropCounters,
     pub(crate) failures: FailureCounters,
-    pub(crate) flow: Mutex<Flow>,
-    timers: Mutex<Timers>,
+    pub(crate) flow: Lock<Flow>,
+    timers: Lock<Timers>,
     /// A timer was ever set in `timers`: until then, cancelling them takes
     /// no lock.
     timed: AtomicBool,
@@ -601,17 +604,18 @@ impl Observer {
             policy: new.policy,
             created_at_ms: now_ms(),
             warnings: new.warnings,
-            status: Mutex::new(Status {
+            status: Lock::new(Status {
                 flags: new.flags,
                 state: ObserverState::Pending,
                 why: Why::Nothing,
                 observing: new.observing,
             }),
+            active: AtomicBool::new(false),
             fires: AtomicU64::new(0),
             drops: DropCounters::default(),
             failures: FailureCounters::default(),
-            flow: Mutex::new(Flow::default()),
-            timers: Mutex::new(Timers::default()),
+            flow: Lock::new(Flow::default()),
+            timers: Lock::new(Timers::default()),
             timed: AtomicBool::new(false),
             last_loop_warn_ms: AtomicU64::new(0),
             last_too_large_warn_ms: AtomicU64::new(0),
@@ -627,10 +631,11 @@ impl Observer {
             observer.spec = Some(Box::new(spec));
         }
         {
-            let status = observer.status.get_mut().unwrap_or_else(|e| e.into_inner());
+            let status = observer.status.get_mut();
             let (state, why) = status.flags.state();
             if state == ObserverState::Active {
                 status.flags.activated_once = true;
+                *observer.active.get_mut() = true;
             }
             status.state = state;
             status.why = why;
@@ -669,21 +674,22 @@ impl Observer {
     }
 
     pub fn state(&self) -> ObserverState {
-        lock(&self.status).state.clone()
+        self.status.read().state.clone()
     }
 
     pub fn reason(&self) -> Option<ErrorBody> {
-        lock(&self.status).reason(self)
+        self.status.read().reason(self)
     }
 
     /// Whether its state reason's code is `code`, read without building the
     /// reason.
     pub(crate) fn reason_is(&self, code: &str) -> bool {
-        lock(&self.status).reason_is(code)
+        self.status.read().reason_is(code)
     }
 
+    /// Whether it is `active`, read without the status lock.
     pub fn is_active(&self) -> bool {
-        lock(&self.status).state == ObserverState::Active
+        self.active.load(Ordering::Acquire)
     }
 
     /// Whether a fire it has already counted runs: it is `active`, or it
@@ -691,7 +697,7 @@ impl Observer {
     /// so every fire counted within `max_fires` runs, including one whose
     /// activation the last fire overtook. Any other state drops the fire.
     pub(crate) fn runs_counted_fires(&self) -> bool {
-        let status = lock(&self.status);
+        let status = self.status.read();
         match status.state {
             ObserverState::Active => true,
             ObserverState::Disposed => status
@@ -706,7 +712,7 @@ impl Observer {
     /// Whether it was disposed: set before its disposal takes it out of any
     /// index.
     pub(crate) fn is_disposed(&self) -> bool {
-        lock(&self.status).flags.disposed.is_some()
+        self.status.read().flags.disposed.is_some()
     }
 
     /// Runs `f` with the state and what builds its reason, holding the
@@ -715,24 +721,24 @@ impl Observer {
         &self,
         f: impl FnOnce(&ObserverState, &dyn Fn() -> Option<ErrorBody>) -> R,
     ) -> R {
-        let status = lock(&self.status);
+        let status = self.status.write();
         f(&status.state, &|| status.reason(self))
     }
 
     /// State and reason read together.
     pub fn snapshot_state(&self) -> (ObserverState, Option<ErrorBody>) {
-        let status = lock(&self.status);
+        let status = self.status.read();
         (status.state.clone(), status.reason(self))
     }
 
     pub(crate) fn observing(&self) -> Observing {
-        lock(&self.status).observing.clone()
+        self.status.read().observing.clone()
     }
 
     /// The observing connection, read without copying the rest of
     /// [`Self::observing`].
     pub(crate) fn observing_connection(&self) -> Uuid {
-        lock(&self.status).observing.connection
+        self.status.read().observing.connection
     }
 
     /// The `function_id` label of its metrics: its function's id, shared.
@@ -791,17 +797,17 @@ impl Observer {
     }
 
     pub(crate) fn set_observing(&self, observing: Observing) {
-        lock(&self.status).observing = observing;
+        self.status.write().observing = observing;
     }
 
     pub(crate) fn set_expiry_timer(&self, handle: tokio::task::AbortHandle) {
-        let mut timers = lock(&self.timers);
+        let mut timers = self.timers.write();
         timers.expiry = Some(handle);
         self.timed.store(true, Ordering::Release);
     }
 
     pub(crate) fn set_ack_timer(&self, handle: tokio::task::AbortHandle) {
-        let mut timers = lock(&self.timers);
+        let mut timers = self.timers.write();
         self.timed.store(true, Ordering::Release);
         if let Some(previous) = timers.ack.replace(handle) {
             previous.abort();
@@ -812,7 +818,7 @@ impl Observer {
         if !self.timed.load(Ordering::Acquire) {
             return;
         }
-        if let Some(handle) = lock(&self.timers).ack.take() {
+        if let Some(handle) = self.timers.write().ack.take() {
             handle.abort();
         }
     }
@@ -821,7 +827,7 @@ impl Observer {
         if !self.timed.load(Ordering::Acquire) {
             return;
         }
-        let mut timers = lock(&self.timers);
+        let mut timers = self.timers.write();
         for handle in [timers.expiry.take(), timers.ack.take()]
             .into_iter()
             .flatten()
@@ -839,19 +845,19 @@ impl Observer {
     /// The flags, for decisions that depend on more than the state.
     #[cfg(test)]
     pub(crate) fn flags(&self) -> Flags {
-        lock(&self.status).flags.clone()
+        self.status.read().flags.clone()
     }
 
     /// Runs `f` with the flags, holding the status lock: for decisions that
     /// depend on more than the state, without copying them.
     pub(crate) fn with_flags<R>(&self, f: impl FnOnce(&Flags) -> R) -> R {
-        f(&lock(&self.status).flags)
+        f(&self.status.read().flags)
     }
 
     /// The announcement the observer waits for its owner to answer: told,
     /// and neither acked, failed nor disposed since. `None` otherwise.
     pub(crate) fn awaited_announcement(&self) -> Option<Announcement> {
-        let status = lock(&self.status);
+        let status = self.status.read();
         let flags = &status.flags;
         flags
             .announced
@@ -862,7 +868,7 @@ impl Observer {
     /// it, with whether the owner had rejected the observer, whether it had
     /// acked it, and whether it failed for not acking it in time.
     pub(crate) fn take_announcement(&self) -> (Option<Announcement>, bool, bool, bool) {
-        let mut status = lock(&self.status);
+        let mut status = self.status.write();
         let flags = &mut status.flags;
         let announced = flags.announced.take();
         let rejected = std::mem::take(&mut flags.rejected_by_owner);
@@ -879,6 +885,12 @@ impl Observer {
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// The lock an observer's status, and a function entry's parts, are kept
+/// under: dashmap's `RwLock` (lock_api over parking_lot_core), the lock the
+/// registry's maps take. While nobody else holds it, taking it is one
+/// compare-exchange, with no allocation and no system call.
+pub(crate) type Lock<T> = dashmap::RwLock<T>;
 
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -1003,7 +1015,7 @@ impl ObserverRegistry {
         change: impl FnOnce(&mut Flags),
         tell: bool,
     ) -> Option<Transition> {
-        let mut status = lock(&observer.status);
+        let mut status = observer.status.write();
         change(&mut status.flags);
         let (state, why) = status.flags.state();
         if state == status.state && why == status.why {
@@ -1015,6 +1027,9 @@ impl ObserverRegistry {
         if state == ObserverState::Active {
             status.flags.activated_once = true;
         }
+        observer
+            .active
+            .store(state == ObserverState::Active, Ordering::Release);
         status.state = state.clone();
         status.why = why;
         let unqueued = self.observer_changed(observer, &state, &|| status.reason(observer));
@@ -1077,7 +1092,7 @@ impl ObserverRegistry {
             // Out of the owner's set: it hears `observerremoved`.
             self.withdraw_from_owner(observer);
             if !observer.reason_is(observe_codes::MAX_FIRES) {
-                let dropped = std::mem::take(&mut lock(&observer.flow).queue).len() as u64;
+                let dropped = std::mem::take(&mut observer.flow.write().queue).len() as u64;
                 observer
                     .drops
                     .inactive
@@ -1272,20 +1287,20 @@ impl ObserverRegistry {
         }
     }
 
-    /// Sends `msg` to `connection`, after everything sent to it before. Each
-    /// connection gets one forwarding task, so a slow worker never holds up
-    /// another's notifications. A connection that is gone drops the message.
+    /// Sends `msg` to `connection`, after everything sent to it before. It
+    /// goes straight into the connection's channel while that has room and
+    /// nothing waits before it; otherwise it waits in the connection's
+    /// backlog, which one task per connection sends while it holds anything,
+    /// so a slow worker never holds up another's notifications. A connection
+    /// that is gone drops the message.
     ///
-    /// The queue is bounded ([`NOTIFY_QUEUE`]): a worker that stops reading
+    /// The backlog is bounded ([`NOTIFY_QUEUE`]): a worker that stops reading
     /// while its notifications pile up is disconnected, so it reconnects and
     /// resyncs (replayed observers, a fresh `functionregistered`) instead of
     /// the engine holding an ever-growing backlog for it.
     pub(crate) fn notify(&self, connection: Uuid, msg: Message) {
-        let existing = self
-            .notifiers
-            .get(&connection)
-            .map(|n| (n.tx.clone(), n.evict.clone()));
-        let (tx, evict) = match existing {
+        let existing = self.notifiers.get(&connection).map(|n| Arc::clone(&n));
+        let notifier = match existing {
             Some(notifier) => notifier,
             None => {
                 let Some(deps) = self.deps.get() else {
@@ -1294,7 +1309,7 @@ impl ObserverRegistry {
                 let Some(worker) = deps.workers.get_worker(&connection) else {
                     return;
                 };
-                // A connection in teardown gets no new forwarder: it would
+                // A connection in teardown gets no new notifier: it would
                 // outlive the connection in `notifiers`.
                 if worker
                     .cleanup_claimed
@@ -1302,55 +1317,99 @@ impl ObserverRegistry {
                 {
                     return;
                 }
-                let Some(runtime) = self.runtime() else {
-                    return;
-                };
-                let (tx, mut rx) = mpsc::channel::<Message>(NOTIFY_QUEUE);
-                let notifier = self.notifiers.entry(connection).or_insert(Notifier {
-                    tx,
-                    evict: worker.evict.clone(),
+                let notifier = self.notifiers.entry(connection).or_insert_with(|| {
+                    Arc::new(Notifier {
+                        channel: worker.channel.clone(),
+                        evict: worker.evict.clone(),
+                        backlog: Lock::new(Backlog::default()),
+                    })
                 });
-                let current = (notifier.tx.clone(), notifier.evict.clone());
-                drop(notifier);
-                // A losing racer's receiver ends with its sender, so only the
-                // winner's task outlives this call.
-                runtime.spawn(async move {
-                    while let Some(msg) = rx.recv().await {
-                        if worker.channel.send(Outbound::Protocol(msg)).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-                current
+                Arc::clone(&notifier)
             }
         };
-        match tx.try_send(msg) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!(
-                    connection = %connection,
-                    queued = NOTIFY_QUEUE,
-                    "a worker is not reading its observe notifications; closing its connection \
-                     so it reconnects and resyncs"
-                );
-                self.notifiers.remove(&connection);
-                evict.notify_one();
+        let mut backlog = notifier.backlog.write();
+        if backlog.closed {
+            drop(backlog);
+            self.notifiers.remove(&connection);
+            return;
+        }
+        if !backlog.sending {
+            let msg = match notifier.channel.try_send(Outbound::Protocol(msg)) {
+                Ok(()) => return,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    drop(backlog);
+                    self.notifiers.remove(&connection);
+                    return;
+                }
+                Err(mpsc::error::TrySendError::Full(msg)) => msg,
+            };
+            let Some(runtime) = self.runtime() else {
+                return;
+            };
+            backlog.queue.push_back(msg);
+            backlog.sending = true;
+            drop(backlog);
+            runtime.spawn(send_backlog(notifier));
+            return;
+        }
+        if backlog.queue.len() >= NOTIFY_QUEUE {
+            drop(backlog);
+            tracing::warn!(
+                connection = %connection,
+                queued = NOTIFY_QUEUE,
+                "a worker is not reading its observe notifications; closing its connection \
+                 so it reconnects and resyncs"
+            );
+            self.notifiers.remove(&connection);
+            notifier.evict.notify_one();
+            return;
+        }
+        backlog.queue.push_back(Outbound::Protocol(msg));
+    }
+}
+
+/// Sends `notifier`'s backlog, oldest first, until it is empty or the
+/// connection's channel closes.
+async fn send_backlog(notifier: Arc<Notifier>) {
+    loop {
+        let msg = {
+            let mut backlog = notifier.backlog.write();
+            match backlog.queue.pop_front() {
+                Some(msg) => msg,
+                None => {
+                    backlog.sending = false;
+                    return;
+                }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.notifiers.remove(&connection);
-            }
+        };
+        if notifier.channel.send(msg).await.is_err() {
+            let mut backlog = notifier.backlog.write();
+            backlog.closed = true;
+            backlog.queue.clear();
+            return;
         }
     }
 }
 
-/// Observe notifications queued for one connection before the engine
+/// Observe notifications waiting for one connection before the engine
 /// disconnects it.
 pub(crate) const NOTIFY_QUEUE: usize = 4096;
 
-/// One connection's notification queue.
+/// One connection's notifications: its channel, and what waits for room in it.
 pub(crate) struct Notifier {
-    tx: mpsc::Sender<Message>,
+    channel: mpsc::Sender<Outbound>,
     evict: Arc<tokio::sync::Notify>,
+    backlog: Lock<Backlog>,
+}
+
+/// Notifications waiting for room in a connection's channel, oldest first.
+#[derive(Default)]
+struct Backlog {
+    queue: VecDeque<Outbound>,
+    /// A task is sending `queue`: a new notification waits behind it.
+    sending: bool,
+    /// The connection's channel closed while that task sent.
+    closed: bool,
 }
 
 #[cfg(test)]
@@ -1384,7 +1443,9 @@ mod tests {
             Arc::new(DashMap::new()),
         );
 
-        for revision in 0..=NOTIFY_QUEUE as u64 {
+        // The first fills the connection's channel; the rest wait in its
+        // backlog, and the one past it closes the connection.
+        for revision in 0..=NOTIFY_QUEUE as u64 + 1 {
             registry.notify(
                 id,
                 Message::ObserverRemoved {

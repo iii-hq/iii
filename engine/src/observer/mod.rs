@@ -122,6 +122,34 @@ impl Hasher for AddressHasher {
 /// Observers indexed by identity (see [`Held`]).
 pub(crate) type HeldSet = HashSet<Held, BuildHasherDefault<AddressHasher>>;
 
+/// Hashes a connection id: the engine makes them (random v4 UUIDs) and only
+/// looks up the ones a worker presents, so their two halves folded and
+/// multiplied spread them well enough.
+#[derive(Default)]
+pub(crate) struct ConnectionHasher(u64);
+
+impl Hasher for ConnectionHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for half in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..half.len()].copy_from_slice(half);
+            let word = u64::from_le_bytes(word);
+            self.0 = (self.0.rotate_left(29) ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+        self.0 ^= self.0 >> 32;
+    }
+
+    /// The length a slice's hash writes first: always 16 here.
+    fn write_usize(&mut self, _length: usize) {}
+}
+
+/// A map keyed by connection id (see [`ConnectionHasher`]).
+pub(crate) type ByConnection<V> = DashMap<Uuid, V, BuildHasherDefault<ConnectionHasher>>;
+
 /// An observing connection that went away, while its observers wait for a
 /// `Reattach`.
 struct Departed {
@@ -143,23 +171,24 @@ pub struct ObserverRegistry {
     /// target, by identity. An observer is filed in both in the same step
     /// that gives it its id in `by_id`, under its status lock, so whoever
     /// finds it by id (to dispose of it) finds it here too.
-    by_connection: DashMap<Uuid, HeldSet>,
+    by_connection: ByConnection<HeldSet>,
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
     by_target: DashMap<FnKey, HeldSet>,
     /// The routed hook's view (see [`ObserverRegistry::route`]): functions
     /// with active observers and private functions a connection hosts, each
     /// with its active set. An invocation reads it with one atomic load, and
-    /// the set of a function it holds with one more. A function's set is
-    /// replaced in place; the view is copied (copy-on-write) only when a
-    /// function joins or leaves it, or who may call a function changes.
+    /// clones the set of a function it holds under that set's read lock. A
+    /// function's set is replaced in place; the view is copied
+    /// (copy-on-write) only when a function joins or leaves it, or who may
+    /// call a function changes.
     routed: ArcSwap<owner::RoutedView>,
     /// Serializes rebuilds of `routed`.
-    rebuild: Mutex<()>,
+    rebuild: lifecycle::Lock<()>,
     /// `engine::on-observers-changed` has active observers: what an observer's
     /// transition reads before it looks for them (set with `routed`).
     observers_changed_watched: std::sync::atomic::AtomicBool,
-    notifiers: DashMap<Uuid, lifecycle::Notifier>,
-    departed: DashMap<Uuid, Departed>,
+    notifiers: ByConnection<Arc<lifecycle::Notifier>>,
+    departed: ByConnection<Departed>,
     state_counts: lifecycle::StateCounts,
     payload_copies: AtomicU64,
     /// Times a reporting connection's reader waited for room in a queue its
@@ -226,14 +255,14 @@ impl ObserverRegistry {
             this: OnceLock::new(),
             runtime: OnceLock::new(),
             by_id: DashMap::new(),
-            by_connection: DashMap::new(),
+            by_connection: ByConnection::default(),
             by_function: DashMap::new(),
             by_target: DashMap::new(),
             routed: ArcSwap::from_pointee(HashMap::new()),
-            rebuild: Mutex::new(()),
+            rebuild: lifecycle::Lock::new(()),
             observers_changed_watched: std::sync::atomic::AtomicBool::new(false),
-            notifiers: DashMap::new(),
-            departed: DashMap::new(),
+            notifiers: ByConnection::default(),
+            departed: ByConnection::default(),
             state_counts: lifecycle::StateCounts::default(),
             payload_copies: AtomicU64::new(0),
             report_waits: AtomicU64::new(0),

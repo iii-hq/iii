@@ -799,8 +799,7 @@ impl ObserverRegistry {
     /// `observers.observer_grace_ms`, waiting for a `Reattach` that presents
     /// `reattach_token`, and disposed after that.
     pub fn connection_closed(self: &Arc<Self>, connection: Uuid, reattach_token: Uuid) {
-        // Nothing more is delivered to this connection; its forwarder ends
-        // with it.
+        // Nothing more is queued for this connection.
         self.notifiers.remove(&connection);
         let observers: Vec<Arc<Observer>> = self
             .observing_for(connection)

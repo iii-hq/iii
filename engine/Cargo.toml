@@ -115,7 +115,9 @@ url = { workspace = true }
 
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
-dashmap = "6"
+# raw-api: its `RwLock` (lock_api over parking_lot_core), which observer
+# statuses and function entries are kept under.
+dashmap = { version = "6", features = ["raw-api"] }
 # observe: lock-free snapshots of the observed-function set on the invocation
 # hot path, and the filter language shared with every SDK.
 arc-swap = "1"
