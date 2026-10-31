@@ -21,7 +21,9 @@
 //! its own `observeradded`, never both and never neither.
 
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, HashMap},
+    hash::{Hash, Hasher},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -39,7 +41,7 @@ use super::{
 };
 use crate::{
     engine::{Engine, InvocationKind},
-    function::FunctionChange,
+    function::{FunctionChange, FunctionKey},
     protocol::{ErrorBody, Message, ObserverView, observe_codes},
     worker_connections::WorkerConnection,
 };
@@ -228,6 +230,47 @@ impl FunctionEntry {
     }
 }
 
+/// The routed hook's view: what it knows of each function it routes (see
+/// [`ObserverRegistry::route`]).
+pub(crate) type RoutedView = HashMap<RoutedKey, Arc<Routed>>;
+
+/// A function's `(namespace, function_id)` in the routed view, shared, so a
+/// copy of the view copies no names. Looked up by `&dyn FunctionKey`, as a
+/// `FnKey` is.
+#[derive(Clone)]
+pub(crate) struct RoutedKey(Arc<FnKey>);
+
+impl FunctionKey for RoutedKey {
+    fn parts(&self) -> (&str, &str) {
+        (&self.0.0, &self.0.1)
+    }
+}
+
+impl Hash for RoutedKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.parts().hash(state);
+    }
+}
+
+impl PartialEq for RoutedKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+
+impl Eq for RoutedKey {}
+
+impl<'a> Borrow<dyn FunctionKey + 'a> for RoutedKey {
+    fn borrow(&self) -> &(dyn FunctionKey + 'a) {
+        self
+    }
+}
+
+/// `key` as the routed view looks it up.
+fn routed_key(key: &FnKey) -> &dyn FunctionKey {
+    key
+}
+
 /// What the routed hook knows of one function (see
 /// [`ObserverRegistry::route`]): its active observers, and who may call it.
 pub(crate) struct Routed {
@@ -252,12 +295,8 @@ pub(crate) enum Callers {
 /// Who may call `key`, for a change of its active observers: as the routed
 /// view says, or, when it is not in the view (no connection hosts it
 /// privately), nobody for a private function and anyone otherwise.
-fn callers_in(
-    view: &HashMap<FnKey, Arc<Routed>>,
-    key: &FnKey,
-    entry: Option<&FunctionEntry>,
-) -> Callers {
-    match view.get(key) {
+fn callers_in(view: &RoutedView, key: &FnKey, entry: Option<&FunctionEntry>) -> Callers {
+    match view.get(routed_key(key)) {
         Some(routed) => routed.callers,
         None if entry
             .and_then(|entry| entry.options())
@@ -285,7 +324,7 @@ pub(crate) fn private_refusal(function_id: &str) -> ErrorBody {
 /// started with; an observer that becomes active or leaves meanwhile makes a
 /// new version, sharing all but `O(log n)` of its nodes with this one.
 pub struct ActiveSet {
-    pub(crate) function: FnKey,
+    pub(crate) function: Arc<FnKey>,
     /// In creation order, by [`Observer::seq`].
     pub(crate) observers: PersistentSet<Arc<Observer>>,
     /// How many of `observers` need each part: `needs` and `listed_needs`
@@ -417,11 +456,11 @@ impl ActiveSet {
             key.hash(&mut hasher);
             hasher.finish()
         };
-        Self::of(key.clone(), observers, counts, shard)
+        Self::of(Arc::new(key.clone()), observers, counts, shard)
     }
 
     fn of(
-        function: FnKey,
+        function: Arc<FnKey>,
         observers: PersistentSet<Arc<Observer>>,
         counts: NeedCounts,
         shard: u64,
@@ -586,10 +625,11 @@ impl ObserverRegistry {
         };
         let _serialized = lock(&self.rebuild);
         let current = self.routed.load();
-        if current.get(key).map(|routed| routed.callers) == Some(callers) {
+        let routed = current.get(routed_key(key));
+        if routed.map(|routed| routed.callers) == Some(callers) {
             return;
         }
-        let active = current.get(key).and_then(|routed| routed.active.clone());
+        let active = routed.and_then(|routed| routed.active.clone());
         self.store_routed(&current, key, active, callers);
     }
 
@@ -598,20 +638,26 @@ impl ObserverRegistry {
     /// otherwise. Called under `rebuild`.
     fn store_routed(
         &self,
-        current: &HashMap<FnKey, Arc<Routed>>,
+        current: &RoutedView,
         key: &FnKey,
         active: Option<Arc<ActiveSet>>,
         callers: Callers,
     ) {
         let kept = active.is_some() || matches!(callers, Callers::Host(_));
-        if !kept && !current.contains_key(key) {
+        if !kept && !current.contains_key(routed_key(key)) {
             return;
         }
-        let mut next: HashMap<FnKey, Arc<Routed>> = HashMap::clone(current);
+        let mut next: RoutedView = HashMap::clone(current);
         if kept {
-            next.insert(key.clone(), Arc::new(Routed { active, callers }));
+            let routed = Arc::new(Routed { active, callers });
+            match next.get_mut(routed_key(key)) {
+                Some(held) => *held = routed,
+                None => {
+                    next.insert(RoutedKey(Arc::new(key.clone())), routed);
+                }
+            }
         } else {
-            next.remove(key);
+            next.remove(routed_key(key));
         }
         self.routed.store(Arc::new(next));
     }
@@ -685,6 +731,9 @@ impl ObserverRegistry {
 
     /// `key`'s entry, created if needed (continuing its revisions).
     fn entry_for(&self, key: &FnKey) -> Arc<FunctionEntry> {
+        if let Some(entry) = self.by_function.get(key) {
+            return entry.clone();
+        }
         self.by_function
             .entry(key.clone())
             .or_insert_with(|| {
@@ -841,7 +890,9 @@ impl ObserverRegistry {
         let wanted =
             entry.as_ref().is_some_and(|entry| entry.holds(observer)) && observer.is_active();
         let current = self.routed.load();
-        let set = current.get(key).and_then(|routed| routed.active.as_deref());
+        let set = current
+            .get(routed_key(key))
+            .and_then(|routed| routed.active.as_deref());
         let held = set
             .and_then(|set| set.observers.get(seq))
             .is_some_and(|held| Arc::ptr_eq(held, observer));
@@ -874,7 +925,7 @@ impl ObserverRegistry {
             None => Vec::new(),
         };
         let current = self.routed.load();
-        if active.is_empty() && !current.contains_key(key) {
+        if active.is_empty() && !current.contains_key(routed_key(key)) {
             return;
         }
         let callers = callers_in(&current, key, entry.as_deref());

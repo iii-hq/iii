@@ -566,16 +566,19 @@ impl ObserverRegistry {
                 }
             }
             self.state_counts.enter(state);
-            self.notify(
-                connection,
-                Message::ObserveResult {
-                    id: observer.id.clone(),
-                    state: state.clone(),
-                    error: None,
-                    warnings,
-                },
-            );
-            Some(self.observer_changed(observer, state, reason.cloned()))
+            // The engine hears nothing about the observers it owns.
+            if !observer.is_engine_owned() {
+                self.notify(
+                    connection,
+                    Message::ObserveResult {
+                        id: observer.id.clone(),
+                        state: state.clone(),
+                        error: None,
+                        warnings,
+                    },
+                );
+            }
+            Some(self.observer_changed(observer, state, reason))
         });
         // Its index entries go before this observer's are added: both may
         // file the same id under the same target.

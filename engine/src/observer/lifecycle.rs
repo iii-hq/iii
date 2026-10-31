@@ -730,11 +730,17 @@ impl StateCounts {
 }
 
 fn record_state_gauge(state: &ObserverState, count: i64) {
+    let label = match state {
+        ObserverState::Pending => "pending",
+        ObserverState::Active => "active",
+        ObserverState::Suspended => "suspended",
+        ObserverState::Error => "error",
+        ObserverState::Disposed | ObserverState::Unknown(_) => return,
+    };
     if let Some(metrics) = super::metrics() {
-        metrics.observers.record(
-            count,
-            &[opentelemetry::KeyValue::new("state", state.to_string())],
-        );
+        metrics
+            .observers
+            .record(count, &[opentelemetry::KeyValue::new("state", label)]);
     }
 }
 
@@ -788,16 +794,19 @@ impl ObserverRegistry {
         }
         status.state = state.clone();
         status.reason = reason.clone();
-        self.notify(
-            observer.observing_connection(),
-            Message::ObserverStateChanged {
-                id: observer.id.clone(),
-                state: state.clone(),
-                reason: reason.clone(),
-                fires: observer.fires(),
-            },
-        );
-        let unqueued = self.observer_changed(observer, &state, reason);
+        let unqueued = self.observer_changed(observer, &state, reason.as_ref());
+        // The engine hears nothing about the observers it owns.
+        if !observer.is_engine_owned() {
+            self.notify(
+                observer.observing_connection(),
+                Message::ObserverStateChanged {
+                    id: observer.id.clone(),
+                    state: state.clone(),
+                    reason,
+                    fires: observer.fires(),
+                },
+            );
+        }
         Some(Transition {
             activeness_changed: was_active != (state == ObserverState::Active),
             became: state,

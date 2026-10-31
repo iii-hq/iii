@@ -96,7 +96,7 @@ pub struct ObserverRegistry {
     /// with active observers and private functions a connection hosts. Read
     /// with one atomic load per invocation, replaced (copy-on-write) on
     /// change.
-    routed: ArcSwap<HashMap<FnKey, Arc<owner::Routed>>>,
+    routed: ArcSwap<owner::RoutedView>,
     /// Serializes rebuilds of `routed`.
     rebuild: Mutex<()>,
     notifiers: DashMap<Uuid, lifecycle::Notifier>,
