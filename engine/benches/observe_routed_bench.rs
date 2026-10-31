@@ -14,7 +14,8 @@
 //!
 //! The host counts what crosses its socket while the bench runs, and each
 //! measurement asserts it: one `invokefunction` in and one
-//! `invocationresult` out per call, and no other frame, whatever `n`.
+//! `invocationresult` out per call, and no other frame, whatever `n`. After
+//! each case the bench prints the totals and the frames per call.
 //!
 //! `cargo bench -p iii --bench observe_routed_bench`
 
@@ -48,6 +49,8 @@ struct Bench {
     t: TestEngine,
     delivered: Arc<AtomicU64>,
     frames: Arc<Frames>,
+    /// Calls the bench made.
+    calls: AtomicU64,
     // Keeps the observing connection, and with it the observers, alive.
     _observer: observe_support::Client,
 }
@@ -107,6 +110,7 @@ async fn setup(observers: usize) -> Bench {
         t,
         delivered,
         frames,
+        calls: AtomicU64::new(0),
         _observer: observer,
     }
 }
@@ -132,6 +136,7 @@ async fn run(b: &Bench, iters: u64, per_call: u64) -> Duration {
         tokio::task::yield_now().await;
     }
     let elapsed = start.elapsed();
+    b.calls.fetch_add(iters, Ordering::Relaxed);
     assert_eq!(b.frames.invoked.load(Ordering::Relaxed) - invoked, iters);
     assert_eq!(b.frames.answered.load(Ordering::Relaxed) - answered, iters);
     assert_eq!(
@@ -154,6 +159,16 @@ fn observe_routed(c: &mut Criterion) {
             b.to_async(&rt)
                 .iter_custom(|iters| run(&bench, iters, n as u64));
         });
+        let calls = bench.calls.load(Ordering::Relaxed);
+        let invoked = bench.frames.invoked.load(Ordering::Relaxed);
+        let answered = bench.frames.answered.load(Ordering::Relaxed);
+        let per_call = |frames: u64| frames as f64 / calls.max(1) as f64;
+        eprintln!(
+            "observe_routed/observed/{n}: {calls} calls; at the host {invoked} invokefunction in ({:.3} per call), {answered} invocationresult out ({:.3} per call), {} other frames",
+            per_call(invoked),
+            per_call(answered),
+            bench.frames.other.load(Ordering::Relaxed),
+        );
     }
     group.finish();
 }
