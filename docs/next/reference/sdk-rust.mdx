@@ -630,6 +630,20 @@ namespace() -> Option<String>
 
 `observe` with the observer's id, policy and metadata.
 
+An id (`ObserverOptions::id`) that a handle of this client holds,
+in any state, is refused at the call: nothing is sent, the holding
+handle and its observer are untouched, and the handle returned is in
+state `error` with the reason `OBSERVER_ID_CONFLICT`,
+`observer id already in use: <id>`. Its `ready`
+fails with that code, and its `dispose`
+sends nothing.
+
+The id is free again as soon as `dispose()` is called on the handle
+that held it, before the engine confirms the disposal. The engine answers a connection's
+observes in the order it reads them, so each handle of the id gets the
+answers to its own `observe` and `unobserve`: a late `disposed` for
+the earlier observer never disposes the new one.
+
 **Signature**
 
 ```rust
@@ -1584,7 +1598,7 @@ connection is up and is replayed with the same id after a reconnect.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `dispose` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Removes the observer. Once it resolves (the engine confirmed it, or after 5 s without an answer), no new activation starts and a call through it fails with `OBSERVER_NOT_ACTIVE`. |
+| `dispose` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Removes the observer, and frees its id at once: an `observe_with` under the same id makes a new observer while this one is still being disposed, and each handle hears the engine's answers to its own messages only. Once it resolves (the engine confirmed it, or after 5 s without an answer), no new activation starts and a call through it fails with `OBSERVER_NOT_ACTIVE`. A handle `observe_with` refused (state `error`, with no observer of its own) sends nothing and leaves the handle that holds the id alone. |
 | `fires` | `fn() -> u64` | Yes | Activations so far, as last reported by the engine. |
 | `id` | `fn() -> &str` | Yes | The observer's id. |
 | `on_state_change` | fn(listener: F) -&gt; [`StateListener`](#statelistener) | Yes | Calls `listener` on every state change. Listeners run on one process-wide thread, one call at a time and in the order the changes happened, never on the connection's read loop: a listener may call the client. A listener that blocks delays every client's listeners in the process; hand slow work to a task of its own. |

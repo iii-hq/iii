@@ -530,7 +530,7 @@ mod json_size_tests {
 }
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
@@ -1180,6 +1180,86 @@ fn is_observe_family(message: &Message) -> bool {
             | Message::InvocationsObserved { .. }
             | Message::LocalInvocationStats { .. }
     )
+}
+
+/// This client's observers by id (decision 56).
+#[derive(Default)]
+pub(crate) struct ObserverBook {
+    /// The handle that holds each id: from its `observe` call until its
+    /// `dispose` is called or the engine disposes it. Replayed on every
+    /// connection that supports observe, in creation order
+    /// ([`ObserverEntry::seq`]).
+    held: HashMap<String, Arc<ObserverEntry>>,
+    /// The connection epoch whose engine takes an `observe` as it is made:
+    /// set once the frames held across a reconnect went out, so an
+    /// `unobserve` queued while disconnected precedes every `observe`.
+    open_epoch: Option<u64>,
+    /// Per id, the handles whose `observe` went out on the current
+    /// connection, oldest first. The engine reads a connection's messages in
+    /// order and answers every `observe` with one `observeresult`, in that
+    /// order: the order of its answers says which handle each is for.
+    routes: HashMap<String, VecDeque<ObserverRoute>>,
+}
+
+/// A handle whose `observe` went out on a connection.
+struct ObserverRoute {
+    entry: Arc<ObserverEntry>,
+    /// The connection epoch it went out on.
+    epoch: u64,
+    /// Its `observeresult` arrived.
+    answered: bool,
+}
+
+/// Which answer of the engine names an observer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObserverAnswer {
+    /// `observeresult`: the answer to an `observe`.
+    Result,
+    /// `observerstatechanged`.
+    StateChanged,
+}
+
+impl ObserverBook {
+    /// The handle an answer for `id` on connection `epoch` is for:
+    /// an `observeresult` answers the oldest listed handle that has none
+    /// yet, which unlists the handles before it (their ids were freed before
+    /// it was made, and their answers came); an `observerstatechanged` is for
+    /// the newest listed handle that has its `observeresult`, and is dropped
+    /// before any has it. A handle the answer disposes is unlisted.
+    fn route(
+        &mut self,
+        id: &str,
+        epoch: u64,
+        answer: ObserverAnswer,
+        disposed: bool,
+    ) -> Option<Arc<ObserverEntry>> {
+        let listed = self.routes.get_mut(id)?;
+        listed.retain(|route| route.epoch == epoch);
+        let at = match answer {
+            ObserverAnswer::Result => {
+                let at = listed.iter().position(|route| !route.answered);
+                if let Some(at) = at {
+                    listed[at].answered = true;
+                    listed.drain(..at);
+                    Some(0)
+                } else {
+                    None
+                }
+            }
+            ObserverAnswer::StateChanged => listed.iter().rposition(|route| route.answered),
+        };
+        let entry = at.map(|at| {
+            let entry = listed[at].entry.clone();
+            if disposed {
+                listed.remove(at);
+            }
+            entry
+        });
+        if listed.is_empty() {
+            self.routes.remove(id);
+        }
+        entry
+    }
 }
 
 pub(crate) enum Outbound {
@@ -1840,9 +1920,8 @@ pub(crate) struct IIIInner {
     reattach_token: Mutex<Option<String>>,
     identity_mode: WorkerIdentityMode,
     registration_changed: Notify,
-    /// Observers this worker created, replayed on every connection that
-    /// supports observe, in creation order ([`ObserverEntry::seq`]).
-    observers: Mutex<HashMap<String, Arc<ObserverEntry>>>,
+    /// The observers this worker created and the engine's answers to them.
+    observers: Mutex<ObserverBook>,
     /// `ENGINE_*` on the current connection: unknown until `WorkerRegistered`.
     engine_features: AtomicU8,
     /// The last engine advertised observe: outgoing calls carry `caller`.
@@ -1922,7 +2001,7 @@ impl IIIClient {
             reattach_token: Mutex::new(None),
             identity_mode,
             registration_changed: Notify::new(),
-            observers: Mutex::new(HashMap::new()),
+            observers: Mutex::new(ObserverBook::default()),
             engine_features: AtomicU8::new(ENGINE_FEATURES_UNKNOWN),
             engine_observe_last: AtomicBool::new(false),
             observe_support: Arc::default(),
@@ -1962,6 +2041,16 @@ impl IIIClient {
 
     pub(crate) fn connection_epoch(&self) -> u64 {
         self.inner.connection_epoch.load(Ordering::Acquire)
+    }
+
+    /// A connection was established or lost: the observes that went out on
+    /// the one before get no more answers here, and the next engine takes
+    /// new ones once its held frames went out.
+    fn next_connection_epoch(&self) {
+        self.inner.connection_epoch.fetch_add(1, Ordering::AcqRel);
+        let mut observers = self.inner.observers.lock_or_recover();
+        observers.open_epoch = None;
+        observers.routes.clear();
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -3007,7 +3096,7 @@ impl IIIClient {
                     self.inner
                         .engine_features
                         .store(ENGINE_FEATURES_UNKNOWN, Ordering::SeqCst);
-                    self.inner.connection_epoch.fetch_add(1, Ordering::AcqRel);
+                    self.next_connection_epoch();
                     self.set_connection_state(IIIConnectionState::Connected);
                     let (mut ws_tx, mut ws_rx) = stream.split();
 
@@ -3175,7 +3264,7 @@ impl IIIClient {
                         // behind a dead socket, and every function waits for
                         // its confirmation on the next connection.
                         self.set_connection_state(IIIConnectionState::Reconnecting);
-                        self.inner.connection_epoch.fetch_add(1, Ordering::AcqRel);
+                        self.next_connection_epoch();
                         self.inner
                             .engine_features
                             .store(ENGINE_FEATURES_UNKNOWN, Ordering::SeqCst);
@@ -3574,7 +3663,8 @@ impl IIIClient {
                 error,
                 warnings,
             } => {
-                if let Some(entry) = self.observer_entry(&id) {
+                let disposed = state == ObserverState::Disposed;
+                if let Some(entry) = self.answered_observer(&id, ObserverAnswer::Result, disposed) {
                     entry.set_warnings(warnings);
                     self.apply_observer_state(&entry, state, error, None);
                 }
@@ -3585,7 +3675,10 @@ impl IIIClient {
                 reason,
                 fires,
             } => {
-                if let Some(entry) = self.observer_entry(&id) {
+                let disposed = state == ObserverState::Disposed;
+                if let Some(entry) =
+                    self.answered_observer(&id, ObserverAnswer::StateChanged, disposed)
+                {
                     self.apply_observer_state(&entry, state, reason, Some(fires));
                 }
             }
@@ -3970,32 +4063,37 @@ impl IIIClient {
             .engine_observe_last
             .store(observe, Ordering::Relaxed);
         self.register_v2_functions(v2);
+        let epoch = self.connection_epoch();
         let held = std::mem::take(&mut *self.inner.held_frames.lock_or_recover());
-        let mut observers: Vec<Arc<ObserverEntry>> = self
-            .inner
-            .observers
-            .lock_or_recover()
-            .values()
-            .cloned()
-            .collect();
-        // In creation order: the engine announces them to each function's
-        // host in the order it receives them.
-        observers.sort_unstable_by_key(|entry| entry.seq);
         if observe {
+            // The `unobserve`s queued while disconnected go out before any
+            // `observe`: the engine disposes an earlier observer before it
+            // reads the `observe` of a new one under its id.
             for envelope in held {
                 let _ = self.send_prepared(envelope);
             }
-            for entry in observers {
-                self.send_observe(&entry);
+        } else if !held.is_empty() {
+            tracing::debug!(
+                frames = held.len(),
+                "dropping observe messages queued for an engine without observe"
+            );
+        }
+        let mut observers: Vec<Arc<ObserverEntry>> = {
+            // Opened with the snapshot: an observer made from here on goes
+            // out at once, and every one made before is in the snapshot.
+            let mut book = self.inner.observers.lock_or_recover();
+            if observe {
+                book.open_epoch = Some(epoch);
             }
-        } else {
-            if !held.is_empty() {
-                tracing::debug!(
-                    frames = held.len(),
-                    "dropping observe messages queued for an engine without observe"
-                );
-            }
-            for entry in observers {
+            book.held.values().cloned().collect()
+        };
+        // In creation order: the engine announces them to each function's
+        // host in the order it receives them.
+        observers.sort_unstable_by_key(|entry| entry.seq);
+        for entry in observers {
+            if observe {
+                self.send_observe(&entry, epoch);
+            } else {
                 Self::fail_unsupported(&entry);
             }
         }
@@ -4120,52 +4218,91 @@ impl IIIClient {
         );
     }
 
-    fn send_observe(&self, entry: &ObserverEntry) {
+    /// Sends `entry`'s `observe` on connection `epoch`, once: nothing when
+    /// that connection is gone (the next one replays it) or the handle is
+    /// disposing. It is listed before it goes out, so its answer finds it.
+    fn send_observe(&self, entry: &Arc<ObserverEntry>, epoch: u64) {
         let _order = entry.send_lock.lock_or_recover();
-        if entry.disposing.load(Ordering::Acquire) {
+        if entry.disposing.load(Ordering::Acquire)
+            || self.connection_epoch() != epoch
+            || entry.sent_epoch.load(Ordering::Acquire) == epoch
+        {
             return;
         }
+        let envelope = match self.prepare_outbound(&entry.message) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                tracing::warn!(observer_id = %entry.id, error = %error, "observe not sent");
+                return;
+            }
+        };
+        entry.sent_epoch.store(epoch, Ordering::Release);
         entry.sent.store(true, Ordering::Release);
-        if let Err(error) = self.send_message(entry.message.clone()) {
+        self.inner
+            .observers
+            .lock_or_recover()
+            .routes
+            .entry(entry.id.clone())
+            .or_default()
+            .push_back(ObserverRoute {
+                entry: entry.clone(),
+                epoch,
+                answered: false,
+            });
+        if let Err(error) = self.send_prepared(envelope) {
             tracing::warn!(observer_id = %entry.id, error = %error, "observe not sent");
         }
     }
 
-    /// Starts tracking a new observer: sent now when this engine supports
-    /// observe, failed when it does not, and sent on `WorkerRegistered`
-    /// before that.
-    /// Returns false, sending nothing, when the id is already taken.
+    /// Starts tracking a new observer: sent at once when this connection's
+    /// engine takes observes, failed when it does not support observe, and
+    /// sent with the replay on `WorkerRegistered` before that.
+    /// Returns false, sending nothing, when a handle holds the id.
     pub(crate) fn track_observer(&self, entry: Arc<ObserverEntry>) -> bool {
-        match self
-            .inner
-            .observers
-            .lock_or_recover()
-            .entry(entry.id.clone())
-        {
-            std::collections::hash_map::Entry::Occupied(_) => return false,
-            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(entry.clone()),
+        let open = {
+            let mut book = self.inner.observers.lock_or_recover();
+            match book.held.entry(entry.id.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => return false,
+                std::collections::hash_map::Entry::Vacant(slot) => slot.insert(entry.clone()),
+            };
+            book.open_epoch
         };
-        match self.inner.engine_features.load(Ordering::SeqCst) {
-            ENGINE_WITH_OBSERVE | ENGINE_WITH_OBSERVE_V2 => self.send_observe(&entry),
-            ENGINE_WITHOUT_OBSERVE => Self::fail_unsupported(&entry),
-            _ => {}
+        match open {
+            Some(epoch) => self.send_observe(&entry, epoch),
+            None if self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITHOUT_OBSERVE => {
+                Self::fail_unsupported(&entry)
+            }
+            None => {}
         }
         true
     }
 
-    /// Stops replaying an observer, unless its id now belongs to another.
+    /// Frees the id `entry` holds, unless another handle holds it: the
+    /// observer is not replayed again.
     pub(crate) fn forget_observer(&self, entry: &ObserverEntry) {
-        let mut observers = self.inner.observers.lock_or_recover();
-        if observers
+        let mut book = self.inner.observers.lock_or_recover();
+        if book
+            .held
             .get(&entry.id)
-            .is_some_and(|tracked| std::ptr::eq(Arc::as_ptr(tracked), entry))
+            .is_some_and(|held| std::ptr::eq(Arc::as_ptr(held), entry))
         {
-            observers.remove(&entry.id);
+            book.held.remove(&entry.id);
         }
     }
 
-    fn observer_entry(&self, id: &str) -> Option<Arc<ObserverEntry>> {
-        self.inner.observers.lock_or_recover().get(id).cloned()
+    /// The handle an answer for observer `id` on this connection is for
+    /// (see [`ObserverBook::route`]).
+    fn answered_observer(
+        &self,
+        id: &str,
+        answer: ObserverAnswer,
+        disposed: bool,
+    ) -> Option<Arc<ObserverEntry>> {
+        let epoch = self.connection_epoch();
+        self.inner
+            .observers
+            .lock_or_recover()
+            .route(id, epoch, answer, disposed)
     }
 
     fn apply_observer_state(
@@ -5992,5 +6129,88 @@ mod held_frames_tests {
         assert_eq!(flushed_functions(&iii), vec!["f", "g"]);
         assert_eq!(iii.reporter().len(), 0);
         assert!(iii.reporter().take_drops().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod observer_book_tests {
+    use super::*;
+
+    fn entry(id: &str) -> Arc<ObserverEntry> {
+        Arc::new(ObserverEntry::new(
+            id.to_string(),
+            Message::Unobserve { id: id.into() },
+        ))
+    }
+
+    fn listed(book: &mut ObserverBook, entry: &Arc<ObserverEntry>, epoch: u64) {
+        book.routes
+            .entry(entry.id.clone())
+            .or_default()
+            .push_back(ObserverRoute {
+                entry: entry.clone(),
+                epoch,
+                answered: false,
+            });
+    }
+
+    fn is(got: Option<Arc<ObserverEntry>>, want: &Arc<ObserverEntry>) -> bool {
+        got.is_some_and(|got| Arc::ptr_eq(&got, want))
+    }
+
+    #[test]
+    fn answers_go_to_the_handles_by_frame_order() {
+        use ObserverAnswer::{Result, StateChanged};
+        let mut book = ObserverBook::default();
+        let (a, b) = (entry("x"), entry("x"));
+        listed(&mut book, &a, 1);
+        // before any observeresult: dropped
+        assert!(book.route("x", 1, StateChanged, false).is_none());
+        listed(&mut book, &b, 1);
+        assert!(is(book.route("x", 1, Result, false), &a));
+        assert!(is(book.route("x", 1, StateChanged, false), &a));
+        assert!(
+            is(book.route("x", 1, StateChanged, true), &a),
+            "a's disposed"
+        );
+        assert!(
+            book.route("x", 1, StateChanged, false).is_none(),
+            "b unanswered"
+        );
+        assert!(is(book.route("x", 1, Result, false), &b));
+        assert!(is(book.route("x", 1, StateChanged, true), &b));
+        assert!(book.routes.is_empty(), "every handle unlisted");
+    }
+
+    #[test]
+    fn a_newer_answer_unlists_the_handles_before_it() {
+        use ObserverAnswer::{Result, StateChanged};
+        let mut book = ObserverBook::default();
+        let (a, b) = (entry("x"), entry("x"));
+        listed(&mut book, &a, 1);
+        assert!(is(book.route("x", 1, Result, false), &a));
+        listed(&mut book, &b, 1);
+        assert!(is(book.route("x", 1, Result, false), &b));
+        assert_eq!(book.routes["x"].len(), 1);
+        assert!(is(book.route("x", 1, StateChanged, false), &b));
+        // an observeresult with nothing unanswered reaches nobody
+        assert!(book.route("x", 1, Result, false).is_none());
+        // a disposed observeresult (a tombstone) unlists its handle
+        let c = entry("y");
+        listed(&mut book, &c, 1);
+        assert!(is(book.route("y", 1, Result, true), &c));
+        assert!(!book.routes.contains_key("y"));
+    }
+
+    #[test]
+    fn another_connections_handles_get_no_answer() {
+        use ObserverAnswer::Result;
+        let mut book = ObserverBook::default();
+        let (old, new) = (entry("x"), entry("x"));
+        listed(&mut book, &old, 1);
+        listed(&mut book, &new, 3);
+        assert!(is(book.route("x", 3, Result, false), &new));
+        assert_eq!(book.routes["x"].len(), 1);
+        assert!(book.route("z", 3, Result, false).is_none());
     }
 }
