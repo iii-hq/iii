@@ -839,10 +839,12 @@ the target, whether or not the observed function is private, and the
 function (`SELF_TARGET`), and that the target is not a private function (`FORBIDDEN`).
 
 An `Observe` whose `id` an observer already holds is a replay when it comes from the observing
-connection with the same spec: the engine answers with the observer's current state. A different
-spec, or another connection, fails with `OBSERVER_ID_CONFLICT`, except for a worker back on a new
-connection. When the observer is `suspended` because its observing worker is away, an `Observe` of
-its `id` from a connection under the same worker name in the same namespace (as declared on
+connection with the same spec: the engine answers with the observer's current state. The replay of
+an observer in `error` is refused with that error: the engine disposes the observer as it answers,
+sends nothing more about it, and holds nothing under the `id`. A different spec, or another
+connection, fails with `OBSERVER_ID_CONFLICT`, except for a worker back on a new connection. When
+the observer is `suspended` because its observing worker is away, an `Observe` of its `id` from a
+connection under the same worker name in the same namespace (as declared on
 `engine::workers::register`) replaces it. A restarted worker re-observes under the ids it used
 before this way, and a queue consumer keyed by observer id keeps its backlog. The engine runs every
 check above first, and replaces the suspended observer when it creates the new one: it disposes the
@@ -906,13 +908,13 @@ Engine -> observing worker. Every lifecycle transition. `fires` is always sent; 
 
 States:
 
-| State       | Meaning                                                                                                                                                                                                                                                                                                                                              |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                                                                                         |
-| `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                              |
-| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                          |
-| `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                     |
-| `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, the grace period elapsed, or replaced by an `Observe` from its worker's new connection. A replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
+| State       | Meaning                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                                                                                                                          |
+| `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                                                               |
+| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                                                           |
+| `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                                                      |
+| `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, the grace period elapsed, or replaced by an `Observe` from its worker's new connection. On a connection that reattached, a replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
 
 ### Answer order and observer ids
 
@@ -920,7 +922,8 @@ The engine reads one connection's messages in order and sends that connection it
 (`ObserveResult`, `ObserverStateChanged`) in the order it makes them. It answers every `Observe`
 with exactly one `ObserveResult`, and sends `ObserveResult` for nothing else. An `id` therefore
 names one observer at a time on the wire, and an SDK can observe again under an id as soon as it
-has unobserved the earlier observer of that id. It tells the two observers' answers apart by order:
+has unobserved the earlier observer of that id, or received its `disposed`. It tells the two
+observers' answers apart by order:
 
 - It keeps, per id, the observers whose `Observe` it sent on the current connection, oldest first.
   A disposed one stays listed until its `disposed` arrives, a newer observer of the id has its
@@ -942,6 +945,13 @@ for a refused `Observe`, and ignores an `Unobserve` of an id that none of the co
 holds: nothing answers it, and another connection's observer of that id stays as it was. An SDK
 refuses an `observe` whose id one of its live handles holds, with `OBSERVER_ID_CONFLICT` and nothing
 sent.
+
+An observer the engine disposes (`max_fires`, expiry, an admin) frees its `id` on the connection
+the engine sent its `disposed` to, which may observe under the `id` again at once. On a connection
+that reattached, the engine answers an `Observe` of that `id` with `disposed` and its reason for
+`observers.observer_grace_ms` after the disposal: it reads the `Observe` as a replay whose
+`disposed` was lost with the earlier connection, and does not create the observer again with new
+counters.
 
 ### `FunctionRegistered`
 
