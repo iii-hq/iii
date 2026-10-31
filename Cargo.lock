@@ -2735,6 +2735,7 @@ dependencies = [
  "iii-compose",
  "iii-filter",
  "iii-helpers",
+ "iii-sandbox-contract",
  "iii-sdk",
  "indexmap 2.14.0",
  "indicatif",

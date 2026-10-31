@@ -136,6 +136,8 @@ iii-clap-docs = { path = "../crates/iii-clap-docs" }
 # `iii compose`: declarative multi-worker lifecycle. Owns its own CLI surface;
 # the engine only mounts the subcommand and delegates.
 iii-compose = { path = "../crates/iii-compose" }
+# Operation table and adapter-name rules shared with the sandbox adapters.
+iii-sandbox-contract = { path = "../crates/iii-sandbox-contract" }
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"
@@ -160,8 +162,7 @@ tar = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 thiserror = "2"
 tokio-tungstenite = "0.28"
-# Used by workers::external::resolve_external_module to locate
-# iii-worker on $PATH for the iii-sandbox well-known name.
+# Used by bin_resolve::find_existing_binary to locate helper binaries on $PATH.
 which = "7"
 
 [dev-dependencies]

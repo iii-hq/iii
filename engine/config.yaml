@@ -1,5 +1,10 @@
 registration_namespace_grace_ms: 5000
 
+# Binds sandbox::* to a sandbox adapter worker; unset, sandbox::* answers S303.
+# sandbox:
+#   adapter: sandbox-libkrun
+#   namespace: default
+
 # Only workers that are part of the engine lifecycle belong here. Project
 # workers such as http, state, cron, queue, pubsub, and bridge belong in
 # worker-compose.yaml.
@@ -20,15 +25,3 @@ workers:
         config:
           directory: ./config
       ttl_seconds: 0
-
-  # Ephemeral sandboxes are an engine-managed exception to worker-compose.
-  # - name: iii-sandbox
-  #   config:
-  #     auto_install: true
-  #     image_allowlist:
-  #       - python
-  #       - node
-  #     default_idle_timeout_secs: 300
-  #     max_concurrent_sandboxes: 32
-  #     default_cpus: 1
-  #     default_memory_mb: 512

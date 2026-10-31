@@ -149,8 +149,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, pathlib, yaml
+          import json, os, pathlib, yaml
           worker = os.environ["WORKER"]
+          # A worker the engine already booted (mandatory, not configurable) is refused
+          # in config.yaml, and a refused reload stops the engine: leave config.yaml alone.
+          booted = json.loads(pathlib.Path("/tmp/iii-workers.json").read_text(encoding="utf-8")).get("workers", [])
+          if any(isinstance(w, dict) and worker in (w.get("name"), w.get("id")) for w in booted):
+              raise SystemExit(0)
           worker_dir = pathlib.Path(os.environ["WORKER_DIR"])
           manifest = worker_dir / "iii.worker.yaml"
           meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}

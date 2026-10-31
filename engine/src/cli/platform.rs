@@ -215,9 +215,8 @@ fn format_target_human(target: &str) -> String {
 /// Returns the path to the binary if found, or None.
 ///
 /// This is the single shared *execution* resolver: the CLI dispatcher
-/// (`mod.rs`) and the engine's known-external spawner (`workers::external`)
-/// both route through it so they can never disagree on
-/// which copy runs. The install/update lifecycle (`update.rs`) deliberately
+/// (`mod.rs`) routes through it so every spawn agrees on which copy runs.
+/// The install/update lifecycle (`update.rs`) deliberately
 /// probes `binary_path()` — the managed `~/.local/bin` copy — first, because
 /// it manages that specific file regardless of what's on PATH.
 pub fn find_existing_binary(binary_name: &str) -> Option<PathBuf> {

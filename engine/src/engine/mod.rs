@@ -79,6 +79,10 @@ const NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS: &[&str] = &[
     "engine::queue::dlq_messages",
 ];
 
+/// Prefixes owned by an in-process engine worker. A WS worker may not register
+/// them in `default`; other namespaces stay open.
+const ENGINE_RESERVED_PREFIXES: &[&str] = &[iii_sandbox_contract::PUBLIC_PREFIX];
+
 /// Returns whether a function is an official namespace-scoped queue provider.
 fn is_namespace_scoped_queue_function(function_id: &str) -> bool {
     NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS.contains(&function_id)
@@ -450,15 +454,6 @@ pub struct Engine {
     /// rejection and draining a rejected worker's buffered registrations.
     namespace_grace_tasks: Arc<DashMap<Uuid, tokio::task::JoinHandle<()>>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
-    /// Effective `iii-worker-manager` port, resolved from config at build
-    /// time. Set once by `EngineBuilder::build`; subsequent reads see the
-    /// same value for the engine's lifetime. Engine-owned external workers
-    /// use it to connect back to the actual configured port.
-    worker_manager_port: Arc<std::sync::OnceLock<u16>>,
-    /// Absolute path of the config file this engine was built from, when
-    /// file-backed. Set once by `EngineBuilder::build`. Handed to spawned
-    /// engine-owned child processes as `III_CONFIG_PATH`.
-    config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
     /// Registration namespace grace in milliseconds, resolved from the global
     /// engine config by `EngineBuilder::build`. Read through
     /// [`Engine::registration_namespace_grace`], where the `III_NAMESPACE_GRACE_MS`
@@ -522,8 +517,6 @@ impl Engine {
             namespace_states: Arc::new(DashMap::new()),
             namespace_grace_tasks: Arc::new(DashMap::new()),
             active_scope,
-            worker_manager_port: Arc::new(std::sync::OnceLock::new()),
-            config_path: Arc::new(std::sync::OnceLock::new()),
             registration_namespace_grace_ms: Arc::new(std::sync::OnceLock::new()),
         }
     }
@@ -549,38 +542,6 @@ impl Engine {
     /// `EngineBuilder::build`; later calls are ignored (OnceLock semantics).
     pub fn set_registration_namespace_grace_ms(&self, ms: u64) {
         let _ = self.registration_namespace_grace_ms.set(ms);
-    }
-
-    /// Returns the effective `iii-worker-manager` port. Resolved from config
-    /// by `EngineBuilder::build` (see `set_worker_manager_port`); falls back
-    /// to `workers::worker::DEFAULT_PORT` if never set (direct `Engine::new`
-    /// paths used only by tests).
-    pub fn worker_manager_port(&self) -> u16 {
-        self.worker_manager_port
-            .get()
-            .copied()
-            .unwrap_or(crate::workers::worker::DEFAULT_PORT)
-    }
-
-    /// Records the effective port. Called once by `EngineBuilder::build`
-    /// after scanning the worker list for an `iii-worker-manager` entry.
-    /// Subsequent calls are ignored (OnceLock semantics) so the port cannot
-    /// drift mid-lifetime.
-    pub fn set_worker_manager_port(&self, port: u16) {
-        let _ = self.worker_manager_port.set(port);
-    }
-
-    /// Absolute config file path when the engine is file-backed; `None` for
-    /// programmatic/in-memory configs. See the field doc for why spawned
-    /// workers need it.
-    pub fn config_path(&self) -> Option<&std::path::Path> {
-        self.config_path.get().map(|p| p.as_path())
-    }
-
-    /// Records the config file path. Called once by `EngineBuilder::build`;
-    /// later calls are ignored (OnceLock semantics).
-    pub fn set_config_path(&self, path: std::path::PathBuf) {
-        let _ = self.config_path.set(path);
     }
 
     pub fn upsert_runtime_worker(&self, worker: RuntimeWorkerInfo) {
@@ -2581,19 +2542,32 @@ impl Engine {
                 // id in any other namespace: otherwise it would inherit the
                 // infrastructure RBAC carve-out AND the `engine::*` middleware
                 // bypass (both keyed by bare id) that are meant only for the real
-                // builtins. In `default` the ownership conflict with the builtin
-                // already blocks the shadow; outside it there is nothing to
-                // conflict with, so reserve the prefix here.
-                if reg_id.starts_with("engine::")
+                // builtins. In-process builtins have no `function_owners` entry,
+                // so in `default` only `ENGINE_RESERVED_PREFIXES` blocks a WS
+                // worker from shadowing them; outside `default` there is nothing
+                // to conflict with, so reserve `engine::*` here.
+                let reserved_engine_id = reg_id.starts_with("engine::")
                     && namespace != DEFAULT_NAMESPACE
-                    && !is_namespace_scoped_queue_function(&reg_id)
-                {
-                    tracing::warn!(
-                        worker_id = %worker.id,
-                        function_id = %reg_id,
-                        namespace = %namespace,
-                        "refusing a reserved `engine::*` function id outside the `default` namespace"
-                    );
+                    && !is_namespace_scoped_queue_function(&reg_id);
+                let reserved_builtin_prefix = namespace == DEFAULT_NAMESPACE
+                    && ENGINE_RESERVED_PREFIXES
+                        .iter()
+                        .any(|p| reg_id.starts_with(p));
+                if reserved_engine_id || reserved_builtin_prefix {
+                    if reserved_builtin_prefix {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %reg_id,
+                            "sandbox::* is served by the engine's sandbox router; adapters register <adapter>::*"
+                        );
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %reg_id,
+                            namespace = %namespace,
+                            "refusing a reserved `engine::*` function id outside the `default` namespace"
+                        );
+                    }
                     // Tell the worker (non-fatal, same shape as the conflict path):
                     // otherwise it believes the registration succeeded and only
                     // learns otherwise when invocations return function_not_found.
@@ -2604,10 +2578,10 @@ impl Engine {
                             namespace: namespace.clone(),
                             worker_name: None,
                             function_id: Some(reg_id.clone()),
-                            // Reserved-prefix refusal, not a real conflict: no
-                            // worker owns `engine::*` (the engine reserves it), so
-                            // don't name the rejected worker as its own owner.
-                            owner_worker_id: String::new(),
+                            // Reserved-prefix refusal, not a real conflict: the
+                            // engine owns it, and the SDKs print this field as the
+                            // owner ("already exported by worker <owner>").
+                            owner_worker_id: "engine (reserved prefix)".to_string(),
                         },
                     )
                     .await;
@@ -5068,8 +5042,9 @@ mod tests {
     /// `engine::*` is reserved for infrastructure (which lives in `default`). A
     /// worker registering an `engine::*` id in another namespace is refused, so
     /// it cannot inherit the infra RBAC carve-out / middleware bypass keyed by
-    /// bare id. In `default` the ownership conflict with the real builtin guards
-    /// it instead, so `engine::*` there is allowed.
+    /// bare id. In-process builtins have no `function_owners` entry, so in
+    /// `default` only `ENGINE_RESERVED_PREFIXES` blocks a shadow; `engine::*`
+    /// there is allowed.
     #[tokio::test]
     async fn register_function_reserves_non_provider_engine_prefix_outside_default() {
         ensure_default_meter();
@@ -5152,6 +5127,84 @@ mod tests {
                 .is_some(),
             "engine::* in default is allowed"
         );
+    }
+
+    /// `sandbox::*` belongs to the engine's sandbox router, an in-process
+    /// builtin with no `function_owners` entry. In `default` nothing but the
+    /// reserved list stops a WS worker from overwriting it, so the registration
+    /// is refused there and stays allowed in a project namespace.
+    #[tokio::test]
+    async fn register_function_reserves_sandbox_prefix_in_default() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                description: Some("router".into()),
+                ..make_request("sandbox::exec")
+            },
+            super::Handler::new(|_input| async { FunctionResult::Success(None) }),
+        );
+
+        let register = Message::RegisterFunction {
+            id: "sandbox::exec".to_string(),
+            description: Some("worker".into()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+            observe: None,
+        };
+
+        // A WS worker resolved to `default` cannot shadow the router.
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let dflt = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(dflt.clone());
+        engine.begin_namespace_resolution(&dflt);
+        engine
+            .resolve_connection_namespace(&dflt, DEFAULT_NAMESPACE)
+            .await;
+        engine
+            .dispatch_msg(&dflt, &register)
+            .await
+            .expect("dispatch");
+        assert_eq!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "sandbox::exec")
+                .unwrap()
+                ._description
+                .as_deref(),
+            Some("router"),
+            "the router's registration must survive the WS worker's"
+        );
+        let Some(Outbound::Protocol(Message::RegistrationRejected {
+            code,
+            function_id,
+            owner_worker_id,
+            ..
+        })) = std::iter::from_fn(|| rx.try_recv().ok())
+            .find(|o| matches!(o, Outbound::Protocol(Message::RegistrationRejected { .. })))
+        else {
+            panic!("a RegistrationRejected should be sent");
+        };
+        assert_eq!(code, crate::protocol::FUNCTION_NAMESPACE_CONFLICT);
+        assert_eq!(function_id.as_deref(), Some("sandbox::exec"));
+        assert_eq!(
+            owner_worker_id, "engine (reserved prefix)",
+            "the SDKs print the owner, so name the engine's reservation"
+        );
+
+        // Other namespaces stay open.
+        let (tx2, _rx2) = mpsc::channel::<Outbound>(8);
+        let orders = WorkerConnection::new(tx2);
+        engine.worker_registry.register_worker(orders.clone());
+        engine.begin_namespace_resolution(&orders);
+        engine.resolve_connection_namespace(&orders, "orders").await;
+        engine
+            .dispatch_msg(&orders, &register)
+            .await
+            .expect("dispatch");
+        assert!(engine.functions.get("orders", "sandbox::exec").is_some());
     }
 
     /// Regression: `function.unregister()` must honor

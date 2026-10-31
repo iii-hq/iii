@@ -96,7 +96,7 @@ fn make_dummy_function(id: &str) -> Function {
 /// the config cleans up its registrations in `Engine.functions`.
 struct TestEphemeralWorker;
 
-const TEST_EPHEMERAL_WORKER_NAME: &str = "iii-sandbox";
+const TEST_EPHEMERAL_WORKER_NAME: &str = "iii-http-functions";
 const TEST_EPHEMERAL_FUNCTION_ID: &str = "test::EphemeralReloadWorker::handler";
 
 #[async_trait]
@@ -523,10 +523,10 @@ modules: []
 }
 
 // ---------------------------------------------------------------------------
-// Allowed external engine workers register over the bus and never call the
-// engine-side register_config. The strip is store-driven, so once their value
-// is in the store their stale config.yaml block is removed too — proven here
-// with a non-builtin worker that registers nothing in-process.
+// A worker that never calls the engine-side register_config still has its
+// stale config.yaml block removed: the strip is store-driven, so the stored
+// value alone is enough — proven here with an `iii-http-functions` stand-in
+// that registers nothing in-process.
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -538,8 +538,8 @@ async fn external_worker_block_stripped_from_store_value_alone() {
     // Value already in the store from a prior boot, for a worker that never
     // calls the engine-side register_config (the external-worker case).
     std::fs::write(
-        store.path().join("iii-sandbox.yaml"),
-        "id: iii-sandbox\nname: Sandbox\ndescription: external stand-in\nvalue:\n  some_key: stored\n",
+        store.path().join("iii-http-functions.yaml"),
+        "id: iii-http-functions\nname: HTTP functions\ndescription: stand-in\nvalue:\n  some_key: stored\n",
     )
     .expect("pre-seed store");
 
@@ -558,7 +558,7 @@ async fn external_worker_block_stripped_from_store_value_alone() {
     config:
       host: 127.0.0.1
       port: 0
-  - name: iii-sandbox
+  - name: iii-http-functions
     config:
       some_key: from_config_yaml
 modules: []
@@ -568,7 +568,7 @@ modules: []
 
     let cfg = EngineConfig::config_file(path.to_str().unwrap()).expect("load config");
     let builder = EngineBuilder::new()
-        .register_worker::<TestEphemeralWorker>("iii-sandbox")
+        .register_worker::<TestEphemeralWorker>("iii-http-functions")
         .with_config(cfg)
         .with_config_path(path.to_str().unwrap())
         .build()
@@ -576,9 +576,9 @@ modules: []
         .expect("build engine");
     let handle = tokio::spawn(async move { builder.serve().await });
 
-    let rewritten = wait_for_config_rewrite(&path, "iii config set iii-sandbox").await;
+    let rewritten = wait_for_config_rewrite(&path, "iii config set iii-http-functions").await;
     assert!(
-        rewritten.contains(&format!("at {store_dir}/iii-sandbox.yaml")),
+        rewritten.contains(&format!("at {store_dir}/iii-http-functions.yaml")),
         "comment should point at the store location, got:\n{rewritten}"
     );
     assert!(
@@ -586,7 +586,7 @@ modules: []
         "stale external block should be gone, got:\n{rewritten}"
     );
     assert!(
-        rewritten.contains("- name: iii-sandbox"),
+        rewritten.contains("- name: iii-http-functions"),
         "the worker entry itself must be kept, got:\n{rewritten}"
     );
 

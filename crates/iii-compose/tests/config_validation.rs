@@ -118,8 +118,6 @@ engine:
       port: 50124
     iii-http-functions: {}
     iii-stream: {}
-    iii-sandbox:
-      auto_install: false
 containers:
   api:
     worker: path://./workers/api
@@ -139,14 +137,12 @@ containers:
         vec![
             "configuration",
             "iii-http-functions",
-            "iii-sandbox",
             "iii-stream",
             "iii-worker-manager",
             "iii-worker-manager#rbac",
         ],
         "the public map is canonical regardless of YAML declaration order"
     );
-    assert_eq!(engine.workers["iii-sandbox"]["auto_install"], false);
 }
 
 #[test]

@@ -60,7 +60,6 @@ pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] = &[
     "iii-worker-manager",
     "iii-http-functions",
     "iii-stream",
-    "iii-sandbox",
 ];
 
 /// Engine worker map keys may carry the engine's existing `#instance`

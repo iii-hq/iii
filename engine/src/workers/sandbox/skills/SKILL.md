@@ -8,13 +8,16 @@ description: >-
 
 # iii-sandbox
 
-The `iii-sandbox` worker boots ephemeral libkrun microVMs and runs code inside them, isolated from the host. Each sandbox boots in a few hundred milliseconds, runs commands or file operations scoped to the engine it lives on, and is reaped when idle; the overlay filesystem is discarded on stop. Its `sandbox::*` functions are called like any other iii function.
+The `iii-sandbox` worker is the engine's sandbox router: it serves the `sandbox::*` functions and forwards each call to a bound sandbox adapter worker (`sandbox-libkrun` by default), which boots ephemeral libkrun microVMs and runs code inside them, isolated from the host. Each sandbox boots in a few hundred milliseconds, runs commands or file operations scoped to the engine it lives on, and is reaped when idle; the overlay filesystem is discarded on stop. The `sandbox::*` functions are called like any other iii function.
 
 There are two ways in. `sandbox::run` is the fast path: it boots a VM, runs a code snippet, captures stdout/stderr, and tears the VM down in a single call. For multi-step work — several commands, multiple files, or inspecting a VM between steps — use the `sandbox::create` → `sandbox::exec` / `sandbox::fs::*` → `sandbox::stop` lifecycle and carry the returned sandbox id across calls.
 
-Prerequisites: enable `iii-sandbox` under `engine.workers` (or the five-worker allowlist of a
-directly supervised engine), and provide hardware virtualization (Apple Silicon, or `/dev/kvm` on
-Linux). Intel Macs and Windows cannot boot sandboxes.
+Prerequisites: a bound sandbox adapter that is running. The router is always on; it does nothing
+without the adapter.
+
+- `S301` means the bound adapter is not connected. Its message names the fix: `compose::add iii-sandbox` installs the adapter in the namespace's Compose project; with no project there, declare a container with `worker: package://<adapter>` (`package://sandbox-libkrun` by default) in a `worker-compose.yaml` for that namespace.
+- `S303` means the engine is not managed by a Compose file and has no `sandbox:` binding in its engine config. Ask the operator to set one.
+- Hardware virtualization (Apple Silicon, or `/dev/kvm` on Linux) is a requirement of `sandbox-libkrun`, not of the router. Intel Macs and Windows cannot boot its sandboxes.
 
 ## Get the contract from the engine
 

@@ -1,10 +1,11 @@
 # iii-sandbox
 
-Spawn ephemeral microVMs from worker code or the terminal. The daemon registers 16 `sandbox::*` triggers — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
+Spawn ephemeral microVMs from worker code. The router serves 16 `sandbox::*` triggers — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
 
-> **Implementation:** `crates/iii-worker/src/sandbox_daemon/`. Ships inside the `iii-worker`
-> support binary; the engine starts it when `iii-sandbox` appears under `engine.workers` (or a
-> directly supervised engine's allowed `config.yaml`).
+> **Implementation:** `engine/src/workers/sandbox/`. The engine's built-in sandbox router. It
+> registers every `sandbox::*` function in the `default` namespace and forwards each call,
+> unchanged, to the bound sandbox adapter worker (`sandbox-libkrun` by default). See
+> [Binding](#binding).
 
 **Use it for:** running untrusted code, AI-agent tool calls, one-shot scripts, per-request isolation.
 
@@ -81,7 +82,8 @@ Parse it once:
 const detail = JSON.parse(err.message);
 // detail.code, detail.type, detail.message, detail.docs_url, detail.retryable
 // detail.fix       — ready-to-send next-call payload, null if not auto-fixable
-// detail.fix_note  — one-liner explaining why fix is null
+// detail.fix_note  — when present, how to use fix or why it is null; filesystem
+//                    errors other than a missing parent carry neither (the message names the path)
 ```
 
 If `detail.fix` is non-null, **merge** its fields into your original request and
@@ -91,57 +93,31 @@ For example `FsParentNotFound` returns `fix: { "parents": true }`, which you mer
 into the original `sandbox::fs::write` / `sandbox::fs::mkdir` request rather than
 replacing it. `detail.fix_note` spells out the merge. The error IS the recovery path.
 
-### Error codes (anchors below)
+## Binding
 
-
-## Host requirements
-
-Sandboxes run as libkrun microVMs and need hardware virtualization on the host:
-
-- **macOS:** Apple Silicon (M-series). Intel Macs can't boot sandboxes.
-- **Linux:** `/dev/kvm` readable by the engine process.
-- **Windows:** unsupported.
-- **iii-worker build:** the embedded guest init (`--features embed-init`). Every official release build has it; `make sandbox-debug` reproduces it locally. Without it `sandbox::create` fails with `S300` rather than boot a sandbox without filesystem isolation.
-
-**Filesystem isolation.** Every sandbox boots from a read-only image of the cached rootfs (an erofs built once per image and stored next to the cached rootfs, e.g. `~/.iii/cache/<slug>.erofs`) plus a private, in-memory writable layer. Guest writes never reach the shared image cache, are invisible to other sandboxes, and vanish on stop; they are bounded by the sandbox's memory. The first `sandbox::create` of an image builds that erofs, which can take seconds for a large image; later creates reuse it.
-
-Hosts without hardware virtualization will fail `sandbox::create` with error `S300` and a stderr tail from the failed VM process. See `S300` in `docs/api-reference/sandbox.mdx` for the full diagnostic flow.
-
-## Sample Configuration
+The router serves `sandbox::*` and nothing else; the adapter worker boots the VMs. The Compose file
+that owns the engine picks the adapter:
 
 ```yaml
 engine:
-  workers:
-    iii-sandbox:
-      auto_install: true
-      image_allowlist:
-        - python
-        - node
-      default_idle_timeout_secs: 300
-      max_concurrent_sandboxes: 32
-      max_concurrent_exec_per_sandbox: 4
-      max_exec_timeout_ms: 300000
-      default_cpus: 1
-      default_memory_mb: 512
+  sandbox:
+    adapter: sandbox-libkrun   # function prefix = the adapter's manifest name; default
+    namespace: my-proj         # optional; default = this project's namespace
 ```
 
-Trim or extend `image_allowlist` and `custom_images` to control what callers can boot. Restart the
-managed Compose invocation after changing `engine:`.
+- A Compose-managed engine without an `engine.sandbox` section is bound to `sandbox-libkrun` in the
+  owner's namespace. Compose installs the adapter when a VM container, `engine.sandbox` or
+  `compose::add iii-sandbox` asks for it.
+- An engine no Compose file manages (External mode: the file has no `engine:` section) gets no
+  binding. Set `sandbox:` in that engine's config, or its callers get `S303`.
+- Changing the section needs a Compose restart.
+- Adapter settings (`image_allowlist`, `custom_images`, `default_*`, `max_*`, `auto_install`, ...)
+  are not engine config. They go under `containers.sandbox-libkrun.config_override` with the same
+  keys they had under `engine.workers.iii-sandbox`.
+- The router reads `adapter::info` again whenever the adapter registers it anew (a restart or a
+  swap), so an adapter that implements another contract major gets `S302` on its first call.
 
-## Configuration
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `auto_install` | boolean | `true` | Pull the image from its OCI ref on first use when the rootfs is not cached. Set `false` only for air-gapped or pre-provisioned deployments; a missing cache returns `S101`. |
-| `image_allowlist` | string[] | `[]` | **Fail-closed** list of image names that may be booted. Entries must be preset names (`python`, `node`) or keys from `custom_images`. Empty list denies everything — `sandbox::create` returns `S100` for every request. |
-| `default_idle_timeout_secs` | number | `300` | Reap a sandbox when **no activity of any kind** — exec (`last_exec_at`, also bumped by fs::* ops) or relayed network payload — has occurred for this long. A busy sandbox is exempt until `idle_timeout + max_exec_timeout_ms + 60s`, after which it is reclaimed anyway (a slot that outlives every possible deadline is leaked). Size capacity on the exempt case, not the bare timeout. Network liveness is **payload-level**: relayed TCP data, UDP datagrams, and DNS queries count; TCP keepalive probes and bare ACKs do not, so an idle-but-connected client can't pin its VM. The reaper runs every 10 s and reads network liveness at ~1 s granularity. Per-request `idle_timeout_secs` on `sandbox::create` overrides. |
-| `max_concurrent_exec_per_sandbox` | number | `4` | Execs admitted simultaneously in one sandbox. Above this, `sandbox::exec` returns `S003`. **Every concurrent exec is a full interpreter in the same guest**, so the safe value is bounded by `default_memory_mb`, not by taste: 4 concurrent `pip install`/`npm install` in a 512 MB guest will OOM-kill each other, and an OOM is a worse failure than the `S003` it replaced. Raise it and `default_memory_mb` together; lower it to 1 to restore strict serialization. `0` is treated as `1`, not as unlimited. |
-| `max_exec_timeout_ms` | number | `300000` | Hard ceiling on one exec's deadline; a caller's `timeout_ms` is clamped to it. Bounds how long a busy sandbox can defer reaping — without it, one caller-supplied timeout could pin a VM indefinitely. |
-| `max_concurrent_sandboxes` | number | `32` | Hard cap on live sandboxes. The 33rd concurrent `sandbox::create` returns `S400`. Size by host RAM (default RAM per sandbox × cap ≤ available RAM). |
-| `default_cpus` | number | `1` | vCPUs per sandbox when the request omits `cpus`. |
-| `default_memory_mb` | number | `512` | RAM ceiling per sandbox when the request omits `memory_mb`. |
-| `per_image_caps` | map | `{}` | Per-image hard caps. Each value is `{ max_cpus: N, max_memory_mb: N }`. Requests exceeding a cap return `S400`. |
-| `custom_images` | map | `{}` | Deployment-specific images beyond the built-in presets. Map key is the name used in `image_allowlist` and the `image` field on `sandbox::create`; value is a fully-qualified OCI reference (e.g. `ghcr.io/acme/my-app:1.2.3`). Preset names (`python`, `node`) are reserved. See `docs/api-reference/sandbox.mdx`. |
+Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-libkrun`.
 
 ## Triggers
 
@@ -179,11 +155,11 @@ Run a command inside a live sandbox. Recommended `timeoutMs`: `35_000` (daemon's
 | `timeout_ms` | number | `300_000` | Per-exec deadline enforced inside the daemon. Sized for cold `npm install` / `pip install` / `cargo build`; pass a smaller value for probes and version checks. |
 | `workdir` | string | guest home | Working directory. |
 
-Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success }`.
+Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success, stdout_truncated, stderr_truncated }`. A `*_truncated` flag is `true` when the adapter cut that stream at its output cap; a contract 1.0 adapter sends neither key.
 
 #### `sandbox::list`
 
-Enumerate active sandboxes. Empty payload (`{}`). Returns an array of `{ sandbox_id, image, name, status, created_at, last_exec_at }`.
+Enumerate active sandboxes. Empty payload (`{}`). Returns `{ sandboxes: [{ sandbox_id, name, image, age_secs, exec_in_progress, exec_in_flight, exec_slots_free, stopped }] }`. Use `exec_slots_free` for admission, not `exec_in_progress`.
 
 #### `sandbox::stop`
 
@@ -213,7 +189,7 @@ Boot a VM, run a code snippet, capture output, and auto-stop — in a single cal
 | `timeout_ms` | number | `300_000` | Per-run deadline. |
 | `keep_sandbox` | boolean | `false` | Keep the VM alive after the run and return its `sandbox_id`. |
 
-Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success, sandbox_id? }`. `sandbox_id` is present only when `keep_sandbox: true`; otherwise the VM is stopped on success and on failure.
+Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success, stdout_truncated, stderr_truncated, sandbox_id? }`. The `*_truncated` flags are as for `sandbox::exec`. `sandbox_id` is present only when `keep_sandbox: true`; otherwise the VM is stopped on success and on failure.
 
 ### Catalog (1)
 
@@ -412,138 +388,18 @@ await iii.trigger({
 })
 ```
 
-## CLI
-
-The `iii sandbox` subcommands wrap a curated subset of the lifecycle and fs surface:
-
-```
-iii sandbox run <image> -- <cmd> [args...]    # one-shot create+exec+stop
-iii sandbox create <image> [--idle-timeout N] # boot, print sandbox_id
-iii sandbox exec <sandbox_id> -- <cmd> ...    # exec into a live sandbox
-iii sandbox list
-iii sandbox stop <sandbox_id>
-iii sandbox upload <sandbox_id> <local> <remote>
-iii sandbox download <sandbox_id> <remote> <local>
-```
-
-Anything outside this set (e.g. `fs::grep`, `fs::sed`, `fs::chmod`) is reachable only via `iii.trigger()` from worker code.
-
 ## Errors
 
-The daemon returns typed `SandboxError`s with S-codes embedded in the wire
-payload (`{type, code, message, docs_url, fix, fix_note, retryable}`).
+Adapter errors reach the caller untouched, as the typed `SandboxError` wire payload
+(`{type, code, message, docs_url, fix, fix_note, retryable}`). Every code, its meaning and its fix
+is documented at https://iii.dev/docs/creating-workers/sandboxes. The router adds four:
 
-`error.docs_url` resolves to one of the anchors below. The anchor IDs are
-case-sensitive HTML anchors so a regression test
-(`sandbox_docs_anchor_stability`) can verify each `SandboxErrorCode` has a
-documented home.
-
-### Request validation
-
-<a id="S001"></a>
-#### S001 — invalid request
-Bad UUID, missing required field, ambiguous `cmd`/`args`/`argv` combo, invalid
-env var name. Check `error.message` for the specific cause.
-
-<a id="S002"></a>
-#### S002 — sandbox not found
-The `sandbox_id` is well-formed but no sandbox with that id exists. Call
-`sandbox::create` first.
-
-<a id="S003"></a>
-#### S003 — exec concurrency cap reached
-A sandbox admits `max_concurrent_exec_per_sandbox` execs at once (default 4);
-this one would have been the next past that. Exec is **not** serialized — both
-ends of the channel multiplex — but it is capped, because the guest defaults to
-1 vCPU and 512 MB and enough simultaneous interpreters OOM the VM rather than
-queueing.
-
-If the calls in flight are long-running or FOREGROUND processes (a server,
-`npm install`, a build/watch), waiting will NOT free a slot — each holds until
-it exits or hits its `timeout_ms` (default 300s). Detach servers with
-`nohup <cmd> > /tmp/out.log 2>&1 &` and read progress via `sandbox::fs::read`,
-or `sandbox::stop` + `sandbox::create` to reset. Retry-after-wait only helps
-for short in-flight commands. Operators serving genuinely concurrent workloads
-should raise `max_concurrent_exec_per_sandbox` alongside `default_memory_mb`.
-
-<a id="S004"></a>
-#### S004 — sandbox already stopped
-The sandbox was reaped or explicitly stopped. Create a new one.
-
-### Image catalog
-
-<a id="S100"></a>
-#### S100 — image not in catalog
-The `image` value isn't a built-in preset (`python`, `node`) and isn't a key in
-`engine.workers.iii-sandbox.custom_images`. Either pick a known preset or add
-a custom_images entry.
-
-<a id="S101"></a>
-#### S101 — rootfs missing
-The image is in the catalog but the rootfs is not on disk. Enable `auto_install`, or pre-provision
-the sandbox image cache through the deployment's image preparation process.
-
-<a id="S102"></a>
-#### S102 — auto-install failed (transient)
-Pull or extract of the image bundle failed. Often transient — retry.
-
-### Exec runtime
-
-<a id="S200"></a>
-#### S200 — exec timed out
-The `timeout_ms` window elapsed before the binary exited. Raise the timeout or
-break the work into smaller steps.
-
-### Filesystem
-
-<a id="S210"></a>
-#### S210 — fs invalid request
-Mutually exclusive fields, missing required field, unsupported operation
-combination. Check `error.message`.
-
-<a id="S211"></a>
-#### S211 — file not found
-
-<a id="S212"></a>
-#### S212 — wrong file type (expected file, found directory, or vice versa)
-
-<a id="S213"></a>
-#### S213 — already exists
-
-<a id="S214"></a>
-#### S214 — directory not empty
-
-<a id="S215"></a>
-#### S215 — permission denied
-
-<a id="S216"></a>
-#### S216 — fs i/o error
-
-<a id="S217"></a>
-#### S217 — invalid regex pattern
-
-<a id="S218"></a>
-#### S218 — fs channel aborted (transient)
-The streaming channel closed before the operation completed. Retry.
-
-<a id="S219"></a>
-#### S219 — fs operation unsupported
-The sandbox supervisor inside the VM is too old to implement this fs op.
-Upgrade iii-worker.
-
-### Platform
-
-<a id="S300"></a>
-#### S300 — VM boot failed
-The microVM couldn't boot. Almost always missing virtualization on the host
-(no `/dev/kvm`, Intel Mac, Windows). Check the stderr tail in `error.message`.
-
-<a id="S400"></a>
-#### S400 — resource limit exceeded
-Capacity bound (`max_concurrent_sandboxes`, per-image caps) reached.
-
-
-## See also
-
-- [`docs/api-reference/sandbox.mdx`](https://github.com/iii-hq/iii/blob/main/docs/api-reference/sandbox.mdx) — full payload reference, S-code diagnostics, custom images, environment variables, troubleshooting.
-- [`docs/how-to/developing-sandbox-workers`](https://github.com/iii-hq/iii/blob/main/docs/how-to/developing-sandbox-workers) — how worker processes themselves run inside isolated microVMs (different topic from this trigger surface).
+- `S301`: the bound adapter is not connected (retryable). The message names the fix: `compose::add iii-sandbox`
+  in the namespace's Compose project, or, if none runs, a container with `worker: package://<adapter>` in a
+  `worker-compose.yaml` for that namespace.
+- `S302`: the adapter speaks another contract major than the router.
+- `S303`: no adapter is configured; the engine is not managed by a Compose file and has no `sandbox:` binding.
+- `S304`: the connected adapter does not register the called op. The router answers it only after
+  a 250 ms grace, so an adapter that is still (re)registering its ids is not reported as missing
+  them; a replay slower than that still gets `S304`. A `function_not_found` that a registered op
+  returns is the adapter's own error and passes through unchanged.

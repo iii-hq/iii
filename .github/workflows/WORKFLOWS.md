@@ -374,7 +374,7 @@ Collects a worker's live interface from a running III engine and POSTs to `POST 
 
 ### `_publish-worker-skills.yml` — Publish Worker Skills
 
-Discovers worker directories with an `iii.worker.yaml` manifest and a non-empty `skills/` tree (repo-wide, including e.g. `crates/iii-worker/src/sandbox_daemon`), builds payloads via `build_skills_payload.py`, and POSTs to `POST /w/{slug}/skills`. Called by `release-iii.yml` (after builtin worker publish) and by the manual `publish-worker-skills.yml` workflow.
+Discovers worker directories with an `iii.worker.yaml` manifest and a non-empty `skills/` tree (repo-wide), builds payloads via `build_skills_payload.py`, and POSTs to `POST /w/{slug}/skills`. Called by `release-iii.yml` (after builtin worker publish) and by the manual `publish-worker-skills.yml` workflow.
 
 | Input | Purpose |
 |-------|---------|

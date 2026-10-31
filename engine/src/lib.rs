@@ -30,7 +30,6 @@ pub mod workers {
     pub mod config_rewrite;
     pub mod configuration;
     pub mod engine_fn;
-    pub mod external;
     pub mod http_functions;
     pub mod observability;
     /// Compatibility API for downstream custom queue adapters. The legacy
@@ -39,7 +38,7 @@ pub mod workers {
     pub mod redis;
     pub mod registry;
     pub mod reload;
-    pub mod secure_temp;
+    pub mod sandbox;
     pub mod stream;
     pub mod telemetry;
     pub mod traits;

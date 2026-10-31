@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use super::config::{
-    EngineConfig, WorkerEntry, WorkerRegistry, assign_instance_ids,
+    EngineConfig, WorkerEntry, WorkerRegistry, normalize_worker_entries,
     runtime_worker_info_from_registration,
 };
 use super::registry::WorkerRegistration;
@@ -79,8 +79,8 @@ pub struct ReloadDiff {
 }
 
 /// Partitions `new` against `old` into added/removed/changed/unchanged. Pure
-/// function. Equality uses `WorkerEntry::PartialEq` which compares `name`,
-/// `image`, and `config` structurally.
+/// function. Equality uses `WorkerEntry::PartialEq` which compares `name`
+/// and `config` structurally.
 pub fn diff_entries(old: &[WorkerEntry], new: &[WorkerEntry]) -> ReloadDiff {
     let old_map: HashMap<&str, &WorkerEntry> = old.iter().map(|e| (e.name.as_str(), e)).collect();
     let new_map: HashMap<&str, &WorkerEntry> = new.iter().map(|e| (e.name.as_str(), e)).collect();
@@ -122,77 +122,7 @@ impl ReloadManager {
         let cfg = EngineConfig::config_file(path)
             .map_err(|e| anyhow::anyhow!("reload: parse failed: {}", e))?;
 
-        let mut entries: Vec<WorkerEntry> = Vec::new();
-        entries.extend(cfg.workers);
-        entries.extend(cfg.modules);
-
-        let names: std::collections::HashSet<String> =
-            entries.iter().map(|e| e.name.clone()).collect();
-
-        for registration in inventory::iter::<WorkerRegistration> {
-            if registration.mandatory && !names.contains(registration.name) {
-                entries.push(WorkerEntry {
-                    name: registration.name.to_string(),
-                    image: None,
-                    config: None,
-                });
-            }
-        }
-
-        assign_instance_ids(&mut entries);
-
-        Ok(entries)
-    }
-
-    /// Walks `diff.unchanged` and asks each tracked worker whether its
-    /// backing process is still alive. Dead ones get pulled out of
-    /// `unchanged` and pushed into `changed` so the commit step will
-    /// destroy + restart them.
-    ///
-    /// This fixes the class of bugs where the engine's `running` list
-    /// believes a worker is up but its detached VM / child process has died
-    /// or been reaped out of band — most commonly via
-    /// a forced managed-worker reinstall, which wipes the managed dir and rewrites
-    /// config.yaml with a structurally identical entry, leaving diff with
-    /// nothing to do.
-    ///
-    /// Returns the list of names that were promoted so the caller can log
-    /// them (e.g. in the reload summary).
-    pub async fn promote_dead_unchanged(
-        diff: &mut ReloadDiff,
-        new_entries: &[WorkerEntry],
-        running: &[RunningWorker],
-    ) -> Vec<String> {
-        let new_by_name: HashMap<&str, &WorkerEntry> =
-            new_entries.iter().map(|e| (e.name.as_str(), e)).collect();
-        let running_by_name: HashMap<&str, &RunningWorker> = running
-            .iter()
-            .map(|rw| (rw.entry.name.as_str(), rw))
-            .collect();
-        let mut promoted: Vec<String> = Vec::new();
-        let mut still_unchanged: Vec<String> = Vec::with_capacity(diff.unchanged.len());
-        for name in diff.unchanged.drain(..) {
-            let is_alive = match running_by_name.get(name.as_str()) {
-                Some(rw) => rw.worker.is_alive().await,
-                None => true, // no tracked worker — can't assess, leave alone
-            };
-            if is_alive {
-                still_unchanged.push(name);
-            } else if let Some(entry) = new_by_name.get(name.as_str()) {
-                tracing::warn!(
-                    worker = %name,
-                    "reload: tracked worker is dead, promoting to CHANGED for restart"
-                );
-                diff.changed.push((*entry).clone());
-                promoted.push(name);
-            } else {
-                // unchanged must appear in new_entries by construction of
-                // diff_entries; this branch is a defensive fallback.
-                still_unchanged.push(name);
-            }
-        }
-        diff.unchanged = still_unchanged;
-        promoted
+        Ok(normalize_worker_entries(cfg))
     }
 
     /// Refuse removal of mandatory workers.
@@ -318,11 +248,7 @@ impl ReloadManager {
         worker_arc.register_functions(engine.clone());
         let registrations = engine.end_worker_scope();
 
-        if let Some(runtime_worker) =
-            runtime_worker_info_from_registration(entry, worker_arc.as_ref(), &registrations)
-        {
-            engine.upsert_runtime_worker(runtime_worker);
-        }
+        engine.upsert_runtime_worker(runtime_worker_info_from_registration(entry, &registrations));
 
         Ok(RunningWorker {
             entry: entry.clone(),
@@ -363,16 +289,13 @@ impl ReloadManager {
         })?;
 
         let old_entries: Vec<WorkerEntry> = running.iter().map(|rw| rw.entry.clone()).collect();
-        let mut diff = diff_entries(&old_entries, &new_entries);
-
-        let promoted = Self::promote_dead_unchanged(&mut diff, &new_entries, running).await;
+        let diff = diff_entries(&old_entries, &new_entries);
 
         tracing::info!(
-            "reload: diff +{} added, -{} removed, ~{} changed ({} revived), ={} unchanged",
+            "reload: diff +{} added, -{} removed, ~{} changed, ={} unchanged",
             diff.added.len(),
             diff.removed.len(),
             diff.changed.len(),
-            promoted.len(),
             diff.unchanged.len(),
         );
 

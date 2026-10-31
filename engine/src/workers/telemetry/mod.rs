@@ -215,6 +215,7 @@ pub fn is_iii_builtin_function_id(id: &str) -> bool {
         // The engine-hosted event sources of the observability worker.
         || id == crate::observer::events::OBSERVABILITY_ON_LOG
         || id == crate::observer::events::OBSERVABILITY_ON_SPAN
+        || id.starts_with("sandbox::")
         || id.starts_with("bridge.")
         || id.starts_with("motia::")
         || id == "publish"
@@ -2449,6 +2450,8 @@ mod tests {
         assert!(is_iii_builtin_function_id("iii-stream::on-config-change"));
         assert!(is_iii_builtin_function_id("iii-cron::on-config-change"));
         assert!(is_iii_builtin_function_id("iii-queue::on-config-change"));
+        assert!(is_iii_builtin_function_id("sandbox::exec"));
+        assert!(is_iii_builtin_function_id("sandbox::adapter::info"));
         assert!(!is_iii_builtin_function_id("orders::process"));
         assert!(!is_iii_builtin_function_id("user::my_function"));
         assert!(!is_iii_builtin_function_id("payments::charge"));

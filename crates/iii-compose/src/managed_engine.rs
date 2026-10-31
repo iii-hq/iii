@@ -911,8 +911,6 @@ engine:
   observers:
     max_observe_depth: 4
   workers:
-    iii-sandbox:
-      auto_install: false
     configuration:
       adapter:
         name: fs
@@ -952,11 +950,9 @@ containers: {}
                 "configuration",
                 "iii-worker-manager",
                 "iii-worker-manager#rbac",
-                "iii-sandbox"
             ]
         );
         assert_eq!(workers[1]["config"]["port"], "${ENGINE_PORT:50123}");
-        assert_eq!(workers[3]["config"]["auto_install"], false);
     }
 
     #[test]

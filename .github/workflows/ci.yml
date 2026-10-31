@@ -708,24 +708,6 @@ jobs:
           cargo test --locked -p iii-worker --features embed-init,embed-libkrunfw \
             --test sandbox_shared_rootfs_boot_params --test sandbox_canonical_cache_boot_params
 
-      - name: Sandbox isolation end to end (UBI 9 image, real microVMs)
-        env:
-          III_BIN: ${{ runner.temp }}/engine/iii
-          WORKER_BIN: target/debug/iii-worker
-          IMAGE_REF: registry.access.redhat.com/ubi9/ubi:latest
-          WORK: ${{ runner.temp }}/sandbox-isolation
-        run: |
-          chmod +x "$III_BIN"
-          bash scripts/sandbox-isolation-e2e.sh
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sandbox-isolation-linux-logs
-          path: ${{ runner.temp }}/sandbox-isolation/logs
-          if-no-files-found: ignore
-          retention-days: 7
-
   sandbox-isolation-macos:
     name: Sandbox Isolation - macos
     runs-on: macos-latest

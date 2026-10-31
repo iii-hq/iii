@@ -602,7 +602,7 @@ jobs:
           - worker: configuration
             worker_dir: engine/src/workers/configuration
           - worker: iii-sandbox
-            worker_dir: crates/iii-worker/src/sandbox_daemon
+            worker_dir: engine/src/workers/sandbox
           - worker: iii-engine-functions
             worker_dir: engine/src/workers/engine_fn
     uses: ./.github/workflows/_publish-engine-workers.yml
