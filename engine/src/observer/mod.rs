@@ -30,6 +30,7 @@ pub mod engine_owned;
 pub mod events;
 mod lifecycle;
 mod owner;
+mod persistent;
 mod registry;
 
 use std::{
@@ -136,6 +137,9 @@ pub struct ObserverRegistry {
     standing_count: AtomicUsize,
     /// Owner announcements made so far: each one's generation.
     announcements: AtomicU64,
+    /// Observers that joined their function so far: the last one's
+    /// [`Observer::seq`].
+    created: AtomicU64,
     /// The last revision of functions whose entry was dropped as unused:
     /// revisions never go back within an engine's lifetime.
     revisions: DashMap<FnKey, u64>,
@@ -187,6 +191,7 @@ impl ObserverRegistry {
             standing: Mutex::new(Vec::new()),
             standing_count: AtomicUsize::new(0),
             announcements: AtomicU64::new(0),
+            created: AtomicU64::new(0),
             revisions: DashMap::new(),
             revision_order: Mutex::new(std::collections::VecDeque::new()),
             drop_export: std::sync::atomic::AtomicBool::new(false),
@@ -298,7 +303,7 @@ impl ObserverRegistry {
     /// `disposed`.
     pub fn observer_count(&self, namespace: &str, function_id: &str) -> usize {
         self.function_entry(&(namespace.to_string(), function_id.to_string()))
-            .map_or(0, |entry| entry.observers().len())
+            .map_or(0, |entry| entry.len())
     }
 
     /// Ids of the live observers `connection` created, sorted.

@@ -156,7 +156,7 @@ impl ObserverRegistry {
         let spec = request.spec(self.config().default_max_in_flight);
         let existing = self.get(&request.id);
         if let Some(existing) = &existing
-            && existing.observing().connection == worker.id
+            && existing.observing_connection() == worker.id
         {
             if existing.spec != spec {
                 return Err(reject(
@@ -575,15 +575,14 @@ impl ObserverRegistry {
                     warnings,
                 },
             );
-            let unqueued = self.observer_changed(observer, state, reason.cloned());
-            Some((state.clone(), unqueued))
+            Some(self.observer_changed(observer, state, reason.cloned()))
         });
         // Its index entries go before this observer's are added: both may
         // file the same id under the same target.
         if let Some((previous, transition)) = replaced {
             self.settle(previous, transition);
         }
-        let Some((state, unqueued)) = published else {
+        let Some(unqueued) = published else {
             return false;
         };
         if let Some(event) = unqueued {
@@ -598,9 +597,9 @@ impl ObserverRegistry {
             .or_default()
             .insert(observer.id.clone());
         self.attach_to_function(observer);
-        if state == ObserverState::Active {
-            self.refresh_active(&observer.function);
-        }
+        // Whatever state it reached since its creation: a transition made
+        // before it joined its function found it in no active set.
+        self.refresh_observer(observer);
         true
     }
 
@@ -702,7 +701,7 @@ impl ObserverRegistry {
             tracing::debug!(observer_id = %id, "unobserve for an unknown observer; ignoring");
             return;
         };
-        if observer.observing().connection != connection {
+        if observer.observing_connection() != connection {
             tracing::debug!(
                 observer_id = %id,
                 connection = %connection,
@@ -738,7 +737,7 @@ impl ObserverRegistry {
             .unwrap_or_default();
         let observers: Vec<Arc<Observer>> = observers
             .into_iter()
-            .filter(|o| o.observing().connection == connection)
+            .filter(|o| o.observing_connection() == connection)
             .collect();
         if observers.is_empty() {
             return;
@@ -788,7 +787,7 @@ impl ObserverRegistry {
             .map(|ids| ids.iter().filter_map(|id| self.get(id)).collect())
             .unwrap_or_default();
         for observer in observers {
-            if observer.observing().connection == connection
+            if observer.observing_connection() == connection
                 && !observer.flags().observing_connected
             {
                 self.dispose(
