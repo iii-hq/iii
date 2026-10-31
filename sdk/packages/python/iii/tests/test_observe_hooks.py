@@ -15,13 +15,12 @@ import pytest
 from observe_fake_engine import (
     FakeEngine,
     acks,
-    answers,
     function_registered,
-    invoke,
     observer_added,
     observer_info,
     observer_removed,
     rejected,
+    reported_items,
     settle,
     wait_until,
 )
@@ -692,13 +691,13 @@ def test_an_observer_announced_again_with_the_same_args_runs_no_hook_and_is_serv
             "a", "t::target", args={"kind": "a"}, filters={"$and": [{"input.n": {"$gt": n}}]}, capture=["input"]
         )
 
-    calls = iter(range(1, 100))
-
     def observed(n: int) -> list[str] | None:
-        invocation_id = f"r-{next(calls)}"
-        engine.deliver(invoke("ra::fn", {"n": n}, invocation_id))
-        [answer] = engine.wait_for(lambda: answers(engine, invocation_id), what="the answer")
-        return answer.get("observed")
+        """The observers a local call of ``n`` is reported to."""
+        before = len(reported_items(engine))
+        client.call({"function_id": "ra::fn", "payload": {"n": n}})
+        settle(client, engine)
+        items = reported_items(engine)[before:]
+        return [obs_id for i in items for obs_id in i["matched"]] or None
 
     # listed by functionregistered
     engine.deliver(function_registered("ra::fn", [above(1)], revision=2))
