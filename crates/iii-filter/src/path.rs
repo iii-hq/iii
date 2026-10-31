@@ -5,7 +5,7 @@ use crate::error::FilterError;
 use crate::limits::MAX_PATH_SEGMENTS;
 
 /// The first segment of a path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Root {
     Input,
     Output,
@@ -33,16 +33,43 @@ impl Root {
 /// One segment after the root. `index` is set when the segment is a canonical
 /// decimal (`0` or `[1-9][0-9]*`) that fits a `usize`; it is used on arrays,
 /// while `key` is used on objects.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Segment {
     pub key: Box<str>,
     pub index: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Path {
     pub root: Root,
     pub segments: Box<[Segment]>,
+}
+
+/// Paths are the same when their roots and keys are: a segment's index
+/// follows from its key.
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Path {}
+
+impl PartialOrd for Path {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Path {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.root.cmp(&other.root).then_with(|| {
+            self.segments
+                .iter()
+                .map(|segment| &segment.key)
+                .cmp(other.segments.iter().map(|segment| &segment.key))
+        })
+    }
 }
 
 impl Path {

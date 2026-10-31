@@ -1,8 +1,13 @@
 //! `cargo bench -p iii-filter`. Budget (observe spec, README §8): a local
 //! call with 10 observers, none matching, stays under 5 µs.
+//!
+//! `index/eq_1_of_<n>` and `scan/eq_1_of_<n>`: `n` filters
+//! `{"input.k": {"$eq": i}}` (the load test's `filters` scenario), one of
+//! which matches each document, through a [`FilterIndex`] and by evaluating
+//! every filter.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use iii_filter::{Doc, Filter};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use iii_filter::{Doc, Filter, FilterIndex};
 use serde_json::{Value, json};
 
 fn row_change() -> Value {
@@ -76,6 +81,39 @@ fn bench(c: &mut Criterion) {
     c.bench_function("parse + normalize", |b| {
         b.iter(|| Filter::parse(black_box(&src)))
     });
+
+    for n in [16u64, 1_024, 4_000] {
+        let filters: Vec<Filter> = (0..n)
+            .map(|i| Filter::parse(&json!({ "input.k": { "$eq": i } })).expect("valid"))
+            .collect();
+        let mut index = FilterIndex::new();
+        for (i, filter) in filters.iter().enumerate() {
+            index.insert(i as u64, filter, i as u64);
+        }
+        let inputs: Vec<Value> = (0..n).map(|k| json!({ "k": k })).collect();
+        let doc_of = |i: u64| Doc {
+            input: Some(&inputs[(i.wrapping_mul(2_654_435_761) % n) as usize]),
+            ..Doc::default()
+        };
+        c.bench_with_input(BenchmarkId::new("index/eq_1_of", n), &n, |b, _| {
+            let mut i = 0u64;
+            b.iter(|| {
+                i += 1;
+                index.matches(black_box(&doc_of(i))).count()
+            })
+        });
+        c.bench_with_input(BenchmarkId::new("scan/eq_1_of", n), &n, |b, _| {
+            let mut i = 0u64;
+            b.iter(|| {
+                i += 1;
+                let doc = doc_of(i);
+                filters
+                    .iter()
+                    .filter(|f| f.matches(black_box(&doc)))
+                    .count()
+            })
+        });
+    }
 }
 
 criterion_group!(benches, bench);
