@@ -145,9 +145,11 @@ pub struct ObserverRegistry {
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
     by_target: DashMap<FnKey, HeldSet>,
     /// The routed hook's view (see [`ObserverRegistry::route`]): functions
-    /// with active observers and private functions a connection hosts. Read
-    /// with one atomic load per invocation, replaced (copy-on-write) on
-    /// change.
+    /// with active observers and private functions a connection hosts, each
+    /// with its active set. An invocation reads it with one atomic load, and
+    /// the set of a function it holds with one more. A function's set is
+    /// replaced in place; the view is copied (copy-on-write) only when a
+    /// function joins or leaves it, or who may call a function changes.
     routed: ArcSwap<owner::RoutedView>,
     /// Serializes rebuilds of `routed`.
     rebuild: Mutex<()>,
@@ -384,8 +386,8 @@ impl ObserverRegistry {
 }
 
 /// A random (version 4) UUID for the ids the observer paths make (an event's
-/// invocation, an activation and its invocation), from the thread's CSPRNG:
-/// as unpredictable as `Uuid::new_v4`, without a call into the OS for each.
+/// invocation, an activation and its invocation), from the thread's CSPRNG
+/// (`rand::random`: ChaCha12, reseeded from the OS).
 pub(crate) fn new_uuid() -> Uuid {
     uuid::Builder::from_random_bytes(rand::random()).into_uuid()
 }

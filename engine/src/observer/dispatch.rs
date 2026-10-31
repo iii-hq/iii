@@ -7,17 +7,19 @@
 //! The routed hook, reports, calls through an observer and activations
 //! (protocol.md §3.2, §3.4; v2 §4.6).
 //!
-//! `InvocationHandler::handle_invocation_inner` asks [`ObserverRegistry::route`]
-//! before running a handler: one atomic load and, only when some function is
-//! observed or hosted privately by a connection, one hash lookup. Unobserved,
-//! nothing is copied. Observed, the hook keeps the parts of the invocation the
-//! active observers need, and once the result is known
-//! [`ObserverRegistry::complete`] hands it to an evaluator task, so the
-//! caller's reply never waits for filters or activations. There is one
-//! evaluator per runtime worker thread, and a function's completions always go
-//! to the same one, which handles them in the order they completed: an
-//! observer watches one function, so its activations stay in engine arrival
-//! order while different functions are evaluated in parallel.
+//! `InvocationHandler::handle_invocation_inner` asks
+//! [`ObserverRegistry::route`] before running a handler: one atomic load of the
+//! routed view and, only when some function is observed or hosted privately by
+//! a connection, one hash lookup, then one atomic load of the function's active
+//! set when the view holds the function. Unobserved, nothing is copied.
+//! Observed, the hook keeps the parts of the invocation the active observers
+//! need, and once the result is known [`ObserverRegistry::complete`] hands it
+//! to an evaluator task, so the caller's reply never waits for filters or
+//! activations. There is one evaluator per runtime worker thread, and a
+//! function's completions always go to the same one, which handles them in the
+//! order they completed: an observer watches one function, so its activations
+//! stay in engine arrival order while different functions are evaluated in
+//! parallel.
 //!
 //! Who matches a call's observers (v2 §8.2, decision 2): a host that declared
 //! `observe.v2` delivers its own calls, listing the observers its delivery
@@ -469,8 +471,9 @@ impl Drop for Slot {
 impl ObserverRegistry {
     /// The active observers of `(namespace, function_id)`, when it has any:
     /// what [`Self::route`] answers, without the caller check. One atomic
-    /// load while nothing is observed or hosted privately by a connection,
-    /// and otherwise one more hash lookup.
+    /// load while nothing is observed or hosted privately by a connection;
+    /// otherwise one hash lookup more, and one atomic load more for the
+    /// function's set when the view holds the function.
     #[inline]
     pub fn watch(&self, namespace: &str, function_id: &str) -> Option<Arc<ActiveSet>> {
         let view = self.routed.load();
