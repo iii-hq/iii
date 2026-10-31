@@ -519,14 +519,43 @@ func TestObserveFixturesLenientDecode(t *testing.T) {
 	if err != nil || dec.RegisterFunction.Private || !*dec.RegisterFunction.Observable {
 		t.Errorf("registerfunction defaults: %v %+v", err, dec.RegisterFunction)
 	}
-	dec, err = UnmarshalMessage([]byte(`{"type":"invocationresult","invocation_id":"3c5e7a9b-1d3f-4b5d-9f1a-3c5e7a9b1d3f","function_id":"f","result":null,"observed":null}`))
-	if err != nil || dec.InvocationResult.Observed != nil || string(dec.InvocationResult.Result) != "null" {
+	dec, err = UnmarshalMessage([]byte(`{"type":"invocationresult","invocation_id":"3c5e7a9b-1d3f-4b5d-9f1a-3c5e7a9b1d3f","function_id":"f","result":null,"matched":null,"delivered":null}`))
+	if err != nil || dec.InvocationResult.Matched != nil || dec.InvocationResult.Delivered || string(dec.InvocationResult.Result) != "null" {
 		t.Errorf("invocationresult: %v %+v", err, dec.InvocationResult)
 	}
 	dec, err = UnmarshalMessage([]byte(`{"type":"invocationsobserved","items":[{"function_id":"f","invocation_id":"i","matched":[],"status":"success",` +
 		`"started_at_ms":1,"duration_ms":0.5,"observe_depth":0,"output_is_input":null}]}`))
 	if err != nil || dec.InvocationsObserved.Items[0].OutputIsInput {
 		t.Errorf("output_is_input null: %v %+v", err, dec.InvocationsObserved)
+	}
+
+	// matched and delivered read as the engine reads them: null is absent, a matched
+	// that is not an array is [], an id that is not a string is skipped, and only true
+	// sets delivered; the result is kept
+	for _, tc := range []struct {
+		fields    string
+		matched   []string
+		delivered bool
+	}{
+		{``, nil, false},
+		{`,"matched":["o-1",7,null,"o-2"]`, []string{"o-1", "o-2"}, false},
+		{`,"matched":[]`, []string{}, false},
+		{`,"matched":"o-1"`, []string{}, false},
+		{`,"matched":{"o-1":true}`, []string{}, false},
+		{`,"delivered":true`, nil, true},
+		{`,"delivered":"yes"`, nil, false},
+		{`,"delivered":1`, nil, false},
+		{`,"matched":["o-1"],"delivered":true`, []string{"o-1"}, true},
+	} {
+		dec, err := UnmarshalMessage([]byte(`{"type":"invocationresult","invocation_id":"3c5e7a9b-1d3f-4b5d-9f1a-3c5e7a9b1d3f","function_id":"f","result":{"ok":true}` + tc.fields + `}`))
+		if err != nil {
+			t.Errorf("%s: %v", tc.fields, err)
+			continue
+		}
+		res := dec.InvocationResult
+		if (res.Matched == nil) != (tc.matched == nil) || !slices.Equal(res.Matched, tc.matched) || res.Delivered != tc.delivered || string(res.Result) != `{"ok":true}` {
+			t.Errorf("%s: matched %#v delivered %v result %s", tc.fields, res.Matched, res.Delivered, res.Result)
+		}
 	}
 
 	// malformed observe fields on an invokefunction are absent, the frame still decodes

@@ -15,9 +15,9 @@ import (
 )
 
 // Client.Observe against the real engine, on the routed path: the observed function
-// lives on another worker and every call goes through the engine. The worker that
-// hosts the function (observe.v2) evaluates the filters and lists the observers it
-// delivered to on its answer.
+// lives on another worker and every call goes through the engine, which evaluates the
+// observers' on and filters with the input it forwarded and the host's answer
+// (decision 55).
 
 var allCaptures = []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureError, iii.CaptureCaller, iii.CaptureMetadata}
 
@@ -433,8 +433,8 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 	}
 }
 
-// A routed call is delivered by its host: the matches ride the invocationresult, so an
-// observed routed call costs no frame of its own.
+// A routed call is delivered by the engine, from the input it forwarded and the host's
+// invocationresult: an observed routed call costs no frame of its own.
 func TestObserveRoutedMatchesRideTheAnswer(t *testing.T) {
 	proxy := newFrameProxy(t)
 	host := observeWorker(t, "routed-host", proxy)
@@ -461,6 +461,6 @@ func TestObserveRoutedMatchesRideTheAnswer(t *testing.T) {
 		t.Errorf("envelope %v", a.Data)
 	}
 	if sent := without(proxy.since(mark), "localinvocationstats"); countOf(sent, "invocationsobserved") != 0 || countOf(sent, "invocationresult") != 2 {
-		t.Errorf("host frames %v: the matches ride the answer", sent)
+		t.Errorf("host frames %v: the answer is the only frame", sent)
 	}
 }

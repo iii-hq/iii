@@ -83,6 +83,8 @@ type functionObservers struct {
 	releases int
 	// wantMatch is the match hook last set; the hook queue installs it (applyMatch).
 	wantMatch *MatchHook
+	// nextSeq is the seq of the observer activated last (Observer.seq).
+	nextSeq uint64
 }
 
 func newFunctionObservers(c *Client, functionID string, localDispatch, private bool) *functionObservers {
@@ -276,7 +278,7 @@ func (f *functionObservers) release() {
 		for _, obs := range st.observers {
 			obs.active.Store(false)
 		}
-		st.local, st.namespace, st.observers, st.index = false, "", nil, emptyIndexFor(st.match)
+		st.local, st.namespace, st.observers, st.index, st.filters = false, "", nil, emptyIndexFor(st.match), nil
 	})
 	f.mu.Unlock()
 	f.enqueue(func() {
@@ -370,16 +372,27 @@ func (f *functionObservers) activateLocked(obs *Observer) {
 		return
 	}
 	obs.active.Store(true)
+	f.nextSeq++
+	obs.seq = f.nextSeq
 	f.swapLocked(func(st *callState) {
 		st.observers = append(slices.Clip(st.observers), obs)
 		if st.index != nil {
 			st.index = st.index.with(obs, obs.keys)
 		}
+		st.filters = f.fileLocked(st.filters, obs)
 	})
 }
 
-// deactivateLocked takes obs out of the active set and the key index. The caller holds
-// mu.
+// fileLocked is filters with obs filed at its seq, and records the condition it is
+// filed under. The caller holds mu.
+func (f *functionObservers) fileLocked(filters *filterIndex, obs *Observer) *filterIndex {
+	next, cond := filters.with(obs, obs.seq)
+	obs.cond.Store(cond)
+	return next
+}
+
+// deactivateLocked takes obs out of the active set, the key index and the filter index.
+// The caller holds mu.
 func (f *functionObservers) deactivateLocked(obs *Observer) {
 	if !obs.active.Load() {
 		return
@@ -390,6 +403,7 @@ func (f *functionObservers) deactivateLocked(obs *Observer) {
 		if st.index != nil {
 			st.index = st.index.without(obs, obs.keys)
 		}
+		st.filters = st.filters.without(obs, obs.seq, obs.cond.Load())
 	})
 }
 
@@ -609,6 +623,8 @@ func (f *functionObservers) reack(held *Observer, info ObserverInfo, revision ui
 				if st.index != nil {
 					st.index = st.index.without(held, held.keys).with(next, next.keys)
 				}
+				next.seq = held.seq
+				st.filters = f.fileLocked(st.filters.without(held, held.seq, held.cond.Load()), next)
 			})
 		}
 	}
@@ -826,6 +842,13 @@ type Observer struct {
 	// keys are what this view of it is filed under on a function matched by keys
 	// (guarded by owner.mu).
 	keys []string
+	// seq is its place in the function's active set, the order of activation: a view
+	// that replaces it takes its seq (set under owner.mu before the view is active).
+	seq uint64
+	// cond is the condition this view is filed under in the function's filter index,
+	// nil while it is not filed or is filed in the list every call scans. It is a
+	// condition of its own filter (filterCond).
+	cond atomic.Pointer[filterCond]
 	// observerState is where the observer stands, shared by every view of it.
 	*observerState
 }
@@ -922,10 +945,18 @@ func (o *Observer) DecodeArgs(v any) error { return json.Unmarshal(o.argsRaw, v)
 
 // Matches reports whether call reaches the observer: its on accepts the call's status
 // and its filters match the call. A deliver hook that calls targets itself checks it
-// before calling through the observer; iii's delivery applies it on its own.
+// before calling through the observer; iii's delivery applies it on its own. On a call
+// the SDK hands a hook, the observers share the call's decoded document and its values
+// at the paths of the function's filter index, so each costs its own filter, and an
+// observer costs a comparison when the call fails the condition it is filed under.
 func (o *Observer) Matches(call *Call) bool {
 	if call == nil || o.filter == nil {
 		return false
+	}
+	if h := call.hook; h != nil {
+		if v := h.viewOf(); v.reads(call) {
+			return v.matches(o)
+		}
 	}
 	return onAccepts(o.on, call.succeeded()) && o.filter.Matches(call.doc())
 }
@@ -1055,27 +1086,32 @@ func decodeJSONValue(raw []byte) (any, error) {
 }
 
 // lazyDoc is the document of a call, decoded root by root on first use and shared by
-// every observer evaluated on it (one goroutine).
+// every observer evaluated on it, from any goroutine.
 type lazyDoc struct {
 	input, output, metadata json.RawMessage
 	errBody                 *ErrorBody
 	caller                  *Caller
 
-	decoded [3]any
-	ok      [3]bool
-	done    [3]bool
+	parts [3]docPart
+}
+
+// docPart is one decoded part of a lazyDoc.
+type docPart struct {
+	once  sync.Once
+	value any
+	ok    bool
 }
 
 func (d *lazyDoc) part(i int, raw json.RawMessage) (any, bool) {
 	if raw == nil {
 		return nil, false
 	}
-	if !d.done[i] {
-		d.done[i] = true
+	p := &d.parts[i]
+	p.once.Do(func() {
 		v, err := decodeJSONValue(raw)
-		d.decoded[i], d.ok[i] = v, err == nil
-	}
-	return d.decoded[i], d.ok[i]
+		p.value, p.ok = v, err == nil
+	})
+	return p.value, p.ok
 }
 
 // Root implements filter.Doc.

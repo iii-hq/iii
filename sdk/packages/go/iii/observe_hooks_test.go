@@ -78,7 +78,7 @@ func recordLevels(c *Client, functionID string, l *hookLog) {
 
 // registerHost registers functionID and waits until the engine's functionregistered
 // was applied and acked.
-func registerHost(t *testing.T, c *Client, functionID string, handler Handler, opts ...RegisterFunctionOptions) *FunctionRef {
+func registerHost(t testing.TB, c *Client, functionID string, handler Handler, opts ...RegisterFunctionOptions) *FunctionRef {
 	t.Helper()
 	ref, err := c.RegisterFunction(functionID, handler, opts...)
 	if err != nil {
@@ -1404,10 +1404,19 @@ func TestAReplayWithTheSameArgsRunsNoHook(t *testing.T) {
 		return observerInfo("a", "t::target", `{"kind":"a"}`, fmt.Sprintf(`{"$and":[{"input.n":{"$gt":%d}}]}`, n),
 			CaptureInput, CaptureCaller)
 	}
+	// the observers a local call is reported to, which this worker selects by their
+	// filters
 	observed := func(n int) []string {
 		t.Helper()
-		id := fe.invoke(InvokeFunctionMessage{FunctionID: "ra::fn", Data: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))})
-		return fe.waitResult(id).Observed
+		items := len(fe.reportItems())
+		if _, err := c.Call(context.Background(), CallRequest{FunctionID: "ra::fn", Payload: json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(30 * time.Millisecond)
+		if got := fe.reportItems()[items:]; len(got) > 0 {
+			return got[0].Matched
+		}
+		return nil
 	}
 
 	// listed by functionregistered

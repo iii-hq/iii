@@ -12,8 +12,8 @@ import (
 
 // This file is the local path of Call: a function this worker hosts, confirmed by the
 // engine for in-process calls, runs here without touching the wire, and is delivered
-// here as a routed call is. Nobody observing it means zero frames; matched observers
-// mean one report item.
+// here: this worker evaluates its observers' on and filters, which the engine never
+// sees. Nobody observing it means zero frames; matched observers mean one report item.
 
 // localTarget returns the function Call may run in-process, with the call state it
 // starts with: registered here, the engine confirmed it with local_dispatch, the
@@ -103,9 +103,9 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 			if !delivering {
 				return handler
 			}
-			answer, _ := f.deliver(ctx, &callDelivery{
+			return f.deliverLocal(ctx, &callDelivery{
 				state:        st,
-				call:         handlerCall(functionID, inv.invocationID, observedInput, handler, caller, inv.metadata),
+				call:         handlerCall(st, functionID, inv.invocationID, observedInput, handler, caller, inv.metadata),
 				handler:      handler,
 				copyRaw:      !private,
 				startedAt:    started,
@@ -113,7 +113,6 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 				observeDepth: inv.observeDepth,
 				trace:        inv.trace,
 			})
-			return answer
 		})
 	}
 

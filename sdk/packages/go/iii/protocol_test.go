@@ -119,15 +119,37 @@ func TestGoldenFrames(t *testing.T) {
 			want: `{"type":"registerfunction","id":"orders::archive"}`,
 		},
 		{
-			// observed rides a routed answer from an observe.v2 host; omitted when empty
-			name: "invocation result lists observed ids",
+			// matched rides a routed answer from an observe.v2 host whose function has
+			// a match hook (decision 55)
+			name: "invocation result lists matched ids",
 			msg: &InvocationResultMessage{
 				InvocationID: id,
 				FunctionID:   "orders::create",
 				Result:       json.RawMessage(`{"ok":true}`),
-				Observed:     []string{"o1", "o2"},
+				Matched:      []string{"o1", "o2"},
 			},
-			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"orders::create","result":{"ok":true},"observed":["o1","o2"]}`,
+			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"orders::create","result":{"ok":true},"matched":["o1","o2"]}`,
+		},
+		{
+			// a match hook that matched none sends [], which an absent matched is not
+			name: "invocation result sends an empty matched",
+			msg: &InvocationResultMessage{
+				InvocationID: id,
+				FunctionID:   "orders::create",
+				Result:       json.RawMessage(`{"ok":true}`),
+				Matched:      []string{},
+			},
+			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"orders::create","result":{"ok":true},"matched":[]}`,
+		},
+		{
+			name: "invocation result says delivered",
+			msg: &InvocationResultMessage{
+				InvocationID: id,
+				FunctionID:   "approvals::request",
+				Result:       json.RawMessage(`{"ok":true}`),
+				Delivered:    true,
+			},
+			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"approvals::request","result":{"ok":true},"delivered":true}`,
 		},
 		{
 			// InvocationResult.invocation_id is required, not omitempty
