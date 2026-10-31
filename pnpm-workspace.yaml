@@ -13,3 +13,7 @@ overrides:
   # dev tree (helpers > @vitest/coverage-v8 > magicast) and gated by
   # scripts/audit-sdk.mjs. Every dependent declares ^1.2.x.
   source-map-js: ^1.2.2
+  # GHSA-g3hv-75wg-m249 (moderate, fixed in 11.0.1): typedoc 0.28.20 pins minimatch ^10.2.5,
+  # which is vulnerable, and gated by scripts/audit-sdk.mjs via helpers > typedoc. Scoped to
+  # typedoc so other minimatch consumers keep their range.
+  typedoc>minimatch: ^11.0.1
