@@ -614,6 +614,8 @@ FAULT_TOLERANCE = [
 
 TESTS = {
     'filter-conformance.test.ts': ('filter-conformance.test.ts', FILTER_CONFORMANCE),
+    # The shared index of the filters' equality conditions, under the browser package's settings.
+    'filter-index.test.ts': ('filter-index.test.ts', []),
     'observe-observer.test.ts': ('observe-observer.test.ts', UNIT),
     'observe-hooks.test.ts': ('observe-hooks.test.ts', HOOKS),
     'observe-deliver.test.ts': ('observe-deliver.test.ts', DELIVER),

@@ -1745,16 +1745,20 @@ class Sdk implements ISdk {
       if (traceparent !== undefined) ctx.traceparent = traceparent
       if (baggage !== undefined) ctx.baggage = baggage
 
-      // An observe.v2 host delivers its routed calls (v2 §8.2): the delivery
-      // sees the input as it arrived (channel refs unresolved), and what iii's
-      // delivery selects rides the answer (`observed`).
+      // The engine evaluates the `on` and filters of the calls it routes
+      // (decision 55). An observe.v2 host runs the function's match and
+      // deliver hooks for them, which see the input as it arrived (channel
+      // refs unresolved), and its answer says how the call is delivered:
+      // `delivered`, `matched`, or neither for a function with no hook.
       const snapshot: readonly ObserverImpl[] = fn.observe.compiled
       const activations = fn.observe.activations
       const hook = this.functionHooks.get(function_id)?.deliver
-      const delivering = this.engineFeatures.has(FEATURE_OBSERVE_V2) && (hook !== undefined || snapshot.length > 0)
+      const answering = this.engineFeatures.has(FEATURE_OBSERVE_V2)
       const startedAt = Date.now()
       const t0 = performance.now()
       let delivery: Delivery | undefined
+      // The answer's `matched` when the call needs no delivery.
+      let matched: readonly string[] | undefined
       const resolvedInput = this.resolveChannelValue(input)
       // Running until the call is delivered: what code after its `await`s falls back to (`callDepth`).
       const run = async (): Promise<unknown> => {
@@ -1766,7 +1770,15 @@ class Sdk implements ISdk {
           } catch (error) {
             outcome = { ok: false, error }
           }
-          if (!delivering) {
+          // No delivery runs without a deliver hook when the function has no
+          // match hook (the answer carries neither field: the engine
+          // evaluates every active observer), or when no observer was active
+          // as the call started (`matched: []`: the match hook has none to
+          // match and does not run, as a local call with an empty snapshot
+          // skips delivery).
+          const narrowed = answering && hook === undefined && fn.observe.hasMatchHook()
+          if (!answering || (hook === undefined && (!narrowed || snapshot.length === 0))) {
+            if (narrowed) matched = []
             if (outcome.ok) return outcome.value
             throw outcome.error
           }
@@ -1809,7 +1821,8 @@ class Sdk implements ISdk {
             result,
             traceparent,
             baggage,
-            observed: delivery?.observed,
+            matched: delivery ? delivery.matched : matched,
+            delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
       } catch (error) {
@@ -1821,7 +1834,8 @@ class Sdk implements ISdk {
             error: delivery ? delivery.errorBody(error) : handlerErrorBody(error),
             traceparent,
             baggage,
-            observed: delivery?.observed,
+            matched: delivery ? delivery.matched : matched,
+            delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
       }

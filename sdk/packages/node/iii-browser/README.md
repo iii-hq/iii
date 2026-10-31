@@ -143,6 +143,14 @@ await shipped.ready()
 await shipped.dispose()
 ```
 
+Filters are evaluated where the call is. The engine evaluates them for every
+call it routes, holding the call's input, caller and metadata and the
+answer's output or error. The SDK evaluates them for the calls a page makes
+to its own functions in-process, which the engine never sees, and matches
+each call through an index of the filters' `$eq` and `$in` conditions: with
+1,000 observers that each filter on their own `input.tenant`, a call
+evaluates one filter.
+
 The engine's own events are functions too: observe `EngineSources.FUNCTIONS_CHANGED`
 (`engine::on-functions-changed`), `EngineSources.WORKERS_CHANGED` and the others
 the same way.
