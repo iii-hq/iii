@@ -870,6 +870,45 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
     expect(answer(socket, 'empty')).toMatchObject({ result: 'archived', matched: [] })
   })
 
+  it('with no observer and no deliver hook, a keys match hook does not run: matched: [], on success and on error', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let keyed = 0
+    const { sdk, socket } = await routed([], (ref) =>
+      ref.onObserverMatch({
+        observer: () => 'k',
+        call: () => {
+          keyed++
+          throw new Error('the call keys are not read')
+        },
+      }),
+    )
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'ok' }))
+    socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'failed' }))
+    await settle()
+    await expect(sdk.call({ function_id: 'orders::create', payload: { qty: 2 } })).resolves.toEqual({
+      order_id: 'o-1',
+      qty: 2,
+    })
+    await flushed()
+    expect(answer(socket, 'ok')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'ok',
+      function_id: 'orders::create',
+      result: { order_id: 'o-1', qty: 1 },
+      matched: [],
+    })
+    expect(answer(socket, 'failed')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'failed',
+      function_id: 'orders::create',
+      error: { code: 'invocation_failed', message: 'out of stock', stacktrace: expect.any(String) },
+      matched: [],
+    })
+    expect(keyed).toBe(0)
+    expect(errors).not.toHaveBeenCalled()
+    expect(reportedItems(socket)).toEqual([])
+  })
+
   it('a match hook that throws matches nothing: matched: []', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { socket } = await routed([observerInfo('all', 'audit::all')], (ref) =>

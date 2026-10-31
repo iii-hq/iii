@@ -2115,11 +2115,23 @@ class Sdk implements IIIClient {
       const startedAt = Date.now()
       const t0 = performance.now()
       let delivery: Delivery | undefined
+      // The answer's `matched` when the call needs no delivery.
+      let matched: readonly string[] | undefined
       const settle = this.engineFeatures.has(FEATURE_OBSERVE_V2)
         ? (outcome: HandlerOutcome) => {
-            if (hook === undefined && !fn.observe.hasMatchHook()) {
-              if (outcome.ok) return outcome.value
-              throw outcome.error
+            if (hook === undefined) {
+              // No delivery runs without a deliver hook when the function has
+              // no match hook (the answer carries neither field: the engine
+              // evaluates every active observer), or when no observer was
+              // active as the call started (`matched: []`: the match hook has
+              // none to match and does not run, as a local call with an empty
+              // snapshot skips delivery).
+              const narrowed = fn.observe.hasMatchHook()
+              if (!narrowed || snapshot.length === 0) {
+                if (narrowed) matched = []
+                if (outcome.ok) return outcome.value
+                throw outcome.error
+              }
             }
             delivery = new Delivery(fn.observe, {
               call: this.callOf(function_id, ctx.invocation_id, outcome, input, ctx.caller, metadata),
@@ -2160,7 +2172,7 @@ class Sdk implements IIIClient {
             result,
             traceparent: getResponseTraceparent(),
             baggage: getResponseBaggage(),
-            matched: delivery?.matched,
+            matched: delivery ? delivery.matched : matched,
             delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
@@ -2173,7 +2185,7 @@ class Sdk implements IIIClient {
             error: delivery ? delivery.errorBody(error) : handlerErrorBody(error),
             traceparent: getResponseTraceparent(),
             baggage: getResponseBaggage(),
-            matched: delivery?.matched,
+            matched: delivery ? delivery.matched : matched,
             delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
