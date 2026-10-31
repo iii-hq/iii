@@ -788,6 +788,17 @@ impl Daemon {
         .cloned()
     }
 
+    /// The project `file` declares when it already finished loading. Never
+    /// loads one: a project read after a mutation reads the file it wrote.
+    async fn loaded_project(&self, file: &Path) -> Option<Arc<Project>> {
+        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        self.projects
+            .lock()
+            .await
+            .get(&key)
+            .and_then(|cell| cell.get().cloned())
+    }
+
     /// Every project that finished loading. A cell still being filled has no
     /// project to act on yet, so it is skipped rather than waited for: the
     /// caller asking for a list must not block on somebody else's `up`.
@@ -1446,6 +1457,9 @@ impl Daemon {
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
+            if let Some(project) = self.loaded_project(path).await {
+                project.adopt_updated_selectors(&current, &planned).await;
+            }
             report_unchanged(path, &operation_id, &requested_names, UP_TO_DATE).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
@@ -3220,6 +3234,208 @@ containers:
     #[test]
     fn update_changes_the_selector_only_when_it_is_explicit() {
         assert_eq!(update_selector(Some("latest"), "0.22.8"), "latest");
+    }
+
+    #[test]
+    fn update_without_a_version_resolves_the_selector_status_reports() {
+        let compose = crate::ComposeFile::parse(
+            "containers:
+  tagged:
+    worker: package://state
+    version: next
+  ranged:
+    worker: package://queue
+    version: ^0.22
+  pinned:
+    worker: package://cache
+    version: 0.22.8
+",
+            Path::new("worker-compose.yaml"),
+        )
+        .unwrap();
+        let asked = ["tagged", "ranged", "pinned"]
+            .map(|key| crate::edit::parse_worker(key).unwrap())
+            .to_vec();
+
+        let (roots, unchanged) = update_roots(&compose, &asked).unwrap();
+
+        assert!(!unchanged);
+        let selectors = roots
+            .iter()
+            .map(|root| {
+                let crate::edit::Source::Package { version, .. } = &root.source else {
+                    unreachable!("update roots are packages");
+                };
+                (root.key.as_str(), version.as_deref())
+            })
+            .collect::<Vec<_>>();
+        let reported = ["tagged", "ranged", "pinned"]
+            .map(|key| (key, compose.containers[key].requested()))
+            .to_vec();
+        assert_eq!(selectors, reported);
+        assert_eq!(
+            reported,
+            [
+                ("tagged", Some("next")),
+                ("ranged", Some("^0.22")),
+                ("pinned", Some("0.22.8")),
+            ]
+        );
+    }
+
+    /// `compose::update worker=state@latest` where `latest` is the release the
+    /// lock already holds rewrites the file and the lock and restarts nothing.
+    /// Status must report the new selector, not the one the held declaration
+    /// was loaded with.
+    #[cfg(unix)]
+    #[test]
+    fn a_selector_only_update_reaches_status_without_a_restart() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "daemon::tests::selector_only_update_fixture",
+                "--nocapture",
+            ])
+            .env_remove("III_COMPOSE_STATE_DIR")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the fixture did not run: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "subprocess fixture: installs into a package cache of its own"]
+    async fn selector_only_update_fixture() {
+        use sha2::{Digest, Sha256};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let root = tempfile::tempdir().unwrap();
+        // SAFETY: this fixture runs alone in its subprocess, before daemon tasks.
+        unsafe { std::env::set_var("III_COMPOSE_STATE_DIR", root.path().join("state")) };
+
+        let script = b"#!/bin/sh\nexec sleep 30\n";
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "worker", &script[..])
+            .unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gzip, &archive.into_inner().unwrap()).unwrap();
+        let archive = gzip.finish().unwrap();
+        let digest = format!("{:x}", Sha256::digest(&archive));
+
+        let server = MockServer::start().await;
+        let url = format!("{}/artifact", server.uri());
+        let artifacts = serde_json::json!({
+            (crate::registry::host_target()): { "url": url, "sha256": digest },
+        });
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "state",
+                    "version": "0.22.8",
+                    "type": "binary",
+                    "binaries": artifacts,
+                }],
+                "edges": [],
+            })))
+            .mount(&server)
+            .await;
+
+        let path = root.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  state:\n    worker: package://state\n    version: 0.22.8\n",
+        )
+        .unwrap();
+        let lock = serde_json::json!({
+            "version": 1,
+            "containers": {
+                "state": {
+                    "worker": "package://state",
+                    "requested": "0.22.8",
+                    "resolved": {
+                        "name": "state",
+                        "version": "0.22.8",
+                        "type": "binary",
+                        "artifacts": artifacts,
+                    },
+                },
+            },
+            "graphs": { "state": ["state"] },
+        });
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            serde_yaml::to_string(&lock).unwrap(),
+        )
+        .unwrap();
+
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "selector-update".to_string(),
+            None,
+            EnginePolicy::External,
+        );
+        let reported = |status: Vec<crate::project::ContainerStatus>| {
+            status
+                .into_iter()
+                .find(|container| container.container == "state")
+                .map(|container| (container.requested, container.version))
+                .unwrap()
+        };
+        let before = daemon.status(Some(&path)).await.unwrap();
+        assert_eq!(
+            reported(before.status().await),
+            (Some("0.22.8".to_string()), Some("0.22.8".to_string()))
+        );
+
+        let outcome = crate::registry::TEST_REGISTRY
+            .scope(
+                server.uri(),
+                daemon.update(
+                    Some(&path),
+                    &["state@latest".to_string()],
+                    "selector-update".to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let outcome = serde_json::to_value(outcome).unwrap();
+        assert_eq!(outcome["status"], "ok", "{outcome}");
+        assert_eq!(outcome["changed"], true, "{outcome}");
+        let written = crate::ComposeFile::load(&path).unwrap();
+        assert_eq!(written.containers["state"].requested(), Some("latest"));
+        let after = daemon.status(Some(&path)).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "the update restarted the project, so this is not the no-restart path"
+        );
+        assert_eq!(
+            reported(after.status().await),
+            (Some("latest".to_string()), Some("0.22.8".to_string()))
+        );
+        daemon.shutdown().await;
     }
 
     #[test]
