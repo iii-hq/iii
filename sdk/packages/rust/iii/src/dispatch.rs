@@ -353,13 +353,13 @@ struct ReportCtx<'a> {
 
 /// The observers of the function among `observers` that are active, accept
 /// the call's status and whose filters match it.
-fn select(
+fn select<'a>(
     function_id: &str,
     view: &CallView<'_>,
-    observers: &[Observer],
+    observers: impl IntoIterator<Item = &'a Observer> + Copy,
 ) -> (Vec<String>, CaptureMask) {
     let candidates = || {
-        observers.iter().filter(|obs| {
+        observers.into_iter().filter(|obs| {
             obs.function_id() == function_id && obs.is_active() && obs.accepts(view.success)
         })
     };
@@ -706,11 +706,11 @@ impl IIIClient {
     /// iii's delivery of a call to `observers`: those whose `on` and filters
     /// match it. A routed call's matches ride its answer (returned); a local
     /// call's are reported.
-    fn deliver(
+    fn deliver<'a>(
         &self,
         report: &ReportCtx<'_>,
         view: &CallView<'_>,
-        observers: &[Observer],
+        observers: impl IntoIterator<Item = &'a Observer> + Copy,
         local: bool,
     ) -> Vec<String> {
         let (matched, mask) = select(&report.entry.id, view, observers);

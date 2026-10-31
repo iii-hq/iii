@@ -29,6 +29,7 @@ use crate::{
     error::Error,
     hooks::{AddedSlot, Call, DeliverHook, Level, Match, Matcher, RemovedHook},
     iii::{IIIClient, IIIInner},
+    observer_set::ObserverSet,
     protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
     reporter::CaptureMask,
 };
@@ -411,7 +412,7 @@ impl Observer {
             // runs the removed hooks: the engine sends no `observerremoved`
             // for a rejection that answers an announcement it has not seen
             // acked (a replay after a reconnect).
-            entry.drop_inactive();
+            entry.drop_inactive(self);
             entry.enqueue(
                 &iii,
                 HookOp::Rejected {
@@ -438,6 +439,28 @@ impl Observer {
 
     pub(crate) fn seq(&self) -> u64 {
         self.state().seq
+    }
+
+    /// Whether `other` is this observer, in any view of it.
+    fn is(&self, other: &Observer) -> bool {
+        Arc::ptr_eq(&self.inner.state, &other.inner.state)
+    }
+
+    /// An observer of `test::f` with id `id`, not held by any client.
+    #[cfg(test)]
+    pub(crate) fn test(id: &str, seq: u64) -> Self {
+        let view: ObserverView =
+            serde_json::from_value(serde_json::json!({ "id": id, "target": "t", "filters": {} }))
+                .expect("a view");
+        Self::new(
+            view,
+            Filter::match_all(),
+            "test::f",
+            "default".to_string(),
+            0,
+            seq,
+            Weak::new(),
+        )
     }
 
     pub(crate) fn mask(&self) -> CaptureMask {
@@ -503,40 +526,118 @@ impl DocParts {
 }
 
 /// The active observers of a function, swapped whole on every change so the
-/// hot path reads it with one load.
-#[derive(Default)]
+/// hot path reads it with one load. A change makes a new version that shares
+/// all but `O(log n)` nodes of its observers with the one before, which a
+/// call that loaded it keeps.
+#[derive(Clone, Default)]
 pub(crate) struct CompiledSet {
-    pub observers: Vec<Observer>,
+    /// By id.
+    pub observers: ObserverSet,
     /// The roots any observer's filter reads.
     pub roots: Roots,
     /// What any observer captures.
     pub capture: CaptureMask,
-    /// The [`Observer::seq`] of the newest observer in the set: an active
-    /// observer added after it is not in the set.
+    /// The newest [`Observer::seq`] that joined the set: an active observer
+    /// added after it is not in the set. Seqs are never reused, and an
+    /// observer that left is not active, so it never needs to go back down.
     pub seq: u64,
+    /// How many of `observers` read each root and capture each part:
+    /// `roots` and `capture` follow from them as observers come and go.
+    counts: PartCounts,
+}
+
+/// Counts per part, in `input`, `output`, `error`, `caller`, `metadata`
+/// order.
+#[derive(Debug, Clone, Copy, Default)]
+struct PartCounts {
+    roots: [usize; 5],
+    capture: [usize; 5],
+}
+
+impl PartCounts {
+    fn count(&mut self, obs: &Observer, joined: bool) {
+        let roots = obs.filter().roots();
+        let mask = obs.mask();
+        for (counts, parts) in [
+            (
+                &mut self.roots,
+                [
+                    roots.input,
+                    roots.output,
+                    roots.error,
+                    roots.caller,
+                    roots.metadata,
+                ],
+            ),
+            (
+                &mut self.capture,
+                [
+                    mask.input,
+                    mask.output,
+                    mask.error,
+                    mask.caller,
+                    mask.metadata,
+                ],
+            ),
+        ] {
+            for (count, part) in counts.iter_mut().zip(parts) {
+                if part {
+                    if joined {
+                        *count += 1;
+                    } else {
+                        *count -= 1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl CompiledSet {
-    fn new(observers: Vec<Observer>) -> Self {
-        let mut roots = Roots::default();
-        let mut capture = CaptureMask::default();
-        let mut seq = 0;
-        for obs in &observers {
-            let filter = obs.filter().roots();
-            roots.input |= filter.input;
-            roots.output |= filter.output;
-            roots.error |= filter.error;
-            roots.caller |= filter.caller;
-            roots.metadata |= filter.metadata;
-            capture = capture.union(obs.mask());
-            seq = seq.max(obs.seq());
-        }
+    fn of(observers: ObserverSet, counts: PartCounts, seq: u64) -> Self {
+        let [input, output, error, caller, metadata] = counts.roots.map(|count| count > 0);
+        let roots = Roots {
+            input,
+            output,
+            error,
+            caller,
+            metadata,
+        };
+        let [input, output, error, caller, metadata] = counts.capture.map(|count| count > 0);
+        let capture = CaptureMask {
+            input,
+            output,
+            error,
+            caller,
+            metadata,
+        };
         Self {
             observers,
             roots,
             capture,
             seq,
+            counts,
         }
+    }
+
+    /// This set with `obs`, in place of any other view of it.
+    fn with(&self, obs: &Observer) -> Self {
+        let mut counts = self.counts;
+        if let Some(held) = self.observers.get(obs.id()) {
+            counts.count(held, false);
+        }
+        counts.count(obs, true);
+        Self::of(self.observers.with(obs), counts, self.seq.max(obs.seq()))
+    }
+
+    /// This set without `obs` (in any view of it); `None` when it does not
+    /// hold it.
+    fn without(&self, obs: &Observer) -> Option<Self> {
+        let held = self.observers.get(obs.id()).filter(|held| held.is(obs))?;
+        let mut counts = self.counts;
+        counts.count(held, false);
+        let observers = self.observers.without(obs.id())?;
+        Some(Self::of(observers, counts, self.seq))
     }
 }
 
@@ -774,6 +875,22 @@ impl FunctionEntry {
             .collect()
     }
 
+    /// Puts `obs` in the compiled set when it is active, in place of any
+    /// other view of it, and takes it out otherwise: `O(log n)`.
+    fn compile(&self, obs: &Observer) {
+        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.compiled.load();
+        let next = if obs.is_active() {
+            Some(current.with(obs))
+        } else {
+            current.without(obs)
+        };
+        if let Some(next) = next {
+            self.compiled.store(Arc::new(next));
+            self.refresh_delivery();
+        }
+    }
+
     /// Local dispatch is on for it: confirmed by the engine with
     /// `local_dispatch: true`, wanted, and not revoked by a conflict.
     #[inline]
@@ -828,31 +945,21 @@ impl FunctionEntry {
             .store(observers << 1 | hook, Ordering::Release);
     }
 
-    /// Removes deactivated observers from the compiled set.
-    fn drop_inactive(&self) {
-        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
-        let observers: Vec<Observer> = self
-            .compiled
-            .load()
-            .observers
-            .iter()
-            .filter(|o| o.is_active())
-            .cloned()
-            .collect();
-        self.compiled.store(Arc::new(CompiledSet::new(observers)));
-        self.refresh_delivery();
+    /// Takes `obs`, deactivated, out of the compiled set.
+    fn drop_inactive(&self, obs: &Observer) {
+        self.compile(obs);
     }
 
-    fn publish(&self, members: &BTreeMap<String, Member>) {
-        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
-        let observers: Vec<Observer> = members
-            .values()
-            .map(|member| &member.observer)
-            .filter(|o| o.is_active())
-            .cloned()
-            .collect();
-        self.compiled.store(Arc::new(CompiledSet::new(observers)));
-        self.refresh_delivery();
+    /// The compiled set follows `members` on the change of the member with
+    /// id `id`: it holds that member's observer when it is active, and no
+    /// observer with that id otherwise. `gone` is the observer of a member
+    /// just removed.
+    fn publish(&self, members: &BTreeMap<String, Member>, id: &str, gone: Option<&Observer>) {
+        match (members.get(id), gone) {
+            (Some(member), _) => self.compile(&member.observer),
+            (None, Some(obs)) => self.compile(obs),
+            (None, None) => {}
+        }
     }
 
     /// Queues `op` on this function's hook task, spawning it on first use.
@@ -1082,7 +1189,7 @@ async fn run_hooks(
                 revision = rev;
             }
             HookOp::Rejected { id } => {
-                entry.publish(&members);
+                entry.publish(&members, &id, None);
                 tear_down(&iii, &entry, &mut members, &id).await;
             }
             HookOp::Reset { last } => {
@@ -1158,7 +1265,7 @@ fn ack_held(
             if let Some(member) = members.get_mut(&view.id) {
                 member.observer = observer;
             }
-            entry.publish(members);
+            entry.publish(members, &view.id, None);
         }
         _ => {}
     }
@@ -1358,7 +1465,7 @@ fn admit(
             torn_down: false,
         },
     );
-    entry.publish(members);
+    entry.publish(members, observer.id(), None);
     Admission::Accepted
 }
 
@@ -1423,7 +1530,7 @@ async fn remove_member(
         if let Some(matcher) = entry.matcher() {
             matcher.unfile(id);
         }
-        entry.publish(members);
+        entry.publish(members, id, Some(&member.observer));
     }
     if member.torn_down {
         return;

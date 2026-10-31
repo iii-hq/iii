@@ -8,6 +8,7 @@ pub mod hooks;
 pub mod iii;
 pub mod observable;
 pub mod observe;
+mod observer_set;
 mod process_marker;
 pub mod protocol;
 mod reporter;
