@@ -377,18 +377,311 @@ async fn an_observer_made_after_the_hello_is_sent_at_once() {
 async fn a_duplicate_observer_id_is_refused_and_leaves_the_first_alone() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "observer");
-    connected(&mock, &iii, true).await;
+    // held before the connection's hello, pending, and in error: refused
     let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("x"));
+    let early = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("x"));
+    assert_eq!(early.state(), ObserverState::Error);
+    connected(&mock, &iii, true).await;
     frame(&mock, |m| m["type"] == "observe" && m["id"] == "x").await;
     let dup = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("x"));
     assert_eq!(dup.state(), ObserverState::Error);
-    assert!(dup.reason().unwrap().message.contains("already in use"));
-    dup.dispose().await.unwrap();
+    let reason = dup.reason().unwrap();
+    assert_eq!(reason.code, "OBSERVER_ID_CONFLICT");
+    assert_eq!(reason.message, "observer id already in use: x");
+    let refused = dup.ready().await.unwrap_err();
+    assert_eq!(
+        refused.invocation_error().unwrap().code,
+        "OBSERVER_ID_CONFLICT"
+    );
+    mock.send_to_client(json!({
+        "type": "observeresult", "id": "x", "state": "error",
+        "error": { "code": "FORBIDDEN", "message": "no" }
+    }));
+    until("the refusal", || first.state() == ObserverState::Error).await;
+    let in_error = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("x"));
+    assert_eq!(in_error.reason().unwrap().code, "OBSERVER_ID_CONFLICT");
+    for refused in [&early, &dup, &in_error] {
+        refused.dispose().await.unwrap();
+    }
     assert_eq!(frames(&mock, "observe").len(), 1);
     assert!(frames(&mock, "unobserve").is_empty());
-    assert_ne!(first.state(), ObserverState::Disposed);
-    first.dispose().await.unwrap();
-    assert_eq!(frames(&mock, "unobserve").len(), 1);
+    assert_eq!(first.state(), ObserverState::Error);
+    assert_eq!(first.reason().unwrap().code, "FORBIDDEN");
+    iii.shutdown_async().await;
+}
+
+/// The engine's answers for one id on one connection, in order: an
+/// `observeresult` for the oldest handle without one, a state change for the
+/// newest with one.
+fn observe_result(mock: &MockEngine, id: &str, state: &str) {
+    mock.send_to_client(json!({ "type": "observeresult", "id": id, "state": state }));
+}
+
+fn state_changed(mock: &MockEngine, id: &str, state: &str, code: &str) {
+    mock.send_to_client(json!({
+        "type": "observerstatechanged", "id": id, "state": state,
+        "reason": { "code": code, "message": code }, "fires": 0
+    }));
+}
+
+/// Position of the first frame `pred` accepts among what the mock received.
+fn position(mock: &MockEngine, pred: impl Fn(&Value) -> bool) -> usize {
+    mock.received_messages()
+        .iter()
+        .position(pred)
+        .expect("the frame was sent")
+}
+
+/// An id is free as soon as `dispose()` is called: the new handle's
+/// `observe` follows the `unobserve`, and the engine's late `disposed` for
+/// the earlier observer reaches the earlier handle, never the new one.
+#[tokio::test]
+async fn an_id_is_free_at_dispose_and_a_late_disposed_reaches_the_earlier_handle() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("q"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "q").await;
+    observe_result(&mock, "q", "active");
+    tokio::time::timeout(WAIT, first.ready())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let disposing = tokio::spawn({
+        let first = first.clone();
+        async move { first.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "q").await;
+    let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("q"));
+    assert_eq!(
+        second.state(),
+        ObserverState::Pending,
+        "{:?}",
+        second.reason()
+    );
+    mock.wait_for(
+        |m| {
+            m.iter()
+                .filter(|m| m["type"] == "observe" && m["id"] == "q")
+                .count()
+                == 2
+        },
+        WAIT,
+    )
+    .await;
+    let unobserve_at = position(&mock, |m| m["type"] == "unobserve");
+    let second_at = mock
+        .received_messages()
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m["type"] == "observe" && m["id"] == "q")
+        .nth(1)
+        .unwrap()
+        .0;
+    assert!(unobserve_at < second_at, "the unobserve goes out first");
+
+    // the engine read the unobserve first: its disposed is the first's
+    state_changed(&mock, "q", "disposed", "UNOBSERVED");
+    tokio::time::timeout(WAIT, disposing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.state(), ObserverState::Disposed);
+    assert_eq!(second.state(), ObserverState::Pending);
+    observe_result(&mock, "q", "active");
+    tokio::time::timeout(WAIT, second.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    state_changed(&mock, "q", "suspended", "TARGET_UNAVAILABLE");
+    until("the suspension", || {
+        second.state() == ObserverState::Suspended
+    })
+    .await;
+    assert_eq!(first.state(), ObserverState::Disposed);
+    let third = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("q"));
+    assert_eq!(third.reason().unwrap().code, "OBSERVER_ID_CONFLICT");
+    iii.shutdown_async().await;
+}
+
+/// An earlier handle disposed before its answer came: the `observeresult`s
+/// arrive in the order of the `observe`s, each for its own handle.
+#[tokio::test]
+async fn each_observeresult_answers_its_own_handle_in_order() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("r"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "r").await;
+    let disposing = tokio::spawn({
+        let first = first.clone();
+        async move { first.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "r").await;
+    let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("r"));
+    mock.wait_for(
+        |m| {
+            m.iter()
+                .filter(|m| m["type"] == "observe" && m["id"] == "r")
+                .count()
+                == 2
+        },
+        WAIT,
+    )
+    .await;
+
+    // first: active, then disposed by its unobserve; then second's answer
+    observe_result(&mock, "r", "active");
+    state_changed(&mock, "r", "disposed", "UNOBSERVED");
+    tokio::time::timeout(WAIT, disposing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.state(), ObserverState::Disposed);
+    assert_eq!(second.state(), ObserverState::Pending);
+    mock.send_to_client(json!({
+        "type": "observeresult", "id": "r", "state": "error",
+        "error": { "code": "FORBIDDEN", "message": "no" }
+    }));
+    until("the second's answer", || {
+        second.state() == ObserverState::Error
+    })
+    .await;
+    assert_eq!(second.reason().unwrap().code, "FORBIDDEN");
+    assert_eq!(first.reason().unwrap().code, "UNOBSERVED");
+    iii.shutdown_async().await;
+}
+
+/// A refused observer is disposed without an engine `disposed` (the engine
+/// keeps no observer it refused): the next handle's `observeresult` still
+/// goes to the next handle.
+#[tokio::test]
+async fn a_newer_answer_unlists_a_disposed_handle_without_its_disposed() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("s"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "s").await;
+    mock.send_to_client(json!({
+        "type": "observeresult", "id": "s", "state": "error",
+        "error": { "code": "FORBIDDEN", "message": "no" }
+    }));
+    until("the refusal", || first.state() == ObserverState::Error).await;
+    let _disposing = tokio::spawn({
+        let first = first.clone();
+        async move { first.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "s").await;
+    let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("s"));
+    mock.wait_for(
+        |m| {
+            m.iter()
+                .filter(|m| m["type"] == "observe" && m["id"] == "s")
+                .count()
+                == 2
+        },
+        WAIT,
+    )
+    .await;
+    observe_result(&mock, "s", "active");
+    tokio::time::timeout(WAIT, second.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    state_changed(&mock, "s", "suspended", "TARGET_UNAVAILABLE");
+    until("the suspension", || {
+        second.state() == ObserverState::Suspended
+    })
+    .await;
+    assert_ne!(first.state(), ObserverState::Suspended);
+    iii.shutdown_async().await;
+}
+
+/// A state change that arrives before the `observeresult` of any `observe`
+/// sent on the connection is dropped: a reattached observer resumes before
+/// its replay is answered, and the replay's answer carries the state.
+#[tokio::test]
+async fn a_state_change_before_any_observeresult_is_dropped() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let handle = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("t"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "t").await;
+    state_changed(&mock, "t", "suspended", "TARGET_UNAVAILABLE");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(handle.state(), ObserverState::Pending, "dropped");
+    observe_result(&mock, "t", "active");
+    tokio::time::timeout(WAIT, handle.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    state_changed(&mock, "t", "active", "OK");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(handle.state(), ObserverState::Active);
+    // an answer for an id this connection never observed reaches nobody
+    observe_result(&mock, "nobody", "active");
+    state_changed(&mock, "nobody", "disposed", "UNOBSERVED");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(handle.state(), ObserverState::Active);
+    iii.shutdown_async().await;
+}
+
+/// Disposed while disconnected and observed again under the same id: on the
+/// new connection the queued `unobserve` goes out before the replayed
+/// `observe`, and the reattached observer's `disposed` reaches neither.
+#[tokio::test]
+async fn a_queued_unobserve_goes_out_before_the_replay_of_its_id() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("u"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "u").await;
+    observe_result(&mock, "u", "active");
+    tokio::time::timeout(WAIT, first.ready())
+        .await
+        .unwrap()
+        .unwrap();
+
+    mock.clear();
+    mock.close_active_connection();
+    until("the disconnect", || iii.engine_supports_observe().is_none()).await;
+    tokio::time::timeout(WAIT, first.dispose())
+        .await
+        .expect("no engine answer to wait for")
+        .unwrap();
+    let second = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("u"));
+    assert_eq!(
+        second.state(),
+        ObserverState::Pending,
+        "{:?}",
+        second.reason()
+    );
+    connected(&mock, &iii, true).await;
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "u").await;
+    let unobserve_at = position(&mock, |m| m["type"] == "unobserve" && m["id"] == "u");
+    let observe_at = position(&mock, |m| m["type"] == "observe" && m["id"] == "u");
+    assert!(
+        unobserve_at < observe_at,
+        "queued unobserves go out before replays"
+    );
+    assert_eq!(
+        frames(&mock, "observe").len(),
+        1,
+        "sent once on the connection"
+    );
+
+    // the reattached earlier observer's disposal, read before the observe
+    state_changed(&mock, "u", "disposed", "UNOBSERVED");
+    observe_result(&mock, "u", "active");
+    tokio::time::timeout(WAIT, second.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(second.state(), ObserverState::Active);
     iii.shutdown_async().await;
 }
 

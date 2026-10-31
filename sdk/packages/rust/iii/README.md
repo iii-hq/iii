@@ -163,6 +163,26 @@ let alerts = iii.observe_with(
 alerts.ready().await?;
 ```
 
+An observer's id is `ObserverOptions::id`, or a fresh UUID. Its handle holds
+the id until `dispose()` is called or the engine disposes the observer, and the
+id is free again at once: a queue consumer observes again under its stable id
+right after it disposes the observer before. While a handle of this client
+holds the id, in any state, another `observe_with` under it sends nothing and
+leaves that handle alone: the handle it returns is in state `error` with the
+reason `OBSERVER_ID_CONFLICT` (`observer id already in use: <id>`), `ready()`
+fails with that code, and its `dispose()` sends nothing. Each handle of an id
+hears the engine's answers to its own messages only, so a late `disposed` for
+the earlier observer never disposes the new one.
+
+```rust
+let messages = || Source::function("queue::on-message").args(json!({ "topic": "orders" }));
+let consumer = ObserverOptions::default().id("orders-consumer");
+let first = iii.observe_with(messages(), "orders::consume", consumer.clone());
+first.dispose().await?;
+let again = iii.observe_with(messages(), "orders::consume", consumer);
+again.ready().await?;
+```
+
 The engine's own events are functions too: `iii_sdk::engine::EngineSources`
 names them (`engine::on-functions-changed`, `observability::on-log`, ...).
 
