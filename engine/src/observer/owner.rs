@@ -871,13 +871,26 @@ impl ObserverRegistry {
     /// Adds `observer` to its function, last in its creation order. An owner
     /// that already got the function's `functionregistered` hears about it at
     /// once (`observeradded`), and the observer waits for its ack.
+    ///
+    /// An observer disposed since it was published joins no function: its
+    /// disposal found it in none, so nothing would take it out again. Its
+    /// disposal marks it disposed before it takes `sync` (to tell the owner)
+    /// and the function's members (to leave them), and the check here holds
+    /// both: either it sees the observer disposed, or the disposal finds the
+    /// observer among the members, and tells the owner if it was announced.
     pub(crate) fn attach_to_function(self: &Arc<Self>, observer: &Arc<Observer>) {
-        self.with_owner_sync(&observer.function, |entry, sync, owner| {
-            // Under `sync`: a function's observers join in the order of
-            // their `seq`.
-            let seq = self.created.fetch_add(1, Ordering::Relaxed) + 1;
-            observer.set_seq(seq);
-            lock(&entry.observers).add(seq, observer);
+        let joined = self.with_owner_sync(&observer.function, |entry, sync, owner| {
+            {
+                let mut members = lock(&entry.observers);
+                if observer.is_disposed() {
+                    return false;
+                }
+                // Under `sync`: a function's observers join in the order of
+                // their `seq`.
+                let seq = self.created.fetch_add(1, Ordering::Relaxed) + 1;
+                observer.set_seq(seq);
+                members.add(seq, observer);
+            }
             let Some(announced_to) = sync.announced_to else {
                 // Not announced (yet): acked by default unless the owner
                 // speaks observe, whose `functionregistered` will announce it.
@@ -885,7 +898,7 @@ impl ObserverRegistry {
                 // was built: an owner may have claimed the function since.
                 let acked = !owner.is_some_and(|owner| owner.speaks_observe);
                 self.update(observer, |flags| flags.owner_acked = acked);
-                return;
+                return true;
             };
             sync.revision += 1;
             let revision = sync.revision;
@@ -899,7 +912,12 @@ impl ObserverRegistry {
                     observer: view(observer),
                 },
             );
+            true
         });
+        if !joined {
+            // The entry may have been made for it alone.
+            self.drop_entry_if_unused(&observer.function);
+        }
     }
 
     pub(crate) fn detach_from_function(&self, observer: &Arc<Observer>) {
@@ -2094,6 +2112,93 @@ mod tests {
         assert_eq!(needs(), Some((Needs::default(), Needs::default())));
         engine.observers.unobserve(worker.id, "plain");
         assert_eq!(needs(), None);
+    }
+
+    /// An observer disposed between its publish (in `by_id`) and its joining
+    /// its function joins no function: its disposal found it in none, so it
+    /// would stay among the function's live observers for good, counting
+    /// against `max_per_function` and keeping the function's entry. Four
+    /// threads observe and unobserve four ids of one function at random, so
+    /// some unobserves land in that window.
+    #[test]
+    fn an_observer_disposed_before_it_joins_its_function_joins_none() {
+        use super::super::events::test_support;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let threads: Vec<_> = (0..4u64)
+            .map(|thread| {
+                let engine = engine.clone();
+                let handle = runtime.handle().clone();
+                std::thread::spawn(move || {
+                    let _entered = handle.enter();
+                    // xorshift: which id, and whether to observe or unobserve.
+                    let mut rng = 0x9e37_79b9_7f4a_7c15_u64 ^ (thread + 1);
+                    for _ in 0..25_000 {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 7;
+                        rng ^= rng << 17;
+                        let id = format!("race-{}", rng % 4);
+                        if (rng >> 32).is_multiple_of(2) {
+                            let _ = engine
+                                .observers
+                                .observe_as_engine(engine_observer(&id, "test::dst"));
+                        } else {
+                            engine.observers.unobserve_as_engine(&id);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let registry = &engine.observers;
+        let key: FnKey = (
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "test::src".to_string(),
+        );
+        let members = registry
+            .function_entry(&key)
+            .map(|entry| entry.observers())
+            .unwrap_or_default();
+        let left_behind: Vec<String> = members
+            .iter()
+            .filter(|member| {
+                !registry
+                    .by_id
+                    .get(&member.id)
+                    .is_some_and(|held| Arc::ptr_eq(&held, member))
+            })
+            .map(|member| format!("{} {}", member.id, member.state()))
+            .collect();
+        assert!(
+            left_behind.is_empty(),
+            "disposed observers among the live ones: {left_behind:?}"
+        );
+        assert_eq!(
+            registry.observer_count(crate::protocol::DEFAULT_NAMESPACE, "test::src"),
+            registry.len()
+        );
+        for id in 0..4 {
+            registry.unobserve_as_engine(&format!("race-{id}"));
+        }
+        assert!(registry.is_empty());
+        assert!(
+            registry.function_entry(&key).is_none(),
+            "the function's entry goes with its last observer"
+        );
+        assert!(
+            registry
+                .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                .is_none()
+        );
     }
 
     /// An entry is dropped only while nobody holds its `sync`, and one that

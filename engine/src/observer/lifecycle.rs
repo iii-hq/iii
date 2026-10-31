@@ -566,6 +566,12 @@ impl Observer {
         lock(&self.status).state == ObserverState::Active
     }
 
+    /// Whether it was disposed: set before its disposal takes it out of any
+    /// index.
+    pub(crate) fn is_disposed(&self) -> bool {
+        lock(&self.status).flags.disposed.is_some()
+    }
+
     /// Runs `f` with the state and reason, holding the status lock: no
     /// transition happens meanwhile.
     pub(crate) fn with_state<R>(
