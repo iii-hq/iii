@@ -4,9 +4,9 @@ import type { FunctionRef, IIIClient } from '../src/types'
 
 /**
  * Matching and delivery in the host (v2 §4.4–§4.6, §8.2; decisions 13, 20,
- * 36, 38, 39, 45): onObserverMatch (predicate and keys), onObserverDeliver,
- * isObserved(call), routed calls and calls through an observer, against a
- * fake engine.
+ * 36, 38, 39, 45, 55): onObserverMatch (predicate and keys),
+ * onObserverDeliver, isObserved(call), the answers to routed calls and calls
+ * through an observer, against a fake engine.
  */
 vi.mock('ws', async () => (await import('./observe-fake-engine')).wsModule())
 vi.resetModules()
@@ -369,7 +369,7 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
         [['a', 'b'], { session: 's1', n: 2 }, undefined],
       ])
 
-      // routed: the observer it names rides the answer
+      // routed: the observer it names rides the answer, for the engine to evaluate
       socket.deliver(
         invokeFunction(
           'tmux::on-changed',
@@ -378,7 +378,7 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
         ),
       )
       await settle()
-      expect(fake.resultOf(socket, 'for-b')).toMatchObject({ result: { session: 's1', n: 3 }, observed: ['b'] })
+      expect(fake.resultOf(socket, 'for-b')).toMatchObject({ result: { session: 's1', n: 3 }, matched: ['b'] })
       expect(matchMetadata).toContainEqual({ for_observer: 'b' })
     })
   }
@@ -520,6 +520,7 @@ describe('onObserverDeliver', () => {
       invocation_id: 'routed',
       function_id: 'queue::on-message',
       error: { code: 'OBSERVER_NOT_ACTIVE', message: 'subscriber removed' },
+      delivered: true,
     })
   })
 
@@ -534,14 +535,20 @@ describe('onObserverDeliver', () => {
     socket.deliver(invokeFunction('orders::on-placed', { n: 2 }, { invocation_id: 'hooked' }))
     await settle()
     expect(hook).toHaveBeenCalledTimes(2)
-    expect(fake.resultOf(socket, 'hooked')).not.toHaveProperty('observed')
+    expect(fake.resultOf(socket, 'hooked')).toMatchObject({ result: { n: 2 }, delivered: true })
 
     sdk.onObserverDeliver('orders::on-placed', null)
     await sdk.call({ function_id: 'orders::on-placed', payload: { n: 3 } })
     socket.deliver(invokeFunction('orders::on-placed', { n: 4 }, { invocation_id: 'delivered' }))
     await settle()
     expect(hook).toHaveBeenCalledTimes(2)
-    expect(fake.resultOf(socket, 'delivered')).toMatchObject({ result: { n: 4 }, observed: ['o'] })
+    // without a hook the engine evaluates the routed call's observers: the answer names none
+    expect(fake.resultOf(socket, 'delivered')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'delivered',
+      function_id: 'orders::on-placed',
+      result: { n: 4 },
+    })
     await flushed()
     expect(reportedItems(socket).map((i) => [i.matched, i.input])).toEqual([[['o'], { n: 3 }]])
   })
@@ -720,7 +727,7 @@ describe('local calls: observers matched through the index of their equality con
   })
 })
 
-describe('routed calls: the host delivers (v2 §8.2)', () => {
+describe('routed calls: the answer says how the call is delivered (v2 §8.2, decision 55)', () => {
   const answer = (socket: ReturnType<typeof fake.lastSocket>, id: string) => fake.resultOf(socket, id)
 
   type Order = { fail?: boolean; qty: number }
@@ -738,57 +745,166 @@ describe('routed calls: the host delivers (v2 §8.2)', () => {
     return { sdk, socket }
   }
 
-  it("iii's delivery: the selected ids ride the answer, on success and on the handler's error; no report is sent", async () => {
-    const { socket } = await routed([
-      observerInfo('big', 'alerts::big', { filters: { $and: [{ 'input.qty': { $gte: 10 } }] } }),
-      observerInfo('all', 'audit::all'),
-      observerInfo('errors', 'alerts::errors', { on: 'error' }),
-    ])
+  const observers = [
+    observerInfo('big', 'alerts::big', { filters: { $and: [{ 'input.qty': { $gte: 10 } }] } }),
+    observerInfo('all', 'audit::all'),
+    observerInfo('errors', 'alerts::errors', { on: 'error' }),
+  ]
+
+  it('no match hook and no deliver hook: neither matched nor delivered, on success and on the handler error; no report', async () => {
+    const { socket } = await routed(observers)
     socket.deliver(invokeFunction('orders::create', { qty: 12 }, { invocation_id: 'i-1' }))
     socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'i-2' }))
     await settle()
     await flushed()
-    expect(socket.frames().map((f) => f.type)).toEqual(['invocationresult', 'invocationresult'])
-    expect(answer(socket, 'i-1')).toMatchObject({ result: { order_id: 'o-1', qty: 12 }, observed: ['big', 'all'] })
-    expect(answer(socket, 'i-2')).toMatchObject({
-      error: { code: 'invocation_failed', message: 'out of stock' },
-      observed: ['errors'],
-    })
-  })
-
-  it('a call nobody matches is answered without observed', async () => {
-    const { socket } = await routed([observerInfo('errors', 'alerts::errors', { on: 'error' })])
-    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
-    await settle()
+    // the engine evaluates on and filters of every active observer: the host evaluates none
     expect(socket.frames()).toEqual([
       {
         type: 'invocationresult',
         invocation_id: 'i-1',
         function_id: 'orders::create',
-        result: { order_id: 'o-1', qty: 1 },
+        result: { order_id: 'o-1', qty: 12 },
+      },
+      {
+        type: 'invocationresult',
+        invocation_id: 'i-2',
+        function_id: 'orders::create',
+        error: { code: 'invocation_failed', message: 'out of stock', stacktrace: expect.any(String) },
       },
     ])
   })
 
-  it('the match hook applies to routed calls', async () => {
+  it('evaluates no filter for a routed call; a local call evaluates them', async () => {
+    let ref: FunctionRef<Order, Created> | undefined
+    const { sdk, socket } = await routed(observers, (r) => {
+      ref = r
+    })
+    // each observer's compiled filter (internal)
+    const held = ref?.observers() as unknown as { filter: { matches: (doc: unknown) => boolean } }[]
+    expect(held).toHaveLength(3)
+    const spies = held.map((obs) => vi.spyOn(obs.filter, 'matches'))
+    const evaluated = () => spies.reduce((n, spy) => n + spy.mock.calls.length, 0)
+    socket.deliver(invokeFunction('orders::create', { qty: 12 }, { invocation_id: 'i-1' }))
+    await settle()
+    expect(answer(socket, 'i-1')).toMatchObject({ result: { order_id: 'o-1', qty: 12 } })
+    expect(evaluated()).toBe(0)
+    await sdk.call({ function_id: 'orders::create', payload: { qty: 12 } })
+    expect(evaluated()).toBe(2) // `big` and `all`; the `on: error` observer is ruled out first
+  })
+
+  it('a predicate match hook: matched lists the observers it matched, before on and filters, on success and on error', async () => {
+    const asked: string[] = []
     const { socket } = await routed(
       [
         observerInfo('small', 'audit::small', { args: { max: 5 } }),
-        observerInfo('large', 'audit::large', { args: { max: 50 } }),
+        observerInfo('large', 'audit::large', { args: { max: 50 }, filters: { 'input.qty': { $gte: 1000 } } }),
+        observerInfo('errors', 'alerts::errors', { args: { max: 50 }, on: 'error' }),
       ],
-      (ref) => ref.onObserverMatch((obs, call) => call.input.qty <= (obs.args.max as number)),
+      (ref) =>
+        ref.onObserverMatch((obs, call) => {
+          asked.push(`${obs.id}:${call.status}`)
+          return call.input.qty <= (obs.args.max as number)
+        }),
     )
     socket.deliver(invokeFunction('orders::create', { qty: 10 }, { invocation_id: 'i-1' }))
     await settle()
-    expect(answer(socket, 'i-1')).toMatchObject({ observed: ['large'] })
+    socket.deliver(invokeFunction('orders::create', { qty: 10, fail: true }, { invocation_id: 'i-2' }))
+    await settle()
+    expect(answer(socket, 'i-1')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'i-1',
+      function_id: 'orders::create',
+      result: { order_id: 'o-1', qty: 10 },
+      matched: ['large', 'errors'],
+    })
+    expect(answer(socket, 'i-2')).toMatchObject({
+      error: { code: 'invocation_failed', message: 'out of stock' },
+      matched: ['large', 'errors'],
+    })
+    expect(asked).toEqual([
+      'small:success',
+      'large:success',
+      'errors:success',
+      'small:error',
+      'large:error',
+      'errors:error',
+    ])
   })
 
-  it('a function with onObserverDeliver lists no observed: its answer is what the hook returns or throws', async () => {
-    const { socket } = await routed([observerInfo('all', 'audit::all', { on: 'complete' })], (ref) =>
-      ref.onObserverDeliver(async (call) => {
-        if (call.status === 'error') return { recovered: true }
-        throw new Error('rejected by the hook')
+  it('a match hook by keys: matched lists the observers filed under the call keys', async () => {
+    const { socket } = await routed(
+      [
+        observerInfo('eu', 'audit::eu', { args: { region: 'eu' } }),
+        observerInfo('us', 'audit::us', { args: { region: 'us' }, on: 'error' }),
+        observerInfo('eu-2', 'audit::eu-2', { args: { region: 'eu' } }),
+      ],
+      (ref) =>
+        ref.onObserverMatch({
+          observer: (obs) => obs.args.region as string,
+          call: (call) => (call.input.qty > 5 ? 'eu' : 'us'),
+        }),
+    )
+    socket.deliver(invokeFunction('orders::create', { qty: 10 }, { invocation_id: 'eu-call' }))
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'us-call' }))
+    await settle()
+    expect((answer(socket, 'eu-call')?.matched as string[]).sort()).toEqual(['eu', 'eu-2'])
+    expect(answer(socket, 'us-call')).toMatchObject({ matched: ['us'] })
+  })
+
+  it('a match hook that matches nothing, or that runs with no observer, sends matched: []', async () => {
+    const { sdk, socket } = await routed([observerInfo('all', 'audit::all')], (ref) => ref.onObserverMatch(() => false))
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'none' }))
+    await settle()
+    expect(answer(socket, 'none')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'none',
+      function_id: 'orders::create',
+      result: { order_id: 'o-1', qty: 1 },
+      matched: [],
+    })
+    sdk.registerFunction('orders::archive', async () => 'archived').onObserverMatch(() => true)
+    socket.deliver(functionRegistered('orders::archive'))
+    await settle()
+    socket.deliver(invokeFunction('orders::archive', {}, { invocation_id: 'empty' }))
+    await settle()
+    expect(answer(socket, 'empty')).toMatchObject({ result: 'archived', matched: [] })
+  })
+
+  it('a match hook that throws matches nothing: matched: []', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const { socket } = await routed([observerInfo('all', 'audit::all')], (ref) =>
+      ref.onObserverMatch(() => {
+        throw new Error('no match')
       }),
+    )
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'i-1' }))
+    await settle()
+    expect(answer(socket, 'i-1')).toMatchObject({ result: { order_id: 'o-1', qty: 1 }, matched: [] })
+  })
+
+  it('removing the match hook leaves the routed call to the engine: no matched', async () => {
+    let ref: FunctionRef<Order, Created> | undefined
+    const { socket } = await routed([observerInfo('all', 'audit::all')], (r) => {
+      ref = r.onObserverMatch(() => true)
+    })
+    socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'hooked' }))
+    await settle()
+    ref?.onObserverMatch(null)
+    socket.deliver(invokeFunction('orders::create', { qty: 2 }, { invocation_id: 'plain' }))
+    await settle()
+    expect(answer(socket, 'hooked')).toMatchObject({ matched: ['all'] })
+    expect(answer(socket, 'plain')).not.toHaveProperty('matched')
+    expect(answer(socket, 'plain')).not.toHaveProperty('delivered')
+  })
+
+  it('a deliver hook: delivered: true and what the hook returns or throws, never matched', async () => {
+    const { socket } = await routed([observerInfo('all', 'audit::all', { on: 'complete' })], (ref) =>
+      ref
+        .onObserverMatch(() => true)
+        .onObserverDeliver(async (call) => {
+          if (call.status === 'error') return { recovered: true }
+          throw new Error('rejected by the hook')
+        }),
     )
     socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'recovered' }))
     socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'rejected' }))
@@ -800,14 +916,44 @@ describe('routed calls: the host delivers (v2 §8.2)', () => {
       invocation_id: 'recovered',
       function_id: 'orders::create',
       result: { recovered: true },
+      delivered: true,
     })
-    expect(answer(socket, 'rejected')).toMatchObject({
-      error: { code: 'invocation_failed', message: 'rejected by the hook' },
+    expect(answer(socket, 'rejected')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'rejected',
+      function_id: 'orders::create',
+      error: { code: 'invocation_failed', message: 'rejected by the hook', stacktrace: expect.any(String) },
+      delivered: true,
     })
-    expect(answer(socket, 'rejected')).not.toHaveProperty('observed')
   })
 
-  it('against an engine without observe.v2 the engine evaluates routed calls: no observed', async () => {
+  it('a deliver hook that runs with no observer still answers delivered: true', async () => {
+    const { socket } = await routed([], (ref) => ref.onObserverDeliver((call) => call.output))
+    socket.deliver(invokeFunction('orders::create', { qty: 3 }, { invocation_id: 'i-1' }))
+    await settle()
+    expect(answer(socket, 'i-1')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'i-1',
+      function_id: 'orders::create',
+      result: { order_id: 'o-1', qty: 3 },
+      delivered: true,
+    })
+  })
+
+  it('an activation of a hosted target is answered the same way', async () => {
+    const { socket } = await routed([observerInfo('all', 'audit::all')], (ref) => ref.onObserverMatch(() => true))
+    socket.deliver(
+      invokeFunction(
+        'orders::create',
+        { qty: 4 },
+        { invocation_id: 'activation', observe_depth: 1, activation: { observer_id: 'up', activation_id: 'a-1' } },
+      ),
+    )
+    await settle()
+    expect(answer(socket, 'activation')).toMatchObject({ result: { order_id: 'o-1', qty: 4 }, matched: ['all'] })
+  })
+
+  it('against an engine without observe.v2 the engine evaluates routed calls: neither field', async () => {
     const { sdk, socket } = worker(fake.ENGINE_FEATURES_V1)
     sdk.registerFunction('orders::create', async () => ({ ok: true }))
     socket.deliver(functionRegistered('orders::create', [observerInfo('all', 'audit::all')]))
@@ -934,6 +1080,7 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
       invocation_id: 'routed',
       function_id: 'http::on-request',
       error: { code: 'OBSERVER_NOT_ACTIVE', message: 'observer users is not active' },
+      delivered: true,
     })
   })
 

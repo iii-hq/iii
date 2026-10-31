@@ -83,8 +83,11 @@ const HANDLED = {
     'invokefunction-observer-call-void.json',
     'invokefunction-legacy.json',
     'invokefunction-workers-register.json',
-    'invocationresult-observed.json',
-    'invocationresult-observed-error.json',
+    'invocationresult-routed.json',
+    'invocationresult-matched.json',
+    'invocationresult-matched-error.json',
+    'invocationresult-matched-none.json',
+    'invocationresult-delivered.json',
   ],
   engineToWorker: [
     'workerregistered.json',
@@ -292,38 +295,105 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(item).not.toHaveProperty('output')
   })
 
-  it("invocationresult-observed.json (iii's delivery of a routed call: the ids ride the answer)", async () => {
-    const expected = fixture('invocationresult-observed.json')
-    const { sdk, socket } = connect({ workerName: 'orders' })
-    sdk.registerFunction('orders::create', () => expected.result)
-    socket.deliver(
-      fake.functionRegistered(
-        'orders::create',
-        (expected.observed as string[]).map((id) => fake.observerInfo(id, 'alerts::big-order')),
-      ),
-    )
+  /** The answer the SDK sends to a routed call of `functionId`, invoked with the fixture's id and trace context. */
+  async function routedAnswer(
+    expected: Json,
+    functionId: string,
+    observers: Json[],
+    register: (sdk: IIIClient) => void,
+  ): Promise<Json[]> {
+    const { sdk, socket } = connect({ workerName: functionId.split('::')[0] })
+    register(sdk)
+    socket.deliver(fake.functionRegistered(functionId, observers))
     await fake.settle()
     socket.clear()
     socket.deliver(
       fake.invokeFunction(
-        'orders::create',
+        functionId,
         { sku: 'A-1', qty: 2 },
         {
           invocation_id: expected.invocation_id as string,
-          traceparent: expected.traceparent as string,
+          ...(typeof expected.traceparent === 'string' ? { traceparent: expected.traceparent } : {}),
         },
       ),
     )
     await fake.settle()
-    expect(socket.frames()).toEqual([expected])
+    return socket.frames()
+  }
+
+  it('invocationresult-routed.json (a function with no match hook and no deliver hook: neither field)', async () => {
+    const expected = fixture('invocationresult-routed.json')
+    const frames = await routedAnswer(
+      expected,
+      'orders::create',
+      [
+        // the engine evaluates both: the host lists neither
+        fake.observerInfo('8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70', 'alerts::big-order', {
+          filters: { 'input.qty': { $gte: 1 } },
+        }),
+        fake.observerInfo('9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81', 'alerts::failed-order', { on: 'error' }),
+      ],
+      (sdk) => sdk.registerFunction('orders::create', () => expected.result),
+    )
+    expect(frames).toEqual([expected])
   })
 
-  it('invocationresult-observed-error.json (builds; observed kept on an error answer)', () => {
-    const expected = fixture('invocationresult-observed-error.json')
+  it('invocationresult-matched.json (the match hook ran: the observers it matched, before on and filters)', async () => {
+    const expected = fixture('invocationresult-matched.json')
+    const [first, second] = expected.matched as string[]
+    const frames = await routedAnswer(
+      expected,
+      'orders::create',
+      [
+        fake.observerInfo(first, 'alerts::big-order', { args: { team: 'sales' } }),
+        fake.observerInfo('d0e1f2a3-b4c5-4d6e-8f70-81a2b3c4d5e6', 'audit::order', { args: { team: 'audit' } }),
+        // matched by the hook; its `on` and filters are the engine's to evaluate
+        fake.observerInfo(second, 'alerts::failed-order', {
+          args: { team: 'sales' },
+          on: 'error',
+          filters: { 'input.qty': { $gte: 100 } },
+        }),
+      ],
+      (sdk) =>
+        sdk
+          .registerFunction('orders::create', () => expected.result)
+          .onObserverMatch((obs) => obs.args.team === 'sales'),
+    )
+    expect(frames).toEqual([expected])
+  })
+
+  it('invocationresult-matched-error.json (builds; matched kept on an error answer)', () => {
+    const expected = fixture('invocationresult-matched-error.json')
     const decoded = wire.decodeInvocationResult(body(expected))
-    expect(decoded.observed).toEqual(['c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60'])
+    expect(decoded.matched).toEqual(['c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60'])
     expect(decoded).not.toHaveProperty('result')
     expect({ type: 'invocationresult', ...wire.buildInvocationResult(decoded as never) }).toEqual(expected)
+  })
+
+  it('invocationresult-matched-none.json (the match hook matched no observer: matched is sent empty)', async () => {
+    const expected = fixture('invocationresult-matched-none.json')
+    const frames = await routedAnswer(
+      expected,
+      'orders::create',
+      [fake.observerInfo('8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70', 'alerts::big-order')],
+      (sdk) => sdk.registerFunction('orders::create', () => expected.result).onObserverMatch(() => false),
+    )
+    expect(frames).toEqual([expected])
+  })
+
+  it('invocationresult-delivered.json (the deliver hook delivered the call: its answer, and delivered)', async () => {
+    const expected = fixture('invocationresult-delivered.json')
+    const frames = await routedAnswer(
+      expected,
+      'approvals::request',
+      [fake.observerInfo('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d', 'approvals::risk-review')],
+      (sdk) =>
+        sdk
+          .registerFunction('approvals::request', () => ({ approved: false }))
+          // the approver's answer, as a call through the observer would return it
+          .onObserverDeliver(() => expected.result),
+    )
+    expect(frames).toEqual([expected])
   })
 
   it('localinvocationstats.json', () => {
@@ -520,11 +590,39 @@ describe('engine → worker: the SDK decodes without loss', () => {
         function_id: null,
       }),
     ).toEqual({ code: 'UNSUPPORTED', namespace: 'default', owner_worker_id: '' })
-    // `result: null` is a value; `observed: []` and a malformed `observed` read as absent
+    // `result: null` is a value; `matched: null` is absent, `[]` is kept, a malformed one is `[]`
+    // (a non-string id is skipped); only `delivered: true` is kept
     expect(
-      wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', result: null, error: null, observed: [] }),
+      wire.decodeInvocationResult({
+        invocation_id: 'i',
+        function_id: 'f',
+        result: null,
+        error: null,
+        matched: null,
+        delivered: null,
+      }),
     ).toEqual({ invocation_id: 'i', function_id: 'f', result: null })
-    expect(wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', observed: 'o-1' })).toEqual({
+    expect(wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', matched: [] })).toEqual({
+      invocation_id: 'i',
+      function_id: 'f',
+      matched: [],
+    })
+    expect(
+      wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', matched: ['o-1', 7, null, 'o-2'] }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', matched: ['o-1', 'o-2'] })
+    expect(
+      wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', matched: 'o-1', delivered: 'yes' }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', matched: [] })
+    expect(wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', delivered: true })).toEqual({
+      invocation_id: 'i',
+      function_id: 'f',
+      delivered: true,
+    })
+    // `delivered` outweighs `matched`: only one is sent; `delivered: false` and an absent `matched` are left out
+    expect(
+      wire.buildInvocationResult({ invocation_id: 'i', function_id: 'f', matched: ['o-1'], delivered: true }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', delivered: true })
+    expect(wire.buildInvocationResult({ invocation_id: 'i', function_id: 'f', delivered: false })).toEqual({
       invocation_id: 'i',
       function_id: 'f',
     })

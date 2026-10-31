@@ -409,6 +409,11 @@ export class FunctionObservers {
     return [...found]
   }
 
+  /** The function has a match hook (`onObserverMatch`) now. */
+  hasMatchHook(): boolean {
+    return this.host.hooks(this.functionId).match !== undefined
+  }
+
   /**
    * The active observers whose `on` accepts a call that succeeded (`ok`) or
    * failed and whose filters match `doc`, in the order of `compiled`. Matched
@@ -915,20 +920,30 @@ export type DeliveryInit = {
   observe_depth: number
   traceparent?: string
   baggage?: string
-  /** A routed call: what iii's delivery selects rides the answer (`observed`); a local call is reported. */
+  /**
+   * A routed call: the engine evaluates its observers' `on` and filters, and
+   * its answer says how it is delivered (`matched`, `delivered`); a local
+   * call is delivered here and reported.
+   */
   routed: boolean
 }
 
 /**
- * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45): the
+ * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45, 55): the
  * observers are matched (`onObserverMatch`), then the function's
  * `onObserverDeliver` delivers the call itself, or iii delivers it to the
- * matched observers whose `on` and filters accept it: a local call in one
- * report item, a routed call in its answer's `observed`.
+ * matched observers whose `on` and filters accept it. For a local call the
+ * host evaluates `on` and filters and reports the observers delivered in
+ * one report item. For a routed call the engine evaluates them: the answer
+ * carries the observers the match hook matched (`matched`), or says that
+ * the deliver hook delivered the call (`delivered`), or neither for a
+ * function with no match hook and no deliver hook.
  */
 export class Delivery {
-  /** A routed call's `observed`: what iii's delivery selected. */
-  observed: readonly string[] = []
+  /** A routed call's answer: the ids of the observers its match hook matched, before `on` and filters. */
+  matched?: readonly string[]
+  /** A routed call's answer: its deliver hook delivered it. */
+  delivered = false
 
   constructor(
     private readonly owner: FunctionObservers,
@@ -939,11 +954,16 @@ export class Delivery {
   async run(deliver: DeliverHook | undefined): Promise<unknown> {
     const { call, snapshot, activations, thrown, routed } = this.init
     const matched = this.owner.matching(call, snapshot, activations)
-    if (deliver !== undefined) return deliver(call, matched)
-    const selected = this.select(call, matched)
-    if (selected.length > 0) {
-      if (routed) this.observed = selected.map((obs) => obs.id)
-      else this.owner.reporter.push(this.item(call, selected))
+    if (deliver !== undefined) {
+      // Its answer, whatever the hook returns or throws.
+      if (routed) this.delivered = true
+      return deliver(call, matched)
+    }
+    if (routed) {
+      if (this.owner.hasMatchHook()) this.matched = matched.map((obs) => obs.id)
+    } else {
+      const selected = this.select(call, matched)
+      if (selected.length > 0) this.owner.reporter.push(this.item(call, selected))
     }
     if (call.status === 'error') throw thrown
     return call.output

@@ -852,13 +852,14 @@ describe('a deliver hook after an await', () => {
       result: { saved: true },
     })
     await settle()
-    // the hook's answer is the target's; a function with a deliver hook lists no `observed`
+    // the hook's answer is the target's, and says the hook delivered the call
     expect(fake.resultOf(socket, 'cmd-1')).toEqual({
       type: 'invocationresult',
       invocation_id: 'cmd-1',
       function_id: 'ui::on-command',
       result: { saved: true },
       traceparent: TRACEPARENT,
+      delivered: true,
     })
   })
 
