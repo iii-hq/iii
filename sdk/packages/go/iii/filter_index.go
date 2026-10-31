@@ -85,9 +85,10 @@ type filterIndex struct {
 }
 
 // with is x with obs filed at seq, and the condition it is filed under (nil: in the
-// scanned list). Of the conditions of its filter's top-level $and it takes the one the
-// fewest observers already filed share, an $eq before an $in, then the one naming fewer
-// values.
+// scanned list). Of the conditions of its filter's top-level $and it takes one naming a
+// single value (an $eq, or an $in of one) before one naming several, then the one the
+// fewest observers already filed share, then the one naming fewer values, as
+// iii_filter::FilterIndex does.
 func (x *filterIndex) with(obs *Observer, seq uint64) (*filterIndex, *filterCond) {
 	var next filterIndex
 	if x != nil {
@@ -146,11 +147,11 @@ func (x *filterIndex) place(f *filter.Filter) (int, *filterlink.Term) {
 				sharing += len(x.paths[at].bucket(v))
 			}
 		}
-		in := 0
-		if t.In {
-			in = 1
+		several := 0
+		if len(t.Values) > 1 {
+			several = 1
 		}
-		score := [3]int{in, sharing, len(t.Values)}
+		score := [3]int{several, sharing, len(t.Values)}
 		if best < 0 || slices.Compare(score[:], bestScore[:]) < 0 {
 			best, bestAt, bestScore = i, at, score
 		}
