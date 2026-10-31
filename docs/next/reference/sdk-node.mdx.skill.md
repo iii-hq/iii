@@ -530,9 +530,9 @@ onObserverAdded(functionId: string, hook: AddedHook | null) => IIIClient
 
 ```typescript
 // every function this worker hosts: keep the event stream open while anything is observed
-iii.onObserverAdded(async () => { await events.retain() })
+worker.onObserverAdded(async () => { await events.retain() })
 // one function, by id
-iii.onObserverAdded('database::on-row-changed', async (obs) => {
+worker.onObserverAdded('database::on-row-changed', async (obs) => {
   await capture.install(obs.args.db, obs.args.table)
 })
 ```
@@ -576,11 +576,11 @@ onObserverDeliver(functionId: string, hook: DeliverHook<I, O, R> | null) => IIIC
   <Tab title="Example">
 
 ```typescript
-iii.onObserverDeliver('http::on-request', async (call) => {
+worker.onObserverDeliver('http::on-request', async (call) => {
   const route = routes.match(call.input)
   if (!route) return { status_code: 404 }
   if (!route.obs.matches(call)) return { status_code: 422 }
-  return iii.call({ observer: route.obs, payload: call.input })
+  return worker.call({ observer: route.obs, payload: call.input })
 })
 ```
 
@@ -627,10 +627,10 @@ onObserverMatch(functionId: string, hook: MatchHook<I, O> | null) => IIIClient
 
 ```typescript
 // an observer of expression X gets the ticks of expression X
-iii.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+worker.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
 
 // many observers: keys, one lookup per key
-iii.onObserverMatch('database::on-row-changed', {
+worker.onObserverMatch('database::on-row-changed', {
   observer: (obs) => `${obs.args.table}|${obs.args.op}`,
   call: (call) => `${call.input.table}|${call.input.op}`,
 })
@@ -795,7 +795,7 @@ started), and what it returns (or throws) is what the caller gets back. A
 thrown ObserveRejection, or the error of a call it made, reaches the
 caller with its code; any other error as `invocation_failed`. iii delivers
 nothing for that function; the hook calls through observers
-(`iii.call({ observer, payload })`) and applies their filters with
+(`worker.call({ observer, payload })`) and applies their filters with
 `obs.matches(call)`. It runs inside the function's invocation, so the calls
 it makes have that invocation as their caller.
 

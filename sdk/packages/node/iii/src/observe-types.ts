@@ -255,7 +255,7 @@ export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKe
  * thrown {@link ObserveRejection}, or the error of a call it made, reaches the
  * caller with its code; any other error as `invocation_failed`. iii delivers
  * nothing for that function; the hook calls through observers
- * (`iii.call({ observer, payload })`) and applies their filters with
+ * (`worker.call({ observer, payload })`) and applies their filters with
  * `obs.matches(call)`. It runs inside the function's invocation, so the calls
  * it makes have that invocation as their caller.
  */

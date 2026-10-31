@@ -187,7 +187,7 @@ jobs:
           cargo test --locked -p iii -p iii-sandbox-contract --all-features
           # Reports re-read the merged profdata (no recompile), so emitting the
           # terminal summary, an lcov file, and a browsable HTML tree is cheap.
-          IGNORE='engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/'
+          IGNORE='engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|^sdk/'
           cargo llvm-cov report --ignore-filename-regex "$IGNORE"
           cargo llvm-cov report --ignore-filename-regex "$IGNORE" --lcov --output-path coverage.lcov
           cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html
@@ -293,37 +293,6 @@ jobs:
             echo "::error::docs/next/cli-reference is stale. Run scripts/generate-cli-docs.sh (or 'make cli-docs') and commit the result."
             exit 1
           fi
-
-  # ──────────────────────────────────────────────────────────────
-  # Engine RabbitMQ Integration Tests
-  # ──────────────────────────────────────────────────────────────
-
-  engine-rabbitmq-tests:
-    name: Engine RabbitMQ Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      rabbitmq:
-        image: rabbitmq:3-management-alpine
-        ports:
-          - 5672:5672
-          - 15672:15672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics check_running" --health-interval 10s --health-timeout
-          5s --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: engine
-
-      - name: Run RabbitMQ integration tests
-        env:
-          RABBITMQ_URL: amqp://localhost:5672
-          RUST_LOG: info
-        run: cargo test --locked -p iii --test rabbitmq_queue_integration -- --nocapture
 
   # ──────────────────────────────────────────────────────────────
   # Compose — supervision is platform code, so it is tested per OS
@@ -892,6 +861,7 @@ jobs:
     name: SDK Python (${{ matrix.python-version }})
     needs: engine-build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -952,6 +922,7 @@ jobs:
     name: SDK Rust Tests
     needs: engine-build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

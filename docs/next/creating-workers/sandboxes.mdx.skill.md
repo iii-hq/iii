@@ -2,7 +2,7 @@
 
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the engine-owned `iii-sandbox`
+for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox`
 worker. Enable it in the managed Compose file before starting the engine:
 
 ```yaml worker-compose.yaml

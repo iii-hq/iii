@@ -280,9 +280,9 @@ export interface IIIClient {
    * @example
    * ```typescript
    * // every function this worker hosts: keep the event stream open while anything is observed
-   * iii.onObserverAdded(async () => { await events.retain() })
+   * worker.onObserverAdded(async () => { await events.retain() })
    * // one function, by id
-   * iii.onObserverAdded('database::on-row-changed', async (obs) => {
+   * worker.onObserverAdded('database::on-row-changed', async (obs) => {
    *   await capture.install(obs.args.db, obs.args.table)
    * })
    * ```
@@ -315,10 +315,10 @@ export interface IIIClient {
    * @example
    * ```typescript
    * // an observer of expression X gets the ticks of expression X
-   * iii.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+   * worker.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
    *
    * // many observers: keys, one lookup per key
-   * iii.onObserverMatch('database::on-row-changed', {
+   * worker.onObserverMatch('database::on-row-changed', {
    *   observer: (obs) => `${obs.args.table}|${obs.args.op}`,
    *   call: (call) => `${call.input.table}|${call.input.op}`,
    * })
@@ -345,11 +345,11 @@ export interface IIIClient {
    *
    * @example
    * ```typescript
-   * iii.onObserverDeliver('http::on-request', async (call) => {
+   * worker.onObserverDeliver('http::on-request', async (call) => {
    *   const route = routes.match(call.input)
    *   if (!route) return { status_code: 404 }
    *   if (!route.obs.matches(call)) return { status_code: 422 }
-   *   return iii.call({ observer: route.obs, payload: call.input })
+   *   return worker.call({ observer: route.obs, payload: call.input })
    * })
    * ```
    */
