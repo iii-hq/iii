@@ -13,15 +13,19 @@ observers with ``functionregistered`` (local dispatch on), waits for their
 acks, then times ``await iii.call_async`` from an event loop of the bench's
 own, one call at a time after a warm-up: the handler and its delivery run on
 that loop, so a row is the SDK's cost of a local call (a sync ``iii.call``
-adds the thread it runs a sync handler on). A row prints the mean, p50 and
-p99 per call over every round, the mean of each round, and the report items
-a call produced.
+adds the thread it runs a sync handler on). A case with a match hook sets it
+before the observers are announced. A churn case gives the function a new
+active set before every call, untimed, as an observer added or removed does:
+the row is the cost of the first call after each change. A row prints the
+mean, p50 and p99 per call over every round, the mean of each round, and the
+report items a call produced.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import platform
 import statistics
@@ -60,6 +64,10 @@ class Case:
     observers: Callable[[], list[dict[str, Any]]]
     payload: Callable[[int], Any]
     calls: int
+    #: The function's ``on_observer_match``.
+    match: Callable[[Any, Any], bool] | None = None
+    #: A new active set before every call.
+    churn: bool = False
 
 
 def _tenants(n: int) -> list[dict[str, Any]]:
@@ -68,6 +76,14 @@ def _tenants(n: int) -> list[dict[str, Any]]:
 
 def _ranges(n: int) -> list[dict[str, Any]]:
     return [observer_info(f"r{i}", "bench::target", filters={"input.amount": {"$gte": 1000 + i}}) for i in range(n)]
+
+
+#: 20 of 1,000 tenants: the observers a match hook picks, as for 20 sessions that share a key.
+_PICKED = {f"t{i}" for i in range(0, 1000, 50)}
+
+
+def _pick_20(obs: Any, call: Any) -> bool:
+    return obs.id in _PICKED
 
 
 CASES = [
@@ -102,6 +118,28 @@ CASES = [
         lambda i: {"tenant": "tenant-7", "amount": 1},
         2_000,
     ),
+    Case(
+        "call_local/1000_equality_observers_hook_picks_20",
+        lambda: _tenants(1000),
+        lambda i: {"tenant": f"tenant-{(i % 20) * 50}", "amount": 1},
+        2_000,
+        match=_pick_20,
+    ),
+    Case(
+        "call_local/1000_equality_observers_hook_picks_20_churn",
+        lambda: _tenants(1000),
+        lambda i: {"tenant": f"tenant-{(i % 20) * 50}", "amount": 1},
+        2_000,
+        match=_pick_20,
+        churn=True,
+    ),
+    Case(
+        "call_local/1000_equality_observers_1_matching_churn",
+        lambda: _tenants(1000),
+        lambda i: {"tenant": f"tenant-{i % 1000}", "amount": 1},
+        2_000,
+        churn=True,
+    ),
 ]
 
 
@@ -131,7 +169,9 @@ def run_case(case: Case) -> dict[str, Any]:
         async def echo(data: Any) -> Any:
             return data
 
-        client.register_function(FN, echo)
+        ref = client.register_function(FN, echo)
+        if case.match is not None:
+            ref.on_observer_match(case.match)
         engine.wait_for(
             lambda: any(f.get("id") == FN for f in engine.frames_of("registerfunction")), what="the registration"
         )
@@ -152,6 +192,9 @@ def run_case(case: Case) -> dict[str, Any]:
             clock = time.perf_counter_ns
             for i in range(n):
                 payload = case.payload(i)
+                if case.churn:
+                    with state._lock:
+                        state.active = dataclasses.replace(state.active)
                 t0 = clock()
                 await client.call_async({"function_id": FN, "payload": payload})
                 if timed:
@@ -188,7 +231,7 @@ def main() -> None:
             results[case.name].append(run_case(case))
     rows = []
     print(f"python {platform.python_version()}, iii-sdk at {Path(iii.__file__).resolve().parent}")
-    print(f"{'case':<52} {'mean µs':>9} {'p50 µs':>9} {'p99 µs':>9} {'round means µs':>26} {'items/call':>10}")
+    print(f"{'case':<56} {'mean µs':>9} {'p50 µs':>9} {'p99 µs':>9} {'round means µs':>26} {'items/call':>10}")
     for case in cases:
         rounds = results[case.name]
         every = sorted(t for r in rounds for t in r["times_ns"])
@@ -205,7 +248,7 @@ def main() -> None:
         }
         rows.append(row)
         print(
-            f"{case.name:<52} {row['mean_us']:>9} {row['p50_us']:>9} {row['p99_us']:>9} "
+            f"{case.name:<56} {row['mean_us']:>9} {row['p50_us']:>9} {row['p99_us']:>9} "
             f"{', '.join(f'{m:.1f}' for m in means):>26} {row['items_per_call']:>10}"
         )
     if args.json:

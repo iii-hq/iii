@@ -598,6 +598,120 @@ def test_a_local_call_is_delivered_to_the_observers_a_scan_finds_through_the_ind
     assert state.active.filters.candidates({"input": {"tenant": "tenant-7"}}) == 1 + 2
 
 
+class _CountingFilter:
+    """An observer's compiled filter that counts its evaluations."""
+
+    def __init__(self, inner: CompiledFilter) -> None:
+        self.inner = inner
+        self.equality_terms = inner.equality_terms  # what the index files it by
+        self.calls = 0
+
+    def matches(self, doc: Any) -> bool:
+        self.calls += 1
+        return bool(self.inner.matches(doc))
+
+
+def _count_filters(client: III, function_id: str) -> dict[str, _CountingFilter]:
+    """Each active observer's filter, counting its evaluations from now on
+    (the filter index a set builds afterwards files these)."""
+    counted: dict[str, _CountingFilter] = {}
+    for obs in client.observers(function_id):
+        counted[obs.id] = _CountingFilter(obs._filter)
+        obs._filter = counted[obs.id]  # type: ignore[assignment]
+    return counted
+
+
+def _evaluated(counted: dict[str, _CountingFilter]) -> dict[str, int]:
+    """The observers whose filter was evaluated since the last read, and how often."""
+    out = {key: f.calls for key, f in counted.items() if f.calls}
+    for f in counted.values():
+        f.calls = 0
+    return out
+
+
+def test_a_local_call_past_scan_max_evaluates_only_the_filters_the_index_does_not_rule_out(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+
+    def create(order: dict[str, Any]) -> dict[str, Any]:
+        if order.get("fail"):
+            raise ValueError("refused")
+        return {"ok": True}
+
+    fid = "orders::counted"
+    client.register_function(fid, create)
+    _confirm(client, engine, fid, _tenant_observers(60))
+    counted = _count_filters(client, fid)
+    assert len(counted) > SCAN_MAX
+    client.call({"function_id": fid, "payload": {"tenant": "tenant-7", "total": 5}})
+    # t7 under its tenant, `big` and `all` scanned; `errors` (on: error) is not evaluated for a success
+    assert _evaluated(counted) == {"t7": 1, "big": 1, "all": 1}
+    with pytest.raises(Exception, match="refused"):
+        client.call({"function_id": fid, "payload": {"tenant": "tenant-2", "fail": True}})
+    # t2 and big are on: success, so only `errors` and `all` (on: complete) are evaluated
+    assert _evaluated(counted) == {"errors": 1, "all": 1}
+    settle(client, engine)
+    assert [i["matched"] for i in _items(engine, fid)] == [["t7", "all"], ["errors", "all"]]
+
+
+def test_a_match_hooks_choice_is_checked_for_on_through_the_index(engine: FakeEngine, connect: Any) -> None:
+    """The match hook picks more than SCAN_MAX observers, among them `errors` (on: error) whose filter
+    matches the call: a successful call is not delivered to it, whether the set evaluates the hook's
+    choice one by one (its first call) or through its index (once built)."""
+    client = connect(engine)
+    fid = "rows::on"
+    client.register_function(fid, lambda change: change, private=True).on_observer_match(
+        lambda obs, call: obs.id != "t5"
+    )
+    _confirm(client, engine, fid, _tenant_observers(30))
+    counted = _count_filters(client, fid)
+    evaluations = []
+    for _ in range(3):
+        client.call({"function_id": fid, "payload": {"tenant": "tenant-1"}})
+        evaluations.append(_evaluated(counted))
+    # 33 observers matched of 34: the first call evaluates each one `on` accepts, which is as many
+    # filters as building the index costs, so the next calls match through the index
+    assert evaluations[0] == {obs: 1 for obs in counted if obs not in ("t5", "errors")}
+    assert evaluations[1] == evaluations[2] == {"t1": 1, "big": 1, "all": 1}
+    settle(client, engine)
+    assert [i["matched"] for i in _items(engine, fid)] == [["t1", "all"]] * 3
+
+
+def test_a_match_hooks_few_picks_build_the_index_once_the_set_has_served_enough_of_them(
+    engine: FakeEngine, connect: Any
+) -> None:
+    """A set builds its index once its calls have evaluated as many filters one by one as it has
+    observers. A set that changes before then (observers that come and go) evaluates only the
+    observers the match hook picks, and builds no index of the others."""
+    client = connect(engine)
+    fid = "rows::few"
+    picked = {f"t{i}" for i in range(10, 20)}
+    client.register_function(fid, lambda change: change, private=True).on_observer_match(
+        lambda obs, call: obs.id in picked
+    )
+    _confirm(client, engine, fid, _tenant_observers(30))
+    state = client._functions[fid].observe
+    counted = _count_filters(client, fid)
+
+    def calls(churn: bool) -> list[int]:
+        out = []
+        for _ in range(5):
+            if churn:
+                with state._lock:
+                    state.active = state.active.renewed()  # what an observer added or removed makes
+            client.call({"function_id": fid, "payload": {"tenant": "tenant-12"}})
+            out.append(sum(_evaluated(counted).values()))
+        return out
+
+    # 10 picked of 34: three calls evaluate 30 filters, the fourth builds the index and evaluates t12 alone
+    assert calls(churn=False) == [10, 10, 10, 1, 1]
+    assert calls(churn=True) == [10] * 5
+    assert "filters" not in state.active.__dict__
+    settle(client, engine)
+    assert [i["matched"] for i in _items(engine, fid)] == [["t12"]] * 10
+
+
 def test_a_match_hooks_choice_is_filtered_through_the_index(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     fid = "rows::changed"
