@@ -36,7 +36,9 @@ const CAP_LOW_WATERMARK: f64 = 0.80;
 /// messages again; a tick that runs out wakes the writer immediately.
 const TICK_MAX_BATCHES: usize = 32;
 const TICK_TIME_BUDGET: Duration = Duration::from_secs(1);
-/// `flush` drains within its caller's 5 s response timeout.
+/// Writer-side work budget of one `flush`, counted from when the writer takes
+/// it. A tick runs ahead of a flush that wakes the writer, and the last batch
+/// can overrun, so the caller's 5 s wait can end first.
 const FLUSH_TIME_BUDGET: Duration = Duration::from_secs(4);
 /// Pages returned to the filesystem per `incremental_vacuum` step (4 MiB at
 /// the default page size); each step is checkpointed before the next one.
@@ -380,9 +382,9 @@ impl TraceDiskStore {
     /// span ingested before the call is durable or was dropped as
     /// irrecoverable and counted in `known_dropped_spans`. `Err` means some of
     /// them are still dirty: deferred by capacity or a storage error (archive
-    /// degraded), or the writer's 4 s budget ran out with backlog left
-    /// (progress made, archive not degraded). Later spans are left to the
-    /// periodic writer.
+    /// degraded), the writer's 4 s budget ran out with backlog left (progress
+    /// made, archive not degraded), or this call's 5 s wait ended while the
+    /// writer was still working. Later spans are left to the periodic writer.
     pub fn flush(&self) -> Result<(), String> {
         let (response_tx, response_rx) = mpsc::channel();
         self.control_tx
@@ -3327,7 +3329,7 @@ fn set_private_permissions(path: &Path, directory: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::{cell::Cell, sync::Arc};
     #[cfg(unix)]
     use std::{process::Command, time::Instant};
 
@@ -3458,9 +3460,7 @@ mod tests {
         incoming.extend(normal_spans);
         hot.add_spans(incoming);
 
-        store
-            .flush()
-            .expect("unfittable trace is dropped and normal spans continue");
+        flush_settled(&store, &hot).expect("unfittable trace is dropped and normal spans continue");
         assert!(
             store
                 .get_spans_by_trace_id("wide-trace")
@@ -3500,7 +3500,7 @@ mod tests {
                 })
                 .collect();
             hot.add_spans(spans);
-            store.flush().expect("bounded batch persists");
+            flush_settled(&store, &hot).expect("bounded batch persists");
             let bytes = store.status().physical_bytes;
             maximum = maximum.max(bytes);
             assert!(
@@ -3586,9 +3586,7 @@ mod tests {
         let mut fresh = test_span("trace-fresh", "span", "fresh");
         fresh.attributes = vec![("payload".to_string(), "y".repeat(64 * 1024))];
         hot.add_spans(vec![fresh]);
-        store
-            .flush()
-            .expect("write after cap shrink must evict and succeed");
+        flush_settled(&store, &hot).expect("write after cap shrink must evict and succeed");
 
         let after = directory_size(directory.path()).expect("measure evicted directory");
         assert!(
@@ -4360,9 +4358,7 @@ mod tests {
             wide_attributes(400, 64 * 1024),
         )]);
 
-        store
-            .flush()
-            .expect("an irrecoverable span is settled, not retried");
+        flush_settled(&store, &hot).expect("an irrecoverable span is settled, not retried");
 
         let survivors = store.get_spans().unwrap();
         let status = store.status();
@@ -4403,7 +4399,7 @@ mod tests {
             let hot = hot_cache(16, 1024 * MIB);
             store.attach_hot_storage(&hot);
             hot.add_spans(vec![wide.clone()]);
-            store.flush().unwrap();
+            flush_settled(&store, &hot).unwrap();
             store.shutdown();
             image_bytes(directory.path())
         };
@@ -4482,7 +4478,7 @@ mod tests {
             wide_attributes(400, 64 * 1024),
         )]);
 
-        store.flush().expect("the impossible update is settled");
+        flush_settled(&store, &hot).expect("the impossible update is settled");
 
         let status = store.status();
         let kept = store.get_spans_by_trace_id("upd-trace").unwrap();
@@ -4505,7 +4501,7 @@ mod tests {
             wide_attributes(400, 64 * 1024),
         )]);
         hot.add_spans(vec![test_span("upd-2", "s", "small")]);
-        store.flush().unwrap();
+        flush_settled(&store, &hot).unwrap();
         assert_eq!(archived_span_ids(directory.path(), "upd-2"), vec!["s"]);
         assert_eq!(store.status().known_dropped_spans, 1);
         assert_eq!(hot.dirty_len(), 0);
@@ -4531,7 +4527,7 @@ mod tests {
             "child-wide",
             wide_attributes(400, 64 * 1024),
         )]);
-        store.flush().unwrap();
+        flush_settled(&store, &hot).unwrap();
         let after_drop = archived_span_ids(directory.path(), "frag");
         hot.add_spans(vec![test_span("frag", "child-late", "child")]);
         store.flush().unwrap();
@@ -4855,12 +4851,15 @@ mod tests {
         }
         let drained = hot.dirty_len();
 
+        // The tick that runs ahead of the flush can take TICK_MAX_BATCHES, so
+        // the flush itself covers more than 32 batches only past twice that.
+        let flushed = (2 * TICK_MAX_BATCHES + 1) * BATCH_MAX_SPANS;
         hot.add_spans(
-            (0..17_000)
+            (0..flushed)
                 .map(|index| test_span(&format!("f-{index:05}"), "s", "flush"))
                 .collect(),
         );
-        let flush = store.flush();
+        let flush = flush_settled(&store, &hot);
         eprintln!(
             "BACKLOG_EVIDENCE degraded_seen={degraded_seen} dirty_after_ticks={drained} flush={flush:?} archived={}",
             store.span_count().unwrap()
@@ -4871,7 +4870,7 @@ mod tests {
         );
         assert_eq!(drained, 0);
         flush.expect("a flush over more than 32 batches completes");
-        assert_eq!(store.span_count().unwrap(), 37_000);
+        assert_eq!(store.span_count().unwrap(), 20_000 + flushed);
         store.shutdown();
     }
 
@@ -4914,7 +4913,7 @@ mod tests {
                 "w",
                 wide_attributes(400, 64 * 1024),
             )]);
-            store.flush().unwrap();
+            flush_settled(&store, &hot).unwrap();
         }
         archive_live_trace(&store, &hot, 50);
         store.update_limits(&capped_config(directory.path(), 1));
@@ -4951,7 +4950,7 @@ mod tests {
                 span_with("wide", "w", wide_attributes(400, 64 * 1024)),
                 test_span("kept", "s", "kept"),
             ]);
-            store.flush().unwrap();
+            flush_settled(&store, &hot).unwrap();
             assert_eq!(store.status().known_dropped_spans, 1);
             std::process::abort();
         }
@@ -5062,7 +5061,7 @@ mod tests {
                     "big",
                     wide_attributes(150, 64 * 1024),
                 )]);
-                store.flush().unwrap();
+                flush_settled(&store, &hot).unwrap();
                 assert_eq!(count_trace_prefix(directory.path(), "aaa-big2"), 1);
                 assert_eq!(store.scratch_measurements.load(Ordering::Relaxed), 1);
                 assert_eq!(store.warnings_emitted(), 1);
@@ -5180,7 +5179,7 @@ mod tests {
                     })
                     .collect(),
             );
-            store.flush().unwrap();
+            flush_settled(&store, &hot).unwrap();
         }
         let mut root = span_with(&live, &realistic_span(1), Vec::new());
         root.pending = true;
@@ -5292,7 +5291,7 @@ mod tests {
                 .map(|index| span_with(&trace, &realistic_span(index + 1), tiny_attributes(100)))
                 .collect(),
         );
-        let flush = store.flush();
+        let flush = flush_settled(&store, &hot);
         let after_flush = count_trace_prefix(directory.path(), &trace);
         thread::sleep(Duration::from_secs(3));
         let archived = count_trace_prefix(directory.path(), &trace) as u64;
@@ -5516,6 +5515,64 @@ mod tests {
         }
     }
 
+    /// `flush` is bounded by wall-clock (the writer's budget, the caller's
+    /// timeout), so on a loaded machine one call can end before the drain
+    /// does. Call it again only while calls use up that budget and the dirty
+    /// set shrinks; any other answer is returned as is.
+    fn flush_settled(store: &TraceDiskStore, hot: &InMemorySpanStorage) -> Result<(), String> {
+        settle(FLUSH_TIME_BUDGET, || store.flush(), || hot.dirty_len())
+    }
+
+    fn settle(
+        budget: Duration,
+        mut flush: impl FnMut() -> Result<(), String>,
+        dirty: impl Fn() -> usize,
+    ) -> Result<(), String> {
+        let mut before = dirty();
+        let mut stalled = false;
+        loop {
+            let started = Instant::now();
+            let result = flush();
+            if result.is_ok() || started.elapsed() < budget {
+                return result;
+            }
+            let after = dirty();
+            if after < before {
+                (before, stalled) = (after, false);
+            } else if stalled {
+                return result;
+            } else {
+                // A batch still running when the caller's wait ends settles
+                // after it: judge progress over one more call.
+                stalled = true;
+            }
+        }
+    }
+
+    #[test]
+    fn settle_repeats_only_slow_flushes_that_progress() {
+        // Each step: the flush result and the dirty count it leaves.
+        let run = |budget: Duration, steps: &[(bool, usize)]| {
+            let (calls, dirty) = (Cell::new(0), Cell::new(10));
+            let flush = || {
+                let (ok, left) = steps[calls.get()];
+                calls.set(calls.get() + 1);
+                dirty.set(left);
+                if ok { Ok(()) } else { Err("slow".to_string()) }
+            };
+            (settle(budget, flush, || dirty.get()).is_ok(), calls.get())
+        };
+        let (fast, slow) = (Duration::MAX, Duration::ZERO);
+        assert_eq!(run(fast, &[(false, 5)]), (false, 1), "a fast Err is final");
+        assert_eq!(run(slow, &[(false, 5), (false, 2), (true, 0)]), (true, 3));
+        assert_eq!(run(slow, &[(false, 10), (false, 4), (true, 0)]), (true, 3));
+        assert_eq!(
+            run(slow, &[(false, 10), (false, 10)]),
+            (false, 2),
+            "a writer making no progress fails"
+        );
+    }
+
     /// A live trace (600 spans of 200 tiny attributes) committed in the same
     /// batches as 60 payload traces (prefix `bbbb0003`), so its size is
     /// attributed from shared commits. Returns the live trace id.
@@ -5535,7 +5592,7 @@ mod tests {
                 ));
             }
             hot.add_spans(spans);
-            store.flush().unwrap();
+            flush_settled(store, hot).unwrap();
         }
         let mut snapshot = span_with(&live, &hex_span(1), Vec::new());
         snapshot.pending = true;
@@ -5701,7 +5758,7 @@ mod tests {
                 .map(|index| span_with(&live, &hex_span(index + 10), tiny_attributes(100)))
                 .collect(),
         );
-        store.flush().unwrap();
+        flush_settled(&store, &hot).unwrap();
         let mut evidence = Vec::new();
         for (round, tag) in [0xbcde_0001_u64, 0xbcde_0002].into_iter().enumerate() {
             hot.add_spans(
@@ -5715,7 +5772,7 @@ mod tests {
                     })
                     .collect(),
             );
-            store.flush().unwrap();
+            flush_settled(&store, &hot).unwrap();
             let prefix = format!("{tag:08x}");
             let written = count_trace_prefix(directory.path(), &prefix);
             hot.add_spans(vec![span_with(
@@ -5723,7 +5780,7 @@ mod tests {
                 &hex_span(5_000 + round as u64),
                 wide_attributes(33, 64 * 1024),
             )]);
-            let flushed = store.flush();
+            let flushed = flush_settled(&store, &hot);
             let left = count_trace_prefix(directory.path(), &prefix);
             evidence.push(format!(
                 "round{round} history {written}->{left} flush={flushed:?}"

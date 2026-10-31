@@ -218,6 +218,11 @@ When an entry is registered, set, or deleted, including by a file edit, `configu
 runs with the change. Observe it to react to changes, with filters on the entry and the event type.
 Workers hot-apply their own settings the same way.
 
+The event names the entry that changed, never its value, which may hold secrets: the observer's
+target reads the new value with `configuration::get`. For the same reason, the functions that read
+or write a value (`configuration::get`, `set`, `register`, `ensure`, and `migrate`) refuse observers
+with `NOT_OBSERVABLE`.
+
 ```typescript
 worker.observe(
   {

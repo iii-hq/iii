@@ -109,7 +109,7 @@ pub fn configure_network() -> Result<(), InitError> {
 /// Cast ioctl request constant to the platform-specific Ioctl type.
 /// glibc uses `u64`, musl uses `i32`.
 #[allow(clippy::unnecessary_cast)]
-const fn ioctl_req(req: u64) -> libc::Ioctl {
+const fn ioctl_req(req: libc::c_ulong) -> libc::Ioctl {
     req as libc::Ioctl
 }
 
@@ -122,7 +122,7 @@ fn set_ip_address(sock: libc::c_int, iface: &[u8], addr: Ipv4Addr) -> Result<(),
             &mut ifr.ifr_ifru as *mut _ as *mut u8,
             std::mem::size_of::<libc::sockaddr_in>(),
         );
-        if libc::ioctl(sock, ioctl_req(libc::SIOCSIFADDR as u64), &ifr) < 0 {
+        if libc::ioctl(sock, ioctl_req(libc::SIOCSIFADDR), &ifr) < 0 {
             return Err(InitError::NetIoctl {
                 iface: iface_name(iface),
                 op: "SIOCSIFADDR",
@@ -142,7 +142,7 @@ fn set_netmask(sock: libc::c_int, iface: &[u8], mask: Ipv4Addr) -> Result<(), In
             &mut ifr.ifr_ifru as *mut _ as *mut u8,
             std::mem::size_of::<libc::sockaddr_in>(),
         );
-        if libc::ioctl(sock, ioctl_req(libc::SIOCSIFNETMASK as u64), &ifr) < 0 {
+        if libc::ioctl(sock, ioctl_req(libc::SIOCSIFNETMASK), &ifr) < 0 {
             return Err(InitError::NetIoctl {
                 iface: iface_name(iface),
                 op: "SIOCSIFNETMASK",
@@ -157,7 +157,7 @@ fn set_interface_up(sock: libc::c_int, iface: &[u8]) -> Result<(), InitError> {
     let mut ifr = new_ifreq(iface);
 
     unsafe {
-        if libc::ioctl(sock, ioctl_req(libc::SIOCGIFFLAGS as u64), &mut ifr) < 0 {
+        if libc::ioctl(sock, ioctl_req(libc::SIOCGIFFLAGS), &mut ifr) < 0 {
             return Err(InitError::NetIoctl {
                 iface: iface_name(iface),
                 op: "SIOCGIFFLAGS",
@@ -168,7 +168,7 @@ fn set_interface_up(sock: libc::c_int, iface: &[u8]) -> Result<(), InitError> {
         let flags = ifr.ifr_ifru.ifru_flags;
         ifr.ifr_ifru.ifru_flags = flags | libc::IFF_UP as i16 | libc::IFF_RUNNING as i16;
 
-        if libc::ioctl(sock, ioctl_req(libc::SIOCSIFFLAGS as u64), &ifr) < 0 {
+        if libc::ioctl(sock, ioctl_req(libc::SIOCSIFFLAGS), &ifr) < 0 {
             return Err(InitError::NetIoctl {
                 iface: iface_name(iface),
                 op: "SIOCSIFFLAGS",
@@ -206,7 +206,7 @@ fn add_default_route(sock: libc::c_int, gateway: Ipv4Addr) -> Result<(), InitErr
 
         rt.rt_flags = libc::RTF_UP | libc::RTF_GATEWAY;
 
-        if libc::ioctl(sock, ioctl_req(libc::SIOCADDRT as u64), &rt) < 0 {
+        if libc::ioctl(sock, ioctl_req(libc::SIOCADDRT), &rt) < 0 {
             return Err(InitError::NetRoute(std::io::Error::last_os_error()));
         }
     }
@@ -217,7 +217,7 @@ fn new_ifreq(iface: &[u8]) -> libc::ifreq {
     let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
     let len = iface.len().min(libc::IFNAMSIZ);
     unsafe {
-        std::ptr::copy_nonoverlapping(iface.as_ptr(), ifr.ifr_name.as_mut_ptr() as *mut u8, len);
+        std::ptr::copy_nonoverlapping(iface.as_ptr(), ifr.ifr_name.as_mut_ptr().cast(), len);
     }
     ifr
 }

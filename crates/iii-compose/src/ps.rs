@@ -298,8 +298,8 @@ fn invocation(cmd: &[String]) -> (Role, Vec<String>) {
         _ => {}
     }
     let mut positional = args.iter().enumerate().filter(|(index, arg)| {
-        !arg.starts_with('-')
-            && !(*index > 0 && matches!(args[index - 1].as_str(), "-c" | "--config"))
+        !(arg.starts_with('-')
+            || (*index > 0 && matches!(args[index - 1].as_str(), "-c" | "--config")))
     });
     let role = match positional.next().map(|(_, arg)| arg.as_str()) {
         None => Role::Engine,

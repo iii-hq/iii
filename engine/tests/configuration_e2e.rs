@@ -241,13 +241,9 @@ async fn an_observer_target_runs_in_the_namespace_it_names() {
 }
 
 #[tokio::test]
-async fn observers_get_the_expanded_event_payload() {
+async fn observers_get_events_without_values() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, worker) = build_worker(dir.path()).await;
-
-    unsafe {
-        std::env::set_var("CFG_E2E_OBSERVED_HOST", "observed.local");
-    }
 
     let mut events = install_event_capture(&engine, "test::on_configuration_change");
 
@@ -266,7 +262,7 @@ async fn observers_get_the_expanded_event_payload() {
                 "type": "object",
                 "properties": { "host": { "type": "string" } }
             }),
-            initial_value: Some(json!({ "host": "${CFG_E2E_OBSERVED_HOST:fallback}" })),
+            initial_value: Some(json!({ "host": "trigger.local" })),
             metadata: None,
         })
         .await;
@@ -278,8 +274,8 @@ async fn observers_get_the_expanded_event_payload() {
     assert_eq!(payload["type"], "configuration");
     assert_eq!(payload["event_type"], "configuration:registered");
     assert_eq!(payload["id"], "iii-stream");
-    assert_eq!(payload["new_value"]["host"], "observed.local");
-    assert!(payload["old_value"].is_null());
+    assert!(payload.get("new_value").is_none(), "{payload}");
+    assert!(payload.get("old_value").is_none(), "{payload}");
 
     worker
         .set_fn(ConfigurationSetInput {
@@ -293,7 +289,7 @@ async fn observers_get_the_expanded_event_payload() {
         .expect("set should reach the observer")
         .expect("channel open");
     assert_eq!(payload["event_type"], "configuration:updated");
-    assert_eq!(payload["new_value"]["host"], "set.local");
+    assert!(payload.get("new_value").is_none(), "{payload}");
 }
 
 #[tokio::test]
@@ -330,7 +326,6 @@ async fn fs_watcher_surfaces_external_file_edits_as_updates() {
         .expect("channel open");
     assert_eq!(payload["event_type"], "configuration:registered");
     assert_eq!(payload["id"], "iii-bridge");
-    assert_eq!(payload["new_value"]["url"], "ws://primary");
 
     worker.destroy().await.expect("destroy");
 }
@@ -375,7 +370,6 @@ async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
         .expect("ensure should reach the observer")
         .expect("channel open");
     assert_eq!(evt["event_type"], "configuration:registered");
-    assert_eq!(evt["new_value"]["port"], 3112);
 
     // Second ensure with a DIFFERENT seed: the stored value must be preserved.
     worker
@@ -497,9 +491,6 @@ async fn migration_events_and_restart_preserve_the_entry() {
             .await
             .unwrap()
             .unwrap();
-        if event["event_type"] == "configuration:registered" {
-            assert_eq!(event["new_value"], active, "event must agree with GET");
-        }
         observed.push((
             event["id"].as_str().unwrap().to_string(),
             event["event_type"].as_str().unwrap().to_string(),

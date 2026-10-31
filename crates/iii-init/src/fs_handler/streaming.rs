@@ -91,16 +91,16 @@ pub(crate) fn handle_write_start_with_timeout(
     let target = std::path::PathBuf::from(&path);
 
     // Resolve / create parent.
-    if let Some(parent) = target.parent() {
-        if !parent.as_os_str().is_empty() {
-            if parents {
-                std::fs::create_dir_all(parent).map_err(|e| FsError::from_io(&path, e))?;
-            } else if !parent.exists() {
-                return Err(FsError::new(
-                    "S211",
-                    format!("parent not found: {}", parent.display()),
-                ));
-            }
+    if let Some(parent) = target.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        if parents {
+            std::fs::create_dir_all(parent).map_err(|e| FsError::from_io(&path, e))?;
+        } else if !parent.exists() {
+            return Err(FsError::new(
+                "S211",
+                format!("parent not found: {}", parent.display()),
+            ));
         }
     }
 

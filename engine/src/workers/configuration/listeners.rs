@@ -96,8 +96,6 @@ mod tests {
             name: id.to_string(),
             description: String::new(),
             schema: json!({}),
-            old_value: None,
-            new_value: Some(json!({})),
             metadata: None,
         }
     }

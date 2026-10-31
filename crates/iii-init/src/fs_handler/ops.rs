@@ -473,6 +473,7 @@ pub fn mv(src: String, dst: String, overwrite: bool) -> FsCallResult {
 /// Errors:
 /// - `S211` — path does not exist.
 /// - `S217` — `pattern` is not a valid regex.
+#[allow(clippy::too_many_arguments)]
 pub fn grep(
     path: String,
     pattern: String,
@@ -732,6 +733,7 @@ fn collect_files_to_sed(
 /// missing `path` form root (S211), invalid input form (S210), or
 /// `recursive=false` on a directory (S210). Per-file I/O errors
 /// surface in `FsSedFileResult.success`.
+#[allow(clippy::too_many_arguments)]
 pub fn sed(
     files: Vec<String>,
     path: Option<String>,

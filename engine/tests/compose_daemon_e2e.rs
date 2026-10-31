@@ -862,12 +862,11 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
     )
     .await
     .expect("managed project should stop");
-    // The daemon names the project by its canonical path (on macOS the temp
-    // dir under /var is /private/var).
-    let canonical = std::fs::canonicalize(&file).expect("canonical compose file path");
+    // Projects are named by their canonical path, the registry key: on macOS
+    // the tempdir is reached through the /var -> /private/var symlink.
     assert_eq!(
         stop["stopping"],
-        json!([canonical.to_str().unwrap()]),
+        json!([file.canonicalize().unwrap()]),
         "{stop}"
     );
 

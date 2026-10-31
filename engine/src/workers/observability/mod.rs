@@ -2307,12 +2307,12 @@ impl ObservabilityWorker {
                                 .name
                                 .strip_prefix("execute ")
                                 .or_else(|| span.name.strip_prefix("call "));
-                            if let Some(named_fn) = named_fn {
-                                if crate::workers::telemetry::is_observability_function_id(named_fn)
-                                    || named_fn.starts_with("engine::")
-                                {
-                                    continue;
-                                }
+                            if let Some(named_fn) = named_fn
+                                && (crate::workers::telemetry::is_observability_function_id(
+                                    named_fn,
+                                ) || named_fn.starts_with("engine::"))
+                            {
+                                continue;
                             }
                             window.push(span);
                         }
@@ -3096,7 +3096,7 @@ impl ObservabilityWorker {
                     })
                     .collect();
 
-                result.sort_by(|a, b| b.first_seen_ms.cmp(&a.first_seen_ms));
+                result.sort_by_key(|b| std::cmp::Reverse(b.first_seen_ms));
                 result.truncate(limit);
                 tracing::debug!(
                     operation = "engine::traces::group_by",

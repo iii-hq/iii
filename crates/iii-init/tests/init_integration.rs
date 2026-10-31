@@ -96,10 +96,12 @@ mod linux {
     #[test]
     fn default_nofile_matches_crate_constant() {
         assert_eq!(iii_init::rlimit::DEFAULT_NOFILE, 65536);
-        assert!(
-            iii_init::rlimit::DEFAULT_NOFILE > 1024,
-            "should be higher than typical default"
-        );
+        const {
+            assert!(
+                iii_init::rlimit::DEFAULT_NOFILE > 1024,
+                "should be higher than typical default"
+            )
+        };
     }
 
     #[test]

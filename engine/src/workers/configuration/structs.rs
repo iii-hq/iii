@@ -222,8 +222,6 @@ pub struct ConfigurationEventData {
     pub name: String,
     pub description: String,
     pub schema: Value,
-    pub old_value: Option<Value>,
-    pub new_value: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
 }

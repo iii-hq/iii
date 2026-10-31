@@ -146,16 +146,20 @@ The engine calls `configuration::on-updated` when a configuration entry is regis
 | `name` | string | The registered name at the time of the event. |
 | `description` | string | The registered description. |
 | `schema` | object | The registered JSON Schema. |
-| `old_value` | any | Previous value with `${VAR:default}` placeholders expanded. `null` on `configuration:registered`. |
-| `new_value` | any | New value with `${VAR:default}` placeholders expanded. `null` on `configuration:deleted`. |
 | `metadata` | any | Echoes the registered metadata; omitted when none was supplied. |
+
+The payload never carries the value, which may hold secrets: read it with `configuration::get`. For the same reason, `configuration::get`, `set`, `register`, `ensure`, and `migrate` refuse observers (`NOT_OBSERVABLE`).
 
 ### Sample Code
 
 ```typescript
 iii.registerFunction('stream::on-config-change', async ({ input: event }) => {
   console.log('Configuration changed:', event.event_type, event.id)
-  console.log('New value:', event.new_value)
+  const { value } = await iii.call({
+    function_id: 'configuration::get',
+    payload: { id: event.id },
+  })
+  console.log('New value:', value)
   return {}
 })
 
@@ -206,9 +210,13 @@ const { value } = await iii.call({
 })
 
 // 3. Observe changes elsewhere — set/external-edit/bridge events all
-//    arrive through the same source.
+//    arrive through the same source, which carries no value: read it again.
 iii.registerFunction('stream::on-config-change', async ({ input: event }) => {
-  console.log('Stream config now:', event.new_value)
+  const { value } = await iii.call({
+    function_id: 'configuration::get',
+    payload: { id: event.id },
+  })
+  console.log('Stream config now:', value)
   return {}
 })
 

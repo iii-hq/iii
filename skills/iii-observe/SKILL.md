@@ -599,7 +599,7 @@ Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CH
 | `engine::on-functions-changed` | `{ event: "functions_changed", functions: [...] }`, bursts coalesced (~100 ms) |
 | `engine::on-workers-changed` | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated` |
 | `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one call per state change |
-| `configuration::on-updated` | `{ type, event_type, id, name, ..., old_value, new_value }` |
+| `configuration::on-updated` | `{ type, event_type, id, name, ... }`, no value (read it with `configuration::get`) |
 | `observability::on-log` | one log record |
 | `observability::on-span` | `{ trace_ids: [...] }` per window (~300 ms) |
 | `stream::on-changed`, `stream::on-join`, `stream::on-leave` (`iii-stream`) | the stream event; filter on `input.stream_name`, `input.group_id` |

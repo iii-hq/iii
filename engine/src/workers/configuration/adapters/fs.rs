@@ -423,19 +423,14 @@ impl ConfigurationAdapter for FsAdapter {
         // failed I/O would leave readers observing a value that disappears
         // on restart.
         let mut cache = self.cache.write().await;
-        let prior = cache.get(&entry.id).cloned();
-        let kind = if prior.is_some() {
+        let kind = if cache.contains_key(&entry.id) {
             RegisterKind::Replaced
         } else {
             RegisterKind::Created
         };
         self.write_entry(&entry).await?;
         cache.insert(entry.id.clone(), entry.clone());
-        Ok(RegisterOutcome {
-            kind,
-            entry,
-            old_value: prior.map(|p| p.value),
-        })
+        Ok(RegisterOutcome { kind, entry })
     }
 
     async fn migrate(
@@ -578,8 +573,7 @@ impl ConfigurationAdapter for FsAdapter {
                             // than blanking it to the disk's null.
                             let mut entry = fresh.clone();
                             entry.schema = existing.schema.clone();
-                            let old_value = Some(existing.value.clone());
-                            events.push(ExternalChange::Updated { entry, old_value });
+                            events.push(ExternalChange::Updated { entry });
                         }
                         _ => {}
                     }
@@ -1030,7 +1024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn second_register_replaces_and_returns_old_value() {
+    async fn second_register_replaces() {
         let dir = temp_dir();
         let adapter = FsAdapter::new(Some(json!({ "directory": dir.path().to_str().unwrap() })))
             .await
@@ -1041,7 +1035,6 @@ mod tests {
         updated.value = json!({ "port": 9999 });
         let outcome = adapter.register(updated.clone()).await.unwrap();
         assert_eq!(outcome.kind, RegisterKind::Replaced);
-        assert_eq!(outcome.old_value, Some(json!({ "port": 3112 })));
     }
 
     #[tokio::test]
@@ -1188,9 +1181,8 @@ mod tests {
             .expect("watcher should report an event")
             .expect("channel closed");
         match evt {
-            ExternalChange::Updated { entry, old_value } => {
+            ExternalChange::Updated { entry } => {
                 assert_eq!(entry.value, json!({ "port": 9999 }));
-                assert_eq!(old_value, Some(json!({ "port": 3112 })));
                 // Schema is absent on disk but must be carried forward from cache,
                 // not blanked to null — and the value edit must fire exactly one
                 // Updated event (schema is no longer part of the diff).

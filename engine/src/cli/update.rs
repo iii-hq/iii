@@ -147,10 +147,10 @@ pub async fn run_background_check(
         (updates, true) // true = check completed, should update timestamp
     };
 
-    match tokio::time::timeout(Duration::from_millis(timeout_ms), check).await {
-        Ok(result) => Some(result),
-        Err(_) => None, // Timed out, will retry next run
-    }
+    // None on timeout: the check is retried next run.
+    tokio::time::timeout(Duration::from_millis(timeout_ms), check)
+        .await
+        .ok()
 }
 
 /// Check if a managed binary is installed on disk.
