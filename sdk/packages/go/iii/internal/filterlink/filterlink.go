@@ -37,10 +37,9 @@ type Path struct {
 // match the filter.
 type Term struct {
 	Path *Path
-	// Values are the scalars the condition names, each once, at least one.
+	// Values are the scalars the condition names, each once, at least one: an $eq
+	// names one, an $in one or more.
 	Values []Scalar
-	// In is set for an $in, which may name several values; an $eq names one.
-	In bool
 }
 
 // Terms returns the equality conditions of f, a *filter.Filter: for each path clause of

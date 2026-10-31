@@ -74,7 +74,7 @@ func appendTerms(terms []filterlink.Term, p *path, ops map[string]any) []filterl
 				values = append(values, s)
 			}
 		}
-		terms = append(terms, filterlink.Term{Path: linked(), Values: values, In: true})
+		terms = append(terms, filterlink.Term{Path: linked(), Values: values})
 	}
 	return terms
 }

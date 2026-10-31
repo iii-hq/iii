@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/iii-hq/iii/sdk/packages/go/iii/filter"
+	"github.com/iii-hq/iii/sdk/packages/go/iii/internal/filterlink"
 )
 
 // The filter index selects exactly the observers an evaluation of every observer's on
@@ -573,7 +574,9 @@ func TestFilterIndexFilesEqualityConditions(t *testing.T) {
 }
 
 // The observer with the fewest observers sharing its value is filed under that
-// condition: a filter on a shared type and its own tenant is filed under the tenant.
+// condition: a filter on a shared type and its own tenant is filed under the tenant. A
+// condition naming one value, an $eq or an $in of one, comes before one naming several,
+// as in iii_filter::FilterIndex.
 func TestFilterIndexFilesUnderTheLeastSharedCondition(t *testing.T) {
 	x := newIndexed()
 	for i := range 50 {
@@ -584,4 +587,37 @@ func TestFilterIndexFilesUnderTheLeastSharedCondition(t *testing.T) {
 		t.Errorf("%d candidates: the shared condition was indexed", n)
 	}
 	checkCall(t, x, &Call{Status: "success", Input: json.RawMessage(`{"kind":"order","tenant":7}`)}, "kind and tenant")
+
+	filedUnder := func(id, filters string) (path string, values []filterlink.Scalar) {
+		t.Helper()
+		if !x.add(t, id, filters, OnSuccess) {
+			t.Fatalf("%s did not compile", filters)
+		}
+		cond := x.observers[len(x.observers)-1].cond.Load()
+		if cond == nil {
+			t.Fatalf("%s: not filed", filters)
+		}
+		return cond.path.Key, cond.values
+	}
+	// the first observer is filed under kind, which no observer shared yet; the others
+	// under their tenants
+	tenant := x.observers[1].cond.Load().path.Key
+	before := n
+	// tenant 7 is shared by one observer, kind "x" by none: an $in of one value is
+	// filed like an $eq
+	if path, values := filedUnder("in-one", `{"input.kind":{"$in":["x"]},"input.tenant":{"$eq":7}}`); path == tenant ||
+		!slices.Equal(values, []filterlink.Scalar{{Kind: filterlink.String, Str: "x"}}) {
+		t.Errorf("an $in of one unshared value: filed under %s %v, want input/4:kind [x]", path, values)
+	}
+	// an $in of several values comes after an $eq, though tenant 8 is shared
+	if path, values := filedUnder("in-several", `{"input.kind":{"$in":["y","z"]},"input.tenant":{"$eq":8}}`); path != tenant ||
+		!slices.Equal(values, []filterlink.Scalar{{Kind: filterlink.Number, Num: 8}}) {
+		t.Errorf("an $in of several values: filed under %s %v, want %s [8]", path, values, tenant)
+	}
+	ids, n := viaIndex(x.index, (&Call{Status: "success", Input: json.RawMessage(`{"kind":"order","tenant":7}`)}).doc(), true)
+	if !slices.Equal(ids, []string{"7"}) || n != before {
+		t.Errorf("matched %v with %d candidates, want [7] with %d", ids, n, before)
+	}
+	checkCall(t, x, &Call{Status: "success", Input: json.RawMessage(`{"kind":"x","tenant":7}`)}, "an $in of one")
+	checkCall(t, x, &Call{Status: "success", Input: json.RawMessage(`{"kind":"z","tenant":8}`)}, "an $in of several")
 }
