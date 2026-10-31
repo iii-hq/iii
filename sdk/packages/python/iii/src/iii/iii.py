@@ -217,6 +217,18 @@ def _answer_error_body(error: BaseException) -> dict[str, Any]:
     return _handler_error_body(error)
 
 
+def _routed_matched(delivery: Delivery | None, active: ActiveSet, hook: DeliverHook | None) -> list[str] | None:
+    """A routed answer's ``matched``: the ids the function's match hook
+    matched, ``[]`` when it matched none or could not run, and ``None`` for a
+    function without one or with a deliver hook (its answer says
+    ``delivered``)."""
+    if hook is not None or active.match is None:
+        return None
+    if delivery is None or delivery.matched is None:
+        return []
+    return delivery.matched
+
+
 @dataclass
 class _SpanOutcome:
     result: Any = None
@@ -1294,8 +1306,9 @@ class III:
         return self._is_open() and self._registered_on_connection and FEATURE_OBSERVE_V1 in self._engine_features
 
     def _delivers_v2(self) -> bool:
-        """This connection's engine advertised ``observe.v2``: the host
-        delivers its routed calls, and reports carry ``output_is_input``."""
+        """This connection's engine advertised ``observe.v2``: the host runs
+        its functions' match and deliver hooks for its routed calls, and
+        reports carry ``output_is_input``."""
         return self._registered_on_connection and FEATURE_OBSERVE_V2 in self._engine_features
 
     def _on_engine_features(self, features: list[str]) -> None:
@@ -1816,14 +1829,16 @@ class III:
             task.add_done_callback(self._log_task_exception)
             return
 
-        # The host delivers a routed call when the engine advertised observe.v2;
-        # otherwise the engine evaluates it. The call is matched against the
-        # observers active when it starts.
+        # The engine evaluates the observers' `on` and filters of every call it
+        # routes (decision 55). On an observe.v2 engine the host runs the
+        # function's match hook, and its answer names the observers the hook
+        # matched, or its deliver hook, and its answer says it delivered the
+        # call. The call is matched against the observers active when it starts.
         if self._delivers_v2():
             state = cast(FunctionObservers, func.observe)
             active = state.active
             hook = self._deliver_hooks.get(path)
-            if hook is not None or active.observers:
+            if hook is not None or active.match is not None or active.observers:
                 await self._invoke_routed_and_deliver(
                     invocation_id,
                     path,
@@ -1899,14 +1914,17 @@ class III:
         baggage: str | None,
         metadata: dict[str, Any] | None,
     ) -> None:
-        """A routed call of an observed function (or one with a deliver hook)
-        on an ``observe.v2`` engine: the handler, then its delivery, then the
-        answer. The handler gets ``resolved_data`` (channel refs as readers
-        and writers); its delivery sees ``data``, the input as it arrived.
-        The ids iii's delivery selected ride the answer's ``observed``; a
-        function with a deliver hook lists none."""
+        """A routed call of an observed function, or of one with a match or
+        deliver hook, on an ``observe.v2`` engine: the handler, then its
+        delivery, then the answer. The handler gets ``resolved_data`` (channel
+        refs as readers and writers); its delivery sees ``data``, the input as
+        it arrived. The engine evaluates ``on`` and filters (decision 55): the
+        answer of a function with a deliver hook carries ``delivered: true``,
+        that of a function with a match hook the ids it matched in
+        ``matched``, and that of any other function neither."""
         handler = cast(Callable[..., Awaitable[Any]], func.handler)
         ctx = cast(ActiveInvocation, current_context())
+        delivered = True if hook is not None else None
         started_at_ms = time.time() * 1000.0
         t0 = time.perf_counter()
         delivery: Delivery | None = None
@@ -1950,7 +1968,8 @@ class III:
                 function_id=path,
                 result=value,
                 traceparent=outcome.traceparent,
-                observed=delivery.observed,
+                matched=_routed_matched(delivery, active, hook),
+                delivered=delivered,
             )
         except _TraceContextError as te:
             failure = original_error(cast(BaseException, te.__cause__))
@@ -1962,7 +1981,8 @@ class III:
                 function_id=path,
                 error=cast(Delivery, delivery).call.error if own else _answer_error_body(failure),
                 traceparent=te.traceparent,
-                observed=delivery.observed if delivery is not None else None,
+                matched=_routed_matched(delivery, active, hook),
+                delivered=delivered,
             )
         await self._send(answer)
 

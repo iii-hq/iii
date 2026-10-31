@@ -138,12 +138,15 @@ def test_capture_empty_moves_no_payloads_and_deliver_output_sends_the_handlers_r
     )
     assert all(isinstance(envelope[k], str) for k in ("activation_id", "invocation_id"))
     assert isinstance(envelope["started_at_ms"], int) and isinstance(envelope["duration_ms"], (int, float))
-    # the host delivered both: a report for the local call, the match on its answer for the routed one
-    observed = [sorted(f["observed"]) for f in frames.frames if f.get("type") == "invocationresult" and "observed" in f]
+    # a report for the local call; the routed one's answer says nothing of observers: the engine evaluates them
+    answers = [
+        f for f in frames.frames if f.get("type") == "invocationresult" and f.get("function_id") == fid("py-cap::price")
+    ]
+    assert not any("matched" in f or "delivered" in f for f in answers)
     if dispatch == "auto":
-        assert "invocationsobserved" in frames.types and observed == []
+        assert "invocationsobserved" in frames.types and answers == []
     else:
-        assert "invocationsobserved" not in frames.types and observed == [sorted([bare.id, output.id])]
+        assert "invocationsobserved" not in frames.types and len(answers) == 1
 
 
 def test_zero_wire_unobserved_local_calls_send_zero_frames(worker: Any, fid: Any) -> None:

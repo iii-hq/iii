@@ -1,6 +1,7 @@
 """``iii.observe`` against the real engine, on the routed path: every call
-goes through the engine, and the worker that hosts the function delivers it,
-listing the observers it matched on its answer."""
+goes through the engine, which evaluates the observers' ``on`` and filters
+from the input it forwarded and the host's answer (decision 55). The host
+runs the function's match and deliver hooks only."""
 
 from __future__ import annotations
 
@@ -74,9 +75,10 @@ def test_activates_the_target_with_the_envelope_when_filters_on_input_output_and
     assert inv.caller is not None and inv.caller["worker_name"] == "iii-engine"
     assert (inv.caller["function_id"], inv.caller["invocation_id"]) == (fid("py-e2e::charge"), data["invocation_id"])
     assert inv.activation == {"observer_id": handle.id, "activation_id": data["activation_id"]}
-    # the host delivered: the match rode its answer, and nothing else went out
-    observed = [f.get("observed") for f in frames.frames if f.get("type") == "invocationresult"]
-    assert observed.count([handle.id]) == 1 and all(o in (None, [handle.id]) for o in observed)
+    # the engine evaluated the filters: the host's answers say nothing of observers, and nothing else went out
+    charge = fid("py-e2e::charge")
+    answered = [f for f in frames.frames if f.get("type") == "invocationresult" and f.get("function_id") == charge]
+    assert len(answered) == 3 and not any("matched" in f or "delivered" in f for f in answered)
     assert "invocationsobserved" not in frames.types
 
 
@@ -256,3 +258,74 @@ def test_the_loop_guard_observe_depth_travels_with_the_calls_a_target_makes(work
     wait_for(lambda: loop_guard_drops() >= 1, "the loop guard to stop the chain", timeout=10)
     settle_engine()
     assert depths == [1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_a_match_hook_names_a_routed_calls_observers_and_the_engine_applies_their_filters(
+    worker: Any, fid: Any
+) -> None:
+    """Decision 55: the answer to a routed call of a function with a match
+    hook names the observers the hook matched, `[]` when none; the engine
+    evaluates their `on` and filters against the input it forwarded and the
+    answer."""
+    owner = worker("routed-match-owner")
+    watcher = worker("routed-match-watcher")
+    fn = fid("py-e2e::row-changed")
+    owner.on_observer_match(fn, observer=lambda obs: obs.args["table"], call=lambda call: call.input["table"])
+    owner.register_function(
+        fn,
+        lambda change: {"rows": change["rows"]},
+        args_format={"type": "object", "required": ["table"], "properties": {"table": {"type": "string"}}},
+    )
+    orders = collector(watcher, fid("py-e2e::on-orders"))
+    big = collector(watcher, fid("py-e2e::on-big-orders"))
+    users = collector(watcher, fid("py-e2e::on-users"))
+    a = watcher.observe({"function_id": fn, "args": {"table": "orders"}}, fid("py-e2e::on-orders"))
+    b = watcher.observe(
+        {"function_id": fn, "args": {"table": "orders"}, "filters": {"output.rows": {"$gte": 10}}},
+        fid("py-e2e::on-big-orders"),
+    )
+    c = watcher.observe({"function_id": fn, "args": {"table": "users"}}, fid("py-e2e::on-users"))
+    for handle in (a, b, c):
+        handle.ready(timeout=10)
+    wait_for(lambda: len(owner.observers(fn)) == 3, "the observers on their host")
+    frames = FrameCounter(owner)
+
+    watcher.call({"function_id": fn, "payload": {"table": "orders", "rows": 3}})
+    watcher.call({"function_id": fn, "payload": {"table": "orders", "rows": 30}})
+    watcher.call({"function_id": fn, "payload": {"table": "audit", "rows": 99}})
+    exactly(orders, 2, "both orders calls")
+    exactly(big, 1, "the big orders call")
+    exactly(users, 0, "no users call")
+    assert big[0].data["output"] == {"rows": 30} and big[0].data["observer_id"] == b.id
+    answered = [f for f in frames.frames if f.get("type") == "invocationresult" and f.get("function_id") == fn]
+    assert [sorted(f["matched"]) for f in answered] == [sorted([a.id, b.id]), sorted([a.id, b.id]), []]
+    assert not any("delivered" in f for f in answered)
+    assert "invocationsobserved" not in frames.types
+
+
+def test_a_routed_call_its_deliver_hook_delivered_activates_no_observer(worker: Any, fid: Any) -> None:
+    """Decision 55: the answer of a function whose deliver hook delivered the
+    call says `delivered: true`, and the engine activates no observer for
+    it: the target runs once, from the hook's call through the observer."""
+    owner = worker("routed-deliver-owner")
+    watcher = worker("routed-deliver-watcher")
+    fn = fid("py-e2e::request")
+
+    @owner.on_observer_deliver(fn)
+    async def route(call: Any, observers: Any) -> Any:
+        [obs] = observers
+        return await owner.call_async({"observer": obs, "payload": {"routed": call.input}})
+
+    owner.register_function(fn, lambda request: request)
+    got = collector(watcher, fid("py-e2e::handler"))
+    handle = watcher.observe({"function_id": fn}, fid("py-e2e::handler"))
+    handle.ready(timeout=10)
+    wait_for(lambda: owner.observers(fn), "the observer on its host")
+    frames = FrameCounter(owner)
+
+    assert watcher.call({"function_id": fn, "payload": {"path": "/x"}}) is None  # what the target returned
+    exactly(got, 1, "the call through the observer and nothing else")
+    data = got[0].data  # the payload the hook sent (with the engine's caller stamps), not an envelope
+    assert "observer_id" not in data and data["routed"]["path"] == "/x"
+    [answer] = [f for f in frames.frames if f.get("type") == "invocationresult" and f.get("function_id") == fn]
+    assert answer["delivered"] is True and "matched" not in answer

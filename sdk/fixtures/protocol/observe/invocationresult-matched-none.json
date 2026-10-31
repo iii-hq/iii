@@ -1,0 +1,10 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "2b4d6f8a-0c2e-4a6c-8e0a-2c4e6a8c0e2a",
+  "function_id": "orders::create",
+  "result": {
+    "order_id": "ord_1005",
+    "total": 310
+  },
+  "matched": []
+}
