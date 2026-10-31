@@ -185,6 +185,23 @@ it is removed. Match and deliver hooks are set per function. Async closures
 and your own types implement the hook traits. Set hooks by id before
 registering the function, so they see every observer.
 
+Filters are iii's, and run where the call's parts are. The engine evaluates
+the `on` and filters of every call it routes: it holds the input, the result
+or error, the caller and the metadata. The SDK evaluates those of the calls a
+worker makes to its own functions, which run in-process and never reach the
+engine. For a function without a match hook, it matches a call through an
+index of the observers' equality conditions (an `$eq` or `$in` of a scalar in
+the top-level `$and`): one lookup per indexed path, plus one evaluation per
+observer the index does not rule out. A set of 16 observers or fewer is
+scanned, every filter evaluated, and so is one in which most observers accept
+the call and have no such condition. The observers a match hook matched are
+each evaluated.
+
+The match and deliver hooks are the worker's code, and the SDK runs them for
+the calls of their function, routed or local: the deliver hook for every
+call, the match hook for every call while the function has an active
+observer on the worker or a deliver hook.
+
 An event source is a function whose handler returns the event it is called
 with, `private` so only its worker calls it:
 

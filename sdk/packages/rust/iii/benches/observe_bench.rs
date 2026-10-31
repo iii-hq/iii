@@ -14,6 +14,17 @@
 //!   handler takes it;
 //! - a local call with 10 observers, none matching: < 5 µs;
 //! - a local call with 1 matching observer: 1 report item, batched;
+//! - a local call of a function whose 1,000 observers each filter on their
+//!   own `input.tenant` (`{ "$eq": "tenant-<i>" }`): one of them matching
+//!   (`call_local/1000_eq_observers_1_matching`, 1 report item), and none
+//!   (`call_local/1000_eq_observers_none_matching`);
+//! - small sets the SDK scans: three observers, two filtering on their own
+//!   path (`input.op`, `input.table`) and one unfiltered, all matching
+//!   (`call_local/3_observers_2_paths_all_matching`, 1 report item); and an
+//!   observer of failed calls whose filter reads `caller` next to two of
+//!   successful calls on `input.n`, none matching a successful call
+//!   (`call_local/error_observer_reads_caller`): the call's caller is not
+//!   serialized for it;
 //! - a function matched by keys whose 10,000 observers are filed under other
 //!   keys: `is_observed_for(call)` is one hash lookup per call key, no
 //!   allocation;
@@ -58,6 +69,9 @@ use iii_sdk::{
 /// Observers filed under keys no benchmark call has, plus one under `hit`.
 const MATCH_KEY_OBSERVERS: usize = 10_000;
 
+/// Observers of `bench::thousand-eq`, each filtering on its own tenant.
+const EQ_OBSERVERS: usize = 1_000;
+
 /// Observers the fake engine sends with each function's `functionregistered`.
 fn observers_for(function_id: &str) -> Value {
     match function_id {
@@ -93,6 +107,33 @@ fn observers_for(function_id: &str) -> Value {
                 })
                 .collect(),
         ),
+        "bench::thousand-eq" => Value::Array(
+            (0..EQ_OBSERVERS)
+                .map(|i| {
+                    json!({
+                        "id": format!("tenant-obs-{i:04}"), "args": {}, "target": "bench::target",
+                        "filters": { "$and": [{ "input.tenant": { "$eq": format!("tenant-{i}") } }] },
+                        "capture": ["input"], "on": "success"
+                    })
+                })
+                .collect(),
+        ),
+        "bench::two-paths" => json!([
+            { "id": "by-op", "args": {}, "target": "bench::target", "capture": ["input"],
+              "filters": { "$and": [{ "input.op": { "$eq": "insert" } }] }, "on": "success" },
+            { "id": "by-table", "args": {}, "target": "bench::target", "capture": ["input"],
+              "filters": { "$and": [{ "input.table": { "$eq": "orders" } }] }, "on": "success" },
+            { "id": "every", "args": {}, "target": "bench::target", "capture": ["input"],
+              "filters": {}, "on": "success" }
+        ]),
+        "bench::error-caller" => json!([
+            { "id": "failed-here", "args": {}, "target": "bench::target", "capture": ["error"],
+              "filters": { "$and": [{ "caller.worker_name": { "$eq": "bench" } }] }, "on": "error" },
+            { "id": "n-minus-1", "args": {}, "target": "bench::target", "capture": ["input"],
+              "filters": { "$and": [{ "input.n": { "$eq": -1 } }] }, "on": "success" },
+            { "id": "n-minus-2", "args": {}, "target": "bench::target", "capture": ["input"],
+              "filters": { "$and": [{ "input.n": { "$eq": -2 } }] }, "on": "success" }
+        ]),
         "bench::source" => json!([{
             "id": "obs-source", "args": {}, "target": "bench::target", "filters": {},
             "capture": ["input", "output"], "on": "success"
@@ -225,6 +266,9 @@ fn host() -> Host {
         RegisterFunction::new(|input: Value| Ok::<_, Error>(json!({ "seen": input["n"] }))),
     );
     let match_keys = iii.register_function("bench::match-keys", echo().private());
+    let thousand_eq = iii.register_function("bench::thousand-eq", echo());
+    let two_paths = iii.register_function("bench::two-paths", echo());
+    let error_caller = iii.register_function("bench::error-caller", echo());
     let source = iii.register_function("bench::source", echo().private());
     let event = iii.register_function("bench::private-event", echo().private());
     iii.on_observer_deliver_for(
@@ -238,6 +282,9 @@ fn host() -> Host {
         &ten_none,
         &one_match,
         &match_keys,
+        &thousand_eq,
+        &two_paths,
+        &error_caller,
         &source,
         &event,
         &delivered,
@@ -248,6 +295,9 @@ fn host() -> Host {
         ten_none.observers().len() == 10
             && one_match.observers().len() == 1
             && match_keys.observers().len() == MATCH_KEY_OBSERVERS
+            && thousand_eq.observers().len() == EQ_OBSERVERS
+            && two_paths.observers().len() == 3
+            && error_caller.observers().len() == 3
             && source.observers().len() == 1
     });
     Host {
@@ -356,6 +406,10 @@ fn paced(host: &Host, name: &str, function_id: &'static str, input: impl Fn(u64)
 fn observe_benches(c: &mut Criterion) {
     let host = host();
     let numbered = |i: u64| json!({ "n": i });
+    // One of the 1,000 tenants a call, in turn; and a tenant none observes.
+    let tenant =
+        |i: u64| json!({ "tenant": format!("tenant-{}", i % EQ_OBSERVERS as u64), "n": i });
+    let no_tenant = |i: u64| json!({ "tenant": "tenant-none", "n": i });
 
     c.bench_function("is_observed/false", |b| {
         b.iter(|| black_box(&host.plain).is_observed())
@@ -421,6 +475,35 @@ fn observe_benches(c: &mut Criterion) {
         "bench::match-keys",
         |i| json!({ "expression": "hit", "n": i }),
     );
+    bench_call(
+        c,
+        "call_local/1000_eq_observers_1_matching",
+        &host.iii,
+        "bench::thousand-eq",
+        tenant,
+    );
+    bench_call(
+        c,
+        "call_local/1000_eq_observers_none_matching",
+        &host.iii,
+        "bench::thousand-eq",
+        no_tenant,
+    );
+    let insert = |i: u64| json!({ "op": "insert", "table": "orders", "n": i });
+    bench_call(
+        c,
+        "call_local/3_observers_2_paths_all_matching",
+        &host.iii,
+        "bench::two-paths",
+        insert,
+    );
+    bench_call(
+        c,
+        "call_local/error_observer_reads_caller",
+        &host.iii,
+        "bench::error-caller",
+        numbered,
+    );
     let event = |i: u64| json!({ "table": "invoices", "op": "update", "row": { "id": i, "status": "paid" } });
     bench_call(
         c,
@@ -480,6 +563,30 @@ fn observe_benches(c: &mut Criterion) {
         "call_local/match_keys_1_of_10000",
         "bench::match-keys",
         |i| json!({ "expression": "hit", "n": i }),
+    );
+    paced(
+        &host,
+        "call_local/1000_eq_observers_1_matching",
+        "bench::thousand-eq",
+        tenant,
+    );
+    paced(
+        &host,
+        "call_local/1000_eq_observers_none_matching",
+        "bench::thousand-eq",
+        no_tenant,
+    );
+    paced(
+        &host,
+        "call_local/3_observers_2_paths_all_matching",
+        "bench::two-paths",
+        insert,
+    );
+    paced(
+        &host,
+        "call_local/error_observer_reads_caller",
+        "bench::error-caller",
+        numbered,
     );
     paced(
         &host,
