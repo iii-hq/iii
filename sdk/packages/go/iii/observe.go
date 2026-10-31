@@ -56,7 +56,9 @@ var unsupportedReason = &ObserveReason{
 // replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS,
 // INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and
 // UNSUPPORTED against an engine without observe) show up as state error and fail
-// [ObserverHandle.Ready].
+// [ObserverHandle.Ready]. An observeresult in state error is the engine's refusal of
+// that observe, for which it stores nothing; the handle's observe goes out again on
+// the next connection.
 // The returned error is for a request that cannot be sent at all: a missing function
 // or target, a blank namespace, args or filters that are not JSON, and an id a handle
 // of this client holds. A handle holds its id until it is disposed (by
@@ -509,10 +511,13 @@ type sentObserve struct {
 // listed one that has its observeresult. A disposed handle stays listed until the
 // engine's disposed for it arrives, a newer handle of the id has its observeresult, or
 // the connection closes: the late disposed of an earlier observer reaches the earlier
-// handle, never the one that observes under its id again.
+// handle, never the one that observes under its id again. An observeresult in state
+// error refuses the observe: the engine stores nothing for it, so that answer is the
+// handle's last on the connection, and the handle leaves the list when it arrives.
 
 // onObserveResult applies an observeresult to the oldest listed handle of id still
-// unanswered; with none it is dropped.
+// unanswered; with none it is dropped. A refusal unlists the handle, and its Dispose
+// sends nothing; one in state disposed frees its id too.
 func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
 	st := toObserverState(state)
 	c.mu.Lock()
@@ -527,10 +532,18 @@ func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
 	list = slices.Delete(list, 0, i)
 	list[0].answered = true
 	c.observeSent[id] = list
-	if st == ObserverDisposed {
+	refused := st == ObserverError
+	switch {
+	case st == ObserverDisposed:
 		c.forgetLocked(h)
+	case refused:
+		c.unlistLocked(h)
 	}
 	c.mu.Unlock()
+	if refused {
+		// before the state, so a Dispose that sees the error sends nothing
+		h.markRefused()
+	}
 	h.setState(st, observeReason(reason))
 }
 
@@ -562,14 +575,19 @@ func (c *Client) onObserverStateChanged(id, state string, reason *ErrorBody) {
 // forgetLocked drops h, which the engine disposed, from the answer list and frees its
 // id. The caller holds mu.
 func (c *Client) forgetLocked(h *ObserverHandle) {
+	c.unlistLocked(h)
+	if c.observers[h.id] == h {
+		delete(c.observers, h.id)
+	}
+}
+
+// unlistLocked drops h from the answer list of its id. The caller holds mu.
+func (c *Client) unlistLocked(h *ObserverHandle) {
 	list := slices.DeleteFunc(c.observeSent[h.id], func(s sentObserve) bool { return s.handle == h })
 	if len(list) == 0 {
 		delete(c.observeSent, h.id)
 	} else {
 		c.observeSent[h.id] = list
-	}
-	if c.observers[h.id] == h {
-		delete(c.observers, h.id)
 	}
 }
 
