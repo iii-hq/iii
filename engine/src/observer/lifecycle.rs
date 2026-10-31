@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::{
-    FnKey, ObserverRegistry,
+    FnKey, Held, ObserverRegistry,
     dispatch::{Completed, QueueBudget},
 };
 use crate::{
@@ -884,6 +884,45 @@ impl ObserverRegistry {
         });
     }
 
+    /// Files `observer`, just given its id in `by_id`, under `connection` and
+    /// under its target. Called under its status lock (see
+    /// [`Self::publish`]): its disposal, which takes that lock first, always
+    /// finds both entries to take out.
+    pub(super) fn index(&self, observer: &Arc<Observer>, connection: Uuid) {
+        let held = Held(observer.clone());
+        self.by_connection
+            .entry(connection)
+            .or_default()
+            .insert(held.clone());
+        match self.by_target.get_mut(&observer.target) {
+            Some(mut targeting) => {
+                targeting.insert(held);
+            }
+            None => {
+                self.by_target
+                    .entry(observer.target.clone())
+                    .or_default()
+                    .insert(held);
+            }
+        }
+    }
+
+    /// Takes `observer`'s entries out of the connection and target indexes:
+    /// its own, not those of another observer under the same id.
+    fn unindex(&self, observer: &Arc<Observer>, connection: Uuid) {
+        let held = Held(observer.clone());
+        self.by_connection
+            .remove_if_mut(&connection, |_, observing| {
+                observing.remove(&held);
+                observing.is_empty()
+            });
+        self.by_target
+            .remove_if_mut(&observer.target, |_, targeting| {
+                targeting.remove(&held);
+                targeting.is_empty()
+            });
+    }
+
     /// Drops every index entry of a disposed observer.
     fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
@@ -901,16 +940,7 @@ impl ObserverRegistry {
                     + std::time::Duration::from_millis(self.config().observer_grace_ms),
             },
         );
-        if let Some(mut ids) = self.by_connection.get_mut(&connection) {
-            ids.remove(&observer.id);
-        }
-        self.by_connection
-            .remove_if(&connection, |_, ids| ids.is_empty());
-        if let Some(mut ids) = self.by_target.get_mut(&observer.target) {
-            ids.remove(&observer.id);
-        }
-        self.by_target
-            .remove_if(&observer.target, |_, ids| ids.is_empty());
+        self.unindex(observer, connection);
         self.detach_from_function(observer);
     }
 
