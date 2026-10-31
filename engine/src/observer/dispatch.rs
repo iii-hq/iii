@@ -1548,10 +1548,11 @@ impl ObserverRegistry {
     /// host its function and it must be active; then its policy applies and
     /// the call is routed to the observer's stored target (the request's
     /// `function_id` and `namespace` are not read) with the observer's
-    /// metadata, a fresh `activation_id` and depth + 1, under the calling
-    /// worker's session. The payload goes as given (a worker's own call carries
-    /// the engine's `_caller_worker_id` stamp, decision 49). The result, or the
-    /// refusal code, goes back to the host.
+    /// metadata, a fresh `activation_id` and depth + 1. It runs as the
+    /// observer's activations do: under the observing worker's session, and
+    /// its payload goes as given less a top-level `_caller_worker_id`
+    /// (decision 49). The host is its `caller`. The result, or the refusal
+    /// code, goes back to the host.
     ///
     /// A refusal by policy of a call the host waits on counts a drop as it
     /// does for an activation (`LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`,
@@ -1780,16 +1781,21 @@ impl ObserverRegistry {
             },
         );
         let invocation_id = call.invocation_id.unwrap_or_else(Uuid::new_v4);
+        // The target runs as for the observer's activations: under the
+        // observing worker's session (none for an engine-owned observer),
+        // with no `_caller_worker_id` in its payload. The host chose the
+        // payload and the observing worker chose the target, so the host's
+        // authority never reaches the target (decision 49).
         let invocation = invocations.handle_invocation_with_handler(
             Some(invocation_id),
             Some(worker),
             target_function.clone(),
             target_namespace,
-            call.data,
+            unstamped(call.data),
             handler,
             call.traceparent,
             call.baggage,
-            worker.session.clone(),
+            observer.observing().session.clone(),
             observer.metadata.clone(),
             ctx,
         );

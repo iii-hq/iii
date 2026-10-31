@@ -73,7 +73,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | E3 | A routed call to an unobserved function costs one load and no copy; 1M unobserved local calls send zero frames. | test, bench |
 | E4 | `output_is_input` on report items when the handler returned its input, only to `observe.v2` engines; an event source's event is serialized once. | test, bench |
 | E5 | No host-reported items for routed calls (`INVALID_REPORT`). | test |
-| E6 | `_caller_worker_id` stripped from every observed input and output; a call through an observer carries it as every call a worker makes does (decision 49). | test |
+| E6 | `_caller_worker_id` stripped from every observed input and output and from the payload of a call through an observer, which runs under the observing worker's session (decision 49). | test |
 | E7 | v2-only functions (`args_format`, `private`, `observable: false`, `onObserverMatch`/`onObserverDeliver`) are held on engines without `observe.v2` with one `UNSUPPORTED` log, re-decided per connection. | test |
 | E8 | 0.25 `observe` object decoded per decision 37 (`delivery: owner` → `UNSUPPORTED`). | test |
 | E9 | Builtins: trigger builtins removed; function rows carry `observer_count`, `args_format`, `private`, `observable`; `engine::workers::info` carries `functions`, `observers`, and a builtin worker's `functions` include the engine-hosted sources it hosts; `engine::on-observers-changed` exists. | test |

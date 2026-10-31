@@ -20,7 +20,7 @@ use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
     Client, Setup, TestEngine, connect, connect_query, evaluated, eventually, in_process,
-    registered, spawn, spawn_engine, spawn_engine_with,
+    registered, spawn, spawn_engine, spawn_engine_with, unrestricted_listener,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -1623,6 +1623,115 @@ async fn an_activation_cannot_dispose_another_workers_observer_under_rbac() {
         "active",
         "the victim's observer survived the attacker's activation"
     );
+}
+
+/// A call through an observer runs as the observer's activations do, under
+/// the session of the worker that created the observer: a host on a port
+/// without RBAC that forwards its input through a restricted worker's
+/// observer of `engine::observers::dispose` cannot dispose another worker's
+/// observer. The host's own call of the same builtin can.
+#[tokio::test]
+async fn a_call_through_an_observer_runs_under_the_observing_workers_session() {
+    let rbac = json!({
+        "expose_functions": ["match(\"api::*\")", "match(\"h::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let internal = unrestricted_listener(&t).await;
+    let _orders = host(&t, "orders", true, &["api::orders", "api::sink"]).await;
+    let mut victim = connect(&t, "victim", true).await;
+    victim
+        .observe_active(observer(
+            "victim-obs",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let mut fanout = Client::connect(internal, "fanout", true).await;
+    fanout.register_function("h::fanout").await;
+    registered(&t.engine, "default", "h::fanout").await;
+    let mut attacker = connect(&t, "attacker", true).await;
+    attacker
+        .observe_active(observer(
+            "attack",
+            json!({ "function_id": "h::fanout", "deliver": "input" }),
+            "engine::observers::dispose",
+        ))
+        .await;
+
+    let call = fanout
+        .call_with(
+            "h::fanout",
+            json!({ "id": "victim-obs" }),
+            json!({ "activation": { "observer_id": "attack" } }),
+        )
+        .await;
+    let answer = fanout.result(call).await;
+    assert_eq!(answer["error"]["code"], "FORBIDDEN", "{answer}");
+    assert_eq!(fires(&t, "attack"), 1, "the call went through the observer");
+    assert_eq!(
+        info(&t, "victim-obs").map(|i| i.state).as_deref(),
+        Some("active"),
+        "the victim's observer survived the call through the attacker's"
+    );
+
+    let call = fanout
+        .call("engine::observers::dispose", json!({ "id": "victim-obs" }))
+        .await;
+    assert_eq!(fanout.result(call).await["result"]["disposed"], true);
+}
+
+/// A call through an observer carries no `_caller_worker_id` (decision 49),
+/// so the host's identity authorizes nothing its target does: a host whose
+/// call through another worker's observer of `engine::observers::dispose`
+/// names the host's own observer leaves it alone, though the host may
+/// dispose it itself.
+#[tokio::test]
+async fn a_call_through_an_observer_does_not_act_with_the_hosts_identity() {
+    let rbac = json!({
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let mut orders = host(&t, "orders", true, &["api::orders", "api::sink"]).await;
+    orders
+        .observe_active(observer(
+            "host-obs",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let mut attacker = connect(&t, "attacker", true).await;
+    attacker
+        .observe_active(observer(
+            "attack",
+            json!({ "function_id": "api::orders", "deliver": "input" }),
+            "engine::observers::dispose",
+        ))
+        .await;
+    let call = attacker
+        .call("engine::observers::dispose", json!({ "id": "host-obs" }))
+        .await;
+    assert_eq!(attacker.result(call).await["error"]["code"], "FORBIDDEN");
+
+    // What a deliver hook that forwards the call's input sends.
+    let call = orders
+        .call_with(
+            "api::orders",
+            json!({ "id": "host-obs" }),
+            json!({ "activation": { "observer_id": "attack" } }),
+        )
+        .await;
+    let answer = orders.result(call).await;
+    assert_eq!(answer["error"]["code"], "FORBIDDEN", "{answer}");
+    assert_eq!(
+        info(&t, "host-obs").map(|i| i.state).as_deref(),
+        Some("active"),
+        "the host's observer survived the call through the attacker's"
+    );
+
+    let call = orders
+        .call("engine::observers::dispose", json!({ "id": "host-obs" }))
+        .await;
+    assert_eq!(orders.result(call).await["result"]["disposed"], true);
 }
 
 /// A worker that reconnects with a narrower session no longer observes what it
