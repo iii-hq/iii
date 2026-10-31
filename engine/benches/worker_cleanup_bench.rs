@@ -290,7 +290,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         invocations,
                         engine,
                         worker_registry,
-                        _rx,
+                        rx,
                     )| async move {
                         simulate_cleanup(
                             &worker,
@@ -301,6 +301,10 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &worker_registry,
                         )
                         .await;
+                        // The engine outlives a worker's cleanup, holding its
+                        // suspended observers for the grace period: returned,
+                        // it is dropped after the measurement.
+                        (engine, rx)
                     },
                     BatchSize::SmallInput,
                 );
