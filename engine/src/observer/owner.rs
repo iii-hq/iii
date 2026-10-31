@@ -182,7 +182,11 @@ impl FunctionEntry {
 
     /// The live observers, in creation order.
     pub fn observers(&self) -> Vec<Arc<Observer>> {
-        lock(&self.observers).by_seq.values().cloned().collect()
+        let observers: Vec<Arc<Observer>> =
+            lock(&self.observers).by_seq.values().cloned().collect();
+        #[cfg(test)]
+        super::work::add(observers.len());
+        observers
     }
 
     /// Live observers.
@@ -1798,6 +1802,210 @@ mod tests {
             observer.reason().unwrap().code,
             observe_codes::OWNER_TIMEOUT
         );
+    }
+
+    /// An engine-owned observer `id` of `test::src` with `target` as its
+    /// target.
+    fn engine_observer(id: &str, target: &str) -> crate::observer::EngineObserver {
+        crate::observer::EngineObserver {
+            id: id.to_string(),
+            function: (
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "test::src".to_string(),
+            ),
+            args: json!({}),
+            filters: None,
+            target: (
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                target.to_string(),
+            ),
+            deliver: crate::protocol::Deliver::Input,
+            metadata: None,
+        }
+    }
+
+    /// The ids of `test::src`'s active observers, in the order a call
+    /// evaluates them.
+    fn active_ids(set: &ActiveSet) -> Vec<String> {
+        set.observers.iter().map(|o| o.id.clone()).collect()
+    }
+
+    /// Adding an observer to a function and removing it cost `O(log n)` in
+    /// the function's `n` active observers: what a change copies grows with
+    /// the depth of the active set, not with its size. A change that rebuilt
+    /// the set would copy every observer, 16 times as many at 8,000 as at
+    /// 500.
+    #[tokio::test]
+    async fn adding_and_removing_an_observer_costs_log_n() {
+        use super::super::{events::test_support, work};
+        let per_change = |n: usize| {
+            let engine = Arc::new(Engine::new());
+            let _source = test_support::capture(&engine, "test::src");
+            let _target = test_support::capture(&engine, "test::dst");
+            work::take();
+            for i in 0..n {
+                engine
+                    .observers
+                    .observe_as_engine(engine_observer(&format!("churn-{i}"), "test::dst"))
+                    .expect("observe");
+            }
+            assert_eq!(
+                engine
+                    .observers
+                    .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                    .map(|set| set.observers.iter().len()),
+                Some(n)
+            );
+            for i in 0..n {
+                assert!(engine.observers.unobserve_as_engine(&format!("churn-{i}")));
+            }
+            assert!(
+                engine
+                    .observers
+                    .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                    .is_none()
+            );
+            work::take() as f64 / (2 * n) as f64
+        };
+        let small = per_change(500);
+        let large = per_change(8_000);
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots copied per change: {small:.1} with 500 observers, {large:.1} with 8,000"
+        );
+    }
+
+    /// A call keeps the active set it started with while observers come and
+    /// go; the next call gets the set as it is then, in creation order.
+    #[tokio::test]
+    async fn a_call_keeps_the_set_it_started_with() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        let watch = || {
+            registry
+                .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                .expect("observed")
+        };
+        for id in ["a", "b", "c"] {
+            registry
+                .observe_as_engine(engine_observer(id, "test::dst"))
+                .unwrap();
+        }
+        let started = watch();
+
+        assert!(registry.unobserve_as_engine("b"));
+        registry
+            .observe_as_engine(engine_observer("d", "test::dst"))
+            .unwrap();
+        // Enough more that the set outgrows one node.
+        for n in 0..200 {
+            registry
+                .observe_as_engine(engine_observer(&format!("x{n:03}"), "test::dst"))
+                .unwrap();
+        }
+        let later = watch();
+
+        assert_eq!(active_ids(&started), ["a", "b", "c"]);
+        let expected: Vec<String> = ["a", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .chain((0..200).map(|n| format!("x{n:03}")))
+            .collect();
+        assert_eq!(active_ids(&later), expected);
+        assert_eq!(later.observers.iter().len(), 203);
+    }
+
+    /// Observers that become active out of their creation order are still
+    /// evaluated in creation order: one created first, whose target
+    /// registers later, comes before one that was active from the start.
+    #[tokio::test]
+    async fn observers_are_evaluated_in_creation_order_whenever_they_became_active() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        registry
+            .observe_as_engine(engine_observer("first", "test::late"))
+            .unwrap();
+        registry
+            .observe_as_engine(engine_observer("second", "test::dst"))
+            .unwrap();
+        let ids = || {
+            active_ids(
+                &registry
+                    .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                    .expect("observed"),
+            )
+        };
+        assert_eq!(ids(), ["second"], "`first` waits for its target");
+
+        let _late = test_support::capture(&engine, "test::late");
+        assert_eq!(ids(), ["first", "second"]);
+        assert!(registry.unobserve_as_engine("second"));
+        assert_eq!(ids(), ["first"]);
+    }
+
+    /// What a call keeps follows the observers that need it as they leave:
+    /// once the last observer whose filter reads the input is gone, calls
+    /// stop copying it.
+    #[tokio::test]
+    async fn what_a_call_keeps_goes_with_the_observers_that_need_it() {
+        use super::super::events::test_support;
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        let engine = Arc::new(crate::engine::Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let observe = |id: &str, filters: Option<Value>| {
+            let mut request = test_support::request(id, "test::src", "test::dst", filters);
+            request.source.capture = Some(vec![]);
+            request.source.deliver = Some(Deliver::Envelope);
+            request
+        };
+        let needs = || {
+            engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .map(|set| (set.needs_for(false), set.needs_for(true)))
+        };
+        for (id, filters) in [
+            ("reads-input", Some(json!({ "input.n": { "$eq": 1 } }))),
+            ("reads-input-too", Some(json!({ "input.n": { "$eq": 2 } }))),
+            ("plain", None),
+        ] {
+            test_support::observe_request(&engine, &worker, observe(id, filters)).await;
+        }
+        let mut errors = test_support::request("errors", "test::src", "test::dst", None);
+        errors.source.capture = Some(vec![Capture::Error]);
+        errors.source.deliver = Some(Deliver::Envelope);
+        test_support::observe_request(&engine, &worker, errors).await;
+        let reads = Needs {
+            input: true,
+            error: true,
+            ..Needs::default()
+        };
+        let delivered = Needs {
+            error: true,
+            ..Needs::default()
+        };
+        assert_eq!(needs(), Some((reads, delivered)));
+
+        engine.observers.unobserve(worker.id, "reads-input");
+        assert_eq!(
+            needs(),
+            Some((reads, delivered)),
+            "one still reads the input"
+        );
+        engine.observers.unobserve(worker.id, "reads-input-too");
+        assert_eq!(needs(), Some((delivered, delivered)));
+        engine.observers.unobserve(worker.id, "errors");
+        assert_eq!(needs(), Some((Needs::default(), Needs::default())));
+        engine.observers.unobserve(worker.id, "plain");
+        assert_eq!(needs(), None);
     }
 
     /// An entry is dropped only while nobody holds its `sync`, and one that

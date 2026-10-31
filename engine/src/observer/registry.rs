@@ -1088,6 +1088,55 @@ mod tests {
         assert_eq!(tombstone.reason.code, observe_codes::OBSERVER_DISCONNECTED);
     }
 
+    /// A worker's disconnect suspends each of its observers in `O(log n)` of
+    /// their function's active observers, and the end of its grace period
+    /// disposes each without copying any set: what each suspension copies
+    /// grows with the depth of the function's active set, not with its size.
+    /// Rebuilding the set for each would copy every observer, 16 times as
+    /// many at 4,000 as at 250.
+    #[tokio::test]
+    async fn a_workers_observers_are_suspended_and_disposed_in_log_n_each() {
+        use super::super::work;
+        async fn per_observer(n: usize) -> (f64, f64) {
+            let engine = engine_with_functions();
+            engine.observers.set_config(ObserversConfig {
+                observer_grace_ms: 600_000,
+                max_per_connection: n,
+                max_per_function: n,
+                ..ObserversConfig::default()
+            });
+            let (worker, mut socket) = test_support::worker(&engine);
+            let drain = tokio::spawn(async move { while socket.recv().await.is_some() {} });
+            for i in 0..n {
+                let request =
+                    test_support::request(&format!("obs-{i}"), "test::src", "test::dst", None);
+                engine.observers.observe(&engine, &worker, request).await;
+            }
+            assert_eq!(
+                engine.observers.count_in_state(&ObserverState::Active),
+                n as i64
+            );
+            let registry = engine.observers.clone();
+            work::take();
+            registry.connection_closed(worker.id, worker.reattach_token);
+            let suspended = work::take();
+            assert_eq!(registry.count_in_state(&ObserverState::Suspended), n as i64);
+            assert!(registry.watch("default", "test::src").is_none());
+            registry.grace_elapsed(worker.id);
+            let disposed = work::take();
+            assert!(registry.is_empty());
+            drain.abort();
+            (suspended as f64 / n as f64, disposed as f64 / n as f64)
+        }
+        let (small, small_disposed) = per_observer(250).await;
+        let (large, large_disposed) = per_observer(4_000).await;
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots copied per suspension: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+        assert_eq!((small_disposed, large_disposed), (0.0, 0.0));
+    }
+
     /// With `disposed_retention_ms: 0` nothing is remembered past the grace
     /// period: a late replay creates the observer again, as after an engine
     /// restart.

@@ -1838,6 +1838,61 @@ async fn a_worker_back_on_a_new_connection_replaces_its_suspended_observer() {
         && f["state"] != "active"));
 }
 
+/// A new owner's `functionregistered` lists the function's observers in
+/// the order they were created: an observer that replaced a suspended one
+/// (decision 51) comes after the ones created before it, and an observer
+/// whose worker is away is not listed (decision 47).
+#[tokio::test]
+async fn a_replacing_observer_is_listed_in_its_creation_order() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let _sink = host(&t, "sink", &["sink::orders"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut other = connect(&t, "other", true).await;
+    let frame = |id: &str| {
+        observer(
+            id,
+            json!({ "function_id": "orders::create" }),
+            "sink::orders",
+        )
+    };
+    for id in ["obs-1", "obs-2"] {
+        acked_observer(&mut orders, &mut watcher, frame(id), "orders::create").await;
+    }
+    acked_observer(&mut orders, &mut other, frame("obs-3"), "orders::create").await;
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-1").await;
+    removed(&mut orders, "obs-2").await;
+
+    // The worker, back on a new connection, observes `obs-1` again only.
+    let mut restarted = connect(&t, "watcher", true).await;
+    acked_observer(
+        &mut orders,
+        &mut restarted,
+        frame("obs-1"),
+        "orders::create",
+    )
+    .await;
+
+    orders.disconnect().await;
+    assert!(
+        eventually(|| t
+            .engine
+            .functions
+            .get("default", "orders::create")
+            .is_none())
+        .await
+    );
+    let (_orders, announced) = owner(&t, "orders-2", &["orders::create"]).await;
+    let listed: Vec<&str> = announced[0]["observers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|observer| observer["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, ["obs-3", "obs-1"], "{}", announced[0]);
+}
+
 /// Only the worker that left takes its suspended observer's id (decision
 /// 51). A connection under another worker name, or under the same name in
 /// another namespace, gets `OBSERVER_ID_CONFLICT` while the grace period

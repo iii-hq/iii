@@ -95,6 +95,8 @@ fn child_for<V>(children: &[Child<V>], key: u64) -> usize {
 
 /// `items` as one node, or two halves when it holds more than [`MAX`].
 fn sized<T, V>(mut items: Vec<T>, node: fn(Vec<T>) -> Node<V>) -> Grown<V> {
+    #[cfg(test)]
+    super::work::add(items.len());
     if items.len() <= MAX {
         return Grown::One(node(items));
     }
@@ -227,6 +229,8 @@ impl<'a, V: Clone> IntoIterator for &'a PersistentSet<V> {
 /// `items` cut into runs of [`MIN`] to [`MAX`] (one shorter run when there
 /// are fewer than [`MIN`] in all), as even as they come.
 fn chunks<T>(items: Vec<T>) -> Vec<Vec<T>> {
+    #[cfg(test)]
+    super::work::add(items.len());
     let count = items.len().div_ceil(FILL).max(1);
     let (base, extra) = (items.len() / count, items.len() % count);
     let mut items = items.into_iter();
@@ -277,6 +281,8 @@ fn remove<V: Clone>(node: &Node<V>, key: u64) -> Option<Node<V>> {
             let mut next = Vec::with_capacity(values.len() - 1);
             next.extend_from_slice(&values[..at]);
             next.extend_from_slice(&values[at + 1..]);
+            #[cfg(test)]
+            super::work::add(next.len());
             Some(Node::Leaf(next))
         }
         Node::Branch(children) => {
@@ -307,6 +313,8 @@ fn remove<V: Clone>(node: &Node<V>, key: u64) -> Option<Node<V>> {
                 next.push(Child::of(child));
                 next.extend_from_slice(&children[at + 1..]);
             }
+            #[cfg(test)]
+            super::work::add(next.len());
             Some(Node::Branch(next))
         }
     }

@@ -329,6 +329,28 @@ pub(crate) fn metrics() -> Option<&'static EngineMetrics> {
         .map(|_| crate::workers::observability::metrics::get_engine_metrics())
 }
 
+/// What the complexity tests count: observer slots copied into a new node of
+/// an active set, or copied out of a function's observers in bulk, on this
+/// thread. A change that rebuilt a function's set from its observers would
+/// count them all.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SLOTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn add(slots: usize) {
+        SLOTS.with(|counted| counted.set(counted.get() + slots));
+    }
+
+    /// What was counted since the last call.
+    pub(crate) fn take() -> usize {
+        SLOTS.with(|counted| counted.replace(0))
+    }
+}
+
 /// Reads back the observer metrics a test emits: [`test_metrics::record`]
 /// sends this thread's to a meter of its own, which the test reads.
 #[cfg(test)]
