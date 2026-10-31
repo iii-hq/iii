@@ -35,6 +35,7 @@ mod registry;
 
 use std::{
     collections::{HashMap, HashSet},
+    hash::{BuildHasherDefault, Hash, Hasher},
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicU64, AtomicUsize},
@@ -74,6 +75,53 @@ pub(crate) struct Deps {
     pub function_owners: Arc<DashMap<FnKey, (Uuid, crate::engine::InvocationKind)>>,
 }
 
+/// One observer in an index, by identity: two observers under the same id
+/// (one replacing the other, decision 51) are two entries, and taking one out
+/// leaves the other. The index holds the observer, so its address names it
+/// for as long as the entry is there.
+#[derive(Clone)]
+pub(crate) struct Held(pub(crate) Arc<Observer>);
+
+impl PartialEq for Held {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Held {}
+
+impl Hash for Held {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(Arc::as_ptr(&self.0) as usize);
+    }
+}
+
+/// Hashes an observer's address ([`Held`]): addresses are the engine's own,
+/// so a multiply and a shift spread them well enough.
+#[derive(Default)]
+pub(crate) struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(*byte)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+
+    fn write_usize(&mut self, address: usize) {
+        // Allocations are 16-byte aligned: the low bits say nothing.
+        self.0 = ((address as u64) >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 ^= self.0 >> 29;
+    }
+}
+
+/// Observers indexed by identity (see [`Held`]).
+pub(crate) type HeldSet = HashSet<Held, BuildHasherDefault<AddressHasher>>;
+
 /// An observing connection that went away, while its observers wait for a
 /// `Reattach`.
 struct Departed {
@@ -91,16 +139,25 @@ pub struct ObserverRegistry {
     this: OnceLock<Weak<ObserverRegistry>>,
     runtime: OnceLock<tokio::runtime::Handle>,
     by_id: DashMap<String, Arc<Observer>>,
-    by_connection: DashMap<Uuid, HashSet<String>>,
+    /// Each live observer under its observing connection, and under its
+    /// target, by identity. An observer is filed in both in the same step
+    /// that gives it its id in `by_id`, under its status lock, so whoever
+    /// finds it by id (to dispose of it) finds it here too.
+    by_connection: DashMap<Uuid, HeldSet>,
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
-    by_target: DashMap<FnKey, HashSet<String>>,
+    by_target: DashMap<FnKey, HeldSet>,
     /// The routed hook's view (see [`ObserverRegistry::route`]): functions
-    /// with active observers and private functions a connection hosts. Read
-    /// with one atomic load per invocation, replaced (copy-on-write) on
-    /// change.
+    /// with active observers and private functions a connection hosts, each
+    /// with its active set. An invocation reads it with one atomic load, and
+    /// the set of a function it holds with one more. A function's set is
+    /// replaced in place; the view is copied (copy-on-write) only when a
+    /// function joins or leaves it, or who may call a function changes.
     routed: ArcSwap<owner::RoutedView>,
     /// Serializes rebuilds of `routed`.
     rebuild: Mutex<()>,
+    /// `engine::on-observers-changed` has active observers: what an observer's
+    /// transition reads before it looks for them (set with `routed`).
+    observers_changed_watched: std::sync::atomic::AtomicBool,
     notifiers: DashMap<Uuid, lifecycle::Notifier>,
     departed: DashMap<Uuid, Departed>,
     state_counts: lifecycle::StateCounts,
@@ -124,9 +181,9 @@ pub struct ObserverRegistry {
     evaluator_bytes: std::sync::atomic::AtomicUsize,
     /// Recently disposed observers, by id: a replay from the same worker
     /// learns the disposal instead of re-creating the observer.
-    tombstones: DashMap<String, lifecycle::Tombstone>,
+    tombstones: DashMap<Arc<str>, lifecycle::Tombstone>,
     /// Tombstones by expiry, oldest first.
-    tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, String)>>,
+    tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
     /// Observing connections whose grace period ended, by connection: a
     /// late `Reattach` learns their observers are disposed.
     expired: DashMap<Uuid, lifecycle::Expired>,
@@ -174,6 +231,7 @@ impl ObserverRegistry {
             by_target: DashMap::new(),
             routed: ArcSwap::from_pointee(HashMap::new()),
             rebuild: Mutex::new(()),
+            observers_changed_watched: std::sync::atomic::AtomicBool::new(false),
             notifiers: DashMap::new(),
             departed: DashMap::new(),
             state_counts: lifecycle::StateCounts::default(),
@@ -286,6 +344,7 @@ impl ObserverRegistry {
         for observer in self.by_id.iter() {
             dispatch::export_drops(observer.value());
         }
+        self.state_counts.record();
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Observer>> {
@@ -313,11 +372,26 @@ impl ObserverRegistry {
         let mut ids: Vec<String> = self
             .by_connection
             .get(&connection)
-            .map(|ids| ids.iter().cloned().collect())
+            .map(|held| held.iter().map(|held| held.0.id.clone()).collect())
             .unwrap_or_default();
         ids.sort();
         ids
     }
+
+    /// The live observers `connection` observes for.
+    fn observing_for(&self, connection: Uuid) -> Vec<Arc<Observer>> {
+        self.by_connection
+            .get(&connection)
+            .map(|held| held.iter().map(|held| held.0.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// A random (version 4) UUID for the ids the observer paths make (an event's
+/// invocation, an activation and its invocation), from the thread's CSPRNG
+/// (`rand::random`: ChaCha12, reseeded from the OS).
+pub(crate) fn new_uuid() -> Uuid {
+    uuid::Builder::from_random_bytes(rand::random()).into_uuid()
 }
 
 /// The engine metrics, when the meter is initialized (it is on every serve
@@ -350,6 +424,44 @@ pub(crate) mod work {
     /// What was counted since the last call.
     pub(crate) fn take() -> usize {
         SLOTS.with(|counted| counted.replace(0))
+    }
+}
+
+/// Points where a test's threads pause at random ([`interleave::point`]), so
+/// another thread's work lands in between: only on threads that asked for it
+/// ([`interleave::enable`]).
+#[cfg(test)]
+pub(crate) mod interleave {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The thread's xorshift state; `0` while it pauses nowhere.
+        static STATE: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Pauses this thread at random at every point from now on.
+    pub(crate) fn enable(seed: u64) {
+        STATE.with(|state| state.set(seed | 1));
+    }
+
+    /// One point: a yield one time in four, a sleep of up to 63 µs another,
+    /// nothing otherwise.
+    pub(crate) fn point() {
+        STATE.with(|state| {
+            let mut x = state.get();
+            if x == 0 {
+                return;
+            }
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            state.set(x);
+            match x % 4 {
+                0 => std::thread::yield_now(),
+                1 => std::thread::sleep(std::time::Duration::from_micros(x >> 58)),
+                _ => {}
+            }
+        });
     }
 }
 

@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicI64, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::{
-    FnKey, ObserverRegistry,
+    FnKey, Held, ObserverRegistry,
     dispatch::{Completed, QueueBudget},
 };
 use crate::{
@@ -46,6 +46,16 @@ pub(crate) struct CaptureSet {
 }
 
 impl CaptureSet {
+    /// What an observer that names no `capture` captures:
+    /// [`crate::protocol::default_capture`].
+    pub const DEFAULT: Self = Self {
+        input: true,
+        output: true,
+        error: false,
+        caller: true,
+        metadata: false,
+    };
+
     /// Known values only: `observe` refuses unknown ones before this runs.
     pub fn from_list(list: &[Capture]) -> Self {
         let mut set = Self::default();
@@ -138,39 +148,29 @@ pub(crate) struct Flags {
     /// Set the first time the observer is active: a target that goes away
     /// after that suspends it, one that was never there keeps it pending.
     pub activated_once: bool,
-    pub failed: Option<ErrorBody>,
-    pub disposed: Option<ErrorBody>,
+    pub failed: Option<Arc<ErrorBody>>,
+    pub disposed: Option<Arc<ErrorBody>>,
+    /// Its disposal leaves a tombstone (see [`Tombstone`]): not when its
+    /// observing worker asked for it, since that worker replays no handle it
+    /// disposed.
+    pub tombstone: bool,
 }
 
 impl Flags {
-    fn state(&self, observer: &Observer) -> (ObserverState, Option<ErrorBody>) {
-        if let Some(reason) = &self.disposed {
-            return (ObserverState::Disposed, Some(reason.clone()));
+    /// The state these facts give, and why. Nothing is allocated: the
+    /// reason is built from [`Why`] when it is read.
+    fn state(&self) -> (ObserverState, Why) {
+        if self.disposed.is_some() {
+            return (ObserverState::Disposed, Why::Disposed);
         }
-        if let Some(error) = &self.failed {
-            return (ObserverState::Error, Some(error.clone()));
+        if self.failed.is_some() {
+            return (ObserverState::Error, Why::Failed);
         }
         if !self.observing_connected {
-            return (
-                ObserverState::Suspended,
-                Some(ErrorBody::new(
-                    observe_codes::OBSERVER_DISCONNECTED,
-                    "the observing worker disconnected; the observer is kept until it reattaches \
-                     or the grace period ends",
-                )),
-            );
+            return (ObserverState::Suspended, Why::Disconnected);
         }
         if !self.function_available {
-            return (
-                ObserverState::Pending,
-                Some(ErrorBody::new(
-                    observe_codes::OWNER_UNAVAILABLE,
-                    format!(
-                        "no worker hosts `{}` in namespace `{}`",
-                        observer.function.1, observer.function.0
-                    ),
-                )),
-            );
+            return (ObserverState::Pending, Why::OwnerUnavailable);
         }
         if !self.target_available {
             let state = if self.activated_once {
@@ -178,29 +178,85 @@ impl Flags {
             } else {
                 ObserverState::Pending
             };
-            return (
-                state,
-                Some(ErrorBody::new(
-                    observe_codes::TARGET_UNAVAILABLE,
-                    format!(
-                        "the target `{}` is not registered in namespace `{}`",
-                        observer.target.1, observer.target.0
-                    ),
-                )),
-            );
+            return (state, Why::TargetUnavailable);
         }
         if !self.owner_acked {
             // Waiting for the owner's `observerack`.
-            return (ObserverState::Pending, None);
+            return (ObserverState::Pending, Why::Nothing);
         }
-        (ObserverState::Active, None)
+        (ObserverState::Active, Why::Nothing)
     }
+}
+
+/// Why an observer is in its state: what its state reason is built from
+/// ([`Observer::reason`]). Each names one reason code, so two observers'
+/// reasons have the same code exactly when their `Why` is the same (a
+/// disposal or a failure is recorded once and never changes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    /// No reason: `active`, or `pending` its owner's ack.
+    Nothing,
+    /// `flags.disposed`.
+    Disposed,
+    /// `flags.failed`.
+    Failed,
+    /// `OBSERVER_DISCONNECTED`.
+    Disconnected,
+    /// `OWNER_UNAVAILABLE`.
+    OwnerUnavailable,
+    /// `TARGET_UNAVAILABLE`.
+    TargetUnavailable,
 }
 
 struct Status {
     flags: Flags,
     state: ObserverState,
-    reason: Option<ErrorBody>,
+    why: Why,
+    /// Who observes, read with the state (a transition tells this
+    /// connection) and changed under the same lock (a `Reattach`).
+    observing: Observing,
+}
+
+impl Status {
+    /// The state reason of `observer`, whose status this is.
+    fn reason(&self, observer: &Observer) -> Option<ErrorBody> {
+        match self.why {
+            Why::Nothing => None,
+            Why::Disposed => self.flags.disposed.as_deref().cloned(),
+            Why::Failed => self.flags.failed.as_deref().cloned(),
+            Why::Disconnected => Some(ErrorBody::new(
+                observe_codes::OBSERVER_DISCONNECTED,
+                "the observing worker disconnected; the observer is kept until it reattaches or \
+                 the grace period ends",
+            )),
+            Why::OwnerUnavailable => Some(ErrorBody::new(
+                observe_codes::OWNER_UNAVAILABLE,
+                format!(
+                    "no worker hosts `{}` in namespace `{}`",
+                    observer.function.1, observer.function.0
+                ),
+            )),
+            Why::TargetUnavailable => Some(ErrorBody::new(
+                observe_codes::TARGET_UNAVAILABLE,
+                format!(
+                    "the target `{}` is not registered in namespace `{}`",
+                    observer.target.1, observer.target.0
+                ),
+            )),
+        }
+    }
+
+    /// Whether the state reason's code is `code`, read without building it.
+    fn reason_is(&self, code: &str) -> bool {
+        match self.why {
+            Why::Nothing => false,
+            Why::Disposed => self.flags.disposed.as_ref().is_some_and(|r| r.code == code),
+            Why::Failed => self.flags.failed.as_ref().is_some_and(|r| r.code == code),
+            Why::Disconnected => code == observe_codes::OBSERVER_DISCONNECTED,
+            Why::OwnerUnavailable => code == observe_codes::OWNER_UNAVAILABLE,
+            Why::TargetUnavailable => code == observe_codes::TARGET_UNAVAILABLE,
+        }
+    }
 }
 
 /// Who observes: the connection that created the observer (re-parented on
@@ -213,8 +269,8 @@ struct Status {
 #[derive(Clone)]
 pub(crate) struct Observing {
     pub connection: Uuid,
-    pub worker_name: Option<String>,
-    pub namespace: String,
+    pub worker_name: Option<Arc<str>>,
+    pub namespace: Arc<str>,
     pub session: Option<Arc<crate::workers::worker::rbac_session::Session>>,
 }
 
@@ -226,7 +282,7 @@ pub(crate) const MAX_TOMBSTONES: usize = 10_000;
 /// again with fresh counters.
 pub(crate) struct Tombstone {
     pub connection: Uuid,
-    pub reason: ErrorBody,
+    pub reason: Arc<ErrorBody>,
     pub until: Instant,
 }
 
@@ -240,7 +296,7 @@ pub(crate) const MAX_EXPIRED_OBSERVERS: usize = 10_000;
 pub(crate) struct Expired {
     pub token: Uuid,
     /// Each observer the connection owned, with why it was disposed.
-    pub disposed: Vec<(String, ErrorBody)>,
+    pub disposed: Vec<(Arc<str>, Arc<ErrorBody>)>,
     pub until: Instant,
 }
 
@@ -449,9 +505,14 @@ pub struct Observer {
     pub id: String,
     /// The observed function, `(namespace, function_id)`.
     pub function: FnKey,
+    /// `function.1`, shared: the `function_id` label of its metrics.
+    function_label: Arc<str>,
     /// The function each activation invokes.
     pub target: FnKey,
-    pub(crate) spec: ObserveSpec,
+    /// The spec its observing worker asked for, kept only when it differs
+    /// from what the observer's own fields give (a registration hook or a
+    /// function prefix rewrote it): see [`Observer::spec_matches`].
+    spec: Option<Box<ObserveSpec>>,
     /// `{}` when the observer has none.
     pub args: Value,
     pub filter: Filter,
@@ -464,13 +525,15 @@ pub struct Observer {
     pub created_at_ms: u64,
     /// Filter paths that could not be verified at creation.
     pub(crate) warnings: Vec<String>,
-    observing: Mutex<Observing>,
     status: Mutex<Status>,
     pub(crate) fires: AtomicU64,
     pub(crate) drops: DropCounters,
     pub(crate) failures: FailureCounters,
     pub(crate) flow: Mutex<Flow>,
     timers: Mutex<Timers>,
+    /// A timer was ever set in `timers`: until then, cancelling them takes
+    /// no lock.
+    timed: AtomicBool,
     pub(crate) last_loop_warn_ms: AtomicU64,
     /// When a `TOO_LARGE` drop was last logged (see
     /// [`super::dispatch::drop_too_large`]).
@@ -479,6 +542,14 @@ pub struct Observer {
     /// function's observers ([`ObserverRegistry::attach_to_function`]): `0`
     /// until then.
     seq: AtomicU64,
+    /// It is one of its function's live observers: set as it joins them and
+    /// cleared as it leaves, under the function's observers lock.
+    member: AtomicBool,
+    /// The function entry it joined (see [`Observer::joined_entry`]).
+    joined: std::sync::OnceLock<std::sync::Weak<super::owner::FunctionEntry>>,
+    /// Its function's active set in the routed view holds it: set and
+    /// cleared with the set, under the registry's `rebuild` lock.
+    in_active_set: AtomicBool,
     /// The engine created it for one of its own modules
     /// ([`super::ENGINE_CONNECTION`] observes it, for its whole life).
     engine_owned: bool,
@@ -496,7 +567,9 @@ pub(crate) struct NewObserver {
     pub id: String,
     pub function: FnKey,
     pub target: FnKey,
-    pub spec: ObserveSpec,
+    /// The spec its observing worker asked for; `None` when the observer's
+    /// own fields are its spec.
+    pub spec: Option<ObserveSpec>,
     pub args: Value,
     pub filter: Filter,
     pub capture: CaptureSet,
@@ -512,11 +585,13 @@ pub(crate) struct NewObserver {
 impl Observer {
     pub(crate) fn new(new: NewObserver) -> Self {
         let engine_owned = new.observing.connection == super::ENGINE_CONNECTION;
-        let observer = Self {
+        let spec = new.spec;
+        let mut observer = Self {
             id: new.id,
+            function_label: Arc::from(new.function.1.as_str()),
             function: new.function,
             target: new.target,
-            spec: new.spec,
+            spec: None,
             args: new.args,
             filter: new.filter,
             capture: new.capture,
@@ -526,32 +601,65 @@ impl Observer {
             policy: new.policy,
             created_at_ms: now_ms(),
             warnings: new.warnings,
-            observing: Mutex::new(new.observing),
             status: Mutex::new(Status {
                 flags: new.flags,
                 state: ObserverState::Pending,
-                reason: None,
+                why: Why::Nothing,
+                observing: new.observing,
             }),
             fires: AtomicU64::new(0),
             drops: DropCounters::default(),
             failures: FailureCounters::default(),
             flow: Mutex::new(Flow::default()),
             timers: Mutex::new(Timers::default()),
+            timed: AtomicBool::new(false),
             last_loop_warn_ms: AtomicU64::new(0),
             last_too_large_warn_ms: AtomicU64::new(0),
             seq: AtomicU64::new(0),
+            member: AtomicBool::new(false),
+            joined: std::sync::OnceLock::new(),
+            in_active_set: AtomicBool::new(false),
             engine_owned,
         };
+        if let Some(spec) = spec
+            && !observer.has_spec(&spec)
         {
-            let mut status = lock(&observer.status);
-            let (state, reason) = status.flags.state(&observer);
+            observer.spec = Some(Box::new(spec));
+        }
+        {
+            let status = observer.status.get_mut().unwrap_or_else(|e| e.into_inner());
+            let (state, why) = status.flags.state();
             if state == ObserverState::Active {
                 status.flags.activated_once = true;
             }
             status.state = state;
-            status.reason = reason;
+            status.why = why;
         }
         observer
+    }
+
+    /// Whether `spec` is the one this observer was created with: a replay
+    /// with the same id must carry it (`OBSERVER_ID_CONFLICT` otherwise).
+    pub(crate) fn spec_matches(&self, spec: &ObserveSpec) -> bool {
+        match &self.spec {
+            Some(own) => **own == *spec,
+            None => self.has_spec(spec),
+        }
+    }
+
+    /// Whether the observer's own fields give `spec`.
+    fn has_spec(&self, spec: &ObserveSpec) -> bool {
+        spec.function == self.function
+            && spec.target == self.target
+            && spec.args == self.args
+            && spec.filters == *self.filter.normalized()
+            && spec.capture == self.capture.to_list()
+            && spec.on == self.on
+            && spec.deliver == self.deliver
+            && spec.metadata == self.metadata
+            && spec.max_fires == self.policy.max_fires
+            && spec.expires_in_ms == self.policy.expires_in_ms
+            && spec.max_in_flight == self.policy.max_in_flight
     }
 
     pub fn state(&self) -> ObserverState {
@@ -559,7 +667,13 @@ impl Observer {
     }
 
     pub fn reason(&self) -> Option<ErrorBody> {
-        lock(&self.status).reason.clone()
+        lock(&self.status).reason(self)
+    }
+
+    /// Whether its state reason's code is `code`, read without building the
+    /// reason.
+    pub(crate) fn reason_is(&self, code: &str) -> bool {
+        lock(&self.status).reason_is(code)
     }
 
     pub fn is_active(&self) -> bool {
@@ -572,30 +686,35 @@ impl Observer {
         lock(&self.status).flags.disposed.is_some()
     }
 
-    /// Runs `f` with the state and reason, holding the status lock: no
-    /// transition happens meanwhile.
+    /// Runs `f` with the state and what builds its reason, holding the
+    /// status lock: no transition happens meanwhile.
     pub(crate) fn with_state<R>(
         &self,
-        f: impl FnOnce(&ObserverState, Option<&ErrorBody>) -> R,
+        f: impl FnOnce(&ObserverState, &dyn Fn() -> Option<ErrorBody>) -> R,
     ) -> R {
         let status = lock(&self.status);
-        f(&status.state, status.reason.as_ref())
+        f(&status.state, &|| status.reason(self))
     }
 
     /// State and reason read together.
     pub fn snapshot_state(&self) -> (ObserverState, Option<ErrorBody>) {
         let status = lock(&self.status);
-        (status.state.clone(), status.reason.clone())
+        (status.state.clone(), status.reason(self))
     }
 
     pub(crate) fn observing(&self) -> Observing {
-        lock(&self.observing).clone()
+        lock(&self.status).observing.clone()
     }
 
     /// The observing connection, read without copying the rest of
     /// [`Self::observing`].
     pub(crate) fn observing_connection(&self) -> Uuid {
-        lock(&self.observing).connection
+        lock(&self.status).observing.connection
+    }
+
+    /// The `function_id` label of its metrics: its function's id, shared.
+    pub(crate) fn function_label(&self) -> Arc<str> {
+        self.function_label.clone()
     }
 
     /// Whether the engine created this observer for one of its own modules.
@@ -616,31 +735,69 @@ impl Observer {
         self.seq.store(seq, Ordering::Release);
     }
 
+    /// Whether it is one of its function's live observers.
+    pub(crate) fn is_member(&self) -> bool {
+        self.member.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_member(&self, member: bool) {
+        self.member.store(member, Ordering::Release);
+    }
+
+    /// The function entry it joined, while that entry is kept: the live one
+    /// for its function as long as the observer is one of its members.
+    pub(crate) fn joined_entry(&self) -> Option<Arc<super::owner::FunctionEntry>> {
+        self.joined.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    pub(crate) fn set_joined_entry(&self, entry: &Arc<super::owner::FunctionEntry>) {
+        let _ = self.joined.set(Arc::downgrade(entry));
+    }
+
+    /// Whether its function's active set holds it (read under `rebuild`).
+    pub(crate) fn in_active_set(&self) -> bool {
+        self.in_active_set.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_in_active_set(&self, held: bool) {
+        self.in_active_set.store(held, Ordering::Release);
+    }
+
     pub fn fires(&self) -> u64 {
         self.fires.load(Ordering::Relaxed)
     }
 
     pub(crate) fn set_observing(&self, observing: Observing) {
-        *lock(&self.observing) = observing;
+        lock(&self.status).observing = observing;
     }
 
     pub(crate) fn set_expiry_timer(&self, handle: tokio::task::AbortHandle) {
-        lock(&self.timers).expiry = Some(handle);
+        let mut timers = lock(&self.timers);
+        timers.expiry = Some(handle);
+        self.timed.store(true, Ordering::Release);
     }
 
     pub(crate) fn set_ack_timer(&self, handle: tokio::task::AbortHandle) {
-        if let Some(previous) = lock(&self.timers).ack.replace(handle) {
+        let mut timers = lock(&self.timers);
+        self.timed.store(true, Ordering::Release);
+        if let Some(previous) = timers.ack.replace(handle) {
             previous.abort();
         }
     }
 
     pub(crate) fn cancel_ack_timer(&self) {
+        if !self.timed.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(handle) = lock(&self.timers).ack.take() {
             handle.abort();
         }
     }
 
     fn cancel_timers(&self) {
+        if !self.timed.load(Ordering::Acquire) {
+            return;
+        }
         let mut timers = lock(&self.timers);
         for handle in [timers.expiry.take(), timers.ack.take()]
             .into_iter()
@@ -657,8 +814,15 @@ impl Observer {
     }
 
     /// The flags, for decisions that depend on more than the state.
+    #[cfg(test)]
     pub(crate) fn flags(&self) -> Flags {
         lock(&self.status).flags.clone()
+    }
+
+    /// Runs `f` with the flags, holding the status lock: for decisions that
+    /// depend on more than the state, without copying them.
+    pub(crate) fn with_flags<R>(&self, f: impl FnOnce(&Flags) -> R) -> R {
+        f(&lock(&self.status).flags)
     }
 
     /// The announcement the observer waits for its owner to answer: told,
@@ -672,12 +836,18 @@ impl Observer {
     }
 
     /// Clears the owner announcement (no state depends on it) and returns
-    /// it, with whether the owner had rejected the observer.
-    pub(crate) fn take_announcement(&self) -> (Option<Announcement>, bool) {
+    /// it, with whether the owner had rejected the observer, whether it had
+    /// acked it, and whether it failed for not acking it in time.
+    pub(crate) fn take_announcement(&self) -> (Option<Announcement>, bool, bool, bool) {
         let mut status = lock(&self.status);
-        let announced = status.flags.announced.take();
-        let rejected = std::mem::take(&mut status.flags.rejected_by_owner);
-        (announced, rejected)
+        let flags = &mut status.flags;
+        let announced = flags.announced.take();
+        let rejected = std::mem::take(&mut flags.rejected_by_owner);
+        let timed_out = flags
+            .failed
+            .as_ref()
+            .is_some_and(|error| error.code == observe_codes::OWNER_TIMEOUT);
+        (announced, rejected, flags.owner_acked, timed_out)
     }
 }
 
@@ -694,7 +864,10 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// Live observers by state, for the `iii.observers` gauge.
+/// Live observers by state, for the `iii.observers` gauge: counted on every
+/// transition, and sent to the gauge every
+/// [`DROP_EXPORT_INTERVAL`](super::dispatch::DROP_EXPORT_INTERVAL) with the
+/// drop counts ([`ObserverRegistry::export_drops`]).
 #[derive(Default)]
 pub(crate) struct StateCounts {
     pending: AtomicI64,
@@ -716,15 +889,13 @@ impl StateCounts {
 
     pub fn enter(&self, state: &ObserverState) {
         if let Some(slot) = self.slot(state) {
-            let count = slot.fetch_add(1, Ordering::Relaxed) + 1;
-            record_state_gauge(state, count);
+            slot.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub fn leave(&self, state: &ObserverState) {
         if let Some(slot) = self.slot(state) {
-            let count = slot.fetch_sub(1, Ordering::Relaxed) - 1;
-            record_state_gauge(state, count);
+            slot.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -733,20 +904,23 @@ impl StateCounts {
             .map(|slot| slot.load(Ordering::Relaxed))
             .unwrap_or_default()
     }
-}
 
-fn record_state_gauge(state: &ObserverState, count: i64) {
-    let label = match state {
-        ObserverState::Pending => "pending",
-        ObserverState::Active => "active",
-        ObserverState::Suspended => "suspended",
-        ObserverState::Error => "error",
-        ObserverState::Disposed | ObserverState::Unknown(_) => return,
-    };
-    if let Some(metrics) = super::metrics() {
-        metrics
-            .observers
-            .record(count, &[opentelemetry::KeyValue::new("state", label)]);
+    /// Sends each count to the `iii.observers` gauge.
+    pub fn record(&self) {
+        let Some(metrics) = super::metrics() else {
+            return;
+        };
+        for (label, slot) in [
+            ("pending", &self.pending),
+            ("active", &self.active),
+            ("suspended", &self.suspended),
+            ("error", &self.error),
+        ] {
+            metrics.observers.record(
+                slot.load(Ordering::Relaxed),
+                &[opentelemetry::KeyValue::new("state", label)],
+            );
+        }
     }
 }
 
@@ -758,6 +932,16 @@ pub(super) struct Transition {
     became: ObserverState,
     unqueued: Option<super::events::UnqueuedEvent>,
     activeness_changed: bool,
+}
+
+/// What [`ObserverRegistry::settle_deferring_refresh`] leaves its caller.
+#[must_use = "the active set follows, then a disposed observer is forgotten"]
+pub(super) struct Settled {
+    /// Activeness changed: the observer joins its function's active set or
+    /// leaves it.
+    pub refresh: bool,
+    /// It was disposed: [`ObserverRegistry::forget`] drops it.
+    pub disposed: bool,
 }
 
 impl ObserverRegistry {
@@ -784,12 +968,22 @@ impl ObserverRegistry {
         observer: &Arc<Observer>,
         change: impl FnOnce(&mut Flags),
     ) -> Option<Transition> {
+        self.transition_telling(observer, change, true)
+    }
+
+    /// [`Self::transition`], telling the observing worker only when `tell`:
+    /// not when its connection is gone (it learns its observers' states
+    /// again when it reattaches or replays them).
+    pub(super) fn transition_telling(
+        &self,
+        observer: &Arc<Observer>,
+        change: impl FnOnce(&mut Flags),
+        tell: bool,
+    ) -> Option<Transition> {
         let mut status = lock(&observer.status);
         change(&mut status.flags);
-        let (state, reason) = status.flags.state(observer);
-        let same_reason =
-            status.reason.as_ref().map(|r| &r.code) == reason.as_ref().map(|r| &r.code);
-        if state == status.state && same_reason {
+        let (state, why) = status.flags.state();
+        if state == status.state && why == status.why {
             return None;
         }
         let was_active = status.state == ObserverState::Active;
@@ -799,16 +993,16 @@ impl ObserverRegistry {
             status.flags.activated_once = true;
         }
         status.state = state.clone();
-        status.reason = reason.clone();
-        let unqueued = self.observer_changed(observer, &state, reason.as_ref());
+        status.why = why;
+        let unqueued = self.observer_changed(observer, &state, &|| status.reason(observer));
         // The engine hears nothing about the observers it owns.
-        if !observer.is_engine_owned() {
+        if tell && !observer.is_engine_owned() {
             self.notify(
-                observer.observing_connection(),
+                status.observing.connection,
                 Message::ObserverStateChanged {
                     id: observer.id.clone(),
                     state: state.clone(),
-                    reason,
+                    reason: status.reason(observer),
                     fires: observer.fires(),
                 },
             );
@@ -827,6 +1021,25 @@ impl ObserverRegistry {
     /// active set when activeness changed, and a disposed observer is
     /// forgotten.
     pub(super) fn settle(&self, observer: &Arc<Observer>, transition: Transition) {
+        let settled = self.settle_deferring_refresh(observer, transition);
+        if settled.refresh {
+            self.refresh_observer(observer);
+        }
+        if settled.disposed {
+            self.forget(observer);
+        }
+    }
+
+    /// [`Self::settle`] but for the change of its function's active set and
+    /// the disposed observer's forgetting, which the caller does, in that
+    /// order: put the observer in its active set or take it out when
+    /// activeness changed ([`Self::refresh_observers`] does many at once),
+    /// then forget it if it was disposed.
+    pub(super) fn settle_deferring_refresh(
+        &self,
+        observer: &Arc<Observer>,
+        transition: Transition,
+    ) -> Settled {
         let Transition {
             became,
             unqueued,
@@ -840,11 +1053,7 @@ impl ObserverRegistry {
         if became == ObserverState::Disposed || became == ObserverState::Error {
             // Out of the owner's set: it hears `observerremoved`.
             self.withdraw_from_owner(observer);
-            let drop_queue = !matches!(
-                observer.reason().map(|r| r.code),
-                Some(code) if code == observe_codes::MAX_FIRES
-            );
-            if drop_queue {
+            if !observer.reason_is(observe_codes::MAX_FIRES) {
                 let dropped = std::mem::take(&mut lock(&observer.flow).queue).len() as u64;
                 observer
                     .drops
@@ -857,20 +1066,41 @@ impl ObserverRegistry {
             // queue reads on: its events no longer reach the queue.
             self.queue_budget.room.notify_waiters();
         }
-        if activeness_changed {
-            self.refresh_observer(observer);
-        }
-        if became == ObserverState::Disposed {
-            self.forget(observer);
+        Settled {
+            refresh: activeness_changed,
+            disposed: became == ObserverState::Disposed,
         }
     }
 
     /// Disposes `observer` with `code` as the state reason.
     pub(crate) fn dispose(&self, observer: &Arc<Observer>, code: &str, message: impl Into<String>) {
-        let reason = ErrorBody::new(code, message);
+        let reason = Arc::new(ErrorBody::new(code, message));
         self.update(observer, |flags| {
             if flags.disposed.is_none() {
                 flags.disposed = Some(reason);
+            }
+        });
+    }
+
+    /// Disposes `observer` at the request of whoever observes with it (its
+    /// observing worker, or the engine for its own): as [`Self::dispose`],
+    /// with no tombstone, since that observer replays no handle it disposed.
+    /// The reason is shared by every such disposal.
+    pub(crate) fn dispose_unobserved(&self, observer: &Arc<Observer>) {
+        static BY_WORKER: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        static BY_ENGINE: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        let (reason, message) = if observer.is_engine_owned() {
+            (&BY_ENGINE, "disposed by the engine")
+        } else {
+            (&BY_WORKER, "disposed by its observing worker")
+        };
+        let reason = reason
+            .get_or_init(|| Arc::new(ErrorBody::new(observe_codes::UNOBSERVED, message)))
+            .clone();
+        self.update(observer, |flags| {
+            if flags.disposed.is_none() {
+                flags.disposed = Some(reason);
+                flags.tombstone = false;
             }
         });
     }
@@ -879,38 +1109,78 @@ impl ObserverRegistry {
     pub(crate) fn fail(&self, observer: &Arc<Observer>, error: ErrorBody) {
         self.update(observer, |flags| {
             if flags.failed.is_none() {
-                flags.failed = Some(error);
+                flags.failed = Some(Arc::new(error));
             }
         });
     }
 
-    /// Drops every index entry of a disposed observer.
-    fn forget(&self, observer: &Arc<Observer>) {
+    /// Files `observer`, just given its id in `by_id`, under `connection` and
+    /// under its target. Called under its status lock (see
+    /// [`Self::publish`]): its disposal, which takes that lock first, always
+    /// finds both entries to take out.
+    pub(super) fn index(&self, observer: &Arc<Observer>, connection: Uuid) {
+        let held = Held(observer.clone());
+        self.by_connection
+            .entry(connection)
+            .or_default()
+            .insert(held.clone());
+        match self.by_target.get_mut(&observer.target) {
+            Some(mut targeting) => {
+                targeting.insert(held);
+            }
+            None => {
+                self.by_target
+                    .entry(observer.target.clone())
+                    .or_default()
+                    .insert(held);
+            }
+        }
+    }
+
+    /// Takes `observer`'s entries out of the connection and target indexes:
+    /// its own, not those of another observer under the same id.
+    fn unindex(&self, observer: &Arc<Observer>, connection: Uuid) {
+        let held = Held(observer.clone());
+        self.by_connection
+            .remove_if_mut(&connection, |_, observing| {
+                observing.remove(&held);
+                observing.is_empty()
+            });
+        self.by_target
+            .remove_if_mut(&observer.target, |_, targeting| {
+                targeting.remove(&held);
+                targeting.is_empty()
+            });
+    }
+
+    /// Drops every index entry of a disposed observer. Its observing worker
+    /// replaying it later learns why it is gone from its tombstone, unless
+    /// that worker disposed of it, or the engine owns it (the engine replays
+    /// nothing).
+    pub(super) fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
         self.by_id
             .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
         let connection = observer.observing_connection();
-        self.remember_tombstone(
-            observer.id.clone(),
-            Tombstone {
-                connection,
-                reason: observer.reason().unwrap_or_else(|| {
-                    ErrorBody::new(observe_codes::UNOBSERVED, "the observer was disposed")
-                }),
-                until: Instant::now()
-                    + std::time::Duration::from_millis(self.config().observer_grace_ms),
-            },
-        );
-        if let Some(mut ids) = self.by_connection.get_mut(&connection) {
-            ids.remove(&observer.id);
+        let (tombstone, reason) =
+            observer.with_flags(|flags| (flags.tombstone, flags.disposed.clone()));
+        if tombstone && !observer.is_engine_owned() {
+            self.remember_tombstone(
+                Arc::from(observer.id.as_str()),
+                Tombstone {
+                    connection,
+                    reason: reason.unwrap_or_else(|| {
+                        Arc::new(ErrorBody::new(
+                            observe_codes::UNOBSERVED,
+                            "the observer was disposed",
+                        ))
+                    }),
+                    until: Instant::now()
+                        + std::time::Duration::from_millis(self.config.load().observer_grace_ms),
+                },
+            );
         }
-        self.by_connection
-            .remove_if(&connection, |_, ids| ids.is_empty());
-        if let Some(mut ids) = self.by_target.get_mut(&observer.target) {
-            ids.remove(&observer.id);
-        }
-        self.by_target
-            .remove_if(&observer.target, |_, ids| ids.is_empty());
+        self.unindex(observer, connection);
         self.detach_from_function(observer);
     }
 
@@ -919,7 +1189,7 @@ impl ObserverRegistry {
     /// when there are more than [`MAX_TOMBSTONES`]: amortized constant work
     /// per disposal, however many observers churn. One that expired and was
     /// not dropped yet is ignored where it is read.
-    pub(super) fn remember_tombstone(&self, id: String, tombstone: Tombstone) {
+    pub(super) fn remember_tombstone(&self, id: Arc<str>, tombstone: Tombstone) {
         let until = tombstone.until;
         self.tombstones.insert(id.clone(), tombstone);
         let mut order = lock(&self.tombstone_order);
@@ -946,7 +1216,7 @@ impl ObserverRegistry {
         &self,
         connection: Uuid,
         token: Uuid,
-        disposed: Vec<(String, ErrorBody)>,
+        disposed: Vec<(Arc<str>, Arc<ErrorBody>)>,
     ) {
         let retention = std::time::Duration::from_millis(self.config().disposed_retention_ms);
         if disposed.is_empty() || retention.is_zero() {
@@ -1108,6 +1378,14 @@ mod tests {
         assert!(
             registry.notifiers.get(&id).is_none(),
             "its backlog is dropped"
+        );
+    }
+
+    #[test]
+    fn the_default_capture_set_is_the_default_capture() {
+        assert_eq!(
+            CaptureSet::from_list(&crate::protocol::default_capture()),
+            CaptureSet::DEFAULT
         );
     }
 
