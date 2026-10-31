@@ -4,58 +4,43 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! A persistent ordered set: a B+ tree whose nodes are shared between
-//! versions. Adding or removing one value copies at most the nodes on its
-//! path (`O(log n)` nodes of at most [`MAX`] slots each) and shares every
-//! other node with the version it was made from, which stays valid for
-//! whoever holds it. The routed hook holds one version per call: the active
-//! observers of a function, in creation order (see [`super::ActiveSet`]).
+//! A persistent ordered set: a run of leaves, each an immutable `Arc<[V]>`
+//! of values in key order, shared between versions. The routed hook holds
+//! one version per call: the active observers of a function, in creation
+//! order (see [`super::ActiveSet`]). A version never changes, and a value is
+//! dropped with the last leaf that holds it, so with the last version that
+//! holds it.
 //!
-//! A leaf is a run of one [`Chunk`]'s slots, each holding a value, ordered by
-//! the values' keys: a scan reads a leaf as one slice of values. Up to [`MAX`]
-//! values fit in one leaf, which [`PersistentSet::leaves`] and
-//! [`PersistentSet::iter`] read without walking any branch. A chunk's slots
-//! are written once each, front to back, so the two changes the active
-//! observers see most copy no leaf: a value past every key (a new observer)
-//! goes into the next slot of the last leaf's chunk, which no version reads
-//! yet, and the first value of a leaf (its oldest observer) leaves it by the
-//! leaf starting one slot later. A leaf that has passed over [`SKIPPED`]
-//! values that way is copied without them. A value is dropped with the last
-//! version that reads it: the chunk counts its leaves by the slot they start
-//! at, and once no leaf starts at or before a slot, it drops that slot's
-//! value, as the last version that held a copied leaf drops that leaf's.
+//! The first leaf (the head) and the last (the tail) are held by the set
+//! itself, the leaves between them by a B+ tree whose nodes are shared
+//! between versions too. The two changes the active observers see most
+//! touch only an edge: a value past every key (a new observer) is added to
+//! the tail, and the first value (the oldest observer) leaves the head, each
+//! by a copy of that one leaf of at most [`MAX`] values. Once the tail is
+//! full it joins the tree, and an empty head takes the tree's first leaf,
+//! which copies the nodes on the tree's edge, once every [`MAX`] changes.
+//! Any other change copies the leaf it lands in and the tree nodes on its
+//! path (`O(log n)` nodes of at most [`MAX`] or [`BRANCH_MAX`] slots each).
+//!
+//! A scan reads each leaf as a slice of values ([`PersistentSet::leaves`]),
+//! and a set of at most [`MAX`] values is one leaf.
 
-use std::{
-    cell::UnsafeCell,
-    iter,
-    marker::PhantomData,
-    mem::MaybeUninit,
-    ptr::NonNull,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, AtomicUsize, Ordering, fence},
-    },
-};
+use std::{iter, sync::Arc};
 
-/// Values in a leaf at most.
-const MAX: usize = 128;
-/// A leaf other than the root with fewer is merged with a neighbour, but the
-/// last leaf, which appends fill.
+/// Values in a leaf at most: what one change of a leaf copies.
+const MAX: usize = 32;
+/// A leaf of the tree with fewer is merged with a neighbour.
 const MIN: usize = MAX / 4;
 /// What a leaf holds when a set is built from a sorted list.
 const FILL: usize = MAX * 3 / 4;
-/// Children of a branch at most: fewer than a leaf holds values, since every
-/// change copies the branches on its path.
+/// Children of a branch at most.
 const BRANCH_MAX: usize = 32;
-/// A branch other than the root with fewer is merged with a neighbour.
+/// A branch other than the tree's root with fewer is merged with a
+/// neighbour.
 const BRANCH_MIN: usize = BRANCH_MAX / 4;
 /// What a branch holds when a set is built from a sorted list.
 const BRANCH_FILL: usize = BRANCH_MAX * 3 / 4;
-/// Values a leaf passes over at its front, removed from it without a copy,
-/// before it is copied without them: the most slots a leaf starts into its
-/// chunk.
-const SKIPPED: usize = MIN;
-/// Levels a set has at most: every node but the root and the last of each
+/// Levels a tree has at most: every node but the root and the edges of each
 /// level holds at least [`MIN`] or [`BRANCH_MIN`], so 13 levels hold more
 /// than 2^40 values.
 const MAX_DEPTH: usize = 16;
@@ -67,14 +52,20 @@ pub(crate) trait Keyed {
 }
 
 /// Values ordered by their [`Keyed::key`], each key at most once.
+///
+/// The tail holds a value whenever the set does, and the head whenever the
+/// tree does: every key in the head comes before every key in the tree, and
+/// every key in the tree before every key in the tail.
 pub(crate) struct PersistentSet<V> {
-    root: Option<Node<V>>,
+    head: Option<Arc<[V]>>,
+    tree: Option<Node<V>>,
+    tail: Option<Arc<[V]>>,
     len: usize,
 }
 
 enum Node<V> {
     /// Sorted by key.
-    Leaf(Leaf<V>),
+    Leaf(Arc<[V]>),
     /// Sorted by key, all at the same depth.
     Branch(Arc<[Child<V>]>),
 }
@@ -82,242 +73,9 @@ enum Node<V> {
 impl<V> Clone for Node<V> {
     fn clone(&self) -> Self {
         match self {
-            Node::Leaf(leaf) => Node::Leaf(leaf.clone()),
+            Node::Leaf(values) => Node::Leaf(values.clone()),
             Node::Branch(children) => Node::Branch(children.clone()),
         }
-    }
-}
-
-/// Slots written once each, front to back: `[dropped, written)` hold values
-/// in key order, `[0, dropped)` values no leaf reads anymore, dropped, and
-/// the rest nothing yet. Leaves of several versions read runs of the same
-/// chunk; a slot is written before any leaf over it exists, and never again.
-/// The leaves over it hold it: it goes with the last of them.
-struct Chunk<V> {
-    /// Slots written. It only grows: an append claims the next slot by
-    /// moving it on, then writes the slot.
-    written: AtomicUsize,
-    /// The leaves over the chunk by the slot they start at (at most
-    /// [`SKIPPED`]). A leaf is made over a new chunk, as a copy of one that
-    /// starts where it does, or from one that starts before it, so once none
-    /// starts at or before a slot, none ever reads it again.
-    starting: [AtomicU32; SKIPPED + 1],
-    /// The slots some leaf starts at: the chunk's references, one for each
-    /// such slot, taken by its first leaf and given up by its last.
-    starts: AtomicU32,
-    /// Slots whose values were dropped, as no leaf starts at or before them
-    /// ([`Chunk::drop_unread`]). It only grows, up to the first slot a leaf
-    /// starts at.
-    dropped: AtomicUsize,
-    slots: Box<[UnsafeCell<MaybeUninit<V>>]>,
-}
-
-impl<V> Chunk<V> {
-    /// Drops the values of the slots before the first one a leaf over the
-    /// chunk starts at: no leaf reads them, and none will. The last leaf at
-    /// a slot calls it as it goes, while that slot still holds the chunk,
-    /// after a `SeqCst` fence: of two last leaves going at once, the one
-    /// whose fence comes second sees both gone.
-    fn drop_unread(&self) {
-        let mut dropped = self.dropped.load(Ordering::Acquire);
-        let Some(first) =
-            (dropped..=SKIPPED).find(|&at| self.starting[at].load(Ordering::Acquire) > 0)
-        else {
-            // No leaf is left: the chunk goes with the last of the leaves
-            // going, and drops the rest itself.
-            return;
-        };
-        while dropped < first {
-            match self
-                .dropped
-                .compare_exchange(dropped, first, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
-                    for slot in &self.slots[dropped..first] {
-                        // SAFETY: a leaf starts at `first`, so it was at most
-                        // `written` when that leaf was made: the slots were
-                        // written. No leaf starts at or before them, so none
-                        // reads them, and this exchange alone claimed them.
-                        unsafe { (*slot.get()).assume_init_drop() };
-                    }
-                    return;
-                }
-                Err(now) => dropped = now,
-            }
-        }
-    }
-}
-
-impl<V> Drop for Chunk<V> {
-    fn drop(&mut self) {
-        let (dropped, written) = (*self.dropped.get_mut(), *self.written.get_mut());
-        for slot in &mut self.slots[dropped..written] {
-            // SAFETY: `[dropped, written)` were written and not dropped, and
-            // nothing reads them once the last leaf over the chunk is gone.
-            unsafe { slot.get_mut().assume_init_drop() };
-        }
-    }
-}
-
-/// The values of slots `[start, end)` of a chunk.
-struct Leaf<V> {
-    /// Alive while this leaf is: its start holds it (`Chunk::starts`).
-    chunk: NonNull<Chunk<V>>,
-    start: u32,
-    end: u32,
-    /// The leaf shares in owning the chunk's values.
-    _values: PhantomData<V>,
-}
-
-// SAFETY: a leaf shares its chunk as an `Arc` would (the chunk goes with
-// its last leaf, on whichever thread). The values are shared between threads
-// only as `&V` (a slot is written by the one append that claimed it, before
-// any leaf that reads it exists, and is read only after that), and dropped
-// once each, where the last leaf that starts at or before them goes, or with
-// the chunk.
-unsafe impl<V: Send + Sync> Send for Leaf<V> {}
-// SAFETY: as for `Send`: concurrent users read written slots, claim
-// unwritten ones through `written` and unread ones through `dropped`.
-unsafe impl<V: Send + Sync> Sync for Leaf<V> {}
-
-impl<V> Clone for Leaf<V> {
-    fn clone(&self) -> Self {
-        self.over(self.start, self.end)
-    }
-}
-
-impl<V> Drop for Leaf<V> {
-    fn drop(&mut self) {
-        let chunk = self.chunk();
-        // Released, as an `Arc`'s drop is: whoever drops the values sees this
-        // leaf's reads of them done.
-        if chunk.starting[self.start as usize].fetch_sub(1, Ordering::Release) != 1 {
-            return;
-        }
-        // The last leaf at its slot: it acquires the other leaves' reads, and
-        // takes the one order `drop_unread` needs.
-        fence(Ordering::SeqCst);
-        chunk.drop_unread();
-        if chunk.starts.fetch_sub(1, Ordering::Release) == 1 {
-            fence(Ordering::Acquire);
-            // SAFETY: this was the last leaf over the chunk, and no leaf is
-            // made over a chunk but from one: nothing reads it anymore.
-            drop(unsafe { Box::from_raw(self.chunk.as_ptr()) });
-        }
-    }
-}
-
-impl<V> Leaf<V> {
-    #[inline]
-    fn chunk(&self) -> &Chunk<V> {
-        // SAFETY: the chunk lives while a leaf over it does.
-        unsafe { self.chunk.as_ref() }
-    }
-
-    /// Slots `[start, end)` of this leaf's chunk, where `start` is at or
-    /// past this leaf's start: counted among the leaves that start there,
-    /// and, as the first of them, with one reference more for the chunk.
-    /// Relaxed, as `Arc::clone` is: this leaf holds the chunk meanwhile.
-    fn over(&self, start: u32, end: u32) -> Self {
-        debug_assert!(start >= self.start);
-        let chunk = self.chunk();
-        let before = chunk.starting[start as usize].fetch_add(1, Ordering::Relaxed);
-        if before == 0 {
-            chunk.starts.fetch_add(1, Ordering::Relaxed);
-        } else if before >= u32::MAX / 2 {
-            // As `Arc` does past its most references: the count must not
-            // wrap.
-            std::process::abort();
-        }
-        Self {
-            chunk: self.chunk,
-            start,
-            end,
-            _values: PhantomData,
-        }
-    }
-
-    /// A leaf of `values` (`len` of them, a run sorted by key), in a chunk
-    /// with room for `room` values in all. One allocation for the chunk's
-    /// slots, one for its counts.
-    fn of(values: impl Iterator<Item = V>, len: usize, room: usize) -> Self {
-        #[cfg(test)]
-        super::work::add(len);
-        let mut chunk = Box::new(Chunk {
-            written: AtomicUsize::new(0),
-            // This leaf, at slot 0.
-            starting: std::array::from_fn(|at| AtomicU32::new(u32::from(at == 0))),
-            starts: AtomicU32::new(1),
-            dropped: AtomicUsize::new(0),
-            slots: (0..room.max(len))
-                .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
-                .collect(),
-        });
-        let mut written = 0;
-        for value in values.take(len) {
-            chunk.slots[written].get_mut().write(value);
-            written += 1;
-            *chunk.written.get_mut() = written;
-        }
-        Self {
-            chunk: NonNull::from(Box::leak(chunk)),
-            start: 0,
-            end: written as u32,
-            _values: PhantomData,
-        }
-    }
-
-    #[inline]
-    fn values(&self) -> &[V] {
-        let start = self.start as usize;
-        let len = (self.end - self.start) as usize;
-        // SAFETY: slots `[start, end)` were written before this leaf was
-        // made (`end` was at most `written` then) and are never written
-        // again, nor dropped while this leaf, which starts at `start`, lives.
-        // `UnsafeCell<MaybeUninit<V>>` has the layout of `V`.
-        unsafe {
-            std::slice::from_raw_parts(self.chunk().slots.as_ptr().add(start).cast::<V>(), len)
-        }
-    }
-
-    fn width(&self) -> usize {
-        (self.end - self.start) as usize
-    }
-
-    /// This leaf with `value`, whose key is past all of its own, written into
-    /// the chunk's next slot when that slot is the one right after this
-    /// leaf's values: no version reads it, and claiming it keeps any other
-    /// version from writing it. `Err` hands `value` back otherwise.
-    fn appended(&self, value: V) -> Result<Self, V> {
-        let end = self.end as usize;
-        let chunk = self.chunk();
-        if end >= chunk.slots.len()
-            || chunk
-                .written
-                .compare_exchange(end, end + 1, Ordering::AcqRel, Ordering::Relaxed)
-                .is_err()
-        {
-            return Err(value);
-        }
-        // SAFETY: the exchange gave this append slot `end`, unwritten until
-        // now and read by no leaf: every leaf over the chunk ended at or
-        // before it.
-        unsafe { (*chunk.slots[end].get()).write(value) };
-        Ok(self.over(self.start, self.end + 1))
-    }
-
-    /// This leaf without its first value: the same chunk from the next
-    /// slot, until it has passed over [`SKIPPED`]; then a copy of the rest.
-    /// The value goes once no leaf starts at or before its slot.
-    fn without_first(&self, room: usize) -> Self
-    where
-        V: Clone,
-    {
-        if (self.start as usize) < SKIPPED {
-            return self.over(self.start + 1, self.end);
-        }
-        let rest = &self.values()[1..];
-        Self::of(rest.iter().cloned(), rest.len(), room)
     }
 }
 
@@ -356,12 +114,13 @@ impl<V> Node<V> {
     /// Values or children held.
     fn width(&self) -> usize {
         match self {
-            Node::Leaf(leaf) => leaf.width(),
+            Node::Leaf(values) => values.len(),
             Node::Branch(children) => children.len(),
         }
     }
 
-    /// What it holds at least, but as the root or the last of its level.
+    /// What it holds at least, but as the tree's root or an edge of its
+    /// level.
     fn least(&self) -> usize {
         match self {
             Node::Leaf(_) => MIN,
@@ -374,10 +133,19 @@ impl<V: Keyed> Node<V> {
     /// The smallest key. Only asked of a node that is not empty.
     fn first(&self) -> u64 {
         match self {
-            Node::Leaf(leaf) => leaf.values()[0].key(),
+            Node::Leaf(values) => values[0].key(),
             Node::Branch(children) => children[0].first,
         }
     }
+}
+
+/// Where a key lands: the last part whose first key is at or before it, or
+/// the first part.
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Head,
+    Tree,
+    Tail,
 }
 
 /// The child whose range holds `key`: the last one starting at or before it,
@@ -389,49 +157,98 @@ fn child_for<V>(children: &[Child<V>], key: u64) -> usize {
 }
 
 /// Where a node changes: in the middle, or as the last node of its level,
-/// where new observers go.
+/// where new leaves go.
 #[derive(Clone, Copy, PartialEq)]
 enum Growth {
     Inside,
     Appended,
 }
 
-impl Growth {
-    /// The room a leaf made here gets: a last leaf takes appends in place.
-    fn room(self, len: usize) -> usize {
-        match self {
-            Growth::Inside => len,
-            Growth::Appended => MAX,
-        }
-    }
+/// `items` (`len` of them) as one leaf: one allocation, counted by the
+/// complexity tests.
+fn leaf<V>(items: impl Iterator<Item = V>, len: usize) -> Arc<[V]> {
+    #[cfg(test)]
+    super::work::add(len);
+    let leaf: Arc<[V]> = items.collect();
+    debug_assert_eq!(leaf.len(), len);
+    leaf
 }
 
-/// `items` (`len` of them) as one leaf, or two when there are more than
-/// [`MAX`]: even halves. `last` says whether the leaf is the last of its
-/// level, whose chunk keeps room for appends.
-fn sized_leaf<V: Clone>(
-    items: impl Iterator<Item = V> + Clone,
-    len: usize,
-    last: Growth,
-) -> Grown<V> {
-    if len <= MAX {
-        return Grown::One(Node::Leaf(Leaf::of(items, len, last.room(len))));
-    }
-    let lower = len / 2;
-    Grown::Split(
-        Node::Leaf(Leaf::of(items.clone(), lower, lower)),
-        Node::Leaf(Leaf::of(
-            items.skip(lower),
-            len - lower,
-            last.room(len - lower),
-        )),
+/// `values` with `value` at `at`.
+fn leaf_with<V: Clone>(values: &[V], at: usize, value: V) -> Arc<[V]> {
+    leaf(
+        values[..at]
+            .iter()
+            .cloned()
+            .chain(iter::once(value))
+            .chain(values[at..].iter().cloned()),
+        values.len() + 1,
     )
+}
+
+/// `values` without the one at `at`; `None` when it was the only one.
+fn leaf_without<V: Clone>(values: &[V], at: usize) -> Option<Arc<[V]>> {
+    (values.len() > 1).then(|| {
+        leaf(
+            values[..at].iter().chain(&values[at + 1..]).cloned(),
+            values.len() - 1,
+        )
+    })
+}
+
+/// `values` (more than [`MAX`]) as two leaves of even halves.
+fn halves<V: Clone>(values: &[V]) -> (Arc<[V]>, Arc<[V]>) {
+    let (lower, upper) = values.split_at(values.len() / 2);
+    (
+        leaf(lower.iter().cloned(), lower.len()),
+        leaf(upper.iter().cloned(), upper.len()),
+    )
+}
+
+/// Which end of the set a leaf is, for [`grown_leaf`].
+#[derive(Clone, Copy, PartialEq)]
+enum End {
+    /// The head: values come in at its front.
+    First,
+    /// The tail: values come in at its back.
+    Last,
+    /// A leaf of the tree.
+    Neither,
+}
+
+/// `values` with `value` at `at`, as one leaf, or as two when that is more
+/// than [`MAX`]: at the tail's back, the full leaf as it is and the value
+/// alone after it, which the next values fill; at the head's front, the
+/// value alone before it; even halves otherwise.
+fn grown_leaf<V: Clone>(
+    values: &Arc<[V]>,
+    at: usize,
+    value: V,
+    end: End,
+) -> (Arc<[V]>, Option<Arc<[V]>>) {
+    if values.len() < MAX {
+        return (leaf_with(values, at, value), None);
+    }
+    if end == End::Last && at == values.len() {
+        return (values.clone(), Some(leaf(iter::once(value), 1)));
+    }
+    if end == End::First && at == 0 {
+        return (leaf(iter::once(value), 1), Some(values.clone()));
+    }
+    let all: Vec<V> = values[..at]
+        .iter()
+        .cloned()
+        .chain(iter::once(value))
+        .chain(values[at..].iter().cloned())
+        .collect();
+    let (lower, upper) = halves(&all);
+    (lower, Some(upper))
 }
 
 /// `children` (`len` of them) as one branch, or two when there are more
 /// than [`BRANCH_MAX`]: even halves, or, for the last branch of its level, a
 /// lower one of `BRANCH_MAX - BRANCH_MIN` and an upper one of
-/// `BRANCH_MIN + 1`, which the next appends fill. One allocation per branch.
+/// `BRANCH_MIN + 1`, which the next leaves fill. One allocation per branch.
 fn sized_branch<V>(
     children: impl Iterator<Item = Child<V>> + Clone,
     len: usize,
@@ -452,9 +269,278 @@ fn sized_branch<V>(
     )
 }
 
+/// `children` with the one at `at` made into `grown`: replaced, or replaced
+/// by the two halves it split into.
+fn regrown<V: Keyed>(
+    children: &[Child<V>],
+    at: usize,
+    grown: Grown<V>,
+    growth: Growth,
+) -> Grown<V> {
+    let (lower, upper) = match grown {
+        Grown::One(child) => (Child::of(child), None),
+        Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
+    };
+    let len = children.len() + usize::from(upper.is_some());
+    let items = children[..at]
+        .iter()
+        .cloned()
+        .chain(iter::once(lower))
+        .chain(upper)
+        .chain(children[at + 1..].iter().cloned());
+    sized_branch(items, len, growth)
+}
+
+/// `children` with the one at `at` made into `shrunk`: gone when `None`,
+/// joined with a neighbour when it holds fewer than its least, replaced
+/// otherwise. `None` when no child is left. `last` is [`Growth::Appended`]
+/// when the branch is the last of its level.
+fn shrunk<V: Keyed + Clone>(
+    children: &[Child<V>],
+    at: usize,
+    shrunk: Option<Node<V>>,
+    last: Growth,
+) -> Option<Node<V>> {
+    let next: Arc<[Child<V>]> = match shrunk {
+        None => {
+            if children.len() == 1 {
+                return None;
+            }
+            #[cfg(test)]
+            super::work::add(children.len() - 1);
+            children[..at]
+                .iter()
+                .chain(&children[at + 1..])
+                .cloned()
+                .collect()
+        }
+        Some(child) if child.width() < child.least() && children.len() > 1 => {
+            // Joined with a neighbour, as one node or two even halves.
+            let (left, joined) = if at + 1 < children.len() {
+                let growth = if at + 2 == children.len() {
+                    last
+                } else {
+                    Growth::Inside
+                };
+                (at, join(&child, &children[at + 1].node, growth))
+            } else {
+                (at - 1, join(&children[at - 1].node, &child, last))
+            };
+            let (lower, upper) = match joined {
+                Grown::One(node) => (Child::of(node), None),
+                Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
+            };
+            let len = children.len() - 1 + usize::from(upper.is_some());
+            #[cfg(test)]
+            super::work::add(len);
+            let next: Arc<[Child<V>]> = children[..left]
+                .iter()
+                .cloned()
+                .chain(iter::once(lower))
+                .chain(upper)
+                .chain(children[left + 2..].iter().cloned())
+                .collect();
+            debug_assert_eq!(next.len(), len);
+            next
+        }
+        Some(child) => {
+            #[cfg(test)]
+            super::work::add(children.len());
+            children[..at]
+                .iter()
+                .cloned()
+                .chain(iter::once(Child::of(child)))
+                .chain(children[at + 1..].iter().cloned())
+                .collect()
+        }
+    };
+    Some(Node::Branch(next))
+}
+
+/// `node` with `value`; `None` when its key is taken. `last` is
+/// [`Growth::Appended`] when `node` is the last node of its level.
+fn insert<V: Keyed + Clone>(node: &Node<V>, value: V, last: Growth) -> Option<Grown<V>> {
+    let key = value.key();
+    match node {
+        Node::Leaf(values) => {
+            let at = values.binary_search_by_key(&key, Keyed::key).err()?;
+            Some(match grown_leaf(values, at, value, End::Neither) {
+                (one, None) => Grown::One(Node::Leaf(one)),
+                (lower, Some(upper)) => Grown::Split(Node::Leaf(lower), Node::Leaf(upper)),
+            })
+        }
+        Node::Branch(children) => {
+            let at = child_for(children, key);
+            let growth = if at + 1 == children.len() {
+                last
+            } else {
+                Growth::Inside
+            };
+            let grown = insert(&children[at].node, value, growth)?;
+            Some(regrown(children, at, grown, growth))
+        }
+    }
+}
+
+/// `node` without `key`: `Some(None)` when nothing is left of it, and
+/// possibly under its least otherwise (its parent merges it); `None` when it
+/// holds no `key`. `last` is [`Growth::Appended`] when `node` is the last
+/// node of its level.
+fn remove<V: Keyed + Clone>(node: &Node<V>, key: u64, last: Growth) -> Option<Option<Node<V>>> {
+    match node {
+        Node::Leaf(values) => {
+            let at = values.binary_search_by_key(&key, Keyed::key).ok()?;
+            Some(leaf_without(values, at).map(Node::Leaf))
+        }
+        Node::Branch(children) => {
+            let at = child_for(children, key);
+            let growth = if at + 1 == children.len() {
+                last
+            } else {
+                Growth::Inside
+            };
+            let child = remove(&children[at].node, key, growth)?;
+            Some(shrunk(children, at, child, last))
+        }
+    }
+}
+
+/// `node` with `leaf`, whose keys are past all of its own, as its last
+/// leaf.
+fn push_last<V: Keyed + Clone>(node: &Node<V>, leaf: Arc<[V]>) -> Grown<V> {
+    match node {
+        Node::Leaf(_) => Grown::Split(node.clone(), Node::Leaf(leaf)),
+        Node::Branch(children) => {
+            let at = children.len() - 1;
+            let grown = push_last(&children[at].node, leaf);
+            regrown(children, at, grown, Growth::Appended)
+        }
+    }
+}
+
+/// `node` with `leaf`, whose keys come before all of its own, as its first
+/// leaf.
+fn push_first<V: Keyed + Clone>(node: &Node<V>, leaf: Arc<[V]>) -> Grown<V> {
+    match node {
+        Node::Leaf(_) => Grown::Split(Node::Leaf(leaf), node.clone()),
+        Node::Branch(children) => {
+            let grown = push_first(&children[0].node, leaf);
+            regrown(children, 0, grown, Growth::Inside)
+        }
+    }
+}
+
+/// `node`'s first leaf, and `node` without it (`None` when that was all of
+/// it). `last` is [`Growth::Appended`] when `node` is the last node of its
+/// level.
+fn pop_first<V: Keyed + Clone>(node: &Node<V>, last: Growth) -> (Arc<[V]>, Option<Node<V>>) {
+    match node {
+        Node::Leaf(values) => (values.clone(), None),
+        Node::Branch(children) => {
+            let growth = if children.len() == 1 {
+                last
+            } else {
+                Growth::Inside
+            };
+            let (leaf, rest) = pop_first(&children[0].node, growth);
+            (leaf, shrunk(children, 0, rest, last))
+        }
+    }
+}
+
+/// `node`'s last leaf, and `node` without it (`None` when that was all of
+/// it). `node` is the last node of its level.
+fn pop_last<V: Keyed + Clone>(node: &Node<V>) -> (Arc<[V]>, Option<Node<V>>) {
+    match node {
+        Node::Leaf(values) => (values.clone(), None),
+        Node::Branch(children) => {
+            let at = children.len() - 1;
+            let (leaf, rest) = pop_last(&children[at].node);
+            (leaf, shrunk(children, at, rest, Growth::Appended))
+        }
+    }
+}
+
+/// A tree's root: a branch left with one child gives way to it.
+fn rooted<V>(mut root: Node<V>) -> Node<V> {
+    while let Node::Branch(children) = &root
+        && children.len() == 1
+    {
+        let only = children[0].node.clone();
+        root = only;
+    }
+    root
+}
+
+/// What a change of the tree made of its root: the root, or a branch over
+/// the two halves it split into.
+fn grown_root<V: Keyed>(grown: Grown<V>) -> Node<V> {
+    match grown {
+        Grown::One(node) => node,
+        Grown::Split(lower, upper) => Node::Branch(Arc::new([Child::of(lower), Child::of(upper)])),
+    }
+}
+
+/// Two neighbouring nodes of the same depth, `lower` first, as one, or as
+/// two even halves. `growth` is [`Growth::Appended`] when `upper` is the last
+/// node of its level.
+fn join<V: Keyed + Clone>(lower: &Node<V>, upper: &Node<V>, growth: Growth) -> Grown<V> {
+    match (lower, upper) {
+        (Node::Leaf(a), Node::Leaf(b)) => {
+            let len = a.len() + b.len();
+            if len <= MAX {
+                return Grown::One(Node::Leaf(leaf(a.iter().chain(b.iter()).cloned(), len)));
+            }
+            let all: Vec<V> = a.iter().chain(b.iter()).cloned().collect();
+            let (lower, upper) = halves(&all);
+            Grown::Split(Node::Leaf(lower), Node::Leaf(upper))
+        }
+        (Node::Branch(a), Node::Branch(b)) => {
+            sized_branch(a.iter().chain(b.iter()).cloned(), a.len() + b.len(), growth)
+        }
+        _ => unreachable!("neighbours are at the same depth"),
+    }
+}
+
+/// `items` cut into even runs of about `fill` (one shorter run when there
+/// are fewer in all): between a node's least and most.
+fn chunks<T>(items: Vec<T>, fill: usize) -> Vec<Vec<T>> {
+    let count = items.len().div_ceil(fill).max(1);
+    let (base, extra) = (items.len() / count, items.len() % count);
+    let mut items = items.into_iter();
+    (0..count)
+        .map(|at| {
+            items
+                .by_ref()
+                .take(base + usize::from(at < extra))
+                .collect()
+        })
+        .collect()
+}
+
+/// A tree over `leaves` (at least one), in key order.
+fn tree_of<V: Keyed>(leaves: Vec<Arc<[V]>>) -> Node<V> {
+    let mut level: Vec<Child<V>> = leaves
+        .into_iter()
+        .map(|values| Child::of(Node::Leaf(values)))
+        .collect();
+    while level.len() > 1 {
+        level = chunks(level, BRANCH_FILL)
+            .into_iter()
+            .map(|children| Child::of(Node::Branch(children.into())))
+            .collect();
+    }
+    level.pop().expect("a tree of at least one leaf").node
+}
+
 impl<V: Keyed + Clone> PersistentSet<V> {
     pub(crate) fn new() -> Self {
-        Self { root: None, len: 0 }
+        Self {
+            head: None,
+            tree: None,
+            tail: None,
+            len: 0,
+        }
     }
 
     /// A set holding `values`, which are sorted by key with each key once.
@@ -464,25 +550,27 @@ impl<V: Keyed + Clone> PersistentSet<V> {
         if len == 0 {
             return Self::new();
         }
-        let runs = chunks(values, FILL);
-        let last = runs.len() - 1;
-        let mut level: Vec<Child<V>> = runs
+        if len <= MAX {
+            return Self {
+                head: None,
+                tree: None,
+                tail: Some(leaf(values.into_iter(), len)),
+                len,
+            };
+        }
+        let mut runs: Vec<Arc<[V]>> = chunks(values, FILL)
             .into_iter()
-            .enumerate()
-            .map(|(at, run)| {
-                let room = if at == last { MAX } else { run.len() };
+            .map(|run| {
                 let len = run.len();
-                Child::of(Node::Leaf(Leaf::of(run.into_iter(), len, room)))
+                leaf(run.into_iter(), len)
             })
             .collect();
-        while level.len() > 1 {
-            level = chunks(level, BRANCH_FILL)
-                .into_iter()
-                .map(|children| Child::of(Node::Branch(children.into())))
-                .collect();
-        }
+        let tail = runs.pop();
+        let head = Some(runs.remove(0));
         Self {
-            root: level.pop().map(|child| child.node),
+            head,
+            tree: (!runs.is_empty()).then(|| tree_of(runs)),
+            tail,
             len,
         }
     }
@@ -495,57 +583,146 @@ impl<V: Keyed + Clone> PersistentSet<V> {
         self.len
     }
 
+    /// The part that holds `key`, or would: the last part whose first key is
+    /// at or before it, or the first part. `None` when the set is empty.
+    fn part_for(&self, key: u64) -> Option<Part> {
+        let tail = self.tail.as_ref()?;
+        if key >= tail[0].key() {
+            return Some(Part::Tail);
+        }
+        if let Some(tree) = &self.tree
+            && key >= tree.first()
+        {
+            return Some(Part::Tree);
+        }
+        Some(if self.head.is_some() {
+            Part::Head
+        } else {
+            Part::Tail
+        })
+    }
+
     /// The value under `key`.
     pub(crate) fn get(&self, key: u64) -> Option<&V> {
-        let mut node = self.root.as_ref()?;
-        loop {
-            match node {
-                Node::Leaf(leaf) => {
-                    let values = leaf.values();
-                    return values
-                        .binary_search_by_key(&key, Keyed::key)
-                        .ok()
-                        .map(|at| &values[at]);
+        let values: &[V] = match self.part_for(key)? {
+            Part::Head => self.head.as_deref()?,
+            Part::Tail => self.tail.as_deref()?,
+            Part::Tree => {
+                let mut node = self.tree.as_ref()?;
+                loop {
+                    match node {
+                        Node::Leaf(values) => break values,
+                        Node::Branch(children) => node = &children[child_for(children, key)].node,
+                    }
                 }
-                Node::Branch(children) => node = &children[child_for(children, key)].node,
             }
-        }
+        };
+        values
+            .binary_search_by_key(&key, Keyed::key)
+            .ok()
+            .map(|at| &values[at])
     }
 
     /// A new version with `value`; `None` when its key is taken.
     pub(crate) fn inserted(&self, value: V) -> Option<Self> {
-        let Some(root) = self.root.as_ref() else {
+        let key = value.key();
+        let Some(part) = self.part_for(key) else {
             return Some(Self {
-                root: Some(Node::Leaf(Leaf::of(iter::once(value), 1, MAX))),
+                head: None,
+                tree: None,
+                tail: Some(leaf(iter::once(value), 1)),
                 len: 1,
             });
         };
-        let root = match insert(root, value, Growth::Appended)? {
-            Grown::One(node) => node,
-            Grown::Split(lower, upper) => {
-                Node::Branch(Arc::new([Child::of(lower), Child::of(upper)]))
+        let (head, tree, tail) = match part {
+            Part::Tree => {
+                let tree = insert(self.tree.as_ref()?, value, Growth::Appended)?;
+                (self.head.clone(), Some(grown_root(tree)), self.tail.clone())
+            }
+            Part::Tail => {
+                let tail = self.tail.as_ref()?;
+                let at = tail.binary_search_by_key(&key, Keyed::key).err()?;
+                match grown_leaf(tail, at, value, End::Last) {
+                    (tail, None) => (self.head.clone(), self.tree.clone(), Some(tail)),
+                    // A full tail leaves its lower part to the tree, or makes
+                    // it the head when there is none.
+                    (lower, Some(tail)) => match (&self.head, &self.tree) {
+                        (None, _) => (Some(lower), None, Some(tail)),
+                        (Some(head), None) => {
+                            (Some(head.clone()), Some(Node::Leaf(lower)), Some(tail))
+                        }
+                        (Some(head), Some(tree)) => (
+                            Some(head.clone()),
+                            Some(grown_root(push_last(tree, lower))),
+                            Some(tail),
+                        ),
+                    },
+                }
+            }
+            Part::Head => {
+                let head = self.head.as_ref()?;
+                let at = head.binary_search_by_key(&key, Keyed::key).err()?;
+                match grown_leaf(head, at, value, End::First) {
+                    (head, None) => (Some(head), self.tree.clone(), self.tail.clone()),
+                    // A full head leaves its upper part to the tree.
+                    (head, Some(upper)) => {
+                        let tree = match &self.tree {
+                            None => Node::Leaf(upper),
+                            Some(tree) => grown_root(push_first(tree, upper)),
+                        };
+                        (Some(head), Some(tree), self.tail.clone())
+                    }
+                }
             }
         };
         Some(Self {
-            root: Some(root),
+            head,
+            tree,
+            tail,
             len: self.len + 1,
         })
     }
 
     /// A new version without `key`; `None` when it holds no `key`.
     pub(crate) fn removed(&self, key: u64) -> Option<Self> {
-        let mut root = remove(self.root.as_ref()?, key, Growth::Appended)?;
-        // A branch left with one child gives way to it.
-        while let Node::Branch(children) = &root
-            && children.len() == 1
-        {
-            let only = children[0].node.clone();
-            root = only;
-        }
-        let len = self.len - 1;
+        let (head, tree, tail) = match self.part_for(key)? {
+            Part::Tree => {
+                let tree = remove(self.tree.as_ref()?, key, Growth::Appended)?;
+                (self.head.clone(), tree.map(rooted), self.tail.clone())
+            }
+            Part::Tail => {
+                let tail = self.tail.as_ref()?;
+                let at = tail.binary_search_by_key(&key, Keyed::key).ok()?;
+                match (leaf_without(tail, at), &self.tree) {
+                    (Some(tail), _) => (self.head.clone(), self.tree.clone(), Some(tail)),
+                    // The tree's last leaf is the tail now, or the head when
+                    // there is no tree.
+                    (None, Some(tree)) => {
+                        let (last, rest) = pop_last(tree);
+                        (self.head.clone(), rest.map(rooted), Some(last))
+                    }
+                    (None, None) => (None, None, self.head.clone()),
+                }
+            }
+            Part::Head => {
+                let head = self.head.as_ref()?;
+                let at = head.binary_search_by_key(&key, Keyed::key).ok()?;
+                match (leaf_without(head, at), &self.tree) {
+                    (Some(head), _) => (Some(head), self.tree.clone(), self.tail.clone()),
+                    // The tree's first leaf is the head now.
+                    (None, Some(tree)) => {
+                        let (first, rest) = pop_first(tree, Growth::Appended);
+                        (Some(first), rest.map(rooted), self.tail.clone())
+                    }
+                    (None, None) => (None, None, self.tail.clone()),
+                }
+            }
+        };
         Some(Self {
-            root: (len > 0).then_some(root),
-            len,
+            head,
+            tree,
+            tail,
+            len: self.len - 1,
         })
     }
 }
@@ -560,28 +737,43 @@ impl<V> PersistentSet<V> {
     }
 
     /// The leaves in key order, each a slice of values: a plain slice loop
-    /// over each, for the scan the routed hook runs on every call. A set
-    /// that is one leaf is read as that slice, with no walk of branches.
+    /// over each, for the scan the routed hook runs on every call. A set of
+    /// at most [`MAX`] values is one leaf, read with no walk of branches.
     #[inline]
     pub(crate) fn leaves(&self) -> Leaves<'_, V> {
-        match &self.root {
+        let tail = self.tail.as_deref();
+        let Some(head) = self.head.as_deref() else {
+            return Leaves {
+                next: tail,
+                queued: None,
+                deeper: None,
+                tail: None,
+            };
+        };
+        match &self.tree {
             None => Leaves {
-                next: None,
+                next: Some(head),
+                queued: None,
                 deeper: None,
+                tail,
             },
-            Some(Node::Leaf(leaf)) => Leaves {
-                next: Some(leaf.values()),
+            Some(Node::Leaf(values)) => Leaves {
+                next: Some(head),
+                queued: Some(values),
                 deeper: None,
+                tail,
             },
             Some(Node::Branch(children)) => {
                 let mut deeper = Deeper {
                     branches: std::array::from_fn(|_| [].iter()),
                     depth: 0,
                 };
-                let next = deeper.descend(children);
+                let queued = deeper.descend(children);
                 Leaves {
-                    next: Some(next),
+                    next: Some(head),
+                    queued: Some(queued),
                     deeper: Some(deeper),
+                    tail,
                 }
             }
         }
@@ -591,7 +783,9 @@ impl<V> PersistentSet<V> {
 impl<V> Clone for PersistentSet<V> {
     fn clone(&self) -> Self {
         Self {
-            root: self.root.clone(),
+            head: self.head.clone(),
+            tree: self.tree.clone(),
+            tail: self.tail.clone(),
             len: self.len,
         }
     }
@@ -612,191 +806,17 @@ impl<'a, V> IntoIterator for &'a PersistentSet<V> {
     }
 }
 
-/// `items` cut into even runs of about `fill` (one shorter run when there
-/// are fewer in all): between a node's least and most.
-fn chunks<T>(items: Vec<T>, fill: usize) -> Vec<Vec<T>> {
-    let count = items.len().div_ceil(fill).max(1);
-    let (base, extra) = (items.len() / count, items.len() % count);
-    let mut items = items.into_iter();
-    (0..count)
-        .map(|at| {
-            items
-                .by_ref()
-                .take(base + usize::from(at < extra))
-                .collect()
-        })
-        .collect()
-}
-
-/// `node` with `value`. `last` is [`Growth::Appended`] when `node` is the
-/// last node of its level, so a key past all of its own is appended to the
-/// set: in place, into the last leaf's chunk, while it has room.
-fn insert<V: Keyed + Clone>(node: &Node<V>, value: V, last: Growth) -> Option<Grown<V>> {
-    let key = value.key();
-    match node {
-        Node::Leaf(leaf) => {
-            let values = leaf.values();
-            let at = values.binary_search_by_key(&key, Keyed::key).err()?;
-            let growth = if at == values.len() {
-                last
-            } else {
-                Growth::Inside
-            };
-            if growth == Growth::Appended {
-                let value = match leaf.appended(value) {
-                    Ok(appended) => return Some(Grown::One(Node::Leaf(appended))),
-                    Err(value) => value,
-                };
-                if values.len() == MAX {
-                    // Full: the value starts the next leaf, and this one is
-                    // shared as it is.
-                    return Some(Grown::Split(
-                        Node::Leaf(leaf.clone()),
-                        Node::Leaf(Leaf::of(iter::once(value), 1, MAX)),
-                    ));
-                }
-                // No room in place: a copy with room, as it is not full.
-                let items = values.iter().cloned().chain(iter::once(value));
-                return Some(sized_leaf(items, values.len() + 1, growth));
-            }
-            let items = values[..at]
-                .iter()
-                .cloned()
-                .chain(iter::once(value))
-                .chain(values[at..].iter().cloned());
-            // The last leaf keeps its room for appends.
-            Some(sized_leaf(items, values.len() + 1, last))
-        }
-        Node::Branch(children) => {
-            let at = child_for(children, key);
-            let growth = if at + 1 == children.len() {
-                last
-            } else {
-                Growth::Inside
-            };
-            let (lower, upper) = match insert(&children[at].node, value, growth)? {
-                Grown::One(child) => (Child::of(child), None),
-                Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
-            };
-            let len = children.len() + usize::from(upper.is_some());
-            let items = children[..at]
-                .iter()
-                .cloned()
-                .chain(iter::once(lower))
-                .chain(upper)
-                .chain(children[at + 1..].iter().cloned());
-            Some(sized_branch(items, len, growth))
-        }
-    }
-}
-
-/// `node` without `key`, possibly empty or under [`MIN`] (its parent merges
-/// it); `None` when it holds no `key`. `last` is [`Growth::Appended`] when
-/// `node` is the last node of its level.
-fn remove<V: Keyed + Clone>(node: &Node<V>, key: u64, last: Growth) -> Option<Node<V>> {
-    match node {
-        Node::Leaf(leaf) => {
-            let values = leaf.values();
-            let at = values.binary_search_by_key(&key, Keyed::key).ok()?;
-            if at == 0 {
-                return Some(Node::Leaf(leaf.without_first(last.room(values.len() - 1))));
-            }
-            let rest = values[..at].iter().chain(&values[at + 1..]).cloned();
-            Some(Node::Leaf(Leaf::of(
-                rest,
-                values.len() - 1,
-                last.room(values.len() - 1),
-            )))
-        }
-        Node::Branch(children) => {
-            let at = child_for(children, key);
-            let growth = if at + 1 == children.len() {
-                last
-            } else {
-                Growth::Inside
-            };
-            let child = remove(&children[at].node, key, growth)?;
-            let next: Vec<Child<V>> = if child.width() == 0 {
-                children[..at]
-                    .iter()
-                    .chain(&children[at + 1..])
-                    .cloned()
-                    .collect()
-            } else if child.width() < child.least() && children.len() > 1 {
-                // Joined with a neighbour, as one node or two even halves.
-                let (left, joined) = if at + 1 < children.len() {
-                    let growth = if at + 2 == children.len() {
-                        last
-                    } else {
-                        Growth::Inside
-                    };
-                    (at, join(&child, &children[at + 1].node, growth))
-                } else {
-                    (at - 1, join(&children[at - 1].node, &child, growth))
-                };
-                let (lower, upper) = match joined {
-                    Grown::One(node) => (Child::of(node), None),
-                    Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
-                };
-                children[..left]
-                    .iter()
-                    .cloned()
-                    .chain(iter::once(lower))
-                    .chain(upper)
-                    .chain(children[left + 2..].iter().cloned())
-                    .collect()
-            } else {
-                children[..at]
-                    .iter()
-                    .cloned()
-                    .chain(iter::once(Child::of(child)))
-                    .chain(children[at + 1..].iter().cloned())
-                    .collect()
-            };
-            #[cfg(test)]
-            super::work::add(next.len());
-            Some(Node::Branch(next.into()))
-        }
-    }
-}
-
-/// Two neighbouring nodes of the same depth, `lower` first, as one, or as
-/// two even halves. `upper` is the last node of its level with
-/// [`Growth::Appended`].
-fn join<V: Keyed + Clone>(lower: &Node<V>, upper: &Node<V>, growth: Growth) -> Grown<V> {
-    match (lower, upper) {
-        (Node::Leaf(a), Node::Leaf(b)) => {
-            let len = a.width() + b.width();
-            let items = a.values().iter().chain(b.values()).cloned();
-            if len <= MAX {
-                return Grown::One(Node::Leaf(Leaf::of(items, len, growth.room(len))));
-            }
-            let half = len / 2;
-            Grown::Split(
-                Node::Leaf(Leaf::of(items.clone(), half, half)),
-                Node::Leaf(Leaf::of(
-                    items.skip(half),
-                    len - half,
-                    growth.room(len - half),
-                )),
-            )
-        }
-        (Node::Branch(a), Node::Branch(b)) => sized_branch(
-            a.iter().chain(b.iter()).cloned(),
-            a.len() + b.len(),
-            Growth::Inside,
-        ),
-        _ => unreachable!("neighbours are at the same depth"),
-    }
-}
-
 /// The leaves of a [`PersistentSet`] in key order (see
 /// [`PersistentSet::leaves`]).
 pub(crate) struct Leaves<'a, V> {
     /// The leaf to yield next.
     next: Option<&'a [V]>,
-    /// Where the leaves after it are, in a set deeper than one leaf.
+    /// The one after it: the tree's first leaf, after the head.
+    queued: Option<&'a [V]>,
+    /// Where the tree's other leaves are, in a tree deeper than one leaf.
     deeper: Option<Deeper<'a, V>>,
+    /// The last leaf, after the tree's.
+    tail: Option<&'a [V]>,
 }
 
 /// The branches above the leaf a [`Leaves`] is at.
@@ -818,7 +838,7 @@ impl<'a, V> Deeper<'a, V> {
             self.branches[self.depth] = rest;
             self.depth += 1;
             match &first.node {
-                Node::Leaf(leaf) => return leaf.values(),
+                Node::Leaf(values) => return values,
                 Node::Branch(next) => children = next,
             }
         }
@@ -834,7 +854,7 @@ impl<'a, V> Deeper<'a, V> {
             match self.branches[self.depth - 1].next() {
                 Some(child) => {
                     return Some(match &child.node {
-                        Node::Leaf(leaf) => leaf.values(),
+                        Node::Leaf(values) => values,
                         Node::Branch(children) => self.descend(children),
                     });
                 }
@@ -850,7 +870,14 @@ impl<'a, V> Iterator for Leaves<'a, V> {
     #[inline]
     fn next(&mut self) -> Option<&'a [V]> {
         let leaf = self.next.take()?;
-        self.next = self.deeper.as_mut().and_then(Deeper::next_leaf);
+        self.next = match self.queued.take() {
+            Some(queued) => Some(queued),
+            None => self
+                .deeper
+                .as_mut()
+                .and_then(Deeper::next_leaf)
+                .or_else(|| self.tail.take()),
+        };
         Some(leaf)
     }
 }
@@ -877,7 +904,10 @@ impl<'a, V> Iterator for Iter<'a, V> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
 
@@ -887,16 +917,18 @@ mod tests {
         }
     }
 
-    /// The depth of every leaf, and whether every node but the root and the
-    /// last of its level holds at least `MIN`, and every node at most `MAX`,
-    /// with each branch's `first` right and each leaf within its chunk's
-    /// written slots.
-    fn check<V: Keyed + Clone>(set: &PersistentSet<V>) -> usize {
+    /// The depth of the tree's leaves, checking the set's shape: the tail
+    /// holds a value whenever the set does and the head whenever the tree
+    /// does, the edges hold at most `MAX`, every key comes in order across
+    /// the parts, and in the tree every node but the root and the edges of
+    /// its level holds at least its least and every node at most its most,
+    /// with each branch's `first` right.
+    fn check<V: Keyed>(set: &PersistentSet<V>) -> usize {
         fn walk<V: Keyed>(
             node: &Node<V>,
             depth: usize,
             root: bool,
-            last: bool,
+            edge: bool,
             depths: &mut Vec<usize>,
         ) -> usize {
             let width = node.width();
@@ -905,21 +937,14 @@ mod tests {
                 Node::Branch(_) => BRANCH_MAX,
             };
             assert!(width <= most, "{width} > {most}");
+            assert!(width > 0, "an empty node");
             assert!(
-                root || last || width >= node.least(),
-                "{width} < {} below the root",
+                root || edge || width >= node.least(),
+                "{width} < {} inside the tree",
                 node.least()
             );
             match node {
-                Node::Leaf(leaf) => {
-                    let values = leaf.values();
-                    assert!(values.windows(2).all(|pair| pair[0].key() < pair[1].key()));
-                    assert!(leaf.end as usize <= leaf.chunk().written.load(Ordering::Acquire));
-                    assert!((leaf.start as usize) <= SKIPPED);
-                    assert!(
-                        leaf.chunk().dropped.load(Ordering::Acquire) <= leaf.start as usize,
-                        "a leaf reads a dropped slot"
-                    );
+                Node::Leaf(values) => {
                     depths.push(depth);
                     values.len()
                 }
@@ -935,20 +960,44 @@ mod tests {
                         .enumerate()
                         .map(|(at, child)| {
                             assert_eq!(child.first, child.node.first());
-                            let last = last && at + 1 == children.len();
-                            walk(&child.node, depth + 1, false, last, depths)
+                            let edge = edge && (at == 0 || at + 1 == children.len());
+                            walk(&child.node, depth + 1, false, edge, depths)
                         })
                         .sum()
                 }
             }
         }
+        assert_eq!(
+            set.tail.is_some(),
+            set.len > 0,
+            "a tail while there are values"
+        );
+        assert!(
+            set.tree.is_none() || set.head.is_some(),
+            "a head with a tree"
+        );
+        for edge in [&set.head, &set.tail].into_iter().flatten() {
+            assert!(
+                !edge.is_empty() && edge.len() <= MAX,
+                "an edge of {}",
+                edge.len()
+            );
+        }
         let mut depths = Vec::new();
-        let counted = set
-            .root
+        let in_tree = set
+            .tree
             .as_ref()
             .map_or(0, |root| walk(root, 1, true, true, &mut depths));
-        assert_eq!(counted, set.len);
+        let in_edges = set.head.as_ref().map_or(0, |head| head.len())
+            + set.tail.as_ref().map_or(0, |tail| tail.len());
+        assert_eq!(in_tree + in_edges, set.len);
         assert!(depths.windows(2).all(|pair| pair[0] == pair[1]), "balanced");
+        let keys: Vec<u64> = set.iter().map(Keyed::key).collect();
+        assert!(
+            keys.windows(2).all(|pair| pair[0] < pair[1]),
+            "in key order"
+        );
+        assert_eq!(keys.len(), set.len);
         depths.first().copied().unwrap_or(0)
     }
 
@@ -972,54 +1021,108 @@ mod tests {
     }
 
     /// Inserts and removes in random order agree with a `BTreeMap` at every
-    /// step, the tree stays balanced and filled, and every earlier version
-    /// still reads as it was.
+    /// step, the set keeps its shape, and every earlier version still reads
+    /// as it was.
     #[test]
     fn random_inserts_and_removes_match_a_btreemap() {
-        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for (seed, keys, steps) in [
+            (0x9e37_79b9_7f4a_7c15u64, 3_000u64, 20_000),
+            (0x2545_f491_4f6c_dd1d, 100, 5_000),
+            (0x5851_f42d_4c95_7f2d, 40, 5_000),
+        ] {
+            let mut rng = Rng(seed);
+            let mut set = PersistentSet::new();
+            let mut model = BTreeMap::new();
+            let mut versions: Vec<(PersistentSet<u64>, Vec<u64>)> = Vec::new();
+            for step in 0..steps {
+                let key = rng.next() % keys;
+                if rng.next().is_multiple_of(3) {
+                    match set.removed(key) {
+                        Some(next) => {
+                            assert!(model.remove(&key).is_some());
+                            set = next;
+                        }
+                        None => assert!(!model.contains_key(&key)),
+                    }
+                } else {
+                    match set.inserted(key) {
+                        Some(next) => {
+                            assert!(model.insert(key, key).is_none());
+                            set = next;
+                        }
+                        None => assert!(model.contains_key(&key)),
+                    }
+                }
+                if keys < 1_000 || step % 97 == 0 {
+                    check(&set);
+                }
+                if step % 997 == 0 {
+                    assert_eq!(contents(&set), model.keys().copied().collect::<Vec<_>>());
+                    versions.push((set.clone(), contents(&set)));
+                }
+                assert_eq!(set.len, model.len());
+                assert_eq!(set.get(key).is_some(), model.contains_key(&key));
+            }
+            for (version, expected) in &versions {
+                assert_eq!(&contents(version), expected, "an earlier version changed");
+            }
+            // Down to nothing, removing in random order.
+            let mut keys: Vec<u64> = model.keys().copied().collect();
+            while !keys.is_empty() {
+                let key = keys.swap_remove((rng.next() % keys.len() as u64) as usize);
+                set = set.removed(key).expect("held");
+                check(&set);
+                assert!(set.get(key).is_none());
+            }
+            assert!(set.is_empty());
+            assert_eq!(set.iter().count(), 0);
+            assert_eq!(set.leaves().count(), 0);
+        }
+    }
+
+    /// Observers churning as they do (the oldest leaves, a newest joins,
+    /// now and then one in the middle) agree with a `BTreeMap`, from one
+    /// observer up to thousands and back.
+    #[test]
+    fn churn_at_the_edges_matches_a_btreemap() {
+        let mut rng = Rng(0x0123_4567_89ab_cdef);
         let mut set = PersistentSet::new();
         let mut model = BTreeMap::new();
-        let mut versions: Vec<(PersistentSet<u64>, Vec<u64>)> = Vec::new();
-        for step in 0..20_000 {
-            let key = rng.next() % 3_000;
-            if rng.next().is_multiple_of(3) {
-                match set.removed(key) {
-                    Some(next) => {
-                        assert!(model.remove(&key).is_some());
-                        set = next;
-                    }
-                    None => assert!(!model.contains_key(&key)),
-                }
+        let mut next = 0u64;
+        for step in 0..60_000u64 {
+            // Grow to about 3,000, shrink to nothing, grow again.
+            let target = if (step / 15_000).is_multiple_of(2) {
+                3_000
             } else {
-                match set.inserted(key) {
-                    Some(next) => {
-                        assert!(model.insert(key, key).is_none());
-                        set = next;
-                    }
-                    None => assert!(model.contains_key(&key)),
+                0
+            };
+            let roll = rng.next() % 16;
+            if roll == 0 && !model.is_empty() {
+                // One in the middle leaves.
+                let nth = (rng.next() % model.len() as u64) as usize;
+                let key = *model.keys().nth(nth).unwrap();
+                set = set.removed(key).unwrap();
+                model.remove(&key);
+            } else if roll == 1 && !model.is_empty() {
+                // One in the middle comes back (a key between two held).
+                let key = rng.next() % next.max(1);
+                if let Some(grown) = set.inserted(key) {
+                    assert!(model.insert(key, key).is_none());
+                    set = grown;
                 }
+            } else if model.len() < target || (model.len() == target && roll < 9) {
+                set = set.inserted(next).unwrap();
+                model.insert(next, next);
+                next += 1;
+            } else if let Some((&first, _)) = model.iter().next() {
+                set = set.removed(first).unwrap();
+                model.remove(&first);
             }
-            if step % 997 == 0 {
+            if step % 101 == 0 || model.len() < 2 * MAX {
                 check(&set);
                 assert_eq!(contents(&set), model.keys().copied().collect::<Vec<_>>());
-                versions.push((set.clone(), contents(&set)));
             }
-            assert_eq!(set.len, model.len());
-            assert_eq!(set.get(key).is_some(), model.contains_key(&key));
         }
-        for (version, expected) in &versions {
-            assert_eq!(&contents(version), expected, "an earlier version changed");
-        }
-        // Down to nothing, removing in random order.
-        let mut keys: Vec<u64> = model.keys().copied().collect();
-        while !keys.is_empty() {
-            let key = keys.swap_remove((rng.next() % keys.len() as u64) as usize);
-            set = set.removed(key).expect("held");
-            check(&set);
-        }
-        assert!(set.is_empty());
-        assert_eq!(set.iter().count(), 0);
-        assert_eq!(set.leaves().count(), 0);
     }
 
     /// Appending in order, the common case (new observers are the newest),
@@ -1031,48 +1134,64 @@ mod tests {
             set = set.inserted(key).unwrap();
         }
         let depth = check(&set);
-        assert!(depth <= 5, "depth {depth}");
+        assert!(depth <= 4, "depth {depth}");
         assert_eq!(contents(&set), (0..50_000).collect::<Vec<_>>());
 
-        for len in [0, 1, MIN - 1, MIN, FILL, MAX, MAX + 1, 1_000, 50_000] {
+        for len in [
+            0,
+            1,
+            MIN - 1,
+            MIN,
+            FILL,
+            MAX,
+            MAX + 1,
+            2 * MAX,
+            2 * MAX + 1,
+            1_000,
+            50_000,
+        ] {
             let built = PersistentSet::from_sorted((0..len as u64).collect());
             check(&built);
             assert_eq!(contents(&built), (0..len as u64).collect::<Vec<_>>());
         }
     }
 
-    /// A value that counts how many of it are alive, clones included, so a
-    /// test sees each one dropped once, whichever versions held it.
-    struct Counted(u64, Arc<AtomicUsize>);
+    /// A value shared as the active sets share an observer: a clone is the
+    /// same value, and `alive` counts the values none of whose clones has
+    /// gone yet, so a test sees each one dropped with the last version that
+    /// holds it.
+    #[derive(Clone)]
+    struct Counted {
+        key: u64,
+        _life: Arc<Life>,
+    }
+
+    struct Life(Arc<AtomicUsize>);
 
     impl Counted {
         fn new(key: u64, alive: &Arc<AtomicUsize>) -> Self {
             alive.fetch_add(1, Ordering::Relaxed);
-            Self(key, alive.clone())
-        }
-    }
-
-    impl Clone for Counted {
-        fn clone(&self) -> Self {
-            Self::new(self.0, &self.1)
+            Self {
+                key,
+                _life: Arc::new(Life(alive.clone())),
+            }
         }
     }
 
     impl Keyed for Counted {
         fn key(&self) -> u64 {
-            self.0
+            self.key
         }
     }
 
-    impl Drop for Counted {
+    impl Drop for Life {
         fn drop(&mut self) {
-            self.1.fetch_sub(1, Ordering::Relaxed);
+            self.0.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
-    /// Every value made is dropped once all the versions that held it are:
-    /// nothing written into a chunk is lost or dropped twice, whether it
-    /// went in place or in a copy.
+    /// Every value made is dropped once all the versions that held it are,
+    /// and once only the last version is left, only its values live.
     #[test]
     fn every_value_is_dropped_once() {
         let alive = Arc::new(AtomicUsize::new(0));
@@ -1095,7 +1214,7 @@ mod tests {
                     if let Some(grown) = set.inserted(value) {
                         set = grown;
                     }
-                } else if let Some(first) = set.iter().next().map(|v: &Counted| v.0) {
+                } else if let Some(first) = set.iter().next().map(|v: &Counted| v.key) {
                     let key = if roll < 9 {
                         first
                     } else {
@@ -1126,11 +1245,10 @@ mod tests {
         assert_eq!(alive.load(Ordering::Relaxed), 0, "each value dropped once");
     }
 
-    /// A value a leaf passes over at its front (an oldest observer leaving)
-    /// goes with the last version that reads it, before and after the leaf
-    /// is copied without what it passed over, in the first leaf or another.
+    /// A value taken out (an observer leaving) goes with the last version
+    /// that holds it, wherever it was: first, last, or in the tree.
     #[test]
-    fn a_value_passed_over_goes_with_the_last_version_that_reads_it() {
+    fn a_removed_value_goes_with_the_last_version_that_holds_it() {
         let alive = Arc::new(AtomicUsize::new(0));
         let live = || alive.load(Ordering::Relaxed);
         let counted = |keys: std::ops::Range<u64>| -> Vec<Counted> {
@@ -1140,40 +1258,31 @@ mod tests {
             let mut set = PersistentSet::from_sorted(counted(0..10));
             let held = set.clone();
             set = set.removed(0).unwrap();
-            assert_eq!(live(), 10, "an earlier version still reads 0");
+            assert_eq!(live(), 10, "an earlier version still holds 0");
             drop(held);
-            assert_eq!(live(), 9, "0 goes with the last version that reads it");
-            assert_eq!(set.iter().next().map(|value| value.0), Some(1));
+            assert_eq!(live(), 9, "0 goes with the last version that holds it");
+            assert_eq!(set.iter().next().map(|value| value.key), Some(1));
 
-            // Through `SKIPPED` front removals and past them, where the
-            // leaf is copied (with clones of what it keeps), each value goes
-            // with its removal.
-            let mut set = PersistentSet::from_sorted(counted(100..200));
-            for key in 100..190 {
+            // The oldest leaving, one after another, through the head and
+            // the tree's leaves it takes: each goes with its removal.
+            let mut set = PersistentSet::from_sorted(counted(100..400));
+            for key in 100..390 {
                 set = set.removed(key).unwrap();
                 assert_eq!(live(), 9 + set.len(), "after removing {key}");
                 check(&set);
             }
 
-            // A version held across front removals keeps what it reads
-            // until it goes.
+            // A version held across removals keeps what it holds until it
+            // goes.
             let before = live();
-            let mut set = PersistentSet::from_sorted(counted(200..300));
+            let mut set = PersistentSet::from_sorted(counted(1_000..1_300));
             let held = set.clone();
-            for key in 200..210 {
+            for key in (1_000..1_010).chain([1_150, 1_299]) {
                 set = set.removed(key).unwrap();
             }
-            assert_eq!(live(), before + 100, "the held version reads 200..210");
+            assert_eq!(live(), before + 300, "the held version holds them");
             drop(held);
-            assert_eq!(live(), before + 90);
-
-            // The first value of a leaf other than the first.
-            let before = live();
-            let mut set = PersistentSet::from_sorted(counted(1_000..2_000));
-            let second = set.leaves().nth(1).unwrap()[0].0;
-            set = set.removed(second).unwrap();
-            assert_eq!(live(), before + 999);
-            check(&set);
+            assert_eq!(live(), before + 288);
         }
         assert_eq!(live(), 0);
     }
@@ -1201,7 +1310,7 @@ mod tests {
                             if held.len() > 8 {
                                 let (version, from, to) =
                                     held.swap_remove((rng.next() % held.len() as u64) as usize);
-                                let keys: Vec<u64> = version.iter().map(|v| v.0).collect();
+                                let keys: Vec<u64> = version.iter().map(|v| v.key).collect();
                                 assert_eq!(keys, (from..to).collect::<Vec<_>>());
                             }
                         }
@@ -1210,8 +1319,7 @@ mod tests {
                 })
                 .collect();
             // The oldest goes or a newest joins, as observers churn, with
-            // between 250 and 350 of them; the last changes are removals,
-            // so the first leaf has passed over values.
+            // between 250 and 350 of them.
             for step in 0..20_003u64 {
                 let len = set.len();
                 let remove =
@@ -1233,62 +1341,37 @@ mod tests {
         assert_eq!(alive.load(Ordering::Relaxed), 0, "each value dropped once");
     }
 
-    /// The commonest changes copy no leaf: a value past every key goes into
-    /// the next slot of the last leaf's chunk, and the first value leaves a
-    /// leaf by the leaf starting a slot later, until it has passed over
-    /// `SKIPPED`. An earlier version reads as it was through both.
+    /// The commonest changes copy one edge leaf: a value past every key goes
+    /// into a copy of the tail, and the first value leaves a copy of the
+    /// head; the tree's edge is copied once every `MAX` of them, as the tail
+    /// joins it or the head takes its first leaf. An earlier version reads
+    /// as it was through both.
     #[test]
-    fn appends_and_front_removals_copy_no_leaf() {
-        fn chunks(set: &PersistentSet<u64>) -> Vec<*const Chunk<u64>> {
-            fn walk(node: &Node<u64>, out: &mut Vec<*const Chunk<u64>>) {
-                match node {
-                    Node::Leaf(leaf) => out.push(leaf.chunk.as_ptr().cast_const()),
-                    Node::Branch(children) => children.iter().for_each(|c| walk(&c.node, out)),
-                }
-            }
-            let mut out = Vec::new();
-            if let Some(root) = &set.root {
-                walk(root, &mut out);
-            }
-            out
-        }
+    fn appends_and_front_removals_copy_an_edge() {
         let mut set = PersistentSet::from_sorted((0..1_000u64).collect());
         let before = set.clone();
         super::super::work::take();
-        let mut new_chunks = 0;
-        for key in 1_000..1_100u64 {
-            let next = set.inserted(key).unwrap();
-            let (was, now) = (chunks(&set), chunks(&next));
-            new_chunks += now.iter().filter(|c| !was.contains(c)).count();
-            set = next;
+        for key in 1_000..1_320u64 {
+            set = set.inserted(key).unwrap();
         }
-        // Only a leaf filling up starts another; the branch above the last
-        // leaf is copied, one slot a child, on each.
-        assert_eq!(new_chunks, 1, "one leaf filled up");
         let appended = super::super::work::take();
         assert!(
-            appended < 100 * 16,
-            "{appended} slots copied for 100 appends"
+            appended < 320 * (MAX / 2 + 8),
+            "{appended} slots copied for 320 appends"
         );
-        let mut new_chunks = 0;
-        for key in 0..20u64 {
-            let next = set.removed(key).unwrap();
-            let (was, now) = (chunks(&set), chunks(&next));
-            new_chunks += now.iter().filter(|c| !was.contains(c)).count();
-            set = next;
+        for key in 0..320u64 {
+            set = set.removed(key).unwrap();
         }
-        assert_eq!(new_chunks, 0, "the first leaf starts later each time");
         let removed = super::super::work::take();
         assert!(
-            removed < 20 * 16,
-            "{removed} slots copied for 20 front removals"
+            removed < 320 * (MAX / 2 + 8),
+            "{removed} slots copied for 320 front removals"
         );
         check(&set);
-        assert_eq!(contents(&set), (20..1_100).collect::<Vec<_>>());
+        assert_eq!(contents(&set), (320..1_320).collect::<Vec<_>>());
         assert_eq!(contents(&before), (0..1_000).collect::<Vec<_>>());
 
-        // Two versions appending past the same leaf: the first writes in
-        // place, the second copies.
+        // Two versions appending past the same tail each get their own.
         let base = PersistentSet::from_sorted((0..10u64).collect());
         let a = base.inserted(10).unwrap();
         let b = base.inserted(11).unwrap();
@@ -1308,7 +1391,8 @@ mod tests {
                 check(&set);
             }
         }
-        assert_eq!(check(&set), 1, "ten values fit in one leaf");
+        check(&set);
+        assert!(set.tree.is_none(), "ten values fit in the edges");
         assert_eq!(contents(&set), (9_990..10_000).collect::<Vec<_>>());
     }
 }
