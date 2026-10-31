@@ -42,7 +42,7 @@ use crate::{
             channels::ChannelManager,
             inbound::{Inbound, Oversized},
             rbac_session,
-            worker_socket::{WorkerSocket, feed_json},
+            worker_socket::{WorkerSocket, send_json},
         },
     },
 };
@@ -58,10 +58,6 @@ const LOGS_WS_PREFIX: &[u8] = b"LOGS";
 /// loop to exit and finish its own cleanup before tearing the connection
 /// down directly (wedged reader guard).
 const REATTACH_EVICT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Messages a connection's writer puts in the socket's write buffer before it
-/// flushes, while more wait in its queue.
-const WRITE_BATCH: usize = 32;
 
 /// Function provided by the standalone `queue` worker in each project
 /// namespace. The engine owns receipt generation and uses this function only
@@ -2712,26 +2708,7 @@ impl Engine {
         let writer_engine = self.clone();
 
         let writer = tokio::spawn(async move {
-            // The messages waiting in the queue go to the socket's write
-            // buffer together, flushed when the queue is empty or every
-            // `WRITE_BATCH` messages: a burst is one write to the socket.
-            let mut unflushed = 0usize;
-            loop {
-                let outbound = match rx.try_recv() {
-                    Ok(outbound) => outbound,
-                    Err(_) => {
-                        if unflushed > 0 {
-                            if ws_tx.flush().await.is_err() {
-                                break;
-                            }
-                            unflushed = 0;
-                        }
-                        match rx.recv().await {
-                            Some(outbound) => outbound,
-                            None => break,
-                        }
-                    }
-                };
+            while let Some(outbound) = rx.recv().await {
                 let send_result = match outbound {
                     Outbound::Protocol(msg) => {
                         let serialized = match serde_json::to_string(&msg) {
@@ -2747,23 +2724,13 @@ impl Engine {
                         else {
                             continue;
                         };
-                        feed_json(&mut ws_tx, payload).await
+                        send_json(&mut ws_tx, payload).await
                     }
-                    Outbound::Raw(frame) => ws_tx.feed(frame).await,
+                    Outbound::Raw(frame) => ws_tx.send(frame).await,
                 };
 
                 if send_result.is_err() {
-                    // What the buffer holds goes out: a close frame is followed
-                    // by messages tungstenite refuses to send after it.
-                    let _ = ws_tx.flush().await;
                     break;
-                }
-                unflushed += 1;
-                if unflushed >= WRITE_BATCH {
-                    if ws_tx.flush().await.is_err() {
-                        break;
-                    }
-                    unflushed = 0;
                 }
             }
         });
