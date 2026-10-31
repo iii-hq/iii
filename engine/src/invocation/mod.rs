@@ -153,6 +153,7 @@ impl InvocationHandler {
             invocation_id,
             worker_id,
             None,
+            worker_id,
             function_id,
             crate::protocol::DEFAULT_NAMESPACE,
             body,
@@ -183,10 +184,12 @@ impl InvocationHandler {
         metadata: Option<Value>,
         ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
+        let worker_id = caller.map(|worker| worker.id);
         self.handle_invocation_inner(
             invocation_id,
-            caller.map(|worker| worker.id),
+            worker_id,
             caller.filter(|_| invocation_id.is_some()),
+            worker_id,
             function_id,
             namespace,
             body,
@@ -200,12 +203,55 @@ impl InvocationHandler {
         .await
     }
 
+    /// A call through an observer: `host` sent it and gets its answer, and
+    /// it is the observing worker's call. `observing` is the observing
+    /// connection (`None` for an observer the engine owns): a private
+    /// target takes the call only from it, as RBAC takes the observing
+    /// worker's `session`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn handle_observer_call(
+        &self,
+        invocation_id: Uuid,
+        host: &WorkerConnection,
+        observing: Option<Uuid>,
+        function_id: String,
+        namespace: &str,
+        body: Value,
+        function_handler: Arc<HandlerFn>,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+        session: Option<Arc<Session>>,
+        metadata: Option<Value>,
+        ctx: InvocationCtx,
+    ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
+        self.handle_invocation_inner(
+            Some(invocation_id),
+            Some(host.id),
+            Some(host),
+            observing,
+            function_id,
+            namespace,
+            body,
+            function_handler,
+            traceparent,
+            baggage,
+            session,
+            metadata,
+            ctx,
+        )
+        .await
+    }
+
+    /// `worker_id` and `caller` are the calling connection; `routed_as` is
+    /// whose call a private function checks (the calling connection, or the
+    /// observing one for a call through an observer).
     #[allow(clippy::too_many_arguments)]
     async fn handle_invocation_inner<H: AsRef<HandlerFn> + Send>(
         &self,
         invocation_id: Option<Uuid>,
         worker_id: Option<Uuid>,
         caller: Option<&WorkerConnection>,
+        routed_as: Option<Uuid>,
         function_id: String,
         namespace: &str,
         body: Value,
@@ -223,7 +269,7 @@ impl InvocationHandler {
         let observers = self.observers.get();
         let observed = match observers.map(|registry| {
             registry
-                .route(namespace, &function_id, worker_id)
+                .route(namespace, &function_id, routed_as)
                 .map(|set| (registry, set))
         }) {
             Some(Err(refused)) => return Ok(Err(refused)),
