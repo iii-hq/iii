@@ -197,6 +197,7 @@ impl ObserverRegistry {
                 worker_name: Some(engine_names().0.clone()),
                 namespace: engine_names().1.clone(),
                 session: None,
+                answered: true,
             },
             flags: Flags {
                 observing_connected: true,

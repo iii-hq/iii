@@ -252,7 +252,7 @@ impl ObserverRegistry {
                     ),
                 ));
             }
-            let (state, reason) = existing.snapshot_state();
+            let (state, reason) = existing.answer_replay();
             let error = (state == ObserverState::Error).then_some(reason).flatten();
             self.notify(
                 worker.id,
@@ -268,12 +268,20 @@ impl ObserverRegistry {
         // A replay of an observer disposed meanwhile (max_fires, expiry, an
         // admin's dispose while the worker was away, a new connection of its
         // worker replacing it) stays disposed, whichever observer holds the id.
+        // A connection that heard the disposal replays nothing more of it.
         if let Some(tombstone) = self.tombstones.get(request.id.as_str())
             && tombstone.connection == worker.id
+            && !tombstone.heard
             && tombstone.until > Instant::now()
         {
             let reason = ErrorBody::clone(&tombstone.reason);
             drop(tombstone);
+            // Its replay answered, the connection has heard the disposal.
+            if let Some(mut tombstone) = self.tombstones.get_mut(request.id.as_str())
+                && tombstone.connection == worker.id
+            {
+                tombstone.heard = true;
+            }
             self.notify(
                 worker.id,
                 Message::ObserveResult {
@@ -549,6 +557,9 @@ impl ObserverRegistry {
                     worker_name,
                     namespace,
                     session: worker.session.clone(),
+                    // Its creation's answer is queued under its status lock,
+                    // before any transition is reported (see `publish`).
+                    answered: true,
                 }
             },
             flags: Flags {
@@ -775,6 +786,11 @@ impl ObserverRegistry {
     pub fn unobserve(&self, connection: Uuid, id: &str) {
         let Some(observer) = self.get(id) else {
             tracing::debug!(observer_id = %id, "unobserve for an unknown observer; ignoring");
+            // Its handle is disposed: a tombstone of this connection (an
+            // observer the engine disposed while the worker was away)
+            // answers no later `observe` of the id.
+            self.tombstones
+                .remove_if(id, |_, tombstone| tombstone.connection == connection);
             return;
         };
         if observer.observing_connection() != connection {
@@ -783,6 +799,8 @@ impl ObserverRegistry {
                 connection = %connection,
                 "unobserve from a connection that does not own the observer; ignoring"
             );
+            self.tombstones
+                .remove_if(id, |_, tombstone| tombstone.connection == connection);
             return;
         }
         // A tombstone answers a replay of an observer disposed while its worker
@@ -945,6 +963,7 @@ impl ObserverRegistry {
                 worker_name: observing.worker_name,
                 namespace: observing.namespace,
                 session: new_connection.session.clone(),
+                answered: false,
             });
             self.by_connection
                 .entry(connection)
@@ -988,6 +1007,7 @@ impl ObserverRegistry {
         for mut tombstone in self.tombstones.iter_mut() {
             if tombstone.connection == previous {
                 tombstone.connection = connection;
+                tombstone.heard = false;
             }
         }
         let hook = new_connection.session.as_ref().and_then(|session| {
@@ -1052,6 +1072,7 @@ impl ObserverRegistry {
                     connection,
                     reason,
                     until,
+                    heard: false,
                 },
             );
         }
