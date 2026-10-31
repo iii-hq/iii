@@ -747,7 +747,7 @@ Each key under `containers` is the name the worker registers under.
 | Field             | Type           | Default              | Description                                                                                                |
 | ----------------- | -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `worker`          | string         | required             | `path://<dir>` or `package://<name>`. A package may name its registry: `package://<registry-host>/<name>`. |
-| `version`         | string         | absent               | Version range. Required for `package://`, and not empty.                                                   |
+| `version`         | string         | absent               | Version range. Required, and not empty, for `package://`. A `path://` worker ignores it.                   |
 | `start_after`     | array          | empty                | Workers that must start first (ie. a worker dependency). Self-dependencies and cycles are rejected.        |
 | `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this worker owns.                                        |
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration; a mapping whose `name` changes is replaced whole.              |
