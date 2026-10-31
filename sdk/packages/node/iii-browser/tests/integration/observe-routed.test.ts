@@ -362,6 +362,36 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     expect(frames.frames.filter((f) => f.type === 'unobserve')).toHaveLength(0)
   })
 
+  it('an id the engine disposed (max_fires, expires_in_ms) is free at once: observed again, it delivers', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner.registerFunction(`e2e::again-${RUN}`, async (n: number) => ({ n }))
+    const got = collector(watcher, `e2e::on-again-${RUN}`)
+    const source = { function_id: `e2e::again-${RUN}` }
+    const target = `e2e::on-again-${RUN}`
+    const id = `again-${RUN}`
+    for (const round of [1, 2]) {
+      const once = watcher.observe(source, target, { id, max_fires: 1 })
+      await once.ready()
+      await watcher.call({ function_id: `e2e::again-${RUN}`, payload: round })
+      await waitFor(() => once.state === 'disposed', `round ${round}: the max_fires disposal`)
+      expect(once.reason?.code).toBe('MAX_FIRES')
+      await waitFor(() => got.length === round, `round ${round}: its activation`)
+    }
+
+    const lease = `lease-${RUN}`
+    const first = watcher.observe(source, target, { id: lease, expires_in_ms: 200 })
+    await first.ready()
+    await waitFor(() => first.state === 'disposed', 'the expiry')
+    expect(first.reason?.code).toBe('EXPIRED')
+    const renewed = watcher.observe(source, target, { id: lease })
+    await renewed.ready()
+    await watcher.call({ function_id: `e2e::again-${RUN}`, payload: 3 })
+    await waitFor(() => got.length === 3, 'an activation through the renewed observer')
+    expect(got[2].data.observer_id).toBe(lease)
+    await renewed.dispose()
+  })
+
   it('the observer survives a reconnect of its worker (same id, replayed)', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
