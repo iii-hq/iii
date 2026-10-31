@@ -30,6 +30,8 @@ export class ObserverHandleImpl implements ObserverHandle {
   private delivering = false
   /** @internal Sent on some connection: the engine may hold it, so disposing it needs an `unobserve`. */
   sent = false
+  /** @internal The engine's `observeresult` for its `observe` on this connection arrived (decision 56). */
+  answered = false
 
   constructor(
     readonly id: string,
