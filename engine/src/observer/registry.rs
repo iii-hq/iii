@@ -825,10 +825,12 @@ impl ObserverRegistry {
     /// is long gone, as long as its grace period has not ended. After that,
     /// see [`Self::reattach_late`].
     ///
-    /// Re-parenting never rejects an observer: `max_per_connection` applies
-    /// when observers are created, and these were created already.
+    /// `max_per_connection` is not applied again: these were created already.
+    /// RBAC is: the new connection's session may be narrower, so an observer
+    /// whose function or target it may not invoke is disposed `FORBIDDEN`.
     pub fn reattach(
         self: &Arc<Self>,
+        engine: &Engine,
         previous: Uuid,
         token: Option<&str>,
         connection: &WorkerConnection,
@@ -885,6 +887,24 @@ impl ObserverRegistry {
                         observing.is_empty()
                     });
                 continue;
+            }
+            if let Some(session) = &observer.observing().session {
+                let denied = [&observer.function, &observer.target].into_iter().find(
+                    |(namespace, function)| {
+                        !engine.is_function_allowed(session, Some(namespace), function)
+                    },
+                );
+                if let Some((namespace, function)) = denied {
+                    self.dispose(
+                        &observer,
+                        observe_codes::FORBIDDEN,
+                        format!(
+                            "function '{function}' not allowed in namespace '{namespace}' \
+                             for the reconnected worker"
+                        ),
+                    );
+                    continue;
+                }
             }
             self.update(&observer, |flags| flags.observing_connected = true);
             moved.push(observer);
@@ -1042,7 +1062,7 @@ mod tests {
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Suspended));
         let (second, _second_socket) = test_support::worker(&engine);
         let token = first.reattach_token.to_string();
-        assert!(registry.reattach(first.id, Some(&token), &second));
+        assert!(registry.reattach(&engine, first.id, Some(&token), &second));
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
         registry.grace_elapsed(first.id);
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
@@ -1057,7 +1077,7 @@ mod tests {
         assert!(registry.get("obs").is_none(), "disposed");
         let (third, _third_socket) = test_support::worker(&engine);
         let token = second.reattach_token.to_string();
-        assert!(!registry.reattach(second.id, Some(&token), &third));
+        assert!(!registry.reattach(&engine, second.id, Some(&token), &third));
     }
 
     /// A worker that reattaches after its grace period ended finds its
@@ -1076,7 +1096,7 @@ mod tests {
         assert!(registry.get("obs").is_none(), "disposed");
 
         let (intruder, _intruder_socket) = test_support::worker(&engine);
-        assert!(!registry.reattach(first.id, Some("not-the-token"), &intruder));
+        assert!(!registry.reattach(&engine, first.id, Some("not-the-token"), &intruder));
         assert!(
             registry
                 .tombstones
@@ -1087,7 +1107,7 @@ mod tests {
         let (second, _second_socket) = test_support::worker(&engine);
         let token = first.reattach_token.to_string();
         assert!(
-            !registry.reattach(first.id, Some(&token), &second),
+            !registry.reattach(&engine, first.id, Some(&token), &second),
             "nothing to re-parent"
         );
         registry.observe(&engine, &second, request).await;
@@ -1370,7 +1390,7 @@ mod tests {
 
         let (second, _second_socket) = test_support::worker(&engine);
         let token = first.reattach_token.to_string();
-        registry.reattach(first.id, Some(&token), &second);
+        registry.reattach(&engine, first.id, Some(&token), &second);
         test_support::observe_request(&engine, &second, request).await;
         assert_eq!(
             registry.get("obs").unwrap().observing().connection,

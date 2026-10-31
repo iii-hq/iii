@@ -3280,7 +3280,9 @@ class III:
             lambda: threading.current_thread() is self._thread,
             self._run_callback,
         )
-        self._observers[observer_id] = handle
+        # setdefault is atomic: of two threads racing past the check above, one loses here.
+        if self._observers.setdefault(observer_id, handle) is not handle:
+            raise ValueError(f"observe: observer id already in use: {observer_id}")
         try:
             self._loop.call_soon_threadsafe(self._after_observe, handle)
         except RuntimeError:
