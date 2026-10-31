@@ -172,6 +172,16 @@ iii.on_observer_match(
 ```
 
 iii's delivery applies the `on` and filters of the observers that matched.
+The engine evaluates them for every call it routes: it holds the call's
+input, caller and metadata, and takes its output or error from this worker's
+answer. For those calls this worker runs only the match and deliver hooks,
+and its answer names the observers the match hook matched. The engine never
+sees the calls this worker makes to its own functions, so the SDK evaluates
+`on` and filters for those, through an index of the filters' `$eq` and `$in`
+conditions: with 1,000 observers that each filter on their own
+`input.tenant`, a local call evaluates one filter. `obs.matches(call)`
+evaluates one observer's `on` and filters in this worker.
+
 `iii.is_observed(function_id, call)` tells a source whether a call would reach
 anyone (on a function matched by keys, by looking up the call's keys), and
 `iii.observers(function_id)` lists the active observers.

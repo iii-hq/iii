@@ -19,6 +19,7 @@ from observe_fake_engine import (
     function_registered,
     invoke,
     observer_info,
+    observer_removed,
     reported_items,
     settle,
     wait_until,
@@ -423,42 +424,136 @@ def _confirm(client: III, engine: FakeEngine, function_id: str, observers: list[
     )
 
 
-def test_invocationresult_observed_json_routed_call_matches_ride_the_answer(engine: FakeEngine, connect: Any) -> None:
-    expected = fixture("invocationresult-observed.json")
-    client = connect(engine)
-    client.register_function("orders::create", lambda order: expected["result"])
-    _confirm(client, engine, "orders::create", [observer_info(o, "t") for o in expected["observed"]])
+def _routed_answer(engine: FakeEngine, expected: dict[str, Any], data: Any) -> dict[str, Any]:
+    """The host's answer to a routed call of ``expected``'s function, made under ``expected``'s ids and trace."""
     engine.deliver(
         invoke(
-            "orders::create",
-            {"sku": "A-1", "qty": 2},
+            expected["function_id"],
+            data,
             expected["invocation_id"],
-            traceparent=expected["traceparent"],
+            traceparent=expected.get("traceparent"),
             caller={"worker_id": "w-1", "worker_name": "checkout"},
         )
     )
     [answer] = engine.wait_for(lambda: answers(engine, expected["invocation_id"]), what="the answer")
+    return answer
+
+
+def test_invocationresult_routed_json_a_function_without_hooks_answers_its_result_alone(
+    engine: FakeEngine, connect: Any
+) -> None:
+    expected = fixture("invocationresult-routed.json")
+    client = connect(engine)
+    client.register_function("orders::create", lambda order: expected["result"])
+    # observed, with filters on the input and the output: the engine evaluates them (decision 55)
+    _confirm(
+        client,
+        engine,
+        "orders::create",
+        [
+            observer_info("8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70", "t", filters={"output.total": {"$gte": 500}}),
+            observer_info("9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81", "t", filters={"input.sku": {"$eq": "A-1"}}),
+        ],
+    )
+    answer = _routed_answer(engine, expected, {"sku": "A-1", "qty": 2})
     assert same_trace(answer, expected) == expected
     settle(client, engine)
     assert reported_items(engine) == []  # no extra frame
 
 
-def test_invocationresult_observed_error_json_shape_an_error_answer_keeps_observed(
+def test_invocationresult_matched_json_a_match_hook_names_its_observers_on_the_answer(
     engine: FakeEngine, connect: Any
 ) -> None:
-    expected = fixture("invocationresult-observed-error.json")
+    expected = fixture("invocationresult-matched.json")
+    client = connect(engine)
+    ids = expected["matched"]
+    client.register_function("orders::create", lambda order: expected["result"]).on_observer_match(
+        lambda obs, call: obs.args["region"] == call.input["region"]
+    )
+    # the hook's choice, before `on` and filters: the second observer's filter fails, and still it is named
+    _confirm(
+        client,
+        engine,
+        "orders::create",
+        [
+            observer_info(ids[0], "t", args={"region": "eu"}),
+            observer_info("other-region", "t", args={"region": "us"}),
+            observer_info(ids[1], "t", args={"region": "eu"}, filters={"output.total": {"$lt": 0}}),
+        ],
+    )
+    answer = _routed_answer(engine, expected, {"sku": "A-1", "region": "eu"})
+    assert same_trace(answer, expected) == expected
+    settle(client, engine)
+    assert reported_items(engine) == []  # no extra frame
+
+
+def test_invocationresult_matched_error_json_an_error_answer_keeps_matched(engine: FakeEngine, connect: Any) -> None:
+    expected = fixture("invocationresult-matched-error.json")
     client = connect(engine)
 
     def charge(data: Any) -> None:
         raise RuntimeError(expected["error"]["message"])
 
-    client.register_function("payments::charge", charge)
-    _confirm(client, engine, "payments::charge", [observer_info(o, "t", on="error") for o in expected["observed"]])
-    engine.deliver(invoke("payments::charge", {"amount": 1250}, expected["invocation_id"]))
-    [answer] = engine.wait_for(lambda: answers(engine, expected["invocation_id"]), what="the answer")
-    assert answer["observed"] == expected["observed"]
-    assert answer["error"]["message"] == expected["error"]["message"]
-    assert "result" not in answer
+    ref = client.register_function("payments::charge", charge)
+    ref.on_observer_match(observer=lambda obs: obs.args["currency"], call=lambda call: call.input["currency"])
+    _confirm(
+        client,
+        engine,
+        "payments::charge",
+        [observer_info(o, "t", on="error", args={"currency": "eur"}) for o in expected["matched"]]
+        + [observer_info("usd", "t", on="error", args={"currency": "usd"})],
+    )
+    answer = _routed_answer(engine, expected, {"amount": 1250, "currency": "eur"})
+    assert answer["matched"] == expected["matched"]
+    assert (answer["error"]["code"], answer["error"]["message"]) == ("invocation_failed", expected["error"]["message"])
+    assert "result" not in answer and "delivered" not in answer
+
+
+def test_invocationresult_matched_none_json_a_match_hook_that_matched_none_sends_an_empty_list(
+    engine: FakeEngine, connect: Any
+) -> None:
+    expected = fixture("invocationresult-matched-none.json")
+    client = connect(engine)
+    ref = client.register_function("orders::create", lambda order: expected["result"])
+    ref.on_observer_match(observer=lambda obs: obs.args["region"], call=lambda call: call.input["region"])
+    _confirm(client, engine, "orders::create", [observer_info("eu", "t", args={"region": "eu"})])
+
+    def untraced(answer: dict[str, Any]) -> dict[str, Any]:
+        """The fixture has no trace; the answer has one when a test before set a tracer provider."""
+        return {k: v for k, v in answer.items() if k != "traceparent"}
+
+    assert untraced(_routed_answer(engine, expected, {"region": "us"})) == expected
+    # with no active observer at all the hook still narrows: none
+    engine.deliver(observer_removed("orders::create", 1, "eu"))
+    wait_until(lambda: not client.is_observed("orders::create"), what="the removal")
+    second = {**expected, "invocation_id": "3c5e7a9b-1d3f-4b7d-9f1b-3d5f7b9d1f3b"}
+    assert untraced(_routed_answer(engine, second, {"region": "eu"})) == second
+
+
+def test_invocationresult_delivered_json_a_deliver_hook_answers_delivered(engine: FakeEngine, connect: Any) -> None:
+    expected = fixture("invocationresult-delivered.json")
+    client = connect(engine)
+    ref = client.register_function("approvals::request", lambda request: request)
+    # a match hook too: `delivered` outweighs `matched`, so only `delivered` is sent
+    ref.on_observer_match(lambda obs, call: True)
+
+    @ref.on_observer_deliver
+    def approve(call: Any, observers: Any) -> Any:
+        return expected["result"]
+
+    _confirm(client, engine, "approvals::request", [observer_info("risk-review", "risk::review")])
+    answer = _routed_answer(engine, expected, {"amount": 90000})
+    assert same_trace(answer, expected) == expected
+    # a deliver hook that raises: its error, still delivered
+    failing = {**expected, "invocation_id": "0b2d4f6a-8c0e-4a2c-9e4a-6c8e0a2c4e6a"}
+
+    @ref.on_observer_deliver
+    def refuse(call: Any, observers: Any) -> Any:
+        raise ObserveRejection("NO_APPROVER", "nobody can approve")
+
+    answer = _routed_answer(engine, failing, {"amount": 90000})
+    assert answer["delivered"] is True and "matched" not in answer and "result" not in answer
+    assert answer["error"] == {"code": "NO_APPROVER", "message": "nobody can approve"}
 
 
 # ── calls through an observer ──────────────────────────────────────────────
@@ -618,9 +713,12 @@ def test_accepts_null_for_optional_fields_and_keeps_unknown_enum_values() -> Non
     )
     assert (registered.revision, registered.observers, registered.local_dispatch) == (0, [], False)
     answer = InvocationResultMessage.model_validate(
-        {"invocation_id": "i", "function_id": "f", "result": 1, "observed": None}
+        {"invocation_id": "i", "function_id": "f", "result": 1, "matched": None, "delivered": None}
     )
-    assert answer.observed is None and "observed" not in wire(answer)
+    assert (answer.matched, answer.delivered) == (None, None)
+    assert "matched" not in wire(answer) and "delivered" not in wire(answer)
+    narrowed = InvocationResultMessage(invocation_id="i", function_id="f", result=1, matched=[])
+    assert wire(narrowed)["matched"] == []  # sent, `[]` included, when a match hook ran
     explicit_defaults = RegisterFunctionMessage.model_validate({"id": "f", "private": False, "observable": True})
     assert (explicit_defaults.private, explicit_defaults.observable) == (False, True)
     item = InvocationsObservedMessage.model_validate(

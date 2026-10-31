@@ -33,9 +33,10 @@ class MessageType(str, Enum):
 
 #: The engine supports observers (``WorkerRegistered.features``).
 FEATURE_OBSERVE_V1 = "observe.v1"
-#: The host delivers the calls of the functions it hosts, local and routed: ``observed`` on
-#: ``invocationresult``, ``output_is_input`` on report items, and the top-level ``args_format``,
-#: ``private`` and ``observable`` of ``registerfunction``.
+#: The host runs the match and deliver hooks of the functions it hosts for the calls the engine
+#: routes to it (``matched`` and ``delivered`` on ``invocationresult``), ``output_is_input`` on
+#: report items, and the top-level ``args_format``, ``private`` and ``observable`` of
+#: ``registerfunction``.
 FEATURE_OBSERVE_V2 = "observe.v2"
 #: The engine confirms functions for in-process calls (``functionregistered.local_dispatch``).
 FEATURE_LOCAL_DISPATCH_V1 = "local-dispatch.v1"
@@ -572,9 +573,13 @@ class InvocationResultMessage(BaseModel):
     error: Any = None
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
-    #: The observers this host's delivery of a routed call matched, when the
-    #: answer is the handler's own outcome; left out when empty.
-    observed: list[str] | None = Field(default=None)
+    #: A routed call of a function with a match hook (``observe.v2``, decision 55): the
+    #: observers the hook matched, before ``on`` and filters, which the engine evaluates.
+    #: ``[]`` when it matched none; left out for a function without a match hook.
+    matched: list[str] | None = Field(default=None)
+    #: A routed call of a function with a deliver hook (``observe.v2``, decision 55): the hook
+    #: delivered the call, and the answer is what it returned or raised. Sent only as ``True``.
+    delivered: bool | None = Field(default=None)
     message_type: MessageType = Field(default=MessageType.INVOCATION_RESULT, alias="type")
 
 
