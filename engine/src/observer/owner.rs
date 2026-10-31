@@ -1035,27 +1035,25 @@ impl ObserverRegistry {
             self.drop_entry_if_unused(&key);
         }
 
-        let targeting: Vec<String> = self
+        let targeting: Vec<Arc<Observer>> = self
             .by_target
             .get(&key)
-            .map(|ids| ids.iter().cloned().collect())
+            .map(|held| held.iter().map(|held| held.0.clone()).collect())
             .unwrap_or_default();
-        for id in targeting {
-            if let Some(observer) = self.by_id.get(&id).map(|o| o.clone()) {
-                // A different worker may now host the target: it gets the
-                // observed input, output and caller only if the observing
-                // worker may invoke it, and only if anyone but its host may
-                // (a private target refuses every activation).
-                if registered
-                    && let Err(error) = self
-                        .check_session_allows(&observer, &key)
-                        .and_then(|()| self.check_target_invocable(&key))
-                {
-                    self.fail(&observer, error);
-                    continue;
-                }
-                self.update(&observer, |flags| flags.target_available = registered);
+        for observer in targeting {
+            // A different worker may now host the target: it gets the
+            // observed input, output and caller only if the observing
+            // worker may invoke it, and only if anyone but its host may
+            // (a private target refuses every activation).
+            if registered
+                && let Err(error) = self
+                    .check_session_allows(&observer, &key)
+                    .and_then(|()| self.check_target_invocable(&key))
+            {
+                self.fail(&observer, error);
+                continue;
             }
+            self.update(&observer, |flags| flags.target_available = registered);
         }
         if registered {
             self.standing_on_registration(namespace, function_id);
