@@ -67,14 +67,14 @@ type callDelivery struct {
 // the caller's outcome: the deliver hook's answer, or the handler's own.
 func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) outcome {
 	st, call := d.state, d.call
-	if st.hooked() {
-		call.view = newCallView(call, st.filters)
-	}
 	if hook := st.deliver; hook != nil {
 		value, err := f.runDeliverHook(ctx, hook, call, f.matching(st, call))
 		return outcomeOf(value, err, d.copyRaw)
 	}
-	var selected []*Observer
+	// selected starts in a buffer on the stack: the appends in the closure below would
+	// make its first allocation on the heap
+	var held [4]*Observer
+	selected := held[:0]
 	if st.match == nil {
 		ok, doc := call.succeeded(), call.doc()
 		st.filters.each(doc, func(obs *Observer) {
@@ -84,7 +84,7 @@ func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) o
 		})
 	} else {
 		for _, obs := range f.matching(st, call) {
-			if call.view.matches(obs) {
+			if obs.Matches(call) {
 				selected = append(selected, obs)
 			}
 		}
@@ -111,9 +111,11 @@ type routedAnswer struct {
 func (f *functionObservers) deliverRouted(ctx context.Context, d *callDelivery) (outcome, routedAnswer) {
 	st, call := d.state, d.call
 	if st.deliver == nil && len(st.observers) == 0 {
+		// The match hook has no active observer to match: [] activates none, where an
+		// absent matched would have the engine evaluate every observer it holds active,
+		// without the hook.
 		return d.handler, routedAnswer{matched: []string{}}
 	}
-	call.view = newCallView(call, st.filters)
 	matched := f.matching(st, call)
 	if hook := st.deliver; hook != nil {
 		value, err := f.runDeliverHook(ctx, hook, call, matched)
@@ -205,9 +207,17 @@ func encodeResult(v any, copyRaw bool) (json.RawMessage, error) {
 	return raw, nil
 }
 
-// handlerCall is the call a handler made, with the outcome its caller would get.
-func handlerCall(functionID, invocationID string, input json.RawMessage, handler outcome, caller *Caller, metadata json.RawMessage) *Call {
-	call := &Call{FunctionID: functionID, InvocationID: invocationID, Input: input, Caller: caller, Metadata: metadata}
+// handlerCall is the call a handler made, with the outcome its caller would get, as
+// the delivery of a call that started with st hands it to the function's hooks: with a
+// view for Observer.Matches when the function has a hook and observers.
+func handlerCall(st *callState, functionID, invocationID string, input json.RawMessage, handler outcome, caller *Caller, metadata json.RawMessage) *Call {
+	var call *Call
+	if st.hooked() && len(st.observers) > 0 {
+		call = newHookCall(st.filters)
+	} else {
+		call = new(Call)
+	}
+	call.FunctionID, call.InvocationID, call.Input, call.Caller, call.Metadata = functionID, invocationID, input, caller, metadata
 	if handler.errBody != nil {
 		call.Status = "error"
 		e := *handler.errBody
