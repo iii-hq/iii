@@ -172,9 +172,10 @@ impl ObserverRegistry {
         // A worker's tombstone under the id: the engine's observer takes it.
         self.tombstones.remove(id.as_str());
 
+        let target_available = self.is_registered(&target);
         let observer = Arc::new(Observer::new(NewObserver {
-            id: id.clone(),
-            target: target.clone(),
+            id,
+            target,
             // Its fields are its spec: nothing rewrote them.
             spec: None,
             args,
@@ -200,7 +201,7 @@ impl ObserverRegistry {
             flags: Flags {
                 observing_connected: true,
                 function_available: function_registered,
-                target_available: self.is_registered(&target),
+                target_available,
                 owner_acked: self.acked_by_default(&function),
                 announced: None,
                 rejected_by_owner: false,
@@ -214,7 +215,7 @@ impl ObserverRegistry {
         if !self.publish(&observer, ENGINE_CONNECTION, Vec::new(), None) {
             return Err(ErrorBody::new(
                 observe_codes::OBSERVER_ID_CONFLICT,
-                format!("observer `{id}` was created concurrently"),
+                format!("observer `{}` was created concurrently", observer.id),
             ));
         }
         let function_available = self.is_registered(&observer.function);
@@ -224,7 +225,7 @@ impl ObserverRegistry {
             flags.target_available = target_available;
         });
         tracing::debug!(
-            observer_id = %id,
+            observer_id = %observer.id,
             function_id = %observer.function.1,
             namespace = %observer.function.0,
             target = %observer.target.1,

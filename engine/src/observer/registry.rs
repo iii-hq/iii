@@ -449,9 +449,10 @@ impl ObserverRegistry {
         }
 
         let capture = source.capture.clone().unwrap_or_else(default_capture);
+        let target_available = self.is_registered(&target_key);
         let observer = Arc::new(Observer::new(NewObserver {
-            id: id.clone(),
-            target: target_key.clone(),
+            id,
+            target: target_key,
             spec: Some(spec),
             args,
             filter,
@@ -479,7 +480,7 @@ impl ObserverRegistry {
             flags: Flags {
                 observing_connected: true,
                 function_available: formats.is_some(),
-                target_available: self.is_registered(&target_key),
+                target_available,
                 owner_acked: self.acked_by_default(&function),
                 announced: None,
                 rejected_by_owner: false,
@@ -496,10 +497,10 @@ impl ObserverRegistry {
             // The suspended observer's connection came back meanwhile, or
             // another `observe` created the id first.
             return Err(match replacing {
-                Some(_) => owned_by_another_connection(&id),
+                Some(_) => owned_by_another_connection(&observer.id),
                 None => reject(
                     observe_codes::OBSERVER_ID_CONFLICT,
-                    format!("observer `{id}` was created concurrently"),
+                    format!("observer `{}` was created concurrently", observer.id),
                 ),
             });
         }
