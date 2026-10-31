@@ -144,7 +144,6 @@ pub struct ObserverRegistry {
     by_connection: DashMap<Uuid, HeldSet>,
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
     by_target: DashMap<FnKey, HeldSet>,
-
     /// The routed hook's view (see [`ObserverRegistry::route`]): functions
     /// with active observers and private functions a connection hosts. Read
     /// with one atomic load per invocation, replaced (copy-on-write) on
@@ -152,6 +151,9 @@ pub struct ObserverRegistry {
     routed: ArcSwap<owner::RoutedView>,
     /// Serializes rebuilds of `routed`.
     rebuild: Mutex<()>,
+    /// `engine::on-observers-changed` has active observers: what an observer's
+    /// transition reads before it looks for them (set with `routed`).
+    observers_changed_watched: std::sync::atomic::AtomicBool,
     notifiers: DashMap<Uuid, lifecycle::Notifier>,
     departed: DashMap<Uuid, Departed>,
     state_counts: lifecycle::StateCounts,
@@ -175,9 +177,9 @@ pub struct ObserverRegistry {
     evaluator_bytes: std::sync::atomic::AtomicUsize,
     /// Recently disposed observers, by id: a replay from the same worker
     /// learns the disposal instead of re-creating the observer.
-    tombstones: DashMap<String, lifecycle::Tombstone>,
+    tombstones: DashMap<Arc<str>, lifecycle::Tombstone>,
     /// Tombstones by expiry, oldest first.
-    tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, String)>>,
+    tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
     /// Observing connections whose grace period ended, by connection: a
     /// late `Reattach` learns their observers are disposed.
     expired: DashMap<Uuid, lifecycle::Expired>,
@@ -225,6 +227,7 @@ impl ObserverRegistry {
             by_target: DashMap::new(),
             routed: ArcSwap::from_pointee(HashMap::new()),
             rebuild: Mutex::new(()),
+            observers_changed_watched: std::sync::atomic::AtomicBool::new(false),
             notifiers: DashMap::new(),
             departed: DashMap::new(),
             state_counts: lifecycle::StateCounts::default(),
@@ -337,6 +340,7 @@ impl ObserverRegistry {
         for observer in self.by_id.iter() {
             dispatch::export_drops(observer.value());
         }
+        self.state_counts.record();
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Observer>> {

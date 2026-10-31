@@ -181,6 +181,10 @@ impl<V: Keyed + Clone> PersistentSet<V> {
         self.len == 0
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
     /// The value under `key`.
     pub(crate) fn get(&self, key: u64) -> Option<&V> {
         let mut node = self.root.as_ref()?;
