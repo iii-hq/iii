@@ -74,6 +74,11 @@ type Args map[string]any
 // explicit operators only (the language of the filter subpackage):
 //
 //	iii.Filters{"input.amount": iii.Op{"$gte": 500}}
+//
+// The engine evaluates them for the calls it routes, and the worker that hosts the
+// function for the calls it makes to it in-process. Both match through an index of the
+// observers' equality conditions: a filter with a top-level $eq or $in of a scalar costs
+// a call nothing when the call's value at that path is none of its values.
 type Filters map[string]any
 
 // Op is the operator object of one filter path: iii.Op{"$eq": "insert"}.
