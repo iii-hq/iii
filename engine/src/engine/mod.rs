@@ -2419,7 +2419,8 @@ impl Engine {
                     // observers may still be in their grace period, and the
                     // registry checks the token it kept for them.
                     self.observers
-                        .reattach(self, prev, reattach_token.as_deref(), worker);
+                        .reattach(self, prev, reattach_token.as_deref(), worker)
+                        .await;
                     return Ok(());
                 };
                 // Worker ids are public (engine::workers::list,
@@ -2468,7 +2469,8 @@ impl Engine {
                 // they move to this one, counters intact, before its replayed
                 // `observe`s arrive.
                 self.observers
-                    .reattach(self, prev, reattach_token.as_deref(), worker);
+                    .reattach(self, prev, reattach_token.as_deref(), worker)
+                    .await;
                 Ok(())
             }
             Message::Ping => {

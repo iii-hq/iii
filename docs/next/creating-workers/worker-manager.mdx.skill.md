@@ -411,6 +411,11 @@ any other answer, or an error, denies the observer with `FORBIDDEN`. Independent
 session may observe a function only when its grants (`expose_functions`, `namespaces`) cover both
 the observed function and the target.
 
+A worker that reconnects and reattaches keeps its observers only as far as its new session allows:
+the engine checks the grants again and calls the hook again for each observer, with the
+registration as the worker asked for it and the new session's `context`. An observer either check
+refuses is disposed with `FORBIDDEN`; an object answer keeps the observer as it is.
+
 A [private function](./observable-functions#private-functions) accepts calls only from the
 connection that hosts it. A call to it from any other session fails with `FORBIDDEN`, whatever the
 session's grants, and an `observe` that names it as the target fails with `FORBIDDEN`. A session
