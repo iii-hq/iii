@@ -39,7 +39,7 @@ engine, the iii workers your project runs, and every worker that binds to them i
 Search each worker for the removed APIs:
 
 ```bash
-rg -n 'registerTrigger|register_trigger|RegisterTrigger|TriggerHandler|IIITrigger|TriggerConfig|unregisterTrigger|unregister_trigger|UnregisterTrigger|[dD]elivery\s*[:=]|legacy_trigger_type|ObserveHooks|ObserveHandler|ObserveDoc|LegacyTrigger|TriggerInfo|TriggerTypeRef|Observe::owner|Observe::auto|EngineTriggers|allow:\s*false|\.emit\(|\.Emit\(|obs\.call|\.trigger\(|trigger_async|\.Trigger\(|TriggerRequest|TriggerAction|iii trigger|engine::triggers|registered-triggers|allowed_trigger_types|allow_trigger_type_registration|on_trigger_registration_function_id|on_trigger_type_registration_function_id'
+rg -n 'registerTrigger|register_trigger|RegisterTrigger|TriggerHandler|IIITrigger|TriggerConfig|unregisterTrigger|unregister_trigger|UnregisterTrigger|[dD]elivery\s*[:=]|legacy_trigger_type|ObserveHooks|ObserveHandler|ObserveDoc|LegacyTrigger|TriggerInfo|TriggerTypeRef|Observe::owner|Observe::auto|EngineTriggers|allow:\s*false|\.emit\(|\.Emit\(|obs\.[cC]all|\.trigger\(|trigger_async|\.Trigger\(|TriggerRequest|TriggerAction|iii trigger|engine::triggers|registered-triggers|allowed_trigger_types|allow_trigger_type_registration|on_trigger_registration_function_id|LIST_TRIGGERS|INFO_TRIGGERS|LIST_REGISTERED_TRIGGERS|INFO_REGISTERED_TRIGGERS|FnListTriggers|FnInfoTriggers|FnListRegisteredTriggers|FnInfoRegisteredTriggers|TriggerFunctionsAvailable|TriggerLog|builtin_triggers|HttpCallRequest|CronCallRequest|StateCallRequest|LogCallRequest|iii-sdk/trigger|iii\.triggers?\b|iii_sdk::triggers|OnTrigger(Type)?Registration|ObserveDescriptorWire|\.[lL]egacy\b|\bTrigger\b'
 ```
 
 Then work through the sections below:
@@ -89,9 +89,11 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `engine::register_trigger`, `engine::unregister_trigger`                          | `observe` from an SDK; `engine::observers::dispose`                                                                                                                   |
 | typed trigger configs (`IIITrigger`, `HttpTriggerConfig`, `CronTriggerConfig`, …) | `observe` with `args`                                                                                                                                                 |
 | `EngineTriggers`                                                                  | `EngineSources`: `FUNCTIONS_CHANGED`, `WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`, `STREAM_CHANGED`, `STREAM_JOIN`, `STREAM_LEAVE` |
-| Node: `ObserveDoc` type export                                                    | none; filters run in the engine, so a worker no longer builds or matches a filter document                                                                            |
-| Rust: `LegacyTrigger`, `Observe`, `ObserveHandler`                                | none; `observe` takes `Source` and `Target`, and the hooks are `AddedHook`, `RemovedHook`, `DeliverHook`, and `Match`                                                 |
-| Rust: `TriggerInfo`, `TriggerTypeRef` (and the `iii_sdk::runtime` re-exports)     | none; a trigger type is a function (`FunctionInfo`, `FunctionRef`) and a trigger is an observer (`Observer`)                                                          |
+| `ObserveDoc` (Node, browser, Go) and `obs.matches(doc)`                           | `obs.matches(call)`, which takes a `Call` and also applies the observer's `on`                                                                                        |
+| Rust: `Observe`, `ObserveHandler`                                                 | none; `observe` takes `Source` and `Target`, and the hooks are `AddedHook`, `RemovedHook`, `DeliverHook`, and `Match`                                                 |
+| Rust, Go: `LegacyTrigger`; Go: `Observer.Legacy`                                  | none; consumers observe the function                                                                                                                                  |
+| `TriggerTypeRef` (Node, browser, Python, Rust, and their `runtime` modules)       | `FunctionRef`, since a trigger type is a function                                                                                                                     |
+| Rust: `TriggerInfo`, the row of `engine::triggers::list`                          | `FunctionInfo`, the row of `engine::functions::list`; Rust has no typed row for `engine::observers::list`, so read its rows as `serde_json::Value`                    |
 
 ### Trigger types and their functions
 
@@ -158,6 +160,19 @@ observer. In Rust, remove `.observe(Observe::auto())` from a function that sets 
 function is observable, so it has no replacement. For the model, see
 [Observable functions](../creating-workers/observable-functions).
 
+### Other removed SDK names
+
+| 0.25                                                                                                                                                                                | 0.26                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EngineFunctions.LIST_TRIGGERS`, `INFO_TRIGGERS`, `LIST_REGISTERED_TRIGGERS`, `INFO_REGISTERED_TRIGGERS` (Node, browser, Python, Rust)                                              | `EngineFunctions.LIST_FUNCTIONS`, `INFO_FUNCTIONS`, and the function ids `engine::observers::list` and `engine::observers::get`                            |
+| Go: `FnListTriggers`, `FnInfoTriggers`, `FnListRegisteredTriggers`, `FnInfoRegisteredTriggers`                                                                                      | `FnListFunctions`, `FnInfoFunctions`, `FnListObservers`, `FnGetObserver`                                                                                   |
+| Go: `TriggerFunctionsAvailable`, `TriggerLog`                                                                                                                                       | `FnOnFunctionsChanged`, `FnOnLog`                                                                                                                          |
+| Node `iii-sdk/trigger`, Python `iii.trigger` and `iii.triggers`, Rust `iii_sdk::triggers`                                                                                           | none; the trigger types they exported are removed                                                                                                          |
+| Rust: `iii_sdk::builtin_triggers` (`HttpCallRequest`, `CronCallRequest`, `StateCallRequest`, `LogCallRequest`, `HttpMethod`, `LogLevel`, `StateEventType`, and the trigger configs) | `iii_helpers::http::HttpRequest` and `iii_helpers::http::HttpMethod` for `http::on-request`; each source's event is JSON, described in its worker's README |
+| `OnTriggerRegistrationInput`, `OnTriggerRegistrationResult` (Node and Python helpers, Rust `iii_helpers`, browser)                                                                  | none; the `on_observer_registration_function_id` hook takes and returns JSON                                                                               |
+| `OnTriggerTypeRegistrationInput`, `OnTriggerTypeRegistrationResult`                                                                                                                 | `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`                                                                                              |
+| Node, browser: `ObserveDescriptorWire`                                                                                                                                              | none; `registerfunction` carries `args_format`, `private`, and `observable`                                                                                |
+
 ### Engine, protocol, and configuration
 
 | 0.25                                                                                                                            | 0.26                                                                                                                                                                                                     |
@@ -186,10 +201,11 @@ engine ignores it. The engine ignores `allowed_trigger_types` and `allow_trigger
 in an auth function's result, and logs one `warn` per engine process the first time a result sets
 them.
 
-The `configuration` worker still accepts `ttl_seconds` so an existing config loads, and a non-zero
-value only logs a `warn` at startup. The worker no longer sweeps entries: they persist until
-deleted. To expire an entry, delete it from your own code (for example from a `cron::on-tick`
-observer that deletes stale ids), then remove `ttl_seconds` from the config.
+The `configuration` worker accepts `ttl_seconds` so an existing config loads, and logs a `warn` at
+startup when it is not `0`. An entry persists until its file is removed: the `fs` adapter keeps each
+entry in `<id>.yaml` under its `directory`, and removing that file replays as a
+`configuration:deleted` event. The worker registers no function that deletes an entry; behind the
+`bridge` adapter, remove the file on the source engine. Remove `ttl_seconds` from the config.
 
 ## Call functions with `call`
 

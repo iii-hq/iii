@@ -16,13 +16,12 @@ The default `fs` adapter persists one YAML file per id under `./config` and watc
 - A worker needs a typed, observable configuration surface other workers can read and validate against.
 - Two workers need to agree on the same configuration values without one polling the other or hardcoding a path on disk.
 - An operator should be able to edit a single YAML file (or the remote control plane) and have the change propagate to every subscriber without a worker restart.
-- A worker comes and goes (sandboxes, ephemeral consumers) and its configuration should be cleaned up automatically when no one is left subscribing.
 
 ## Boundaries
 
 - Not a general-purpose key/value store — every entry must have a registered JSON Schema. Use the standalone `state` worker for free-form values.
 - No partial-update surface; `set` always replaces the whole value. Build the new value client-side and ship it in one call.
-- The `bridge` adapter cannot delete entries on the remote engine; cleanup over the bridge happens via TTL or directly on the source engine.
+- Entries persist until their file is removed from the `fs` adapter's directory; no function deletes an entry. The `bridge` adapter cannot delete entries on the remote engine; remove them on the source engine.
 - Over the `bridge` adapter, `configuration::ensure` is decided by the remote engine (the original candidate is forwarded there), so it requires a remote engine that exposes `configuration::ensure`; against an older remote it fails closed with `ADAPTER_ERROR` rather than falling back to an unsafe `register`.
 - Schemas are not version-checked across re-registrations — re-registering with an incompatible schema simply replaces it. Coordinate schema migrations out-of-band.
 
