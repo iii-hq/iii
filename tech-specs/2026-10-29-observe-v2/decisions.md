@@ -213,12 +213,13 @@ differ, this file wins, and the spec is updated to match.
     | The answer carries | The function | The engine |
     |---|---|---|
     | neither field | has no match hook and no deliver hook | evaluates every active observer of the function |
-    | `"matched": [ids]` | has a match hook: the observers it matched, before `on` and filters, each once; `[]` when it matched none | evaluates those of them that are active observers of the invoked function; any other id counts `INACTIVE` |
+    | `"matched": [ids]` | has a match hook: the observers it matched, before `on` and filters, each once; `[]` when it matched none, or when the host held no active observer of the function as the call started (the hook then has none to match and does not run) | evaluates those of them that are active observers of the invoked function; any other id counts `INACTIVE` |
     | `"delivered": true` | has a deliver hook, which delivered the call; the answer is what the hook returned or threw | activates nothing |
 
     A host sends at most one of the two fields, and `delivered` outweighs
-    `matched`. `matched` is absent, never `[]`, when no match hook ran. The
-    engine reads both from `observe.v2` connections only, on every routed
+    `matched`. `matched` is absent when the function has no match hook; a
+    function with a match hook and no deliver hook always answers with it.
+    The engine reads both from `observe.v2` connections only, on every routed
     answer (decision 36), leniently (`null` is absent, a `matched` that is
     not an array is `[]`, a non-string id is skipped, and only `true` sets
     `delivered`), and strips both before forwarding a result. Only the
@@ -233,6 +234,13 @@ differ, this file wins, and the spec is updated to match.
     Hosts without `observe.v2`, engine-hosted functions and HTTP-invoked
     functions (decision 43) are evaluated against every active observer.
 
+    An answer too large to send is answered `payload_too_large`. That error
+    is not the handler's outcome, so it activates no observer: to an
+    `observe.v2` engine the host sends it with `delivered: true` when the
+    deliver hook delivered the call, and with `matched: []` otherwise,
+    whatever the function's hooks. An engine without `observe.v2` gets the
+    bare error. The caller gets `payload_too_large` either way.
+
     When the engine has no room to evaluate a routed call (an evaluator's
     queue, or the bytes it holds for calls waiting to be evaluated, is
     full), it evaluates no filter for the call, and each observer the call
@@ -245,28 +253,42 @@ differ, this file wins, and the spec is updated to match.
     evaluates `on` and filters of its local calls and reports the observers
     delivered (`invocationsobserved`, decisions 4, 38, 48).
 
-    Every evaluation matches through an index, in the engine and in every
-    SDK. `iii_filter::FilterIndex` files each observer under one `$eq` (or
-    `$in`) condition of a scalar (number, string, boolean, `null`) on a path
-    of its filter's top-level `$and`, path to value to observers, by the
-    language's equality (numbers as doubles, `-0` as `0`), and keeps the
-    observers without one in a list it scans. A call costs about one lookup
-    per indexed path plus one filter evaluation per candidate. Its matches
-    are exactly the observers a scan of every filter matches, in key order,
-    proven by a differential test against the evaluator (the shared
-    generator, an equality-heavy corpus, churn, every conformance vector and
-    the diff corpus). It is persistent: the active-set version a call holds
-    keeps its index, and an observer's change copies `O(log n)` nodes. The
-    engine uses it for every evaluation, and the Rust SDK for its local
-    calls. A function none of whose observers has had an indexable filter
-    (`Filter::is_indexable`) keeps no index: its calls scan the observers,
-    which is what the index would do with them, so an unfiltered observer's
-    change costs what it costs without an index; the first indexable
-    observer builds the index from every observer, and it is kept up to date
-    from then on. Node and the browser, Python and Go index equality conditions in
-    their own filter code by the same rule (the conditions the index serves,
-    then the whole filter of each candidate), proven against their
-    evaluators.
+    The engine matches every evaluation through `iii_filter::FilterIndex`,
+    and every SDK scans a small set of observers and matches through its
+    equality index once that index narrows the set. `FilterIndex` files each
+    observer under one `$eq` (or `$in`) condition of a scalar (number,
+    string, boolean, `null`) on a path of its filter's top-level `$and`, path
+    to value to observers, by the language's equality (numbers as doubles,
+    `-0` as `0`), and keeps the observers without one in a list it scans. A
+    call costs about one lookup per indexed path plus one filter evaluation
+    per candidate. Where the lookups would spare a call little, the index
+    evaluates every filter in key order, as a scan does: when it files fewer
+    than two observers per indexed path, and when a call's lookups leave half
+    the observers or more. A call therefore costs at most about a scan plus
+    one lookup per indexed path. Its matches are exactly the observers a scan
+    of every filter matches, in key order, proven by a differential test
+    against the evaluator (the shared generator, an equality-heavy corpus,
+    churn, every conformance vector and the diff corpus). It is persistent:
+    the active-set version a call holds keeps its index, and an observer's
+    change copies `O(log n)` nodes. A function none of whose observers has
+    had an indexable filter (`Filter::is_indexable`) keeps no index: its
+    calls scan the observers, which is what the index would do with them, so
+    an unfiltered observer's change costs what it costs without an index; the
+    first indexable observer builds the index from every observer, and it is
+    kept up to date from then on.
+
+    The SDKs match a local call the same way. Each evaluates every filter of
+    a small set and matches a larger one through an index of the equality
+    conditions by `FilterIndex`'s rule (the conditions the index serves, then
+    the whole filter of each candidate), with the matches a scan yields,
+    proven against its evaluator:
+
+    | SDK | Evaluates every filter | Matches through the index |
+    |---|---|---|
+    | Rust | a set of at most 16 observers, or one more than half of whose observers accept the call's outcome and have no indexable filter | otherwise: `FilterIndex`, with its plan |
+    | Node, browser | while no indexed path files more than one observer | otherwise: their own index |
+    | Python | a call that evaluates at most 8 observers, and every call of a set until the set's calls have evaluated as many filters as it has observers | otherwise: the set's index, built once and kept |
+    | Go | where `FilterIndex`'s plan would: fewer than two observers per indexed path, or lookups that leave half the observers or more | otherwise: its own index, merging the lists the lookups leave |
 
     Under decision 12, an activation of a routed call its host did not narrow
     is labelled `engine`, and one its match hook named `host`.
@@ -402,6 +424,51 @@ differ, this file wins, and the spec is updated to match.
     out. An `invokefunction` that arrives with `"metadata": null` reaches the
     handler as none too. The engine already reads `null` as none
     (`InvokeFunction.metadata` is an `Option`).
+56. **Observer ids in the SDK.** An observer's id is the client's: the `id`
+    option, or a fresh UUID. A handle holds its id from its `observe` call
+    until its `dispose()` is called or the engine disposes it.
+    - **A held id is refused at the call.** An `observe` whose id a handle of
+      this client holds, in any state, is refused locally: nothing is sent,
+      and the holding handle and its observer are untouched. The refusal has
+      code `OBSERVER_ID_CONFLICT`, the engine's code for an id another
+      observer holds, and the message `observer id already in use: <id>`
+      after the SDK's prefix (`observe: ` in Node, the browser and Python,
+      `iii: Observe: ` in Go, none in Rust). Node and the browser throw an
+      `ObserveRejection`, Python raises one, and Go returns an
+      `*ObserveRejectionError`, each with that code. Rust's `observe`
+      returns a handle: the handle it returns is in state `error` with that
+      reason, `ready()` fails with it, and its `dispose()` sends nothing and
+      leaves the holding handle alone.
+    - **An id is free again at once.** A client may observe under an id as
+      soon as the handle that held it is disposed (a queue consumer observes
+      again under its stable id). The engine's answers name an observer by
+      id only, and the order of the frames tells the answers apart, with no
+      wire field: the engine reads one connection's messages in order, sends
+      that connection its observe answers in the order it makes them,
+      answers every `observe` with exactly one `observeresult`, and sends
+      `observeresult` for nothing else. Each SDK therefore:
+      1. keeps, per id, the handles whose `observe` it sent on the current
+         connection, oldest first. A disposed handle stays listed until the
+         engine's `disposed` for it arrives, a newer handle of the id has its
+         `observeresult`, or the connection closes;
+      2. gives an `observeresult` for the id to the oldest listed handle
+         that has none yet;
+      3. gives an `observerstatechanged` for the id to the newest listed
+         handle that has its `observeresult`, and drops one that arrives
+         before any has it: a reattached connection hears its observers
+         resume before its replayed `observe`s are answered, and each
+         replay's `observeresult` carries the current state;
+      4. on a new connection, sends the `unobserve`s it queued while
+         disconnected before it replays any `observe`, so the engine disposes
+         the earlier observer before it reads the new one's `observe`. Sent
+         later, the `unobserve` would dispose the new observer: a reattached
+         earlier observer takes the new `observe` as its replay (or refuses
+         it, `OBSERVER_ID_CONFLICT`), and a replacement (decision 51) holds
+         the id by then.
+
+      The engine's late `disposed` for the earlier observer, sent before the
+      engine read the new `observe`, therefore reaches the earlier handle,
+      and the new handle hears its own answers only.
 
 ## CLI and crates
 
