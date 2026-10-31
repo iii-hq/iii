@@ -43,6 +43,12 @@ export class ObserverHandleImpl implements ObserverHandle {
    * observer's state.
    */
   created = false
+  /**
+   * @internal The engine refused its `observe`, the handle's final answer:
+   * it is not sent again on a later connection, and keeps its id until
+   * disposed.
+   */
+  refused = false
 
   constructor(
     readonly id: string,
