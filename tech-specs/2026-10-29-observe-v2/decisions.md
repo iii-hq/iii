@@ -221,13 +221,25 @@ differ, this file wins, and the spec is updated to match.
     engine reads both from `observe.v2` connections only, on every routed
     answer (decision 36), leniently (`null` is absent, a `matched` that is
     not an array is `[]`, a non-string id is skipped, and only `true` sets
-    `delivered`), and strips both before forwarding a result. `matched` from
-    a connection that does not host the function activates nothing
-    (`REPORTER_NOT_OWNER`). A routed call of an `observe.v2` host that ends
-    without its answer activates nothing, and each of its observers counts a
-    `CANCELLED` drop. Hosts without `observe.v2`, engine-hosted functions and
-    HTTP-invoked functions (decision 43) are evaluated against every active
-    observer.
+    `delivered`), and strips both before forwarding a result. Only the
+    function's host answers for its observers: an `observe.v2` answer from a
+    connection that does not host the function (a caller answering its own
+    call by its id, say) activates nothing, whichever case it carries, and
+    is not evaluated. Each observer its `matched` names counts
+    `REPORTER_NOT_OWNER`, and an answer without `matched` (neither field,
+    or `delivered`) counts it for every active observer of the function. A
+    routed call of an `observe.v2` host that ends without its answer
+    activates nothing, and each of its observers counts a `CANCELLED` drop.
+    Hosts without `observe.v2`, engine-hosted functions and HTTP-invoked
+    functions (decision 43) are evaluated against every active observer.
+
+    When the engine has no room to evaluate a routed call (an evaluator's
+    queue, or the bytes it holds for calls waiting to be evaluated, is
+    full), it evaluates no filter for the call, and each observer the call
+    could activate counts an `OVERFLOW` drop: every active observer of the
+    function, or the ones the match hook named, whatever their filters. The
+    engine counts the same for every call it evaluates, an `observe.v1`
+    host's and an engine-hosted function's included.
 
     The engine never sees a host's calls of its own functions, so the host
     evaluates `on` and filters of its local calls and reports the observers
