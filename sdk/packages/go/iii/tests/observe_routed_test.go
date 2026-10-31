@@ -428,9 +428,11 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 	call(t, owner, iii.CallRequest{FunctionID: work})
 	call(t, owner, iii.CallRequest{FunctionID: work})
 	waitFor(t, "max_fires reached across the reattach", 10*time.Second, func() bool { return h.State() == iii.ObserverDisposed })
-	if got.len() != 3 || h.Reason() == nil || h.Reason().Code != "MAX_FIRES" {
-		t.Errorf("%d activations, reason %+v: fires must survive the reattach", got.len(), h.Reason())
+	if h.Reason() == nil || h.Reason().Code != "MAX_FIRES" {
+		t.Errorf("reason %+v: fires must survive the reattach", h.Reason())
 	}
+	// the disposal can reach the watcher before the last activations run its target
+	exactly(t, got, 3, "the activations across the reattach", 10*time.Second)
 }
 
 // A routed call is delivered by the engine, from the input it forwarded and the host's
