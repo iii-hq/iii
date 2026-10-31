@@ -1148,6 +1148,42 @@ impl ObserverRegistry {
         });
     }
 
+    /// Disposes `observer`, in `error`, whose replayed `observe` is answered
+    /// with that error. The answer is a refusal, its handle's last (decision
+    /// 56): the worker holds nothing under the id any more, and neither does
+    /// the engine. Nothing is sent to the worker, and no tombstone is left.
+    /// Returns the error, or `None` when `observer` is not in `error`.
+    pub(crate) fn dispose_refused_replay(&self, observer: &Arc<Observer>) -> Option<ErrorBody> {
+        static REFUSED: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        let mut refused = None;
+        let transition = self.transition_telling(
+            observer,
+            |flags| {
+                if flags.disposed.is_none()
+                    && let Some(failed) = &flags.failed
+                {
+                    refused = Some(ErrorBody::clone(failed));
+                    flags.disposed = Some(
+                        REFUSED
+                            .get_or_init(|| {
+                                Arc::new(ErrorBody::new(
+                                    observe_codes::UNOBSERVED,
+                                    "its replayed observe was refused with its error",
+                                ))
+                            })
+                            .clone(),
+                    );
+                    flags.tombstone = false;
+                }
+            },
+            false,
+        );
+        if let Some(transition) = transition {
+            self.settle(observer, transition);
+        }
+        refused
+    }
+
     /// Moves `observer` to `error`: a rejection that arrived after creation.
     pub(crate) fn fail(&self, observer: &Arc<Observer>, error: ErrorBody) {
         self.update(observer, |flags| {
