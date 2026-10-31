@@ -133,12 +133,17 @@ iii.observe(
   `error`). Once the handle is disposed the id is free at once: the SDK
   attributes the engine's answers by the order of the frames, so the late
   `disposed` of the earlier observer never reaches the new one (decision 56).
+  An observer the engine disposes frees its id on the connection that heard
+  the `disposed`. On a reattached connection the engine answers an `observe`
+  of the id `disposed` for `observers.observer_grace_ms` after the disposal,
+  as the replay of an observer whose `disposed` was lost.
 - **A refused `observe`** (its `observeresult` is `error`) gets no other
   answer. Its handle's `dispose()` sends nothing and resolves at once; a
   `dispose()` called before the refusal arrived resolves when it arrives.
   The engine stores nothing for a refused `observe` and ignores an
-  `unobserve` of an id none of the connection's observers holds (decision
-  56).
+  `unobserve` of an id none of the connection's observers holds. The replay
+  of an observer the engine holds in `error` is refused with that error, and
+  the engine disposes that observer as it answers (decision 56).
 
 ### 3.1 Calling functions
 
