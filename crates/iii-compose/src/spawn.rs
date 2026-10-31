@@ -296,7 +296,21 @@ impl SpawnPlan {
             return None;
         }
         let mut command = tokio::process::Command::new(&self.program);
-        command.args(&self.args).current_dir(&self.working_dir);
+        #[cfg(windows)]
+        if self.program == "cmd" && self.args.len() == 2 && self.args[0] == "/C" {
+            use std::os::windows::process::CommandExt;
+
+            // This is already cmd shell syntax, including outer quotes when
+            // needed. MSVC argument escaping inserts backslashes that cmd
+            // treats literally, breaking quoted executable paths and args.
+            command.arg("/C");
+            command.as_std_mut().raw_arg(&self.args[1]);
+        } else {
+            command.args(&self.args);
+        }
+        #[cfg(not(windows))]
+        command.args(&self.args);
+        command.current_dir(&self.working_dir);
         // Clear first: the plan is the child's entire environment, so nothing
         // from the daemon's shell can leak in behind it.
         command.env_clear();

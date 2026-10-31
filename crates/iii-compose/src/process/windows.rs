@@ -21,10 +21,10 @@ use tokio::sync::watch;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE, WAIT_TIMEOUT},
     System::{
-        Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent},
+        Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent, GetConsoleProcessList},
         JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject},
         Threading::{
-            CREATE_NEW_PROCESS_GROUP, GetProcessTimes, OpenProcess,
+            CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, GetProcessTimes, OpenProcess,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
             TerminateProcess, WaitForSingleObject,
         },
@@ -114,7 +114,16 @@ fn spawn_supervised_inner(
 ) -> std::io::Result<(Supervised, ChildOutput, Option<tokio::process::ChildStdin>)> {
     // Its own console group: CTRL_BREAK can then be aimed at the child alone,
     // rather than at every process sharing the daemon's console.
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    let mut flags = CREATE_NEW_PROCESS_GROUP;
+    let mut console_pid = 0;
+    // Detached/service parents have no console to inherit. Without this flag,
+    // Windows creates a visible console for every engine, worker and hook.
+    // Query attachment rather than GetConsoleWindow: a hidden console should
+    // still be shared so CTRL_BREAK can reach the child's process group.
+    if unsafe { GetConsoleProcessList(&mut console_pid, 1) } == 0 {
+        flags |= CREATE_NO_WINDOW;
+    }
+    command.creation_flags(flags);
     // A worker is not an interactive child of Compose. Inheriting stdin can
     // block startup indefinitely and differs from daemon/service semantics.
     if !preserve_stdin {
