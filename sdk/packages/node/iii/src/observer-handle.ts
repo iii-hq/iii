@@ -36,8 +36,10 @@ export class ObserverHandleImpl implements ObserverHandle {
   /** @internal The engine's `observeresult` for its `observe` on this connection arrived (decision 56). */
   answered = false
   /**
-   * @internal The engine created its observer on some connection and has not
-   * disposed it: a replay's `error` answer can be that observer's state.
+   * @internal The engine may hold an observer it created for it on some
+   * connection (it answered with the observer's state, or the connection
+   * closed before its answer): a replay's `error` answer can be that
+   * observer's state.
    */
   created = false
 

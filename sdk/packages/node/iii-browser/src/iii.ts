@@ -1516,7 +1516,7 @@ class Sdk implements ISdk {
     // Local dispatch and the compiled observer sets survive; what was sent on
     // this connection is replayed on the next one (standby functions too).
     this.registeredOnConnection = false
-    this.observesSent.clear()
+    this.forgetObservesSent()
     for (const functionId of [...this.standbyTimers.keys()]) this.stopStandby(functionId)
 
     // A fatal registration rejection (or shutdown) sets `isShuttingDown` and a
@@ -1537,7 +1537,7 @@ class Sdk implements ISdk {
     this.setConnectionState('connected')
     this.connectionEpoch++
     this.registeredOnConnection = false
-    this.observesSent.clear()
+    this.forgetObservesSent()
 
     if (this.ws) {
       this.ws.onmessage = this.onMessage.bind(this)
@@ -2053,6 +2053,17 @@ class Sdk implements ISdk {
     if (!sent || at < 0) return
     sent.splice(at, 1)
     if (sent.length === 0) this.observesSent.delete(handle.id)
+  }
+
+  /**
+   * The connection closed: its lists go. The engine may have created an
+   * observer whose answer never arrived, and may hold it on a reattach.
+   */
+  private forgetObservesSent(): void {
+    for (const sent of this.observesSent.values()) {
+      for (const handle of sent) if (!handle.answered) handle.created = true
+    }
+    this.observesSent.clear()
   }
 
   /**
