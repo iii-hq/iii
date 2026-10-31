@@ -134,7 +134,7 @@ What each feature turns on:
 | Feature             | Meaning                                                                                                                                                                                                       |
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields. |
-| `observe.v2`        | Includes `observe.v1`. The host delivers the calls of the functions it hosts ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`.                      |
+| `observe.v2`        | Includes `observe.v1`. The host runs its functions' match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`.        |
 | `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                  |
 | `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                             |
 
@@ -150,7 +150,8 @@ Rules:
 - The engine adds `caller`, `observe_depth`, and `activation` to an `InvokeFunction` only when the
   receiving connection declared `observe.v1`.
 - The engine decodes every worker-to-engine observe message from any connection, and reads
-  `InvocationResult.observed` only from connections that declared `observe.v2`.
+  `InvocationResult.matched` and `InvocationResult.delivered` only from connections that declared
+  `observe.v2`.
 - `large-messages.v1` commits the connection to receiving JSON messages up to 64 MiB (67,108,864
   bytes of serialized envelope), sent as one WebSocket text frame or as a fragmented message. The
   engine then sends it messages up to that size whatever `version` it reports, except to
@@ -164,8 +165,9 @@ Rules:
   `onObserverDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
   registration until the current connection's `WorkerRegistered` lists `observe.v2`, and decides
   again on every reconnect, including when it replays registrations. Every other function, `call`,
-  and `observe` work: the SDK reports matches of local calls only, sends no `observed`, and sends
-  `output` where it would set `output_is_input`, and the engine evaluates routed calls itself.
+  and `observe` work: the SDK reports matches of local calls only, sends no `matched` and no
+  `delivered`, and sends `output` where it would set `output_is_input`, and the engine evaluates
+  every active observer of a routed call.
 - If the namespace grace timer drains before `engine::workers::register` arrives, the connection is
   treated as legacy until it does; the engine then sends `FunctionRegistered` for the functions the
   connection already registered.
@@ -371,11 +373,11 @@ ordinary `InvokeFunction`. `data` is the `Observed` envelope (or the observed `i
 per the observer's `deliver`), `metadata` is the observer's metadata sidecar, and `caller` is the
 engine (`worker_name: "iii-engine"`, with the observed function and invocation). An activation
 carries an `invocation_id` and no `action`: the target's SDK answers it with an `InvocationResult`
-like any call. The engine discards that result for the observed side, and activates the ids in its
-`observed` (the target's own observers) as for any routed answer. The answer frees the observer's
-`max_in_flight` slot, and so does `observers.activation_timeout_ms` (30 s by default) for an
-activation never answered. The observed `input` never contains the engine's `_caller_worker_id`
-stamp.
+like any call. The engine discards that result for the observed side, and delivers the call to the
+target's own observers as for any routed answer ([Routed answers](#routed-answers)). The answer
+frees the observer's `max_in_flight` slot, and so does `observers.activation_timeout_ms` (30 s by
+default) for an activation never answered. The observed `input` never contains the engine's
+`_caller_worker_id` stamp.
 
 ```json
 {
@@ -491,7 +493,7 @@ as the reason, and logs it at `debug`:
 A host sends one observer something of its own, such as its initial state once `obs.accepted()`
 resolves, as a call of its own function with `metadata: { "for_observer": "<observer id>" }`. The
 function's match hook gives that call to that observer alone, and it reaches the engine as every
-call of the function does: an `InvocationsObserved` item for a local call, `observed` on the
+call of the function does: an `InvocationsObserved` item for a local call, `matched` on the
 `InvocationResult` of a routed one. See
 [Send an observer its initial state](../creating-workers/observable-functions#send-an-observer-its-initial-state).
 
@@ -539,9 +541,21 @@ A `function_not_found` message names the namespace the lookup ran in, and lists 
 the id does exist:
 `Function state::get not found in namespace default. It is registered in namespace(s): orders, analytics.`
 
-### `observed`
+### Routed answers
 
-An `observe.v2` host answers a routed call with the observers its delivery matched, in `observed`:
+An `observe.v2` host's answer to a routed call says how the call is delivered. The engine evaluates
+the observers' `on` and filters itself, with the input it kept when it forwarded the call, the
+answer's `result` or `error`, the caller it forwarded the call with, and the call's metadata. The
+host runs what is worker code, the function's match and deliver hooks, and its answer carries one of
+three things:
+
+| The answer carries | When                                                                                                                     | The engine                                                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| nothing more       | The function has no `onObserverMatch` and no `onObserverDeliver` hook.                                                   | Evaluates `on` and filters of every active observer of the function.                                                     |
+| `matched`          | The function's `onObserverMatch` hook ran: the observers it matched, each once, before `on` and filters. `[]` when none. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
+| `delivered: true`  | The function's `onObserverDeliver` hook delivered the call: `result` is what the hook returned.                          | Activates nothing.                                                                                                       |
+
+The answer for a function with a match hook:
 
 ```json
 {
@@ -550,24 +564,39 @@ An `observe.v2` host answers a routed call with the observers its delivery match
   "function_id": "orders::create",
   "result": { "order_id": "ord_1002", "total": 1250 },
   "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
-  "observed": ["8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70", "9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81"]
+  "matched": ["8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70", "9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81"]
 }
 ```
 
-- The host lists the observers iii's delivery selected: those its `onObserverMatch` matched (every
-  active observer by default) whose `on` and filters match the call. `result` is the handler's
-  return value. A function with an `onObserverDeliver` hook lists none: its hook calls through
-  observers itself.
-- `observed` may ride an answer that carries `error`: iii's delivery rethrows the handler's error,
+The answer for a function with a deliver hook:
+
+```json
+{
+  "type": "invocationresult",
+  "invocation_id": "9a1c3e5b-7d9f-4b1d-8f3b-5d7f9b1d3f5b",
+  "function_id": "approvals::request",
+  "result": { "approved": true, "by": "risk-review" },
+  "delivered": true
+}
+```
+
+- An answer for a function without hooks is the plain success or failure above. `matched` is sent
+  whenever the match hook ran, `[]` included: an absent `matched` leaves every observer to the
+  engine. A host sends at most one of `matched` and `delivered`; with both, `delivered` wins.
+- `matched` may ride an answer that carries `error`: iii's delivery rethrows the handler's error,
   and the envelope's `status` and `error` come from the answer.
-- The host reports the matches of a routed call in `observed` only. An
+- The host names the observers of a routed call on its answer only. An
   [`InvocationsObserved`](#invocationsobserved) item reports a local call.
-- The engine reads `observed` only from `observe.v2` connections, on every routed answer, a target's
-  answer to an activation or to a call through an observer included. It activates each listed id
-  after checking that it is an active observer of the invoked function, drops any other id, and
-  strips the field before it forwards the result to the caller.
-- The envelope's `input` is the input the engine routed, and its `output` is `result`. A match costs
-  no frame beyond the answer.
+- The engine reads `matched` and `delivered` only from `observe.v2` connections, on every routed
+  answer, a target's answer to an activation or to a call through an observer included, and strips
+  both before it forwards the result to the caller. `matched` from a connection that does not host
+  the function activates nothing (`REPORTER_NOT_OWNER`).
+- A routed call whose answer never comes (its caller left, the host went away) activates nothing:
+  each of the function's observers counts a `CANCELLED` drop.
+- The envelope's `input` is the input the engine routed, and its `output` is `result`. Delivery
+  costs no frame beyond the answer. The engine finds an observer's filter through an index of the
+  filters' `$eq` and `$in` conditions, so a call costs about one lookup per indexed path, whatever
+  the number of observers (see [Filters](./filters)).
 
 ## `RegistrationRejected`
 
@@ -691,9 +720,11 @@ function runs, the target runs. The **observing worker** is the connection that 
   `INVALID_ARGS_FORMAT`.
 - **Ids are strings.** Observer ids are client-generated UUID v4 strings, stable across replays.
 - **Malformed frames.** The engine reads `caller`, `observe_depth`, and `activation` on
-  `InvokeFunction`, and `observed` on `InvocationResult`, leniently: a bad value counts as absent,
-  and the rest of the frame is handled. An `Observe` the engine cannot decode but whose `id` is a
-  string gets `ObserveResult` with error `INVALID_ARGS`.
+  `InvokeFunction`, and `matched` and `delivered` on `InvocationResult`, leniently: a bad `caller`,
+  `observe_depth`, or `activation` counts as absent, a `matched` that is neither an array nor `null`
+  counts as `[]` (a non-string id in it is skipped), `delivered` counts only when it is `true`, and
+  the rest of the frame is handled. An `Observe` the engine cannot decode but whose `id` is a string
+  gets `ObserveResult` with error `INVALID_ARGS`.
 - **Revisions.** `revision` counts announcements per `(namespace, function_id)` and grows by one
   with each: `FunctionRegistered`, every `ObserverAdded`, and every `ObserverRemoved`. An SDK
   ignores an `ObserverAdded` or `ObserverRemoved` whose `revision` is not greater than the one it
@@ -708,23 +739,27 @@ function runs, the target runs. The **observing worker** is the connection that 
 
 ### Who delivers
 
-The connection that hosts a function delivers its calls when it declared `observe.v2`. Its SDK runs
-the handler, then matches observers to the call: every active observer by default, or those the
-function's `onObserverMatch` hook selects by predicate or by keys. iii's delivery then selects the
-matching observers whose `on` and filters match the call. A function's `onObserverDeliver` hook
-takes delivery over: it receives the matching observers and calls through them itself, and the host
-reports nothing for it. Otherwise the host reports what iii's delivery selected:
+The connection that hosts a function runs the function's hooks when it declared `observe.v2`. Its
+SDK runs the handler, then matches observers to the call: every active observer by default, or those
+the function's `onObserverMatch` hook selects by predicate or by keys. iii's delivery then selects
+the matching observers whose `on` and filters match the call. A function's `onObserverDeliver` hook
+takes delivery over: it receives the matching observers and calls through them itself. Where the
+filters run depends on the call:
 
-- **Local call.** The host called its own function. Matches go to the engine in a batched
-  [`InvocationsObserved`](#invocationsobserved) report. Nothing is sent when nothing matches.
-- **Routed call.** The engine routed the call to the host with an `invocation_id`. The host lists
-  the matches in [`InvocationResult.observed`](#observed).
+- **Local call.** The host called its own function, and the engine never sees the call. The host
+  evaluates `on` and filters and sends the observers delivered in a batched
+  [`InvocationsObserved`](#invocationsobserved) report. Nothing is sent when nothing matches, or
+  when the deliver hook delivered the call.
+- **Routed call.** The engine routed the call to the host with an `invocation_id`, and holds its
+  input, caller, and metadata. The host's answer names the observers the match hook matched, or says
+  that the deliver hook delivered the call, and the engine evaluates `on` and filters
+  ([Routed answers](#routed-answers)).
 - **Through an observer.** The host runs one observer's target itself with an `InvokeFunction` that
   carries `activation.observer_id` (see [Calls through an observer](#calls-through-an-observer)).
 
-The engine evaluates filters itself for routed calls to hosts without `observe.v2`, for
-engine-hosted functions, and for functions registered with `invocation` (HTTP-invoked: the engine
-calls the endpoint, so no connection answers).
+The engine evaluates every active observer of a routed call to a host without `observe.v2`, of a
+call to an engine-hosted function, and of a call to a function registered with `invocation`
+(HTTP-invoked: the engine calls the endpoint, so no connection answers).
 
 ### `Observe`
 

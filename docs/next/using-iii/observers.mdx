@@ -1781,7 +1781,7 @@ To change or deny observers in the RBAC configuration, see
   `observable: false`, or that sets `onObserverMatch` or `onObserverDeliver`, needs a 0.26 engine:
   the SDK does not register it on a 0.25 engine, so its observers stay `pending`. The
   [built-in event sources](#built-in-event-sources) are such functions.
-- Functions hosted by workers on older SDKs are observable. The engine evaluates the filters for
-  routed calls of functions hosted on SDKs without `observe.v2`, and the hosting SDK reports its own
-  local calls.
+- Functions hosted by workers on older SDKs are observable. The engine evaluates the filters of
+  every routed call, whichever SDK hosts the function, and the hosting SDK reports its own local
+  calls.
 - Workers on SDKs older than 0.25 cannot observe.

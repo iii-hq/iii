@@ -434,13 +434,17 @@ steps:
 iii's delivery:
 
 1. selects, among the matching observers, those whose `on` matches the call's status and whose
-   filters match the call;
-2. hands them to the engine, which runs each target with the observer's `deliver` choice, policy,
-   metadata, and [loop guard](../using-iii/observers#loop-guard);
+   filters match the call. The engine does it for a call it routed to the worker, with the input it
+   forwarded and the result the worker answers; the worker does it for a call it makes to its own
+   function;
+2. the engine runs each target with the observer's `deliver` choice, policy, metadata, and
+   [loop guard](../using-iii/observers#loop-guard);
 3. gives the caller the handler's return value, or rethrows its error.
 
 It does not wait for targets. A call with no observers costs one atomic load, and the caller and the
-observers see the same value.
+observers see the same value. The engine finds the observers whose filters hold an `$eq` or `$in` on
+a value of the call through an index, so a routed call costs about one lookup however many observers
+filter on their own value (see [Filters](../reference/filters#many-observers)).
 
 ### Match observers to calls
 
