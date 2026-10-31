@@ -396,9 +396,12 @@ impl ComposeFile {
     }
 
     /// Parses compose YAML that is already in memory. `path` is used for
-    /// diagnostics and to resolve relative paths.
+    /// diagnostics and to resolve relative paths. A relative `path` is made
+    /// absolute first, so what is resolved against it (a VM's `host_path`)
+    /// does not depend on the working directory of whoever reads it next.
     pub fn parse(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
+        let path = std::path::absolute(&path).unwrap_or(path);
         let base_dir = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -1428,6 +1431,24 @@ engine:
         let text = example["worker-compose.yaml"].as_str().unwrap();
         let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
         assert!(parsed.containers.contains_key("state"));
+    }
+
+    /// `compose::add` with no `file` parses the daemon's relative default: a
+    /// `path://../` worker must still reach the adapter as an absolute path.
+    #[test]
+    fn a_relative_compose_path_resolves_workers_absolutely() {
+        let parsed = ComposeFile::parse(
+            "containers:\n  vm: {worker: path://../outside}\n",
+            "worker-compose.yaml",
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(parsed.path, cwd.join("worker-compose.yaml"));
+        assert_eq!(parsed.base_dir, cwd);
+        assert_eq!(
+            parsed.containers["vm"].worker_dir(),
+            Some(cwd.join("../outside").as_path())
+        );
     }
 
     #[test]
