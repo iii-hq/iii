@@ -635,3 +635,33 @@ def test_filters_announced_again_are_the_ones_the_index_serves(engine: FakeEngin
     settle(client, engine)
     # the second call of 4 reaches no one, the call of 400 reaches o4
     assert [(i["matched"], i["input"]["n"]) for i in _items(engine, fid)] == [(["o4"], 4), (["o4"], 400)]
+
+
+def test_an_observer_announced_again_takes_its_filters_before_the_set_that_serves_them(
+    engine: FakeEngine, connect: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A local call on another thread (a sync ``iii.call`` delivers on its caller's thread) may build the
+    filter index of the function's current set at any moment of a re-announcement. Simulated here at the
+    moment the observer takes its new filters: the set it reads then serves the old filters, and the set
+    every later call reads files the new ones."""
+    client = connect(engine)
+    fid = "ra::race"
+    client.register_function(fid, lambda data: data)
+    _confirm(client, engine, fid, [observer_info(f"o{i}", "t", filters={"input.n": {"$eq": i}}) for i in range(20)])
+    state = client._functions[fid].observe
+    update = Observer._update
+
+    def racing_update(self: Observer, info: Any, filter_: Any) -> None:
+        if self.function_id == fid and self.id == "o4" and self._active:
+            assert len(state.active.filters) == 20  # a concurrent call builds the current set's index here
+        update(self, info, filter_)
+
+    monkeypatch.setattr(Observer, "_update", racing_update)
+    engine.deliver(observer_added(fid, 1, observer_info("o4", "t", filters={"input.n": {"$eq": 400}})))
+    engine.wait_for(lambda: len([a for a in acks(engine) if a["id"] == "o4"]) == 2, what="the re-ack")
+    wait_until(lambda: client.observers(fid)[4].filters == {"input.n": {"$eq": 400}}, what="the new view")
+    client.call({"function_id": fid, "payload": {"n": 4}})
+    client.call({"function_id": fid, "payload": {"n": 400}})
+    settle(client, engine)
+    assert [o.id for o in client.observers(fid) if o.matches({"input": {"n": 400}})] == ["o4"]
+    assert [(i["matched"], i["input"]["n"]) for i in _items(engine, fid)] == [(["o4"], 400)]
