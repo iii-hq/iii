@@ -68,7 +68,7 @@ func (m *mockEngine) handshakeAt(i int) handshake {
 
 // newMockEngine starts a mock engine on an ephemeral loopback port and returns it with
 // the buffer empty. Call Close (via t.Cleanup) to shut it down.
-func newMockEngine(t *testing.T) *mockEngine {
+func newMockEngine(t testing.TB) *mockEngine {
 	t.Helper()
 	m := &mockEngine{}
 	m.gotMessage = sync.NewCond(&m.mu)

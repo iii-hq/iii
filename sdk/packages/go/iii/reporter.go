@@ -12,8 +12,8 @@ import (
 )
 
 // This file is the reporter: one bounded buffer for the deliveries of local calls,
-// flushed as invocationsobserved batches, and the periodic localinvocationstats. A
-// routed call is reported only in its answer's observed list.
+// flushed as invocationsobserved batches, and the periodic localinvocationstats. Routed
+// calls are never reported: the engine delivers them.
 //
 // It never blocks a call: pushing only appends under a mutex. When the buffer is full
 // the newest item is dropped and counted (BUFFER_FULL); an item too large on its own is

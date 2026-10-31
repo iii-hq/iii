@@ -1694,14 +1694,17 @@ func (c *Client) enqueueOutboundDirect(frame []byte) {
 
 // handleInvoke runs a registered function for an inbound InvokeFunction that arrived on
 // connection epoch and, unless the call is fire-and-forget (no invocation_id), replies
-// with an InvocationResult. With an engine that advertised observe.v2 this worker
-// delivers the call (a void one included: the engine sends it with an invocation_id),
-// and the answer lists in observed the observers iii delivered it to. A function with a
-// deliver hook answers with what the hook returns, and lists none.
+// with an InvocationResult. The engine evaluates the observers' on and filters for the
+// call: it holds the input, the caller, the metadata and the answer (decision 55). With
+// an engine that advertised observe.v2 (which sends every call with an invocation_id,
+// a void one included) this worker runs the function's hooks: a function with a deliver
+// hook answers with what the hook returns and delivered, one with a match hook lists in
+// matched the observers the hook matched, and any other answers with the handler's
+// result alone.
 func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunctionMessage) {
 	c.mu.Lock()
 	fn, ok := c.functions[msg.FunctionID]
-	hostDelivers := msg.InvocationID != nil && c.epoch == epoch && c.registeredOnConnection && c.engineFeatures[FeatureObserveV2]
+	runsHooks := msg.InvocationID != nil && c.epoch == epoch && c.registeredOnConnection && c.engineFeatures[FeatureObserveV2]
 	c.mu.Unlock()
 
 	tc := traceContext{traceparent: msg.Traceparent, baggage: msg.Baggage}
@@ -1710,7 +1713,7 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 		c.replyInvocation(epoch, msg, nil, &ErrorBody{
 			Code:    "function_not_found",
 			Message: fmt.Sprintf("no handler registered for %q", msg.FunctionID),
-		}, tc, nil)
+		}, tc, routedAnswer{})
 		return
 	}
 	// An HTTP-invoked function (RegisterHTTPFunction) has no handler here: the engine
@@ -1719,7 +1722,7 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 		c.replyInvocation(epoch, msg, nil, &ErrorBody{
 			Code:    "function_not_invokable",
 			Message: "Function is HTTP-invoked and cannot be invoked locally",
-		}, tc, nil)
+		}, tc, routedAnswer{})
 		return
 	}
 
@@ -1745,21 +1748,20 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	f := fn.observe
 	// the observers active when the call started, and the hooks set then
 	st := f.state.Load()
-	var observed []string
+	var routed routedAnswer
 	out := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, handler outcome) outcome {
-		if !hostDelivers || !st.delivering() {
+		if !runsHooks || !st.hooked() {
 			return handler
 		}
-		answer, ids := f.deliver(ctx, &callDelivery{
+		answer, how := f.deliverRouted(ctx, &callDelivery{
 			state:   st,
 			call:    handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, metadata),
 			handler: handler,
-			routed:  true,
 		})
-		observed = ids
+		routed = how
 		return answer
 	})
-	c.replyInvocation(epoch, msg, out.result, out.errBody, tc, observed)
+	c.replyInvocation(epoch, msg, out.result, out.errBody, tc, routed)
 }
 
 // outcome is a call's outcome as the wire carries it, its encoded result or its error
@@ -1833,8 +1835,8 @@ func errorBodyFromHandlerError(err error) *ErrorBody {
 // replyInvocation sends the InvocationResult for an invocation on the connection it
 // arrived on, unless it was fire-and-forget (no invocation_id), in which case there is
 // nowhere to reply. Echoes the incoming trace context back on the result, as the engine
-// expects, and lists in observed the observers iii delivered the call to.
-func (c *Client) replyInvocation(epoch uint64, msg *InvokeFunctionMessage, result json.RawMessage, errBody *ErrorBody, tc traceContext, observed []string) {
+// expects, and says how the call is delivered (routedAnswer).
+func (c *Client) replyInvocation(epoch uint64, msg *InvokeFunctionMessage, result json.RawMessage, errBody *ErrorBody, tc traceContext, routed routedAnswer) {
 	if msg.InvocationID == nil {
 		return // fire-and-forget: no reply expected
 	}
@@ -1845,7 +1847,8 @@ func (c *Client) replyInvocation(epoch uint64, msg *InvokeFunctionMessage, resul
 		Error:        errBody,
 		Traceparent:  tc.traceparent,
 		Baggage:      tc.baggage,
-		Observed:     observed,
+		Matched:      routed.matched,
+		Delivered:    routed.delivered,
 	})
 	if err != nil {
 		return
