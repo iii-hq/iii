@@ -5,13 +5,15 @@
 //
 // Run it against a local engine:
 //
-//	iii --use-default-config   # in another terminal, engine on :49134 / :3111
-//	go run .                   # from sdk/packages/go/iii-example
+//	iii                                  # engine, SDK socket on :49134
+//	iii compose                          # Compose daemon, in a third terminal
+//	iii trigger compose::add worker=http # serves :3111
+//	go run .                             # from sdk/packages/go/iii-example
 //	curl -X POST localhost:3111/greet -H 'Content-Type: application/json' -d '{"name":"world"}'
 //
-// The Content-Type header matters: the engine only parses a JSON body into the request
-// envelope's "body" field, so a form-urlencoded request (curl's -d default) arrives with
-// body=null and the handler falls back to its default.
+// The Content-Type header matters: the http worker only parses a JSON body into the
+// request envelope's "body" field, so a form-urlencoded request (curl's -d default)
+// arrives with body=null and the handler falls back to its default.
 package main
 
 import (
@@ -29,7 +31,7 @@ import (
 // httpRequest is the subset of the engine's HTTP-trigger ApiRequest envelope this
 // example reads. When a function is invoked via an "http" trigger, the engine wraps the
 // request as { path, method, body, headers, ... } and the parsed request body lives
-// under "body" — not at the top level. See engine/src/workers/rest_api/README.md.
+// under "body" — not at the top level. See docs/next/creating-workers/functions.mdx.
 type httpRequest struct {
 	Body greetBody `json:"body"`
 }
@@ -78,7 +80,7 @@ func main() {
 		log.Fatalf("register function: %v", err)
 	}
 
-	// Bind an HTTP trigger so the engine exposes the function at POST /greet.
+	// Bind an HTTP trigger so the http worker exposes the function at POST /greet.
 	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
 		ID:         "hello-http",
 		Type:       "http",
@@ -113,7 +115,7 @@ func main() {
 	}
 
 	// Serve until interrupted so the HTTP trigger stays live.
-	log.Print("serving; POST to /greet on the engine's HTTP port, or Ctrl-C to exit")
+	log.Print("serving; POST to /greet on :3111, or Ctrl-C to exit")
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
