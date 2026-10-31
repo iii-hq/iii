@@ -82,7 +82,8 @@ Parse it once:
 const detail = JSON.parse(err.message);
 // detail.code, detail.type, detail.message, detail.docs_url, detail.retryable
 // detail.fix       — ready-to-send next-call payload, null if not auto-fixable
-// detail.fix_note  — one-liner explaining why fix is null
+// detail.fix_note  — when present, how to use fix or why it is null; filesystem
+//                    errors other than a missing parent carry neither (the message names the path)
 ```
 
 If `detail.fix` is non-null, **merge** its fields into your original request and
@@ -158,7 +159,7 @@ Returns: `{ stdout, stderr, exit_code, timed_out, duration_ms, success, stdout_t
 
 #### `sandbox::list`
 
-Enumerate active sandboxes. Empty payload (`{}`). Returns an array of `{ sandbox_id, image, name, status, created_at, last_exec_at }`.
+Enumerate active sandboxes. Empty payload (`{}`). Returns `{ sandboxes: [{ sandbox_id, name, image, age_secs, exec_in_progress, exec_in_flight, exec_slots_free, stopped }] }`. Use `exec_slots_free` for admission, not `exec_in_progress`.
 
 #### `sandbox::stop`
 
