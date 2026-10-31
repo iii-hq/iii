@@ -3392,7 +3392,6 @@ mod tests {
                 !msg.contains("iii trigger -n default"),
                 "worker namespace must not be presented as the Compose daemon namespace: {msg}"
             );
-            assert!(!msg.contains("iii worker"), "legacy command leaked: {msg}");
         }
     }
 

@@ -40,7 +40,7 @@ The workflows are organized into two categories:
         │  bumps + tags iii-alpha/v* (isolated; never touches main)
         ▼
         ├─► sdk-node (pnpm) / _py / _rust-cargo / _go   (SDK packages)
-        ├─► _rust-binary.yml + init-build job            (engine/worker/init binaries → iii-alpha prerelease)
+        ├─► _rust-binary.yml                             (iii engine binary → iii-alpha prerelease)
         └─► _publish-engine-workers / -skills            (builtin workers → `alpha` registry tag)
 ```
 
@@ -58,7 +58,7 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 |-----|-----------|--------------|
 | `changes` | — | Detects changed paths (engine/crates/Cargo) for scoping downstream jobs |
 | `engine-build` | — | Builds debug `iii` with all features, uploads `iii-binary` artifact (critical path) |
-| `engine-coverage` | `changes` | Tests `iii-worker`, `iii-filesystem`, `iii-network`, `iii-init` and `iii --all-features` under `cargo llvm-cov`. PRs: only when engine paths change. Push/dispatch: always |
+| `engine-coverage` | `changes` | Tests `iii` and `iii-sandbox-contract` with `--all-features` under `cargo llvm-cov`. PRs: only when engine paths change. Push/dispatch: always |
 | `engine-benches` | — | `cargo bench --benches --no-run` to verify benches compile |
 | `engine-fmt` | — | `cargo fmt --all -- --check` |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
@@ -102,7 +102,8 @@ Entry point for stable and RC releases. Provides a form with:
    - **release candidates** (`rc`) leave docs untouched.
    - In-content links are version-relative, so files move verbatim; only `docs.json` nav paths carry the version prefix.
 8. Commits the version bump (including any docs changes) and creates an annotated tag with the source branch and SHA. On `main`, pushes the branch and tag; on any other branch, pushes **only the tag**, leaving both the source branch and `main` unchanged
-9. Posts a Slack notification
+9. Dispatches an `iii-release` event with the version to `iii-hq/workers`, whose `loadtest.yml` benchmarks the new tag (prereleases included), and on stable releases to `iii-hq/templates` to bump its pins. Both need the `III_CI_APP` GitHub App installed with `contents: write`; a failed workers dispatch only skips the benchmark run
+10. Posts a Slack notification
 
 > **Docs layout:** `Latest` lives at the docs root (unprefixed paths); `Next` lives in the fixed `docs/next/` folder; archived versions live in `docs/MAJOR-MINOR-0/` folders. `docs/changelog/` is shared by all versions — it stays at the root, is never copied into a version folder, and every version's Changelog tab points at it. Rotation assumes this shape already exists (a `Latest` root block + a `Next` block pointing at `docs/next/`).
 
@@ -199,7 +200,7 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
 4. Pushes **only** the `iii-alpha/v{version}` tag — never a branch, never `main`
 5. Publishes, all checking out that tag:
    - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages) plus `_py.yml`, `_rust-cargo.yml`, `_go.yml`
-   - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
+   - **Engine binary** — `iii` via `_rust-binary.yml`, attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
    - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
 
 **Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Docker and Homebrew are intentionally excluded.**

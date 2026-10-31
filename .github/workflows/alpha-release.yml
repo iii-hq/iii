@@ -7,8 +7,8 @@ name: Alpha Release
 #
 # Publishes:
 #   * SDK packages — npm + pypi + crates + go.
-#   * Engine binaries — iii / iii-worker / iii-init, attached to a GitHub
-#     prerelease on the iii-alpha/v* tag.
+#   * Engine binary — iii, attached to a GitHub prerelease on the
+#     iii-alpha/v* tag.
 #   * Builtin workers + skills — to the workers registry under a dedicated
 #     `alpha` tag (never rc/latest).
 #   Docker and homebrew are intentionally excluded.
@@ -347,71 +347,6 @@ jobs:
             go get github.com/iii-hq/iii/sdk/packages/go/iii@v${{ needs.prepare.outputs.version }}
             ```
 
-  init-build:
-    name: Build iii-init (${{ matrix.target }})
-    needs: [prepare, create-alpha-release]
-    if: ${{ !failure() && !cancelled() }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            publish_aliases: 'x86_64-unknown-linux-gnu'
-          - target: aarch64-unknown-linux-musl
-            publish_aliases: 'aarch64-unknown-linux-gnu'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-          # Build runs checked-out code; uploads go through softprops (token
-          # via env), so the write token never needs to sit in git config.
-          persist-credentials: false
-
-      - name: Install cross-compilation tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: iii-init-${{ matrix.target }}
-
-      - name: Build iii-init
-        run: cargo build -p iii-init --target ${{ matrix.target }} --release
-
-      - name: Upload init binary as workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: iii-init-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/iii-init
-          retention-days: 1
-
-      - name: Package and upload to release
-        if: needs.prepare.outputs.dry_run != 'true'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf iii-init-${{ matrix.target }}.tar.gz iii-init
-          sha256sum iii-init-${{ matrix.target }}.tar.gz | awk '{print $1}' > iii-init-${{ matrix.target }}.sha256
-          for alias in ${{ matrix.publish_aliases }}; do
-            cp iii-init-${{ matrix.target }}.tar.gz "iii-init-${alias}.tar.gz"
-            sha256sum "iii-init-${alias}.tar.gz" | awk '{print $1}' > "iii-init-${alias}.sha256"
-          done
-
-      - name: Upload release assets
-        if: needs.prepare.outputs.dry_run != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
-          files: target/${{ matrix.target }}/release/iii-init-*.tar.gz,target/${{ matrix.target }}/release/iii-init-*.sha256
-
   engine-release:
     name: Engine Binary (alpha)
     needs: [prepare, create-alpha-release]
@@ -429,30 +364,9 @@ jobs:
       III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
       III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
 
-  worker-release:
-    name: Worker Binary (alpha)
-    needs: [prepare, create-alpha-release, init-build]
-    if: ${{ !failure() && !cancelled() }}
-    uses: ./.github/workflows/_rust-binary.yml
-    with:
-      bin_name: iii-worker
-      manifest_path: crates/iii-worker/Cargo.toml
-      tag_name: ${{ needs.prepare.outputs.tag }}
-      tag_prefix: iii-alpha/
-      is_prerelease: true
-      skip_create_release: true
-      dry_run: ${{ needs.prepare.outputs.dry_run == 'true' }}
-      features: embed-init,embed-libkrunfw
-      init_artifacts: true
-      targets: '["aarch64-apple-darwin","x86_64-unknown-linux-gnu","aarch64-unknown-linux-gnu","x86_64-unknown-linux-musl","aarch64-unknown-linux-musl"]'
-      system_deps: libcap-ng-dev
-    secrets:
-      III_CI_APP_ID: ${{ secrets.III_CI_APP_ID }}
-      III_CI_APP_PRIVATE_KEY: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
-
   publish-builtin-workers:
     name: Publish builtin workers (alpha)
-    needs: [prepare, create-alpha-release, engine-release, worker-release]
+    needs: [prepare, create-alpha-release, engine-release]
     if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
     strategy:
       fail-fast: false

@@ -2,23 +2,37 @@
 
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the engine-owned `iii-sandbox`
-worker. Enable it in the managed Compose file before starting the engine:
+for agent tool-calls, REPLs, and one-off jobs. The engine's `iii-sandbox` router serves the
+`sandbox::*` triggers and forwards each call to a sandbox adapter. The `sandbox-libkrun` worker is
+the adapter that runs the VMs, and Compose installs it from the registry when a project needs it:
+when the compose file sets `engine.sandbox` for its own namespace, when it declares a worker that
+runs in a VM (a bundle worker, or a `path://` worker with `runtime.base_image`), or when you run
+`iii trigger compose::add worker=iii-sandbox`. To change which images the adapter allows, set its
+configuration under `containers.sandbox-libkrun.config_override`:
 
 ```yaml worker-compose.yaml
 engine:
-  workers:
-    iii-sandbox:
-      auto_install: true
+  sandbox:
+    adapter: sandbox-libkrun
+containers:
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
+    version: "^0.2"
+    config_override:
       image_allowlist: [python, node]
 ```
 
+`image_allowlist` and `custom_images` set the images a sandbox can boot. An engine that no Compose
+file manages has no adapter bound, so its `sandbox::*` calls fail with [S303](#S303) until you set a
+top-level `sandbox:` section in its engine config. [Upgrading to the sandbox
+worker](../upgrading/sandbox-worker) covers that case and the move from the 0.25 setup.
+
 <Note>
-  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
-  [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+  This page is a quick tour of the sandbox triggers. For the adapter's own documentation, see the
+  [sandbox-libkrun docs](https://workers.iii.dev/workers/sandbox-libkrun).
 </Note>
 
-You drive sandboxes by invoking the worker's `sandbox::*` triggers, the same way you call any
+You drive sandboxes by invoking the `sandbox::*` triggers, the same way you call any
 function (see [Triggering functions](../using-iii/functions#triggering-invoking-functions)). Images
 are catalog names such as `python` or `node`, not arbitrary OCI references. The examples below
 capture the new sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
@@ -49,7 +63,7 @@ SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
 iii trigger sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
 
 # list the active sandbox ids
-iii trigger sandbox::list | jq -r '.[].sandbox_id'
+iii trigger sandbox::list | jq -r '.sandboxes[].sandbox_id'
 
 # stop when done
 iii trigger sandbox::stop sandbox_id=$SB

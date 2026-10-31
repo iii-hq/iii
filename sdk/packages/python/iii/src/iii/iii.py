@@ -1358,7 +1358,7 @@ class III:
 
     def _worker_name(self) -> str:
         # III_WORKER_NAME carries the orchestrator-assigned name (set by
-        # iii-worker for engine-managed workers). The engine matches live
+        # iii compose for the workers it starts). The engine matches live
         # registrations by name, so that identity must win over a name
         # embedded in worker code.
         return os.environ.get("III_WORKER_NAME") or self._options.worker_name or f"{platform.node()}:{os.getpid()}"

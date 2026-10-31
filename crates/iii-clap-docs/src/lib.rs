@@ -6,17 +6,17 @@
 
 //! Render a `clap::Command` tree as a Mintlify MDX reference page.
 //!
-//! Each user-facing binary in this repo (`iii`, `iii-worker`) exposes a
-//! hidden `gen-cli-docs` subcommand that hands its own `Command` tree to
-//! [`render_mdx`]. The output is committed under `docs/next/cli-reference/`
+//! The `iii` binary exposes a hidden `gen-cli-docs` subcommand that hands
+//! its own `Command` tree to [`render_mdx`]. The output is committed under
+//! `docs/next/cli-reference/`
 //! and CI regenerates + diffs it so the docs can never drift from the CLI.
 //!
 //! The walker is intentionally dumb: it documents exactly what clap knows.
 //! Anything `hide = true` (commands or args) is skipped, the auto `help`
 //! command/flag is skipped, and subcommands listed in
-//! [`PageMeta::delegated`] are linked to their own page instead of being
-//! rendered (the engine's `console`/`cloud`/`worker` passthrough stubs carry
-//! no real structure; the real trees live in the dispatched binaries).
+//! [`PageMeta::delegated`] are listed with a note instead of being rendered
+//! (the engine's `cloud` passthrough stub carries no real structure; the real
+//! tree lives in the dispatched binary).
 
 use std::collections::BTreeMap;
 
@@ -24,10 +24,8 @@ use clap::Command;
 
 /// A subcommand that is documented elsewhere (or not at all). The walker
 /// lists it in the parent's Commands table with `note` as the description,
-/// linking to `link` when given, and does not recurse into it.
+/// and does not recurse into it.
 pub struct Delegated {
-    /// Relative doc link (e.g. `./iii-worker`). `None` renders plain text.
-    pub link: Option<String>,
     /// Replacement description for the Commands table row.
     pub note: String,
 }
@@ -74,29 +72,13 @@ pub fn render_mdx(cmd: Command, meta: &PageMeta) -> String {
         out.push_str("\n\n");
     }
 
-    render_command(&mut out, &mut cmd, &root_path, 2, meta, None);
-    finish(out)
-}
-
-/// Render `cmd` as a page fragment: no frontmatter, no banner. The intro is
-/// emitted INSIDE the root section (after the about line) as a lead-in
-/// instead of above the heading. Fragments are concatenated under another
-/// binary's full page to build the combined CLI reference.
-pub fn render_mdx_fragment(cmd: Command, meta: &PageMeta) -> String {
-    let (mut cmd, root_path) = prepare(cmd);
-    let lead_in = if meta.intro.is_empty() {
-        None
-    } else {
-        Some(meta.intro.as_str())
-    };
-    let mut out = String::new();
-    render_command(&mut out, &mut cmd, &root_path, 2, meta, lead_in);
+    render_command(&mut out, &mut cmd, &root_path, 2, meta);
     finish(out)
 }
 
 /// Build the command tree and resolve the root display path: prefer an
-/// explicit bin_name ("iii worker") over the package name ("iii-worker") so
-/// headings show what users actually type.
+/// explicit bin_name over the command name so headings show what users
+/// actually type.
 fn prepare(cmd: Command) -> (Command, String) {
     let mut cmd = cmd;
     cmd.build();
@@ -146,16 +128,6 @@ pub fn write_page(
     write_str(render_mdx(cmd, meta), out)
 }
 
-/// Like [`write_page`] but renders a concatenable fragment (see
-/// [`render_mdx_fragment`]).
-pub fn write_fragment(
-    cmd: Command,
-    meta: &PageMeta,
-    out: Option<&std::path::Path>,
-) -> std::io::Result<()> {
-    write_str(render_mdx_fragment(cmd, meta), out)
-}
-
 fn write_str(mdx: String, out: Option<&std::path::Path>) -> std::io::Result<()> {
     match out {
         Some(path) => {
@@ -172,8 +144,8 @@ fn write_str(mdx: String, out: Option<&std::path::Path>) -> std::io::Result<()> 
 }
 
 /// Recursively set each node's bin name to its full command path so
-/// `render_usage` prints `Usage: iii worker sandbox run [OPTIONS]` instead
-/// of `Usage: run [OPTIONS]`. clap only fills these in lazily while
+/// `render_usage` prints `Usage: iii compose logs [OPTIONS]` instead
+/// of `Usage: logs [OPTIONS]`. clap only fills these in lazily while
 /// rendering help for a live invocation; for offline walking we do it
 /// ourselves.
 fn set_bin_names(cmd: Command, path: &str) -> Command {
@@ -189,14 +161,7 @@ fn set_bin_names(cmd: Command, path: &str) -> Command {
     cmd
 }
 
-fn render_command(
-    out: &mut String,
-    cmd: &mut Command,
-    path: &str,
-    level: usize,
-    meta: &PageMeta,
-    lead_in: Option<&str>,
-) {
+fn render_command(out: &mut String, cmd: &mut Command, path: &str, level: usize, meta: &PageMeta) {
     let hashes = "#".repeat(level.min(5));
     out.push_str(&format!("{hashes} `{path}`\n\n"));
 
@@ -207,13 +172,6 @@ fn render_command(
         .unwrap_or_default();
     if !about.is_empty() {
         out.push_str(&esc_mdx(&about));
-        out.push_str("\n\n");
-    }
-
-    // Fragment lead-in: contextual prose for this binary's section of the
-    // combined page (raw MDX, only ever set on the root node).
-    if let Some(text) = lead_in {
-        out.push_str(text.trim_end());
         out.push_str("\n\n");
     }
 
@@ -253,8 +211,8 @@ fn render_command(
         })
         .collect();
     subs.sort_by(|a, b| a.0.cmp(&b.0));
-    // Only root sections (`## iii`, `## iii worker`) get the table: it
-    // serves as that binary's index. For nested commands the child
+    // Only the root section (`## iii`) gets the table: it serves as the
+    // binary's index. For nested commands the child
     // sections follow immediately below, so a table would just duplicate
     // their headings.
     if !subs.is_empty() && level == 2 {
@@ -265,11 +223,7 @@ fn render_command(
         out.push_str("| Command | Description |\n| ------- | ----------- |\n");
         for (name, about) in &subs {
             let row = if let Some(d) = meta.delegated.get(name) {
-                let label = match &d.link {
-                    Some(link) => format!("[`{name}`]({link})"),
-                    None => format!("`{name}`"),
-                };
-                format!("| {label} | {} |\n", esc_cell(&d.note))
+                format!("| `{name}` | {} |\n", esc_cell(&d.note))
             } else {
                 format!(
                     "| [`{name}`](#{}) | {} |\n",
@@ -307,7 +261,7 @@ fn render_command(
             .find(|s| s.get_name() == name)
             .expect("subcommand listed above")
             .clone();
-        render_command(out, &mut child, &child_path, level + 1, meta, None);
+        render_command(out, &mut child, &child_path, level + 1, meta);
     }
 }
 
@@ -660,41 +614,33 @@ mod tests {
 
     #[test]
     fn respects_explicit_bin_name_for_root_path() {
-        let cmd = Command::new("iii-worker")
-            .bin_name("iii worker")
-            .about("worker runtime")
-            .subcommand(Command::new("add").about("Install a worker"));
+        let cmd = Command::new("demo-cli")
+            .bin_name("demo cli")
+            .about("demo runtime")
+            .subcommand(Command::new("add").about("Add a thing"));
         let mdx = render_mdx(cmd, &meta());
-        assert!(mdx.contains("## `iii worker`\n"));
-        assert!(mdx.contains("### `iii worker add`\n"));
-        assert!(mdx.contains("[`add`](#iii-worker-add)"));
+        assert!(mdx.contains("## `demo cli`\n"));
+        assert!(mdx.contains("### `demo cli add`\n"));
+        assert!(mdx.contains("[`add`](#demo-cli-add)"));
     }
 
     #[test]
-    fn delegated_subcommands_link_out_and_do_not_recurse() {
-        let cmd = Command::new("iii")
-            .subcommand(Command::new("worker").about("Manage workers"))
-            .subcommand(Command::new("cloud").about("Manage deployments"));
-        let mut m = meta();
-        m.delegated.insert(
-            "worker".to_string(),
-            Delegated {
-                link: Some("./iii-worker".to_string()),
-                note: "Documented on its own page.".to_string(),
-            },
+    fn delegated_subcommands_are_listed_and_do_not_recurse() {
+        let cmd = Command::new("iii").subcommand(
+            Command::new("cloud")
+                .about("Manage deployments")
+                .subcommand(Command::new("deploy").about("Deploy")),
         );
+        let mut m = meta();
         m.delegated.insert(
             "cloud".to_string(),
             Delegated {
-                link: None,
                 note: "External binary; run `iii cloud --help`.".to_string(),
             },
         );
         let mdx = render_mdx(cmd, &m);
-        assert!(mdx.contains("[`worker`](./iii-worker)"));
-        assert!(mdx.contains("Documented on its own page."));
-        assert!(!mdx.contains("## `iii worker`"), "must not recurse:\n{mdx}");
         assert!(mdx.contains("| `cloud` | External binary; run `iii cloud --help`. |"));
+        assert!(!mdx.contains("## `iii cloud`"), "must not recurse:\n{mdx}");
     }
 
     #[test]
@@ -737,28 +683,6 @@ mod tests {
         );
         let mdx = render_mdx(explicit, &meta());
         assert!(mdx.contains("`-v, --version`"));
-    }
-
-    #[test]
-    fn fragment_has_no_page_chrome_and_inlines_intro_as_lead_in() {
-        let cmd = Command::new("iii-worker")
-            .bin_name("iii worker")
-            .about("iii managed worker runtime")
-            .subcommand(Command::new("add").about("Install a worker"));
-        let mdx = render_mdx_fragment(cmd, &meta());
-        assert!(
-            mdx.starts_with("## `iii worker`\n"),
-            "fragment must start at the root heading:\n{mdx}"
-        );
-        assert!(!mdx.contains("---\n"), "no frontmatter in fragments");
-        assert!(!mdx.contains("AUTO-GENERATED"), "no banner in fragments");
-        // Intro renders inside the section, after the about line.
-        let about_pos = mdx.find("iii managed worker runtime").unwrap();
-        let intro_pos = mdx.find("Intro line.").unwrap();
-        let usage_pos = mdx.find("```text").unwrap();
-        assert!(about_pos < intro_pos && intro_pos < usage_pos);
-        // Children render normally.
-        assert!(mdx.contains("### `iii worker add`"));
     }
 
     #[test]

@@ -347,7 +347,7 @@ fn update_list_targets_prints_targets() {
     assert!(output.status.success(), "exit: {:?}", output.status);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("self") && (stdout.contains("console") || stdout.contains("worker")),
+        stdout.contains("self") && stdout.contains("cloud"),
         "expected list-targets to mention self + a managed binary:\n{}",
         stdout
     );

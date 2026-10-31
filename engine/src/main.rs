@@ -6,7 +6,7 @@
 
 mod cli;
 mod cli_trigger;
-mod legacy_worker_functions;
+mod missing_function_hints;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_trigger::TriggerArgs;
@@ -195,7 +195,7 @@ enum Commands {
 
     /// Update iii and managed binaries to their latest versions
     Update {
-        /// Specific command or binary to update (e.g., "worker", "self").
+        /// Specific command or binary to update (e.g., "cloud", "self").
         /// Use "self" or "iii" to update only iii.
         /// If omitted, updates iii and all installed binaries.
         #[arg(
@@ -688,15 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn worker_is_no_longer_a_public_command() {
-        let result = Cli::try_parse_from(["iii", "worker", "add", "http"]);
-        assert!(
-            result.is_err(),
-            "iii worker must be rejected by the root CLI"
-        );
-    }
-
-    #[test]
     fn version_flag_works_globally() {
         let cli = Cli::try_parse_from(["iii", "--version"]).expect("should parse --version");
         assert!(cli.version);
@@ -737,7 +728,7 @@ mod tests {
     #[test]
     fn cli_usage_command_path_covers_update_modes() {
         let cli =
-            Cli::try_parse_from(["iii", "update", "worker"]).expect("should parse update target");
+            Cli::try_parse_from(["iii", "update", "cloud"]).expect("should parse update target");
         assert_eq!(cli_usage_command_path(&cli), "update target");
 
         let cli = Cli::try_parse_from(["iii", "update", "--list-targets"])
@@ -818,14 +809,14 @@ mod tests {
 
     #[test]
     fn update_parses_with_target() {
-        let cli = Cli::try_parse_from(["iii", "update", "worker"])
+        let cli = Cli::try_parse_from(["iii", "update", "cloud"])
             .expect("should parse update with target");
         match cli.command {
             Some(Commands::Update {
                 target,
                 list_targets,
             }) => {
-                assert_eq!(target.as_deref(), Some("worker"));
+                assert_eq!(target.as_deref(), Some("cloud"));
                 assert!(!list_targets);
             }
             _ => panic!("expected Update subcommand"),
@@ -866,7 +857,7 @@ mod tests {
 
     #[test]
     fn update_target_and_list_targets_conflict() {
-        let result = Cli::try_parse_from(["iii", "update", "worker", "--list-targets"]);
+        let result = Cli::try_parse_from(["iii", "update", "cloud", "--list-targets"]);
         assert!(
             result.is_err(),
             "--list-targets should conflict with positional target"

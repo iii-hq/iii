@@ -8,9 +8,7 @@
 //!
 //! A compose project declares several workers, their dependencies and how each
 //! one starts; the daemon validates the declaration, resolves configuration,
-//! starts the graph in order and supervises the children it created. It is a
-//! greenfield crate: it shares no runtime code with `crates/iii-worker`, whose
-//! lifecycle system it is meant to replace rather than extend.
+//! starts the graph in order and supervises the children it created.
 //!
 //! One daemon serves an engine and holds any number of projects, each named by
 //! an id its operator chose. It registers `compose::*` in `default`, validates

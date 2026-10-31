@@ -22,13 +22,10 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 | `iii trigger` | Invoke a registered function on a running engine. |
 | `iii project` | Scaffold projects and generate Docker assets. |
 | `iii cloud` | Manage hosted iii deployments. |
-| `iii update` | Update iii and its managed support binaries. |
+| `iii update` | Update iii and the `iii-cloud` binary. |
 
 `iii console` was removed: it now only prints a notice. The iii console is ADE, a standalone
 application published in the registry as `ade`; see [Console](./console).
-
-`iii worker` was removed in 0.23. Add and manage project workers through `compose::*`; see
-[Workers](./workers). The `worker::*` function surface was removed with it.
 
 Running `iii` with no subcommand starts only the engine from `./config.yaml` or `--config`. Use
 `iii compose --up` for the normal project lifecycle:
@@ -47,7 +44,7 @@ The `iii cloud` command group manages hosted deployments. See
 
 ## Updating iii
 
-`iii update` updates iii and support binaries installed with it. Worker package versions are pinned
+`iii update` updates iii and the `iii-cloud` binary. Worker package versions are pinned
 inside `worker-compose.yaml`; update one with `compose::update`:
 
 ```bash

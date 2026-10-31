@@ -266,7 +266,7 @@ function handlerErrorBody(error: unknown): ErrorBody {
 }
 
 function resolveNamespace(optionNamespace?: string): string | undefined {
-  // III_NAMESPACE carries the namespace for managed workers (set by iii-worker
+  // III_NAMESPACE carries the namespace for managed workers (set by iii compose
   // at spawn), mirroring III_WORKER_NAME. An explicit option wins; otherwise
   // the env var provides the managed identity. Absent in both means undefined
   // -- the engine applies its `default` namespace when none is on the wire.

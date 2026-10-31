@@ -45,8 +45,8 @@ static ENV_VAR_RE: LazyLock<Regex> =
 static LONE_PLACEHOLDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*\$\{[^}]*\}\s*$").unwrap());
 
-/// Non-panicking env-var substitution for one string. Mirrors the CLI's
-/// `expand_env_vars` (`crates/iii-worker/src/cli/config_file.rs`): on a missing
+/// Non-panicking env-var substitution for one string. Mirrors the legacy
+/// worker CLI's `expand_env_vars`: on a missing
 /// var with no default, the var name is recorded in `missing` and the literal
 /// `${VAR}` is left in place so partial output stays usable. The engine-only
 /// `__III_ENGINE_VERSION__` sentinel default is honored (config.rs parity).

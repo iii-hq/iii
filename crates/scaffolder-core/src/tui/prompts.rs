@@ -26,14 +26,8 @@ pub struct CreateArgs {
     /// Skip tool installation check (e.g., iii)
     pub skip_tool_check: bool,
 
-    /// Skip the post-scaffold dependency install step (`npm install` /
-    /// `uv sync`). Worker init sets this to true: the scaffold ships
-    /// runnable code but the user owns when to fetch deps.
-    pub skip_install: bool,
-
-    /// Skip the scaffolder's `next_steps` print. Worker init renders
-    /// its own per-language success message and doesn't want two
-    /// "Next steps" blocks back-to-back.
+    /// Skip the scaffolder's `next_steps` print, for a caller that prints
+    /// its own follow-up (`iii project init --learn-iii` starts the tour).
     pub skip_next_steps: bool,
 
     /// Auto-confirm all prompts (non-interactive mode)
@@ -105,7 +99,6 @@ pub async fn run<C: ProductConfig>(config: &C, args: CreateArgs, cli_version: &s
         &project_dir,
         &selected_languages,
         &language_files,
-        args.skip_install,
     )
     .await?;
 
@@ -548,7 +541,6 @@ async fn create_project(
     project_dir: &PathBuf,
     selected_languages: &[check::Language],
     language_files: &LanguageFiles,
-    skip_install: bool,
 ) -> Result<()> {
     let spinner = cliclack::spinner();
     spinner.start("Creating project...");
@@ -594,13 +586,13 @@ async fn create_project(
     ));
 
     install_dependencies(
-        (!skip_install).then(|| telemetry::run_dependency_install(project_dir, selected_languages)),
+        telemetry::run_dependency_install(project_dir, selected_languages),
         created_handle,
     )
     .await
 }
 
-/// Runs the dependency step, if there is one, then waits up to
+/// Runs the dependency step, then waits up to
 /// [`CREATED_EVENT_WAIT`] for the `project_created` send.
 ///
 /// The send was spawned before the install, so the two overlap and the wait
@@ -608,22 +600,16 @@ async fn create_project(
 /// was created either way, and the caller exits on the error, which would
 /// drop a send still in flight.
 async fn install_dependencies(
-    install: Option<impl std::future::Future<Output = Result<()>>>,
+    install: impl std::future::Future<Output = Result<()>>,
     created_handle: Option<tokio::task::JoinHandle<()>>,
 ) -> Result<()> {
-    let installed = match install {
-        Some(install) => {
-            let install_spinner = cliclack::spinner();
-            install_spinner.start("Installing dependencies (when applicable)...");
-            let installed = install.await;
-            install_spinner.stop(match installed {
-                Ok(()) => "Dependency step finished",
-                Err(_) => "Dependency installation failed",
-            });
-            installed
-        }
-        None => Ok(()),
-    };
+    let install_spinner = cliclack::spinner();
+    install_spinner.start("Installing dependencies (when applicable)...");
+    let installed = install.await;
+    install_spinner.stop(match installed {
+        Ok(()) => "Dependency step finished",
+        Err(_) => "Dependency installation failed",
+    });
 
     // Best-effort flush: wait up to CREATED_EVENT_WAIT for telemetry to complete, then move on
     if let Some(handle) = created_handle {
@@ -679,7 +665,7 @@ mod tests {
         });
 
         let result = install_dependencies(
-            Some(async { Err(anyhow::anyhow!("npm install: exit status: 1")) }),
+            async { Err(anyhow::anyhow!("npm install: exit status: 1")) },
             Some(created),
         )
         .await;

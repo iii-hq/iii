@@ -37,7 +37,7 @@ The UI comes from the **console worker**. The project templates include it; once
 
 Discover CLI surface area with **`iii --help`** and **`iii <subcommand> --help`**. **`iii trigger <function>`** is how a human or an agent outside iii calls a function on the running engine, including the `compose::*` lifecycle functions. Code that runs inside a worker calls functions through the SDK's `trigger`, not by shelling out to the CLI.
 
-Add a worker from the registry with `iii trigger compose::add worker=<name>`; it writes the worker and its dependencies into `worker-compose.yaml` and restarts the project. `iii update` updates iii and its managed binaries. (`iii worker add` was removed in 0.23.)
+Add a worker from the registry with `iii trigger compose::add worker=<name>`; it writes the worker and its dependencies into `worker-compose.yaml` and restarts the project. `iii update` updates iii and the `iii-cloud` binary.
 
 Install an SDK:
 

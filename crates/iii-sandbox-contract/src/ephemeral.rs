@@ -1,9 +1,8 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Request and response types of the sixteen ephemeral `sandbox::*` operations, moved from
-//! `crates/iii-worker/src/sandbox_daemon/{create,exec,stop,list,catalog,run,fs/*}.rs` with
-//! today's names, field docs and serde attributes. Handlers and runner traits stay in the adapter.
+//! Request and response types of the sixteen ephemeral `sandbox::*` operations. Handlers and
+//! runner traits live in the adapter.
 
 use crate::channel::StreamChannelRef;
 use schemars::JsonSchema;

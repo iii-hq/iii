@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn function_not_found_hint_uses_the_same_sentence_and_guide() {
-        let message = crate::legacy_worker_functions::migration_message("stream::set")
+        let message = crate::missing_function_hints::migration_message("stream::set")
             .expect("stream::set needs an actionable hint");
         assert!(message.contains(&stream_deprecation_message("stream::set")));
     }

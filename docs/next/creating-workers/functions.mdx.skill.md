@@ -368,7 +368,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
           url: "https://hooks.provider.example.com/notify",
           method: "POST",
           timeout_ms: 5000,
-          headers: { "X-Service": "iii-worker" },
+          headers: { "X-Service": "orders-worker" },
           auth: { type: "bearer", token_key: "PROVIDER_API_TOKEN" },
         },
         { description: "POST a notification to the provider webhook" },
@@ -392,7 +392,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
               url="https://hooks.provider.example.com/notify",
               method="POST",
               timeout_ms=5000,
-              headers={"X-Service": "iii-worker"},
+              headers={"X-Service": "orders-worker"},
               auth=HttpAuthBearer(token_key="PROVIDER_API_TOKEN"),
           ),
           description="POST a notification to the provider webhook",
@@ -417,7 +417,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
       );
 
       let mut headers = HashMap::new();
-      headers.insert("X-Service".into(), "iii-worker".into());
+      headers.insert("X-Service".into(), "orders-worker".into());
 
       worker.register_function((
           RegisterFunctionMessage::with_id("notifications::send".into())

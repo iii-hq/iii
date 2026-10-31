@@ -3,7 +3,6 @@
 #
 # Runs the installer against the real GitHub API and verifies:
 #   - the main binary installs and responds to --version
-#   - companion binary failures are warned but non-fatal
 #   - re-running the script on an already-current install is idempotent
 #   - --help exits 0 and prints usage
 #   - unknown flags are rejected

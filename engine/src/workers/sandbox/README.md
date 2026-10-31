@@ -76,10 +76,10 @@ commands. Use `sandbox::run` with `lang: "shell"` for bash semantics.
 ### Error responses carry a self-healing payload
 
 Every error returns JSON encoded inside `error.message` (see SandboxErrorWire docs).
-Parse it once:
+Adapter errors carry the SDK's `handler error: ` prefix, so parse from the first `{`:
 
 ```js
-const detail = JSON.parse(err.message);
+const detail = JSON.parse(err.message.slice(err.message.indexOf("{")));
 // detail.code, detail.type, detail.message, detail.docs_url, detail.retryable
 // detail.fix       — ready-to-send next-call payload, null if not auto-fixable
 // detail.fix_note  — when present, how to use fix or why it is null; filesystem
@@ -106,8 +106,8 @@ engine:
 ```
 
 - A Compose-managed engine without an `engine.sandbox` section is bound to `sandbox-libkrun` in the
-  owner's namespace. Compose installs the adapter when a VM container, `engine.sandbox` or
-  `compose::add iii-sandbox` asks for it.
+  owner's namespace. Compose installs the adapter when a VM container, `engine.sandbox` (unless its
+  `namespace` names another one) or `compose::add iii-sandbox` asks for it.
 - An engine no Compose file manages (External mode: the file has no `engine:` section) gets no
   binding. Set `sandbox:` in that engine's config, or its callers get `S303`.
 - Changing the section needs a Compose restart.
@@ -307,7 +307,7 @@ Recursive regex search.
 |---|---|---|---|
 | `sandbox_id` | string | required | Sandbox to operate in. |
 | `path` | string | required | Root path. |
-| `pattern` | string | required | Regex (RE2 syntax). |
+| `pattern` | string | required | Regex (Rust `regex` crate syntax). |
 | `recursive` | boolean | `true` | Walk subdirectories. |
 | `ignore_case` | boolean | `false` | Case-insensitive match. |
 | `include_glob` | string[] | `[]` | Gitignore-style include filter. |
@@ -315,7 +315,7 @@ Recursive regex search.
 | `max_matches` | number | `10000` | Stop after N matches. |
 | `max_line_bytes` | number | `4096` | Truncate any single line longer than this. |
 
-Returns: `{ matches: FsMatch[], truncated }` where each match has `{ path, line_no, byte_offset, line }`.
+Returns: `{ matches: FsMatch[], truncated }` where each match has `{ path, line, content }` and `line` is 1-based.
 
 #### `sandbox::fs::sed`
 
@@ -391,15 +391,16 @@ await iii.trigger({
 ## Errors
 
 Adapter errors reach the caller untouched, as the typed `SandboxError` wire payload
-(`{type, code, message, docs_url, fix, fix_note, retryable}`). Every code, its meaning and its fix
-is documented at https://iii.dev/docs/creating-workers/sandboxes. The router adds four:
+(`{type, code, message, docs_url, fix, fix_note, retryable}`) behind the SDK's `handler error: `
+prefix. Every code, its meaning and its fix is documented at
+https://iii.dev/docs/creating-workers/sandboxes. The router adds four:
 
 - `S301`: the bound adapter is not connected (retryable). The message names the fix: `compose::add iii-sandbox`
   in the namespace's Compose project, or, if none runs, a container with `worker: package://<adapter>` in a
   `worker-compose.yaml` for that namespace.
 - `S302`: the adapter speaks another contract major than the router.
 - `S303`: no adapter is configured; the engine is not managed by a Compose file and has no `sandbox:` binding.
-- `S304`: the connected adapter does not register the called op. The router answers it only after
-  a 250 ms grace, so an adapter that is still (re)registering its ids is not reported as missing
-  them; a replay slower than that still gets `S304`. A `function_not_found` that a registered op
-  returns is the adapter's own error and passes through unchanged.
+- `S304`: the connected adapter does not register the called op (not retryable). The router
+  answers it only after a 250 ms grace, so an adapter that is still (re)registering its ids is not
+  reported as missing them; a replay slower than that still gets `S304`. A `function_not_found`
+  that a registered op returns is the adapter's own error and passes through unchanged.

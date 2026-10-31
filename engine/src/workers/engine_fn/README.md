@@ -77,9 +77,11 @@ iii trigger -n dev compose::update file=worker-compose.yaml worker=state
 iii trigger -n dev compose::down file=worker-compose.yaml
 ```
 
-`iii worker` and `worker::*` no longer exist. Use `engine::workers::list` for live registrations and
-`compose::status` for process ownership and supervisor state. Use `compose::logs` for bounded raw
-stdout and stderr, or `iii compose logs state --follow --namespace dev` for a live view.
+Use `engine::workers::list` for live registrations and `compose::status` for process ownership and
+supervisor state. `<adapter>::worker::*` (for example `sandbox-libkrun::worker::*`) is the sandbox
+adapter's surface, and only Compose calls it. Use
+`compose::logs` for bounded raw stdout and stderr, or `iii compose logs state --follow --namespace dev`
+for a live view.
 
 ## Trigger types
 

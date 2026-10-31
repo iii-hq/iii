@@ -149,7 +149,7 @@ async fn run_init(args: InitArgs) -> i32 {
         return code;
     }
 
-    if let Err(e) = check_directory_state(&root, args.allow_non_empty, "project.ini") {
+    if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
         let code = print_err(
             "target directory is not empty",
             &e,
@@ -280,7 +280,6 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         directory: target_dir.clone(),
         languages: None,
         skip_tool_check: args.skip_iii,
-        skip_install: false,
         // --learn-iii prints its own "starting the tour" line right after.
         skip_next_steps: args.learn_iii,
         yes: false,

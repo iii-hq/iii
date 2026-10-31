@@ -24,7 +24,6 @@ fn delegated() -> BTreeMap<String, Delegated> {
     map.insert(
         "cloud".to_string(),
         Delegated {
-            link: None,
             note: "Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, \
                    which is temporarily maintained outside this repository; run `iii cloud --help` for its \
                    current surface."

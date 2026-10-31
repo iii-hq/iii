@@ -221,6 +221,8 @@ pub async fn handle_update(target: Option<&str>) -> i32 {
         return 1;
     }
 
+    update::print_retired_binaries_note();
+
     let results = match target {
         Some("iii" | "iii-cli" | "self") => {
             // Self-update only ("iii-cli" accepted for backward compat)

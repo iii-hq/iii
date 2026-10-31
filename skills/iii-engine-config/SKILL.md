@@ -33,8 +33,8 @@ engine:
     iii-stream:
       host: 127.0.0.1
       port: 3112
-    iii-sandbox:
-      auto_install: true
+  sandbox:
+    adapter: sandbox-libkrun
 containers: {}
 ```
 
@@ -57,10 +57,12 @@ Allowed engine worker base names are:
 - `iii-worker-manager`
 - `iii-http-functions`
 - `iii-stream`
-- `iii-sandbox`
 
 Use `#instance` for another instance of an allowed worker. `iii-engine-functions`,
-`iii-telemetry`, and `iii-observability` are injected automatically and must not be declared.
+`iii-telemetry`, `iii-observability`, and the `iii-sandbox` router are injected automatically and
+must not be declared. `engine.sandbox` binds the router to an adapter worker (`sandbox-libkrun` by
+default, which Compose installs). An engine no Compose file manages sets a top-level
+`sandbox: {adapter, namespace}` in its `config.yaml`, or its `sandbox::*` calls get S303.
 
 HTTP, cron, queue, state, pubsub, bridge, application, and custom workers belong under
 `containers:`. Add registry packages with:
@@ -166,7 +168,7 @@ iii compose --namespace orders-daemon --engine ws://127.0.0.1:49134 --up --file 
 ```
 
 The external Compose file must omit `engine:`. `III_URL` may replace `--engine`. Direct config
-expansion uses `${VAR:default}` and accepts only the same five engine-owned worker types. Any
+expansion uses `${VAR:default}` and accepts only the same four engine-owned worker types. Any
 project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 
 ## Security and operations
@@ -187,7 +189,7 @@ project worker stops startup/reload with `UNSUPPORTED_CONFIG_WORKERS`.
 
 ## Boundaries
 
-- Project worker lifecycle belongs to Compose, not `config.yaml` or `iii worker`.
+- Project worker lifecycle belongs to Compose, not `config.yaml`.
 - For function and trigger code, use `iii-core-primitives`; for observer code and filters, use
   `iii-observe`.
 - For worker-specific HTTP, queue, cron, state, or pubsub behavior, use that worker's docs.

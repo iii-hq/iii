@@ -107,11 +107,14 @@ Explicit saves persist the submitted value. See [Configuration](./configuration)
 
 ## Engine-managed exceptions
 
-`configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream` (deprecated), and
-`iii-sandbox` remain
+`configuration`, `iii-worker-manager`, `iii-http-functions`, and `iii-stream` (deprecated) remain
 engine-owned. Put them under `engine.workers` for managed Compose, or in `config.yaml` only when an
-external supervisor owns the engine. Internal `iii-engine-functions`, `iii-telemetry`, and
-`iii-observability` are injected automatically. They must not be added as Compose package roots.
+external supervisor owns the engine. Internal `iii-engine-functions`, `iii-telemetry`,
+`iii-observability`, and the `iii-sandbox` router are injected automatically. They must not be
+added as Compose package roots. The router forwards `sandbox::*` calls to the `sandbox-libkrun`
+worker, which Compose installs; an engine no Compose file manages sets a top-level `sandbox:`
+section in its `config.yaml`, or those calls fail with S303 (see
+[Sandboxes](../creating-workers/sandboxes)).
 
 <Warning title="Deprecated">
   `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
@@ -133,8 +136,8 @@ the same function and trigger registry. Compose only owns processes declared in 
 
 ## Migrating an existing project
 
-0.23 removed `iii worker`, `worker::*`, and engine-side startup of project workers. Follow the
-[manual migration guide](../upgrading/workers-to-compose) before starting an older project.
+Follow the [manual migration guide](../upgrading/workers-to-compose) before starting a project
+from iii 0.22 or earlier.
 
 ## Authoring workers
 

@@ -53,7 +53,8 @@ are two common paths:
 
 The public worker registry at `workers.iii.dev` is for installable workers such as HTTP, state,
 queue, pub/sub, cron, database, shell, console, rbac-proxy, and other capability workers.
-(`iii-sandbox` and `iii-observability` are engine-owned and are not added through the registry.) Those workers may ship their own function-level skills; do not duplicate every capability
+(`iii-sandbox` and `iii-observability` are engine-owned and are not added through the registry; the
+`sandbox-libkrun` adapter behind `iii-sandbox` is a registry worker that Compose installs.) Those workers may ship their own function-level skills; do not duplicate every capability
 as a top-level iii skill.
 
 ### Worker Manifest

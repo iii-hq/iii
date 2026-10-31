@@ -8256,7 +8256,7 @@ mod tests {
                     }]
                 },
                 "scopeSpans": [{
-                    "scope": {"name": "iii-worker", "version": "1.0.0"},
+                    "scope": {"name": "app-worker", "version": "1.0.0"},
                     "spans": [{
                         "traceId": "abcdef1234567890abcdef1234567890",
                         "spanId": "1234567890abcdef",

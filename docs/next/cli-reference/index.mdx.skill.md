@@ -198,7 +198,7 @@ iii update [OPTIONS] [COMMAND]
 
 | Argument | Description |
 | -------- | ----------- |
-| `[COMMAND]` | Specific command or binary to update (e.g., "worker", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
+| `[COMMAND]` | Specific command or binary to update (e.g., "cloud", "self"). Use "self" or "iii" to update only iii. If omitted, updates iii and all installed binaries |
 
 | Option | Description |
 | ------ | ----------- |
