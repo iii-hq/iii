@@ -161,22 +161,24 @@ impl InvocationCtx {
     /// The caller as the engine reports it: the connection's `worker_id` and
     /// `worker_name` over whatever the SDK asserted for them.
     pub fn caller(&self) -> Option<&Caller> {
-        self.resolved
-            .get_or_init(|| match &self.origin {
-                CallerOrigin::None => None,
-                CallerOrigin::Engine(caller) => Some(caller.clone()),
-                CallerOrigin::Connection {
-                    worker_id,
-                    workers,
-                    asserted,
-                } => {
+        match &self.origin {
+            CallerOrigin::None => None,
+            // Built whole by the engine: read in place, not copied.
+            CallerOrigin::Engine(caller) => Some(caller),
+            CallerOrigin::Connection {
+                worker_id,
+                workers,
+                asserted,
+            } => self
+                .resolved
+                .get_or_init(|| {
                     let mut caller = asserted.as_deref().cloned().unwrap_or_default();
                     caller.worker_id = Some(worker_id.to_string());
                     caller.worker_name = workers.get_worker_name(worker_id);
                     Some(caller)
-                }
-            })
-            .as_ref()
+                })
+                .as_ref(),
+        }
     }
 
     /// The context of the invocation whose handler is running, if any.
@@ -234,6 +236,31 @@ mod tests {
     #[test]
     fn engine_orchestration_has_no_caller() {
         assert!(InvocationCtx::engine_internal().caller().is_none());
+    }
+
+    #[test]
+    fn an_activation_reads_the_caller_the_engine_built_in_place() {
+        let ctx = InvocationCtx::activation(
+            Caller {
+                worker_name: Some(ENGINE_CALLER_NAME.to_string()),
+                function_id: Some("orders::create".into()),
+                invocation_id: Some("i-1".into()),
+                ..Caller::default()
+            },
+            1,
+            Activation {
+                observer_id: "o-1".into(),
+                activation_id: Some("a-1".into()),
+            },
+        );
+        let caller = ctx.caller().expect("a caller");
+        assert_eq!(caller.worker_name.as_deref(), Some(ENGINE_CALLER_NAME));
+        assert_eq!(caller.function_id.as_deref(), Some("orders::create"));
+        assert_eq!(caller.invocation_id.as_deref(), Some("i-1"));
+        assert!(caller.worker_id.is_none());
+        // The same caller each time, never a copy.
+        assert!(std::ptr::eq(caller, ctx.caller().expect("a caller")));
+        assert!(ctx.resolved.get().is_none());
     }
 
     #[tokio::test]

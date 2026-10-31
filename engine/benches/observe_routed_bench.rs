@@ -125,13 +125,15 @@ async fn setup(observers: usize, case: Case) -> Bench {
         while let Some(frame) = host.recv().await {
             if frame["type"] == "invokefunction" && frame["function_id"] == OBSERVED {
                 seen.invoked.fetch_add(1, Ordering::Relaxed);
+                // Counted before it is sent: the call it answers returns as
+                // soon as the engine reads it, and `run` then reads the count.
+                seen.answered.fetch_add(1, Ordering::Relaxed);
                 if case == Case::Matched {
                     host.reply_matched(&frame, json!({ "ok": true }), &listed)
                         .await;
                 } else {
                     host.reply(&frame, json!({ "ok": true })).await;
                 }
-                seen.answered.fetch_add(1, Ordering::Relaxed);
             } else {
                 seen.other.fetch_add(1, Ordering::Relaxed);
             }
