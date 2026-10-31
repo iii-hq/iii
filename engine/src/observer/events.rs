@@ -68,7 +68,7 @@ impl ObserverRegistry {
         &self,
         observer: &Observer,
         state: &ObserverState,
-        reason: Option<ErrorBody>,
+        reason: Option<&ErrorBody>,
     ) -> Option<UnqueuedEvent> {
         let registry = self.this()?;
         let evaluation = registry.emission(

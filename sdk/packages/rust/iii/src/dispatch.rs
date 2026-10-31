@@ -351,32 +351,35 @@ struct ReportCtx<'a> {
     duration_ms: f64,
 }
 
-/// The observers of the function among `observers` that are active, accept
-/// the call's status and whose filters match it.
+/// The observers of the function among `leaves` (a list, or the leaves of a
+/// compiled set, each a slice) that are active, accept the call's status and
+/// whose filters match it.
 fn select(
     function_id: &str,
     view: &CallView<'_>,
-    observers: &[Observer],
+    leaves: &[&[Observer]],
 ) -> (Vec<String>, CaptureMask) {
-    let candidates = || {
-        observers.iter().filter(|obs| {
-            obs.function_id() == function_id && obs.is_active() && obs.accepts(view.success)
-        })
+    let candidate = |obs: &&Observer| {
+        obs.function_id() == function_id && obs.is_active() && obs.accepts(view.success)
     };
     let mut roots = Roots::default();
-    for obs in candidates() {
-        let read = obs.filter().roots();
-        roots.error |= read.error;
-        roots.caller |= read.caller;
+    for leaf in leaves {
+        for obs in leaf.iter().filter(candidate) {
+            let read = obs.filter().roots();
+            roots.error |= read.error;
+            roots.caller |= read.caller;
+        }
     }
     let parts = DocParts::of(roots, view.error, view.caller);
     let doc = parts.doc(view.input, view.output, view.metadata);
     let mut matched = Vec::new();
     let mut mask = CaptureMask::default();
-    for obs in candidates() {
-        if obs.filter().matches(&doc) {
-            matched.push(obs.id().to_string());
-            mask = mask.union(obs.mask());
+    for leaf in leaves {
+        for obs in leaf.iter().filter(candidate) {
+            if obs.filter().matches(&doc) {
+                matched.push(obs.id().to_string());
+                mask = mask.union(obs.mask());
+            }
         }
     }
     (matched, mask)
@@ -636,7 +639,14 @@ impl IIIClient {
                 metadata: invocation.metadata.as_ref(),
                 success: result.is_ok(),
             };
-            let observed = self.deliver(&report, &view, &snapshot.observers, local);
+            // A set that is one leaf is read as one slice, as a list is.
+            let observed = match snapshot.observers.as_slice() {
+                Some(observers) => self.deliver(&report, &view, &[observers], local),
+                None => {
+                    let leaves: Vec<&[Observer]> = snapshot.observers.leaves().collect();
+                    self.deliver(&report, &view, &leaves, local)
+                }
+            };
             return Answer {
                 result,
                 observed,
@@ -673,7 +683,7 @@ impl IIIClient {
         };
 
         let Some(hook) = hook else {
-            let observed = self.deliver(&report, &CallView::of(&call), &matched, local);
+            let observed = self.deliver(&report, &CallView::of(&call), &[&matched], local);
             let result = match handler_error {
                 Some(body) => Err(body),
                 None => Ok(call.output.take().unwrap_or(Value::Null)),
@@ -710,10 +720,10 @@ impl IIIClient {
         &self,
         report: &ReportCtx<'_>,
         view: &CallView<'_>,
-        observers: &[Observer],
+        leaves: &[&[Observer]],
         local: bool,
     ) -> Vec<String> {
-        let (matched, mask) = select(&report.entry.id, view, observers);
+        let (matched, mask) = select(&report.entry.id, view, leaves);
         if matched.is_empty() || !local {
             return matched;
         }

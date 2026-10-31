@@ -156,7 +156,7 @@ impl ObserverRegistry {
         let spec = request.spec(self.config().default_max_in_flight);
         let existing = self.get(&request.id);
         if let Some(existing) = &existing
-            && existing.observing().connection == worker.id
+            && existing.observing_connection() == worker.id
         {
             if existing.spec != spec {
                 return Err(reject(
@@ -566,24 +566,26 @@ impl ObserverRegistry {
                 }
             }
             self.state_counts.enter(state);
-            self.notify(
-                connection,
-                Message::ObserveResult {
-                    id: observer.id.clone(),
-                    state: state.clone(),
-                    error: None,
-                    warnings,
-                },
-            );
-            let unqueued = self.observer_changed(observer, state, reason.cloned());
-            Some((state.clone(), unqueued))
+            // The engine hears nothing about the observers it owns.
+            if !observer.is_engine_owned() {
+                self.notify(
+                    connection,
+                    Message::ObserveResult {
+                        id: observer.id.clone(),
+                        state: state.clone(),
+                        error: None,
+                        warnings,
+                    },
+                );
+            }
+            Some(self.observer_changed(observer, state, reason))
         });
         // Its index entries go before this observer's are added: both may
         // file the same id under the same target.
         if let Some((previous, transition)) = replaced {
             self.settle(previous, transition);
         }
-        let Some((state, unqueued)) = published else {
+        let Some(unqueued) = published else {
             return false;
         };
         if let Some(event) = unqueued {
@@ -598,9 +600,9 @@ impl ObserverRegistry {
             .or_default()
             .insert(observer.id.clone());
         self.attach_to_function(observer);
-        if state == ObserverState::Active {
-            self.refresh_active(&observer.function);
-        }
+        // Whatever state it reached since its creation: a transition made
+        // before it joined its function found it in no active set.
+        self.refresh_observer(observer);
         true
     }
 
@@ -702,7 +704,7 @@ impl ObserverRegistry {
             tracing::debug!(observer_id = %id, "unobserve for an unknown observer; ignoring");
             return;
         };
-        if observer.observing().connection != connection {
+        if observer.observing_connection() != connection {
             tracing::debug!(
                 observer_id = %id,
                 connection = %connection,
@@ -738,7 +740,7 @@ impl ObserverRegistry {
             .unwrap_or_default();
         let observers: Vec<Arc<Observer>> = observers
             .into_iter()
-            .filter(|o| o.observing().connection == connection)
+            .filter(|o| o.observing_connection() == connection)
             .collect();
         if observers.is_empty() {
             return;
@@ -788,7 +790,7 @@ impl ObserverRegistry {
             .map(|ids| ids.iter().filter_map(|id| self.get(id)).collect())
             .unwrap_or_default();
         for observer in observers {
-            if observer.observing().connection == connection
+            if observer.observing_connection() == connection
                 && !observer.flags().observing_connected
             {
                 self.dispose(
@@ -1087,6 +1089,105 @@ mod tests {
         let tombstone = registry.tombstones.get("obs").unwrap();
         assert_eq!(tombstone.connection, second.id);
         assert_eq!(tombstone.reason.code, observe_codes::OBSERVER_DISCONNECTED);
+    }
+
+    /// A worker's disconnect suspends each of its observers in `O(log n)` of
+    /// their function's active observers, and the end of its grace period
+    /// disposes each without copying any set: what each suspension copies
+    /// grows with the depth of the function's active set, not with its size.
+    /// Rebuilding the set for each would copy every observer, 16 times as
+    /// many at 4,000 as at 250.
+    #[tokio::test]
+    async fn a_workers_observers_are_suspended_and_disposed_in_log_n_each() {
+        use super::super::work;
+        async fn per_observer(n: usize) -> (f64, f64) {
+            let engine = engine_with_functions();
+            engine.observers.set_config(ObserversConfig {
+                observer_grace_ms: 600_000,
+                max_per_connection: n,
+                max_per_function: n,
+                ..ObserversConfig::default()
+            });
+            let (worker, mut socket) = test_support::worker(&engine);
+            let drain = tokio::spawn(async move { while socket.recv().await.is_some() {} });
+            for i in 0..n {
+                let request =
+                    test_support::request(&format!("obs-{i}"), "test::src", "test::dst", None);
+                engine.observers.observe(&engine, &worker, request).await;
+            }
+            assert_eq!(
+                engine.observers.count_in_state(&ObserverState::Active),
+                n as i64
+            );
+            let registry = engine.observers.clone();
+            work::take();
+            registry.connection_closed(worker.id, worker.reattach_token);
+            let suspended = work::take();
+            assert_eq!(registry.count_in_state(&ObserverState::Suspended), n as i64);
+            assert!(registry.watch("default", "test::src").is_none());
+            registry.grace_elapsed(worker.id);
+            let disposed = work::take();
+            assert!(registry.is_empty());
+            drain.abort();
+            (suspended as f64 / n as f64, disposed as f64 / n as f64)
+        }
+        let (small, small_disposed) = per_observer(250).await;
+        let (large, large_disposed) = per_observer(4_000).await;
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots copied per suspension: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+        assert_eq!((small_disposed, large_disposed), (0.0, 0.0));
+    }
+
+    /// A worker's `observe` and `unobserve` cost `O(log n)` each in its
+    /// function's `n` observers: neither scans them (to count them against
+    /// `max_per_function`, or to find the one leaving), so what each copies
+    /// grows with the depth of the function's active set, not with its size.
+    /// A scan of the function's observers on each would visit every one, 16
+    /// times as many at 4,000 as at 250.
+    #[tokio::test]
+    async fn a_workers_observe_and_unobserve_cost_log_n_each() {
+        use super::super::work;
+        async fn per_change(n: usize) -> (f64, f64) {
+            let engine = engine_with_functions();
+            engine.observers.set_config(ObserversConfig {
+                observer_grace_ms: 600_000,
+                max_per_connection: n,
+                max_per_function: n,
+                ..ObserversConfig::default()
+            });
+            let (worker, mut socket) = test_support::worker(&engine);
+            let drain = tokio::spawn(async move { while socket.recv().await.is_some() {} });
+            let registry = engine.observers.clone();
+            work::take();
+            for i in 0..n {
+                let request =
+                    test_support::request(&format!("obs-{i}"), "test::src", "test::dst", None);
+                registry.observe(&engine, &worker, request).await;
+            }
+            let observed = work::take();
+            assert_eq!(registry.count_in_state(&ObserverState::Active), n as i64);
+            for i in 0..n {
+                registry.unobserve(worker.id, &format!("obs-{i}"));
+            }
+            let unobserved = work::take();
+            assert!(registry.is_empty());
+            assert!(registry.watch("default", "test::src").is_none());
+            drain.abort();
+            (observed as f64 / n as f64, unobserved as f64 / n as f64)
+        }
+        let (small, small_unobserve) = per_change(250).await;
+        let (large, large_unobserve) = per_change(4_000).await;
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots per observe: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+        assert!(
+            large_unobserve < 3.0 * small_unobserve && large_unobserve < 256.0,
+            "slots per unobserve: {small_unobserve:.1} with 250 observers, \
+             {large_unobserve:.1} with 4,000"
+        );
     }
 
     /// With `disposed_retention_ms: 0` nothing is remembered past the grace

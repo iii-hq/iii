@@ -21,7 +21,9 @@
 //! its own `observeradded`, never both and never neither.
 
 use std::{
+    borrow::Borrow,
     collections::HashMap,
+    hash::{Hash, Hasher},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -35,10 +37,11 @@ use uuid::Uuid;
 use super::{
     FnKey, ObserverRegistry,
     lifecycle::{Announcement, Flags, Observer, lock},
+    persistent::{Keyed, PersistentSet},
 };
 use crate::{
     engine::{Engine, InvocationKind},
-    function::FunctionChange,
+    function::{FunctionChange, FunctionKey},
     protocol::{ErrorBody, Message, ObserverView, observe_codes},
     worker_connections::WorkerConnection,
 };
@@ -86,7 +89,7 @@ pub(crate) struct FunctionEntry {
     /// From the current registration. `None`: the defaults.
     options: Mutex<Option<FunctionOptions>>,
     /// Every live observer of the function, in any state but `disposed`.
-    observers: Mutex<Vec<Arc<Observer>>>,
+    observers: Mutex<Members>,
     /// What the current owner has been told. Every owner-sync message for the
     /// function is sent while holding it.
     sync: Mutex<OwnerSync>,
@@ -103,6 +106,82 @@ pub(crate) struct FunctionEntry {
     /// timeout counts from here, not from its announcement (v2 §4.3).
     owner_progress: Mutex<Option<(Uuid, tokio::time::Instant)>>,
 }
+
+/// A function's live observers, kept where only [`Members`]' own methods
+/// reach them: adding, taking or finding one is `O(log n)`, counting them
+/// `O(1)`, and the one scan, [`Members::to_vec`], is what the complexity
+/// tests count, so a scan of every observer on each `observe` or
+/// `unobserve` shows in them.
+mod members {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use super::super::lifecycle::Observer;
+
+    /// A function's live observers in creation order, and how many count
+    /// against `observers.max_per_function`.
+    #[derive(Default)]
+    pub(super) struct Members {
+        /// By [`Observer::seq`].
+        by_seq: BTreeMap<u64, Arc<Observer>>,
+        /// The ones that are not the engine's own.
+        limited: usize,
+    }
+
+    impl Members {
+        pub(super) fn add(&mut self, seq: u64, observer: &Arc<Observer>) {
+            if self.by_seq.insert(seq, observer.clone()).is_none() && !observer.is_engine_owned() {
+                self.limited += 1;
+            }
+        }
+
+        pub(super) fn take(&mut self, observer: &Arc<Observer>) {
+            let Some(seq) = observer.seq() else {
+                return;
+            };
+            if self
+                .by_seq
+                .get(&seq)
+                .is_some_and(|held| Arc::ptr_eq(held, observer))
+            {
+                self.by_seq.remove(&seq);
+                if !observer.is_engine_owned() {
+                    self.limited -= 1;
+                }
+            }
+        }
+
+        pub(super) fn holds(&self, observer: &Arc<Observer>) -> bool {
+            observer.seq().is_some_and(|seq| {
+                self.by_seq
+                    .get(&seq)
+                    .is_some_and(|held| Arc::ptr_eq(held, observer))
+            })
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.by_seq.len()
+        }
+
+        pub(super) fn is_empty(&self) -> bool {
+            self.by_seq.is_empty()
+        }
+
+        /// The ones that count against `observers.max_per_function`.
+        pub(super) fn limited(&self) -> usize {
+            self.limited
+        }
+
+        /// All of them, in creation order: `O(n)`, and counted by the
+        /// complexity tests.
+        pub(super) fn to_vec(&self) -> Vec<Arc<Observer>> {
+            #[cfg(test)]
+            super::super::work::add(self.by_seq.len());
+            self.by_seq.values().cloned().collect()
+        }
+    }
+}
+
+use members::Members;
 
 struct OwnerSync {
     /// Increases by one on every `observeradded` / `observerremoved`.
@@ -136,17 +215,25 @@ impl FunctionEntry {
         lock(&self.options).clone()
     }
 
+    /// The live observers, in creation order.
     pub fn observers(&self) -> Vec<Arc<Observer>> {
-        lock(&self.observers).clone()
+        lock(&self.observers).to_vec()
+    }
+
+    /// Live observers.
+    pub fn len(&self) -> usize {
+        lock(&self.observers).len()
     }
 
     /// Observers that count against `observers.max_per_function`: not the
     /// ones the engine owns.
     pub fn limited_observer_count(&self) -> usize {
-        lock(&self.observers)
-            .iter()
-            .filter(|observer| !observer.is_engine_owned())
-            .count()
+        lock(&self.observers).limited()
+    }
+
+    /// Whether `observer` is one of the function's live observers.
+    fn holds(&self, observer: &Arc<Observer>) -> bool {
+        lock(&self.observers).holds(observer)
     }
 
     /// A new entry; `revision` continues the function's revisions from an
@@ -154,7 +241,7 @@ impl FunctionEntry {
     fn starting_at(revision: u64) -> Self {
         Self {
             options: Mutex::new(None),
-            observers: Mutex::new(Vec::new()),
+            observers: Mutex::new(Members::default()),
             sync: Mutex::new(OwnerSync {
                 revision,
                 announced_to: None,
@@ -170,6 +257,47 @@ impl FunctionEntry {
             && lock(&self.options).is_none()
             && !self.announced.load(Ordering::Acquire)
     }
+}
+
+/// The routed hook's view: what it knows of each function it routes (see
+/// [`ObserverRegistry::route`]).
+pub(crate) type RoutedView = HashMap<RoutedKey, Arc<Routed>>;
+
+/// A function's `(namespace, function_id)` in the routed view, shared, so a
+/// copy of the view copies no names. Looked up by `&dyn FunctionKey`, as a
+/// `FnKey` is.
+#[derive(Clone)]
+pub(crate) struct RoutedKey(Arc<FnKey>);
+
+impl FunctionKey for RoutedKey {
+    fn parts(&self) -> (&str, &str) {
+        (&self.0.0, &self.0.1)
+    }
+}
+
+impl Hash for RoutedKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.parts().hash(state);
+    }
+}
+
+impl PartialEq for RoutedKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.parts() == other.parts()
+    }
+}
+
+impl Eq for RoutedKey {}
+
+impl<'a> Borrow<dyn FunctionKey + 'a> for RoutedKey {
+    fn borrow(&self) -> &(dyn FunctionKey + 'a) {
+        self
+    }
+}
+
+/// `key` as the routed view looks it up.
+fn routed_key(key: &FnKey) -> &dyn FunctionKey {
+    key
 }
 
 /// What the routed hook knows of one function (see
@@ -193,6 +321,22 @@ pub(crate) enum Callers {
     Nobody,
 }
 
+/// Who may call `key`, for a change of its active observers: as the routed
+/// view says, or, when it is not in the view (no connection hosts it
+/// privately), nobody for a private function and anyone otherwise.
+fn callers_in(view: &RoutedView, key: &FnKey, entry: Option<&FunctionEntry>) -> Callers {
+    match view.get(routed_key(key)) {
+        Some(routed) => routed.callers,
+        None if entry
+            .and_then(|entry| entry.options())
+            .is_some_and(|options| options.private) =>
+        {
+            Callers::Nobody
+        }
+        None => Callers::Anyone,
+    }
+}
+
 /// `FORBIDDEN`: a call of the private `function_id` from anyone but its host.
 pub(crate) fn private_refusal(function_id: &str) -> ErrorBody {
     ErrorBody::new(
@@ -205,10 +349,16 @@ pub(crate) fn private_refusal(function_id: &str) -> ErrorBody {
 }
 
 /// The active observers of one function, as the routed hook sees them, with
-/// the parts of an invocation any of them needs.
+/// the parts of an invocation any of them needs. A call holds the version it
+/// started with; an observer that becomes active or leaves meanwhile makes a
+/// new version, sharing all but `O(log n)` of its nodes with this one.
 pub struct ActiveSet {
-    pub(crate) function: FnKey,
-    pub(crate) observers: Vec<Arc<Observer>>,
+    pub(crate) function: Arc<FnKey>,
+    /// In creation order, by [`Observer::seq`].
+    pub(crate) observers: PersistentSet<Arc<Observer>>,
+    /// How many of `observers` need each part: `needs` and `listed_needs`
+    /// follow from them as observers come and go.
+    counts: NeedCounts,
     /// What a call the engine evaluates needs: what the observers' filters
     /// read, capture or deliver.
     pub(crate) needs: Needs,
@@ -255,6 +405,7 @@ impl Needs {
         }
     }
 
+    #[cfg(test)]
     fn union(self, other: Self) -> Self {
         Self {
             input: self.input || other.input,
@@ -264,32 +415,130 @@ impl Needs {
             metadata: self.metadata || other.metadata,
         }
     }
+
+    fn parts(self) -> [bool; 5] {
+        [
+            self.input,
+            self.output,
+            self.error,
+            self.caller,
+            self.metadata,
+        ]
+    }
+
+    /// Each part that at least one observer needs.
+    fn of_counts(counts: &[usize; 5]) -> Self {
+        Self {
+            input: counts[0] > 0,
+            output: counts[1] > 0,
+            error: counts[2] > 0,
+            caller: counts[3] > 0,
+            metadata: counts[4] > 0,
+        }
+    }
+}
+
+/// How many observers of an [`ActiveSet`] need each part (in
+/// [`Needs::parts`] order): what the engine evaluates, and what a host lists.
+#[derive(Debug, Clone, Copy, Default)]
+struct NeedCounts {
+    evaluated: [usize; 5],
+    delivered: [usize; 5],
+}
+
+impl NeedCounts {
+    fn count(&mut self, observer: &Observer, joined: bool) {
+        for (counts, needs) in [
+            (&mut self.evaluated, Needs::evaluated(observer)),
+            (&mut self.delivered, Needs::delivered(observer)),
+        ] {
+            for (count, needed) in counts.iter_mut().zip(needs.parts()) {
+                if needed {
+                    if joined {
+                        *count += 1;
+                    } else {
+                        *count -= 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An active set orders its observers by [`Observer::seq`]: each one in a
+/// set joined its function, and its seq never changes after that.
+impl Keyed for Arc<Observer> {
+    #[inline]
+    fn key(&self) -> u64 {
+        self.seq().unwrap_or_default()
+    }
 }
 
 impl ActiveSet {
+    /// The set of `observers`, which are in creation order and have joined
+    /// their function's observers.
     fn new(key: &FnKey, observers: Vec<Arc<Observer>>) -> Self {
-        let (needs, listed_needs) = observers.iter().fold(
-            (Needs::default(), Needs::default()),
-            |(needs, listed), observer| {
-                (
-                    needs.union(Needs::evaluated(observer)),
-                    listed.union(Needs::delivered(observer)),
-                )
-            },
-        );
+        let observers: Vec<Arc<Observer>> = observers
+            .into_iter()
+            .filter(|observer| observer.seq().is_some())
+            .collect();
+        let mut counts = NeedCounts::default();
+        for observer in &observers {
+            counts.count(observer, true);
+        }
+        let observers = PersistentSet::from_sorted(observers);
         let shard = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             key.hash(&mut hasher);
             hasher.finish()
         };
+        Self::of(Arc::new(key.clone()), observers, counts, shard)
+    }
+
+    fn of(
+        function: Arc<FnKey>,
+        observers: PersistentSet<Arc<Observer>>,
+        counts: NeedCounts,
+        shard: u64,
+    ) -> Self {
         Self {
-            function: key.clone(),
+            function,
             observers,
-            needs,
-            listed_needs,
+            needs: Needs::of_counts(&counts.evaluated),
+            listed_needs: Needs::of_counts(&counts.delivered),
+            counts,
             shard,
         }
+    }
+
+    /// This set with `observer`, filed under its seq.
+    fn with(&self, observer: &Arc<Observer>) -> Self {
+        let Some(observers) = self.observers.inserted(observer.clone()) else {
+            return self.copy();
+        };
+        let mut counts = self.counts;
+        counts.count(observer, true);
+        Self::of(self.function.clone(), observers, counts, self.shard)
+    }
+
+    /// This set without `observer`, filed under `seq`.
+    fn without(&self, observer: &Arc<Observer>, seq: u64) -> Self {
+        let Some(observers) = self.observers.removed(seq) else {
+            return self.copy();
+        };
+        let mut counts = self.counts;
+        counts.count(observer, false);
+        Self::of(self.function.clone(), observers, counts, self.shard)
+    }
+
+    fn copy(&self) -> Self {
+        Self::of(
+            self.function.clone(),
+            self.observers.clone(),
+            self.counts,
+            self.shard,
+        )
     }
 
     /// What a call needs kept: when its host delivers it, only what the
@@ -413,10 +662,11 @@ impl ObserverRegistry {
         };
         let _serialized = lock(&self.rebuild);
         let current = self.routed.load();
-        if current.get(key).map(|routed| routed.callers) == Some(callers) {
+        let routed = current.get(routed_key(key));
+        if routed.map(|routed| routed.callers) == Some(callers) {
             return;
         }
-        let active = current.get(key).and_then(|routed| routed.active.clone());
+        let active = routed.and_then(|routed| routed.active.clone());
         self.store_routed(&current, key, active, callers);
     }
 
@@ -425,20 +675,26 @@ impl ObserverRegistry {
     /// otherwise. Called under `rebuild`.
     fn store_routed(
         &self,
-        current: &HashMap<FnKey, Arc<Routed>>,
+        current: &RoutedView,
         key: &FnKey,
         active: Option<Arc<ActiveSet>>,
         callers: Callers,
     ) {
         let kept = active.is_some() || matches!(callers, Callers::Host(_));
-        if !kept && !current.contains_key(key) {
+        if !kept && !current.contains_key(routed_key(key)) {
             return;
         }
-        let mut next: HashMap<FnKey, Arc<Routed>> = HashMap::clone(current);
+        let mut next: RoutedView = HashMap::clone(current);
         if kept {
-            next.insert(key.clone(), Arc::new(Routed { active, callers }));
+            let routed = Arc::new(Routed { active, callers });
+            match next.get_mut(routed_key(key)) {
+                Some(held) => *held = routed,
+                None => {
+                    next.insert(RoutedKey(Arc::new(key.clone())), routed);
+                }
+            }
         } else {
-            next.remove(key);
+            next.remove(routed_key(key));
         }
         self.routed.store(Arc::new(next));
     }
@@ -512,6 +768,9 @@ impl ObserverRegistry {
 
     /// `key`'s entry, created if needed (continuing its revisions).
     fn entry_for(&self, key: &FnKey) -> Arc<FunctionEntry> {
+        if let Some(entry) = self.by_function.get(key) {
+            return entry.clone();
+        }
         self.by_function
             .entry(key.clone())
             .or_insert_with(|| {
@@ -609,12 +868,29 @@ impl ObserverRegistry {
         }
     }
 
-    /// Adds `observer` to its function. An owner that already got the
-    /// function's `functionregistered` hears about it now (`observeradded`),
-    /// and the observer waits for its ack.
+    /// Adds `observer` to its function, last in its creation order. An owner
+    /// that already got the function's `functionregistered` hears about it at
+    /// once (`observeradded`), and the observer waits for its ack.
+    ///
+    /// An observer disposed since it was published joins no function: its
+    /// disposal found it in none, so nothing would take it out again. Its
+    /// disposal marks it disposed before it takes `sync` (to tell the owner)
+    /// and the function's members (to leave them), and the check here holds
+    /// both: either it sees the observer disposed, or the disposal finds the
+    /// observer among the members, and tells the owner if it was announced.
     pub(crate) fn attach_to_function(self: &Arc<Self>, observer: &Arc<Observer>) {
-        self.with_owner_sync(&observer.function, |entry, sync, owner| {
-            lock(&entry.observers).push(observer.clone());
+        let joined = self.with_owner_sync(&observer.function, |entry, sync, owner| {
+            {
+                let mut members = lock(&entry.observers);
+                if observer.is_disposed() {
+                    return false;
+                }
+                // Under `sync`: a function's observers join in the order of
+                // their `seq`.
+                let seq = self.created.fetch_add(1, Ordering::Relaxed) + 1;
+                observer.set_seq(seq);
+                members.add(seq, observer);
+            }
             let Some(announced_to) = sync.announced_to else {
                 // Not announced (yet): acked by default unless the owner
                 // speaks observe, whose `functionregistered` will announce it.
@@ -622,7 +898,7 @@ impl ObserverRegistry {
                 // was built: an owner may have claimed the function since.
                 let acked = !owner.is_some_and(|owner| owner.speaks_observe);
                 self.update(observer, |flags| flags.owner_acked = acked);
-                return;
+                return true;
             };
             sync.revision += 1;
             let revision = sync.revision;
@@ -636,20 +912,62 @@ impl ObserverRegistry {
                     observer: view(observer),
                 },
             );
+            true
         });
+        if !joined {
+            // The entry may have been made for it alone.
+            self.drop_entry_if_unused(&observer.function);
+        }
     }
 
     pub(crate) fn detach_from_function(&self, observer: &Arc<Observer>) {
         if let Some(entry) = self.function_entry(&observer.function) {
-            lock(&entry.observers).retain(|o| !Arc::ptr_eq(o, observer));
+            lock(&entry.observers).take(observer);
         }
         self.drop_entry_if_unused(&observer.function);
-        self.refresh_active(&observer.function);
+        self.refresh_observer(observer);
     }
 
-    /// Rebuilds the routed hook's view of `key` from its active observers,
-    /// keeping who may call it. Copy-on-write, so the hot path reads a
-    /// consistent snapshot with one atomic load.
+    /// Puts `observer` in its function's active set, or takes it out, as its
+    /// current state and its function's current observers say: it is one of
+    /// the function's active observers when it is one of its live observers
+    /// and `active`. `O(log n)` in the function's active observers.
+    /// Copy-on-write, so the hot path reads a consistent snapshot with one
+    /// atomic load, and a call keeps the set it started with.
+    pub(crate) fn refresh_observer(&self, observer: &Arc<Observer>) {
+        // Not one of its function's observers yet: in no active set.
+        let Some(seq) = observer.seq() else {
+            return;
+        };
+        let key = &observer.function;
+        let _serialized = lock(&self.rebuild);
+        let entry = self.function_entry(key);
+        let wanted =
+            entry.as_ref().is_some_and(|entry| entry.holds(observer)) && observer.is_active();
+        let current = self.routed.load();
+        let set = current
+            .get(routed_key(key))
+            .and_then(|routed| routed.active.as_deref());
+        let held = set
+            .and_then(|set| set.observers.get(seq))
+            .is_some_and(|held| Arc::ptr_eq(held, observer));
+        if wanted == held {
+            return;
+        }
+        let next = match set {
+            Some(set) if wanted => set.with(observer),
+            Some(set) => set.without(observer, seq),
+            None => ActiveSet::new(key, vec![observer.clone()]),
+        };
+        let active = (!next.observers.is_empty()).then(|| Arc::new(next));
+        let callers = callers_in(&current, key, entry.as_deref());
+        self.store_routed(&current, key, active, callers);
+    }
+
+    /// Rebuilds the routed hook's view of `key` from all its active
+    /// observers, keeping who may call it: `O(n)`, for a change that touches
+    /// every observer of the function (a registration). One observer's
+    /// change goes through [`Self::refresh_observer`].
     pub(crate) fn refresh_active(&self, key: &FnKey) {
         let _serialized = lock(&self.rebuild);
         let entry = self.function_entry(key);
@@ -662,20 +980,10 @@ impl ObserverRegistry {
             None => Vec::new(),
         };
         let current = self.routed.load();
-        if active.is_empty() && !current.contains_key(key) {
+        if active.is_empty() && !current.contains_key(routed_key(key)) {
             return;
         }
-        let callers = match current.get(key) {
-            Some(routed) => routed.callers,
-            // Not in the view, so no connection hosts it privately.
-            None if entry
-                .and_then(|entry| entry.options())
-                .is_some_and(|options| options.private) =>
-            {
-                Callers::Nobody
-            }
-            None => Callers::Anyone,
-        };
+        let callers = callers_in(&current, key, entry.as_deref());
         let active = (!active.is_empty()).then(|| Arc::new(ActiveSet::new(key, active)));
         self.store_routed(&current, key, active, callers);
     }
@@ -1029,24 +1337,20 @@ impl ObserverRegistry {
     /// that got its `functionregistered` hears about them again
     /// (`observeradded`), in the order they were created, as that
     /// `functionregistered` would have listed them, and each waits for its
-    /// ack.
+    /// ack. `O(k log k)` for `k` returning observers, however many others
+    /// their functions have.
     pub(crate) fn announce_returned(self: &Arc<Self>, observers: &[Arc<Observer>]) {
-        let returned: std::collections::HashSet<&str> =
-            observers.iter().map(|o| o.id.as_str()).collect();
-        let mut functions: Vec<&FnKey> = Vec::new();
-        for observer in observers {
-            if !functions.contains(&&observer.function) {
-                functions.push(&observer.function);
-            }
-        }
-        for function in functions {
-            let Some(entry) = self.function_entry(function) else {
-                continue;
-            };
-            for observer in entry.observers() {
-                if returned.contains(observer.id.as_str()) {
-                    self.announce_on_return(&observer);
-                }
+        let mut returned: Vec<(u64, &Arc<Observer>)> = observers
+            .iter()
+            .filter_map(|observer| Some((observer.seq()?, observer)))
+            .collect();
+        returned.sort_unstable_by_key(|(seq, _)| *seq);
+        for (_, observer) in returned {
+            if self
+                .function_entry(&observer.function)
+                .is_some_and(|entry| entry.holds(observer))
+            {
+                self.announce_on_return(observer);
             }
         }
     }
@@ -1603,6 +1907,297 @@ mod tests {
         assert_eq!(
             observer.reason().unwrap().code,
             observe_codes::OWNER_TIMEOUT
+        );
+    }
+
+    /// An engine-owned observer `id` of `test::src` with `target` as its
+    /// target.
+    fn engine_observer(id: &str, target: &str) -> crate::observer::EngineObserver {
+        crate::observer::EngineObserver {
+            id: id.to_string(),
+            function: (
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                "test::src".to_string(),
+            ),
+            args: json!({}),
+            filters: None,
+            target: (
+                crate::protocol::DEFAULT_NAMESPACE.to_string(),
+                target.to_string(),
+            ),
+            deliver: crate::protocol::Deliver::Input,
+            metadata: None,
+        }
+    }
+
+    /// The ids of `test::src`'s active observers, in the order a call
+    /// evaluates them.
+    fn active_ids(set: &ActiveSet) -> Vec<String> {
+        set.observers.iter().map(|o| o.id.clone()).collect()
+    }
+
+    /// Adding an observer to a function and removing it cost `O(log n)` in
+    /// the function's `n` active observers: what a change copies grows with
+    /// the depth of the active set, not with its size. A change that rebuilt
+    /// the set would copy every observer, 16 times as many at 8,000 as at
+    /// 500.
+    #[tokio::test]
+    async fn adding_and_removing_an_observer_costs_log_n() {
+        use super::super::{events::test_support, work};
+        let per_change = |n: usize| {
+            let engine = Arc::new(Engine::new());
+            let _source = test_support::capture(&engine, "test::src");
+            let _target = test_support::capture(&engine, "test::dst");
+            work::take();
+            for i in 0..n {
+                engine
+                    .observers
+                    .observe_as_engine(engine_observer(&format!("churn-{i}"), "test::dst"))
+                    .expect("observe");
+            }
+            assert_eq!(
+                engine
+                    .observers
+                    .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                    .map(|set| set.observers.iter().count()),
+                Some(n)
+            );
+            for i in 0..n {
+                assert!(engine.observers.unobserve_as_engine(&format!("churn-{i}")));
+            }
+            assert!(
+                engine
+                    .observers
+                    .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                    .is_none()
+            );
+            work::take() as f64 / (2 * n) as f64
+        };
+        let small = per_change(500);
+        let large = per_change(8_000);
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots copied per change: {small:.1} with 500 observers, {large:.1} with 8,000"
+        );
+    }
+
+    /// A call keeps the active set it started with while observers come and
+    /// go; the next call gets the set as it is then, in creation order.
+    #[tokio::test]
+    async fn a_call_keeps_the_set_it_started_with() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        let watch = || {
+            registry
+                .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                .expect("observed")
+        };
+        for id in ["a", "b", "c"] {
+            registry
+                .observe_as_engine(engine_observer(id, "test::dst"))
+                .unwrap();
+        }
+        let started = watch();
+
+        assert!(registry.unobserve_as_engine("b"));
+        registry
+            .observe_as_engine(engine_observer("d", "test::dst"))
+            .unwrap();
+        // Enough more that the set outgrows one node.
+        for n in 0..200 {
+            registry
+                .observe_as_engine(engine_observer(&format!("x{n:03}"), "test::dst"))
+                .unwrap();
+        }
+        let later = watch();
+
+        assert_eq!(active_ids(&started), ["a", "b", "c"]);
+        let expected: Vec<String> = ["a", "c", "d"]
+            .into_iter()
+            .map(String::from)
+            .chain((0..200).map(|n| format!("x{n:03}")))
+            .collect();
+        assert_eq!(active_ids(&later), expected);
+        assert_eq!(later.observers.iter().count(), 203);
+    }
+
+    /// Observers that become active out of their creation order are still
+    /// evaluated in creation order: one created first, whose target
+    /// registers later, comes before one that was active from the start.
+    #[tokio::test]
+    async fn observers_are_evaluated_in_creation_order_whenever_they_became_active() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        registry
+            .observe_as_engine(engine_observer("first", "test::late"))
+            .unwrap();
+        registry
+            .observe_as_engine(engine_observer("second", "test::dst"))
+            .unwrap();
+        let ids = || {
+            active_ids(
+                &registry
+                    .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                    .expect("observed"),
+            )
+        };
+        assert_eq!(ids(), ["second"], "`first` waits for its target");
+
+        let _late = test_support::capture(&engine, "test::late");
+        assert_eq!(ids(), ["first", "second"]);
+        assert!(registry.unobserve_as_engine("second"));
+        assert_eq!(ids(), ["first"]);
+    }
+
+    /// What a call keeps follows the observers that need it as they leave:
+    /// once the last observer whose filter reads the input is gone, calls
+    /// stop copying it.
+    #[tokio::test]
+    async fn what_a_call_keeps_goes_with_the_observers_that_need_it() {
+        use super::super::events::test_support;
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        let engine = Arc::new(crate::engine::Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let observe = |id: &str, filters: Option<Value>| {
+            let mut request = test_support::request(id, "test::src", "test::dst", filters);
+            request.source.capture = Some(vec![]);
+            request.source.deliver = Some(Deliver::Envelope);
+            request
+        };
+        let needs = || {
+            engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .map(|set| (set.needs_for(false), set.needs_for(true)))
+        };
+        for (id, filters) in [
+            ("reads-input", Some(json!({ "input.n": { "$eq": 1 } }))),
+            ("reads-input-too", Some(json!({ "input.n": { "$eq": 2 } }))),
+            ("plain", None),
+        ] {
+            test_support::observe_request(&engine, &worker, observe(id, filters)).await;
+        }
+        let mut errors = test_support::request("errors", "test::src", "test::dst", None);
+        errors.source.capture = Some(vec![Capture::Error]);
+        errors.source.deliver = Some(Deliver::Envelope);
+        test_support::observe_request(&engine, &worker, errors).await;
+        let reads = Needs {
+            input: true,
+            error: true,
+            ..Needs::default()
+        };
+        let delivered = Needs {
+            error: true,
+            ..Needs::default()
+        };
+        assert_eq!(needs(), Some((reads, delivered)));
+
+        engine.observers.unobserve(worker.id, "reads-input");
+        assert_eq!(
+            needs(),
+            Some((reads, delivered)),
+            "one still reads the input"
+        );
+        engine.observers.unobserve(worker.id, "reads-input-too");
+        assert_eq!(needs(), Some((delivered, delivered)));
+        engine.observers.unobserve(worker.id, "errors");
+        assert_eq!(needs(), Some((Needs::default(), Needs::default())));
+        engine.observers.unobserve(worker.id, "plain");
+        assert_eq!(needs(), None);
+    }
+
+    /// An observer disposed between its publish (in `by_id`) and its joining
+    /// its function joins no function: its disposal found it in none, so it
+    /// would stay among the function's live observers for good, counting
+    /// against `max_per_function` and keeping the function's entry. Four
+    /// threads observe and unobserve four ids of one function at random, so
+    /// some unobserves land in that window.
+    #[test]
+    fn an_observer_disposed_before_it_joins_its_function_joins_none() {
+        use super::super::events::test_support;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let threads: Vec<_> = (0..4u64)
+            .map(|thread| {
+                let engine = engine.clone();
+                let handle = runtime.handle().clone();
+                std::thread::spawn(move || {
+                    let _entered = handle.enter();
+                    // xorshift: which id, and whether to observe or unobserve.
+                    let mut rng = 0x9e37_79b9_7f4a_7c15_u64 ^ (thread + 1);
+                    for _ in 0..25_000 {
+                        rng ^= rng << 13;
+                        rng ^= rng >> 7;
+                        rng ^= rng << 17;
+                        let id = format!("race-{}", rng % 4);
+                        if (rng >> 32).is_multiple_of(2) {
+                            let _ = engine
+                                .observers
+                                .observe_as_engine(engine_observer(&id, "test::dst"));
+                        } else {
+                            engine.observers.unobserve_as_engine(&id);
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let registry = &engine.observers;
+        let key: FnKey = (
+            crate::protocol::DEFAULT_NAMESPACE.to_string(),
+            "test::src".to_string(),
+        );
+        let members = registry
+            .function_entry(&key)
+            .map(|entry| entry.observers())
+            .unwrap_or_default();
+        let left_behind: Vec<String> = members
+            .iter()
+            .filter(|member| {
+                !registry
+                    .by_id
+                    .get(&member.id)
+                    .is_some_and(|held| Arc::ptr_eq(&held, member))
+            })
+            .map(|member| format!("{} {}", member.id, member.state()))
+            .collect();
+        assert!(
+            left_behind.is_empty(),
+            "disposed observers among the live ones: {left_behind:?}"
+        );
+        assert_eq!(
+            registry.observer_count(crate::protocol::DEFAULT_NAMESPACE, "test::src"),
+            registry.len()
+        );
+        for id in 0..4 {
+            registry.unobserve_as_engine(&format!("race-{id}"));
+        }
+        assert!(registry.is_empty());
+        assert!(
+            registry.function_entry(&key).is_none(),
+            "the function's entry goes with its last observer"
+        );
+        assert!(
+            registry
+                .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+                .is_none()
         );
     }
 

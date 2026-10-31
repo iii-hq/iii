@@ -922,21 +922,27 @@ impl ObserverRegistry {
                     caller: completed.caller.as_deref(),
                     metadata: completed.metadata.as_deref(),
                 };
-                for observer in &set.observers {
-                    if accepts(&observer.on, completed.success) && observer.filter.matches(&doc) {
-                        self.activate(observer, &completed);
+                for leaf in set.observers.leaves() {
+                    for observer in leaf {
+                        if accepts(&observer.on, completed.success) && observer.filter.matches(&doc)
+                        {
+                            self.activate(observer, &completed);
+                        }
                     }
                 }
             }
             Matching::Listed(ids) => {
                 let mut held = vec![false; ids.len()];
-                for observer in &set.observers {
-                    let Ok(at) = ids.binary_search_by(|id| id.as_str().cmp(&observer.id)) else {
-                        continue;
-                    };
-                    held[at] = true;
-                    if accepts(&observer.on, completed.success) {
-                        self.activate(observer, &completed);
+                for leaf in set.observers.leaves() {
+                    for observer in leaf {
+                        let Ok(at) = ids.binary_search_by(|id| id.as_str().cmp(&observer.id))
+                        else {
+                            continue;
+                        };
+                        held[at] = true;
+                        if accepts(&observer.on, completed.success) {
+                            self.activate(observer, &completed);
+                        }
                     }
                 }
                 for (id, held) in ids.iter().zip(held) {

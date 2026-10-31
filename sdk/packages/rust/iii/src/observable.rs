@@ -29,6 +29,7 @@ use crate::{
     error::Error,
     hooks::{AddedSlot, Call, DeliverHook, Level, Match, Matcher, RemovedHook},
     iii::{IIIClient, IIIInner},
+    observer_set::ObserverSet,
     protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
     reporter::CaptureMask,
 };
@@ -411,7 +412,7 @@ impl Observer {
             // runs the removed hooks: the engine sends no `observerremoved`
             // for a rejection that answers an announcement it has not seen
             // acked (a replay after a reconnect).
-            entry.drop_inactive();
+            entry.drop_inactive(self);
             entry.enqueue(
                 &iii,
                 HookOp::Rejected {
@@ -438,6 +439,28 @@ impl Observer {
 
     pub(crate) fn seq(&self) -> u64 {
         self.state().seq
+    }
+
+    /// Whether `other` is this observer, in any view of it.
+    fn is(&self, other: &Observer) -> bool {
+        Arc::ptr_eq(&self.inner.state, &other.inner.state)
+    }
+
+    /// An observer of `test::f` with id `id`, not held by any client.
+    #[cfg(test)]
+    pub(crate) fn test(id: &str, seq: u64) -> Self {
+        let view: ObserverView =
+            serde_json::from_value(serde_json::json!({ "id": id, "target": "t", "filters": {} }))
+                .expect("a view");
+        Self::new(
+            view,
+            Filter::match_all(),
+            "test::f",
+            "default".to_string(),
+            0,
+            seq,
+            Weak::new(),
+        )
     }
 
     pub(crate) fn mask(&self) -> CaptureMask {
@@ -503,40 +526,118 @@ impl DocParts {
 }
 
 /// The active observers of a function, swapped whole on every change so the
-/// hot path reads it with one load.
-#[derive(Default)]
+/// hot path reads it with one load. A change makes a new version that shares
+/// all but `O(log n)` nodes of its observers with the one before, which a
+/// call that loaded it keeps.
+#[derive(Clone, Default)]
 pub(crate) struct CompiledSet {
-    pub observers: Vec<Observer>,
+    /// By id.
+    pub observers: ObserverSet,
     /// The roots any observer's filter reads.
     pub roots: Roots,
     /// What any observer captures.
     pub capture: CaptureMask,
-    /// The [`Observer::seq`] of the newest observer in the set: an active
-    /// observer added after it is not in the set.
+    /// The newest [`Observer::seq`] that joined the set: an active observer
+    /// added after it is not in the set. Seqs are never reused, and an
+    /// observer that left is not active, so it never needs to go back down.
     pub seq: u64,
+    /// How many of `observers` read each root and capture each part:
+    /// `roots` and `capture` follow from them as observers come and go.
+    counts: PartCounts,
+}
+
+/// Counts per part, in `input`, `output`, `error`, `caller`, `metadata`
+/// order.
+#[derive(Debug, Clone, Copy, Default)]
+struct PartCounts {
+    roots: [usize; 5],
+    capture: [usize; 5],
+}
+
+impl PartCounts {
+    fn count(&mut self, obs: &Observer, joined: bool) {
+        let roots = obs.filter().roots();
+        let mask = obs.mask();
+        for (counts, parts) in [
+            (
+                &mut self.roots,
+                [
+                    roots.input,
+                    roots.output,
+                    roots.error,
+                    roots.caller,
+                    roots.metadata,
+                ],
+            ),
+            (
+                &mut self.capture,
+                [
+                    mask.input,
+                    mask.output,
+                    mask.error,
+                    mask.caller,
+                    mask.metadata,
+                ],
+            ),
+        ] {
+            for (count, part) in counts.iter_mut().zip(parts) {
+                if part {
+                    if joined {
+                        *count += 1;
+                    } else {
+                        *count -= 1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl CompiledSet {
-    fn new(observers: Vec<Observer>) -> Self {
-        let mut roots = Roots::default();
-        let mut capture = CaptureMask::default();
-        let mut seq = 0;
-        for obs in &observers {
-            let filter = obs.filter().roots();
-            roots.input |= filter.input;
-            roots.output |= filter.output;
-            roots.error |= filter.error;
-            roots.caller |= filter.caller;
-            roots.metadata |= filter.metadata;
-            capture = capture.union(obs.mask());
-            seq = seq.max(obs.seq());
-        }
+    fn of(observers: ObserverSet, counts: PartCounts, seq: u64) -> Self {
+        let [input, output, error, caller, metadata] = counts.roots.map(|count| count > 0);
+        let roots = Roots {
+            input,
+            output,
+            error,
+            caller,
+            metadata,
+        };
+        let [input, output, error, caller, metadata] = counts.capture.map(|count| count > 0);
+        let capture = CaptureMask {
+            input,
+            output,
+            error,
+            caller,
+            metadata,
+        };
         Self {
             observers,
             roots,
             capture,
             seq,
+            counts,
         }
+    }
+
+    /// This set with `obs`, in place of any other view of it.
+    fn with(&self, obs: &Observer) -> Self {
+        let mut counts = self.counts;
+        if let Some(held) = self.observers.get(obs.id()) {
+            counts.count(held, false);
+        }
+        counts.count(obs, true);
+        Self::of(self.observers.with(obs), counts, self.seq.max(obs.seq()))
+    }
+
+    /// This set without `obs` (in any view of it); `None` when it does not
+    /// hold it.
+    fn without(&self, obs: &Observer) -> Option<Self> {
+        let held = self.observers.get(obs.id()).filter(|held| held.is(obs))?;
+        let mut counts = self.counts;
+        counts.count(held, false);
+        let observers = self.observers.without(obs.id())?;
+        Some(Self::of(observers, counts, self.seq))
     }
 }
 
@@ -774,6 +875,22 @@ impl FunctionEntry {
             .collect()
     }
 
+    /// Puts `obs` in the compiled set when it is active, in place of any
+    /// other view of it, and takes it out otherwise: `O(log n)`.
+    fn compile(&self, obs: &Observer) {
+        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.compiled.load();
+        let next = if obs.is_active() {
+            Some(current.with(obs))
+        } else {
+            current.without(obs)
+        };
+        if let Some(next) = next {
+            self.compiled.store(Arc::new(next));
+            self.refresh_delivery();
+        }
+    }
+
     /// Local dispatch is on for it: confirmed by the engine with
     /// `local_dispatch: true`, wanted, and not revoked by a conflict.
     #[inline]
@@ -828,31 +945,21 @@ impl FunctionEntry {
             .store(observers << 1 | hook, Ordering::Release);
     }
 
-    /// Removes deactivated observers from the compiled set.
-    fn drop_inactive(&self) {
-        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
-        let observers: Vec<Observer> = self
-            .compiled
-            .load()
-            .observers
-            .iter()
-            .filter(|o| o.is_active())
-            .cloned()
-            .collect();
-        self.compiled.store(Arc::new(CompiledSet::new(observers)));
-        self.refresh_delivery();
+    /// Takes `obs`, deactivated, out of the compiled set.
+    fn drop_inactive(&self, obs: &Observer) {
+        self.compile(obs);
     }
 
-    fn publish(&self, members: &BTreeMap<String, Member>) {
-        let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
-        let observers: Vec<Observer> = members
-            .values()
-            .map(|member| &member.observer)
-            .filter(|o| o.is_active())
-            .cloned()
-            .collect();
-        self.compiled.store(Arc::new(CompiledSet::new(observers)));
-        self.refresh_delivery();
+    /// The compiled set follows `members` on the change of the member with
+    /// id `id`: it holds that member's observer when it is active, and no
+    /// observer with that id otherwise. `gone` is the observer of a member
+    /// just removed.
+    fn publish(&self, members: &BTreeMap<String, Member>, id: &str, gone: Option<&Observer>) {
+        match (members.get(id), gone) {
+            (Some(member), _) => self.compile(&member.observer),
+            (None, Some(obs)) => self.compile(obs),
+            (None, None) => {}
+        }
     }
 
     /// Queues `op` on this function's hook task, spawning it on first use.
@@ -1082,7 +1189,7 @@ async fn run_hooks(
                 revision = rev;
             }
             HookOp::Rejected { id } => {
-                entry.publish(&members);
+                entry.publish(&members, &id, None);
                 tear_down(&iii, &entry, &mut members, &id).await;
             }
             HookOp::Reset { last } => {
@@ -1158,7 +1265,7 @@ fn ack_held(
             if let Some(member) = members.get_mut(&view.id) {
                 member.observer = observer;
             }
-            entry.publish(members);
+            entry.publish(members, &view.id, None);
         }
         _ => {}
     }
@@ -1358,7 +1465,7 @@ fn admit(
             torn_down: false,
         },
     );
-    entry.publish(members);
+    entry.publish(members, observer.id(), None);
     Admission::Accepted
 }
 
@@ -1423,7 +1530,7 @@ async fn remove_member(
         if let Some(matcher) = entry.matcher() {
             matcher.unfile(id);
         }
-        entry.publish(members);
+        entry.publish(members, id, Some(&member.observer));
     }
     if member.torn_down {
         return;
@@ -3027,5 +3134,194 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(function.observers().is_empty());
+    }
+
+    /// The ids of `function_id`'s compiled set, in the order a call reads
+    /// them.
+    fn compiled_ids(iii: &IIIClient, function_id: &str) -> Vec<String> {
+        compiled(iii, function_id)
+            .observers
+            .iter()
+            .map(|o| o.id().to_string())
+            .collect()
+    }
+
+    fn compiled(iii: &IIIClient, function_id: &str) -> Arc<CompiledSet> {
+        iii.function_entry(function_id)
+            .expect("registered")
+            .compiled()
+    }
+
+    /// Waits until `function_id`'s compiled set holds `ids`.
+    async fn until_compiled(iii: &IIIClient, function_id: &str, ids: &[&str]) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while compiled_ids(iii, function_id) != ids {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{:?}, not {ids:?}", compiled_ids(iii, function_id)));
+    }
+
+    /// Adding a keyed observer to a function this worker hosts, and removing
+    /// it, cost `O(log n)` in the function's `n` active observers: what a
+    /// change copies into the compiled set grows with its depth, not with
+    /// its size. Rebuilding the set on each change would copy every
+    /// observer, 16 times as many at 4,000 as at 250.
+    #[tokio::test]
+    async fn adding_and_removing_keyed_observers_costs_log_n() {
+        async fn per_change(n: usize) -> f64 {
+            let (iii, mut rx) = client();
+            v2_hello(&iii);
+            iii.on_observer_match_for(
+                "keyed::f",
+                crate::Match::keys(
+                    |obs| obs.args_value()["key"].as_str().into(),
+                    |call| call.input["key"].as_str().into(),
+                ),
+            );
+            let function = hosted(&iii, &mut rx, "keyed::f", json!([])).await;
+            crate::observer_set::work::take();
+            for i in 0..n {
+                feed(
+                    &iii,
+                    json!({
+                        "type": "observeradded", "function_id": "keyed::f",
+                        "revision": 2 + i as u64,
+                        "observer": view_with_args(&format!("o{i}"), json!({ "key": format!("k{i}") }))
+                    }),
+                );
+                next_ack(&mut rx).await;
+            }
+            while function.observers().len() < n {
+                tokio::task::yield_now().await;
+            }
+            for i in 0..n {
+                feed(
+                    &iii,
+                    json!({
+                        "type": "observerremoved", "function_id": "keyed::f",
+                        "revision": 2 + (n + i) as u64, "id": format!("o{i}")
+                    }),
+                );
+            }
+            while function.is_observed() {
+                tokio::task::yield_now().await;
+            }
+            crate::observer_set::work::take() as f64 / (2 * n) as f64
+        }
+        let small = per_change(250).await;
+        let large = per_change(4_000).await;
+        assert!(
+            small > 0.0 && large < 3.0 * small && large < 256.0,
+            "slots copied per change: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+    }
+
+    /// The compiled set is in id order whatever order its observers arrive
+    /// in, and a call keeps the set it loaded while observers come and go.
+    #[tokio::test]
+    async fn a_call_keeps_the_compiled_set_it_loaded() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        hosted(
+            &iii,
+            &mut rx,
+            "order::f",
+            json!([
+                view_with_args("c", json!({})),
+                view_with_args("a", json!({})),
+                view_with_args("b", json!({}))
+            ]),
+        )
+        .await;
+        until_compiled(&iii, "order::f", &["a", "b", "c"]).await;
+        let loaded = compiled(&iii, "order::f");
+
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "order::f", "revision": 2, "id": "b" }),
+        );
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "order::f", "revision": 3,
+                    "observer": view_with_args("aa", json!({})) }),
+        );
+        next_ack(&mut rx).await;
+        until_compiled(&iii, "order::f", &["a", "aa", "c"]).await;
+        let ids: Vec<&str> = loaded.observers.iter().map(Observer::id).collect();
+        assert_eq!(ids, ["a", "b", "c"], "the set loaded before the changes");
+        assert!(
+            compiled(&iii, "order::f").seq > loaded.seq,
+            "`aa` joined after the call loaded its set"
+        );
+    }
+
+    /// What a call keeps follows the observers that need it: the roots a
+    /// filter reads and the parts a capture names stop being kept once the
+    /// last observer that needs them leaves, and a replayed view with other
+    /// filters replaces its observer's needs.
+    #[tokio::test]
+    async fn what_a_call_keeps_follows_the_compiled_set() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let view = |id: &str, filters: Value, capture: Value| json!({ "id": id, "args": {}, "target": "t", "filters": filters, "capture": capture });
+        let reads_input = json!({ "input.n": { "$eq": 1 } });
+        hosted(
+            &iii,
+            &mut rx,
+            "needs::f",
+            json!([
+                view("reads", reads_input.clone(), json!([])),
+                view("reads-too", json!({ "input.n": { "$eq": 2 } }), json!([])),
+                view("captures", json!({}), json!(["caller"]))
+            ]),
+        )
+        .await;
+        let kept = |iii: &IIIClient| {
+            let set = compiled(iii, "needs::f");
+            (set.roots.input, set.capture.caller)
+        };
+        until_compiled(&iii, "needs::f", &["captures", "reads", "reads-too"]).await;
+        assert_eq!(kept(&iii), (true, true));
+
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "needs::f", "revision": 2, "id": "reads" }),
+        );
+        until_compiled(&iii, "needs::f", &["captures", "reads-too"]).await;
+        assert_eq!(
+            kept(&iii),
+            (true, true),
+            "`reads-too` still reads the input"
+        );
+
+        // Announced again with the same args and no filter: the same
+        // observer, with the new view's needs.
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "needs::f", "revision": 3,
+                    "local_dispatch": true,
+                    "observers": [view("reads-too", json!({}), json!([])),
+                                  view("captures", json!({}), json!(["caller"]))] }),
+        );
+        next_ack(&mut rx).await;
+        next_ack(&mut rx).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while kept(&iii).0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the input is not kept");
+        assert_eq!(compiled_ids(&iii, "needs::f"), ["captures", "reads-too"]);
+        assert_eq!(kept(&iii), (false, true));
+
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "needs::f", "revision": 4, "id": "captures" }),
+        );
+        until_compiled(&iii, "needs::f", &["reads-too"]).await;
+        assert_eq!(kept(&iii), (false, false));
     }
 }

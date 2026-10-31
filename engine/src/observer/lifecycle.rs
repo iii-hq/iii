@@ -475,6 +475,13 @@ pub struct Observer {
     /// When a `TOO_LARGE` drop was last logged (see
     /// [`super::dispatch::drop_too_large`]).
     pub(crate) last_too_large_warn_ms: AtomicU64,
+    /// Its place in its function's creation order, given when it joins the
+    /// function's observers ([`ObserverRegistry::attach_to_function`]): `0`
+    /// until then.
+    seq: AtomicU64,
+    /// The engine created it for one of its own modules
+    /// ([`super::ENGINE_CONNECTION`] observes it, for its whole life).
+    engine_owned: bool,
 }
 
 impl Drop for Observer {
@@ -504,6 +511,7 @@ pub(crate) struct NewObserver {
 
 impl Observer {
     pub(crate) fn new(new: NewObserver) -> Self {
+        let engine_owned = new.observing.connection == super::ENGINE_CONNECTION;
         let observer = Self {
             id: new.id,
             function: new.function,
@@ -531,6 +539,8 @@ impl Observer {
             timers: Mutex::new(Timers::default()),
             last_loop_warn_ms: AtomicU64::new(0),
             last_too_large_warn_ms: AtomicU64::new(0),
+            seq: AtomicU64::new(0),
+            engine_owned,
         };
         {
             let mut status = lock(&observer.status);
@@ -556,6 +566,12 @@ impl Observer {
         lock(&self.status).state == ObserverState::Active
     }
 
+    /// Whether it was disposed: set before its disposal takes it out of any
+    /// index.
+    pub(crate) fn is_disposed(&self) -> bool {
+        lock(&self.status).flags.disposed.is_some()
+    }
+
     /// Runs `f` with the state and reason, holding the status lock: no
     /// transition happens meanwhile.
     pub(crate) fn with_state<R>(
@@ -574,6 +590,30 @@ impl Observer {
 
     pub(crate) fn observing(&self) -> Observing {
         lock(&self.observing).clone()
+    }
+
+    /// The observing connection, read without copying the rest of
+    /// [`Self::observing`].
+    pub(crate) fn observing_connection(&self) -> Uuid {
+        lock(&self.observing).connection
+    }
+
+    /// Whether the engine created this observer for one of its own modules.
+    pub fn is_engine_owned(&self) -> bool {
+        self.engine_owned
+    }
+
+    /// Its place in its function's creation order; `None` before it joined
+    /// its function's observers.
+    pub(crate) fn seq(&self) -> Option<u64> {
+        match self.seq.load(Ordering::Acquire) {
+            0 => None,
+            seq => Some(seq),
+        }
+    }
+
+    pub(crate) fn set_seq(&self, seq: u64) {
+        self.seq.store(seq, Ordering::Release);
     }
 
     pub fn fires(&self) -> u64 {
@@ -696,11 +736,17 @@ impl StateCounts {
 }
 
 fn record_state_gauge(state: &ObserverState, count: i64) {
+    let label = match state {
+        ObserverState::Pending => "pending",
+        ObserverState::Active => "active",
+        ObserverState::Suspended => "suspended",
+        ObserverState::Error => "error",
+        ObserverState::Disposed | ObserverState::Unknown(_) => return,
+    };
     if let Some(metrics) = super::metrics() {
-        metrics.observers.record(
-            count,
-            &[opentelemetry::KeyValue::new("state", state.to_string())],
-        );
+        metrics
+            .observers
+            .record(count, &[opentelemetry::KeyValue::new("state", label)]);
     }
 }
 
@@ -717,8 +763,9 @@ pub(super) struct Transition {
 impl ObserverRegistry {
     /// Applies `change` to `observer`'s flags and re-derives its state. On a
     /// change, the observing worker hears about it (`observerstatechanged`),
-    /// `engine::on-observers-changed` is called, the function's active set is
-    /// rebuilt when activeness changed, and a disposed observer is forgotten.
+    /// `engine::on-observers-changed` is called, the observer joins or leaves
+    /// its function's active set when activeness changed, and a disposed
+    /// observer is forgotten.
     pub(crate) fn update(&self, observer: &Arc<Observer>, change: impl FnOnce(&mut Flags)) {
         if let Some(transition) = self.transition(observer, change) {
             self.settle(observer, transition);
@@ -753,16 +800,19 @@ impl ObserverRegistry {
         }
         status.state = state.clone();
         status.reason = reason.clone();
-        self.notify(
-            observer.observing().connection,
-            Message::ObserverStateChanged {
-                id: observer.id.clone(),
-                state: state.clone(),
-                reason: reason.clone(),
-                fires: observer.fires(),
-            },
-        );
-        let unqueued = self.observer_changed(observer, &state, reason);
+        let unqueued = self.observer_changed(observer, &state, reason.as_ref());
+        // The engine hears nothing about the observers it owns.
+        if !observer.is_engine_owned() {
+            self.notify(
+                observer.observing_connection(),
+                Message::ObserverStateChanged {
+                    id: observer.id.clone(),
+                    state: state.clone(),
+                    reason,
+                    fires: observer.fires(),
+                },
+            );
+        }
         Some(Transition {
             activeness_changed: was_active != (state == ObserverState::Active),
             became: state,
@@ -773,8 +823,9 @@ impl ObserverRegistry {
     /// The part of [`Self::update`] done once `observer`'s status lock is
     /// released: the `engine::on-observers-changed` call no evaluator took is
     /// evaluated, an observer in `disposed` or `error` leaves its owner's set
-    /// (`observerremoved`), the function's active set is rebuilt when
-    /// activeness changed, and a disposed observer is forgotten.
+    /// (`observerremoved`), the observer joins or leaves its function's
+    /// active set when activeness changed, and a disposed observer is
+    /// forgotten.
     pub(super) fn settle(&self, observer: &Arc<Observer>, transition: Transition) {
         let Transition {
             became,
@@ -807,7 +858,7 @@ impl ObserverRegistry {
             self.queue_budget.room.notify_waiters();
         }
         if activeness_changed {
-            self.refresh_active(&observer.function);
+            self.refresh_observer(observer);
         }
         if became == ObserverState::Disposed {
             self.forget(observer);
@@ -838,7 +889,7 @@ impl ObserverRegistry {
         observer.cancel_timers();
         self.by_id
             .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
-        let connection = observer.observing().connection;
+        let connection = observer.observing_connection();
         self.remember_tombstone(
             observer.id.clone(),
             Tombstone {

@@ -89,13 +89,6 @@ impl StandingObserver {
     }
 }
 
-impl Observer {
-    /// Whether the engine created this observer for one of its own modules.
-    pub fn is_engine_owned(&self) -> bool {
-        self.observing().connection == ENGINE_CONNECTION
-    }
-}
-
 impl ObserverRegistry {
     /// Creates `request` as an engine-owned observer. Idempotent: an
     /// engine-owned observer with the same id and spec is left as it is,

@@ -7,6 +7,11 @@ commits.
 
 ## Summary
 
+The §13 budget, `isObserved()` and Node and Go figures are of observe-v2 at
+`e0d87164c`. The observer churn fix (`d37f78f42`) was measured again on the
+engine's observe, control-plane and cleanup benches and four load tests
+("Observer churn fix").
+
 - Every row of the §13 budget is within budget on the Rust host, in a tight
   loop and at 5,000 calls/s. At that rate the p99 of a local call is 6.7 to
   10.5 µs whatever its observers, so the 5 µs of the 10-observer row holds for
@@ -17,17 +22,28 @@ commits.
 - An unobserved routed call takes one `invokefunction` and one
   `invocationresult` and costs what it cost in 0.25 (34.9 µs against 35.1 µs).
   An observed one takes the same two frames, whatever the number of observers.
-- Engine benches against 0.25: 65 rows the same within noise, 20 faster, and
-  9 slower beyond noise. Three are small (`observe_fanout/1` +13 to +15%,
-  `observe_routed/observed/8` and `/64` +7 to +9%). Six are large: adding and
-  removing observers on one source (`control_plane_churn/observers_add_remove`)
-  costs 2.9x, 5.3x and 16.5x what 0.25's triggers cost at 100, 1,000 and 5,000,
-  and grows faster than n; a worker's cleanup (`worker_cleanup/observers`)
-  costs 2.9x to 6.5x per observer what it cost per trigger.
-- Load test against 0.25: `rpc` is the same; `source` delivers 200k
-  activations/s sustained where 0.25's `emit` delivered 100k; `filters` and
-  `fanout` take fewer calls per second from 256 and 4 observers on, and
-  `filters` drops nothing where 0.25 dropped most of its observations.
+- Engine benches against 0.25, with the observer churn fix (`d37f78f42`): 64
+  rows the same within noise, 20 faster and 10 slower beyond noise. The 33
+  rows of `control_plane_churn`, `worker_cleanup`, `observe_dispatch`,
+  `observe_fanout` and `observe_routed` come from the fix's pass; the other
+  61 rows (51 the same, 10 faster) were measured on observe-v2 before the fix
+  only. Four of the slower rows are small and the same as before the fix
+  (`observe_fanout/1` +15%, `observe_fanout/8` +6%, `observe_routed/observed/8`
+  and `/64` +7% and +8%). Six are larger: adding and removing an observer of
+  one function (`control_plane_churn/observers_add_remove`) costs 4.0, 4.3 and
+  4.9 µs with 100, 1,000 and 5,000 observers, 2.9x to 3.3x what a trigger cost
+  in 0.25 (6.3, 21.5 and 91 µs before the fix); a worker's cleanup
+  (`worker_cleanup/observers`) costs 2.7x to 4.0x per observer what it cost
+  per trigger.
+- Load test against 0.25. On observe-v2 before the fix, `rpc` is the same and
+  `source` delivers 200k activations/s sustained where 0.25's `emit`
+  delivered 100k. With the fix, `filters` takes 5% to 84% fewer calls per
+  second (16 to 4,000 observers) and drops nothing where 0.25 dropped most of
+  its observations; `fanout` takes 14% to 31% fewer calls per second from 4
+  observers a function on and delivers the same activations within noise; the
+  `observers` scenario creates 64,000 observers 3.4 times as fast as 0.25 and
+  disposes of them 2.3 times as fast, and holds 12% to 24% more engine memory
+  per observer at rest.
 
 ## Setup
 
@@ -37,7 +53,8 @@ commits.
 | Other load | one unrelated process at 100% of one core and a browser renderer at about 70% of one throughout; load average 6 to 10. Versions alternate run by run, and every run is repeated. |
 | 0.25.0 | `b0b86fd37` (main; observe-v2 branched from it) |
 | 0.26.0 | `e0d87164c` (observe-v2), with the bench output this file's commit adds: `observe_routed_bench` prints the frames per call, `observe_bench` runs each local call again at 5,000 calls/s. Neither changes the code measured. |
-| Rust | rustc 1.97.1 (8bab26f4f 2026-07-14), cargo 1.97.1, aarch64-apple-darwin; criterion 0.5.1; the `bench` profile is the release profile (lto, codegen-units 1, opt-level 2) |
+| 0.26.0 with the observer churn fix | `d37f78f42` (`ov2/observer-churn`, on observe-v2 `b05994f93`), measured in "Observer churn fix" |
+| Rust | rustc 1.98.0 (88d9e12ae 2026-08-18), cargo 1.98.0, aarch64-apple-darwin; criterion 0.5.1; the `bench` profile is the release profile (lto, codegen-units 1, opt-level 2). The load test builds with rustc 1.97.1 in its image. |
 | Node | Node 22.13.0, vitest 4.1.12, pnpm 10.19.0 |
 | Go | go1.25.14 linux/arm64 (golang:1.25 image, Docker, 8 CPUs) |
 | Load test | `iii-loadtest`, `host` profile, each version built and run in the rust:1.97 image (Debian 13, linux/arm64, rustc 1.97.1) under Docker Desktop 29.2.0, VM with 16 vCPUs and 8 GB, kernel 6.12.67-linuxkit. The container has CPUs 0-7 and 6 GB; the engine runs on CPUs 4-7 and the load generator on 0-3. Steps of 10 s after 2 s of warm-up; observability and log level as shipped. |
@@ -91,6 +108,11 @@ figures are means over three rounds of 10,000 calls.
 | Call through an observer | one routed invocation | No bench times it. `a_call_through_an_observer_is_the_fixture_frame` passes: the call is one `invokefunction` to the observer's target. | no equivalent | within budget (counted by the test) |
 
 ## Measurements
+
+The tables of this section are the first pass, on observe-v2 at `e0d87164c`.
+"Observer churn fix" measures the observe, control-plane and cleanup benches
+and the `fanout`, `filters`, `observers` and `match-keys` load tests again,
+on the fix and on observe-v2 before it.
 
 ### Observe benches
 
@@ -200,8 +222,8 @@ figures are means over three rounds of 10,000 calls.
 | `ws_roundtrip_payload_sizes/10kb` | 76.8 µs | 77 µs | +0.2% | 0.1% / 0.5% | 2 / 2 | same as 0.25 within noise |  |
 | `ws_roundtrip_payload_sizes/100kb` | 296 µs | 297 µs | +0.4% | 0.5% / 0.6% | 2 / 2 | same as 0.25 within noise |  |
 
-(1) 0.25's bench registers n triggers of one trigger type, each aimed at its own target; 0.26's adds n engine observers of one function, all aimed at one target. A matched bench (one source, n targets, the same observe and unobserve calls) gives 2.9x, 5.3x and 16.5x the 0.25 cost at 100, 1,000 and 5,000, so the shared target is not the cost (see "Check").  
-(2) 0.25 unregisters a worker's n triggers of one trigger type; 0.26 suspends a worker's n observers of one function. The cost per observer is 2.9x to 6.5x the cost per trigger. A bench with n distinct targets was not run.  
+(1) 0.25's bench registers n triggers of one trigger type, each aimed at its own target; 0.26's adds n engine observers of one function, all aimed at one target. A matched bench (one source, n targets, the same observe and unobserve calls) gives 2.9x, 5.3x and 16.5x the 0.25 cost at 100, 1,000 and 5,000, so the shared target is not the cost (see "Check"). With the observer churn fix, 2.3x to 2.4x ("Observer churn fix").  
+(2) 0.25 unregisters a worker's n triggers of one trigger type; 0.26 suspends a worker's n observers of one function. The cost per observer is 2.9x to 6.5x the cost per trigger, and 2.7x to 4.0x with the observer churn fix. A bench with n distinct targets was not run.  
 
 ### Rust SDK `observe_bench`
 
@@ -418,60 +440,326 @@ runs. The extra columns read 0.25 → 0.26.
 | 10000 keyed observers, 1 matching | – | 83.8k / 78.9k | – | 0.26 only |
 | 10000 keyed observers, none matching | – | 0 / 0 | – | 0.26 only |
 
+## Observer churn fix
+
+`ov2/observer-churn` at `d37f78f42` keeps a function's active observers, in
+the engine and in a Rust host's compiled set, in persistent sets of 128-slot
+nodes, so adding, removing or suspending one observer of a function with n
+observers copies O(log n) slots. This pass measured it on 2026-10-31, on the
+machine of the first pass, against observe-v2 before it (`b05994f93`, whose
+engine, Rust SDK and load test are those of the first pass's `e0d87164c`) and
+against 0.25 (`b0b86fd37`). The Rust SDK, Node and Go benches and the §13
+budget were not measured again.
+
+### Method
+
+- **Engine benches.** `control_plane_churn`, `worker_cleanup`,
+  `observe_dispatch`, `observe_fanout` (0.25: `trigger_fanout`) and
+  `observe_routed` (0.25: the first pass's scratch port), bench by bench in
+  the order 0.25, before the fix, the fix, in two rounds (`--save-baseline f1`
+  and `f2`), each version in its own target directory. Figures, spread and
+  verdicts as in the first pass.
+- **Matched shapes.** A scratch bench (not committed) adds n engine observers
+  with `observe_as_engine` and removes them with `unobserve_as_engine`, as
+  `observers_add_remove` does, in three shapes: one source and one target (the
+  committed bench), one source and n targets (0.25's shape: one trigger type,
+  n target functions), and n sources sharing one target; the n sources and n
+  targets are function ids nobody registers. It ran before the
+  fix, then on the fix, after each engine round, and is compared with 0.25's
+  `triggers_register_unregister` of the same rounds.
+- **Load test.** The first pass's image, CPU sets, memory cap and flags, with
+  `--port 58200`: `fanout`, `filters` and `observers` for every version,
+  `match-keys` for 0.26. Runs in the order before, fix, 0.25, fix, before;
+  `fanout` and `match-keys`, whose runs spread most, ran twice more per
+  version in the order fix, before, before, fix. The verdicts against 0.25 use
+  this pass's 0.25 run and the first pass's two.
+- **Machine.** One unrelated process at 100% of one core and a browser
+  renderer at 30% to 50% of one throughout; load average 5.0 to 12.3 (its
+  readings count each bench's own threads). This pass's 0.25 load-test run is
+  within 4% of the first pass's mean at every step but five: `fanout` with 4
+  observers (+17% calls/s), creating up to 4,000 observers (−24%), creating
+  4,000 filtered observers (−7.5%), and memory at rest with 1,000 observers
+  (−15%, within the first pass's range) and with 4,000 (+21%).
+
+### What changed
+
+- **Adding and removing observers of one function.** One add and remove costs
+  3.97 µs with 100 observers, 4.34 µs with 1,000 and 4.92 µs with 5,000
+  (6.26, 21.5 and 90.9 µs before the fix): the cost of one change grows by 24%
+  from 100 to 5,000 observers. 0.25's triggers cost 1.38 to 1.50 µs each, so
+  the fix costs 2.9x, 3.1x and 3.3x. In the matched bench, one source with n
+  targets costs 3.2 to 3.6 µs a change (2.3x to 2.4x 0.25), n sources 3.4 to
+  3.8 µs (2.5x), and a target shared by all n observers 0.7 to 1.4 µs more a
+  change than n targets, more as n grows.
+- **A worker's cleanup.** Suspending a worker's observers of one function
+  costs 4.97, 3.46 and 3.48 µs per observer with 10, 50 and 200 (5.49, 4.16
+  and 5.73 µs before the fix), against 1.86, 0.99 and 0.86 µs per trigger in
+  0.25: 2.7x, 3.5x and 4.0x.
+- **The other engine rows** are the same as before the fix within noise
+  (within 2.2% either side).
+- **Load test, creating and disposing of observers.** The `observers`
+  scenario creates 64,000 observers at 16.3k a second and disposes of them at
+  10.4k to 10.6k, against 4.2k to 4.3k for each before the fix and 4.8k to
+  4.9k and 4.5k to 4.7k in 0.25. `filters` creates 4,000 filtered observers at
+  80k to 96k a second (6.0k before the fix, 12k to 13.5k in 0.25). The
+  `match-keys` worker creates its keyed observers of one function at 50k to
+  58k a second up to 100, 53k to 71k up to 1,000 and 4.1k up to 10,000 (45k
+  to 48k, 18k to 19k and 1.5k before the fix). The step to 10,000 opens nine
+  more worker connections of 1,000 observers each and takes 2.2 s; the
+  `observers` step to 16,000, which opens twelve, takes 2.2 to 2.6 s in every
+  version (4.6k to 5.5k observers a second).
+- **Load test, calls.** `fanout` with 64 observers a function takes 20.6% more
+  calls per second and delivers 20.7% more activations than before the fix
+  (four runs each); with 0, 1, 4 and 16 observers the two are the same within
+  noise. `filters` and `match-keys` calls and activations are the same as
+  before the fix within noise.
+- **Load test, memory.** Engine memory per observer at rest is 9.1 KiB with
+  4,000 and 16,000 observers and 9.7 KiB with 64,000, against 8.2, 8.1 and 8.9
+  KiB before the fix in the same pass (+11.6%, +12.8%, +8.5%) and 7.8, 8.1
+  and 7.8 KiB in 0.25 (+16.8%, +11.9%, +24.0%). With 1,000 observers, runs of
+  every version measure about 7.1 or about 9.7 KiB; the fix's two measured 9.6
+  and 9.7.
+
+### Engine benches
+
+Two rounds per version; Δ and spread as in the first pass.
+
+| Row | 0.25 | Before | Fix | Δ fix vs before | Δ fix vs 0.25 | Δ before vs 0.25 | Spread 0.25 / before / fix | Verdict, fix vs before | Verdict, fix vs 0.25 |
+|---|---:|---:|---:|---:|---:|---:|---|---|---|
+| `control_plane_churn/functions_register_remove/100` | 37.6 µs | 37.5 µs | 37.5 µs | +0.0% | -0.4% | -0.5% | 0.1% / 0.5% / 0.1% | same within noise | same within noise |
+| `control_plane_churn/functions_register_remove/1000` | 382 µs | 380 µs | 381 µs | +0.1% | -0.3% | -0.4% | 0.5% / 0.3% / 0.1% | same within noise | same within noise |
+| `control_plane_churn/functions_register_remove/5000` | 1.91 ms | 1.89 ms | 1.89 ms | +0.0% | -0.8% | -0.8% | 0.2% / 0.5% / 0.1% | same within noise | same within noise |
+| `control_plane_churn/observers_add_remove/100` (1) | 138 µs | 626 µs | 397 µs | -36.6% | +186.8% | +352.2% | 0.2% / 0.6% / 2.1% | faster | regression |
+| `control_plane_churn/observers_add_remove/1000` (1) | 1.41 ms | 21.5 ms | 4.34 ms | -79.8% | +207.1% | +1422.3% | 0.0% / 0.4% / 0.8% | faster | regression |
+| `control_plane_churn/observers_add_remove/5000` (1) | 7.52 ms | 454 ms | 24.6 ms | -94.6% | +226.7% | +5939.9% | 0.1% / 0.2% / 0.5% | faster | regression |
+| `control_plane_churn/workers_register_unregister/100` | 380 µs | 356 µs | 359 µs | +0.8% | -5.4% | -6.1% | 0.2% / 0.0% / 1.6% | same within noise | improvement |
+| `control_plane_churn/workers_register_unregister/1000` | 6.39 ms | 4.19 ms | 4.21 ms | +0.5% | -34.1% | -34.4% | 0.9% / 0.1% / 1.0% | same within noise | improvement |
+| `control_plane_churn/workers_register_unregister/5000` | 36.1 ms | 23.6 ms | 23.7 ms | +0.3% | -34.4% | -34.5% | 1.0% / 0.4% / 1.3% | same within noise | improvement |
+| `observe_dispatch/default/0` (2) | 1.83 µs | 1.71 µs | 1.71 µs | +0.2% | -6.4% | -6.5% | 0.2% / 0.4% / 0.5% | same within noise | improvement |
+| `observe_dispatch/default/1` (2) | 4.73 µs | 4.69 µs | 4.73 µs | +0.8% | -0.1% | -0.9% | 0.1% / 0.8% / 0.3% | same within noise | same within noise |
+| `observe_dispatch/default/8` (2) | 10.6 µs | 10.6 µs | 10.5 µs | -0.9% | -1.4% | -0.5% | 1.1% / 0.9% / 0.7% | same within noise | same within noise |
+| `observe_dispatch/default/64` (2) | 75.7 µs | 75.4 µs | 75 µs | -0.5% | -0.9% | -0.4% | 1.1% / 0.3% / 0.9% | same within noise | same within noise |
+| `observe_dispatch/filtered/16` | 4.77 µs | 4.73 µs | 4.71 µs | -0.3% | -1.3% | -1.0% | 1.4% / 0.6% / 0.0% | same within noise | same within noise |
+| `observe_dispatch/filtered/256` | 5.32 µs | 5.38 µs | 5.37 µs | -0.3% | +0.9% | +1.2% | 2.6% / 2.9% / 0.1% | same within noise | same within noise |
+| `observe_dispatch/filtered/1024` | 19.8 µs | 19.6 µs | 20 µs | +1.8% | +1.1% | -0.7% | 0.6% / 0.8% / 0.4% | same within noise | same within noise |
+| `observe_fanout/1` (3) | 11.4 µs | 13.1 µs | 13.1 µs | +0.2% | +14.9% | +14.6% | 0.8% / 0.5% / 0.2% | same within noise | regression |
+| `observe_fanout/8` (3) | 28.7 µs | 30.3 µs | 30.6 µs | +0.9% | +6.4% | +5.5% | 0.3% / 1.0% / 0.8% | same within noise | regression |
+| `observe_fanout/32` (3) | 84.7 µs | 66.9 µs | 67 µs | +0.2% | -20.9% | -21.0% | 0.5% / 0.3% / 0.3% | same within noise | improvement |
+| `observe_fanout/128` (3) | 321 µs | 176 µs | 176 µs | -0.1% | -45.1% | -45.0% | 1.2% / 0.3% / 0.1% | same within noise | improvement |
+| `observe_routed/observed/0` | 34.5 µs | 34.5 µs | 34.8 µs | +0.8% | +0.8% | +0.1% | 0.8% / 1.6% / 1.0% | same within noise | same within noise |
+| `observe_routed/observed/1` | 36.7 µs | 38.2 µs | 38.1 µs | -0.2% | +3.9% | +4.1% | 0.2% / 1.0% / 0.2% | same within noise | same within noise |
+| `observe_routed/observed/8` | 44.2 µs | 47.6 µs | 47.4 µs | -0.5% | +7.3% | +7.8% | 0.6% / 0.7% / 0.2% | same within noise | regression |
+| `observe_routed/observed/64` | 93.4 µs | 102 µs | 101 µs | -0.7% | +8.1% | +8.9% | 2.0% / 0.0% / 0.5% | same within noise | regression |
+| `worker_cleanup/functions/10` | 13.2 µs | 11.3 µs | 11.3 µs | +0.3% | -14.5% | -14.7% | 1.4% / 2.3% / 1.0% | same within noise | improvement |
+| `worker_cleanup/functions/50` | 27.8 µs | 26.7 µs | 27.3 µs | +2.2% | -2.1% | -4.2% | 1.8% / 3.5% / 0.8% | same within noise | same within noise |
+| `worker_cleanup/functions/200` | 76.5 µs | 75.1 µs | 76 µs | +1.3% | -0.6% | -1.9% | 4.5% / 1.3% / 1.1% | same within noise | same within noise |
+| `worker_cleanup/invocations/10` | 8.3 µs | 6.76 µs | 6.85 µs | +1.3% | -17.5% | -18.6% | 1.6% / 0.6% / 2.3% | same within noise | improvement |
+| `worker_cleanup/invocations/50` | 7.82 µs | 5.96 µs | 5.95 µs | -0.1% | -23.9% | -23.8% | 4.0% / 0.5% / 1.4% | same within noise | improvement |
+| `worker_cleanup/invocations/200` | 8.51 µs | 6.43 µs | 6.36 µs | -1.1% | -25.3% | -24.5% | 6.4% / 4.4% / 1.7% | same within noise | improvement |
+| `worker_cleanup/observers/10` (4) | 18.6 µs | 54.9 µs | 49.7 µs | -9.5% | +167.5% | +195.8% | 1.9% / 0.1% / 3.0% | faster | regression |
+| `worker_cleanup/observers/50` (4) | 49.7 µs | 208 µs | 173 µs | -16.9% | +248.0% | +318.5% | 0.3% / 1.3% / 2.2% | faster | regression |
+| `worker_cleanup/observers/200` (4) | 173 µs | 1.15 ms | 696 µs | -39.2% | +303.0% | +562.9% | 0.6% / 2.1% / 1.7% | faster | regression |
+
+(1) 0.25: `control_plane_churn/triggers_register_unregister/<n>`, a different shape (the first pass's notes).  
+(2) 0.25: `observe_dispatch/auto/<n>`.  
+(3) 0.25: `trigger_fanout/<n>`.  
+(4) 0.25: `worker_cleanup/triggers/<n>`, a different shape (the first pass's notes).
+
+### One change, per observer
+
+The rows of `observers_add_remove` and `worker_cleanup/observers` above, divided by n.
+
+| Bench | n | 0.25, per trigger | Before | Fix | Fix / 0.25 |
+|---|---:|---:|---:|---:|---:|
+| `control_plane_churn/observers_add_remove` | 100 | 1.38 µs | 6.26 µs | 3.97 µs | 2.9x |
+| `control_plane_churn/observers_add_remove` | 1,000 | 1.41 µs | 21.52 µs | 4.34 µs | 3.1x |
+| `control_plane_churn/observers_add_remove` | 5,000 | 1.50 µs | 90.89 µs | 4.92 µs | 3.3x |
+| `worker_cleanup/observers` | 10 | 1.86 µs | 5.49 µs | 4.97 µs | 2.7x |
+| `worker_cleanup/observers` | 50 | 0.99 µs | 4.16 µs | 3.46 µs | 3.5x |
+| `worker_cleanup/observers` | 200 | 0.86 µs | 5.73 µs | 3.48 µs | 4.0x |
+
+### Matched shapes (scratch bench, not committed)
+
+Two rounds per version. The 0.25 column is `control_plane_churn/triggers_register_unregister/<n>` of the engine rounds above.
+
+| Shape | n | Before | Fix | Fix vs before | Before, per add and remove | Fix, per add and remove | Before / 0.25 | Fix / 0.25 | Spread before / fix |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `one_source_one_target` | 100 | 621 µs | 394 µs | -36.6% | 6.21 µs | 3.94 µs | 4.5x | 2.8x | 0.6% / 0.1% |
+| `one_source_one_target` | 1,000 | 21.5 ms | 4.34 ms | -79.8% | 21.49 µs | 4.34 µs | 15.2x | 3.1x | 0.7% / 4.6% |
+| `one_source_one_target` | 5,000 | 451 ms | 24.6 ms | -94.5% | 90.29 µs | 4.92 µs | 60.0x | 3.3x | 1.1% / 2.5% |
+| `one_source_n_targets` | 100 | 406 µs | 323 µs | -20.5% | 4.06 µs | 3.23 µs | 2.9x | 2.3x | 0.1% / 0.3% |
+| `one_source_n_targets` | 1,000 | 7.52 ms | 3.22 ms | -57.1% | 7.52 µs | 3.22 µs | 5.3x | 2.3x | 0.5% / 0.3% |
+| `one_source_n_targets` | 5,000 | 128 ms | 17.8 ms | -86.0% | 25.55 µs | 3.57 µs | 17.0x | 2.4x | 0.1% / 1.6% |
+| `n_sources_one_target` | 100 | 385 µs | 341 µs | -11.4% | 3.85 µs | 3.41 µs | 2.8x | 2.5x | 0.7% / 0.5% |
+| `n_sources_one_target` | 1,000 | 3.86 ms | 3.48 ms | -9.7% | 3.86 µs | 3.48 µs | 2.7x | 2.5x | 0.5% / 0.6% |
+| `n_sources_one_target` | 5,000 | 20.8 ms | 18.9 ms | -9.0% | 4.16 µs | 3.79 µs | 2.8x | 2.5x | 0.3% / 1.3% |
+
+### Load test
+
+Each cell lists the runs. The 0.25 column gives this pass's run, then the
+first pass's two in brackets; the extra column reads 0.25 → before → fix
+(before → fix for `match-keys`).
+
+#### `fanout`: calls/s with N observers on the called function
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 | engine CPU |
+|---|---:|---:|---:|---:|---|---:|---|---:|
+| 0 observers/function | 178k (179k / 178k) | 186k / 191k / 181k / 191k | 182k / 186k / 185k / 177k | -2.6% | same within noise | +2.2% | same within noise | 3.37 (3.38 / 3.39) → 3.44 / 3.49 / 3.40 / 3.48 → 3.43 / 3.44 / 3.44 / 3.37 |
+| 1 observers/function | 97.9k (100k / 98k) | 101k / 99.6k / 101k / 101k | 99.3k / 100k / 101k / 99.9k | -0.7% | same within noise | +1.4% | same within noise | 3.28 (3.29 / 3.29) → 3.32 / 3.34 / 3.33 / 3.32 → 3.32 / 3.34 / 3.33 / 3.33 |
+| 4 observers/function | 64.5k (55k / 55.2k) | 48.5k / 47.8k / 46k / 48.4k | 50.4k / 49.4k / 47.6k / 46.3k | +1.6% | same within noise | -16.8% | regression | 3.48 (3.40 / 3.40) → 3.38 / 3.40 / 3.36 / 3.31 → 3.43 / 3.43 / 3.37 / 3.37 |
+| 16 observers/function | 70.4k (70.8k / 70.5k) | 60.2k / 62.3k / 64.2k / 66.8k | 57.1k / 52.1k / 67.5k / 66.2k | -4.1% | same within noise | -14.0% | regression | 3.57 (3.58 / 3.57) → 3.53 / 3.61 / 3.62 / 3.68 → 3.51 / 3.40 / 3.70 / 3.66 |
+| 64 observers/function | 68.1k (68k / 68.1k) | 39.2k / 38.5k / 36.5k / 42.5k | 45.8k / 45.3k / 45.9k / 51.9k | +20.6% | better | -30.6% | regression | 3.55 (3.63 / 3.55) → 3.40 / 3.39 / 3.33 / 3.55 → 3.54 / 3.55 / 3.53 / 3.68 |
+
+#### `fanout`: activations delivered per second
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 | dropped (OVERFLOW) |
+|---|---:|---:|---:|---:|---|---:|---|---:|
+| 1 observers/function | 70.9k (76k / 70.9k) | 80.4k / 81.5k / 74.7k / 77.5k | 77.8k / 81.2k / 77.9k / 75.4k | -0.6% | same within noise | +7.6% | same within noise | 268k (238k / 269k) → 208k / 179k / 259k / 233k → 214k / 187k / 227k / 243k |
+| 4 observers/function | 196k (191k / 189k) | 188k / 190k / 184k / 191k | 194k / 196k / 190k / 185k | +1.6% | same within noise | -0.3% | same within noise | 614k (295k / 316k) → 56k / 9.8k / 1.72k / 22k → 73.1k / 11.1k / 7.03k / 2.96k |
+| 16 observers/function | 194k (202k / 196k) | 178k / 196k / 194k / 211k | 168k / 157k / 231k / 207k | -2.1% | same within noise | -3.6% | same within noise | 9.29M (9.28M / 9.29M) → 7.82M / 7.98M / 8.3M / 8.54M → 7.43M / 6.74M / 8.47M / 8.48M |
+| 64 observers/function | 186k (193k / 190k) | 146k / 140k / 141k / 157k | 171k / 168k / 172k / 195k | +20.7% | better | -6.9% | same within noise | 41.6M (41.5M / 41.6M) → 23.5M / 23.1M / 21.8M / 25.5M → 27.5M / 27.2M / 27.5M / 31.2M |
+
+#### `filters`: calls/s, N filtered observers, each call matches one
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 | engine CPU |
+|---|---:|---:|---:|---:|---|---:|---|---:|
+| 16 filtered observers | 102k (102k / 102k) | 96.8k / 98.8k | 95k / 98k | -1.3% | same within noise | -5.3% | regression | 3.43 (3.43 / 3.43) → 3.39 / 3.41 → 3.39 / 3.40 |
+| 256 filtered observers | 96.3k (95.7k / 95.5k) | 87.3k / 87.4k | 85.6k / 86.9k | -1.3% | same within noise | -10.0% | regression | 3.51 (3.51 / 3.51) → 3.24 / 3.26 → 3.23 / 3.24 |
+| 1024 filtered observers | 77.5k (78.3k / 78k) | 30.6k / 30.7k | 30.7k / 31k | +0.7% | same within noise | -60.4% | regression | 3.74 (3.73 / 3.74) → 1.37 / 1.37 → 1.38 / 1.37 |
+| 4000 filtered observers | 28.1k (28.3k / 28.4k) | 4.76k / 4.47k | 4.61k / 4.53k | -1.0% | same within noise | -83.8% | regression | 3.89 (3.88 / 3.88) → 0.43 / 0.40 → 0.46 / 0.43 |
+
+#### `filters`: activations delivered per second
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 | dropped (OVERFLOW) |
+|---|---:|---:|---:|---:|---|---:|---|---:|
+| 16 filtered observers | 102k (102k / 102k) | 96.8k / 98.8k | 95k / 98k | -1.3% | same within noise | -5.3% | regression | 0 (0 / 0) → 0 / 0 → 0 / 0 |
+| 256 filtered observers | 96.3k (95.7k / 95.5k) | 87.3k / 87.4k | 85.6k / 86.9k | -1.3% | same within noise | -10.0% | regression | 0 (0 / 0) → 0 / 0 → 0 / 0 |
+| 1024 filtered observers | 33.7k (33.6k / 33.7k) | 30.6k / 30.7k | 30.7k / 31k | +0.7% | same within noise | -8.3% | regression | 382M (391M / 386M) → 0 / 0 → 0 / 0 |
+| 4000 filtered observers | 4.91k (5.11k / 4.89k) | 4.76k / 4.47k | 4.61k / 4.52k | -0.9% | same within noise | -8.0% | regression | 666M (665M / 678M) → 0 / 0 → 0 / 0 |
+
+#### `filters`: observers created per second, up to N
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 |
+|---|---:|---:|---:|---:|---|---:|---|
+| 16 filtered observers | 14.3k (16.4k / 12.9k) | 23k / 15.7k | 16.4k / 19.2k | -8.2% | same within noise | +22.3% | same within noise |
+| 256 filtered observers | 28.8k (29.3k / 26.1k) | 27.6k / 17.2k | 38.3k / 29k | +50.1% | better | +19.9% | same within noise |
+| 1024 filtered observers | 19.8k (22.4k / 17.2k) | 18.7k / 17k | 37.2k / 51.3k | +147.7% | better | +123.5% | improvement |
+| 4000 filtered observers | 12.3k (13.5k / 13k) | 6.04k / 6.02k | 79.5k / 95.8k | +1354.3% | better | +578.3% | improvement |
+
+#### `observers`: creation and disposal rate (per second)
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 |
+|---|---:|---:|---:|---:|---|---:|---|
+| create → 1000 | 26k (24.6k / 26.6k) | 46k / 55k | 46.8k / 45.2k | -8.8% | same within noise | +78.9% | improvement |
+| create → 4000 | 32.8k (42.3k / 43.6k) | 65.6k / 45.5k | 69.2k / 79.4k | +33.8% | better | +87.9% | improvement |
+| create → 16000 | 4.75k (4.73k / 4.72k) | 4.76k / 4.56k | 5.43k / 5.47k | +17.0% | better | +15.2% | improvement |
+| create → 64000 | 4.79k (4.82k / 4.91k) | 4.26k / 4.2k | 16.3k / 16.3k | +285.9% | better | +237.2% | improvement |
+| dispose 64000 | 4.5k (4.6k / 4.68k) | 4.32k / 4.19k | 10.4k / 10.6k | +147.4% | better | +129.1% | improvement |
+
+#### `observers`: engine memory per observer at rest (KiB)
+
+| Step | 0.25: this pass (first pass) | Before | Fix | Δ vs before | Verdict vs before | Δ vs 0.25 | Verdict vs 0.25 |
+|---|---:|---:|---:|---:|---|---:|---|
+| 1000 observers (at rest) | 7.19 (7.18 / 9.70) | 7.11 / 7.09 | 9.71 / 9.61 | +36.1% | worse | +20.4% | same within noise |
+| 4000 observers (at rest) | 8.80 (6.99 / 7.61) | 7.43 / 8.89 | 9.22 / 8.99 | +11.6% | worse | +16.8% | regression |
+| 16000 observers (at rest) | 8.03 (8.00 / 8.38) | 7.90 / 8.25 | 9.53 / 8.68 | +12.8% | worse | +11.9% | regression |
+| 64000 observers (at rest) | 7.67 (7.75 / 7.94) | 8.90 / 8.90 | 9.73 / 9.59 | +8.5% | worse | +24.0% | regression |
+
+#### `match-keys` (0.26 only): observers created per second, up to N
+
+| Step | Before | Fix | Δ vs before | Verdict vs before |
+|---|---:|---:|---:|---|
+| 100 keyed observers, 1 matching | 45.6k / 46.6k / 47.9k / 45.3k | 49.8k / 50.4k / 57.5k / 56.3k | +15.4% | better |
+| 1000 keyed observers, 1 matching | 19k / 18.7k / 17.9k / 18.2k | 66.2k / 52.6k / 58.1k / 70.6k | +235.4% | better |
+| 10000 keyed observers, 1 matching | 1.49k / 1.5k / 1.49k / 1.5k | 4.12k / 4.13k / 4.08k / 4.08k | +174.3% | better |
+
+#### `match-keys` (0.26 only): calls/s
+
+| Step | Before | Fix | Δ vs before | Verdict vs before | engine CPU |
+|---|---:|---:|---:|---|---:|
+| 100 keyed observers, 1 matching | 980k / 916k / 936k / 934k | 962k / 928k / 925k / 952k | +0.0% | same within noise | 2.97 / 2.99 / 2.98 / 2.95 → 2.99 / 2.98 / 2.97 / 2.96 |
+| 100 keyed observers, none matching | 1.95M / 2.19M / 2.03M / 1.94M | 2.1M / 1.95M / 2.16M / 2.06M | +2.1% | same within noise | 0.00 / 0.00 / 0.00 / 0.00 → 0.00 / 0.00 / 0.00 / 0.00 |
+| 1000 keyed observers, 1 matching | 948k / 906k / 923k / 861k | 958k / 931k / 894k / 925k | +2.0% | same within noise | 2.95 / 2.96 / 2.98 / 3.02 → 2.84 / 2.93 / 2.98 / 2.97 |
+| 1000 keyed observers, none matching | 2.05M / 2.11M / 2.04M / 1.89M | 2.07M / 1.9M / 1.93M / 2.1M | -1.1% | same within noise | 0.00 / 0.00 / 0.00 / 0.00 → 0.00 / 0.00 / 0.00 / 0.00 |
+| 10000 keyed observers, 1 matching | 940k / 926k / 919k / 873k | 918k / 921k / 861k / 936k | -0.6% | same within noise | 2.85 / 2.77 / 2.85 / 2.86 → 2.80 / 2.84 / 2.82 / 2.83 |
+| 10000 keyed observers, none matching | 1.93M / 2.16M / 2.07M / 1.87M | 2.01M / 1.95M / 1.94M / 2.14M | -0.1% | same within noise | 0.46 / 0.01 / 0.01 / 0.00 → 0.01 / 0.01 / 0.01 / 0.01 |
+
+#### `match-keys` (0.26 only): activations delivered per second
+
+| Step | Before | Fix | Δ vs before | Verdict vs before |
+|---|---:|---:|---:|---|
+| 100 keyed observers, 1 matching | 133k / 140k / 139k / 139k | 131k / 138k / 140k / 128k | -2.6% | same within noise |
+| 1000 keyed observers, 1 matching | 132k / 135k / 135k / 137k | 87k / 117k / 138k / 135k | -11.4% | same within noise |
+| 10000 keyed observers, 1 matching | 73.1k / 69.7k / 76.1k / 75.5k | 77.8k / 74.6k / 75.2k / 65.2k | -0.6% | same within noise |
+
 ## Slower than 0.25
 
-- **`observe_fanout/1`**: 13.1 µs against 11.5 µs for `trigger_fanout/1`
-  (+14.5%). With 8 observers the two are the same within noise; with 32 and
-  128, 0.26 takes 22% and 45% less time.
-- **`observe_routed/observed/8` and `/64`**: 48.3 µs and 99.2 µs against 45.2
-  µs and 90.7 µs (+6.9%, +9.4%). In 0.26 the host's `invocationresult` lists
-  the matched observers (8 or 64 ids) and the engine starts their activations
-  from that list; in 0.25 the engine evaluated the observers itself.
-  Unobserved and with one observer, the two are the same within noise.
+With the observer churn fix (`d37f78f42`), from its pass; first-pass figures
+where the fix's pass did not measure the row.
+
+- **`observe_fanout/1`**: 13.1 µs against 11.4 µs for `trigger_fanout/1`
+  (+14.9%; +14.5% in the first pass). **`observe_fanout/8`**: 30.6 µs against
+  28.7 µs (+6.4%), where observe-v2 before the fix measured +5.5% in the same
+  rounds and +4.8% (the same within noise) in the first pass. With 32 and 128,
+  0.26 takes 21% and 45% less time.
+- **`observe_routed/observed/8` and `/64`**: 47.4 µs and 101 µs against 44.2
+  µs and 93.4 µs (+7.3%, +8.1%; +6.9% and +9.4% in the first pass). In 0.26
+  the host's `invocationresult` lists the matched observers (8 or 64 ids) and
+  the engine starts their activations from that list; in 0.25 the engine
+  evaluated the observers itself. Unobserved and with one observer, the two
+  are the same within noise.
 - **Adding and removing observers of one function.**
   `control_plane_churn/observers_add_remove/<n>` adds and removes `n` engine
-  observers of one function: one add and remove costs 6.2 µs with 100
-  observers, 21.5 µs with 1,000 and 91 µs with 5,000, so the total grows with
-  the square of `n`. 0.25's closest bench registers and unregisters `n`
-  triggers of `n` functions at 1.4 to 1.5 µs each. The load test shows the
-  same cost: the `match-keys` worker creates its observers of one function at
-  35,500 a second up to 100, 16,000 to 17,800 a second up to 1,000 and 1,500 a
-  second up to 10,000.
+  observers of one function: one add and remove costs 3.97 µs with 100
+  observers, 4.34 µs with 1,000 and 4.92 µs with 5,000. 0.25's closest bench
+  registers and unregisters `n` triggers of `n` functions at 1.38 to 1.50 µs
+  each, so 0.26 costs 2.9x to 3.3x. With the shape of 0.25's bench (one source,
+  `n` targets) 0.26 costs 3.2 to 3.6 µs a change, 2.3x to 2.4x. Before the fix
+  one change cost 6.26, 21.5 and 90.9 µs, and the total grew with the square
+  of `n`.
 - **Cleaning up a worker's observers.** `worker_cleanup/observers/<n>` costs
-  4.3 to 5.8 µs per observer (10 to 200 observers), against 0.9 to 1.9 µs per
-  trigger for 0.25's `worker_cleanup/triggers/<n>`.
+  3.5 to 5.0 µs per observer (10 to 200 observers), against 0.86 to 1.86 µs
+  per trigger for 0.25's `worker_cleanup/triggers/<n>`: 2.7x to 4.0x (4.2 to
+  5.7 µs per observer before the fix).
 - **Load test `filters`.** With 1,024 and 4,000 filtered observers of one
-  function, 0.26 takes 30.5k and 4.7k calls/s against 78k and 28k (−61%,
-  −83%), with the engine's CPUs mostly idle (1.4 and 0.4 of 4 cores busy). It
-  delivers every matching call (0 dropped); 0.25 delivered 33.6k and 5.0k
-  activations/s and dropped 389M and 672M observations as `OVERFLOW`. Counted
-  in activations delivered, 0.26 is 9.3% and 6.5% below 0.25. With 256
-  observers 0.26 is 7.8% below; with 16 the two are the same within noise.
+  function, 0.26 takes 30.9k and 4.6k calls/s against 77.9k and 28.3k (−60%,
+  −84%), with the engine's CPUs mostly idle (1.4 and 0.4 of 4 cores busy). It
+  delivers every matching call (0 dropped); 0.25 delivered 33.7k and 5.0k
+  activations/s and dropped 386M and 670M observations as `OVERFLOW`. Counted
+  in activations delivered, 0.26 is 8.3% and 8.0% below 0.25. With 256
+  observers 0.26 is 10.0% below and with 16, 5.3% (7.8% and 3.7% in the first
+  pass). The fix's calls and activations are the same as before the fix
+  within noise.
 - **Load test `fanout`.** With 4, 16 and 64 observers a function, 0.26 takes
-  13%, 16% and 36% fewer calls per second (15%, 15% and 32% pooled over four
-  runs per version). Activations delivered are 5% higher with 1 observer and
-  the same within noise with 4, 16 and 64.
-- **Load test `observers`.** Engine memory per observer at rest is 8.3 KiB
-  against 7.3 KiB with 4,000 observers (+13.9%) and 8.8 KiB against 7.8 KiB
-  with 64,000 (+12.3%). With 1,000 observers 0.26 measured 9.7 to 9.9 KB in
-  all four runs and 0.25 7.3 KB in three of four, so the difference is most
-  likely about +33%; with 16,000 the two are the same within noise. Creating
-  the observers up to 64,000 and disposing of them run 10 to 14% and 7 to 9%
-  slower; creating the first 1,000 runs 83% faster, and the first 4,000 the
-  same within noise over four runs per version.
+  17%, 14% and 31% fewer calls per second (four runs; 13%, 16% and 36% in the
+  first pass, before the fix). Activations delivered are the same within noise
+  with 1, 4, 16 and 64 observers. With 64 observers the fix takes 21% more
+  calls per second and delivers 21% more activations than observe-v2 before
+  it.
+- **Load test `observers`.** Engine memory per observer at rest is 9.1 KiB
+  against 7.8 KiB with 4,000 observers (+16.8%), 9.1 against 8.1 KiB with
+  16,000 (+11.9%) and 9.7 against 7.8 KiB with 64,000 (+24.0%). Before the fix
+  the runs of the same pass measured 8.2, 8.1 and 8.9 KiB, so the fix holds
+  8.5% to 12.8% more. With 1,000 observers, runs of every version measure about 7.1 or about
+  9.7 KiB, and the fix's two measured 9.6 and 9.7. Creating and disposing of
+  observers is faster than in 0.25: 64,000 created at 16.3k a second and
+  disposed of at 10.5k, against 4.8k and 4.6k.
 
 ## Check
 
-A second pass re-ran every row marked a regression or over budget, plus the
-two largest improvements (`observe_fanout/128` and the `source` load test at
-200k activations/s), at least twice each, alternating which version ran first.
-The committed numbers match the raw data. What the second pass found:
+A second pass, on observe-v2 at `e0d87164c`, re-ran every row the first pass
+marked a regression or over budget, plus the two largest improvements
+(`observe_fanout/128` and the `source` load test at 200k activations/s), at
+least twice each, alternating which version ran first. The committed numbers
+match the raw data. What the second pass found:
 
-- Every regression above holds, at the same size.
+- Every regression of the first pass holds, at the same size.
 - The two improvements hold.
 - `control_plane_churn/observers_add_remove`: a matched bench with one source
   and n targets, using the same observe and unobserve calls in both versions,
-  gives 2.9x, 5.3x and 16.5x the 0.25 cost at 100, 1,000 and 5,000.
+  gives 2.9x, 5.3x and 16.5x the 0.25 cost at 100, 1,000 and 5,000 on
+  observe-v2 before the observer churn fix, and 2.3x, 2.3x and 2.4x with the
+  fix ("Observer churn fix").
 - §13, 10 observers none matching, at 5,000 calls/s: the p99 is 7.4 to 9.1 µs
   in all five rounds, above the 5 µs budget; mean and p90 are under it. A call
   with no observers has a p99 above 5 µs too, so the tail comes from the paced
@@ -486,6 +774,8 @@ The committed numbers match the raw data. What the second pass found:
 
 ```sh
 # Engine benches (each version in its own checkout and target directory)
+cargo bench -p iii --bench control_plane_churn_bench -- --save-baseline r1 --noplot
+cargo bench -p iii --bench worker_cleanup_bench -- --save-baseline r1 --noplot
 cargo bench -p iii --bench observe_dispatch_bench -- --save-baseline r1 --noplot
 cargo bench -p iii --bench observe_fanout_bench -- --save-baseline r1 --noplot   # 0.25: trigger_fanout_bench
 cargo bench -p iii --bench observe_routed_bench -- --save-baseline r1 --noplot
