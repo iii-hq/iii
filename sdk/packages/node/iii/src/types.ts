@@ -129,8 +129,11 @@ export interface IIIClient {
    * Every call of the function, local or routed, runs the handler and then
    * goes to the observers that want it (`onObserverMatch`; by default all of
    * them): the function's `onObserverDeliver` hook delivers it, or iii does,
-   * to those whose `on` and filters match. What the worker does when the
-   * function is observed is set with the hooks (`onObserverAdded`,
+   * to those whose `on` and filters match. iii evaluates `on` and filters
+   * where the call is: the engine for a call it routes to this worker, and
+   * the SDK for a call this worker makes to its own function in-process,
+   * through an index of the filters' equality conditions. What the worker
+   * does when the function is observed is set with the hooks (`onObserverAdded`,
    * `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
    * the returned {@link FunctionRef}. The SDK acks no observer before this
    * call returns, so a hook set by id before it, chained on its result, or

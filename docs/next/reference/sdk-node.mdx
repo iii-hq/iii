@@ -95,8 +95,11 @@ event source's handler returns the event it is called with.
 Every call of the function, local or routed, runs the handler and then
 goes to the observers that want it (`onObserverMatch`; by default all of
 them): the function's `onObserverDeliver` hook delivers it, or iii does,
-to those whose `on` and filters match. What the worker does when the
-function is observed is set with the hooks (`onObserverAdded`,
+to those whose `on` and filters match. iii evaluates `on` and filters
+where the call is: the engine for a call it routes to this worker, and
+the SDK for a call this worker makes to its own function in-process,
+through an index of the filters' equality conditions. What the worker
+does when the function is observed is set with the hooks (`onObserverAdded`,
 `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
 the returned FunctionRef. The SDK acks no observer before this
 call returns, so a hook set by id before it, chained on its result, or
@@ -1409,11 +1412,12 @@ type CaptureWire = OpenEnum<"input" | "output" | "error" | "caller" | "metadata"
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `baggage` | `string` | No | W3C baggage header for cross-cutting context propagation |
+| `delivered` | `boolean` | No | Host → engine (`observe.v2`): the function's deliver hook<br />(`onObserverDeliver`) delivered this routed call, and the engine<br />activates no observer for it. Sent only as `true`, and without<br />`matched`. |
 | `error` | `unknown` | No | - |
 | `function_id` | `string` | Yes | The path of the function. |
 | `invocation_id` | `string` | Yes | The id of the invocation |
+| `matched` | `string[]` | No | Host → engine (`observe.v2`): the observers the function's match hook<br />(`onObserverMatch`) matched for this routed call, before their `on` and<br />filters, which the engine evaluates; `[]` when it matched none. Left out<br />by a function without a match hook: the engine then evaluates every<br />active observer of the function. |
 | `message_type` | [`MessageType`](#messagetype).InvocationResult | Yes | - |
-| `observed` | `string[]` | No | Host → engine (`observe.v2`): the observers iii's delivery selected for<br />this routed call. Left out when empty, and by a function with<br />`onObserverDeliver`. |
 | `result` | `unknown` | No | - |
 | `traceparent` | `string` | No | W3C trace-context traceparent header for distributed tracing |
 

@@ -14,13 +14,18 @@
  * - a local call with 10 observers, none matching; with 1 matching observer
  *   (one report item, batched); matching by keys, 1 matching observer among
  *   10,000;
+ * - a local call of a function whose 1,000 observers each filter on their own
+ *   `input.tenant` (`$eq`), with 1 of them matching and with none: the SDK
+ *   matches the call through an index of the filters' equality conditions;
  * - an observed event source (`call_local/event_source_observed`, a private
  *   function that returns its input) and an observed echo that is not private
  *   (`call_local/echo_observed`): each report item carries the value once
  *   (`output_is_input`);
  * - a routed call (an `invokefunction` from the engine, answered with
- *   `invocationresult`) of a function nobody observes, and of one with a
- *   matching observer (its id rides the answer, no extra frame).
+ *   `invocationresult`) of a function nobody observes, of one with a
+ *   matching observer, and of the function with 1,000 equality-filtered
+ *   observers: the engine evaluates their filters, so the host evaluates
+ *   none and its answer carries the result alone (decision 55).
  *
  * The fake engine (tests/observe-fake-engine.ts) confirms the functions with
  * the observers each case needs; the socket counts what the SDK sends, and
@@ -37,10 +42,12 @@ const { registerWorker } = await import('../src/index')
 const { functionRegistered, observerInfo, settle } = fake
 
 const KEYED_OBSERVERS = 10_000
+const FILTERED_OBSERVERS = 1_000
 const TIME_MS = 1000
 
 /** What the SDK put on the wire, counted without keeping the frames. */
-const wire = { reportFrames: 0, results: 0, observedResults: 0, other: 0 }
+/** `invocationresult` frames, and of them those that carry `matched` or `delivered` (decision 55). */
+const wire = { reportFrames: 0, results: 0, matchedResults: 0, deliveredResults: 0, other: 0 }
 /** Report items per function, and how many carried the value once (`output_is_input`, no `output`). */
 const items = new Map<string, { items: number; once: number }>()
 let answered: (() => void) | undefined
@@ -70,7 +77,8 @@ socket.send = (data: Buffer | string, callback?: (err?: Error | null) => void) =
     countItems(text)
   } else if (text.includes('"type":"invocationresult"')) {
     wire.results++
-    if (text.includes('"observed":')) wire.observedResults++
+    if (text.includes('"matched":')) wire.matchedResults++
+    if (text.includes('"delivered":')) wire.deliveredResults++
     answered?.()
   } else {
     wire.other++
@@ -94,6 +102,7 @@ const keyed = iii
   })
 const source = iii.registerFunction('bench::source', echo, { private: true })
 const echoObserved = iii.registerFunction('bench::echo-observed', echo)
+const tenants = iii.registerFunction('bench::tenants', (input: { tenant: string; n: number }) => ({ seen: input.n }))
 
 const capture = { capture: ['input', 'output'] }
 socket.deliver(functionRegistered('bench::plain'))
@@ -127,12 +136,21 @@ socket.deliver(
 )
 socket.deliver(functionRegistered('bench::source', [observerInfo('source', 'bench::target', capture)]))
 socket.deliver(functionRegistered('bench::echo-observed', [observerInfo('echo', 'bench::target', capture)]))
+socket.deliver(
+  functionRegistered(
+    'bench::tenants',
+    Array.from({ length: FILTERED_OBSERVERS }, (_, i) =>
+      observerInfo(`tenant-${i}`, 'bench::target', { filters: { 'input.tenant': { $eq: `t-${i}` } }, ...capture }),
+    ),
+  ),
+)
 const accepted = () =>
   tenNone.observers().length === 10 &&
   oneMatch.observers().length === 1 &&
   keyed.observers().length === KEYED_OBSERVERS &&
   source.observers().length === 1 &&
-  echoObserved.observers().length === 1
+  echoObserved.observers().length === 1 &&
+  tenants.observers().length === FILTERED_OBSERVERS
 for (let round = 0; round < 1000 && !accepted(); round++) await settle()
 if (!accepted()) throw new Error('the fake engine did not get every observer accepted')
 
@@ -157,6 +175,12 @@ const invoke = (function_id: string) =>
   JSON.stringify({ type: 'invokefunction', invocation_id: 'bench-routed', function_id, data: { n: 1 } })
 const routedPlain = invoke('bench::plain')
 const routedOneMatch = invoke('bench::one-match')
+const routedTenants = JSON.stringify({
+  type: 'invokefunction',
+  invocation_id: 'bench-routed',
+  function_id: 'bench::tenants',
+  data: { tenant: 't-7', n: 1 },
+})
 
 const miss = { input: { expression: 'never-filed', n: 0 } }
 
@@ -185,9 +209,16 @@ describe('local calls', () => {
   })
   bench('call_local/event_source_observed', () => call('bench::source', numbered()), { time: TIME_MS })
   bench('call_local/echo_observed', () => call('bench::echo-observed', numbered()), { time: TIME_MS })
+  bench('call_local/eq_filters_1_of_1000', () => call('bench::tenants', { tenant: 't-7', n: i++ }), {
+    time: TIME_MS,
+  })
+  bench('call_local/eq_filters_none_of_1000', () => call('bench::tenants', { tenant: 'nobody', n: i++ }), {
+    time: TIME_MS,
+  })
 })
 
 describe('routed calls', () => {
   bench('call_routed/no_observers', () => routed(routedPlain), { time: TIME_MS })
   bench('call_routed/1_observer_matching', () => routed(routedOneMatch), { time: TIME_MS })
+  bench('call_routed/eq_filters_1000', () => routed(routedTenants), { time: TIME_MS })
 })

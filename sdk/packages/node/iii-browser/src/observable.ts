@@ -2,11 +2,11 @@
 /**
  * The host side of observe (v2 §4): per-function observer state, the
  * observer hooks of the worker and of the function, the `Observer` object
- * handed to them, matching (the key index), and the delivery of each call of
- * a hosted function.
+ * handed to them, matching (the key index, and the index of the filters'
+ * equality conditions), and the delivery of each call of a hosted function.
  */
 import { deliverErrorBody, ObserveRejection } from './errors'
-import { type CompiledFilter, compileFilter, type FilterDoc } from './filter'
+import { type CompiledFilter, compileFilter, type FilterDoc, FilterIndex } from './filter'
 import type { CallerWire, ErrorBody, ObserverInfoWire } from './iii-types'
 import type {
   AddedHook,
@@ -309,6 +309,12 @@ export class FunctionObservers {
   private matchKeys?: MatchKeys
   /** Matching by keys: the active observers by key. */
   private index?: Map<string, Set<ObserverImpl>>
+  /**
+   * The active observers by their filters' equality conditions, in the order
+   * they joined the active set (decision 55). It changes with `compiled`, in
+   * the same step, and with the filters of a held observer served a new view.
+   */
+  private readonly filterIndex = new FilterIndex<ObserverImpl>()
   /** A match hook threw: logged once per function. */
   private matchFailureLogged = false
 
@@ -375,6 +381,26 @@ export class FunctionObservers {
       for (const obs of filed) if (obs.activatedSeq <= activations) found.add(obs)
     }
     return [...found]
+  }
+
+  /** The function has a match hook (`onObserverMatch`) now. */
+  hasMatchHook(): boolean {
+    return this.host.hooks(this.functionId).match !== undefined
+  }
+
+  /**
+   * The active observers whose `on` accepts a call that succeeded (`ok`) or
+   * failed and whose filters match `doc`, in the order of `compiled`. Matched
+   * through the index of their filters' equality conditions when it narrows
+   * them (`FilterIndex.narrows`): the call evaluates the filters of the
+   * observers the index does not rule out. Otherwise each observer of
+   * `compiled` is evaluated in order, which costs less and yields the same
+   * observers in the same order.
+   */
+  selectActive(doc: FilterDoc, ok: boolean): ObserverImpl[] {
+    const index = this.filterIndex
+    if (!index.narrows) return this.compiled.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
+    return index.matches(doc, (obs) => onAccepts(obs.on, ok))
   }
 
   observers(): readonly Observer[] {
@@ -549,6 +575,7 @@ export class FunctionObservers {
     obs.active = true
     obs.activatedSeq = ++this.activations
     this.compiled = [...this.compiled, obs]
+    this.filterIndex.insert(obs, obs.filter, obs.activatedSeq)
     this.file(obs)
   }
 
@@ -556,6 +583,7 @@ export class FunctionObservers {
     if (!obs.active) return
     obs.active = false
     this.compiled = this.compiled.filter((o) => o !== obs)
+    this.filterIndex.remove(obs)
     this.unfile(obs)
   }
 
@@ -654,11 +682,14 @@ export class FunctionObservers {
       }
       const keys = this.viewKeys(held, info, filter)
       if (keys === null) return false
-      // Filed again under the keys of the view it is served with.
+      // Filed again under the keys and the filters of the view it is served with.
       if (held.active) this.unfile(held)
       held.update(info, filter)
       if (keys !== undefined) held.keys = keys
-      if (held.active) this.file(held)
+      if (held.active) {
+        this.file(held)
+        this.filterIndex.insert(held, held.filter, held.activatedSeq)
+      }
     }
     held.revision = revision
     this.ack(info, revision, namespace)
@@ -868,20 +899,30 @@ export type DeliveryInit = {
   observe_depth: number
   traceparent?: string
   baggage?: string
-  /** A routed call: what iii's delivery selects rides the answer (`observed`); a local call is reported. */
+  /**
+   * A routed call: the engine evaluates its observers' `on` and filters, and
+   * its answer says how it is delivered (`matched`, `delivered`); a local
+   * call is delivered here and reported.
+   */
   routed: boolean
 }
 
 /**
- * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45): the
+ * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45, 55): the
  * observers are matched (`onObserverMatch`), then the function's
  * `onObserverDeliver` delivers the call itself, or iii delivers it to the
- * matched observers whose `on` and filters accept it: a local call in one
- * report item, a routed call in its answer's `observed`.
+ * matched observers whose `on` and filters accept it. For a local call the
+ * host evaluates `on` and filters and reports the observers delivered in
+ * one report item. For a routed call the engine evaluates them: the answer
+ * carries the observers the match hook matched (`matched`), or says that
+ * the deliver hook delivered the call (`delivered`), or neither for a
+ * function with no match hook and no deliver hook.
  */
 export class Delivery {
-  /** A routed call's `observed`: what iii's delivery selected. */
-  observed: readonly string[] = []
+  /** A routed call's answer: the ids of the observers its match hook matched, before `on` and filters. */
+  matched?: readonly string[]
+  /** A routed call's answer: its deliver hook delivered it. */
+  delivered = false
 
   constructor(
     private readonly owner: FunctionObservers,
@@ -892,11 +933,16 @@ export class Delivery {
   async run(deliver: DeliverHook | undefined): Promise<unknown> {
     const { call, snapshot, activations, thrown, routed } = this.init
     const matched = this.owner.matching(call, snapshot, activations)
-    if (deliver !== undefined) return deliver(call, matched)
-    const selected = this.select(call, matched)
-    if (selected.length > 0) {
-      if (routed) this.observed = selected.map((obs) => obs.id)
-      else this.owner.reporter.push(this.item(call, selected))
+    if (deliver !== undefined) {
+      // Its answer, whatever the hook returns or throws.
+      if (routed) this.delivered = true
+      return deliver(call, matched)
+    }
+    if (routed) {
+      if (this.owner.hasMatchHook()) this.matched = matched.map((obs) => obs.id)
+    } else {
+      const selected = this.select(call, matched)
+      if (selected.length > 0) this.owner.reporter.push(this.item(call, selected))
     }
     if (call.status === 'error') throw thrown
     return call.output
@@ -911,10 +957,18 @@ export class Delivery {
     return error === thrown && call.error ? call.error : deliverErrorBody(error)
   }
 
-  /** The matched observers whose `on` and filters accept `call`. */
+  /**
+   * The matched observers whose `on` and filters accept `call`, in the order
+   * of `matched`. Without a match hook `matched` is the call's snapshot; while
+   * it is also the active set (no observer joined or left since the call
+   * started), {@link FunctionObservers.selectActive} selects them, through
+   * the index of the filters' equality conditions when it narrows them.
+   * Otherwise each matched observer's filters are evaluated.
+   */
   private select(call: Call, matched: readonly ObserverImpl[]): ObserverImpl[] {
     const ok = call.status !== 'error'
     const doc = filterDoc(call)
+    if (matched === this.init.snapshot && matched === this.owner.compiled) return this.owner.selectActive(doc, ok)
     return matched.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
   }
 

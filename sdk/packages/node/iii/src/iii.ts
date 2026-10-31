@@ -2104,18 +2104,35 @@ class Sdk implements IIIClient {
       if (observeFields.caller) ctx.caller = observeFields.caller
       if (observeFields.activation) ctx.activation = observeFields.activation
 
-      // An observe.v2 host delivers its routed calls (v2 §8.2): the delivery
-      // sees the input as it arrived (channel refs unresolved), and what iii's
-      // delivery selects rides the answer (`observed`).
+      // The engine evaluates the `on` and filters of the calls it routes
+      // (decision 55). An observe.v2 host runs the function's match and
+      // deliver hooks for them, which see the input as it arrived (channel
+      // refs unresolved), and its answer says how the call is delivered:
+      // `delivered`, `matched`, or neither for a function with no hook.
       const snapshot: readonly ObserverImpl[] = fn.observe.compiled
       const activations = fn.observe.activations
       const hook = this.functionHooks.get(function_id)?.deliver
-      const delivering = this.engineFeatures.has(FEATURE_OBSERVE_V2) && (hook !== undefined || snapshot.length > 0)
       const startedAt = Date.now()
       const t0 = performance.now()
       let delivery: Delivery | undefined
-      const settle = delivering
+      // The answer's `matched` when the call needs no delivery.
+      let matched: readonly string[] | undefined
+      const settle = this.engineFeatures.has(FEATURE_OBSERVE_V2)
         ? (outcome: HandlerOutcome) => {
+            if (hook === undefined) {
+              // No delivery runs without a deliver hook when the function has
+              // no match hook (the answer carries neither field: the engine
+              // evaluates every active observer), or when no observer was
+              // active as the call started (`matched: []`: the match hook has
+              // none to match and does not run, as a local call with an empty
+              // snapshot skips delivery).
+              const narrowed = fn.observe.hasMatchHook()
+              if (!narrowed || snapshot.length === 0) {
+                if (narrowed) matched = []
+                if (outcome.ok) return outcome.value
+                throw outcome.error
+              }
+            }
             delivery = new Delivery(fn.observe, {
               call: this.callOf(function_id, ctx.invocation_id, outcome, input, ctx.caller, metadata),
               thrown: outcome.ok ? undefined : outcome.error,
@@ -2155,7 +2172,8 @@ class Sdk implements IIIClient {
             result,
             traceparent: getResponseTraceparent(),
             baggage: getResponseBaggage(),
-            observed: delivery?.observed,
+            matched: delivery ? delivery.matched : matched,
+            delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
       } catch (error) {
@@ -2167,7 +2185,8 @@ class Sdk implements IIIClient {
             error: delivery ? delivery.errorBody(error) : handlerErrorBody(error),
             traceparent: getResponseTraceparent(),
             baggage: getResponseBaggage(),
-            observed: delivery?.observed,
+            matched: delivery ? delivery.matched : matched,
+            delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
       }
