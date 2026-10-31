@@ -26,6 +26,8 @@ import (
 	"io"
 	"strconv"
 	"unicode/utf8"
+
+	"github.com/iii-hq/iii/sdk/packages/go/iii/internal/filterlink"
 )
 
 // Structural limits of a filter (the conformance vectors define how they count).
@@ -158,6 +160,8 @@ type Filter struct {
 	pred     pred
 	roots    Roots
 	matchAll bool
+	// terms are the equality conditions of the top-level $and (terms.go).
+	terms []filterlink.Term
 }
 
 var matchAll = &Filter{source: map[string]any{}, pred: func(*evalDoc, any) bool { return true }, matchAll: true}
@@ -342,13 +346,14 @@ func compileValue(v any, checkSize bool) (*Filter, error) {
 	}
 	c := compiler{}
 	var clauses []pred
-	if err := c.collectClauses(obj, 1, false, &clauses); err != nil {
+	var terms []filterlink.Term
+	if err := c.collectClauses(obj, 1, false, &clauses, &terms); err != nil {
 		return nil, err
 	}
 	if len(clauses) == 0 {
 		return &Filter{source: obj, pred: matchAll.pred, matchAll: true}, nil
 	}
-	return &Filter{source: obj, pred: and(clauses), roots: c.roots}, nil
+	return &Filter{source: obj, pred: and(clauses), roots: c.roots, terms: terms}, nil
 }
 
 // decodeJSON reads exactly one JSON value, keeping numbers as json.Number.
