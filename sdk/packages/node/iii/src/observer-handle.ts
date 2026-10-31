@@ -28,10 +28,18 @@ export class ObserverHandleImpl implements ObserverHandle {
   /** State changes not delivered to the listeners yet, in order. */
   private readonly undelivered: [ObserverState, ObserveReason | undefined][] = []
   private delivering = false
-  /** @internal Sent on some connection: the engine may hold it, so disposing it needs an `unobserve`. */
+  /**
+   * @internal Sent, and not refused since: the engine may hold it, so
+   * disposing it needs an `unobserve`.
+   */
   sent = false
   /** @internal The engine's `observeresult` for its `observe` on this connection arrived (decision 56). */
   answered = false
+  /**
+   * @internal The engine created its observer on some connection and has not
+   * disposed it: a replay's `error` answer can be that observer's state.
+   */
+  created = false
 
   constructor(
     readonly id: string,

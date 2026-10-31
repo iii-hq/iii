@@ -295,6 +295,45 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     expect(got).toHaveLength(1)
   })
 
+  it('a refused observe: its dispose sends nothing, and the id observed again works', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner.registerFunction(`e2e::refused-${RUN}`, async (n: number) => ({ n }))
+    const got = collector(watcher, `e2e::on-refused-${RUN}`)
+    const frames = frameCounter(watcher)
+    const sent = () => frames.frames.filter((f) => f.type === 'observe' || f.type === 'unobserve').map((f) => f.type)
+    const id = `refused-${RUN}`
+    const source = { function_id: `e2e::refused-${RUN}` }
+    const target = `e2e::on-refused-${RUN}`
+
+    // Refused, then disposed: nothing is sent for it.
+    const refused = watcher.observe(source, target, { id, max_fires: 0 })
+    await expect(refused.ready()).rejects.toMatchObject({ code: 'INVALID_ARGS' })
+    const started = performance.now()
+    await refused.dispose()
+    expect(performance.now() - started).toBeLessThan(500)
+    expect(sent()).toEqual(['observe'])
+
+    // Disposed before its refusal: the unobserve the engine ignores does not touch the next observe of the id.
+    const early = watcher.observe(source, target, { id, max_fires: 0 })
+    await early.dispose()
+    const kept = watcher.observe(source, target, { id })
+    await kept.ready()
+    expect(sent()).toEqual(['observe', 'observe', 'unobserve', 'observe'])
+    await sleep(200)
+    expect(kept.state).toBe('active')
+    expect(early.reason?.code).toBe('UNOBSERVED')
+    await watcher.call({ function_id: `e2e::refused-${RUN}`, payload: 1 })
+    await waitFor(() => got.length === 1, 'an activation through the kept observer')
+    expect(got[0].data.observer_id).toBe(id)
+
+    await kept.dispose()
+    expect(sent()).toEqual(['observe', 'observe', 'unobserve', 'observe', 'unobserve'])
+    await expect(watcher.call({ function_id: 'engine::observers::get', payload: { id } })).rejects.toMatchObject({
+      code: 'OBSERVER_NOT_FOUND',
+    })
+  })
+
   it('the observer survives a reconnect of its worker (same id, replayed)', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')

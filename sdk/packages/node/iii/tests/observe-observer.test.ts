@@ -455,3 +455,162 @@ describe('observer ids (decision 56)', () => {
     expect(second.state).toBe('active')
   })
 })
+
+describe('a refused observe', () => {
+  // Rust's dispose() waits up to 5 s for the engine's answer; this SDK's never waits for it.
+  const DISPOSE_WAIT_MS = 5000
+  async function timedDispose(handle: { dispose(): Promise<void> }): Promise<number> {
+    const started = performance.now()
+    await handle.dispose()
+    return performance.now() - started
+  }
+  const observeFrames = (socket: ReturnType<typeof fake.lastSocket>) =>
+    socket
+      .frames()
+      .filter((f) => f.type === 'observe' || f.type === 'unobserve')
+      .map((f) => `${f.type}:${f.id}`)
+
+  it('is the handle’s final answer: its dispose() sends nothing and resolves at once', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    const ready = handle.ready()
+    socket.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: { code: 'FORBIDDEN', message: 'no' },
+    })
+    await expect(ready).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'no' })
+    // Out of the id's list: nothing the engine says about the id reaches it.
+    socket.deliver({ type: 'observerstatechanged', id: 'r', state: 'active', fires: 0 })
+    expect(handle.state).toBe('error')
+    expect(await timedDispose(handle)).toBeLessThan(DISPOSE_WAIT_MS / 10)
+    expect(handle.state).toBe('disposed')
+    expect(observeFrames(socket)).toEqual(['observe:r'])
+  })
+
+  it('a dispose sent before the refusal resolves at once; the refusal finds it and the id is free', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    expect(await timedDispose(handle)).toBeLessThan(DISPOSE_WAIT_MS / 10)
+    expect(observeFrames(socket)).toEqual(['observe:r', 'unobserve:r'])
+    socket.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: { code: 'INVALID_ARGS', message: 'bad args' },
+    })
+    expect(handle.state).toBe('disposed')
+    expect(handle.reason?.code).toBe('UNOBSERVED')
+    // The engine ignores that unobserve and answers nothing for it: the next
+    // observe of the id hears its own answer.
+    const next = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    expect(next.state).toBe('active')
+    socket.deliver({ type: 'observerstatechanged', id: 'r', state: 'suspended', fires: 0 })
+    expect(next.state).toBe('suspended')
+    await next.dispose()
+    expect(observeFrames(socket)).toEqual(['observe:r', 'unobserve:r', 'observe:r', 'unobserve:r'])
+  })
+
+  it('the refused handle holds its id until disposed; the id observed again after works normally', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const refused = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: {
+        code: 'OBSERVER_ID_CONFLICT',
+        message: 'observer `r` is owned by another connection',
+      },
+    })
+    expect(() => sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })).toThrow(
+      'observe: observer id already in use: r',
+    )
+    await refused.dispose()
+    const next = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    expect(observeFrames(socket)).toEqual(['observe:r', 'observe:r'])
+    socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    await expect(next.ready()).resolves.toBeUndefined()
+    expect(refused.reason?.code).toBe('UNOBSERVED')
+    await next.dispose()
+    expect(observeFrames(socket)).toEqual(['observe:r', 'observe:r', 'unobserve:r'])
+  })
+
+  it('a refusal for an older handle of the id leaves the newer, pending one to its own answer', async () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const older = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    await older.dispose()
+    const newer = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: { code: 'FORBIDDEN', message: 'no' },
+    })
+    expect(older.state).toBe('disposed')
+    expect(older.reason?.code).toBe('UNOBSERVED')
+    expect(newer.state).toBe('pending')
+    // Nothing is listed with an answer yet: a state change before the newer one's answer is dropped.
+    socket.deliver({ type: 'observerstatechanged', id: 'r', state: 'error', fires: 0 })
+    expect(newer.state).toBe('pending')
+    socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    expect(newer.state).toBe('active')
+    expect(await timedDispose(newer)).toBeLessThan(DISPOSE_WAIT_MS / 10)
+    expect(observeFrames(socket)).toEqual(['observe:r', 'unobserve:r', 'observe:r', 'unobserve:r'])
+  })
+
+  it('a refused handle is replayed on the next connection, and disposing it after that answer sends unobserve', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: { code: 'OBSERVER_ID_CONFLICT', message: 'taken' },
+    })
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    expect(observeFrames(next)).toEqual(['observe:r'])
+    next.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    expect(handle.state).toBe('active')
+    await handle.dispose()
+    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
+  })
+
+  it('an error answer to the replay of an observer the engine created is its state there: dispose() sends unobserve', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    // Reattached: the engine holds the observer, which its host rejected while the worker was away.
+    next.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: { code: 'REJECTED', message: 'rejected by its host' },
+    })
+    expect(handle.state).toBe('error')
+    await handle.dispose()
+    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
+    // The engine disposes it, then answers the id's next observe.
+    const again = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    next.deliver({ type: 'observerstatechanged', id: 'r', state: 'disposed', fires: 0 })
+    next.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    expect(again.state).toBe('active')
+  })
+})

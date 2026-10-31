@@ -2281,6 +2281,18 @@ class Sdk implements IIIClient {
     const handle = this.observesSent.get(id)?.find((h) => !h.answered)
     if (!handle) return
     handle.answered = true
+    const state = toObserverState(wireState)
+    if (state === 'error' && !handle.created) {
+      // A refusal, the handle's final answer: the engine stores nothing for
+      // it and ignores its `unobserve`, so dispose() sends none.
+      handle.sent = false
+      this.unlistObserve(handle)
+      handle.setState(state, reason ? { code: reason.code, message: reason.message } : undefined)
+      return
+    }
+    // A replay's `error` answer for an observer the engine created may be
+    // that observer's state (a reattached connection): it may hold it still.
+    if (state !== 'error' && state !== 'disposed') handle.created = true
     // Disposed before its answer: its `unobserve` follows, and nothing
     // the engine says about it later reaches another handle.
     if (handle.state === 'disposed') this.unlistObserve(handle)
