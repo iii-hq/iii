@@ -741,6 +741,14 @@ impl Observer {
         self.status.read().observing.connection
     }
 
+    /// The observing connection's session, read without copying the rest of
+    /// [`Self::observing`]: what each activation runs with.
+    pub(crate) fn observing_session(
+        &self,
+    ) -> Option<Arc<crate::workers::worker::rbac_session::Session>> {
+        self.status.read().observing.session.clone()
+    }
+
     /// The `function_id` label of its metrics: its function's id, shared.
     pub(crate) fn function_label(&self) -> Arc<str> {
         self.function_label.clone()
