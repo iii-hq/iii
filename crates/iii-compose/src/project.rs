@@ -266,6 +266,33 @@ impl Project {
         Ok(())
     }
 
+    /// Adopts the selector and lock result `updated` declares for each of
+    /// `keys`, without touching what runs.
+    ///
+    /// An update that changes no package content and no topology writes the
+    /// file and the lock but restarts nothing, so nothing re-reads the file.
+    /// Without this the held declaration keeps the selector the update
+    /// replaced, and `compose::status` reports it until the next restart.
+    /// Only a declaration whose source did not change is refreshed.
+    pub(crate) async fn adopt_updated_selectors<'a>(
+        &self,
+        updated: &ComposeFile,
+        keys: impl IntoIterator<Item = &'a String>,
+    ) {
+        let mut current = self.file.write().await;
+        for key in keys {
+            let (Some(container), Some(source)) =
+                (current.containers.get_mut(key), updated.containers.get(key))
+            else {
+                continue;
+            };
+            if source.worker == container.worker {
+                container.version = source.version.clone();
+                container.resolved_package = source.resolved_package.clone();
+            }
+        }
+    }
+
     /// Re-checks every ready container against the engine after the connection
     /// came back.
     ///
@@ -1215,8 +1242,8 @@ impl Project {
             None
         };
         file.containers
-            .keys()
-            .map(|key| {
+            .iter()
+            .map(|(key, container)| {
                 let record = inner
                     .as_ref()
                     .and_then(|inner| inner.state.containers.get(key))
@@ -1234,10 +1261,8 @@ impl Project {
                 ContainerStatus {
                     container: key.clone(),
                     state,
-                    version: file
-                        .containers
-                        .get(key)
-                        .and_then(|container| container.version_label()),
+                    version: container.version_label(),
+                    requested: container.requested().map(str::to_owned),
                     pid: record.filter(|_| running).map(|record| record.pid),
                     owned: inner
                         .as_ref()
@@ -1335,9 +1360,17 @@ impl Project {
 pub struct ContainerStatus {
     pub container: String,
     pub state: ChildStatus,
-    /// Locked package version, or `local` for a `path://` worker.
+    /// Locked package version, or `local` for a `path://` worker. Absent for
+    /// a package while the lock holds no result for its current selector.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Registry selector of a `package://` worker as the project declares it
+    /// in `worker-compose.yaml`: a tag such as `latest`, a semver range, or an
+    /// exact version. `compose::update worker=<name>` resolves it again, and
+    /// `version` is present only while the lock holds a result for this
+    /// selector. Absent for a `path://` worker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requested: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     /// Whether this daemon owns the process (started it and can stop it).

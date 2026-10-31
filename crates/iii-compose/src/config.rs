@@ -599,7 +599,14 @@ fn validate_container(
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
 
-    if is_package && raw.version.is_none() {
+    // An empty selector (`version: ""`, or a variable that expands to nothing)
+    // selects nothing, and the lock refuses to record one.
+    if is_package
+        && raw
+            .version
+            .as_deref()
+            .is_none_or(|version| version.trim().is_empty())
+    {
         return Err(ComposeError::MissingVersionForPackage {
             container: key.to_string(),
         });
@@ -753,6 +760,19 @@ impl Container {
                 .resolved_package
                 .as_ref()
                 .map(|package| package.version.clone()),
+        }
+    }
+
+    /// The registry selector a `package://` worker is resolved against: its
+    /// declared `version`, a tag such as `latest`, a semver range, or an exact
+    /// version. It is the value the lock records as `requested`, and the one
+    /// `compose::update worker=<name>` resolves again. `None` for a `path://`
+    /// worker, which has no registry selector even when it declares a
+    /// `version`.
+    pub fn requested(&self) -> Option<&str> {
+        match &self.worker {
+            WorkerSource::Path { .. } => None,
+            WorkerSource::Package { .. } => Some(self.version.as_deref().unwrap_or("*")),
         }
     }
 
@@ -1252,6 +1272,43 @@ pub(crate) fn worker_compose_example_json() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requested_is_a_package_selector_as_declared_and_absent_for_a_path_worker() {
+        let compose = ComposeFile::parse(
+            r#"
+containers:
+  tagged:
+    worker: package://api.workers.iii.dev/state
+    version: latest
+  ranged:
+    worker: package://api.workers.iii.dev/queue
+    version: ^0.22
+  pinned:
+    worker: package://private.example/team/cache
+    version: 0.22.8
+  defaulted:
+    worker: package://api.workers.iii.dev/stream
+    version: ${III_COMPOSE_REQUESTED_TEST_UNSET:-next}
+  local:
+    worker: path://.
+    version: 1.0.0
+    scripts:
+      run: ./local
+"#,
+            Path::new("worker-compose.yaml"),
+        )
+        .unwrap();
+        let requested = |key: &str| compose.containers[key].requested();
+
+        assert_eq!(requested("tagged"), Some("latest"));
+        assert_eq!(requested("ranged"), Some("^0.22"));
+        assert_eq!(requested("pinned"), Some("0.22.8"));
+        // The selector compose resolves is the interpolated one.
+        assert_eq!(requested("defaulted"), Some("next"));
+        // A path worker is never resolved, so its `version` selects nothing.
+        assert_eq!(requested("local"), None);
+    }
 
     #[test]
     fn engine_only_parse_ignores_invalid_container_state() {
