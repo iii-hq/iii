@@ -1091,8 +1091,9 @@ impl ObserverRegistry {
             let mut flow = lock(&observer.flow);
             // Disposal sets the state and then drains this queue under the
             // lock: judging again here keeps an activation that passed the
-            // check above from running after it.
-            if !observer.is_active() {
+            // check above from running after it. A `MAX_FIRES` disposal
+            // keeps the queue, and this fire is within `max_fires`: it runs.
+            if !observer.runs_counted_fires() {
                 drop(flow);
                 observer.fires.fetch_sub(1, Ordering::AcqRel);
                 drop_event(observer, observe_codes::INACTIVE);
@@ -1639,10 +1640,12 @@ impl ObserverRegistry {
     }
 
     /// Policy for a call through `observer`, in order: depth, expiry,
-    /// `max_fires`, `max_in_flight` (no queue: the host is waiting for the
-    /// result). Returns the in-flight slot the call holds. A refusal counts
-    /// a drop under the policy's reason, or under the refusal's code for a
-    /// `fire_and_forget` call.
+    /// `max_fires`, the state again under the flow lock, `max_in_flight` (no
+    /// queue: the host is waiting for the result). Returns the in-flight
+    /// slot the call holds. A refusal counts a drop under the policy's
+    /// reason, or under the refusal's code for a `fire_and_forget` call; an
+    /// observer disposed since `check_observer_call` refuses as that check
+    /// does.
     fn admit_observer_call(
         self: &Arc<Self>,
         observer: &Arc<Observer>,
@@ -1683,6 +1686,21 @@ impl ObserverRegistry {
         };
         {
             let mut flow = lock(&observer.flow);
+            // The observer was active in `check_observer_call`; a disposal
+            // since then refuses the call, as it does for an activation. A
+            // `MAX_FIRES` disposal keeps this fire, which is within
+            // `max_fires`.
+            if !observer.runs_counted_fires() {
+                drop(flow);
+                observer.fires.fetch_sub(1, Ordering::AcqRel);
+                if fire_and_forget {
+                    drop_event(observer, observe_codes::OBSERVER_NOT_ACTIVE);
+                }
+                return Err(ErrorBody::new(
+                    observe_codes::OBSERVER_NOT_ACTIVE,
+                    format!("observer `{}` is not active", observer.id),
+                ));
+            }
             if flow.running >= observer.policy.max_in_flight {
                 drop(flow);
                 observer.fires.fetch_sub(1, Ordering::AcqRel);
@@ -2210,7 +2228,7 @@ mod tests {
     use crate::{
         engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
         function::FunctionResult,
-        protocol::DEFAULT_NAMESPACE,
+        protocol::{DEFAULT_NAMESPACE, ObserverState, observe_codes},
     };
 
     fn source(engine: &Engine) {
@@ -3380,6 +3398,112 @@ mod tests {
 
         assert_eq!(observer.fires.load(Ordering::SeqCst), 0, "no fire counted");
         assert_eq!(observer.drops.snapshot().get("INACTIVE"), Some(&1));
+    }
+
+    /// `max_fires` 2: an activation took fire 1 and waits for the flow lock
+    /// while fire 2 is taken and the observer disposed `MAX_FIRES`, as the
+    /// activation that takes the last fire does. Fire 1 is within
+    /// `max_fires`: it runs, and its fire is kept.
+    #[tokio::test]
+    async fn a_fire_the_last_fire_overtook_still_runs() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let mut sink = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let mut request = test_support::request("mf", "test::src", "test::dst", None);
+        request.max_fires = Some(2);
+        test_support::observe_request(&engine, &worker, request).await;
+        let observer = engine.observers.get("mf").unwrap();
+        let registry = engine.observers.clone();
+
+        let held = super::lock(&observer.flow);
+        let first = std::thread::spawn({
+            let (registry, observer) = (registry.clone(), observer.clone());
+            move || registry.activate(&observer, &event(0))
+        });
+        // Until the first activation holds its fire: it is past the state
+        // check and waits for the lock.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while observer.fires.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline, "fire 1 taken");
+            std::thread::yield_now();
+        }
+        assert_eq!(super::try_fire(&observer), Some(2));
+        let last = std::thread::spawn({
+            let (registry, observer) = (registry.clone(), observer.clone());
+            move || {
+                registry.dispose(
+                    &observer,
+                    observe_codes::MAX_FIRES,
+                    "the observer fired 2 times, its max_fires",
+                )
+            }
+        });
+        last.join().unwrap();
+        drop(held);
+        first.join().unwrap();
+
+        assert_eq!(observer.fires.load(Ordering::SeqCst), 2);
+        assert_eq!(observer.drops.snapshot().get("INACTIVE"), None);
+        let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), sink.recv()).await;
+        assert!(
+            matches!(delivered, Ok(Some(_))),
+            "fire 1 reached the target"
+        );
+    }
+
+    /// A call through an observer that passed `check_observer_call` and waits
+    /// for the flow lock while the observer is disposed is refused
+    /// `OBSERVER_NOT_ACTIVE`, its fire given back, as the check refuses it.
+    #[tokio::test]
+    async fn a_call_through_an_observer_that_loses_a_race_with_dispose_is_refused() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let _sink = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let request = test_support::request("oc", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &worker, request).await;
+        let observer = engine.observers.get("oc").unwrap();
+        let registry = engine.observers.clone();
+        assert!(observer.is_active());
+
+        let held = super::lock(&observer.flow);
+        let admit = std::thread::spawn({
+            let (registry, observer) = (registry.clone(), observer.clone());
+            move || registry.admit_observer_call(&observer, 0, true).map(drop)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while observer.fires.load(Ordering::SeqCst) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the call took its fire"
+            );
+            std::thread::yield_now();
+        }
+        // Disposal sets the state before it waits for the flow lock.
+        let dispose = std::thread::spawn({
+            let (registry, observer) = (registry.clone(), observer.clone());
+            move || registry.dispose(&observer, "UNOBSERVED", "disposed")
+        });
+        while observer.state() != ObserverState::Disposed {
+            assert!(std::time::Instant::now() < deadline, "disposed");
+            std::thread::yield_now();
+        }
+        drop(held);
+        let refused = admit.join().unwrap().expect_err("refused");
+        dispose.join().unwrap();
+
+        assert_eq!(refused.code, observe_codes::OBSERVER_NOT_ACTIVE);
+        assert_eq!(observer.fires.load(Ordering::SeqCst), 0, "fire given back");
+        assert_eq!(
+            observer
+                .drops
+                .snapshot()
+                .get(observe_codes::OBSERVER_NOT_ACTIVE),
+            Some(&1),
+            "a fire-and-forget refusal counts under its code"
+        );
+        assert_eq!(super::lock(&observer.flow).running, 0);
     }
 
     /// An event larger than the whole of the queues' budget never queues:
