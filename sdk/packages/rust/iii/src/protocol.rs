@@ -346,11 +346,15 @@ pub enum Message {
         baggage: Option<String>,
         /// Host → engine, from an `observe.v2` host's answer to a routed
         /// call of a function with a match hook: the observers the hook
-        /// matched, before `on` and filters, each once (`[]` when none). The
-        /// engine evaluates `on` and filters of those of them that are active
-        /// observers of the function. Absent when no match hook ran: the
-        /// engine evaluates every active observer of the function. The
-        /// engine strips it before forwarding a result.
+        /// matched, before `on` and filters, each once; `[]` when it matched
+        /// none, and when the host holds no observer of the function for it
+        /// to match (the hook does not run). The engine evaluates `on` and
+        /// filters of those of them that are active observers of the
+        /// function. Absent when the function has no match hook: the engine
+        /// evaluates every active observer of the function. The
+        /// `payload_too_large` answer that replaces one too large to send
+        /// activates no observer: `[]`, or `delivered`. The engine strips it
+        /// before forwarding a result.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         matched: Option<Vec<String>>,
         /// Host → engine, from an `observe.v2` host's answer to a routed

@@ -441,8 +441,13 @@ mod json_size_tests {
         sdk.shutdown_async().await;
     }
 
-    #[test]
-    fn result_fallback_preserves_correlation_and_discards_large_context() {
+    /// An answer too large to send, as an engine with `observe.v2`
+    /// (`observes_v2`) or one without it gets it.
+    fn oversized(
+        matched: Option<Vec<String>>,
+        delivered: bool,
+        observes_v2: bool,
+    ) -> (usize, String) {
         let message = Message::InvocationResult {
             invocation_id: Uuid::nil(),
             function_id: "size::echo".into(),
@@ -450,11 +455,18 @@ mod json_size_tests {
             error: None,
             traceparent: None,
             baggage: Some("secret".repeat(1000)),
-            matched: Some(vec!["o".to_string()]),
-            delivered: false,
+            matched,
+            delivered,
         };
         let size = serde_json::to_string(&message).unwrap().len();
-        let payload = IIIClient::prepare_envelope(&message).unwrap().payload;
+        let envelope =
+            IIIClient::prepare_envelope_with_budget(&message, None, observes_v2).unwrap();
+        (size, envelope.payload.to_string())
+    }
+
+    #[test]
+    fn result_fallback_preserves_correlation_and_discards_large_context() {
+        let (size, payload) = oversized(Some(vec!["o".to_string()]), false, true);
         let parsed: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(parsed["invocation_id"], Uuid::nil().to_string());
         assert_eq!(parsed["error"]["code"], "payload_too_large");
@@ -465,28 +477,48 @@ mod json_size_tests {
             )
         );
         assert!(parsed.get("result").is_none());
-        assert_eq!(
-            parsed["matched"],
-            serde_json::json!(["o"]),
-            "how it is delivered"
-        );
         assert!(!payload.contains("secret"));
+    }
 
-        let delivered = Message::InvocationResult {
-            invocation_id: Uuid::nil(),
-            function_id: "size::echo".into(),
-            result: Some(Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES))),
-            error: None,
-            traceparent: None,
-            baggage: None,
-            matched: None,
-            delivered: true,
+    /// The error answer that replaces one too large to send is not the
+    /// handler's outcome: to an engine with `observe.v2` it activates no
+    /// observer, whatever the function's hooks (`matched: []`, or
+    /// `delivered` for a call the deliver hook delivered), and an engine
+    /// without it gets the bare error.
+    #[test]
+    fn result_fallback_activates_no_observer() {
+        let fields = |payload: &str| {
+            let parsed: Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(parsed["error"]["code"], "payload_too_large");
+            (
+                parsed.get("matched").cloned(),
+                parsed.get("delivered").cloned(),
+            )
         };
-        let payload = IIIClient::prepare_envelope(&delivered).unwrap().payload;
-        let parsed: Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(parsed["error"]["code"], "payload_too_large");
-        assert_eq!(parsed["delivered"], true);
-        assert!(parsed.get("matched").is_none());
+        let none = Some(serde_json::json!([]));
+        for (matched, delivered, observes_v2, expected) in [
+            // no hooks: the engine would evaluate every observer
+            (None, false, true, (none.clone(), None)),
+            // a match hook's observers
+            (
+                Some(vec!["o".to_string()]),
+                false,
+                true,
+                (none.clone(), None),
+            ),
+            (Some(Vec::new()), false, true, (none, None)),
+            // the deliver hook delivered it
+            (None, true, true, (None, Some(Value::Bool(true)))),
+            // an engine without `observe.v2`
+            (None, false, false, (None, None)),
+        ] {
+            let (_, payload) = oversized(matched.clone(), delivered, observes_v2);
+            assert_eq!(
+                fields(&payload),
+                expected,
+                "matched {matched:?} delivered {delivered} observe.v2 {observes_v2}"
+            );
+        }
     }
 
     #[test]
@@ -2836,16 +2868,21 @@ impl IIIClient {
         } else {
             None
         };
-        Self::prepare_envelope_with_budget(message, budget)
+        Self::prepare_envelope_with_budget(message, budget, self.engine_observes_v2())
     }
 
     fn prepare_envelope(message: &Message) -> Result<PreparedEnvelope, Error> {
-        Self::prepare_envelope_with_budget(message, None)
+        Self::prepare_envelope_with_budget(message, None, false)
     }
 
+    /// The envelope of `message`. An `invocationresult` too large to send
+    /// becomes a `payload_too_large` error answer; to an engine with
+    /// `observe.v2` (`observes_v2`), which reads how a routed call is
+    /// delivered from it, that answer activates no observer.
     fn prepare_envelope_with_budget(
         message: &Message,
         budget: Option<&Arc<AtomicUsize>>,
+        observes_v2: bool,
     ) -> Result<PreparedEnvelope, Error> {
         let payload = serde_json::to_string(message)?;
         let size = payload.len();
@@ -2864,15 +2901,18 @@ impl IIIClient {
         if let Message::InvocationResult {
             invocation_id,
             function_id,
-            matched,
             delivered,
             ..
         } = message
         {
-            // An error answer in place of one too large to send. It keeps how
-            // the call is delivered: a call the deliver hook delivered is
-            // delivered by no one else, and one the match hook narrowed goes
-            // to the observers it matched.
+            // An error answer in place of one too large to send: not the
+            // handler's outcome, so it activates no observer. A call the
+            // deliver hook delivered says so; any other matched none.
+            let (matched, delivered) = match (observes_v2, *delivered) {
+                (false, _) => (None, false),
+                (true, true) => (None, true),
+                (true, false) => (Some(Vec::new()), false),
+            };
             let fallback = Message::InvocationResult {
                 invocation_id: *invocation_id,
                 function_id: function_id.clone(),
@@ -2884,8 +2924,8 @@ impl IIIClient {
                 }),
                 traceparent: None,
                 baggage: None,
-                matched: matched.clone(),
-                delivered: *delivered,
+                matched,
+                delivered,
             };
             let payload = serde_json::to_string(&fallback)?;
             if payload.len() <= MAX_JSON_MESSAGE_BYTES {

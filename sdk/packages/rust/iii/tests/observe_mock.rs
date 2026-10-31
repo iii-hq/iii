@@ -3493,6 +3493,44 @@ async fn a_match_hook_without_observers_matches_none() {
     iii.shutdown_async().await;
 }
 
+/// The `payload_too_large` error that replaces a routed answer too large to
+/// send is not the handler's outcome, and activates no observer: it carries
+/// `matched: []` for a function without hooks too, whose observers the
+/// engine would otherwise evaluate against that error.
+#[tokio::test]
+async fn an_answer_too_large_to_send_activates_no_observer() {
+    // The outbound JSON message limit, 64 MiB, and the time a debug build
+    // takes to build and refuse a result over it.
+    const LIMIT: usize = 64 * 1024 * 1024;
+    const OVERSIZED: Duration = Duration::from_secs(30);
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "exports");
+    connected(&mock, &iii, true).await;
+    hosted(
+        &mock,
+        &iii,
+        "exports::dump",
+        RegisterFunction::new(|_: Value| Ok::<_, Error>(Value::String("x".repeat(LIMIT + 1)))),
+        json!([view("every", json!({}), json!(["error"]), "complete")]),
+    )
+    .await;
+    acked(&mock, &[("every", 1)]).await;
+    let invocation = "3c5e7a9b-1d2f-4a6b-8c0e-2f4a6c8e0b1d";
+    route_call(&mock, "exports::dump", invocation, json!({}));
+    let is_answer = |m: &Value| m["type"] == "invocationresult" && m["invocation_id"] == invocation;
+    let answer = mock
+        .wait_for(|msgs| msgs.iter().any(is_answer), OVERSIZED)
+        .await
+        .into_iter()
+        .find(is_answer)
+        .expect("the answer");
+    assert_eq!(answer["error"]["code"], "payload_too_large", "{answer:#}");
+    assert!(answer.get("result").is_none());
+    assert_eq!(answer["matched"], json!([]), "{answer:#}");
+    assert!(answer.get("delivered").is_none());
+    iii.shutdown_async().await;
+}
+
 /// A deliver hook delivers a routed call itself: the answer is what it
 /// returned (`invocationresult-delivered.json`), with `delivered: true` and
 /// no `matched`, with a match hook or without.
