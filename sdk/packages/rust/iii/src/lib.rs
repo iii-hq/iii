@@ -3,6 +3,11 @@ pub mod context;
 mod dispatch;
 pub mod engine;
 pub mod error;
+/// The shared generator of seeded random filters and documents, for the
+/// differential tests of indexed matching.
+#[cfg(test)]
+#[path = "../../../../../crates/iii-filter/tests/support/gen.rs"]
+mod filter_gen;
 pub mod helpers;
 pub mod hooks;
 pub mod iii;

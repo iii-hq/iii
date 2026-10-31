@@ -20,7 +20,7 @@ use std::{
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use futures_util::FutureExt;
-use iii_filter::{Doc, Filter, Roots};
+use iii_filter::{Doc, Filter, FilterIndex, Roots};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
@@ -463,6 +463,26 @@ impl Observer {
         )
     }
 
+    /// An observer of `test::f` announced with `view` (`id`, `filters`,
+    /// `on`, `capture`, ...), its filters compiled, active or not, and not
+    /// held by any client.
+    #[cfg(test)]
+    pub(crate) fn test_view(view: Value, seq: u64, active: bool) -> Self {
+        let view: ObserverView = serde_json::from_value(view).expect("a view");
+        let filter = Filter::parse(&view.filters).expect("a valid filter");
+        let obs = Self::new(
+            view,
+            filter,
+            "test::f",
+            "default".to_string(),
+            0,
+            seq,
+            Weak::new(),
+        );
+        obs.state().active.store(active, Ordering::Release);
+        obs
+    }
+
     pub(crate) fn mask(&self) -> CaptureMask {
         self.inner.mask
     }
@@ -525,6 +545,35 @@ impl DocParts {
     }
 }
 
+/// An observer as a key of a [`FilterIndex`]: ordered by id, so the index
+/// yields its matches in id order, as [`ObserverSet`] holds them.
+#[derive(Clone)]
+pub(crate) struct ById(pub(crate) Observer);
+
+impl PartialEq for ById {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id() == other.0.id()
+    }
+}
+
+impl Eq for ById {}
+
+impl PartialOrd for ById {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ById {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.id().cmp(other.0.id())
+    }
+}
+
+/// The observers of a set whose `on` accepts one outcome of a call, by the
+/// equality conditions of their filters.
+pub(crate) type OutcomeIndex = FilterIndex<ById, ()>;
+
 /// The active observers of a function, swapped whole on every change so the
 /// hot path reads it with one load. A change makes a new version that shares
 /// all but `O(log n)` nodes of its observers with the one before, which a
@@ -533,6 +582,12 @@ impl DocParts {
 pub(crate) struct CompiledSet {
     /// By id.
     pub observers: ObserverSet,
+    /// The observers whose `on` accepts a call that succeeded (`success`,
+    /// `complete`), indexed by their filters' equality conditions: what a
+    /// local call that succeeded is matched against.
+    pub on_success: OutcomeIndex,
+    /// The same for a call that failed (`error`, `complete`).
+    pub on_error: OutcomeIndex,
     /// The roots any observer's filter reads.
     pub roots: Roots,
     /// What any observer captures.
@@ -594,7 +649,12 @@ impl PartCounts {
 }
 
 impl CompiledSet {
-    fn of(observers: ObserverSet, counts: PartCounts, seq: u64) -> Self {
+    fn of(
+        observers: ObserverSet,
+        [on_success, on_error]: [OutcomeIndex; 2],
+        counts: PartCounts,
+        seq: u64,
+    ) -> Self {
         let [input, output, error, caller, metadata] = counts.roots.map(|count| count > 0);
         let roots = Roots {
             input,
@@ -613,6 +673,8 @@ impl CompiledSet {
         };
         Self {
             observers,
+            on_success,
+            on_error,
             roots,
             capture,
             seq,
@@ -620,24 +682,69 @@ impl CompiledSet {
         }
     }
 
+    /// The index of the observers whose `on` accepts a call that succeeded
+    /// (`success`), or one that failed.
+    pub(crate) fn accepting(&self, success: bool) -> &OutcomeIndex {
+        if success {
+            &self.on_success
+        } else {
+            &self.on_error
+        }
+    }
+
+    /// The two indexes with `obs` filed in those its `on` accepts, in place
+    /// of any other view of it: `O(log n)` each.
+    fn indexes_with(&self, obs: &Observer) -> [OutcomeIndex; 2] {
+        let key = ById(obs.clone());
+        [true, false].map(|success| {
+            let mut index = self.accepting(success).clone();
+            if obs.accepts(success) {
+                index.insert(key.clone(), obs.filter(), ());
+            } else {
+                index.remove(&key);
+            }
+            index
+        })
+    }
+
+    /// The two indexes without the observer with `obs`'s id.
+    fn indexes_without(&self, obs: &Observer) -> [OutcomeIndex; 2] {
+        let key = ById(obs.clone());
+        [true, false].map(|success| {
+            let mut index = self.accepting(success).clone();
+            index.remove(&key);
+            index
+        })
+    }
+
     /// This set with `obs`, in place of any other view of it.
-    fn with(&self, obs: &Observer) -> Self {
+    pub(crate) fn with(&self, obs: &Observer) -> Self {
         let mut counts = self.counts;
         if let Some(held) = self.observers.get(obs.id()) {
             counts.count(held, false);
         }
         counts.count(obs, true);
-        Self::of(self.observers.with(obs), counts, self.seq.max(obs.seq()))
+        Self::of(
+            self.observers.with(obs),
+            self.indexes_with(obs),
+            counts,
+            self.seq.max(obs.seq()),
+        )
     }
 
     /// This set without `obs` (in any view of it); `None` when it does not
     /// hold it.
-    fn without(&self, obs: &Observer) -> Option<Self> {
+    pub(crate) fn without(&self, obs: &Observer) -> Option<Self> {
         let held = self.observers.get(obs.id()).filter(|held| held.is(obs))?;
         let mut counts = self.counts;
         counts.count(held, false);
         let observers = self.observers.without(obs.id())?;
-        Some(Self::of(observers, counts, self.seq))
+        Some(Self::of(
+            observers,
+            self.indexes_without(held),
+            counts,
+            self.seq,
+        ))
     }
 }
 
