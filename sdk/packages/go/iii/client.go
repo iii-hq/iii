@@ -163,9 +163,14 @@ type Client struct {
 	engineFeatures map[string]bool
 	// registeredOnConnection: WorkerRegistered arrived on the current connection.
 	registeredOnConnection bool
-	// observers this worker created, replayed (same id) on every connection.
+	// observers this worker created, replayed (same id) on every connection: each
+	// holds its id until it is disposed (decision 56).
 	observers   map[string]*ObserverHandle
 	observerSeq uint64
+	// observeSent lists, per id, the handles whose observe went out on the current
+	// connection, oldest first. The engine's answers name an observer by id only;
+	// their order tells the observers of a reused id apart (observe.go, answerOf).
+	observeSent map[string][]sentObserve
 	// pendingUnobserve holds unobserves of observers disposed while disconnected.
 	pendingUnobserve []string
 	// unsupportedWarned: the functions already reported as needing observe.v2.
@@ -1226,6 +1231,7 @@ func (c *Client) runConnection() (bool, error) {
 	c.epoch++
 	epoch := c.epoch
 	c.registeredOnConnection = false
+	c.observeSent = nil
 	c.mu.Unlock()
 	c.replyMu.Lock()
 	c.reply = reply
@@ -1278,6 +1284,7 @@ func (c *Client) runConnection() (bool, error) {
 	// Local dispatch and the compiled observer sets survive; what was sent on this
 	// connection is replayed on the next one.
 	c.registeredOnConnection = false
+	c.observeSent = nil
 	if c.state == StateConnected {
 		c.setStateLocked(StateDisconnected)
 	}
@@ -1840,7 +1847,7 @@ func (c *Client) replyInvocation(epoch uint64, msg *InvokeFunctionMessage, resul
 	if msg.InvocationID == nil {
 		return // fire-and-forget: no reply expected
 	}
-	frame, err := prepareJSON(&InvocationResultMessage{
+	answer := &InvocationResultMessage{
 		InvocationID: *msg.InvocationID,
 		FunctionID:   msg.FunctionID,
 		Result:       result,
@@ -1849,11 +1856,41 @@ func (c *Client) replyInvocation(epoch uint64, msg *InvokeFunctionMessage, resul
 		Baggage:      tc.baggage,
 		Matched:      routed.matched,
 		Delivered:    routed.delivered,
-	})
+	}
+	frame, err := MarshalMessage(answer)
 	if err != nil {
 		return
 	}
+	if len(frame) > maxJSONMessageBytes {
+		if frame, err = c.tooLargeAnswer(epoch, answer, len(frame)); err != nil {
+			return
+		}
+	}
 	c.sendOnEpoch(epoch, frame)
+}
+
+// tooLargeAnswer is the answer to a call whose answer, size bytes, is too large to
+// send: payload_too_large. That error is not the handler's outcome, so it activates no
+// observer: to an engine with observe.v2 the answer carries delivered when the deliver
+// hook delivered the call and matched [] otherwise, whatever the function's hooks
+// (decision 55); an engine without observe.v2 gets the bare error.
+func (c *Client) tooLargeAnswer(epoch uint64, answer *InvocationResultMessage, size int) ([]byte, error) {
+	c.mu.Lock()
+	v2 := c.epoch == epoch && c.registeredOnConnection && c.engineFeatures[FeatureObserveV2]
+	c.mu.Unlock()
+	fallback := &InvocationResultMessage{
+		InvocationID: answer.InvocationID,
+		FunctionID:   answer.FunctionID,
+		Error:        &ErrorBody{Code: "payload_too_large", Message: payloadTooLargeMessage(size)},
+	}
+	switch {
+	case !v2:
+	case answer.Delivered:
+		fallback.Delivered = true
+	default:
+		fallback.Matched = []string{}
+	}
+	return MarshalMessage(fallback)
 }
 
 // handleInvocationResult resolves the pending Call keyed by the result's

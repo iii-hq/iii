@@ -41,8 +41,7 @@ func prepareFrame(frame []byte) ([]byte, error) {
 	if err := json.Unmarshal(frame, &header); err != nil {
 		return frame, err
 	}
-	message := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", len(frame), maxJSONMessageBytes)
-	sizeErr := &InvocationError{Code: "payload_too_large", FunctionID: header.FunctionID, Message: message}
+	sizeErr := &InvocationError{Code: "payload_too_large", FunctionID: header.FunctionID, Message: payloadTooLargeMessage(len(frame))}
 	if header.Type == "invocationresult" && header.InvocationID != nil {
 		fallback, err := MarshalMessage(&InvocationResultMessage{InvocationID: *header.InvocationID, FunctionID: header.FunctionID,
 			Error: &ErrorBody{Code: sizeErr.Code, Message: sizeErr.Message}})
@@ -54,6 +53,12 @@ func prepareFrame(frame []byte) ([]byte, error) {
 		}
 	}
 	return frame, sizeErr
+}
+
+// payloadTooLargeMessage is the payload_too_large message for a JSON message of size
+// bytes.
+func payloadTooLargeMessage(size int) string {
+	return fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", size, maxJSONMessageBytes)
 }
 
 func (c *Client) rejectFrame(frame []byte, err error) {

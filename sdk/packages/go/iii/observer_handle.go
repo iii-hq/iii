@@ -121,9 +121,10 @@ func (h *ObserverHandle) OnStateChange(listener func(state ObserverState, reason
 }
 
 // Dispose removes the observer (unobserve). It is not replayed on reconnect. An
-// observer disposed while disconnected is unobserved on the next connection, so a
-// Reattach does not keep it alive. ctx is reserved; Dispose does not wait for the
-// engine.
+// observer disposed while disconnected is unobserved on the next connection, before
+// any observe is replayed, so a Reattach does not keep it alive. Its id is free at
+// once: an Observe under it gets a new handle, which hears the engine's answers to
+// its own observe only. ctx is reserved; Dispose does not wait for the engine.
 func (h *ObserverHandle) Dispose(ctx context.Context) error {
 	_ = ctx
 	if h.State() == ObserverDisposed {

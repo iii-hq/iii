@@ -449,9 +449,11 @@ differ, this file wins, and the spec is updated to match.
       code `OBSERVER_ID_CONFLICT`, the engine's code for an id another
       observer holds, and the message `observer id already in use: <id>`
       after the SDK's prefix (`observe: ` in Node, the browser and Python,
-      `iii: Observe: ` in Go, none in Rust). Node and the browser throw an
+      none in Go and Rust). Node and the browser throw an
       `ObserveRejection`, Python raises one, and Go returns an
-      `*ObserveRejectionError`, each with that code. Rust's `observe`
+      `*ObserveRejectionError`, each with that code (Go's `Error()` reads
+      `iii: observe rejected: OBSERVER_ID_CONFLICT: observer id already in
+      use: <id>`, as for the engine's rejections). Rust's `observe`
       returns a handle: the handle it returns is in state `error` with that
       reason, `ready()` fails with it, and its `dispose()` sends nothing and
       leaves the holding handle alone.
