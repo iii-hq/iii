@@ -1757,6 +1757,8 @@ class Sdk implements ISdk {
       const startedAt = Date.now()
       const t0 = performance.now()
       let delivery: Delivery | undefined
+      // The answer's `matched` when the call needs no delivery.
+      let matched: readonly string[] | undefined
       const resolvedInput = this.resolveChannelValue(input)
       // Running until the call is delivered: what code after its `await`s falls back to (`callDepth`).
       const run = async (): Promise<unknown> => {
@@ -1768,7 +1770,15 @@ class Sdk implements ISdk {
           } catch (error) {
             outcome = { ok: false, error }
           }
-          if (!answering || (hook === undefined && !fn.observe.hasMatchHook())) {
+          // No delivery runs without a deliver hook when the function has no
+          // match hook (the answer carries neither field: the engine
+          // evaluates every active observer), or when no observer was active
+          // as the call started (`matched: []`: the match hook has none to
+          // match and does not run, as a local call with an empty snapshot
+          // skips delivery).
+          const narrowed = answering && hook === undefined && fn.observe.hasMatchHook()
+          if (!answering || (hook === undefined && (!narrowed || snapshot.length === 0))) {
+            if (narrowed) matched = []
             if (outcome.ok) return outcome.value
             throw outcome.error
           }
@@ -1811,7 +1821,7 @@ class Sdk implements ISdk {
             result,
             traceparent,
             baggage,
-            matched: delivery?.matched,
+            matched: delivery ? delivery.matched : matched,
             delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
@@ -1824,7 +1834,7 @@ class Sdk implements ISdk {
             error: delivery ? delivery.errorBody(error) : handlerErrorBody(error),
             traceparent,
             baggage,
-            matched: delivery?.matched,
+            matched: delivery ? delivery.matched : matched,
             delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
