@@ -613,4 +613,25 @@ describe('a refused observe', () => {
     next.deliver({ type: 'observeresult', id: 'r', state: 'active' })
     expect(again.state).toBe('active')
   })
+
+  it('an observe whose answer a dropped connection lost: an error answer to its replay leaves dispose() sending unobserve', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    // The engine may have created it before the drop and reattached it since.
+    next.deliver({
+      type: 'observeresult',
+      id: 'r',
+      state: 'error',
+      error: { code: 'REJECTED', message: 'rejected by its host' },
+    })
+    expect(handle.state).toBe('error')
+    await handle.dispose()
+    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
+  })
 })
