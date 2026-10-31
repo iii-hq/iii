@@ -1041,11 +1041,14 @@ phase 2 baseline.
 These changes follow the publication of 0.26.0. Each one needs a published
 release, tag or crate, so it lands after the release.
 
-1. **SDK CI fixtures.** In `sdk/fixtures/config-test.yaml` the state, http,
+1. **SDK fixtures.** In `sdk/fixtures/config-test.yaml` the state, http,
    pubsub, cron and queue workers move to `0.26.0`, and pubsub moves to
    `0.26.0` in `sdk/fixtures/config-bridge.yaml` and
-   `sdk/fixtures/config-bridge-backend.yaml`. The SDK CI jobs start those
-   workers.
+   `sdk/fixtures/config-bridge-backend.yaml`. Local runs of these fixtures
+   start those packages. The SDK CI jobs build the same five workers from the
+   `iii-hq/workers` commit in `sdk/fixtures/workers-ref`
+   (`scripts/ci/sdk-test-workers.sh`), and `workers-ref` moves to the
+   `iii-hq/workers` commit that lands the v2 workers.
 2. **Workers Cargo.lock files.** Each of these projects in `iii-hq/workers`
    asks for `iii-sdk = "=0.26.0"`, and its Cargo.lock re-locks to the
    published 0.26.0 crates so that `--locked` builds resolve. The lockfiles of
