@@ -559,11 +559,13 @@ describe('a refused observe', () => {
     expect(observeFrames(socket)).toEqual(['observe:r', 'unobserve:r', 'observe:r', 'unobserve:r'])
   })
 
-  it('a refused handle is replayed on the next connection, and disposing it after that answer sends unobserve', async () => {
+  it('a refused handle is not sent again on a later connection: it keeps its refusal and its id until dispose(), which sends nothing', async () => {
     vi.useFakeTimers()
     const { sdk, socket } = worker()
     socket.open()
     const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    const states: string[] = []
+    handle.onStateChange((state) => states.push(state))
     socket.deliver({
       type: 'observeresult',
       id: 'r',
@@ -574,11 +576,22 @@ describe('a refused observe', () => {
     await vi.advanceTimersByTimeAsync(50)
     const next = fake.lastSocket()
     next.open()
-    expect(observeFrames(next)).toEqual(['observe:r'])
-    next.deliver({ type: 'observeresult', id: 'r', state: 'active' })
-    expect(handle.state).toBe('active')
-    await handle.dispose()
-    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
+    expect(observeFrames(next)).toEqual([])
+    // Nothing the engine says about the id reaches it.
+    next.deliver({ type: 'observerstatechanged', id: 'r', state: 'active', fires: 0 })
+    expect(handle.state).toBe('error')
+    expect(handle.reason?.code).toBe('OBSERVER_ID_CONFLICT')
+    // An engine without observe.v1 on the connection after: the refusal stays its reason.
+    next.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const legacy = fake.lastSocket()
+    legacy.open('legacy')
+    expect(handle.reason?.code).toBe('OBSERVER_ID_CONFLICT')
+    expect(() => sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })).toThrow(/already in use/)
+    expect(await timedDispose(handle)).toBeLessThan(DISPOSE_WAIT_MS / 10)
+    expect(observeFrames(next)).toEqual([])
+    expect(observeFrames(legacy)).toEqual([])
+    expect(states).toEqual(['error', 'disposed'])
   })
 
   it('an error answer to the replay of an observer the engine created is its state there: dispose() sends unobserve', async () => {

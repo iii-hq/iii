@@ -334,6 +334,34 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     })
   })
 
+  it('a refused observe is not sent again after a reconnect: it stays refused once the id is free', async () => {
+    const owner = worker('routed-owner')
+    const holder = worker('routed-holder')
+    const watcher = worker('routed-watcher')
+    owner.registerFunction(`e2e::contested-${RUN}`, async (n: number) => ({ n }))
+    collector(holder, `e2e::on-contested-held-${RUN}`)
+    const got = collector(watcher, `e2e::on-contested-${RUN}`)
+    const id = `contested-${RUN}`
+    const held = holder.observe({ function_id: `e2e::contested-${RUN}` }, `e2e::on-contested-held-${RUN}`, { id })
+    await held.ready()
+    const refused = watcher.observe({ function_id: `e2e::contested-${RUN}` }, `e2e::on-contested-${RUN}`, { id })
+    await expect(refused.ready()).rejects.toMatchObject({ code: 'OBSERVER_ID_CONFLICT' })
+    await held.dispose()
+    const frames = frameCounter(watcher)
+    dropConnection(watcher)
+    // Its functions go out again on the new connection, and its observers right after them.
+    await waitFor(() => frames.types.includes('registerfunction'), 'the re-registration on the new connection')
+    await sleep(200)
+    await owner.call({ function_id: `e2e::contested-${RUN}`, payload: 1 })
+    await sleep(300)
+    expect(frames.frames.filter((f) => f.type === 'observe' && f.id === id)).toHaveLength(0)
+    expect(refused.state).toBe('error')
+    expect(refused.reason?.code).toBe('OBSERVER_ID_CONFLICT')
+    expect(got).toHaveLength(0)
+    await refused.dispose()
+    expect(frames.frames.filter((f) => f.type === 'unobserve')).toHaveLength(0)
+  })
+
   it('the observer survives a reconnect of its worker (same id, replayed)', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
