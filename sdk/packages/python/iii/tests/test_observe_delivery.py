@@ -80,9 +80,33 @@ def test_iii_delivers_the_observers_whose_on_and_filters_match(engine: FakeEngin
     ]
 
 
-def test_a_routed_call_lists_what_iii_delivered_on_its_answer_and_reports_nothing(
+class _CountingFilter:
+    """An observer's compiled filter that counts its evaluations."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.calls = 0
+
+    def matches(self, doc: Any) -> bool:
+        self.calls += 1
+        return bool(self.inner.matches(doc))
+
+
+def _count_filters(client: III, function_id: str) -> list[_CountingFilter]:
+    counted = []
+    for obs in client.observers(function_id):
+        counted.append(_CountingFilter(obs._filter))
+        obs._filter = counted[-1]  # type: ignore[assignment]
+    return counted
+
+
+def test_a_routed_call_without_hooks_answers_its_outcome_alone_and_evaluates_no_filter(
     engine: FakeEngine, connect: Any
 ) -> None:
+    """Decision 55: the engine evaluates ``on`` and filters of a routed call
+    from the input it forwarded and the answer. A function without a match
+    hook or a deliver hook answers with neither ``matched`` nor
+    ``delivered``, and its host evaluates nothing and reports nothing."""
     client = connect(engine)
 
     def charge(data: dict[str, Any]) -> dict[str, Any]:
@@ -98,18 +122,31 @@ def test_a_routed_call_lists_what_iii_delivered_on_its_answer_and_reports_nothin
         observer_info("big", "t", filters={"$and": [{"input.amount": {"$gte": 100}}]}),
         observer_info("errors", "t", on="error"),
     )
+    counted = _count_filters(client, "payments::charge")
     engine.deliver(invoke("payments::charge", {"amount": 500}, "r-ok"))
     engine.deliver(invoke("payments::charge", {"amount": -1}, "r-error"))
     engine.deliver(invoke("payments::charge", {"amount": 5}, "r-none"))
     [ok] = engine.wait_for(lambda: answers(engine, "r-ok"), what="the answer")
     [failed] = engine.wait_for(lambda: answers(engine, "r-error"), what="the error answer")
     [none] = engine.wait_for(lambda: answers(engine, "r-none"), what="the unmatched answer")
-    assert (ok["result"], ok["observed"]) == ({"charged": 500}, ["big"])
-    # the handler's error rides the answer, with the observers delivered for it
-    assert (failed["error"]["message"], failed["observed"]) == ("refused", ["errors"])
-    assert "observed" not in none
+    assert {k: v for k, v in ok.items() if k != "traceparent"} == {
+        "type": "invocationresult",
+        "invocation_id": "r-ok",
+        "function_id": "payments::charge",
+        "result": {"charged": 500},
+    }
+    # the handler's error rides the answer, as it does on the local path
+    assert set(failed) - {"traceparent"} == {"type", "invocation_id", "function_id", "error"}
+    assert (failed["error"]["code"], failed["error"]["message"]) == ("invocation_failed", "refused")
+    assert none["result"] == {"charged": 5} and "matched" not in none and "delivered" not in none
     settle(client, engine)
     assert reported_items(engine) == []
+    assert [c.calls for c in counted] == [0, 0]
+    # a local call of the same function is this host's to evaluate
+    client.call({"function_id": "payments::charge", "payload": {"amount": 700}})
+    settle(client, engine)
+    assert [i["matched"] for i in _items(engine, "payments::charge")] == [["big"]]
+    assert [c.calls for c in counted] == [1, 0]  # `on: error` rules the other out before its filter runs
 
 
 # ── on_observer_match: a predicate ─────────────────────────────────────────
@@ -148,7 +185,8 @@ def test_a_predicate_runs_once_per_active_observer_per_call_before_filters(engin
     assert sorted(asked) == sorted((o, n) for o in ("five", "ten", "ten-even") for n in (1, 2, 3))
     # then iii's delivery applies the filters of the observers that want the call
     assert [sorted(i["matched"]) for i in _items(engine, "cron::on-tick")] == [["ten"], ["ten", "ten-even"]]
-    assert answer["observed"] == ["five"]
+    # a routed call's answer names what the predicate matched; the engine applies `on` and filters
+    assert answer["matched"] == ["five"] and "delivered" not in answer
 
 
 def test_a_predicate_that_raises_is_no_match_and_is_logged_once_per_function(
@@ -230,7 +268,7 @@ def test_keys_match_the_observers_filed_under_the_calls_keys(engine: FakeEngine,
         ["orders-any"],
         ["every-insert"],
     ]
-    assert answer["observed"] == ["other-db"]
+    assert answer["matched"] == ["other-db"] and "delivered" not in answer
     assert sorted(observer_calls) == ["every-insert", "orders-any", "orders-insert", "other-db"]  # computed once
     assert len(call_calls) == len(changes) + 1  # once per call
 
@@ -306,9 +344,9 @@ def test_an_observer_accepted_while_a_call_runs_does_not_match_it(
     gate.set()
     [answer] = engine.wait_for(lambda: answers(engine, "r-during"), what="the answer")
     if hooked:
-        assert answer["result"] == ["a"]
+        assert answer["result"] == ["a"] and answer["delivered"] is True and "matched" not in answer
     else:
-        assert answer["observed"] == ["a"]
+        assert answer["matched"] == ["a"] and "delivered" not in answer
 
 
 def test_keys_set_while_observers_are_active_file_them_and_a_failing_key_rejects(
@@ -440,7 +478,7 @@ def test_a_deliver_hook_gets_the_call_and_the_observers_and_its_value_is_what_th
     [answer_frame] = engine.wait_for(lambda: answers(engine, "r-1"), what="the answer")
     assert answer_frame["result"] == {"wrapped": 10}
     # the hook delivers: iii delivers nothing for the function, local or routed
-    assert "observed" not in answer_frame
+    assert answer_frame["delivered"] is True and "matched" not in answer_frame
     settle(client, engine)
     assert reported_items(engine) == [] and engine.frames_of("invocationsobserved") == []
     # every observer, `on` and filters unapplied: the hook applies them with obs.matches
@@ -462,7 +500,8 @@ def test_a_deliver_hook_receives_only_the_observers_that_matched(engine: FakeEng
     client.call({"function_id": "queue::on-message", "payload": {}, "metadata": {"subscriber": "sub-2"}})
     engine.deliver(invoke("queue::on-message", {}, "r-gone", metadata={"subscriber": "gone"}))
     [answer] = engine.wait_for(lambda: answers(engine, "r-gone"), what="the answer")
-    assert answer["result"] == "unrouted" and "observed" not in answer
+    # `delivered` outweighs `matched`: the answer of a function with both hooks carries only `delivered`
+    assert answer["result"] == "unrouted" and answer["delivered"] is True and "matched" not in answer
     assert seen == [["sub-2"], []]
 
 
@@ -487,6 +526,7 @@ def test_a_hook_rejection_or_call_error_keeps_its_code(engine: FakeEngine, conne
     engine.deliver(invoke("queue::on-message", {}, "r-gone", metadata={"subscriber": "gone"}))
     [answer] = engine.wait_for(lambda: answers(engine, "r-gone"), what="the answer")
     assert answer["error"] == {"code": "OBSERVER_NOT_ACTIVE", "message": "subscriber removed"}
+    assert answer["delivered"] is True  # what the hook raised is its delivery's outcome
 
 
 def test_a_handler_error_reaches_the_hook_as_an_error_call(engine: FakeEngine, connect: Any) -> None:
@@ -506,7 +546,7 @@ def test_a_handler_error_reaches_the_hook_as_an_error_call(engine: FakeEngine, c
     assert client.call({"function_id": "fail::fn", "payload": {}}) == {"recovered": ["e"]}
     engine.deliver(invoke("fail::fn", {}, "r-fail"))
     [answer] = engine.wait_for(lambda: answers(engine, "r-fail"), what="the answer")
-    assert answer["result"] == {"recovered": ["e"]} and "observed" not in answer and "error" not in answer
+    assert answer["result"] == {"recovered": ["e"]} and answer["delivered"] is True and "error" not in answer
 
 
 def test_the_deliver_hook_runs_in_the_functions_invocation(engine: FakeEngine, connect: Any) -> None:
@@ -558,7 +598,7 @@ def test_a_routed_call_with_no_observers_and_no_hook_sends_only_its_answer(engin
     engine.deliver(invoke("quiet::fn", 7, "r-quiet"))
     [answer] = engine.wait_for(lambda: answers(engine, "r-quiet"), what="the answer")
     settle(client, engine)
-    assert engine.frames() == [answer] and "observed" not in answer
+    assert engine.frames() == [answer] and "matched" not in answer and "delivered" not in answer
 
 
 # ── Observer.matches, is_observed, observers ───────────────────────────────
@@ -844,10 +884,10 @@ def test_a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_
         (["a", "b"], {"session": "s1", "n": 2}, None),
     ]
 
-    # routed: the observer it names rides the answer
+    # routed: the observer the match hook gives it rides the answer
     engine.deliver(invoke("tmux::on-changed", {"session": "s1", "n": 3}, "for-b", metadata={"for_observer": "b"}))
     [answer] = engine.wait_for(lambda: answers(engine, "for-b"), what="the answer")
-    assert (answer["result"], answer["observed"]) == ({"session": "s1", "n": 3}, ["b"])
+    assert (answer["result"], answer["matched"]) == ({"session": "s1", "n": 3}, ["b"])
 
 
 # ── private and output_is_input ────────────────────────────────────────────
@@ -915,10 +955,10 @@ def test_the_delivery_sees_channel_refs_as_sent_and_the_handler_gets_readers(
     [answer] = engine.wait_for(lambda: answers(engine, "r-ref"), what="the answer")
     settle(client, engine)
     assert len(bodies) == 2 and all(isinstance(body, ChannelReader) for body in bodies)
-    # filters see the ref, local or routed; the report carries it
+    # filters see the ref; the report carries it, and the engine has the routed call's input as it was sent
     [item] = _items(engine, "files::put")
     assert (item["matched"], item["input"]) == (["o"], {"name": "a.txt", "body": _REF})
-    assert (answer["result"], answer["observed"]) == ({"stored": "b.txt"}, ["o"])
+    assert answer["result"] == {"stored": "b.txt"} and "matched" not in answer and "delivered" not in answer
 
 
 def test_a_deliver_hook_forwards_the_call_input_with_its_channel_refs(engine: FakeEngine, connect: Any) -> None:
@@ -1030,7 +1070,7 @@ def test_functions_that_need_observe_v2_wait_for_it_and_stay_out_of_a_v1_engine(
     _confirm(client, engine, "observed::fn", observer_info("o", "t"))
     engine.deliver(invoke("observed::fn", 1, "r-v1"))
     [answer] = engine.wait_for(lambda: answers(engine, "r-v1"), what="the answer")
-    assert answer["result"] == 1 and "observed" not in answer
+    assert answer["result"] == 1 and "matched" not in answer and "delivered" not in answer
 
 
 def test_registration_needing_observe_v2_goes_after_workerregistered_on_every_connection(

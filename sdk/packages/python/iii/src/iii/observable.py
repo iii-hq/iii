@@ -3,6 +3,16 @@
 :class:`Observer` handed to them, matching (``on_observer_match``, the key
 index) and each call's delivery (iii's, or ``on_observer_deliver``).
 
+Where filters run (decision 55): the engine evaluates the observers' ``on``
+and filters for every call it routes. For a routed call this host runs only
+worker code, the function's match and deliver hooks, and its answer says
+which observers the match hook matched (``matched``) or that the deliver
+hook delivered the call (``delivered``). The engine never sees this
+worker's calls of its own functions: for those, iii's delivery here applies
+``on`` and filters through an index of the filters' equality conditions
+(:class:`~iii.filter._index.FilterIndex`), and reports the observers
+delivered.
+
 Threading: the engine's messages are handled on the SDK loop, and the hooks
 of one function id run there one at a time, in the order the engine announced
 the observers (sync hooks on a thread of their own). ``Observer.matches`` /
@@ -22,10 +32,12 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Literal, Protocol, Union, cast
 
 from .errors import ObserveRejection
 from .filter import CompiledFilter, compile_filter
+from .filter._index import FilterIndex
 from .iii_types import ObserverInfoWire
 from .invocation_context import run_in_thread
 from .observe_types import AddedHook, Call, DeliverHook, MatchHook, MatchKeys, MatchPredicate, RemovedHook
@@ -42,6 +54,15 @@ Level = Literal["worker", "function"]
 
 #: A partial call (``{"input": ...}``) or a :class:`Call`, for ``matches`` and ``is_observed``.
 CallLike = Union[Call[Any, Any], Mapping[str, Any]]
+
+#: iii's delivery of a local call evaluates the filters of up to this many
+#: observers one by one; past it, it matches them through the active set's
+#: filter index, which a set builds once (:meth:`ActiveSet.filter_index`).
+SCAN_MAX = 8
+
+#: The ``on`` values that accept a call that succeeded, and one that failed.
+_ON_SUCCESS = frozenset({"success", "complete"})
+_ON_ERROR = frozenset({"error", "complete"})
 
 _PARTS = ("input", "output", "error", "caller", "metadata")
 
@@ -434,6 +455,39 @@ class ActiveSet:
     match: MatchHook | None = None
     #: Matching by keys: key → the observers filed under it.
     index: Mapping[str, tuple[Observer, ...]] | None = None
+
+    @cached_property
+    def filters(self) -> FilterIndex[Observer]:
+        """The observers' filters, indexed by their equality conditions, in
+        the order of :attr:`observers`. Built on the first read, then kept:
+        an observer whose filters change goes into a new set
+        (:meth:`renewed`)."""
+        return FilterIndex((obs, obs._filter) for obs in self.observers)
+
+    def filter_index(self, evaluating: int) -> FilterIndex[Observer] | None:
+        """The filter index for a local call that would otherwise evaluate
+        ``evaluating`` filters one by one, or ``None``: that call evaluates
+        them one by one. Building the index costs about what evaluating every
+        observer's filter once costs, so a set builds it once its calls have
+        evaluated as many filters one by one as it has observers, and keeps
+        it. A call that matches every observer (a function without a match
+        hook) builds it at once. The calls of a match hook that picks a few
+        observers evaluate those observers' filters until the set has served
+        enough of them, so a set that serves a few such calls before its
+        observers change builds none."""
+        state = self.__dict__  # what `filters` caches into; the dataclass is frozen
+        if "filters" not in state:
+            evaluated = state.get("_evaluated", 0) + evaluating
+            if evaluated < len(self.observers):
+                # Counted without a lock: a count lost to a race only delays the build.
+                state["_evaluated"] = evaluated
+                return None
+        return self.filters
+
+    def renewed(self) -> ActiveSet:
+        """The same set as a new snapshot, for observers whose filters
+        changed: its filter index is built from their current filters."""
+        return ActiveSet(self.observers, self.match, self.index)
 
     def adding(self, obs: Observer) -> ActiveSet:
         """This set with ``obs``, filed under its keys."""
@@ -864,10 +918,17 @@ class FunctionObservers:
                 if view is None:
                     return False
                 filter_, keys, match = view
-                if keys is not None and obs._active and self.active.match is match:
-                    self.active = self.active.refiling(obs, keys)
+                active = self.active
+                if keys is not None and obs._active and active.match is match:
+                    active = active.refiling(obs, keys)
                     obs._keys = keys
+                if obs._active and filter_ is not obs._filter and active is self.active:
+                    active = active.renewed()
+                # The observer takes its new filters before the set that
+                # serves them is published, so the filter index a call on
+                # any thread builds for that set files these filters.
                 obs._update(info, filter_)
+                self.active = active
             obs._revision = revision
         self._ack(obs, revision, namespace, rejection)
         return True
@@ -1069,9 +1130,12 @@ class FunctionObservers:
 class Delivery:
     """One call's delivery: the observers that want it (``on_observer_match``,
     from the active set when the call started), then the function's
-    ``on_observer_deliver``, which delivers the call itself, or iii's delivery
-    to the matched observers whose ``on`` and filters match the call: a local
-    call in one report item, a routed call in its answer's ``observed``."""
+    ``on_observer_deliver``, which delivers the call itself, or iii's
+    delivery. For a local call, iii's delivery reports the matched observers
+    whose ``on`` and filters match the call in one report item. For a routed
+    call the engine evaluates ``on`` and filters: the answer lists in
+    ``matched`` the observers the function's match hook matched (``[]`` when
+    none), and carries no list for a function without one (decision 55)."""
 
     def __init__(
         self,
@@ -1095,8 +1159,9 @@ class Delivery:
         self._started_at_ms = started_at_ms
         self._duration_ms = duration_ms
         self._observe_depth = observe_depth
-        #: A routed call's ``observed``: what iii's delivery selected.
-        self.observed: list[str] | None = None
+        #: A routed call's ``matched``: the observers its match hook matched,
+        #: before ``on`` and filters. ``None`` for a function without one.
+        self.matched: list[str] | None = None
 
     async def run_async(self, hook: DeliverHook | None) -> tuple[bool, Any]:
         """Delivers the call and returns ``(ok, value)``: what the caller gets
@@ -1140,27 +1205,44 @@ class Delivery:
             return False, error
 
     def _deliver(self, matched: Sequence[Observer]) -> tuple[bool, Any]:
-        """iii's delivery to the matched observers whose ``on`` and filters
-        match the call. Returns the handler's outcome."""
+        """iii's delivery: a routed call's answer names the observers the
+        match hook matched, and a local call is reported to the matched
+        observers whose ``on`` and filters match it. Returns the handler's
+        outcome."""
         call = self.call
         ok = call.status == "success"
-        doc: dict[str, Any] | None = None
-        selected: list[Observer] = []
-        for obs in matched:
-            if not _on_accepts(obs.on, ok):
-                continue
-            if doc is None:
-                doc = call_doc(call)
-            if obs._filter.matches(doc):
-                selected.append(obs)
-        if selected:
-            if self._routed:
-                self.observed = [obs.id for obs in selected]
-            else:
+        if self._routed:
+            if self._active.match is not None:
+                self.matched = [obs.id for obs in matched]
+        else:
+            selected = self._select(matched, ok)
+            if selected:
                 self.owner.host.reporter.push(*self._item(selected))
         if ok:
             return True, call.output
         return False, self.handler_error
+
+    def _select(self, matched: Sequence[Observer], ok: bool) -> list[Observer]:
+        """The matched observers whose ``on`` and filters match the call, in
+        order. Past :data:`SCAN_MAX` observers, through the active set's
+        filter index once the set has one (:meth:`ActiveSet.filter_index`):
+        every observer when there is no match hook, or the match hook's
+        choice, each looked up before its filter runs."""
+        if not matched:
+            return []
+        doc = call_doc(self.call)
+        accepted = _ON_SUCCESS if ok else _ON_ERROR  # what `_on_accepts` accepts
+        active = self._active
+        index = active.filter_index(len(matched)) if len(matched) > SCAN_MAX else None
+        if index is None:
+            return [obs for obs in matched if obs.on in accepted and obs._filter.matches(doc)]
+        if matched is active.observers:
+            return [
+                entry.key
+                for entry in index.candidate_entries(doc)
+                if entry.key.on in accepted and entry.filter.matches(doc)
+            ]
+        return index.select(matched, doc, lambda obs: obs.on in accepted)
 
     def _item(self, selected: list[Observer]) -> tuple[ReportInit, set[str]]:
         """The report item of a local call delivered to ``selected``."""
