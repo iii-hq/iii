@@ -77,8 +77,11 @@ type Args map[string]any
 //
 // The engine evaluates them for the calls it routes, and the worker that hosts the
 // function for the calls it makes to it in-process. Both match through an index of the
-// observers' equality conditions: a filter with a top-level $eq or $in of a scalar costs
-// a call nothing when the call's value at that path is none of its values.
+// observers' equality conditions: each observer is filed under one $eq of a scalar, or
+// one $in of scalars, on a path of its filter's top-level $and, and costs a call nothing
+// when the call's value at that path is none of that condition's values. A call
+// evaluates the whole filter of the observers filed under its value and of those with
+// no such condition.
 type Filters map[string]any
 
 // Op is the operator object of one filter path: iii.Op{"$eq": "insert"}.

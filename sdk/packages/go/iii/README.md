@@ -386,9 +386,9 @@ every call it routes: it holds the call's input, its output or error, its caller
 metadata. The worker that hosts a function evaluates them for the calls it makes to that
 function in-process, which the engine never sees, and in `obs.Matches(call)`. Both match
 through an index of the observers' equality conditions: each observer is filed under one
-`$eq` (or `$in`) of a scalar on a path of its filter's top-level `$and`, and a call
-evaluates the whole filter of only the observers filed under its value there and of
-those without such a condition. With 1,000 observers that each filter on their own
+`$eq` of a scalar, or one `$in` of scalars, on a path of its filter's top-level `$and`,
+and a call evaluates the whole filter of only the observers filed under its value there
+and of those without such a condition. With 1,000 observers that each filter on their own
 `input.tenant`, a call evaluates one filter. A filter without such a condition (ranges,
 `$ne`, `$exists`, `$prefix`, conditions inside `$or`, `$not` or `$any`) is evaluated on
 every call.
@@ -550,8 +550,8 @@ client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *
 
 On the call the SDK hands a hook, `obs.Matches(call)` shares the call's decoded document
 and its values at the indexed paths across observers: checking every observer costs each
-its own filter, and an observer whose equality condition the call fails costs a
-comparison. A routed call's answer says `delivered`, and the engine activates no observer
+its own filter, and an observer costs a comparison when the call fails the condition it
+is filed under. A routed call's answer says `delivered`, and the engine activates no observer
 for it.
 
 Choose observers in the match hook when an observer's args and the call settle it: a
