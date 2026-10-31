@@ -1232,7 +1232,7 @@ func (c *Client) runConnection() (bool, error) {
 	c.epoch++
 	epoch := c.epoch
 	c.registeredOnConnection = false
-	c.observeSent = nil
+	c.dropObserveSentLocked()
 	c.mu.Unlock()
 	c.replyMu.Lock()
 	c.reply = reply
@@ -1283,9 +1283,9 @@ func (c *Client) runConnection() (bool, error) {
 	c.connCancel = nil
 	registered := c.registeredOnConnection
 	// Local dispatch and the compiled observer sets survive; what was sent on this
-	// connection is replayed on the next one.
+	// connection is replayed on the next one, except a refused observe.
 	c.registeredOnConnection = false
-	c.observeSent = nil
+	c.dropObserveSentLocked()
 	if c.state == StateConnected {
 		c.setStateLocked(StateDisconnected)
 	}
