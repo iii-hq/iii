@@ -472,8 +472,8 @@ impl ObserverRegistry {
     /// The active observers of `(namespace, function_id)`, when it has any:
     /// what [`Self::route`] answers, without the caller check. One atomic
     /// load while nothing is observed or hosted privately by a connection;
-    /// otherwise one hash lookup more, and one atomic load more for the
-    /// function's set when the view holds the function.
+    /// otherwise one hash lookup more, and the function's set cloned under
+    /// its read lock when the view holds the function.
     #[inline]
     pub fn watch(&self, namespace: &str, function_id: &str) -> Option<Arc<ActiveSet>> {
         let view = self.routed.load();
@@ -488,7 +488,11 @@ impl ObserverRegistry {
     /// event source checks before building an event.
     #[inline]
     pub fn is_observed(&self, namespace: &str, function_id: &str) -> bool {
-        self.watch(namespace, function_id).is_some()
+        let view = self.routed.load();
+        !view.is_empty()
+            && view
+                .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+                .is_some_and(|routed| routed.active.is_some())
     }
 
     /// One call of an engine-hosted source (see [`super::events`]): evaluated
@@ -624,7 +628,7 @@ impl ObserverRegistry {
     /// `(running, queued)` activations of observer `id`, for introspection.
     pub fn in_flight(&self, id: &str) -> Option<(u32, usize)> {
         self.get(id).map(|observer| {
-            let flow = lock(&observer.flow);
+            let flow = observer.flow.write();
             (flow.running, flow.queue.len())
         })
     }
@@ -985,7 +989,7 @@ impl ObserverRegistry {
             return false;
         };
         let run_now = {
-            let mut flow = lock(&observer.flow);
+            let mut flow = observer.flow.write();
             if flow.running < observer.policy.max_in_flight && flow.queue.is_empty() {
                 flow.running += 1;
                 Some(PendingActivation::running(completed.clone()))
@@ -1174,7 +1178,7 @@ impl ObserverRegistry {
 
     /// The next queued activation, keeping the slot; or `None`, freeing it.
     fn next_queued(&self, observer: &Observer) -> Option<PendingActivation> {
-        let mut flow = lock(&observer.flow);
+        let mut flow = observer.flow.write();
         match flow.queue.pop_front() {
             Some(pending) => {
                 if flow.queue.len() == observer.policy.max_queue / 2 {
@@ -1201,7 +1205,7 @@ impl ObserverRegistry {
                     runtime.spawn(run_activations(self.clone(), observer.clone(), pending));
                 }
                 None => {
-                    let mut flow = lock(&observer.flow);
+                    let mut flow = observer.flow.write();
                     flow.running = flow.running.saturating_sub(1);
                 }
             }
@@ -1395,7 +1399,7 @@ impl ObserverRegistry {
                 let room = self.queue_budget.room.notified();
                 tokio::pin!(room);
                 room.as_mut().enable();
-                let queued = lock(&observer.flow).queue.len();
+                let queued = observer.flow.write().queue.len();
                 if !observer.is_active()
                     || (queued <= observer.policy.max_queue / 2 && self.queue_budget.has_room())
                 {
@@ -1568,7 +1572,7 @@ impl ObserverRegistry {
             );
         };
         {
-            let mut flow = lock(&observer.flow);
+            let mut flow = observer.flow.write();
             if flow.running >= observer.policy.max_in_flight {
                 drop(flow);
                 observer.fires.fetch_sub(1, Ordering::AcqRel);
@@ -2642,7 +2646,7 @@ mod tests {
         // the others: sorted, by the call each came from.
         let mut labels: Vec<(u64, &str)> = {
             let observer = engine.observers.get("obs").unwrap();
-            let flow = super::lock(&observer.flow);
+            let flow = observer.flow.write();
             flow.queue
                 .iter()
                 .map(|pending| {
@@ -2769,7 +2773,7 @@ mod tests {
         .await;
         let queued = |id: &str| {
             let observer = engine.observers.get(id).unwrap();
-            let flow = super::lock(&observer.flow);
+            let flow = observer.flow.write();
             flow.queue[0].event.clone()
         };
         assert!(Arc::ptr_eq(&queued("a"), &queued("b")), "one event");
@@ -2798,11 +2802,11 @@ mod tests {
         }
         until(|| engine.observers.in_flight("obs") == Some((1, 199))).await;
         let observer = engine.observers.get("obs").unwrap();
-        assert!(super::lock(&observer.flow).queue.capacity() >= 199);
+        assert!(observer.flow.write().queue.capacity() >= 199);
 
         gate.add_permits(200);
         until(|| engine.observers.in_flight("obs") == Some((0, 0))).await;
-        assert!(super::lock(&observer.flow).queue.capacity() <= super::QUEUE_KEPT);
+        assert!(observer.flow.write().queue.capacity() <= super::QUEUE_KEPT);
     }
 
     /// There is an evaluator per runtime worker thread, and a function's
@@ -2877,7 +2881,7 @@ mod tests {
         test_support::observe_request(engine, &worker, request).await;
         let observer = engine.observers.get("obs").unwrap();
         let budget = engine.observers.queue_budget.clone();
-        let mut flow = super::lock(&observer.flow);
+        let mut flow = observer.flow.write();
         flow.running = 1;
         for n in 0..queued {
             let event = event(n);
@@ -3010,7 +3014,7 @@ mod tests {
         // Full again: not held before the reader has read for 10 ms.
         let budget = registry.queue_budget.clone();
         {
-            let mut flow = super::lock(&observer.flow);
+            let mut flow = observer.flow.write();
             for n in 4..6 {
                 let event = event(n);
                 assert!(budget.charge(&event));
@@ -3086,7 +3090,7 @@ mod tests {
         let budget = &engine.observers.queue_budget;
         let queued = {
             let observer = engine.observers.get("a").unwrap();
-            let flow = super::lock(&observer.flow);
+            let flow = observer.flow.write();
             flow.queue[0].event.clone()
         };
         assert_eq!(budget.bytes.load(Ordering::SeqCst), queued.cost());
@@ -3120,7 +3124,7 @@ mod tests {
         until(|| engine.observers.in_flight("obs") == Some((1, 1))).await;
         let cost = {
             let observer = engine.observers.get("obs").unwrap();
-            let flow = super::lock(&observer.flow);
+            let flow = observer.flow.write();
             flow.queue[0].event.cost()
         };
         let limit = 2 * cost + cost / 2;
