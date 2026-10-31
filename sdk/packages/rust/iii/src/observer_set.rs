@@ -3,45 +3,50 @@
 //! versions. Adding or removing one observer copies the `O(log n)` nodes on
 //! its path (at most [`MAX`] slots each) and shares every other node with the
 //! version it was made from, which a call that loaded it keeps reading.
+//!
+//! Each node is one allocation, its slots right after its reference count,
+//! so a scan reaches a leaf's observers with one pointer from its branch. A
+//! function with up to [`MAX`] observers is one leaf.
 
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 
 use crate::observable::Observer;
 
 /// Observers in a leaf, or children of a branch, at most.
-const MAX: usize = 32;
+const MAX: usize = 128;
 /// A node other than the root with fewer is merged with a neighbour.
 const MIN: usize = MAX / 4;
 /// Levels a set has at most: every node but the root holds at least [`MIN`],
-/// so 14 levels hold more than 2^40 observers.
+/// so 9 levels hold more than 2^40 observers.
 const MAX_DEPTH: usize = 16;
 
 /// Observers by id, each id at most once.
 #[derive(Clone, Default)]
 pub(crate) struct ObserverSet {
-    root: Option<Arc<Node>>,
+    root: Option<Node>,
     len: usize,
 }
 
+#[derive(Clone)]
 enum Node {
     /// Sorted by id.
-    Leaf(Vec<Observer>),
+    Leaf(Arc<[Observer]>),
     /// Sorted by id, all at the same depth.
-    Branch(Vec<Child>),
+    Branch(Arc<[Child]>),
 }
 
 #[derive(Clone)]
 struct Child {
     /// The observer with the smallest id under `node`.
     first: Observer,
-    node: Arc<Node>,
+    node: Node,
 }
 
 impl Child {
     fn of(node: Node) -> Self {
         Self {
             first: node.first().clone(),
-            node: Arc::new(node),
+            node,
         }
     }
 }
@@ -78,15 +83,23 @@ fn child_for(children: &[Child], id: &str) -> usize {
         .saturating_sub(1)
 }
 
-/// `items` as one node, or two halves when it holds more than [`MAX`].
-fn sized<T>(mut items: Vec<T>, node: fn(Vec<T>) -> Node) -> Grown {
+/// `items` (`len` of them) as one node, or two even halves when there are
+/// more than [`MAX`]. One allocation per node made.
+fn sized<T: Clone>(
+    items: impl Iterator<Item = T> + Clone,
+    len: usize,
+    node: fn(Arc<[T]>) -> Node,
+) -> Grown {
     #[cfg(test)]
-    work::add(items.len());
-    if items.len() <= MAX {
-        return Grown::One(node(items));
+    work::add(len);
+    if len <= MAX {
+        return Grown::One(node(items.collect()));
     }
-    let upper = items.split_off(items.len() / 2);
-    Grown::Split(node(items), node(upper))
+    let lower = len / 2;
+    Grown::Split(
+        node(items.clone().take(lower).collect()),
+        node(items.skip(lower).collect()),
+    )
 }
 
 impl ObserverSet {
@@ -96,7 +109,7 @@ impl ObserverSet {
 
     /// The observer with id `id`.
     pub(crate) fn get(&self, id: &str) -> Option<&Observer> {
-        let mut node = self.root.as_deref()?;
+        let mut node = self.root.as_ref()?;
         loop {
             match node {
                 Node::Leaf(observers) => {
@@ -113,19 +126,21 @@ impl ObserverSet {
     /// A new version holding `observer`, in place of the one with its id if
     /// there is one.
     pub(crate) fn with(&self, observer: &Observer) -> Self {
-        let Some(root) = self.root.as_deref() else {
+        let Some(root) = self.root.as_ref() else {
             return Self {
-                root: Some(Arc::new(Node::Leaf(vec![observer.clone()]))),
+                root: Some(Node::Leaf(Arc::new([observer.clone()]))),
                 len: 1,
             };
         };
         let (grown, added) = insert(root, observer);
         let root = match grown {
             Grown::One(node) => node,
-            Grown::Split(lower, upper) => Node::Branch(vec![Child::of(lower), Child::of(upper)]),
+            Grown::Split(lower, upper) => {
+                Node::Branch(Arc::new([Child::of(lower), Child::of(upper)]))
+            }
         };
         Self {
-            root: Some(Arc::new(root)),
+            root: Some(root),
             len: self.len + usize::from(added),
         }
     }
@@ -133,10 +148,10 @@ impl ObserverSet {
     /// A new version without the observer with id `id`; `None` when it holds
     /// none.
     pub(crate) fn without(&self, id: &str) -> Option<Self> {
-        let mut root = Arc::new(remove(self.root.as_deref()?, id)?);
+        let mut root = remove(self.root.as_ref()?, id)?;
         // A branch left with one child gives way to it.
         loop {
-            let only = match &*root {
+            let only = match &root {
                 Node::Branch(children) if children.len() == 1 => children[0].node.clone(),
                 _ => break,
             };
@@ -155,9 +170,8 @@ impl ObserverSet {
             branches: std::array::from_fn(|_| [].iter()),
             depth: 0,
             leaf: [].iter(),
-            remaining: self.len,
         };
-        if let Some(root) = self.root.as_deref() {
+        if let Some(root) = self.root.as_ref() {
             iter.descend(root);
         }
         iter
@@ -179,35 +193,41 @@ fn insert(node: &Node, observer: &Observer) -> (Grown, bool) {
         Node::Leaf(observers) => {
             match observers.binary_search_by(|held| held.id().cmp(observer.id())) {
                 Ok(at) => {
-                    let mut next = observers.clone();
-                    next[at] = observer.clone();
                     #[cfg(test)]
-                    work::add(next.len());
-                    (Grown::One(Node::Leaf(next)), false)
+                    work::add(observers.len());
+                    let replaced = observers[..at]
+                        .iter()
+                        .chain(iter::once(observer))
+                        .chain(&observers[at + 1..])
+                        .cloned()
+                        .collect();
+                    (Grown::One(Node::Leaf(replaced)), false)
                 }
                 Err(at) => {
-                    let mut next = Vec::with_capacity(observers.len() + 1);
-                    next.extend_from_slice(&observers[..at]);
-                    next.push(observer.clone());
-                    next.extend_from_slice(&observers[at..]);
-                    (sized(next, Node::Leaf), true)
+                    let items = observers[..at]
+                        .iter()
+                        .chain(iter::once(observer))
+                        .chain(&observers[at..])
+                        .cloned();
+                    (sized(items, observers.len() + 1, Node::Leaf), true)
                 }
             }
         }
         Node::Branch(children) => {
             let at = child_for(children, observer.id());
             let (grown, added) = insert(&children[at].node, observer);
-            let mut next = Vec::with_capacity(children.len() + 1);
-            next.extend_from_slice(&children[..at]);
-            match grown {
-                Grown::One(child) => next.push(Child::of(child)),
-                Grown::Split(lower, upper) => {
-                    next.push(Child::of(lower));
-                    next.push(Child::of(upper));
-                }
-            }
-            next.extend_from_slice(&children[at + 1..]);
-            (sized(next, Node::Branch), added)
+            let (lower, upper) = match grown {
+                Grown::One(child) => (Child::of(child), None),
+                Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
+            };
+            let len = children.len() + usize::from(upper.is_some());
+            let items = children[..at]
+                .iter()
+                .cloned()
+                .chain(iter::once(lower))
+                .chain(upper)
+                .chain(children[at + 1..].iter().cloned());
+            (sized(items, len, Node::Branch), added)
         }
     }
 }
@@ -218,20 +238,25 @@ fn remove(node: &Node, id: &str) -> Option<Node> {
     match node {
         Node::Leaf(observers) => {
             let at = observers.binary_search_by(|held| held.id().cmp(id)).ok()?;
-            let mut next = Vec::with_capacity(observers.len() - 1);
-            next.extend_from_slice(&observers[..at]);
-            next.extend_from_slice(&observers[at + 1..]);
             #[cfg(test)]
-            work::add(next.len());
-            Some(Node::Leaf(next))
+            work::add(observers.len() - 1);
+            Some(Node::Leaf(
+                observers[..at]
+                    .iter()
+                    .chain(&observers[at + 1..])
+                    .cloned()
+                    .collect(),
+            ))
         }
         Node::Branch(children) => {
             let at = child_for(children, id);
             let child = remove(&children[at].node, id)?;
-            let mut next: Vec<Child> = Vec::with_capacity(children.len());
-            if child.width() == 0 {
-                next.extend_from_slice(&children[..at]);
-                next.extend_from_slice(&children[at + 1..]);
+            let next: Vec<Child> = if child.width() == 0 {
+                children[..at]
+                    .iter()
+                    .chain(&children[at + 1..])
+                    .cloned()
+                    .collect()
             } else if child.width() < MIN && children.len() > 1 {
                 // Joined with a neighbour, as one node or two even halves.
                 let (left, joined) = if at + 1 < children.len() {
@@ -239,23 +264,28 @@ fn remove(node: &Node, id: &str) -> Option<Node> {
                 } else {
                     (at - 1, join(&children[at - 1].node, &child))
                 };
-                next.extend_from_slice(&children[..left]);
-                match joined {
-                    Grown::One(node) => next.push(Child::of(node)),
-                    Grown::Split(lower, upper) => {
-                        next.push(Child::of(lower));
-                        next.push(Child::of(upper));
-                    }
-                }
-                next.extend_from_slice(&children[left + 2..]);
+                let (lower, upper) = match joined {
+                    Grown::One(node) => (Child::of(node), None),
+                    Grown::Split(lower, upper) => (Child::of(lower), Some(Child::of(upper))),
+                };
+                children[..left]
+                    .iter()
+                    .cloned()
+                    .chain(iter::once(lower))
+                    .chain(upper)
+                    .chain(children[left + 2..].iter().cloned())
+                    .collect()
             } else {
-                next.extend_from_slice(&children[..at]);
-                next.push(Child::of(child));
-                next.extend_from_slice(&children[at + 1..]);
-            }
+                children[..at]
+                    .iter()
+                    .cloned()
+                    .chain(iter::once(Child::of(child)))
+                    .chain(children[at + 1..].iter().cloned())
+                    .collect()
+            };
             #[cfg(test)]
             work::add(next.len());
-            Some(Node::Branch(next))
+            Some(Node::Branch(next.into()))
         }
     }
 }
@@ -263,8 +293,16 @@ fn remove(node: &Node, id: &str) -> Option<Node> {
 /// Two neighbouring nodes of the same depth, `lower` first, as one.
 fn join(lower: &Node, upper: &Node) -> Grown {
     match (lower, upper) {
-        (Node::Leaf(a), Node::Leaf(b)) => sized([a.as_slice(), b].concat(), Node::Leaf),
-        (Node::Branch(a), Node::Branch(b)) => sized([a.as_slice(), b].concat(), Node::Branch),
+        (Node::Leaf(a), Node::Leaf(b)) => sized(
+            a.iter().chain(b.iter()).cloned(),
+            a.len() + b.len(),
+            Node::Leaf,
+        ),
+        (Node::Branch(a), Node::Branch(b)) => sized(
+            a.iter().chain(b.iter()).cloned(),
+            a.len() + b.len(),
+            Node::Branch,
+        ),
         _ => unreachable!("neighbours are at the same depth"),
     }
 }
@@ -295,7 +333,6 @@ pub(crate) struct Iter<'a> {
     branches: [std::slice::Iter<'a, Child>; MAX_DEPTH],
     depth: usize,
     leaf: std::slice::Iter<'a, Observer>,
-    remaining: usize,
 }
 
 impl<'a> Iter<'a> {
@@ -320,6 +357,23 @@ impl<'a> Iter<'a> {
             }
         }
     }
+
+    /// Moves on to the next leaf: the next child of the nearest level that
+    /// has one. `false` when there is none.
+    fn next_leaf(&mut self) -> bool {
+        loop {
+            if self.depth == 0 {
+                return false;
+            }
+            match self.branches[self.depth - 1].next() {
+                Some(child) => {
+                    self.descend(&child.node);
+                    return true;
+                }
+                None => self.depth -= 1,
+            }
+        }
+    }
 }
 
 impl<'a> Iterator for Iter<'a> {
@@ -329,29 +383,14 @@ impl<'a> Iterator for Iter<'a> {
     fn next(&mut self) -> Option<&'a Observer> {
         loop {
             if let Some(observer) = self.leaf.next() {
-                self.remaining -= 1;
                 return Some(observer);
             }
-            // The next leaf: the next child of the nearest level that has one.
-            loop {
-                if self.depth == 0 {
-                    return None;
-                }
-                if let Some(child) = self.branches[self.depth - 1].next() {
-                    self.descend(&child.node);
-                    break;
-                }
-                self.depth -= 1;
+            if !self.next_leaf() {
+                return None;
             }
         }
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
-    }
 }
-
-impl ExactSizeIterator for Iter<'_> {}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -388,7 +427,7 @@ pub(crate) mod tests {
         let mut depths = Vec::new();
         let counted = set
             .root
-            .as_deref()
+            .as_ref()
             .map_or(0, |root| walk(root, 1, true, &mut depths));
         assert_eq!(counted, set.len());
         assert!(depths.windows(2).all(|pair| pair[0] == pair[1]), "balanced");
