@@ -911,7 +911,6 @@ fn report_mutation(
     report_op(op, &reported, elapsed);
 }
 
-/// Serialize the generated root schema into the value carried over the wire.
 /// Adds what this host asks the registry for, so a caller checking for
 /// updates asks for a build compose would install.
 fn with_host_targets(mut answer: Value) -> Value {
@@ -923,10 +922,11 @@ fn with_host_targets(mut answer: Value) -> Value {
     answer
 }
 
-/// `target` is the triple compose sends first to the registry's `POST
-/// /resolve`, and `targets` every triple it tries, in order. A build with no
-/// triple for its platform reports `unknown`, which no registry serves, so the
-/// answer leaves both out rather than offer it to a caller.
+/// Inserts `target` and `targets` into an object answer. `target` is the
+/// triple compose sends first to the registry's `POST /resolve`, and `targets`
+/// every triple it tries, in order. A build with no triple for its platform
+/// reports `unknown`, which no registry serves, so the answer leaves both out
+/// rather than offer it to a caller.
 fn insert_host_targets(answer: &mut Value, target: &str, targets: &[&str]) {
     if target == "unknown" {
         return;
@@ -937,6 +937,7 @@ fn insert_host_targets(answer: &mut Value, target: &str, targets: &[&str]) {
     }
 }
 
+/// Serialize the generated root schema into the value carried over the wire.
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
 }
