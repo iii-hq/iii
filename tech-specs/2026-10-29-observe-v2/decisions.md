@@ -72,9 +72,15 @@ differ, this file wins, and the spec is updated to match.
    engine) is deleted.
 10. **RBAC.** `allow_trigger_type_registration`, `allowed_trigger_types`,
     `on_trigger_registration_function_id` and
-    `on_trigger_type_registration_function_id` are removed. The two
-    `on_trigger_*` config keys, when present in an `rbac` config, are ignored
-    with one `warn` at load naming the observe equivalent. The two auth
+    `on_trigger_type_registration_function_id` are removed. An `rbac` config
+    that sets one of the two `on_trigger_*` keys without its replacement
+    (`on_observer_registration_function_id` for
+    `on_trigger_registration_function_id`,
+    `on_function_registration_function_id` for
+    `on_trigger_type_registration_function_id`) fails worker creation, so the
+    engine refuses to start with an error naming the replacement: the gate
+    the old key set would otherwise be off. With the replacement set, the old
+    key is ignored with one `warn` at load. The two auth
     result fields, when an auth function's result sets them, are ignored with
     one `warn` per process. The `on_function_registration_function_id` hook input gains
     top-level `private` and `observable` (always sent) and `args_format`
