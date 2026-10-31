@@ -30,6 +30,27 @@ assert!(filter.matches(&Doc { input: Some(&input), ..Doc::default() }));
 - `Filter::check_schema_paths` checks `input.*` / `output.*` paths against a
   function's `request_format` / `response_format` (`INVALID_FILTER_PATH`, or
   warnings for paths an open schema cannot verify).
+- `FilterIndex` matches many filters against one document. It files each
+  filter under one `$eq` / `$in` condition of its top-level `$and` (`path ->
+  value -> filters`) and scans the filters without one, so a match costs
+  about one lookup per indexed path plus one evaluation per candidate. Its
+  matches are exactly the filters `Filter::matches` accepts, in key order.
+  It is persistent: a clone is `O(1)` and shares every node, and an insert or
+  a removal copies `O(log n)` nodes, so a reader keeps the version it holds.
+
+```rust
+use iii_filter::{Doc, Filter, FilterIndex};
+use serde_json::json;
+
+let mut index = FilterIndex::new();
+for k in 0..4_000u64 {
+    let filter = Filter::parse(&json!({ "input.k": { "$eq": k } })).expect("valid filter");
+    index.insert(k, &filter, k);
+}
+let input = json!({ "k": 17 });
+let doc = Doc { input: Some(&input), ..Doc::default() };
+assert_eq!(index.matches(&doc).map(|(key, _)| *key).collect::<Vec<_>>(), [17]);
+```
 
 The engine and every iii SDK implement the same language and run the same
 conformance vectors (`sdk/fixtures/filters/` in the
