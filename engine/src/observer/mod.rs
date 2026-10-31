@@ -330,9 +330,9 @@ pub(crate) fn metrics() -> Option<&'static EngineMetrics> {
 }
 
 /// What the complexity tests count: observer slots copied into a new node of
-/// an active set, or copied out of a function's observers in bulk, on this
-/// thread. A change that rebuilt a function's set from its observers would
-/// count them all.
+/// an active set, or copied out of a function's observers in bulk, the one way
+/// to scan them, on this thread. A change that rebuilt a function's set from
+/// its observers, or scanned them, would count them all.
 #[cfg(test)]
 pub(crate) mod work {
     use std::cell::Cell;

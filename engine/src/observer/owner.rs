@@ -22,7 +22,7 @@
 
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     hash::{Hash, Hasher},
     sync::{
         Arc, Mutex,
@@ -107,48 +107,81 @@ pub(crate) struct FunctionEntry {
     owner_progress: Mutex<Option<(Uuid, tokio::time::Instant)>>,
 }
 
-/// A function's live observers in creation order, and how many count
-/// against `observers.max_per_function`: adding or removing one is
-/// `O(log n)`, counting them `O(1)`.
-#[derive(Default)]
-struct Members {
-    /// By [`Observer::seq`].
-    by_seq: BTreeMap<u64, Arc<Observer>>,
-    /// The ones that are not the engine's own.
-    limited: usize,
-}
+/// A function's live observers, kept where only [`Members`]' own methods
+/// reach them: adding, taking or finding one is `O(log n)`, counting them
+/// `O(1)`, and the one scan, [`Members::to_vec`], is what the complexity
+/// tests count, so a scan of every observer on each `observe` or
+/// `unobserve` shows in them.
+mod members {
+    use std::{collections::BTreeMap, sync::Arc};
 
-impl Members {
-    fn add(&mut self, seq: u64, observer: &Arc<Observer>) {
-        if self.by_seq.insert(seq, observer.clone()).is_none() && !observer.is_engine_owned() {
-            self.limited += 1;
-        }
+    use super::super::lifecycle::Observer;
+
+    /// A function's live observers in creation order, and how many count
+    /// against `observers.max_per_function`.
+    #[derive(Default)]
+    pub(super) struct Members {
+        /// By [`Observer::seq`].
+        by_seq: BTreeMap<u64, Arc<Observer>>,
+        /// The ones that are not the engine's own.
+        limited: usize,
     }
 
-    fn take(&mut self, observer: &Arc<Observer>) {
-        let Some(seq) = observer.seq() else {
-            return;
-        };
-        if self
-            .by_seq
-            .get(&seq)
-            .is_some_and(|held| Arc::ptr_eq(held, observer))
-        {
-            self.by_seq.remove(&seq);
-            if !observer.is_engine_owned() {
-                self.limited -= 1;
+    impl Members {
+        pub(super) fn add(&mut self, seq: u64, observer: &Arc<Observer>) {
+            if self.by_seq.insert(seq, observer.clone()).is_none() && !observer.is_engine_owned() {
+                self.limited += 1;
             }
         }
-    }
 
-    fn holds(&self, observer: &Arc<Observer>) -> bool {
-        observer.seq().is_some_and(|seq| {
-            self.by_seq
+        pub(super) fn take(&mut self, observer: &Arc<Observer>) {
+            let Some(seq) = observer.seq() else {
+                return;
+            };
+            if self
+                .by_seq
                 .get(&seq)
                 .is_some_and(|held| Arc::ptr_eq(held, observer))
-        })
+            {
+                self.by_seq.remove(&seq);
+                if !observer.is_engine_owned() {
+                    self.limited -= 1;
+                }
+            }
+        }
+
+        pub(super) fn holds(&self, observer: &Arc<Observer>) -> bool {
+            observer.seq().is_some_and(|seq| {
+                self.by_seq
+                    .get(&seq)
+                    .is_some_and(|held| Arc::ptr_eq(held, observer))
+            })
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.by_seq.len()
+        }
+
+        pub(super) fn is_empty(&self) -> bool {
+            self.by_seq.is_empty()
+        }
+
+        /// The ones that count against `observers.max_per_function`.
+        pub(super) fn limited(&self) -> usize {
+            self.limited
+        }
+
+        /// All of them, in creation order: `O(n)`, and counted by the
+        /// complexity tests.
+        pub(super) fn to_vec(&self) -> Vec<Arc<Observer>> {
+            #[cfg(test)]
+            super::super::work::add(self.by_seq.len());
+            self.by_seq.values().cloned().collect()
+        }
     }
 }
+
+use members::Members;
 
 struct OwnerSync {
     /// Increases by one on every `observeradded` / `observerremoved`.
@@ -184,22 +217,18 @@ impl FunctionEntry {
 
     /// The live observers, in creation order.
     pub fn observers(&self) -> Vec<Arc<Observer>> {
-        let observers: Vec<Arc<Observer>> =
-            lock(&self.observers).by_seq.values().cloned().collect();
-        #[cfg(test)]
-        super::work::add(observers.len());
-        observers
+        lock(&self.observers).to_vec()
     }
 
     /// Live observers.
     pub fn len(&self) -> usize {
-        lock(&self.observers).by_seq.len()
+        lock(&self.observers).len()
     }
 
     /// Observers that count against `observers.max_per_function`: not the
     /// ones the engine owns.
     pub fn limited_observer_count(&self) -> usize {
-        lock(&self.observers).limited
+        lock(&self.observers).limited()
     }
 
     /// Whether `observer` is one of the function's live observers.
@@ -224,7 +253,7 @@ impl FunctionEntry {
     }
 
     fn is_unused(&self) -> bool {
-        lock(&self.observers).by_seq.is_empty()
+        lock(&self.observers).is_empty()
             && lock(&self.options).is_none()
             && !self.announced.load(Ordering::Acquire)
     }
