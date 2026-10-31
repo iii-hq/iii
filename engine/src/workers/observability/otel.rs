@@ -98,9 +98,11 @@ pub fn update_otel_config(
 /// global is process-wide and is NOT reset between tests, so a `#[serial]`
 /// test that calls `update_otel_config` must clear afterward — otherwise it
 /// pollutes sibling tests that rely on `current_config()` falling back to the
-/// worker's own `_config`.
-#[cfg(test)]
-pub(crate) fn clear_otel_config_for_test() {
+/// worker's own `_config`. Exposed to integration tests through the
+/// `test-adapters` self-dev-dependency, like `trace_storage_test_support`.
+#[cfg(any(test, feature = "test-adapters"))]
+#[doc(hidden)]
+pub fn clear_otel_config_for_test() {
     *GLOBAL_OTEL_CONFIG
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
