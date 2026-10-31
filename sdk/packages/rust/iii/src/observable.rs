@@ -233,7 +233,7 @@ impl Observer {
         state: Arc<ObserverState>,
     ) -> Self {
         let mask = capture_mask(&view.capture);
-        let indexed = filed_under_a_condition(&filter);
+        let indexed = filter.is_indexable();
         Self {
             inner: Arc::new(ObserverInner {
                 view,
@@ -515,15 +515,6 @@ impl Observer {
             On::Unknown(_) => false,
         }
     }
-}
-
-/// Whether a [`FilterIndex`] files `filter` under one of its equality
-/// conditions: an index of it alone finds nothing in a document that
-/// resolves no path, where it finds every entry filed under no condition.
-fn filed_under_a_condition(filter: &Filter) -> bool {
-    let mut index: FilterIndex<(), ()> = FilterIndex::new();
-    index.insert((), filter, ());
-    index.candidates(&Doc::default()) == 0
 }
 
 /// The parts of a filter document that are built for it: `error` and
