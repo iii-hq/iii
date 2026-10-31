@@ -1587,6 +1587,19 @@ class Sdk implements ISdk {
     }
   }
 
+  /**
+   * The `payload_too_large` error that replaces an answer too large to send
+   * is not the handler's outcome, so it activates no observer: to an engine
+   * with `observe.v2` it says `delivered` when the deliver hook delivered the
+   * call (`answer.delivered`), and `matched: []` otherwise, whatever the
+   * function's hooks. An engine without `observe.v2` gets the bare error.
+   */
+  private oversizedAnswer(answer: Record<string, unknown>, fallback: Record<string, unknown>): Record<string, unknown> {
+    if (!this.engineFeatures.has(FEATURE_OBSERVE_V2)) return fallback
+    if (answer.delivered === true) return { ...fallback, delivered: true }
+    return { ...fallback, matched: [] }
+  }
+
   private prepareJson(message: Record<string, unknown>): string {
     const data = JSON.stringify(message)
     const size = JSON_ENCODER.encode(data).byteLength
@@ -1598,12 +1611,14 @@ class Sdk implements ISdk {
     )
     if (message.type === MessageType.InvocationResult) {
       // The wire body carries the bare message: `error.message` already has the `code: ` prefix.
-      const fallback = JSON.stringify({
-        type: MessageType.InvocationResult,
-        invocation_id: message.invocation_id,
-        function_id: message.function_id,
-        error: { code: error.code, message: payloadTooLargeMessage(size) },
-      })
+      const fallback = JSON.stringify(
+        this.oversizedAnswer(message, {
+          type: MessageType.InvocationResult,
+          invocation_id: message.invocation_id,
+          function_id: message.function_id,
+          error: { code: error.code, message: payloadTooLargeMessage(size) },
+        }),
+      )
       if (JSON_ENCODER.encode(fallback).byteLength <= MAX_JSON_FRAME_BYTES) return fallback
     }
 

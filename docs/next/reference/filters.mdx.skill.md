@@ -157,11 +157,18 @@ filter on their own `input.tenant`, a call evaluates one filter. The index uses 
 above (`1` and `1.0` are one value), so its matches are exactly the observers whose filters match.
 
 A filter costs a call nothing when the call does not meet the condition the index files it under.
-The index files each filter under one condition only, preferring an `$eq` to an `$in` and the value
-the fewest other observers are filed under, so a filter with several equality conditions is
-evaluated on every call that meets the one it is filed under, whatever its other conditions say. A
-filter without one (its conditions are ranges, `$ne`, `$nin`, `$exists`, `$prefix`, conditions
-inside `$or`, `$not`, or `$any`, or an `$eq` of an array or an object) is evaluated on every call.
+The index files each filter under one condition only, preferring a condition of one value to an
+`$in` of several, then the value the fewest other observers are filed under, so a filter with
+several equality conditions is evaluated on every call that meets the one it is filed under,
+whatever its other conditions say. A filter without one (its conditions are ranges, `$ne`, `$nin`,
+`$exists`, `$prefix`, conditions inside `$or`, `$not`, or `$any`, or an `$eq` of an array or an
+object) is evaluated on every call.
+
+Where the lookups would spare a call little, the engine evaluates every observer's filter, as a
+scan does: when the index files fewer than two observers per indexed path, and when a call meets
+the conditions of half the observers or more. A call therefore costs at most about the evaluation
+of every filter plus one lookup per indexed path. A function none of whose observers has an
+indexable filter keeps no index, and its calls evaluate every filter.
 
 ## Validation
 
