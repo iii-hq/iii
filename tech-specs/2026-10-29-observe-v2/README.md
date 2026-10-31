@@ -127,6 +127,12 @@ iii.observe(
 - The handle (`ready()`, `state`, `onStateChange`, `dispose()`) and the
   options (`id`, `metadata`, `max_fires`, `expires_in_ms`, `max_in_flight`)
   are the 0.25 ones.
+- **`id`** is held by its handle until the handle is disposed. An `observe`
+  of an id a handle of the same client holds is refused at the call with
+  `OBSERVER_ID_CONFLICT` and nothing is sent (Rust returns a handle in state
+  `error`). Once the handle is disposed the id is free at once: the SDK
+  attributes the engine's answers by the order of the frames, so the late
+  `disposed` of the earlier observer never reaches the new one (decision 56).
 
 ### 3.1 Calling functions
 
@@ -336,9 +342,11 @@ iii's delivery:
    `call.status` and whose filters match the call. The engine does it for a
    routed call, with the input it forwarded and the result the worker
    answers; the worker does it for a call it makes to its own function
-   (§8.2). Both find the observers through an index of the filters'
-   equality conditions, so a call costs about one lookup, however many
-   observers filter on their own value;
+   (§8.2). Both evaluate the filters of a small set of observers and find
+   a larger set's observers through an index of the filters' equality
+   conditions once it narrows them, so a call costs at most about a scan
+   plus one lookup per indexed path, and about one lookup however many
+   observers filter on their own value of one path (decision 55);
 2. the engine runs each target with the observer's `deliver` choice,
    policy, metadata sidecar and loop guard;
 3. gives the caller the handler's return value, or rethrows its error.
@@ -717,7 +725,7 @@ is (decision 55):
 ```jsonc
 // no match hook, no deliver hook: every active observer of the function
 { "type": "invocationresult", "invocation_id": "c3f…", "result": { … } }
-// a match hook: the observers it matched, [] when none
+// a match hook: the observers it matched, [] when none (or no observer was active)
 { "type": "invocationresult", "invocation_id": "c3f…", "result": { … },
   "matched": ["5b0c…", "a07…"] }
 // a deliver hook: it delivered the call; the engine activates nothing
@@ -729,7 +737,11 @@ is (decision 55):
   active observers of the invoked function. The envelope carries the call's
   input and, as `output`, the handler's return value. Only the function's
   host answers for its observers: an answer from another connection
-  activates nothing (`REPORTER_NOT_OWNER`, decision 55).
+  activates nothing (`REPORTER_NOT_OWNER`, decision 55). `matched` is absent
+  when the function has no match hook. An answer too large to send is
+  answered `payload_too_large`, with `delivered: true` when the deliver hook
+  delivered the call and `matched: []` otherwise, so the error activates no
+  observer.
 - **Through an observer.** An `invokefunction` with `activation.observer_id`.
   The engine checks that the observer exists, that the sender hosts its
   function, and that it is active, then applies policy and routes to the
@@ -764,12 +776,19 @@ any connection (decisions 1, 37).
 `observeradded`, `observerremoved`, `observerack` and `functionregistered` are
 the 0.25 messages; §4.3 says when the SDK sends `observerack`.
 
+The engine answers every `observe` with exactly one `observeresult`, and
+sends a connection its observe answers in the order it read that
+connection's messages, so an SDK tells the observers of a reused id apart by
+order: an `observeresult` answers the oldest `observe` of the id still
+unanswered, and an `observerstatechanged` is about the newest observer of the
+id whose `observeresult` arrived (decision 56).
+
 ### 8.5 Error codes
 
 | Code | When |
 |---|---|
 | `NOT_FUNCTION_OWNER` | engine: a call through an observer from a connection that does not host the observer's function |
-| `OBSERVER_ID_CONFLICT` | engine: an `observe` whose id an observer holds: the same connection's, with a different spec, or another connection's. A suspended observer's own worker, back on a new connection under the same worker name and namespace, replaces it (decision 51) |
+| `OBSERVER_ID_CONFLICT` | engine: an `observe` whose id an observer holds: the same connection's, with a different spec, or another connection's. A suspended observer's own worker, back on a new connection under the same worker name and namespace, replaces it (decision 51). SDK: an `observe` whose id a handle of the same client holds, refused before anything is sent (decision 56) |
 | `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`, `TIMEOUT` | engine: activation checks and policy, as in 0.25 §3.5 |
 | `FORBIDDEN` | engine: a call to a private function from another connection; a private function as a target; RBAC |
 | `OBSERVE_REJECTED`, `OWNER_TIMEOUT` | an `onObserverAdded` threw a plain error, or ran past 30 s |

@@ -549,11 +549,11 @@ answer's `result` or `error`, the caller it forwarded the call with, and the cal
 host runs what is worker code, the function's match and deliver hooks, and its answer carries one of
 three things:
 
-| The answer carries | When                                                                                                                     | The engine                                                                                                               |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| nothing more       | The function has no `onObserverMatch` and no `onObserverDeliver` hook.                                                   | Evaluates `on` and filters of every active observer of the function.                                                     |
-| `matched`          | The function's `onObserverMatch` hook ran: the observers it matched, each once, before `on` and filters. `[]` when none. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
-| `delivered: true`  | The function's `onObserverDeliver` hook delivered the call: `result` is what the hook returned.                          | Activates nothing.                                                                                                       |
+| The answer carries | When                                                                                                                                                                                               | The engine                                                                                                               |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| nothing more       | The function has no `onObserverMatch` and no `onObserverDeliver` hook.                                                                                                                             | Evaluates `on` and filters of every active observer of the function.                                                     |
+| `matched`          | The function has an `onObserverMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
+| `delivered: true`  | The function's `onObserverDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
 
 The answer for a function with a match hook:
 
@@ -580,9 +580,14 @@ The answer for a function with a deliver hook:
 }
 ```
 
-- An answer for a function without hooks is the plain success or failure above. `matched` is sent
-  whenever the match hook ran, `[]` included: an absent `matched` leaves every observer to the
-  engine. A host sends at most one of `matched` and `delivered`; with both, `delivered` wins.
+- An answer for a function without hooks is the plain success or failure above: an absent `matched`
+  leaves every observer to the engine. A function with a match hook and no deliver hook always
+  answers with `matched`, `[]` included. A host sends at most one of `matched` and `delivered`; with
+  both, `delivered` wins.
+- An answer too large to send is answered with the error `payload_too_large`. The error is not the
+  handler's outcome, so it activates no observer: it carries `delivered: true` when the deliver hook
+  delivered the call, and `matched: []` otherwise, whatever the function's hooks. A host whose engine
+  lacks `observe.v2` sends the bare error. The caller gets `payload_too_large` either way.
 - `matched` may ride an answer that carries `error`: iii's delivery rethrows the handler's error,
   and the envelope's `status` and `error` come from the answer.
 - The host names the observers of a routed call on its answer only. An
@@ -598,9 +603,10 @@ The answer for a function with a deliver hook:
 - A routed call whose answer never comes (its caller left, the host went away) activates nothing:
   each of the function's observers counts a `CANCELLED` drop.
 - The envelope's `input` is the input the engine routed, and its `output` is `result`. Delivery
-  costs no frame beyond the answer. The engine finds an observer's filter through an index of the
-  filters' `$eq` and `$in` conditions, so a call costs about one lookup per indexed path, whatever
-  the number of observers (see [Filters](./filters)).
+  costs no frame beyond the answer. The engine matches the filters through an index of their `$eq`
+  and `$in` conditions, and evaluates every filter where the lookups would spare little, so a call
+  costs at most about the evaluation of every filter plus one lookup per indexed path, and about one
+  lookup when many observers filter on their own value of one path (see [Filters](./filters)).
 
 ## `RegistrationRejected`
 
@@ -903,6 +909,29 @@ States:
 | `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                     |
 | `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, the grace period elapsed, or replaced by an `Observe` from its worker's new connection. A replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
 
+### Answer order and observer ids
+
+The engine reads one connection's messages in order and sends that connection its observe answers
+(`ObserveResult`, `ObserverStateChanged`) in the order it makes them. It answers every `Observe`
+with exactly one `ObserveResult`, and sends `ObserveResult` for nothing else. An `id` therefore
+names one observer at a time on the wire, and an SDK can observe again under an id as soon as it
+has unobserved the earlier observer of that id. It tells the two observers' answers apart by order:
+
+- It keeps, per id, the observers whose `Observe` it sent on the current connection, oldest first.
+  A disposed one stays listed until its `disposed` arrives, a newer observer of the id has its
+  `ObserveResult`, or the connection closes.
+- An `ObserveResult` for the id answers the oldest listed observer that has none yet.
+- An `ObserverStateChanged` for the id is about the newest listed observer that has its
+  `ObserveResult`. One that arrives before any has it is dropped: a reattached connection hears its
+  observers resume before its replayed `Observe`s are answered, and each replay's `ObserveResult`
+  carries the current state.
+- On a new connection, the `Unobserve`s queued while disconnected go out before any replayed
+  `Observe`, so the engine disposes the earlier observer before it reads the new one's `Observe`.
+
+The engine's `disposed` for the earlier observer, sent before it read the new `Observe`, reaches
+the earlier observer's handle, and the new handle gets its own answers only. An SDK refuses an
+`observe` whose id one of its live handles holds, with `OBSERVER_ID_CONFLICT` and nothing sent.
+
 ### `FunctionRegistered`
 
 Engine -> host (only to connections that declared `observe.v1`). The success ack of
@@ -1155,20 +1184,20 @@ reason is counted as `OTHER`.
 
 `ObserveResult.error.code` and `ObserverStateChanged.reason.code` on a rejected observer:
 
-| Code                   | When                                                                                                                                                                                                                    |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value.                                                                                                 |
-| `INVALID_ARGS`         | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode.                               |
-| `INVALID_FILTER`       | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.                                                                                                               |
-| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` / `response_format`.                                                                                                                                     |
-| `NOT_OBSERVABLE`       | The function registered `observable: false`.                                                                                                                                                                            |
-| `FORBIDDEN`            | RBAC denies the observed function or the target, the registration hook denied, or the target is a private function.                                                                                                     |
-| `SELF_TARGET`          | The target is the observed function.                                                                                                                                                                                    |
-| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` reached.                                                                                                                                                 |
-| `OBSERVER_ID_CONFLICT` | Another observer holds the `id`: the same connection's, with a different spec, or another connection's. A `suspended` observer's own worker, on a new connection under the same worker name and namespace, replaces it. |
-| `OWNER_TIMEOUT`        | The host did not ack within `observers.owner_ack_timeout_ms`: an `onObserverAdded` hook ran past it.                                                                                                                    |
-| `OBSERVE_REJECTED`     | An `onObserverAdded` hook threw an error other than `ObserveRejection`.                                                                                                                                                 |
-| host codes             | Carried verbatim from `ObserverAck.error`: the code of the `ObserveRejection` a hook threw (for example `HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`).                                                              |
+| Code                   | When                                                                                                                                                                                                                                                                                                                                |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value.                                                                                                                                                                                                             |
+| `INVALID_ARGS`         | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode.                                                                                                                                           |
+| `INVALID_FILTER`       | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.                                                                                                                                                                                                                           |
+| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` / `response_format`.                                                                                                                                                                                                                                                 |
+| `NOT_OBSERVABLE`       | The function registered `observable: false`.                                                                                                                                                                                                                                                                                        |
+| `FORBIDDEN`            | RBAC denies the observed function or the target, the registration hook denied, or the target is a private function.                                                                                                                                                                                                                 |
+| `SELF_TARGET`          | The target is the observed function.                                                                                                                                                                                                                                                                                                |
+| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` reached.                                                                                                                                                                                                                                                             |
+| `OBSERVER_ID_CONFLICT` | Another observer holds the `id`: the same connection's, with a different spec, or another connection's. A `suspended` observer's own worker, on a new connection under the same worker name and namespace, replaces it. An SDK refuses an `observe` whose id one of its live handles holds with this code, before anything is sent. |
+| `OWNER_TIMEOUT`        | The host did not ack within `observers.owner_ack_timeout_ms`: an `onObserverAdded` hook ran past it.                                                                                                                                                                                                                                |
+| `OBSERVE_REJECTED`     | An `onObserverAdded` hook threw an error other than `ObserveRejection`.                                                                                                                                                                                                                                                             |
+| host codes             | Carried verbatim from `ObserverAck.error`: the code of the `ObserveRejection` a hook threw (for example `HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`).                                                                                                                                                                          |
 
 A call through an observer fails with `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`,
 `OBSERVER_NOT_ACTIVE`, `LOOP_GUARD`, `OVERFLOW`, `TIMEOUT`, or the target's own error.
