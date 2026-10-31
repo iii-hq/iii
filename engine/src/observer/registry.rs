@@ -252,6 +252,12 @@ impl ObserverRegistry {
                     ),
                 ));
             }
+            // An observer in `error` answers its replay with that error, a
+            // refusal (decision 56): it is disposed as it answers, so the
+            // engine holds nothing under the id either.
+            if let Some(error) = self.dispose_refused_replay(existing) {
+                return Err(error);
+            }
             let (state, reason) = existing.snapshot_state();
             let error = (state == ObserverState::Error).then_some(reason).flatten();
             self.notify(
@@ -1176,6 +1182,77 @@ mod tests {
         assert_eq!(held.state(), ObserverState::Active);
         assert_eq!(held.observing_connection(), holder.id);
         assert!(registry.observing_for(worker.id).is_empty());
+    }
+
+    /// Everything `socket` received so far.
+    fn received(
+        socket: &mut tokio::sync::mpsc::Receiver<crate::engine::Outbound>,
+    ) -> Vec<crate::protocol::Message> {
+        let mut received = Vec::new();
+        while let Ok(outbound) = socket.try_recv() {
+            if let crate::engine::Outbound::Protocol(message) = outbound {
+                received.push(message);
+            }
+        }
+        received
+    }
+
+    /// A reattached worker replaying an observer the engine holds in `error`
+    /// is refused with that error, the handle's last answer (decision 56):
+    /// the engine disposes the observer as it answers, sends nothing more
+    /// about it and leaves no tombstone, so the id is free at once.
+    #[tokio::test]
+    async fn a_replay_of_an_observer_in_error_is_refused_and_disposes_it() {
+        use crate::protocol::{ErrorBody, Message};
+
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (first, _first_socket) = test_support::worker(&engine);
+        let request = test_support::request("obs", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &first, request.clone()).await;
+        registry.fail(
+            &registry.get("obs").unwrap(),
+            ErrorBody::new(observe_codes::OBSERVE_REJECTED, "rejected by its host"),
+        );
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Error));
+
+        registry.connection_closed(first.id, first.reattach_token);
+        let (second, mut socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(
+            registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await
+        );
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Error));
+        received(&mut socket);
+
+        registry.observe(&engine, &second, request).await;
+        match received(&mut socket).as_slice() {
+            [
+                Message::ObserveResult {
+                    id,
+                    state: ObserverState::Error,
+                    error: Some(error),
+                    ..
+                },
+            ] => {
+                assert_eq!(id, "obs");
+                assert_eq!(error.code, observe_codes::OBSERVE_REJECTED);
+            }
+            other => panic!("one refusal and nothing else, got {other:?}"),
+        }
+        assert!(registry.get("obs").is_none(), "disposed as it answered");
+        assert!(registry.tombstones.get("obs").is_none());
+        assert!(registry.observing_for(second.id).is_empty());
+        registry.unobserve(second.id, "obs");
+        assert!(received(&mut socket).is_empty(), "nothing answers it");
+
+        let other = test_support::request("obs", "test::dst", "test::src", None);
+        test_support::observe_request(&engine, &second, other).await;
+        let observer = registry.get("obs").unwrap();
+        assert_eq!(observer.observing_connection(), second.id);
+        assert_eq!(observer.function.1, "test::dst");
     }
 
     /// An `observe` handled while its connection is being torn down joins
