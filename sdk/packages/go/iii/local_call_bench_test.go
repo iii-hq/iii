@@ -7,24 +7,57 @@ import (
 	"testing"
 )
 
-// The cost of a local call of a function with 1,000 observers that each filter on their
-// own value of input.tenant ({"input.tenant": {"$eq": "tenant-<i>"}}): a call that none
-// of them match, and one that one of them matches (and is reported). A function nobody
-// observes is the floor. The engine is the fake one; report frames are discarded.
+// The cost of a local call of a function whose observers each filter on their own
+// value of input.tenant ({"input.tenant": {"$eq": "tenant-<i>"}}), 1,000 or 4 of them: a
+// call that none of them match, and one that one of them matches (and is reported). A
+// function with a deliver hook, with no observers, and with 4 whose filters the hook
+// evaluates for none of them or for each (Observer.Matches). A function nobody observes
+// is the floor. The engine is the fake one; report frames are discarded.
 func BenchmarkLocalCall(b *testing.B) {
-	const observers = 1000
 	fe := newFakeEngine(b)
-	set := make([]ObserverInfo, observers)
-	for i := range set {
-		set[i] = observerInfo(fmt.Sprintf("o-%04d", i), "x::y", "", fmt.Sprintf(`{"$and":[{"input.tenant":{"$eq":"tenant-%d"}}]}`, i))
+	tenants := func(n int) []ObserverInfo {
+		set := make([]ObserverInfo, n)
+		for i := range set {
+			set[i] = observerInfo(fmt.Sprintf("o-%04d", i), "x::y", "", fmt.Sprintf(`{"$and":[{"input.tenant":{"$eq":"tenant-%d"}}]}`, i))
+		}
+		return set
 	}
-	fe.setObservers("bench::filtered", 1, set...)
+	sizes := map[string]int{
+		"bench::filtered": 1000, "bench::few": 4,
+		"bench::deliver-unread": 4, "bench::deliver-matches": 4,
+	}
+	for fn, n := range sizes {
+		fe.setObservers(fn, 1, tenants(n)...)
+	}
 	c := fe.client()
-	registerHost(b, c, "bench::plain", echoHandler)
-	registerHost(b, c, "bench::filtered", echoHandler)
-	waitUntil(b, "the observers active", func() bool { return len(c.Observers("bench::filtered")) == observers })
+	deliver := func(_ context.Context, call *Call, _ []*Observer) (any, error) { return call.Output, nil }
+	c.OnObserverDeliverFor("bench::deliver-none", deliver)
+	c.OnObserverDeliverFor("bench::deliver-unread", deliver)
+	c.OnObserverDeliverFor("bench::deliver-matches", func(_ context.Context, call *Call, observers []*Observer) (any, error) {
+		for _, obs := range observers {
+			obs.Matches(call)
+		}
+		return call.Output, nil
+	})
+	fns := []string{"bench::plain", "bench::filtered", "bench::few", "bench::deliver-none", "bench::deliver-unread", "bench::deliver-matches"}
+	for _, fn := range fns {
+		registerHost(b, c, fn, echoHandler)
+	}
+	waitUntil(b, "the observers active", func() bool {
+		for fn, n := range sizes {
+			if len(c.Observers(fn)) != n {
+				return false
+			}
+		}
+		return true
+	})
 	waitUntil(b, "local dispatch", func() bool {
-		return c.LocalDispatchActive("bench::plain") && c.LocalDispatchActive("bench::filtered")
+		for _, fn := range fns {
+			if !c.LocalDispatchActive(fn) {
+				return false
+			}
+		}
+		return true
 	})
 
 	run := func(fn, payload string) func(b *testing.B) {
@@ -43,7 +76,13 @@ func BenchmarkLocalCall(b *testing.B) {
 			}
 		}
 	}
+	const one, none = `{"tenant":"tenant-2","total":1250}`, `{"tenant":"nobody","total":1250}`
 	b.Run("no_observers", run("bench::plain", `{"tenant":"tenant-500","total":1250}`))
-	b.Run("1000_eq_observers_none_matching", run("bench::filtered", `{"tenant":"nobody","total":1250}`))
+	b.Run("1000_eq_observers_none_matching", run("bench::filtered", none))
 	b.Run("1000_eq_observers_1_matching", run("bench::filtered", `{"tenant":"tenant-500","total":1250}`))
+	b.Run("4_eq_observers_none_matching", run("bench::few", none))
+	b.Run("4_eq_observers_1_matching", run("bench::few", one))
+	b.Run("deliver_hook_0_observers", run("bench::deliver-none", one))
+	b.Run("deliver_hook_4_observers_no_filters_read", run("bench::deliver-unread", one))
+	b.Run("deliver_hook_4_observers_matches_each", run("bench::deliver-matches", one))
 }

@@ -116,9 +116,9 @@ type Call struct {
 	// Metadata is the call's metadata sidecar; nil when it carries none.
 	Metadata json.RawMessage
 
-	// view is what Observer.Matches shares across the observers of a call the SDK
-	// hands a hook (callView); nil on a Call made elsewhere.
-	view *callView
+	// hook is the call the SDK handed a hook of a function with observers, with what
+	// Observer.Matches shares across them (hookCall); nil on a Call made elsewhere.
+	hook *hookCall
 }
 
 // succeeded reports the call's status.
@@ -134,13 +134,19 @@ func (call *Call) succeeded() bool {
 
 // doc is the call as filters read it.
 func (call *Call) doc() *lazyDoc {
-	doc := &lazyDoc{input: call.Input, caller: call.Caller, metadata: call.Metadata}
-	if call.succeeded() {
-		doc.output = call.Output
-	} else {
-		doc.errBody = call.Error
-	}
+	doc := &lazyDoc{}
+	call.readInto(doc)
 	return doc
+}
+
+// readInto sets the parts of d, a document not read yet, to the call's.
+func (call *Call) readInto(d *lazyDoc) {
+	d.input, d.caller, d.metadata = call.Input, call.Caller, call.Metadata
+	if call.succeeded() {
+		d.output = call.Output
+	} else {
+		d.errBody = call.Error
+	}
 }
 
 // Identity is a handler that returns the input it is called with. An event source

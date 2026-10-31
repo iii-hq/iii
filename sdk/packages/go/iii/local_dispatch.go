@@ -105,7 +105,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 			}
 			return f.deliverLocal(ctx, &callDelivery{
 				state:        st,
-				call:         handlerCall(functionID, inv.invocationID, observedInput, handler, caller, inv.metadata),
+				call:         handlerCall(st, functionID, inv.invocationID, observedInput, handler, caller, inv.metadata),
 				handler:      handler,
 				copyRaw:      !private,
 				startedAt:    started,

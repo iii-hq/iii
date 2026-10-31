@@ -291,22 +291,40 @@ func (x *filterIndex) len() int {
 	return n
 }
 
+// hookCall is a call the SDK hands a hook of a function with observers, allocated with
+// what its view is made from: Call.hook points back here. The view is made on the first
+// Observer.Matches of the call, so a hook that evaluates no filter costs nothing more
+// than the Call.
+type hookCall struct {
+	call Call
+	// filters is the filter index of the call state the call started with.
+	filters *filterIndex
+	once    sync.Once
+	view    *callView
+}
+
+// newHookCall is a Call to hand a hook, whose view reads the paths of filters.
+func newHookCall(filters *filterIndex) *Call {
+	h := &hookCall{filters: filters}
+	h.call.hook = h
+	return &h.call
+}
+
+// viewOf is the view of the call, made on first use.
+func (h *hookCall) viewOf() *callView {
+	h.once.Do(func() { h.view = newCallView(&h.call, h.filters) })
+	return h.view
+}
+
 // callView is a call as the filters of its function's observers read it, shared by
 // every observer evaluated on it: its document, each part decoded once, and its value at
-// each path of the function's filter index, resolved once. The SDK attaches one to the
-// Call it hands a hook, so Observer.Matches evaluates each observer at the cost of its
-// own filter (an observer whose condition the call fails costs a comparison). It is
-// safe for concurrent use.
+// each path of the function's filter index, resolved once. Observer.Matches on a call
+// the SDK hands a hook evaluates each observer through it, at the cost of its own filter
+// (an observer whose condition the call fails costs a comparison). It is safe for
+// concurrent use.
 type callView struct {
-	// the fields of the call it was made for (Observer.Matches uses it for a call
-	// that still has them)
-	input, output, metadata json.RawMessage
-	errBody                 *ErrorBody
-	caller                  *Caller
-	status                  string
-
 	succeeded bool
-	doc       *lazyDoc
+	doc       lazyDoc
 	paths     []*filterlink.Path
 	probes    []probe
 }
@@ -320,12 +338,8 @@ type probe struct {
 
 // newCallView is the view of call for the observers of index.
 func newCallView(call *Call, index *filterIndex) *callView {
-	v := &callView{
-		input: call.Input, output: call.Output, metadata: call.Metadata,
-		errBody: call.Error, caller: call.Caller, status: call.Status,
-		succeeded: call.succeeded(),
-		doc:       call.doc(),
-	}
+	v := &callView{succeeded: call.succeeded()}
+	call.readInto(&v.doc)
 	if index != nil && len(index.paths) > 0 {
 		v.paths = make([]*filterlink.Path, len(index.paths))
 		for i, pi := range index.paths {
@@ -336,10 +350,17 @@ func newCallView(call *Call, index *filterIndex) *callView {
 	return v
 }
 
-// isFor reports whether v was made for a call with call's fields.
-func (v *callView) isFor(call *Call) bool {
-	return sameRaw(v.input, call.Input) && sameRaw(v.output, call.Output) && sameRaw(v.metadata, call.Metadata) &&
-		v.errBody == call.Error && v.caller == call.Caller && v.status == call.Status
+// reads reports whether filters read call as the call v was made for: the same status,
+// and the same parts (the same bytes in memory, the same error and caller).
+func (v *callView) reads(call *Call) bool {
+	d := &v.doc
+	if call.succeeded() != v.succeeded || !sameRaw(d.input, call.Input) || !sameRaw(d.metadata, call.Metadata) || d.caller != call.Caller {
+		return false
+	}
+	if v.succeeded {
+		return sameRaw(d.output, call.Output)
+	}
+	return d.errBody == call.Error
 }
 
 // sameRaw reports whether a and b are the same bytes in memory (or both nil, or both
@@ -361,11 +382,11 @@ func (v *callView) matches(obs *Observer) bool {
 	if c := obs.cond.Load(); c != nil {
 		if i := slices.Index(v.paths, c.path); i >= 0 {
 			p := &v.probes[i]
-			p.once.Do(func() { p.value, p.ok = c.path.Resolve(v.doc) })
+			p.once.Do(func() { p.value, p.ok = c.path.Resolve(&v.doc) })
 			if !p.ok || !c.admits(p.value) {
 				return false
 			}
 		}
 	}
-	return obs.filter.Matches(v.doc)
+	return obs.filter.Matches(&v.doc)
 }

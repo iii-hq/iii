@@ -1755,7 +1755,7 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 		}
 		answer, how := f.deliverRouted(ctx, &callDelivery{
 			state:   st,
-			call:    handlerCall(msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, metadata),
+			call:    handlerCall(st, msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, metadata),
 			handler: handler,
 		})
 		routed = how

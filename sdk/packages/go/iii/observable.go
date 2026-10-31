@@ -948,13 +948,15 @@ func (o *Observer) DecodeArgs(v any) error { return json.Unmarshal(o.argsRaw, v)
 // before calling through the observer; iii's delivery applies it on its own. On a call
 // the SDK hands a hook, the observers share the call's decoded document and its values
 // at the paths of the function's filter index, so each costs its own filter, and an
-// observer whose equality condition the call fails costs a comparison.
+// observer costs a comparison when the call fails the condition it is filed under.
 func (o *Observer) Matches(call *Call) bool {
 	if call == nil || o.filter == nil {
 		return false
 	}
-	if v := call.view; v != nil && v.isFor(call) {
-		return v.matches(o)
+	if h := call.hook; h != nil {
+		if v := h.viewOf(); v.reads(call) {
+			return v.matches(o)
+		}
 	}
 	return onAccepts(o.on, call.succeeded()) && o.filter.Matches(call.doc())
 }

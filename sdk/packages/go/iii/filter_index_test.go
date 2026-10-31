@@ -255,6 +255,16 @@ func (g gen) call() *Call {
 
 func (g gen) on() On { return []On{OnSuccess, OnError, OnComplete}[g.r.IntN(3)] }
 
+// handOver is call as the SDK hands it to a hook of a function whose filter index is
+// filters: a copy of its fields, with a view.
+func handOver(call *Call, filters *filterIndex) *Call {
+	handed := newHookCall(filters)
+	hook := handed.hook
+	*handed = *call
+	handed.hook = hook
+	return handed
+}
+
 // checkCall compares the index with a scan for call, and the view's Matches with the
 // bare call's for every observer.
 func checkCall(t *testing.T, x *indexed, call *Call, what string) bool {
@@ -268,12 +278,9 @@ func checkCall(t *testing.T, x *indexed, call *Call, what string) bool {
 		t.Errorf("%s: index %v, scan %v\ncall %s", what, got, want, in)
 		return false
 	}
-	view := newCallView(call, x.index)
-	call.view = view
+	handed := handOver(call, x.index)
 	for _, obs := range x.observers {
-		bare := *call
-		bare.view = nil
-		if got, want := obs.Matches(call), obs.Matches(&bare); got != want {
+		if got, want := obs.Matches(handed), obs.Matches(call); got != want {
 			t.Errorf("%s: Matches through the view %v, on the bare call %v; observer %s filters %v", what, got, want, obs.id, obs.Filters)
 			return false
 		}
