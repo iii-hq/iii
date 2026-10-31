@@ -362,6 +362,53 @@ jobs:
       - name: Run compose tests
         run: cargo test --locked -p iii-compose
 
+  # ──────────────────────────────────────────────────────────────
+  # Compose on sandbox-libkrun — the spec's acceptance run: a registry bundle
+  # and a base-image worker boot in real microVMs owned by the adapter, and one
+  # sandbox::exec goes through the engine router. The adapter and the bundle
+  # are pinned in the test, so a registry release cannot turn this job red.
+  # No continue-on-error: it is meant to become a required check.
+  # ──────────────────────────────────────────────────────────────
+
+  compose-sandbox-e2e-linux:
+    name: Compose Sandbox E2E - linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: compose-sandbox-e2e-linux
+
+      # Public GitHub-hosted Linux runners expose /dev/kvm as of April 2024
+      # (github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available).
+      # The udev rule below grants the runner user direct access — required for
+      # libkrun-backed sandbox tests that boot a real microVM. Cheap no-op for
+      # any feature-gated tests that don't actually launch a guest.
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            ls -l /dev/kvm
+          else
+            echo "::warning::/dev/kvm missing on this runner image; libkrun guest boot will be unavailable"
+          fi
+
+      # The adapter needs libcap-ng at run time (a host prerequisite of sandbox-libkrun).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y libcap-ng0 \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng0; }
+
+      - name: Run the Compose sandbox e2e
+        run: cargo test --locked -p iii --test compose_sandbox_e2e -- --ignored --nocapture
+
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
     runs-on: ${{ matrix.os }}

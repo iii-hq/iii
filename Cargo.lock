@@ -2811,6 +2811,7 @@ dependencies = [
  "fslock",
  "futures",
  "hex",
+ "iii-sandbox-contract",
  "iii-sdk",
  "indexmap 2.14.0",
  "jsonschema",

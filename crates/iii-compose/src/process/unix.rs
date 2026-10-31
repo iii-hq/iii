@@ -66,13 +66,12 @@ pub fn spawn_supervised_piped(
 }
 
 /// Same, but preserves a caller-configured piped stdin and returns its writer.
-/// Used by the managed engine and by VM boot processes, which read the worker
-/// env from stdin; other worker spawns keep a null stdin.
+/// Used only by the managed engine; worker spawns retain null stdin.
 pub fn spawn_supervised_piped_with_stdin(
     command: tokio::process::Command,
 ) -> std::io::Result<(Supervised, ChildOutput, tokio::process::ChildStdin)> {
     let (child, output, stdin) = spawn_supervised_inner(command, true, true)?;
-    let stdin = stdin.ok_or_else(|| std::io::Error::other("child stdin was not piped"))?;
+    let stdin = stdin.ok_or_else(|| std::io::Error::other("managed engine stdin was not piped"))?;
     Ok((child, output, stdin))
 }
 
@@ -256,7 +255,8 @@ impl Supervised {
                 // leader may have exited and its PID gone to somebody else.
                 match self.poll() {
                     Outcome::Exited(status) => status,
-                    Outcome::Running => {
+                    // A local process is never `Unknown`.
+                    Outcome::Running | Outcome::Unknown => {
                         signal_group(self.pgid, Signal::SIGKILL);
                         self.wait().await
                     }

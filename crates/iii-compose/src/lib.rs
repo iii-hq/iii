@@ -46,6 +46,7 @@ pub mod registry;
 pub mod remote;
 pub mod report;
 mod restart;
+pub mod sandbox;
 mod shutdown;
 pub mod spawn;
 pub mod state;
@@ -678,7 +679,7 @@ async fn serve_daemon(
             break;
         }
         if let Some(engine) = managed_engine
-            && let process::Outcome::Exited(status) = engine.poll()
+            && let Some(status) = engine.poll_exit(daemon.engine())
         {
             daemon.shutdown().await;
             return Err(engine_exited(engine, status).await);
@@ -780,19 +781,62 @@ async fn serve_daemon(
         if connected {
             project.progress.engine_ready();
         }
+        // An engine that dies during the startup is recorded as soon as it is
+        // seen, so no stop waits out `worker::stop` over its bus. It also ends
+        // the startup: cancelled, not dropped, so the startup still rolls back
+        // what it started while its calls to the dead bus are dropped at once.
+        // A start that failed first, on its call's dropped connection, still
+        // reports the exit.
+        let note_engine_exit = || {
+            let engine = managed_engine?;
+            Some((engine, engine.poll_exit(daemon.engine())?))
+        };
+        let mut engine_exit = None;
         let result = loop {
             tokio::select! {
                 result = &mut up => break result,
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if !connected => {
-                    connected = daemon.engine().is_connected();
-                    if connected {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    if !connected && daemon.engine().is_connected() {
+                        connected = true;
                         project.progress.engine_ready();
+                    }
+                    if engine_exit.is_none()
+                        && let Some(exit) = note_engine_exit()
+                    {
+                        operation.cancel();
+                        engine_exit = Some(exit);
                     }
                 }
             }
         };
+        if engine_exit.is_none() {
+            engine_exit = note_engine_exit();
+        }
         if daemon.engine().is_connected() {
             project.progress.engine_ready();
+        }
+        if let Some((engine, status)) = engine_exit {
+            project.progress.finish(false, "Failed");
+            let error = engine_exited(engine, status).await;
+            report_up(
+                project,
+                telemetry::UpOutcome::Failed,
+                &daemon,
+                started,
+                None,
+                Some(error.code()),
+                true,
+            )
+            .await;
+            operation
+                .finish(operation::OperationStatus::Failed, error.to_string())
+                .await;
+            println!(
+                "{}",
+                "managed engine exited; stopping every project...".dimmed()
+            );
+            daemon.shutdown().await;
+            return Err(error);
         }
         match result {
             Ok(None) => {
@@ -909,7 +953,7 @@ async fn serve_daemon(
         }
 
         if let Some(engine) = managed_engine
-            && let process::Outcome::Exited(status) = engine.poll()
+            && let Some(status) = engine.poll_exit(daemon.engine())
         {
             println!(
                 "{}",

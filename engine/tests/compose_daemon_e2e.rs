@@ -1447,20 +1447,26 @@ containers:
     )
     .await
     .expect("status after a contained failure");
-    let state = |key: &str| {
+    let container = |key: &str| {
         status["containers"]
             .as_array()
             .expect("containers")
             .iter()
             .find(|container| container["container"] == key)
-            .unwrap_or_else(|| panic!("missing {key}: {status}"))["state"]
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))
             .clone()
     };
-    assert_eq!(state("api"), "ready", "dependent was rolled back: {status}");
-    assert_ne!(
-        state("mailer"),
+    assert_eq!(
+        container("api")["state"],
         "ready",
-        "the failed container must not report ready: {status}"
+        "dependent was rolled back: {status}"
+    );
+    // A start that never registered is a failure with a reason, not a stop.
+    assert_eq!(container("mailer")["state"], "failed", "{status}");
+    assert_eq!(
+        container("mailer")["last_error"],
+        "container 'mailer' was not ready after 2s",
+        "{status}"
     );
 
     api.shutdown_async().await;

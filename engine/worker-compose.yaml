@@ -16,14 +16,9 @@ engine:
           directory: ./config
       ttl_seconds: 0
 
-    # Ephemeral sandboxes are an engine-owned exception to project containers.
-    # iii-sandbox:
-    #   auto_install: true
-    #   image_allowlist: [python, node]
-    #   default_idle_timeout_secs: 300
-    #   max_concurrent_sandboxes: 32
-    #   default_cpus: 1
-    #   default_memory_mb: 512
+  # Sandboxes run in the sandbox-libkrun worker, which Compose installs when the
+  # project needs one. Uncomment to pick another adapter or a shared namespace.
+  # sandbox: {adapter: sandbox-libkrun}
 containers:
   state:
     worker: package://api.workers.iii.dev/state

@@ -217,7 +217,7 @@ pub fn host_target() -> &'static str {
 /// The x86_64 glibc and musl dynamic loaders. A glibc distribution has the
 /// first. A musl one (Alpine) has the second, and may have the first too as a
 /// compatibility link to itself (libc6-compat, gcompat), so the musl loader
-/// decides, as it does for `iii-worker`'s own binary and the installer.
+/// decides, as it does for the installer.
 const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
 const MUSL_LOADER: &str = "/lib/ld-musl-x86_64.so.1";
 
@@ -626,10 +626,9 @@ fn artifact_for_target<'a>(
 ///
 /// Unix only, because starting one is: see [`ComposeError::BundleNeedsAVm`].
 ///
-/// The install is compose's own, not the machine-wide `~/.iii/workers-bundle/`
-/// that `iii add` keeps. That one is keyed by name alone and is replaced on
-/// every install, so two compose projects pinning different versions of the
-/// same bundle would overwrite each other between one `up` and the next.
+/// The install is keyed by name, version and digest under Compose's package
+/// cache, so two projects pinning different versions of the same bundle never
+/// overwrite each other between one `up` and the next.
 #[cfg(unix)]
 async fn install_bundle(
     container: &str,
@@ -912,6 +911,15 @@ async fn resolve_response(
             index = next;
             continue;
         }
+        if let Some(available) = refused_platform(&body) {
+            return Err(ComposeError::UnsupportedPlatform {
+                container: container.to_string(),
+                name: name.to_string(),
+                version: version_range.to_string(),
+                target: candidates[index].to_string(),
+                available: available.join(", "),
+            });
+        }
         return Err(ComposeError::PackageNotResolved {
             container: container.to_string(),
             name: name.to_string(),
@@ -933,17 +941,29 @@ async fn resolve_response(
 /// when the registry refused `tried` as a platform the worker has no build
 /// for (`unsupported_platform`), and only one it lists as available.
 fn fallback_index(body: &str, candidates: &[&str], tried: usize) -> Option<usize> {
+    let available = refused_platform(body)?;
+    (tried + 1..candidates.len())
+        .find(|&index| available.iter().any(|target| target == candidates[index]))
+}
+
+/// The targets an `unsupported_platform` refusal lists as available, or
+/// `None` when `body` is not that refusal.
+fn refused_platform(body: &str) -> Option<Vec<String>> {
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok()?;
     let error = parsed.get("error")?;
     if error.get("code")?.as_str()? != "unsupported_platform" {
         return None;
     }
-    let available = error.get("available")?.as_array()?;
-    (tried + 1..candidates.len()).find(|&index| {
-        available
-            .iter()
-            .any(|value| value.as_str() == Some(candidates[index]))
-    })
+    Some(
+        error
+            .get("available")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 async fn send_resolve_request(
@@ -2047,8 +2067,11 @@ mod tests {
         )
         .await
         .unwrap_err();
+        assert_eq!(error.code(), "UNSUPPORTED_PLATFORM");
         assert!(
-            error.to_string().contains("does not support platform"),
+            error
+                .to_string()
+                .contains("x86_64-apple-darwin, x86_64-unknown-linux-gnu"),
             "{error}"
         );
     }

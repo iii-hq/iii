@@ -69,7 +69,7 @@ impl ManagedEngine {
                 .map_err(|source| ComposeError::EngineSpawnFailed {
                     message: format!("could not claim the managed engine namespace: {source}"),
                 })??;
-        let config_path = materialize_engine_config(spec, namespace_dir)?;
+        let config_path = materialize_engine_config(spec, namespace_dir, daemon_namespace)?;
         let log_path = engine_log_path(namespace_dir);
         let mut engine = Self::spawn_with_materialized_config(
             &executable,
@@ -208,6 +208,16 @@ impl ManagedEngine {
         self.process.poll()
     }
 
+    /// Its exit status once it has exited, recorded on `client` so teardown
+    /// stops asking over its bus.
+    pub fn poll_exit(&self, client: &crate::engine::EngineClient) -> Option<ExitStatus> {
+        let crate::process::Outcome::Exited(status) = self.poll() else {
+            return None;
+        };
+        client.mark_exited();
+        Some(status)
+    }
+
     pub async fn stop(&self, grace: Duration) -> ExitStatus {
         let status = self.process.stop(grace).await;
         self.finish_logging().await;
@@ -246,6 +256,14 @@ struct MaterializedEngineConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     observers: Option<&'a serde_yaml::Value>,
     workers: Vec<MaterializedWorker<'a>>,
+    /// Always written, so the router is bound whether or not the file asks.
+    sandbox: MaterializedSandbox<'a>,
+}
+
+#[derive(Serialize)]
+struct MaterializedSandbox<'a> {
+    adapter: &'a str,
+    namespace: &'a str,
 }
 
 #[derive(Serialize)]
@@ -254,7 +272,13 @@ struct MaterializedWorker<'a> {
     config: &'a serde_yaml::Value,
 }
 
-fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<PathBuf> {
+/// `owner_namespace` is the project's own: the adapter runs there unless
+/// `engine.sandbox.namespace` says otherwise.
+fn materialize_engine_config(
+    spec: &EngineSpec,
+    namespace_dir: &Path,
+    owner_namespace: &str,
+) -> Result<PathBuf> {
     std::fs::create_dir_all(namespace_dir).map_err(|source| ComposeError::Io {
         path: namespace_dir.to_path_buf(),
         source,
@@ -288,6 +312,19 @@ fn materialize_engine_config(spec: &EngineSpec, namespace_dir: &Path) -> Result<
         registration_namespace_grace_ms: spec.registration_namespace_grace_ms,
         observers: spec.observers.as_ref(),
         workers,
+        sandbox: MaterializedSandbox {
+            adapter: spec
+                .sandbox
+                .as_ref()
+                .map_or(iii_sandbox_contract::DEFAULT_ADAPTER, |sandbox| {
+                    sandbox.adapter.as_str()
+                }),
+            namespace: spec
+                .sandbox
+                .as_ref()
+                .and_then(|sandbox| sandbox.namespace.as_deref())
+                .unwrap_or(owner_namespace),
+        },
     };
     let text = serde_yaml::to_string(&document).map_err(|err| ComposeError::EngineSpawnFailed {
         message: format!("could not serialize managed engine configuration: {err}"),
@@ -932,7 +969,7 @@ containers: {}
     #[test]
     fn materialized_config_contains_only_engine_fields_in_canonical_worker_order() {
         let dir = tempfile::tempdir().unwrap();
-        let path = materialize_engine_config(&engine_spec(), dir.path()).unwrap();
+        let path = materialize_engine_config(&engine_spec(), dir.path(), "app").unwrap();
         let document: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
@@ -956,6 +993,53 @@ containers: {}
     }
 
     #[test]
+    fn materialized_config_binds_sandbox_libkrun_in_the_owner_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = materialize_engine_config(&engine_spec(), dir.path(), "orders").unwrap();
+        let document: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+        assert_eq!(
+            document["sandbox"],
+            serde_yaml::from_str::<serde_yaml::Value>(
+                "{adapter: sandbox-libkrun, namespace: orders}"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn materialized_config_uses_the_engine_sandbox_section() {
+        for (section, expected) in [
+            (
+                "{adapter: sandbox-docker}",
+                "{adapter: sandbox-docker, namespace: orders}",
+            ),
+            (
+                "{adapter: sandbox-docker, namespace: shared}",
+                "{adapter: sandbox-docker, namespace: shared}",
+            ),
+        ] {
+            let spec = crate::ComposeFile::parse(
+                &format!("engine:\n  sandbox: {section}\ncontainers: {{}}\n"),
+                "/srv/app/worker-compose.yaml",
+            )
+            .unwrap()
+            .engine
+            .unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = materialize_engine_config(&spec, dir.path(), "orders").unwrap();
+            let document: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+            assert_eq!(
+                document["sandbox"],
+                serde_yaml::from_str::<serde_yaml::Value>(expected).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn materialized_config_infers_worker_manager_endpoint_from_engine_url() {
         let spec = crate::ComposeFile::parse(
             r#"
@@ -970,7 +1054,7 @@ containers: {}
         .engine
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let path = materialize_engine_config(&spec, dir.path()).unwrap();
+        let path = materialize_engine_config(&spec, dir.path(), "app").unwrap();
         let document: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
 
@@ -1044,7 +1128,7 @@ containers: {}
         .engine
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let path = materialize_engine_config(&spec, dir.path()).unwrap();
+        let path = materialize_engine_config(&spec, dir.path(), "app").unwrap();
         let document: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
 
@@ -1067,7 +1151,7 @@ port: 60123
 
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().join("daemon");
-        let path = materialize_engine_config(&engine_spec(), &state_dir).unwrap();
+        let path = materialize_engine_config(&engine_spec(), &state_dir, "app").unwrap();
 
         assert_eq!(
             std::fs::metadata(&state_dir).unwrap().permissions().mode() & 0o777,
@@ -1313,7 +1397,7 @@ port: 60123
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("fake-iii");
         let namespace_dir = dir.path().join("daemon");
-        let config = materialize_engine_config(&engine_spec(), &namespace_dir).unwrap();
+        let config = materialize_engine_config(&engine_spec(), &namespace_dir, "app").unwrap();
         let log = namespace_dir.join("engine.log");
         write_executable(&script, "#!/bin/sh\nexit 0\n");
         std::fs::create_dir(&log).unwrap();
@@ -1391,5 +1475,95 @@ port: 60123
         let _status = engine.stop(Duration::from_secs(2)).await;
 
         assert!(!crate::process::is_running(pid));
+    }
+
+    /// Every exit Compose sees, during the initial `--up` or after it, marks
+    /// the client: that is what lets teardown skip `worker::stop`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_engine_exit_is_recorded_on_the_client() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-iii");
+        let config = dir.path().join("config.yaml");
+        let log = dir.path().join("engine.log");
+        write_executable(&script, "#!/bin/sh\nsleep 1\nexit 3\n");
+        let engine = ManagedEngine::spawn_with_paths(&script, &config, &log, "test")
+            .await
+            .unwrap();
+        let client = crate::engine::EngineClient::connect("ws://127.0.0.1:1", "t", "t");
+
+        assert!(engine.poll_exit(&client).is_none());
+        assert!(!client.has_exited());
+
+        tokio::time::timeout(Duration::from_secs(5), engine.wait())
+            .await
+            .expect("fake engine should exit");
+        assert_eq!(
+            engine.poll_exit(&client).and_then(|status| status.code()),
+            Some(3)
+        );
+        assert!(client.has_exited());
+    }
+
+    /// An engine that dies while the initial `--up` waits on its bus ends the
+    /// command at once, rather than after the call in flight times out.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_engine_exit_during_the_initial_up_ends_it() {
+        use futures::StreamExt;
+
+        // Accepts the daemon and never answers it, so `up` stays in a call.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    while socket.next().await.is_some() {}
+                });
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("fake-iii");
+        write_executable(&script, "#!/bin/sh\nsleep 1\nexit 3\n");
+        let engine = ManagedEngine::spawn_with_paths(
+            &script,
+            &dir.path().join("config.yaml"),
+            &dir.path().join("engine.log"),
+            "test",
+        )
+        .await
+        .unwrap();
+        let file = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        )
+        .unwrap();
+        let project = crate::InitialProject {
+            progress: crate::report::StartupProgress::start(true, &file),
+            file,
+            frozen: false,
+            shape: Default::default(),
+        };
+
+        let (_never, receiver) = tokio::sync::watch::channel(false);
+        let error = tokio::time::timeout(
+            Duration::from_secs(8),
+            crate::serve_daemon(
+                url,
+                format!("engine-exit-{}", uuid::Uuid::new_v4()),
+                None,
+                Some(project),
+                Some(&engine),
+                crate::daemon::EnginePolicy::External,
+                crate::shutdown::ShutdownSignal::from_receiver(receiver),
+            ),
+        )
+        .await
+        .expect("the startup must not wait out its call to a dead engine")
+        .unwrap_err();
+
+        assert_eq!(error.code(), "ENGINE_EXITED");
     }
 }

@@ -1,0 +1,8 @@
+{
+  "name": "sandbox-vm-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "iii-sdk": "0.24.6"
+  }
+}

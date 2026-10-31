@@ -46,9 +46,20 @@ pub enum ComposeError {
     #[error(
         "engine worker '{worker}' is not configurable inside worker-compose.yaml. Move project \
          workers under containers; engine.workers accepts configuration, iii-worker-manager, \
-         iii-http-functions, iii-stream, and iii-sandbox"
+         iii-http-functions and iii-stream. Sandboxes are configured under engine.sandbox"
     )]
     UnsupportedEngineWorker { worker: String },
+
+    /// The pre-0.26 `engine.workers.iii-sandbox` block. `replacement` is the
+    /// `containers:` entry that carries its settings to `sandbox-libkrun`.
+    #[error(
+        "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the \
+         sandbox-libkrun worker, which Compose installs for you. Replace the block with \
+         `engine.sandbox.adapter: sandbox-libkrun` (optional, the default) and move \
+         image_allowlist/custom_images/default_* to `containers.sandbox-libkrun.config_override`. \
+         Guide: https://iii.dev/docs/upgrading/sandbox-worker\n\n{replacement}"
+    )]
+    SandboxConfigMoved { replacement: String },
 
     #[error(
         "engine worker '{worker}' is injected automatically and must not be declared under \
@@ -286,6 +297,22 @@ pub enum ComposeError {
         available: String,
     },
 
+    #[error(
+        "{needed_by} needs the sandbox adapter '{adapter}', and --frozen does not edit the file. \
+         Run up once without --frozen, or: iii trigger compose::add worker=iii-sandbox"
+    )]
+    SandboxAdapterNotDeclared { adapter: String, needed_by: String },
+
+    #[error(
+        "container '{container}' is the sandbox adapter '{expected}', but adapter::info names \
+         '{found}'. Set engine.sandbox.adapter to '{found}' or install '{expected}'"
+    )]
+    SandboxAdapterMismatch {
+        container: String,
+        expected: String,
+        found: String,
+    },
+
     #[error("container '{container}': its package has not been installed yet")]
     PackageNotInstalled { container: String },
 
@@ -505,6 +532,11 @@ pub enum ComposeError {
     )]
     AddPlanStale { path: PathBuf, replans: u32 },
 
+    /// `build` runs outside the daemon's mutation lock, so a file edited while
+    /// it prepared is not overwritten from its stale snapshot.
+    #[error("{} changed while build was preparing it; nothing was written. Run the build again.", .path.display())]
+    BuildPlanStale { path: PathBuf },
+
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
     /// the caller is standing in, and never obvious from the caller's side.
@@ -570,6 +602,7 @@ impl ComposeError {
             Self::FrozenLockOutOfDate { .. } => "COMPOSE_LOCK_OUT_OF_DATE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
+            Self::SandboxConfigMoved { .. } => "SANDBOX_CONFIG_MOVED",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
             Self::InvalidEngineObservers => "INVALID_ENGINE_OBSERVERS",
@@ -609,6 +642,8 @@ impl ComposeError {
             Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
             Self::NotAPackageContainer { .. } => "NOT_A_PACKAGE_CONTAINER",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
+            Self::SandboxAdapterNotDeclared { .. } => "SANDBOX_ADAPTER_NOT_DECLARED",
+            Self::SandboxAdapterMismatch { .. } => "SANDBOX_ADAPTER_MISMATCH",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",
             Self::PackageDigestMismatch { .. } => "PACKAGE_DIGEST_MISMATCH",
@@ -639,6 +674,7 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
             Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
+            Self::BuildPlanStale { .. } => "BUILD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",

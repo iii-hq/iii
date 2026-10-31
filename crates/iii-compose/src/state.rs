@@ -80,10 +80,16 @@ pub enum ChildStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChildRecord {
-    pub pid: u32,
+    /// `None` for a VM container, which has no local process.
+    #[serde(default)]
+    pub pid: Option<u32>,
     /// Fingerprint taken when the child was spawned. Without a match, the PID is
     /// never signalled again.
-    pub birth: BirthIdentity,
+    #[serde(default)]
+    pub birth: Option<BirthIdentity>,
+    /// The VM a VM container runs, at the adapter that runs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm: Option<VmRecord>,
     pub status: ChildStatus,
     /// Seconds since the unix epoch, for `compose::status` output.
     pub started_at: u64,
@@ -91,11 +97,23 @@ pub struct ChildRecord {
     pub last_error: Option<String>,
 }
 
+/// One boot of a VM container: `instance` names it, so a call about an older
+/// boot cannot touch a newer one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VmRecord {
+    pub adapter: String,
+    /// Where the adapter's `worker::*` functions are registered.
+    pub namespace: String,
+    pub vm_id: String,
+    pub instance: u64,
+}
+
 impl ChildRecord {
     pub fn new(pid: u32, birth: BirthIdentity, status: ChildStatus) -> Self {
         Self {
-            pid,
-            birth,
+            pid: Some(pid),
+            birth: Some(birth),
+            vm: None,
             status,
             started_at: now_unix(),
             last_error: None,
@@ -104,6 +122,20 @@ impl ChildRecord {
 
     pub fn from_supervised(child: &crate::process::Supervised, status: ChildStatus) -> Self {
         Self::new(child.pid, child.birth.clone(), status)
+    }
+
+    pub fn from_child(child: &crate::lifecycle::Child, status: ChildStatus) -> Self {
+        match child {
+            crate::lifecycle::Child::Process(process) => Self::from_supervised(process, status),
+            crate::lifecycle::Child::Vm(vm) => Self {
+                pid: None,
+                birth: None,
+                vm: Some(vm.record.clone()),
+                status,
+                started_at: now_unix(),
+                last_error: None,
+            },
+        }
     }
 }
 
@@ -119,6 +151,13 @@ pub struct DaemonState {
     /// written before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<Owner>,
+    /// Secret that lets this project's engine call the sandbox adapter's
+    /// `worker::*` functions. Minted when the project first opens, kept in this
+    /// 0600 file so a restarted daemon hands the same value to an adopted
+    /// adapter, and given to the adapter container only. `None` in state
+    /// written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_token: Option<String>,
 }
 
 /// One compose process, fingerprinted like the children it records.
@@ -157,6 +196,7 @@ impl DaemonState {
             namespace: namespace.to_string(),
             containers: BTreeMap::new(),
             owner: None,
+            sandbox_token: None,
         }
     }
 
@@ -191,26 +231,40 @@ pub enum Reconciliation {
     /// A live PID that is not provably the recorded process — a recycled PID, or
     /// a platform that cannot fingerprint. Never signalled; reported instead.
     Unverifiable,
-    /// This daemon stopped it on purpose and recorded that: nothing to adopt,
-    /// nothing to report. `down` leaves the record behind and `restart`
-    /// re-opens the project right after it.
+    /// This daemon stopped it on purpose, or recorded it as failed and why:
+    /// nothing to adopt, nothing to report. `down` leaves the record behind and
+    /// `restart` re-opens the project right after it.
     Stopped,
 }
 
 /// Read-only: inspects the recorded child and returns what to do. Signals
 /// nothing, kills nothing.
 pub fn reconcile(record: &ChildRecord) -> Reconciliation {
-    if record.status == ChildStatus::Stopped {
+    // A failed record's last_error already says why; re-checking it would
+    // replace that with "exited". A failed record can still be running (an
+    // unverifiable pid, or a VM whose worker::stop got no answer); reading it
+    // as stopped never signals it, and its adapter still owns the VM.
+    if matches!(record.status, ChildStatus::Stopped | ChildStatus::Failed) {
         return Reconciliation::Stopped;
     }
-    if !crate::process::is_running(record.pid) {
+    // No process: a VM container, which only its adapter can answer for.
+    let (Some(pid), Some(birth)) = (record.pid, &record.birth) else {
+        return Reconciliation::Gone;
+    };
+    if !crate::process::is_running(pid) {
         return Reconciliation::Gone;
     }
-    if record.birth.matches(&birth_identity(record.pid)) {
+    if birth.matches(&birth_identity(pid)) {
         Reconciliation::Adopt
     } else {
         Reconciliation::Unverifiable
     }
+}
+
+// A test's own package cache, so it never reads or deletes the real one.
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_PACKAGE_CACHE: PathBuf;
 }
 
 /// Owner-only directory holding one daemon's durable state.
@@ -235,6 +289,10 @@ impl StateStore {
     /// Registry packages are shared by every Compose daemon and project on
     /// this machine.
     pub fn package_cache() -> Result<PathBuf> {
+        #[cfg(test)]
+        if let Ok(cache) = TEST_PACKAGE_CACHE.try_with(Clone::clone) {
+            return Ok(cache);
+        }
         Ok(Self::root()?.join("packages"))
     }
 
@@ -353,7 +411,7 @@ impl StateStore {
     }
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
@@ -384,5 +442,73 @@ mod reconcile_tests {
         // Anything else still goes through the liveness check.
         let failed = ChildRecord::new(u32::MAX - 7, BirthIdentity::Unavailable, ChildStatus::Ready);
         assert_eq!(reconcile(&failed), Reconciliation::Gone);
+    }
+
+    #[test]
+    fn a_failed_record_keeps_its_error_across_a_restart() {
+        // A start that never registered: no process, no VM.
+        let never_ran = ChildRecord {
+            pid: None,
+            birth: None,
+            vm: None,
+            status: ChildStatus::Failed,
+            started_at: 1,
+            last_error: Some("container 'mailer' was not ready after 2s".into()),
+        };
+        assert_eq!(reconcile(&never_ran), Reconciliation::Stopped);
+        // A restart that failed reuses the stopped record, dead pid and all.
+        let restarted = ChildRecord {
+            last_error: never_ran.last_error.clone(),
+            ..ChildRecord::new(
+                u32::MAX - 7,
+                BirthIdentity::Unavailable,
+                ChildStatus::Failed,
+            )
+        };
+        assert_eq!(reconcile(&restarted), Reconciliation::Stopped);
+        // Stopped is also what keeps a failed VM's record from its adapter.
+        let vm = ChildRecord {
+            vm: Some(super::VmRecord {
+                adapter: "sandbox-libkrun".into(),
+                namespace: "app".into(),
+                vm_id: "ab".into(),
+                instance: 2,
+            }),
+            ..never_ran
+        };
+        assert_eq!(reconcile(&vm), Reconciliation::Stopped);
+    }
+
+    #[test]
+    fn a_pre_0_26_state_file_still_loads() {
+        let state: super::DaemonState = serde_json::from_str(
+            r#"{"compose_path": "/srv/app/worker-compose.yaml", "namespace": "app", "containers": {"api": {"pid": 42, "birth": {"start_time": 7}, "status": "ready", "started_at": 1}}}"#,
+        )
+        .unwrap();
+        let api = &state.containers["api"];
+        assert_eq!(api.pid, Some(42));
+        assert_eq!(api.birth, Some(BirthIdentity::StartTime(7)));
+        assert_eq!(api.vm, None);
+        assert_eq!(state.sandbox_token, None);
+    }
+
+    #[test]
+    fn a_vm_record_round_trips_and_reconciles_as_gone() {
+        let record = ChildRecord {
+            pid: None,
+            birth: None,
+            vm: Some(super::VmRecord {
+                adapter: "sandbox-libkrun".into(),
+                namespace: "app".into(),
+                vm_id: "ab".into(),
+                instance: 2,
+            }),
+            status: ChildStatus::Ready,
+            started_at: 1,
+            last_error: None,
+        };
+        let text = serde_json::to_string(&record).unwrap();
+        assert_eq!(serde_json::from_str::<ChildRecord>(&text).unwrap(), record);
+        assert_eq!(reconcile(&record), Reconciliation::Gone);
     }
 }

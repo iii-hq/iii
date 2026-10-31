@@ -30,7 +30,7 @@ pub enum StartSpec {
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
     /// A worker started in a VM. The source decides which validation and
-    /// workspace rules `iii-worker` applies before it builds the boot command.
+    /// workspace rules the sandbox adapter applies before it boots the VM.
     Vm(VmSpec),
 }
 
@@ -38,7 +38,12 @@ pub enum StartSpec {
 pub enum VmSpec {
     /// An installed registry bundle. Its manifest command is publisher-owned
     /// and is always read and run inside the guest.
-    Bundle { install_dir: PathBuf },
+    Bundle {
+        /// The bundle manifest's name, which for an alias is the package it
+        /// stands for, not the container key.
+        package: String,
+        install_dir: PathBuf,
+    },
     /// A local project whose manifest selected an OCI rootfs. The compose
     /// command may replace the manifest's `scripts.start`, but still runs in
     /// the guest.
@@ -50,6 +55,9 @@ pub enum VmSpec {
 
 #[derive(Debug, Clone)]
 pub struct Manifest {
+    /// The worker's own name, when it is a string. Only the sandbox adapter
+    /// lookup reads it: a container is still known by its compose key.
+    pub name: Option<String>,
     pub start: Option<String>,
     pub base_image: Option<String>,
 }
@@ -86,6 +94,11 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
         .map(str::to_string);
 
     Ok(Some(Manifest {
+        name: raw
+            .name
+            .as_ref()
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string),
         start: raw.scripts.and_then(|scripts| scripts.start),
         base_image,
     }))
@@ -296,9 +309,10 @@ fn check_env_files(key: &str, container: &Container) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
-    // `name` is deliberately absent: the manifest may carry one and compose
-    // does not read it. Unknown keys are tolerated here, so it is ignored
-    // rather than rejected.
+    /// Kept as a value so a name that is not a string stays ignored, as every
+    /// key compose does not need is.
+    #[serde(default)]
+    name: Option<serde_yaml::Value>,
     #[serde(default)]
     scripts: Option<RawManifestScripts>,
     /// Kept as a value so legacy scalar forms remain ignored. Compose only

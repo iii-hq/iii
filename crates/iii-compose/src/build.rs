@@ -3,17 +3,18 @@
 
 //! Prepare every registry package in a compose file without starting anything.
 
-use std::{path::Path, time::Instant};
-
-#[cfg(test)]
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    time::Instant,
+};
 
 #[cfg(test)]
 use futures::StreamExt;
 
 use crate::{
     ComposeFile,
-    error::Result,
+    error::{ComposeError, Result},
     registry::{self, InstallStatus},
     report,
     state::StateStore,
@@ -48,6 +49,10 @@ pub async fn build_frozen(file: &Path) -> Result<BuildReport> {
 
 async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     let began = Instant::now();
+    let text = std::fs::read_to_string(file).map_err(|source| ComposeError::Io {
+        path: file.to_path_buf(),
+        source,
+    })?;
     let mut file = ComposeFile::load(file)?;
     let cache = StateStore::package_cache()?;
     let packages = file
@@ -63,11 +68,39 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         .collect::<Vec<_>>();
     report::plan(&packages);
 
-    let prepared = match if frozen {
-        crate::lockfile::prepare_frozen(&mut file, &cache).await
-    } else {
-        crate::lockfile::prepare(&mut file, &cache, &std::collections::BTreeSet::new()).await
-    } {
+    // Not frozen, it writes the adapter a VM needs, so `build` then
+    // `up --frozen` works.
+    let mut edited = text.clone();
+    // `build` takes no `--namespace`: the file's own.
+    let namespace = crate::namespace::project_namespace(None, file.namespace.as_deref());
+    let prepared = async {
+        if frozen {
+            let prepared = crate::lockfile::prepare_frozen(&mut file, &cache).await?;
+            crate::sandbox::require_declared_adapter(&file, &namespace)?;
+            return Ok::<_, ComposeError>(prepared);
+        }
+        let mut prepared = crate::lockfile::prepare(&mut file, &cache, &BTreeSet::new()).await?;
+        let path = file.path.clone();
+        if crate::sandbox::apply_adapter_change(
+            &path,
+            &mut edited,
+            &mut file,
+            &namespace,
+            &mut prepared,
+            &mut BTreeSet::new(),
+            &mut BTreeMap::new(),
+            false,
+            false,
+        )
+        .await?
+        .is_some()
+        {
+            prepared.install(&cache).await?;
+        }
+        Ok(prepared)
+    }
+    .await;
+    let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             report::plan_done();
@@ -78,7 +111,23 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     for (container, reference, canonical) in prepared.aliases() {
         registry::warn_alias(container, reference, Some(canonical), None).await;
     }
-    prepared.write_if_changed()?;
+    // The daemon's mutation lock is in its own process: an edit made while
+    // this prepared must not be overwritten from the snapshot. A build that
+    // writes nothing (frozen, or already locked) overwrites nothing.
+    if (edited != text || prepared.changed())
+        && std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+            path: file.path.clone(),
+            source,
+        })? != text
+    {
+        let error = ComposeError::BuildPlanStale {
+            path: file.path.clone(),
+        };
+        report::plan_done();
+        report::summary_failed("build", error.code(), began.elapsed());
+        return Err(error);
+    }
+    crate::daemon::persist_mutation(&file.path, &text, &edited, &prepared)?;
     if prepared.changed() {
         report::lock_changed(prepared.path(), !prepared.existed());
     }
