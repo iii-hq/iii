@@ -80,6 +80,8 @@ fn child_for(children: &[Child], id: &str) -> usize {
 
 /// `items` as one node, or two halves when it holds more than [`MAX`].
 fn sized<T>(mut items: Vec<T>, node: fn(Vec<T>) -> Node) -> Grown {
+    #[cfg(test)]
+    work::add(items.len());
     if items.len() <= MAX {
         return Grown::One(node(items));
     }
@@ -179,6 +181,8 @@ fn insert(node: &Node, observer: &Observer) -> (Grown, bool) {
                 Ok(at) => {
                     let mut next = observers.clone();
                     next[at] = observer.clone();
+                    #[cfg(test)]
+                    work::add(next.len());
                     (Grown::One(Node::Leaf(next)), false)
                 }
                 Err(at) => {
@@ -217,6 +221,8 @@ fn remove(node: &Node, id: &str) -> Option<Node> {
             let mut next = Vec::with_capacity(observers.len() - 1);
             next.extend_from_slice(&observers[..at]);
             next.extend_from_slice(&observers[at + 1..]);
+            #[cfg(test)]
+            work::add(next.len());
             Some(Node::Leaf(next))
         }
         Node::Branch(children) => {
@@ -247,6 +253,8 @@ fn remove(node: &Node, id: &str) -> Option<Node> {
                 next.push(Child::of(child));
                 next.extend_from_slice(&children[at + 1..]);
             }
+            #[cfg(test)]
+            work::add(next.len());
             Some(Node::Branch(next))
         }
     }
@@ -258,6 +266,26 @@ fn join(lower: &Node, upper: &Node) -> Grown {
         (Node::Leaf(a), Node::Leaf(b)) => sized([a.as_slice(), b].concat(), Node::Leaf),
         (Node::Branch(a), Node::Branch(b)) => sized([a.as_slice(), b].concat(), Node::Branch),
         _ => unreachable!("neighbours are at the same depth"),
+    }
+}
+
+/// What the complexity tests count: observer slots copied into new nodes on
+/// this thread.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SLOTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn add(slots: usize) {
+        SLOTS.with(|counted| counted.set(counted.get() + slots));
+    }
+
+    /// What was counted since the last call.
+    pub(crate) fn take() -> usize {
+        SLOTS.with(|counted| counted.replace(0))
     }
 }
 

@@ -3135,4 +3135,193 @@ mod tests {
         }
         assert!(function.observers().is_empty());
     }
+
+    /// The ids of `function_id`'s compiled set, in the order a call reads
+    /// them.
+    fn compiled_ids(iii: &IIIClient, function_id: &str) -> Vec<String> {
+        compiled(iii, function_id)
+            .observers
+            .iter()
+            .map(|o| o.id().to_string())
+            .collect()
+    }
+
+    fn compiled(iii: &IIIClient, function_id: &str) -> Arc<CompiledSet> {
+        iii.function_entry(function_id)
+            .expect("registered")
+            .compiled()
+    }
+
+    /// Waits until `function_id`'s compiled set holds `ids`.
+    async fn until_compiled(iii: &IIIClient, function_id: &str, ids: &[&str]) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while compiled_ids(iii, function_id) != ids {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{:?}, not {ids:?}", compiled_ids(iii, function_id)));
+    }
+
+    /// Adding a keyed observer to a function this worker hosts, and removing
+    /// it, cost `O(log n)` in the function's `n` active observers: what a
+    /// change copies into the compiled set grows with its depth, not with
+    /// its size. Rebuilding the set on each change would copy every
+    /// observer, 16 times as many at 4,000 as at 250.
+    #[tokio::test]
+    async fn adding_and_removing_keyed_observers_costs_log_n() {
+        async fn per_change(n: usize) -> f64 {
+            let (iii, mut rx) = client();
+            v2_hello(&iii);
+            iii.on_observer_match_for(
+                "keyed::f",
+                crate::Match::keys(
+                    |obs| obs.args_value()["key"].as_str().into(),
+                    |call| call.input["key"].as_str().into(),
+                ),
+            );
+            let function = hosted(&iii, &mut rx, "keyed::f", json!([])).await;
+            crate::observer_set::work::take();
+            for i in 0..n {
+                feed(
+                    &iii,
+                    json!({
+                        "type": "observeradded", "function_id": "keyed::f",
+                        "revision": 2 + i as u64,
+                        "observer": view_with_args(&format!("o{i}"), json!({ "key": format!("k{i}") }))
+                    }),
+                );
+                next_ack(&mut rx).await;
+            }
+            while function.observers().len() < n {
+                tokio::task::yield_now().await;
+            }
+            for i in 0..n {
+                feed(
+                    &iii,
+                    json!({
+                        "type": "observerremoved", "function_id": "keyed::f",
+                        "revision": 2 + (n + i) as u64, "id": format!("o{i}")
+                    }),
+                );
+            }
+            while function.is_observed() {
+                tokio::task::yield_now().await;
+            }
+            crate::observer_set::work::take() as f64 / (2 * n) as f64
+        }
+        let small = per_change(250).await;
+        let large = per_change(4_000).await;
+        assert!(
+            small > 0.0 && large < 3.0 * small && large < 256.0,
+            "slots copied per change: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+    }
+
+    /// The compiled set is in id order whatever order its observers arrive
+    /// in, and a call keeps the set it loaded while observers come and go.
+    #[tokio::test]
+    async fn a_call_keeps_the_compiled_set_it_loaded() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        hosted(
+            &iii,
+            &mut rx,
+            "order::f",
+            json!([
+                view_with_args("c", json!({})),
+                view_with_args("a", json!({})),
+                view_with_args("b", json!({}))
+            ]),
+        )
+        .await;
+        until_compiled(&iii, "order::f", &["a", "b", "c"]).await;
+        let loaded = compiled(&iii, "order::f");
+
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "order::f", "revision": 2, "id": "b" }),
+        );
+        feed(
+            &iii,
+            json!({ "type": "observeradded", "function_id": "order::f", "revision": 3,
+                    "observer": view_with_args("aa", json!({})) }),
+        );
+        next_ack(&mut rx).await;
+        until_compiled(&iii, "order::f", &["a", "aa", "c"]).await;
+        let ids: Vec<&str> = loaded.observers.iter().map(Observer::id).collect();
+        assert_eq!(ids, ["a", "b", "c"], "the set loaded before the changes");
+        assert!(
+            compiled(&iii, "order::f").seq > loaded.seq,
+            "`aa` joined after the call loaded its set"
+        );
+    }
+
+    /// What a call keeps follows the observers that need it: the roots a
+    /// filter reads and the parts a capture names stop being kept once the
+    /// last observer that needs them leaves, and a replayed view with other
+    /// filters replaces its observer's needs.
+    #[tokio::test]
+    async fn what_a_call_keeps_follows_the_compiled_set() {
+        let (iii, mut rx) = client();
+        v2_hello(&iii);
+        let view = |id: &str, filters: Value, capture: Value| json!({ "id": id, "args": {}, "target": "t", "filters": filters, "capture": capture });
+        let reads_input = json!({ "input.n": { "$eq": 1 } });
+        hosted(
+            &iii,
+            &mut rx,
+            "needs::f",
+            json!([
+                view("reads", reads_input.clone(), json!([])),
+                view("reads-too", json!({ "input.n": { "$eq": 2 } }), json!([])),
+                view("captures", json!({}), json!(["caller"]))
+            ]),
+        )
+        .await;
+        let kept = |iii: &IIIClient| {
+            let set = compiled(iii, "needs::f");
+            (set.roots.input, set.capture.caller)
+        };
+        until_compiled(&iii, "needs::f", &["captures", "reads", "reads-too"]).await;
+        assert_eq!(kept(&iii), (true, true));
+
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "needs::f", "revision": 2, "id": "reads" }),
+        );
+        until_compiled(&iii, "needs::f", &["captures", "reads-too"]).await;
+        assert_eq!(
+            kept(&iii),
+            (true, true),
+            "`reads-too` still reads the input"
+        );
+
+        // Announced again with the same args and no filter: the same
+        // observer, with the new view's needs.
+        feed(
+            &iii,
+            json!({ "type": "functionregistered", "id": "needs::f", "revision": 3,
+                    "local_dispatch": true,
+                    "observers": [view("reads-too", json!({}), json!([])),
+                                  view("captures", json!({}), json!(["caller"]))] }),
+        );
+        next_ack(&mut rx).await;
+        next_ack(&mut rx).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while kept(&iii).0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the input is not kept");
+        assert_eq!(compiled_ids(&iii, "needs::f"), ["captures", "reads-too"]);
+        assert_eq!(kept(&iii), (false, true));
+
+        feed(
+            &iii,
+            json!({ "type": "observerremoved", "function_id": "needs::f", "revision": 4, "id": "captures" }),
+        );
+        until_compiled(&iii, "needs::f", &["reads-too"]).await;
+        assert_eq!(kept(&iii), (false, false));
+    }
 }
