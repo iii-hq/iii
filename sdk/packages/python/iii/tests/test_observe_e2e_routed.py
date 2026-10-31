@@ -409,3 +409,55 @@ def test_a_refused_observe_holds_nothing_and_its_id_observes_again(worker: Any, 
     settle_engine()
     with pytest.raises(Exception, match="OBSERVER_NOT_FOUND"):
         watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})
+
+
+def test_an_error_answer_to_the_replay_of_an_observer_whose_answers_were_lost_unobserves_it(
+    worker: Any, fid: Any
+) -> None:
+    """The engine created the observer and its owner rejected it, but none of
+    that reached the SDK before the connection dropped. The reattached
+    connection's replay is answered with the held observer's ``error``; the
+    handle's dispose() unobserves it, so the id observes again."""
+    owner = worker("lost-owner")
+    watcher = worker("lost-watcher")
+    src, tgt, oid = fid("py-e2e::lost-src"), fid("py-e2e::lost-tgt"), fid("py-e2e-lost-oid")
+    added: list[str] = []
+
+    @owner.on_observer_added(src)
+    def reject_the_first(observer: Any) -> None:
+        added.append(observer.id)
+        if len(added) == 1:
+            raise ObserveRejection("OWNER_SAYS_NO", "rejected by the owner")
+
+    owner.register_function(src, lambda data: data)
+    got = collector(watcher, tgt)
+    settle_engine()
+
+    def engine_state() -> Any:
+        try:
+            return owner.call({"function_id": "engine::observers::get", "payload": {"id": oid}})["state"]
+        except Exception as error:  # noqa: BLE001
+            return "gone" if "OBSERVER_NOT_FOUND" in str(error) else repr(error)
+
+    # this connection's answers for oid never reach the SDK
+    on_result, on_changed = watcher._on_observe_result, watcher._on_observer_state_changed
+    watcher._on_observe_result = lambda i, s, e: None if i == oid else on_result(i, s, e)  # type: ignore[method-assign]
+    watcher._on_observer_state_changed = lambda i, s, r: None if i == oid else on_changed(i, s, r)  # type: ignore[method-assign]
+    handle = watcher.observe({"function_id": src}, tgt, {"id": oid})
+    wait_for(lambda: engine_state() == "error", "the owner's rejection on the engine")
+    del watcher._on_observe_result, watcher._on_observer_state_changed
+    drop_connection(watcher)
+    wait_for(lambda: watcher.get_connection_state() != "connected", "the disconnect")
+    wait_for(lambda: watcher._registered_on_connection, "the reconnect", timeout=10)
+    wait_for(lambda: handle.state == "error", "the replay's answer")
+    assert handle.reason is not None and handle.reason["code"] == "OWNER_SAYS_NO"
+    assert watcher._observe_sent[oid] == [handle]
+    assert engine_state() == "error"
+    handle.dispose()
+    wait_for(lambda: engine_state() == "gone", "the unobserve")
+    second = watcher.observe({"function_id": src}, tgt, {"id": oid})
+    second.ready(timeout=10)
+    assert added == [oid, oid]
+    watcher.call({"function_id": src, "payload": 1})
+    exactly(got, 1, "the second observer's activation")
+    second.dispose()

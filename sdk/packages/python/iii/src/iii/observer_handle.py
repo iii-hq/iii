@@ -30,10 +30,12 @@ class ObserverHandle:
     """What ``iii.observe`` returns, synchronously.
 
     The observer is replayed with the same id on every reconnect until it is
-    disposed. The engine's refusal of its ``observe`` is final: the engine
-    holds nothing for it, and it is not replayed. State listeners are called in order, on a callback thread of the
-    SDK (never on the event loop that reads the engine's frames), so they may
-    call the sync API.
+    disposed. An ``error`` answer to its first ``observe`` is the engine's
+    refusal and is final: the engine holds nothing for it, and it is not
+    replayed. An ``error`` answer to a replay keeps it replayed, since the
+    engine may hold the observer in that state. State listeners are called in
+    order, on a callback thread of the SDK (never on the event loop that reads
+    the engine's frames), so they may call the sync API.
 
     Attributes:
         id: The observer's id (stable across replays).
@@ -65,12 +67,13 @@ class ObserverHandle:
         #: whether that connection's ``observeresult`` for it arrived.
         self._sent_epoch = -1
         self._answered = False
-        #: An ``observeresult`` other than ``error`` arrived for it on some
-        #: connection: the engine created its observer and may hold it, in
-        #: any state, until it is unobserved or disposed.
-        self._accepted = False
-        #: The engine refused its ``observe`` and stores nothing: that
-        #: answer is final, it is not replayed, and its dispose() sends nothing.
+        #: Sent on more than one connection: an answer on this connection
+        #: answers a replay, and the engine may hold its observer from an
+        #: earlier one (an ``error`` answer can carry that observer's state).
+        self._replayed = False
+        #: The engine answered its first ``observe`` with ``error``: it stores
+        #: nothing for it, so the answer is final, it is not replayed, and its
+        #: dispose() sends nothing.
         self._refused = False
         #: The engine's ``disposed`` for it arrived: it holds nothing there.
         self._engine_disposed = False
@@ -169,8 +172,8 @@ class ObserverHandle:
     def dispose(self) -> None:
         """Removes the observer (``unobserve``). It is not replayed on reconnect.
 
-        Returns at once. A handle whose ``observe`` the engine refused, or
-        that the engine disposed, sends nothing."""
+        Returns at once. A handle the engine refused (an ``error`` answer to
+        its first ``observe``) or disposed sends nothing."""
         if self._state == "disposed":
             return
         self._on_dispose(self)
