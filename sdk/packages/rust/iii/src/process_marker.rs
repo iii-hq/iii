@@ -10,8 +10,8 @@
 
 use std::path::PathBuf;
 
-/// Removes the marker when the connection loop that wrote it ends.
-pub(crate) struct Marker(Option<PathBuf>);
+/// Removes the marker when the client that wrote it shuts down.
+pub(crate) struct Marker(pub(crate) Option<PathBuf>);
 
 impl Marker {
     pub(crate) fn announce(url: &str, name: Option<&str>) -> Self {
