@@ -360,10 +360,11 @@ impl ActiveSlot {
         self.0.read().is_some()
     }
 
-    /// Replaces the current version. Called under `rebuild`.
-    fn store(&self, active: Option<Arc<ActiveSet>>) {
+    /// Replaces the current version, and says whether there was one.
+    /// Called under `rebuild`.
+    fn store(&self, active: Option<Arc<ActiveSet>>) -> bool {
         let previous = std::mem::replace(&mut *self.0.write(), active);
-        drop(previous);
+        previous.is_some()
     }
 }
 
@@ -800,18 +801,19 @@ impl ObserverRegistry {
         let kept = active.is_some() || matches!(callers, Callers::Host(_));
         self.watching_observers_changed(key, active.is_some());
         let held = current.get(routed_key(key));
-        let was_live = held.is_some_and(|held| held.is_live());
         if let Some(held) = held
             && kept
             && held.callers == callers
         {
-            held.active.store(active);
-            self.count_live(was_live, true);
+            let host = matches!(callers, Callers::Host(_));
+            let had = held.active.store(active);
+            self.count_live(host || had, true);
             return;
         }
         if !kept && held.is_none() {
             return;
         }
+        let was_live = held.is_some_and(|held| held.is_live());
         let mut next: RoutedView = HashMap::clone(current);
         // The functions nobody finds go with the copy.
         if current.len() > self.routed_live.load(Ordering::Relaxed) {
@@ -1253,9 +1255,10 @@ impl ObserverRegistry {
             // found by nobody (see [`Routed::is_live`]).
             Some(routed) if active.is_some() || !matches!(routed.callers, Callers::Nobody) => {
                 self.watching_observers_changed(key, active.is_some());
-                let was_live = routed.is_live();
-                routed.active.store(active);
-                self.count_live(was_live, routed.is_live());
+                let host = matches!(routed.callers, Callers::Host(_));
+                let is_live = host || active.is_some();
+                let had = routed.active.store(active);
+                self.count_live(host || had, is_live);
             }
             Some(routed) => self.store_routed(current, key, None, routed.callers),
             None => {
