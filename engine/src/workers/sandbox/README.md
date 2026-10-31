@@ -394,7 +394,7 @@ Adapter errors reach the caller untouched, as the typed `SandboxError` wire payl
 is documented at https://iii.dev/docs/creating-workers/sandboxes. The router adds four:
 
 - `S301`: the bound adapter is not connected (retryable). The message names the fix: `compose::add iii-sandbox`
-  in the namespace's Compose project, or, if none runs, a container for the adapter in a
+  in the namespace's Compose project, or, if none runs, a container with `worker: package://<adapter>` in a
   `worker-compose.yaml` for that namespace.
 - `S302`: the adapter speaks another contract major than the router.
 - `S303`: no adapter is configured; the engine is not managed by a Compose file and has no `sandbox:` binding.

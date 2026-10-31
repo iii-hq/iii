@@ -57,7 +57,7 @@ fn not_connected(b: &SandboxRouterConfig) -> ErrorBody {
     sandbox_error(
         SandboxErrorCode::S301,
         &format!(
-            "adapter {adapter} not connected in namespace {ns}; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a {adapter} container in a worker-compose.yaml for {ns}",
+            "adapter {adapter} not connected in namespace {ns}; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a container with worker: package://{adapter} in a worker-compose.yaml for {ns}",
             adapter = b.adapter,
             ns = b.namespace,
         ),
