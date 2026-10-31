@@ -33,8 +33,12 @@ assert!(filter.matches(&Doc { input: Some(&input), ..Doc::default() }));
 - `FilterIndex` matches many filters against one document. It files each
   filter under one `$eq` / `$in` condition of its top-level `$and` (`path ->
   value -> filters`) and scans the filters without one, so a match costs
-  about one lookup per indexed path plus one evaluation per candidate. Its
-  matches are exactly the filters `Filter::matches` accepts, in key order.
+  about one lookup per indexed path plus one evaluation per candidate. When
+  the lookups would spare little (fewer than two filters per indexed path,
+  or a document whose lookups leave half the filters or more), it evaluates
+  every filter in key order, so a match costs at most about a scan plus one
+  lookup per indexed path. Its matches are exactly the filters
+  `Filter::matches` accepts, in key order.
   It is persistent: a clone is `O(1)` and shares every node, and an insert or
   a removal copies `O(log n)` nodes, so a reader keeps the version it holds.
 

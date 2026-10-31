@@ -312,6 +312,46 @@ fn the_index_matches_what_a_scan_matches_on_shared_paths_and_values() {
     );
 }
 
+/// Filters on many paths, and documents meeting many of them at once: a
+/// match merges more lists than it compares head by head.
+#[test]
+fn the_index_matches_what_a_scan_matches_when_a_document_meets_many_paths() {
+    for seed in 0..40u64 {
+        let mut rng = Rng::new(25_000 + seed);
+        let paths = 5 + rng.below(40);
+        let count = 20 + rng.below(300);
+        let mut index = FilterIndex::new();
+        let mut model: Vec<(u32, Filter)> = Vec::new();
+        for key in 0..count as u32 {
+            let path = format!("input.p{}", rng.below(paths));
+            let other = format!("input.p{}", rng.below(paths));
+            let src = match rng.below(100) {
+                0..50 => json!({ path: { "$eq": scalar_literal(&mut rng) } }),
+                50..70 => {
+                    json!({ path: { "$in": [scalar_literal(&mut rng), scalar_literal(&mut rng)] } })
+                }
+                70..85 => {
+                    json!({ path: { "$eq": scalar_literal(&mut rng) }, other: { "$exists": true } })
+                }
+                _ => json!({ path: { "$exists": rng.chance(80) } }),
+            };
+            let filter = Filter::parse(&src).expect("valid");
+            index.insert(key, &filter, key);
+            model.push((key, filter));
+        }
+        for _ in 0..100 {
+            let mut input = Map::new();
+            for path in 0..paths {
+                if rng.chance(85) {
+                    input.insert(format!("p{path}"), scalar(&mut rng));
+                }
+            }
+            let doc = json!({ "input": input });
+            agree(&index, &model, &doc, &format!("seed {seed}"));
+        }
+    }
+}
+
 #[test]
 fn inserts_removals_and_replacements_keep_the_index_exact_and_every_version_intact() {
     for seed in 0..40u64 {
