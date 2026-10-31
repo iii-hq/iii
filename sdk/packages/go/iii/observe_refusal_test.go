@@ -7,10 +7,11 @@ import (
 	"time"
 )
 
-// Refused observes: an observeresult in state error refuses the observe, and the
-// engine stores nothing for it. The refusal is the handle's last answer on the
-// connection: the handle leaves its id's list when it arrives, its Dispose sends
-// nothing and returns at once, and a later observe of the id works as any other.
+// Refused observes: an observeresult in state error, for a handle whose observer the
+// engine never created, refuses the observe, and the engine stores nothing for it. The
+// refusal is the handle's final answer: the handle leaves its id's list when it
+// arrives and is not sent again, its Dispose sends nothing and returns at once, and a
+// later observe of the id works as any other.
 
 // quickDispose bounds a Dispose that has nothing to wait for, far under the 5 s an
 // SDK that waits for the engine's disposed gives it.
@@ -230,18 +231,18 @@ func TestRefusalOfAnOlderHandleWhileANewerIsPending(t *testing.T) {
 	}
 }
 
-// A refusal answers one connection's observe. A refused handle that is not disposed
-// goes out again on the next connection, and that observe's answer decides what its
-// Dispose sends; disposed while away, it sends nothing on the next connection.
-func TestRefusedHandleOnTheNextConnection(t *testing.T) {
-	for _, next := range []string{"accepted", "refused again", "disposed while away"} {
+// A refusal is the handle's final answer: a later connection does not send the
+// refused handle again. It keeps its state and its id, and its Dispose sends nothing;
+// disposed while away, it parks nothing for the next connection.
+func TestRefusedHandleIsNotSentAgain(t *testing.T) {
+	for _, next := range []string{"kept", "disposed while away"} {
 		t.Run(next, func(t *testing.T) {
-			const id = "replayed"
+			const id = "refused-once"
 			fe := newFakeEngine(t)
 			c := fe.client()
 			h, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: id})
 			fe.waitFrames(MsgObserve, 1, nil)
-			fe.send(refusal(id, "OBSERVER_ID_CONFLICT"))
+			fe.send(refusal(id, "FORBIDDEN"))
 			waitUntil(t, "refused", func() bool { return h.State() == ObserverError })
 
 			if next == "disposed while away" {
@@ -269,25 +270,73 @@ func TestRefusedHandleOnTheNextConnection(t *testing.T) {
 			}
 
 			fe.reconnect(c)
-			fe.waitFrames(MsgObserve, 2, func(d *DecodedMessage) bool { return d.Observe.ID == id })
-			if l := listed(c, id); len(l) != 1 || l[0] != h {
-				t.Fatalf("listed %v on the new connection, want the replayed handle", l)
+			fe.reconnect(c)
+			time.Sleep(30 * time.Millisecond)
+			if o := len(observeFrames(fe, id)); o != 1 {
+				t.Fatalf("%d observes for a refused handle, want the first only", o)
 			}
-			if next == "accepted" {
-				// until then it shows the first connection's refusal
-				fe.send(&ObserveResultMessage{ID: id, State: "active"})
-				waitUntil(t, "the replay accepted", func() bool { return h.State() == ObserverActive })
-				disposeQuickly(t, h)
-				fe.waitFrames(MsgUnobserve, 1, func(d *DecodedMessage) bool { return d.Unobserve.ID == id })
-				return
+			if l := listed(c, id); len(l) != 0 {
+				t.Errorf("listed %v on a later connection", l)
 			}
-			fe.send(refusal(id, "OBSERVER_ID_CONFLICT"))
-			waitUntil(t, "unlisted", func() bool { return len(listed(c, id)) == 0 })
+			if h.State() != ObserverError || h.Reason().Code != "FORBIDDEN" {
+				t.Errorf("refused handle %s %+v on a later connection", h.State(), h.Reason())
+			}
+			var rej *ObserveRejectionError
+			if again, err := c.Observe(idSource, "audit::log", ObserverOptions{ID: id}); again != nil || !errors.As(err, &rej) || rej.Code != "OBSERVER_ID_CONFLICT" {
+				t.Errorf("Observe of the refused handle's id: %v, %v", again, err)
+			}
 			disposeQuickly(t, h)
 			time.Sleep(30 * time.Millisecond)
 			if n := unobserveFrames(fe, id); n != 0 {
-				t.Errorf("%d unobserves for an observe refused on both connections", n)
+				t.Errorf("Dispose of a refused handle sent %d unobserves", n)
 			}
+			second, err := c.Observe(idSource, "audit::log", ObserverOptions{ID: id})
+			if err != nil {
+				t.Fatalf("Observe after the refused handle was disposed: %v", err)
+			}
+			fe.waitFrames(MsgObserve, 2, func(d *DecodedMessage) bool { return d.Observe.ID == id })
+			if l := listed(c, id); len(l) != 1 || l[0] != second {
+				t.Errorf("listed %v, want the new handle alone", l)
+			}
+		})
+	}
+}
+
+// An observeresult in state error for a handle whose observer the engine may hold is
+// that observer's state, not a refusal: on a reattached connection the engine answers
+// the replay of an observer it holds in error (a host rejection, OWNER_TIMEOUT) with
+// error. The handle was answered pending, active or suspended before, or its answer
+// was lost to the closed connection. It stays listed, is replayed again on the next
+// connection, and its Dispose unobserves it.
+func TestAnErrorAnswerForAHeldObserver(t *testing.T) {
+	for _, before := range []string{"pending", "active", "suspended", "answer lost"} {
+		t.Run(before, func(t *testing.T) {
+			const id = "held-errored"
+			fe := newFakeEngine(t)
+			c := fe.client()
+			h, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: id})
+			fe.waitFrames(MsgObserve, 1, nil)
+			if before != "answer lost" {
+				fe.send(&ObserveResultMessage{ID: id, State: before})
+				waitUntil(t, "the first answer", func() bool { return string(h.State()) == before })
+				fe.send(&ObserverStateChangedMessage{ID: id, State: "error", Reason: &ErrorBody{Code: "UNKNOWN_DB", Message: "rejected by the host"}})
+				waitUntil(t, "the host's rejection", func() bool { return h.State() == ObserverError })
+			}
+
+			fe.reconnect(c)
+			fe.waitFrames(MsgObserve, 2, func(d *DecodedMessage) bool { return d.Observe.ID == id })
+			fe.send(&ObserveResultMessage{ID: id, State: "error", Error: &ErrorBody{Code: "OWNER_TIMEOUT", Message: "the host did not answer"}})
+			waitUntil(t, "the replay's answer", func() bool { r := h.Reason(); return r != nil && r.Code == "OWNER_TIMEOUT" })
+			if l := listed(c, id); len(l) != 1 || l[0] != h {
+				t.Errorf("listed %v after the replay's error answer, want the handle", l)
+			}
+			fe.send(&ObserverStateChangedMessage{ID: id, State: "active"})
+			waitUntil(t, "a later state change reaches it", func() bool { return h.State() == ObserverActive })
+
+			fe.reconnect(c)
+			fe.waitFrames(MsgObserve, 3, func(d *DecodedMessage) bool { return d.Observe.ID == id })
+			disposeQuickly(t, h)
+			fe.waitFrames(MsgUnobserve, 1, func(d *DecodedMessage) bool { return d.Unobserve.ID == id })
 		})
 	}
 }
