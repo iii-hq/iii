@@ -360,8 +360,13 @@ pub struct ActiveSet {
     /// The same observers by [`Observer::seq`], indexed by the equality
     /// conditions of their filters: what the engine matches a call with
     /// (decision 55). It yields exactly the observers whose filters match,
-    /// in creation order.
-    pub(crate) filters: FilterIndex<u64, Arc<Observer>>,
+    /// in creation order. `None` while no observer of the function has had a
+    /// filter the index files under a condition: a call is then matched by
+    /// a scan of `observers`, which is what the index would do with them,
+    /// and an observer's change costs nothing more. The first observer whose
+    /// filter it can index builds it from every observer; versions made
+    /// from that one keep it up to date.
+    pub(crate) filters: Option<FilterIndex<u64, Arc<Observer>>>,
     /// How many of `observers` need each part: `needs` follows from them as
     /// observers come and go.
     counts: NeedCounts,
@@ -481,11 +486,13 @@ impl ActiveSet {
             .filter(|observer| observer.seq().is_some())
             .collect();
         let mut counts = NeedCounts::default();
-        let mut filters = FilterIndex::new();
         for observer in &observers {
             counts.count(observer, true);
-            filters.insert(observer.key(), &observer.filter, observer.clone());
         }
+        let filters = observers
+            .iter()
+            .any(|observer| observer.filter.is_indexable())
+            .then(|| index_of(observers.iter()));
         let observers = PersistentSet::from_sorted(observers);
         let shard = {
             use std::hash::{Hash, Hasher};
@@ -499,7 +506,7 @@ impl ActiveSet {
     fn of(
         function: Arc<FnKey>,
         observers: PersistentSet<Arc<Observer>>,
-        filters: FilterIndex<u64, Arc<Observer>>,
+        filters: Option<FilterIndex<u64, Arc<Observer>>>,
         counts: NeedCounts,
         shard: u64,
     ) -> Self {
@@ -520,8 +527,15 @@ impl ActiveSet {
         };
         let mut counts = self.counts;
         counts.count(observer, true);
-        let mut filters = self.filters.clone();
-        filters.insert(observer.key(), &observer.filter, observer.clone());
+        let filters = match &self.filters {
+            Some(filters) => {
+                let mut filters = filters.clone();
+                filters.insert(observer.key(), &observer.filter, observer.clone());
+                Some(filters)
+            }
+            None if observer.filter.is_indexable() => Some(index_of(observers.iter())),
+            None => None,
+        };
         Self::of(
             self.function.clone(),
             observers,
@@ -538,8 +552,11 @@ impl ActiveSet {
         };
         let mut counts = self.counts;
         counts.count(observer, false);
-        let mut filters = self.filters.clone();
-        filters.remove(&seq);
+        let filters = self.filters.as_ref().map(|filters| {
+            let mut filters = filters.clone();
+            filters.remove(&seq);
+            filters
+        });
         Self::of(
             self.function.clone(),
             observers,
@@ -577,6 +594,17 @@ impl ActiveSet {
             .find(|observer| observer.id == id)
             .cloned()
     }
+}
+
+/// `observers`, in creation order, filed in a filter index by seq.
+fn index_of<'a>(
+    observers: impl Iterator<Item = &'a Arc<Observer>>,
+) -> FilterIndex<u64, Arc<Observer>> {
+    let mut filters = FilterIndex::new();
+    for observer in observers {
+        filters.insert(observer.key(), &observer.filter, observer.clone());
+    }
+    filters
 }
 
 /// Checks an observer against the function's options: `NOT_OBSERVABLE` when
@@ -2118,27 +2146,26 @@ mod tests {
                 ..iii_filter::Doc::default()
             };
             set.filters
+                .as_ref()
+                .expect("an index")
                 .matches(&doc)
                 .map(|(_, observer)| observer.id.clone())
                 .collect()
         };
         let held = set();
-        assert_eq!(held.filters.len(), 201);
+        let index = held.filters.as_ref().expect("an index");
+        assert_eq!(index.len(), 201);
         let input = json!({ "k": 7 });
         let doc = iii_filter::Doc {
             input: Some(&input),
             ..iii_filter::Doc::default()
         };
-        assert_eq!(
-            held.filters.candidates(&doc),
-            2,
-            "k-7 and the unfiltered one"
-        );
+        assert_eq!(index.candidates(&doc), 2, "k-7 and the unfiltered one");
         assert_eq!(matched(&held, 7), ["k-7", "plain"], "in creation order");
 
         engine.observers.unobserve(worker.id, "k-7");
         assert_eq!(matched(&set(), 7), ["plain"]);
-        assert_eq!(set().filters.len(), 200);
+        assert_eq!(set().filters.as_ref().map(FilterIndex::len), Some(200));
         assert_eq!(
             matched(&held, 7),
             ["k-7", "plain"],
@@ -2147,6 +2174,48 @@ mod tests {
         engine.observers.unobserve(worker.id, "plain");
         assert!(matched(&set(), 7).is_empty());
         assert_eq!(matched(&set(), 8), ["k-8"]);
+    }
+
+    /// A function whose observers' filters the index cannot serve keeps no
+    /// index: its calls scan the observers, and their changes touch only the
+    /// active set. The first observer whose filter it can serve builds one
+    /// from every observer, and the observers after it are filed as they
+    /// join, whatever their filters, also once it leaves.
+    #[tokio::test]
+    async fn the_filter_index_starts_with_the_first_indexable_observer() {
+        use super::super::events::test_support;
+        use crate::protocol::DEFAULT_NAMESPACE;
+        let engine = Arc::new(crate::engine::Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let observe = |id: &str, filters: Option<Value>| {
+            test_support::request(id, "test::src", "test::dst", filters)
+        };
+        let filed = || {
+            engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .and_then(|set| set.filters.as_ref().map(FilterIndex::len))
+        };
+        for (id, filters) in [
+            ("plain", None),
+            ("ranged", Some(json!({ "input.n": { "$gt": 1 } }))),
+        ] {
+            test_support::observe_request(&engine, &worker, observe(id, filters)).await;
+        }
+        assert_eq!(filed(), None);
+        test_support::observe_request(
+            &engine,
+            &worker,
+            observe("keyed", Some(json!({ "input.k": { "$eq": 1 } }))),
+        )
+        .await;
+        assert_eq!(filed(), Some(3), "built from every observer");
+        test_support::observe_request(&engine, &worker, observe("later", None)).await;
+        assert_eq!(filed(), Some(4));
+        engine.observers.unobserve(worker.id, "keyed");
+        assert_eq!(filed(), Some(3), "kept once built");
     }
 
     /// What a call keeps follows the observers that need it as they leave:
