@@ -194,6 +194,15 @@ impl Filter {
         self.inner.node.equality_terms()
     }
 
+    /// Whether a [`FilterIndex`] files this filter under one of its
+    /// conditions: its top-level `$and` holds an `$eq` of a scalar (a number,
+    /// a string, a boolean or `null`) or an `$in` of scalars on a document
+    /// path. A [`FilterIndex`] evaluates any other filter on every match.
+    pub fn is_indexable(&self) -> bool {
+        self.equality_terms()
+            .any(|(_, literals)| index::indexable_literals(literals))
+    }
+
     /// Checks `input.*` paths against `request_format` and `output.*` paths
     /// against `response_format` (filters.md §4). Returns the warnings for
     /// paths that could not be verified, or [`ErrorCode::InvalidFilterPath`]
