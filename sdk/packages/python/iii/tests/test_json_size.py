@@ -38,6 +38,7 @@ def client():
     sdk._registered_on_connection = False
     sdk._connection_epoch = 0
     sdk._held_observe_frames = []
+    sdk._observers, sdk._observe_sent = {}, {}
     sdk._observe_host = _ObserveHost(sdk)
     sdk._worker_added = sdk._worker_removed = None
     sdk._added_hooks, sdk._removed_hooks, sdk._match_hooks, sdk._deliver_hooks = {}, {}, {}, {}
@@ -641,6 +642,34 @@ async def test_result_substitution_and_same_transport_small_send():
     await sdk._send({"type": "invocationresult", "invocation_id": "inv-2", "function_id": "f", "result": 1})
     assert sdk._ws is socket
     assert socket.send.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("features", "fields", "expected"),
+    [
+        # observe.v2: the error activates no observer, whatever the function's hooks
+        (["observe.v1", "observe.v2"], {}, {"matched": []}),
+        (["observe.v1", "observe.v2"], {"matched": ["o-1", "o-2"]}, {"matched": []}),
+        (["observe.v1", "observe.v2"], {"delivered": True}, {"delivered": True}),
+        # an engine without observe.v2 gets the bare error
+        (["observe.v1"], {"matched": ["o-1"]}, {}),
+        (["observe.v1"], {"delivered": True}, {}),
+    ],
+)
+def test_an_answer_too_large_to_send_activates_no_observer(features, fields, expected):
+    sdk = client()
+    sdk._engine_features = frozenset(features)
+    answer = {
+        "type": "invocationresult",
+        "invocation_id": "inv-1",
+        "function_id": "f",
+        "result": "x" * (_MAX_JSON_OUTBOUND_BYTES + 1),
+        **fields,
+    }
+    fallback = json.loads(sdk._prepare_json(answer))
+    assert {k: v for k, v in fallback.items() if k in ("matched", "delivered")} == expected
+    assert fallback["error"]["code"] == "payload_too_large"
+    assert "result" not in fallback
 
 
 def test_preconnection_enqueue_rejects_arguments_and_substitutes_results():

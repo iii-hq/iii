@@ -329,3 +329,31 @@ def test_a_routed_call_its_deliver_hook_delivered_activates_no_observer(worker: 
     assert "observer_id" not in data and data["routed"]["path"] == "/x"
     [answer] = [f for f in frames.frames if f.get("type") == "invocationresult" and f.get("function_id") == fn]
     assert answer["delivered"] is True and "matched" not in answer
+
+
+def test_an_id_is_free_at_once_after_dispose_and_the_new_observer_hears_its_own_answers(worker: Any, fid: Any) -> None:
+    owner = worker("reuse-owner")
+    watcher = worker("reuse-watcher")
+    src, oid = fid("py-e2e::reuse-src"), fid("py-e2e-reuse-oid")
+    owner.register_function(src, lambda data: data)
+    got = collector(watcher, fid("py-e2e::reuse-tgt"))
+    first = watcher.observe({"function_id": src}, fid("py-e2e::reuse-tgt"), {"id": oid})
+    first.ready(timeout=10)
+    with pytest.raises(ObserveRejection) as raised:  # held: refused, nothing sent
+        watcher.observe({"function_id": src}, fid("py-e2e::reuse-tgt"), {"id": oid})
+    assert raised.value.code == "OBSERVER_ID_CONFLICT"
+    first.dispose()
+    # at once, before the engine's disposed for the first observer arrives
+    second = watcher.observe({"function_id": src}, fid("py-e2e::reuse-tgt"), {"id": oid})
+    second.ready(timeout=10)
+    settle_engine()
+    assert second.state == "active"
+    assert watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})["state"] == "active"
+    watcher.call({"function_id": src, "payload": 1})
+    exactly(got, 1, "the second observer's activation")
+    second.dispose()
+    settle_engine()
+    with pytest.raises(Exception, match="OBSERVER_NOT_FOUND"):
+        watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})
+    watcher.call({"function_id": src, "payload": 2})
+    exactly(got, 1, "no activation after the second dispose")

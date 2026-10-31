@@ -329,7 +329,7 @@ async def test_reactive_state(iii_client: III):
         },
         fn.id,
     )
-    await observer.ready_async()
+    await asyncio.wait_for(observer.ready_async(), timeout=10.0)
 
     try:
         # Poll: call state::set again each attempt until the handler runs.
