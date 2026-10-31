@@ -1124,6 +1124,60 @@ mod tests {
         engine.observers.get(id).map(|o| o.state())
     }
 
+    /// A refused `observe` leaves nothing in the engine (decision 56): its
+    /// `observeresult` is its only answer, and an `unobserve` of its id from
+    /// the same connection is ignored. It sends nothing, and the observer
+    /// another connection holds under the id stays as it was.
+    #[tokio::test]
+    async fn a_refused_observe_stores_nothing_and_its_unobserve_is_ignored() {
+        use crate::{engine::Outbound, protocol::Message};
+
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (holder, _holder_socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &holder,
+            test_support::request("held", "test::src", "test::dst", None),
+        )
+        .await;
+        let (worker, mut socket) = test_support::worker(&engine);
+        for (request, code) in [
+            (
+                test_support::request("refused", "", "test::dst", None),
+                observe_codes::INVALID_ARGS,
+            ),
+            (
+                test_support::request("held", "test::src", "test::dst", None),
+                observe_codes::OBSERVER_ID_CONFLICT,
+            ),
+        ] {
+            let id = request.id.clone();
+            registry.observe(&engine, &worker, request).await;
+            match socket.try_recv() {
+                Ok(Outbound::Protocol(Message::ObserveResult {
+                    id: answered,
+                    state: ObserverState::Error,
+                    error: Some(error),
+                    ..
+                })) => {
+                    assert_eq!(answered, id);
+                    assert_eq!(error.code, code);
+                }
+                _ => panic!("`{id}` answered with its refusal"),
+            }
+            registry.unobserve(worker.id, &id);
+            assert!(socket.try_recv().is_err(), "nothing answers the unobserve");
+        }
+
+        assert!(registry.get("refused").is_none());
+        assert!(registry.tombstones.get("refused").is_none());
+        let held = registry.get("held").unwrap();
+        assert_eq!(held.state(), ObserverState::Active);
+        assert_eq!(held.observing_connection(), holder.id);
+        assert!(registry.observing_for(worker.id).is_empty());
+    }
+
     /// An `observe` handled while its connection is being torn down joins
     /// the connection's other observers: suspended, waiting for a reattach.
     #[tokio::test]
