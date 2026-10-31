@@ -1085,7 +1085,7 @@ impl ObserverRegistry {
             handler,
             traceparent,
             baggage,
-            None,
+            observer.observing().session.clone(),
             observer.metadata.clone(),
             ctx,
         );
@@ -1432,8 +1432,10 @@ impl ObserverRegistry {
     /// host its function and it must be active; then its policy applies and
     /// the call is routed to the observer's stored target (the request's
     /// `function_id` and `namespace` are not read) with the observer's
-    /// metadata, a fresh `activation_id` and depth + 1. The payload goes as
-    /// given. The result, or the refusal code, goes back to the host.
+    /// metadata, a fresh `activation_id` and depth + 1, under the calling
+    /// worker's session. The payload goes as given (a worker's own call carries
+    /// the engine's `_caller_worker_id` stamp, decision 49). The result, or the
+    /// refusal code, goes back to the host.
     ///
     /// A refusal by policy of a call the host waits on counts a drop as it
     /// does for an activation (`LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`,
@@ -1654,7 +1656,7 @@ impl ObserverRegistry {
             handler,
             call.traceparent,
             call.baggage,
-            None,
+            worker.session.clone(),
             observer.metadata.clone(),
             ctx,
         );
