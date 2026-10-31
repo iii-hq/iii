@@ -702,5 +702,13 @@ mod tests {
         let doc = json!({ "input": { "op": "insert", "table": "t7" } });
         assert_eq!(index.candidates(&Doc::from_value(&doc)), 2);
         assert_eq!(matched(&index, &doc), [7]);
+        // Only the condition an entry is filed under rules it out: filed
+        // under `t7`, the seventh is evaluated for a call on `t7` whatever
+        // its `op`, and the first, filed under `insert`, is not.
+        let doc = json!({ "input": { "op": "delete", "table": "t7" } });
+        assert_eq!(index.candidates(&Doc::from_value(&doc)), 1);
+        assert!(matched(&index, &doc).is_empty());
+        let doc = json!({ "input": { "op": "delete", "table": "t0" } });
+        assert_eq!(index.candidates(&Doc::from_value(&doc)), 0);
     }
 }
