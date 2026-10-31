@@ -19,3 +19,28 @@ Failed startup removes its temporary configuration directory. Successful runs
 retain it for diagnostics in the temporary directory printed by the launcher;
 CI runner teardown removes it. For a manual successful run, stop the engine before
 removing that printed directory.
+
+## Workers built from source
+
+`workers-ref` holds the `iii-hq/workers` commit that the SDK CI jobs build the
+`state`, `http`, `pubsub`, `cron` and `queue` workers from.
+`scripts/ci/sdk-test-workers.sh build` fetches that commit and builds the five
+workers against this checkout's Rust SDK crates through a `[patch.crates-io]`
+override. `scripts/ci/sdk-test-workers.sh fixtures` then writes a variant of
+every fixture in this directory: each `package://api.workers.iii.dev/<worker>`
+container becomes a `path://` container that runs the built binary, and the
+engine section and companion configuration directory stay as committed. The
+SDK jobs in `.github/workflows/ci.yml` start these variants.
+
+Locally (the outputs go to `target/sdk-test-workers`, or to
+`$SDK_TEST_WORKERS_DIR` when set):
+
+```bash
+bash scripts/ci/sdk-test-workers.sh build
+bash scripts/ci/sdk-test-workers.sh fixtures
+bash scripts/start-iii.sh \
+  --config target/sdk-test-workers/fixtures/config-test.yaml --port 49199
+```
+
+The committed fixtures start the released worker packages they name. To test
+against another workers commit, write its SHA to `workers-ref`.
