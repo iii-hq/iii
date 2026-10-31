@@ -15,15 +15,17 @@ differ, this file wins, and the spec is updated to match.
 2. **Features.** The engine advertises `observe.v1`, `observe.v2`,
    `local-dispatch.v1`. v2 SDKs declare `observe.v1` and `observe.v2`. `v2`
    is a superset: owner sync, `caller`, `observe_depth` and `activation` work
-   as for v1. A host that declared `observe.v2` delivers its own routed calls;
-   the engine evaluates routed calls only for hosts without it and for
-   engine-hosted functions.
-3. **Routed completion.** `Invocation.sender` carries a completion struct
-   (`result`, `observed: Vec<String>`) instead of a bare result. The
-   `InvocationResult` arm fills it; the routed hook activates the listed ids
-   after checking each belongs to the invoked function and is active, using
-   the input it kept (the routed hook keeps the input exactly when the function
-   is observed, as in 0.25).
+   as for v1. Where filters run is decision 55: the engine evaluates the
+   filters of every routed call, a host that declared `observe.v2` runs its
+   functions' match and deliver hooks for them, and a host evaluates the
+   calls it makes to its own functions.
+3. **Routed completion.** `Invocation.sender` carries a completion struct:
+   the `result` and, from a host that declared `observe.v2`, how the call is
+   delivered (decision 55: every observer, the ids its match hook matched, or
+   delivered by its deliver hook). The `InvocationResult` arm fills it; the
+   routed hook evaluates the observers' `on` and filters against the input it
+   kept (the routed hook keeps the input exactly when the function is
+   observed, as in 0.25) and the answer.
 4. **`output_is_input`** exists on `invocationsobserved` items only. An
    `invocationresult` always carries the result, which the engine already uses
    as `output`. SDK detection: Node, browser and Python compare by identity
@@ -82,8 +84,9 @@ differ, this file wins, and the spec is updated to match.
     { code: INVALID_ARGS_FORMAT }`. Retired: `NOT_OWNER_DELIVERED`,
     `TARGET_MISMATCH`, `FILTERS_NOT_MATCHED`, `INVALID_OBSERVE_DESCRIPTOR`.
 12. **Metrics.** `iii.observer.activations.total{delivery}` takes `engine`
-    (engine-evaluated), `host` (reported by the host, local or routed) and
-    `observer_call`. Telemetry heartbeat fields `trigger_count`,
+    (the engine matched the call among every active observer), `host` (the
+    host named the observer: a report of a local call, or its match hook's
+    `matched` on a routed answer, decision 55) and `observer_call`. Telemetry heartbeat fields `trigger_count`,
     `trigger_types`, `trigger_registrations` become `observer_count`,
     `observable_function_count`, `private_function_count`.
 13. **Call through an observer.** The SDK sends `invokefunction` with
@@ -102,10 +105,11 @@ differ, this file wins, and the spec is updated to match.
 
 36. **What routed observers observe.** The engine takes a routed call's
     `output` from `invocationresult.result`, which is the handler's return
-    value whenever iii delivers (a function with `onObserverDeliver` lists no
-    `observed` ids). The engine strips `observed` before forwarding a result,
-    and activates the `observed` ids on every routed answer from an
-    `observe.v2` host, including a target's answer to an activation.
+    value whenever iii delivers (a function with `onObserverDeliver` answers
+    `delivered: true`). The engine strips `matched` and `delivered` before
+    forwarding a result, and reads them on every routed answer from an
+    `observe.v2` host, including a target's answer to an activation
+    (decision 55).
 37. **0.25 `observe` object.** Decoded from any connection:
     `{ delivery?, args_format?, legacy_trigger_type?, allow? }`. `delivery:
     auto` and an absent `delivery` are accepted; `args_format` and
@@ -113,14 +117,16 @@ differ, this file wins, and the spec is updated to match.
     false`; `delivery: owner` or an unknown value is refused with
     `UNSUPPORTED`.
 
-38. **No host reports for routed calls.** A host reports matches of a routed
-    call only through `invocationresult.observed`; an `invocationsobserved`
-    item always reports a local call of the reporting host. The engine drops an
+38. **No host reports for routed calls.** A host names the observers of a
+    routed call only through `invocationresult.matched`; an
+    `invocationsobserved` item always reports a local call of the reporting
+    host. The engine drops an
     item whose `invocation_id` is a routed call it forwarded to that host, as
     `INVALID_REPORT`.
-39. **Errors on routed answers.** `observed` may ride an `invocationresult`
-    that carries `error`: iii's delivery rethrows the handler's error, and the
-    envelope's `status` and `error` come from the answer.
+39. **Errors on routed answers.** `matched` may ride an `invocationresult`
+    that carries `error`, and the engine evaluates the observers of an answer
+    that carries `error` like any other: iii's delivery rethrows the handler's
+    error, and the envelope's `status` and `error` come from the answer.
 40. **`_caller_worker_id`.** The engine removes the top-level
     `_caller_worker_id` from every observed `input` and `output` it delivers:
     the envelope's fields, and the bare value under `deliver: input` or
@@ -193,6 +199,70 @@ differ, this file wins, and the spec is updated to match.
     `OBSERVER_DISCONNECTED`, and the earlier connection, reattaching, has
     its replayed `observe` answered `disposed`, as for any observer disposed
     while its worker was away.
+55. **Filters run where the system is fastest.** Args are the worker's and
+    filters are iii's. The engine holds everything a routed call's filters
+    read: its input (it forwarded the invocation and keeps the input when an
+    observer needs it), its output or error (the `invocationresult`,
+    decision 36), its caller and its metadata. So the engine evaluates the
+    observers' `on` and filters of every routed call, at no extra frame, and
+    the host keeps what is worker code: the function's match hook, which
+    reads the observers' args, and its deliver hook. An `observe.v2` host's
+    `invocationresult` to a routed call says which of three cases the call
+    is:
+
+    | The answer carries | The function | The engine |
+    |---|---|---|
+    | neither field | has no match hook and no deliver hook | evaluates every active observer of the function |
+    | `"matched": [ids]` | has a match hook: the observers it matched, before `on` and filters, each once; `[]` when it matched none | evaluates those of them that are active observers of the invoked function; any other id counts `INACTIVE` |
+    | `"delivered": true` | has a deliver hook, which delivered the call; the answer is what the hook returned or threw | activates nothing |
+
+    A host sends at most one of the two fields, and `delivered` outweighs
+    `matched`. `matched` is absent, never `[]`, when no match hook ran. The
+    engine reads both from `observe.v2` connections only, on every routed
+    answer (decision 36), leniently (`null` is absent, a `matched` that is
+    not an array is `[]`, a non-string id is skipped, and only `true` sets
+    `delivered`), and strips both before forwarding a result. `matched` from
+    a connection that does not host the function activates nothing
+    (`REPORTER_NOT_OWNER`). A routed call of an `observe.v2` host that ends
+    without its answer activates nothing, and each of its observers counts a
+    `CANCELLED` drop. Hosts without `observe.v2`, engine-hosted functions and
+    HTTP-invoked functions (decision 43) are evaluated against every active
+    observer.
+
+    The engine never sees a host's calls of its own functions, so the host
+    evaluates `on` and filters of its local calls and reports the observers
+    delivered (`invocationsobserved`, decisions 4, 38, 48).
+
+    Every evaluation matches through an index, in the engine and in every
+    SDK. `iii_filter::FilterIndex` files each observer under one `$eq` (or
+    `$in`) condition of a scalar (number, string, boolean, `null`) on a path
+    of its filter's top-level `$and`, path to value to observers, by the
+    language's equality (numbers as doubles, `-0` as `0`), and keeps the
+    observers without one in a list it scans. A call costs about one lookup
+    per indexed path plus one filter evaluation per candidate. Its matches
+    are exactly the observers a scan of every filter matches, in key order,
+    proven by a differential test against the evaluator (the shared
+    generator, an equality-heavy corpus, churn, every conformance vector and
+    the diff corpus). It is persistent: the active-set version a call holds
+    keeps its index, and an observer's change copies `O(log n)` nodes. The
+    engine uses it for every evaluation, and the Rust SDK for its local
+    calls. A function none of whose observers has had an indexable filter
+    (`Filter::is_indexable`) keeps no index: its calls scan the observers,
+    which is what the index would do with them, so an unfiltered observer's
+    change costs what it costs without an index; the first indexable
+    observer builds the index from every observer, and it is kept up to date
+    from then on. Node and the browser, Python and Go index equality conditions in
+    their own filter code by the same rule (the conditions the index serves,
+    then the whole filter of each candidate), proven against their
+    evaluators.
+
+    Under decision 12, an activation of a routed call its host did not narrow
+    is labelled `engine`, and one its match hook named `host`.
+    `isObserved(call)`, `capture`, `deliver`, `on`, policy (`max_fires`,
+    expiry, `max_in_flight`), the loop guard, the caller stamps (decisions
+    40, 49), the reports of local calls, match keys and `for_observer`
+    (decision 52) behave as their own decisions say, and every observer
+    receives what it receives for every call.
 
 ## SDKs (all five)
 
@@ -214,9 +284,9 @@ differ, this file wins, and the spec is updated to match.
 18. **Older engines.** Against an engine without `observe.v2`, functions that
     declare `args_format`, `private` or `observable: false`, or set
     `onObserverMatch` or `onObserverDeliver`, stay unregistered and the SDK logs `UNSUPPORTED` once
-    per function. Everything else works, with the engine evaluating routed
-    calls: the SDK delivers local calls only, sends no `observed` and no
-    `output_is_input`.
+    per function. Everything else works, with the engine evaluating every
+    observer of a routed call: the SDK delivers local calls only, sends no
+    `matched`, no `delivered` and no `output_is_input`.
 19. **`Observer.accepted()`** resolves after the SDK has acked the observer.
     Calls through the observer sent after it resolves reach an active observer
     (frames are processed in order), and so does a call of its function for

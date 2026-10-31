@@ -66,8 +66,9 @@ iii validates them against the function's `args_format` and hands them to its
 hooks; the worker decides what they mean (a table to capture, a cron
 expression, a route, a retry policy). `filters` belong to iii. They select
 calls by `input`, `output`, `error`, `caller` and `metadata`, and iii evaluates
-them wherever the call is delivered: in the worker that ran it, or in the
-engine.
+them where that is fastest: in the engine for every call it routes, which
+already holds all five, and in the worker for the calls it makes to its own
+functions, which the engine never sees (§8.2).
 
 ## 2. From 0.25
 
@@ -86,7 +87,7 @@ engine.
 | CLI `iii trigger <fn>` | `iii call <fn>`; `iii trigger` and `iii t` are aliases |
 | `Observe::owner()`, `Observe::auto()`, `ObserveHandler` (Rust) | `on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` methods taking closures or types that implement the hook traits (§5.2) |
 | `observe({ function_id }, target)` | also `observe('fn::id', target)` |
-| the engine evaluates routed calls, the host evaluates local calls and emits | the host evaluates every call of its functions; the engine evaluates calls to hosts without `observe.v2` and to engine-hosted sources (§8.2) |
+| the engine evaluates routed calls, the host evaluates local calls and emits | the engine evaluates routed calls, among the observers the host's match hook names, or none when its deliver hook delivered the call; the host evaluates its local calls (§8.2) |
 | error codes `NOT_OWNER_DELIVERED`, `FILTERS_NOT_MATCHED`, `TARGET_MISMATCH`, `INVALID_OBSERVE_DESCRIPTOR` | retired |
 
 ## 3. Consumer API
@@ -321,7 +322,7 @@ interface Call<I = unknown, O = unknown> {
 ```
 
 Every call of a function, local or routed, runs in the worker that hosts it,
-in three steps:
+in three steps, with iii's part of the third in the engine for a routed call:
 
 1. **The handler runs.** Its return value is what observers observe.
 2. **Observers are matched.** By default every observer of the function wants
@@ -332,9 +333,14 @@ in three steps:
 iii's delivery:
 
 1. selects, among the matching observers, those whose `on` matches
-   `call.status` and whose filters match the call;
-2. hands them to the engine, which runs each target with the observer's
-   `deliver` choice, policy, metadata sidecar and loop guard;
+   `call.status` and whose filters match the call. The engine does it for a
+   routed call, with the input it forwarded and the result the worker
+   answers; the worker does it for a call it makes to its own function
+   (§8.2). Both find the observers through an index of the filters'
+   equality conditions, so a call costs about one lookup, however many
+   observers filter on their own value;
+2. the engine runs each target with the observer's `deliver` choice,
+   policy, metadata sidecar and loop guard;
 3. gives the caller the handler's return value, or rethrows its error.
 
 It does not wait for targets. A call with no observers costs one atomic load.
@@ -694,24 +700,33 @@ SDKs and the engine advertise `observe.v2`. §8 applies between two
 
 ### 8.2 Who delivers
 
-The worker that hosts a function delivers its calls:
+The worker that hosts a function runs its handler and hooks for every call,
+and iii's delivery evaluates the observers' `on` and filters where the call
+is (decision 55):
 
-- **Local call.** Matches go to the engine in a batched `invocationsobserved`
-  report, as in 0.25. Nothing is sent when nothing matches.
+- **Local call.** The worker evaluates them, and the matches go to the
+  engine in a batched `invocationsobserved` report, as in 0.25. Nothing is
+  sent when nothing matches.
 - **Routed call.** The engine always sends an `invocation_id` to the host, so
   every routed call has an `invocationresult`. The SDK runs the handler and
-  delivers, and lists the observers iii's delivery selected on that result.
-  The result is the handler's return value, which the engine already holds
-  with the input, so a match costs no extra frame. A function with
-  `onObserverDeliver` lists none: its hook calls through observers itself.
+  the function's hooks. The engine evaluates the observers' `on` and filters:
+  it already holds the call's input, caller and metadata, and the result is
+  the handler's return value, so delivery costs no extra frame (decision
+  55). The answer says among which observers:
 
 ```jsonc
+// no match hook, no deliver hook: every active observer of the function
+{ "type": "invocationresult", "invocation_id": "c3f…", "result": { … } }
+// a match hook: the observers it matched, [] when none
 { "type": "invocationresult", "invocation_id": "c3f…", "result": { … },
-  "observed": ["5b0c…", "a07…"] }          // omitted when empty
+  "matched": ["5b0c…", "a07…"] }
+// a deliver hook: it delivered the call; the engine activates nothing
+{ "type": "invocationresult", "invocation_id": "c3f…", "result": { … },
+  "delivered": true }
 ```
 
-  The engine activates each listed observer after checking that it belongs
-  to the invoked function and is active. The envelope carries the call's
+  With `matched`, the engine evaluates only the named observers that are
+  active observers of the invoked function. The envelope carries the call's
   input and, as `output`, the handler's return value.
 - **Through an observer.** An `invokefunction` with `activation.observer_id`.
   The engine checks that the observer exists, that the sender hosts its
@@ -727,8 +742,8 @@ fills `output` from `input`. Event sources send each event once, whatever the
 observers capture. A routed call needs no flag: the engine takes `output` from
 the `invocationresult` it already receives.
 
-The engine evaluates filters itself for calls to hosts without `observe.v2`
-and for engine-hosted sources.
+The engine evaluates every active observer of a call to a host without
+`observe.v2` and of a call of an engine-hosted source.
 
 ### 8.3 `registerfunction`
 
@@ -765,7 +780,7 @@ All other codes are the 0.25 ones.
 | Change | Where |
 |---|---|
 | Advertise `observe.v2`; record it per connection | `engine/src/engine/mod.rs` |
-| For routed calls to `observe.v2` hosts, skip evaluation and activate the ids in `invocationresult.observed` | `engine/src/invocation/mod.rs`, `engine/src/observer/` |
+| For routed calls to `observe.v2` hosts, evaluate among the observers `invocationresult.matched` names, or none when it says `delivered` (decision 55); match every evaluation through `iii_filter::FilterIndex` | `engine/src/invocation/mod.rs`, `engine/src/observer/`, `crates/iii-filter` |
 | `output_is_input` on `invocationsobserved` items | `engine/src/protocol.rs`, `engine/src/observer/` |
 | Top-level `args_format`, `private`, `observable` on `RegisterFunction`; `args_format` on any function | `engine/src/protocol.rs`, `engine/src/observer/registry.rs` |
 | `private`: accept invocations only from the host; refuse it as a target | invoke path in `engine/src/engine/mod.rs`; `observe` validation |
@@ -1003,7 +1018,8 @@ phase 2 baseline.
 | Function matched by keys, observers on other keys (`isObserved(call)` false) | one hash lookup per call key, no allocation |
 | Matching by keys, 1 matching observer among 10,000 | ≤ 4 hash lookups + one filter evaluation + 1 report item |
 | iii's delivery, 10 observers, none matching | < 5 µs (compiled filters) |
-| Routed call, observed | 0 extra frames (ids on `invocationresult`) |
+| Routed call, observed | 0 extra frames (the engine evaluates with what it holds; a match hook's ids on `invocationresult`) |
+| Routed call, `n` observers each filtering on its own value of one path, 1 matching | one index lookup + one filter evaluation, whatever `n` |
 | Event source (handler returns its input), observed | the event serialized once |
 | Local call to a private function | no copy of input or result when nothing reads the input after the handler; one copy of the input when a match or deliver hook, a filter or a `capture` reads it (a Rust handler typed on `serde_json::Value`; one typed on its own struct also costs the serde conversion of its input and result) |
 | Call through an observer | one routed invocation |
@@ -1105,8 +1121,10 @@ release, tag or crate, so it lands after the release.
 4. **Args belong to the worker, filters to iii.** Args set things up and
    choose observers in `onObserverMatch`. Filters select calls; iii's delivery and
    `obs.matches` apply them.
-5. **The host delivers.** One evaluation per call, in the worker that ran it;
-   routed matches ride the result frame.
+5. **Filters run where the call is.** One evaluation per call: in the engine
+   for a call it routes, which holds its input, output, caller and metadata;
+   in the worker for a call it makes to its own function. A match hook's
+   choice for a routed call rides the result frame (decision 55).
 6. **Observers observe the handler's return value,** and `response_format`
    describes it. `onObserverDeliver` decides what the caller gets back; iii's
    delivery gives it the same value.

@@ -44,6 +44,13 @@ engine's observe, control-plane and cleanup benches and four load tests
   `observers` scenario creates 64,000 observers 3.4 times as fast as 0.25 and
   disposes of them 2.3 times as fast, and holds 12% to 24% more engine memory
   per observer at rest.
+- Decision 55 ("Filters evaluated by the engine"): the engine matches a call
+  of a function with 1,024 or 4,000 observers, each filtering on its own
+  value of `input.k`, in 5.61 and 6.04 µs (`observe_dispatch/filtered`),
+  against 21.8 and 74.8 µs for observe-v2's scan, and a routed call of such a
+  function costs what an unobserved one costs plus one activation, whatever
+  the number of observers (`observe_routed/filtered`, 36.5 µs with 4,000).
+  The rows of unfiltered observers run observe-v2's code.
 
 ## Setup
 
@@ -103,6 +110,7 @@ figures are means over three rounds of 10,000 calls.
 | Matching by keys, 1 matching observer among 10,000 | ≤ 4 hash lookups + one filter evaluation + 1 report item | `call_local/match_keys_1_of_10000` 3.32 µs a call, against 3.21 µs for a function whose only observer matches; at 5,000 calls/s p50 3.14 µs, 1.000 report items a call. Load test `match-keys`: 897k to 926k calls/s with 100, 1,000 and 10,000 observers. The lookups are not counted: the cost per call does not grow with the observers. | no equivalent | within budget |
 | iii's delivery, 10 observers, none matching | < 5 µs (compiled filters) | `call_local/10_observers_none_matching` 2.19 µs a call; at 5,000 calls/s mean 2.95 µs, p90 4.04 µs, p99 7.64 µs (a call with no observers has p99 6.65 µs at the same rate). | `trigger_local/10_observers_none_matching` 2.22 µs | within budget (p99 at 5,000 calls/s is above 5 µs, as it is with no observers) |
 | Routed call, observed | 0 extra frames (ids on `invocationresult`) | `observe_routed_bench`: one `invokefunction` and one `invocationresult` a call and no other frame, with 0, 1, 8 and 64 observers, over 4,214,226 calls in 4 rounds; `observe_routed/observed/1` 38.5 µs against 34.9 µs unobserved. Node: the answers to `call_routed/1_observer_matching` carry the observer ids (210,571 `invocationresult` frames with `observed` in run 1), and `bench::one-match` has report items for its local calls only (127,590). | the same frames (the engine evaluates); `observe_routed/observed/1` 37.3 µs | within budget |
+| Routed call, `n` observers each filtering on its own value of one path, 1 matching (decision 55) | one index lookup + one filter evaluation, whatever `n` | `observe_routed/filtered/<n>` 37.8 µs a call with 16 observers, 36.5 µs with 4,000; `observe_dispatch/filtered/<n>` 5.25 µs and 6.04 µs; `index/eq_1_of/4000` 211 ns. Measured on `86bebd34b` ("Filters evaluated by the engine"). | `observe_dispatch/filtered/1024` 19.7 µs (a scan) | within budget |
 | Event source (handler returns its input), observed | the event serialized once | `call_local/event_source_observed` 3.64 µs a call; at 5,000 calls/s 1.000 report items a call, 1.000 of them carrying the event once (`output_is_input`, no `output`). Node: every `bench::source` item carries it once. | no equivalent (0.25 sources emitted with `obs.emit()`) | within budget |
 | Local call to a private function | no copy of input or result when nothing reads the input after the handler; one copy of the input when a hook, a filter or a `capture` reads it | `call_local/private` 1.91 µs (the handler alone: 51.2 ns); `call_local/private_event` 2.21 µs, the same with a deliver hook `call_local/private_deliver_hook` 2.92 µs. `a_local_call_of_a_private_function_copies_nothing` passes (allocations do not grow with the payload). | no equivalent (0.25 has no private functions) | within budget |
 | Call through an observer | one routed invocation | No bench times it. `a_call_through_an_observer_is_the_fixture_frame` passes: the call is one `invokefunction` to the observer's target. | no equivalent | within budget (counted by the test) |
@@ -692,6 +700,99 @@ first pass's two in brackets; the extra column reads 0.25 → before → fix
 | 1000 keyed observers, 1 matching | 132k / 135k / 135k / 137k | 87k / 117k / 138k / 135k | -11.4% | same within noise |
 | 10000 keyed observers, 1 matching | 73.1k / 69.7k / 76.1k / 75.5k | 77.8k / 74.6k / 75.2k / 65.2k | -0.6% | same within noise |
 
+## Filters evaluated by the engine (decision 55)
+
+Decision 55 evaluates the filters of every routed call in the engine and
+matches each evaluation through `iii_filter::FilterIndex`. Measured on
+`ov2/filters-engine` at `86bebd34b` against observe-v2 at `edc636d13`, on the
+machine of "Setup", with other agents' builds and benches running (load
+average 7 to 18). Engine benches: `cargo bench -p iii --bench <name> --
+--save-baseline rN --noplot`, the two versions alternating bench by bench,
+two rounds (four for `control_plane_churn` and `observe_fanout`). Figures are
+criterion's typical time averaged over the rounds, and the verdict is the
+rule of "Method".
+
+### Where the time went
+
+The `filters` load test calls one function, hosted by one Rust worker, with
+N observers `{"input.k": {"$eq": i}}`; each call matches one. On observe-v2
+the host evaluated every observer's filter for each routed call (the engine
+was mostly idle), and the engine ran the same scan for hosts without
+`observe.v2`:
+
+| On observe-v2 (`edc636d13`) | 1,024 observers | 4,000 observers |
+|---|---:|---:|
+| Rust host, one call through iii's delivery (`call_local/filtered_1_of_<n>`, a scratch row of `observe_bench`, not committed: the scan a routed call ran too) | 23.3 µs | 82.7 µs |
+| Engine evaluation (`observe_dispatch/filtered/<n>`) | 19.7 µs | 68.1 µs |
+| `iii-filter`, every filter evaluated (`scan/eq_1_of/<n>`) | 11.4 µs | 47.8 µs |
+| `iii-filter`, `FilterIndex::matches` (`index/eq_1_of/<n>`) | 133 ns | 211 ns |
+
+A call with one matching observer costs the host 3.21 µs
+(`call_local/1_observer_matching`), so the scan cost about 20 ns per observer
+per call: at 4,000 observers, about 12,000 calls a second per host core.
+
+### Engine benches
+
+| Row | observe-v2 (`edc636d13`) | decision 55 | Δ | Rounds (observe-v2 / decision 55) | Verdict |
+|---|---:|---:|---:|---|---|
+| `observe_dispatch/default/0` | 1.83 µs | 1.85 µs | +0.9% | 1.69 µs, 1.97 µs / 1.87 µs, 1.82 µs | same within noise |
+| `observe_dispatch/default/1` | 6.23 µs | 5.92 µs | -5.0% | 5.82 µs, 6.65 µs / 5.86 µs, 5.97 µs | same within noise |
+| `observe_dispatch/default/8` | 11.9 µs | 11.7 µs | -1.8% | 12.2 µs, 11.7 µs / 12.8 µs, 10.6 µs | same within noise |
+| `observe_dispatch/default/64` | 89.6 µs | 77.1 µs | -14.0% | 89.6 µs, 89.7 µs / 77.7 µs, 76.5 µs | faster |
+| `observe_dispatch/filtered/16` | 6.95 µs | 5.25 µs | -24.4% | 6.02 µs, 7.87 µs / 5.52 µs, 4.98 µs | faster |
+| `observe_dispatch/filtered/256` | 6.15 µs | 5.28 µs | -14.1% | 6.16 µs, 6.13 µs / 5.55 µs, 5.02 µs | faster |
+| `observe_dispatch/filtered/1024` | 21.8 µs | 5.61 µs | -74.3% | 22.1 µs, 21.5 µs / 6.23 µs, 5 µs | faster |
+| `observe_dispatch/filtered/4000` | 74.8 µs | 6.04 µs | -91.9% | 76 µs, 73.6 µs / 7.02 µs, 5.05 µs | faster |
+| `observe_routed/filtered/16` | (no row) | 37.8 µs | | 37.1 µs, 38.5 µs | |
+| `observe_routed/filtered/256` | (no row) | 38.2 µs | | 37.2 µs, 39.3 µs | |
+| `observe_routed/filtered/1024` | (no row) | 37.7 µs | | 37.1 µs, 38.3 µs | |
+| `observe_routed/filtered/4000` | (no row) | 36.5 µs | | 35.8 µs, 37.2 µs | |
+| `observe_routed/matched/1` | (no row) | 41.8 µs | | 40.7 µs, 42.8 µs | |
+| `observe_routed/matched/8` | (no row) | 50.8 µs | | 49.2 µs, 52.3 µs | |
+| `observe_routed/matched/64` | (no row) | 108 µs | | 106 µs, 109 µs | |
+| `observe_routed/observed/0` | 36.8 µs | 36.5 µs | -0.8% | 37.9 µs, 35.7 µs / 35.8 µs, 37.2 µs | same within noise |
+| `observe_routed/observed/1` | 44 µs | 42.6 µs | -3.2% | 47.1 µs, 40.9 µs / 39.2 µs, 46.1 µs | same within noise |
+| `observe_routed/observed/8` | 53.5 µs | 49.1 µs | -8.2% | 52.5 µs, 54.5 µs / 51.9 µs, 46.4 µs | faster |
+| `observe_routed/observed/64` | 130 µs | 116 µs | -11.0% | 123 µs, 137 µs / 108 µs, 123 µs | same within noise |
+| `control_plane_churn/observers_add_remove/100` | 405 µs | 413 µs | +1.8% | 400 µs, 406 µs, 418 µs, 397 µs / 402 µs, 408 µs, 423 µs, 418 µs | same within noise |
+| `control_plane_churn/observers_add_remove/1000` | 4.62 ms | 4.55 ms | -1.4% | 4.94 ms, 4.43 ms, 4.7 ms, 4.4 ms / 4.54 ms, 4.53 ms, 4.49 ms, 4.65 ms | same within noise |
+| `control_plane_churn/observers_add_remove/5000` | 25 ms | 26 ms | +4.0% | 24.5 ms, 24.8 ms, 26.2 ms, 24.6 ms / 27.4 ms, 25.4 ms, 25.4 ms, 26.1 ms | same within noise |
+| `worker_cleanup/observers/10` | 54.3 µs | 56.3 µs | +3.8% | 57.6 µs, 50.9 µs / 59.5 µs, 53.2 µs | same within noise |
+| `worker_cleanup/observers/50` | 191 µs | 195 µs | +2.1% | 202 µs, 179 µs / 204 µs, 185 µs | same within noise |
+| `worker_cleanup/observers/200` | 787 µs | 800 µs | +1.7% | 821 µs, 753 µs / 837 µs, 763 µs | same within noise |
+| `observe_fanout/1` | 14.4 µs | 14.4 µs | +0.5% | 16.6 µs, 13.3 µs, 13.4 µs, 14.1 µs / 17.3 µs, 13.3 µs, 13.6 µs, 13.5 µs | same within noise |
+| `observe_fanout/8` | 35.2 µs | 34.8 µs | -1.1% | 40.1 µs, 31.7 µs, 32.4 µs, 36.5 µs / 44.1 µs, 30.8 µs, 31.5 µs, 32.6 µs | same within noise |
+| `observe_fanout/32` | 68.6 µs | 77.5 µs | +12.9% | 73.8 µs, 66.7 µs, 65.9 µs, 68.2 µs / 101 µs, 74.5 µs, 66.5 µs, 67.7 µs | same within noise |
+| `observe_fanout/128` | 182 µs | 201 µs | +10.5% | 191 µs, 177 µs, 183 µs, 177 µs / 244 µs, 202 µs, 181 µs, 177 µs | same within noise |
+
+`observe_routed/<case>/<n>` rows have no observe-v2 row of their name.
+`observed` answers with the result alone (no match hook), and the engine
+evaluates the `n` unfiltered observers; observe-v2's `observed` rows measured
+a host that listed every observer, the wire `matched` measures. `filtered` is
+the load test's shape, `n` observers each on its own `input.k`, one
+matching: 37.8 µs a call with 16 observers and 36.5 µs with 4,000, the cost
+of an unobserved routed call (`observed/0`, 36.5 µs) plus one activation.
+Every case took one `invokefunction` and one `invocationresult` a call and no
+other frame (6,096,502 calls over the two rounds).
+
+`observe_dispatch/filtered/<n>` costs 5.25 µs with 16 observers and 6.04 µs
+with 4,000. A function none of whose observers has an indexable filter keeps
+no index, so `observe_dispatch/default`, `observe_fanout`,
+`control_plane_churn/observers_add_remove` and `worker_cleanup/observers`
+(unfiltered observers) run the code of observe-v2: what separates their
+rounds (`observe_dispatch/default/64` 14% faster in both, one round of
+`observe_fanout/32` at 101 µs) is the machine's load, and the other rows of
+unfiltered observers are the same within noise. Kept for every function,
+the index cost
+`control_plane_churn/observers_add_remove` 16%, 24% and 26% with 100, 1,000
+and 5,000 observers in the same conditions.
+
+### Load test
+
+Not run. The `filters` scenario's host is the Rust SDK, which evaluates the
+filters of its routed calls until it answers with decision 55's `matched` and
+`delivered`; the scenario measures decision 55 with the SDKs that do.
+
 ## Slower than 0.25
 
 With the observer churn fix (`d37f78f42`), from its pass; first-pass figures
@@ -782,6 +883,9 @@ cargo bench -p iii --bench observe_routed_bench -- --save-baseline r1 --noplot
 
 # Rust SDK (criterion rows, then the paced pass at 5,000 calls/s)
 cargo bench -p iii-sdk --bench observe_bench -- --save-baseline r1 --noplot
+
+# The filter index against a scan (decision 55)
+cargo bench -p iii-filter --bench filter_bench -- eq_1_of --noplot
 
 # Node SDK
 pnpm --filter iii-sdk bench
