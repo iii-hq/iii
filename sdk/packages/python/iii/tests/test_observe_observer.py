@@ -251,6 +251,42 @@ def test_refuses_a_reused_id_and_a_missing_source_or_target(engine: FakeEngine, 
         client.observe({"function_id": "f::a", "filters": {"input.when": {"$eq": object()}}}, "t::a")
 
 
+def test_concurrent_observe_with_the_same_id_lets_exactly_one_win(
+    engine: FakeEngine, connect: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = connect(engine)
+    import iii.iii as iii_module
+
+    real = iii_module.build_observe_message
+    gate = threading.Barrier(2, timeout=0.5)
+
+    def slow_build(*args: Any, **kwargs: Any) -> Any:
+        try:
+            gate.wait()  # both threads are past the duplicate check
+        except threading.BrokenBarrierError:
+            pass  # fixed code: the loser never gets here
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(iii_module, "build_observe_message", slow_build)
+    results: list[object] = []
+
+    def call() -> None:
+        try:
+            results.append(client.observe({"function_id": "f::a"}, "t::a", {"id": "dup"}))
+        except ValueError as exc:
+            results.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(isinstance(r, ValueError) for r in results) == 1
+    assert len(client._observers) == 1
+    settle(client, engine)
+    assert len(engine.frames_of("observe")) == 1
+
+
 def test_a_state_listener_that_raises_does_not_stop_the_others(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     handle = client.observe({"function_id": "f::a"}, "t::a")
