@@ -81,7 +81,12 @@ impl ProgressEmitter {
             action,
             timeout_ms: Some(5_000),
         };
-        let _ = self.client.call(request).await;
+        if let Err(err) = self.client.call(request).await {
+            eprintln!(
+                "compose operation progress delivery failed ({}): {err}",
+                event.operation_id
+            );
+        }
     }
 }
 
