@@ -276,7 +276,10 @@ iii.onObserverAdded('cron::on-tick', start)
   observer is `suspended` for `observers.observer_grace_ms` and the host lets
   it go (`onObserverRemoved` runs). If the worker reattaches in that time, the
   host gets the observer again, in the order the observers were created, and
-  its `onObserverAdded` runs before it is active again.
+  its `onObserverAdded` runs before it is active again. An observer the new
+  connection's session may not hold (its RBAC, or the observer registration
+  hook, decision 47) is disposed `FORBIDDEN`, and the host hears nothing more
+  of it.
 - **Back on a new connection.** A restarted worker connects with no reattach
   token and observes under the ids it used before. An `observe` that names a
   suspended observer's id, from a connection under the same worker name in

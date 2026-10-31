@@ -167,7 +167,14 @@ differ, this file wins, and the spec is updated to match.
     `accepted()` resolving means a call through the observer reaches an active
     observer (decision 19). An observer that does not come back is disposed
     with nothing more sent to the host, as is one its worker replaces from a
-    new connection (decision 51).
+    new connection (decision 51). A `Reattach` applies the creation rules of
+    the new connection's session to each observer it re-parents, before the
+    host hears of it: an observer whose function or target the session may
+    not invoke, or that `rbac.on_observer_registration_function_id` denies,
+    is disposed `FORBIDDEN`. The hook gets the registration as the worker
+    asked for it (filters in normal form) and the new session's context; an
+    object answer keeps the observer as it is, since a rewrite applies to a
+    registration being created.
 48. **The announced `capture`** (`observeradded`, `functionregistered`) also
     names the part `deliver` hands the target: `input` under `deliver: input`,
     `output` under `deliver: output`. A host's report of a local call carries

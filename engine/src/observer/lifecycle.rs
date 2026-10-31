@@ -638,6 +638,12 @@ impl Observer {
         observer
     }
 
+    /// The spec its observing worker asked for, when a registration hook or
+    /// a function prefix rewrote it; `None` when its own fields give it.
+    pub(crate) fn requested_spec(&self) -> Option<&ObserveSpec> {
+        self.spec.as_deref()
+    }
+
     /// Whether `spec` is the one this observer was created with: a replay
     /// with the same id must carry it (`OBSERVER_ID_CONFLICT` otherwise).
     pub(crate) fn spec_matches(&self, spec: &ObserveSpec) -> bool {

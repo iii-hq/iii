@@ -1787,6 +1787,95 @@ async fn a_reattach_with_a_narrower_session_disposes_the_observers_it_forbids() 
     assert_eq!(disposed["reason"]["code"], "FORBIDDEN", "{disposed}");
 }
 
+/// A reattach runs `rbac.on_observer_registration_function_id` again for each
+/// observer it re-parents, with the registration as the worker asked for it
+/// and the new session's context: an observer the hook now denies is
+/// disposed `FORBIDDEN`, one it admits is kept as it is.
+#[tokio::test]
+async fn a_reattach_runs_the_observer_registration_hook_again() {
+    let rbac = json!({
+        "auth_function_id": "test::auth",
+        "on_observer_registration_function_id": "test::hook",
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    in_process(&t.engine, "test::auth", |input| {
+        let narrowed = input["query_params"]["who"]
+            .as_array()
+            .is_some_and(|who| who.iter().any(|w| w == "narrowed"));
+        json!({ "context": { "narrowed": narrowed } })
+    });
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    in_process(&t.engine, "test::hook", {
+        let seen = seen.clone();
+        move |input| {
+            seen.lock().unwrap().push(input.clone());
+            // Narrowed, the hook admits only observers of `api::orders`.
+            if input["context"]["narrowed"] == json!(true)
+                && input["function_id"] != json!("api::orders")
+            {
+                Value::Null
+            } else {
+                json!({})
+            }
+        }
+    });
+    let _host = host(
+        &t,
+        "host",
+        true,
+        &["api::orders", "api::refunds", "api::sink"],
+    )
+    .await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut kept = observer("kept", json!({ "function_id": "api::orders" }), "api::sink");
+    kept["metadata"] = json!({ "team": "eu" });
+    watcher.observe_active(kept).await;
+    watcher
+        .observe_active(observer(
+            "denied",
+            json!({ "function_id": "api::refunds" }),
+            "api::sink",
+        ))
+        .await;
+    seen.lock().unwrap().clear();
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "denied") == Some(ObserverState::Suspended)).await,
+        "the observing worker left: suspended"
+    );
+
+    let mut watcher = Client::open_query(t.port, "watcher", "who=narrowed").await;
+    watcher
+        .send(json!({
+            "type": "reattach",
+            "previous_worker_id": previous.to_string(),
+            "reattach_token": token,
+        }))
+        .await;
+    watcher.announce(true).await;
+    let disposed = watcher.state_becomes("denied", "disposed").await;
+    assert_eq!(disposed["reason"]["code"], "FORBIDDEN", "{disposed}");
+    assert!(
+        eventually(|| state(&t, "kept") == Some(ObserverState::Active)).await,
+        "the hook admits it: kept"
+    );
+    let seen = seen.lock().unwrap().clone();
+    let kept_input = seen
+        .iter()
+        .find(|input| input["observer_id"] == "kept")
+        .expect("the hook ran for `kept`");
+    assert_eq!(kept_input["function_id"], "api::orders");
+    assert_eq!(kept_input["namespace"], "default");
+    assert_eq!(kept_input["args"], json!({}));
+    assert_eq!(kept_input["metadata"], json!({ "team": "eu" }));
+    assert_eq!(kept_input["target_function_id"], "api::sink");
+    assert_eq!(kept_input["filters"], Value::Null);
+    assert_eq!(kept_input["context"], json!({ "narrowed": true }));
+    assert_eq!(seen.len(), 2, "once per observer: {seen:?}");
+}
+
 /// `list` / `get` show only observers of functions the caller may invoke; the
 /// rest do not exist for it.
 #[tokio::test]
