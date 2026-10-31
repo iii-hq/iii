@@ -60,11 +60,27 @@ iii trigger configuration::get --json '{"id": "iii-sandbox", "raw": true}'
 
 Copy the keys it prints into the `config_override` of the `sandbox-libkrun` container, as in the
 previous section. Do not store them under the adapter's id, `<namespace>-sandbox-libkrun`: Compose
-sets that entry in memory at each start, from the package defaults and `config_override`, and
-storing it with `configuration::set` fails with `NOT_REGISTERED`. A running project reads the
-edited file on `compose::restart` without a `worker` argument. Check the adapter before you delete
-the old entry.
-See [Configuration precedence](../using-iii/compose#configuration-precedence).
+sets that entry in memory each time it starts the adapter, and storing it with `configuration::set`
+fails with `NOT_REGISTERED`. A running project reads the edited file on `compose::restart` without
+a `worker` argument. Check the adapter before you delete the old entry.
+
+## Change adapter settings
+
+Compose builds the adapter's entry from three layers, lowest to highest: the package defaults, the
+entry's current value in the engine, then `config_override`. Maps such as `custom_images` merge key
+by key; lists such as `image_allowlist` and scalars replace. See [Configuration
+precedence](../using-iii/compose#configuration-precedence).
+
+Removing a key from `config_override` therefore does not restore its default: the key keeps its
+current value, and a `custom_images` entry you delete stays. To go back to the package defaults,
+start from an engine that has no entry. If `iii compose --up` started the engine, stop Compose and
+run `iii compose --up` again. If Compose attaches to an engine you run yourself, restart that
+engine, then run `compose::restart`.
+
+A bad value fails closed: the adapter exits at start, and `sandbox::*` calls fail with S301.
+Removing the key does not recover it, because the bad value stays in the entry. Set the key to a
+valid value in `config_override` and run `compose::restart` without a `worker` argument, or start
+from an engine that has no entry, as above.
 
 ## Engines that no Compose file manages
 
@@ -79,10 +95,30 @@ sandbox:
   namespace: default
 ```
 
-`namespace` is where the adapter runs, `default` when omitted. Install the adapter in a Compose
-project in that namespace with `iii trigger compose::add worker=iii-sandbox`. Until it runs, calls
-fail with S301, which names the namespace. Leaving an `iii-sandbox` entry in the list-shaped
-`config.yaml` fails startup with `UNSUPPORTED_CONFIG_WORKERS`.
+`namespace` is where the adapter runs, `default` when omitted. Until the adapter runs there, calls
+fail with S301, which names the namespace and both ways to install it.
+
+If a Compose project already runs in that namespace, add the adapter to it with
+`iii trigger compose::add worker=iii-sandbox`. If none runs, `compose::add` has nothing to edit: it
+only edits a compose file that exists, and a file with no `engine:` section must declare at least
+one container. Write a `worker-compose.yaml` that declares the adapter:
+
+```yaml worker-compose.yaml
+containers:
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
+    version: '^0.2'
+```
+
+It has no `engine:` section, so Compose attaches to your engine instead of starting one. Start it
+in the bound namespace, with your engine's address:
+
+```bash
+iii compose --up --namespace default --engine ws://127.0.0.1:49134
+```
+
+Leaving an `iii-sandbox` entry in the list-shaped `config.yaml` fails startup with
+`UNSUPPORTED_CONFIG_WORKERS`.
 
 ## Frozen installs
 
@@ -93,10 +129,16 @@ not declare it fails with `SANDBOX_ADAPTER_NOT_DECLARED`. Run `iii compose --up`
 
 ## VM workers from `path://`
 
-The adapter only mounts host directories under two roots: the compose file's directory and
-Compose's package cache (`~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`). A
-`path://` worker with `runtime.base_image` anywhere else fails with S501, which names the
-roots. Move the worker under the compose directory.
+The adapter only mounts host directories under its host roots: the compose file's directory,
+Compose's package cache (`~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`), and the
+directory of each `path://` worker with `runtime.base_image` that the file declares when the adapter
+starts. A declared worker outside the compose directory, such as `path://../shared`, is admitted.
+
+The adapter reads its roots only when it starts. A `path://` VM worker outside the compose
+directory that you add while it runs, for example with `compose::add`, fails with `SPAWN_FAILED`
+and the adapter's S501, which names the roots and links its entry. The error ends with the command
+that restarts the adapter, `iii trigger compose::restart worker=sandbox-libkrun`, which stops every
+VM. Run it, or move the worker under the compose directory.
 
 ## Supported hosts
 
@@ -160,10 +202,12 @@ Keep the rest of `~/.iii/lib/`: `sandbox-libkrun` still loads `libkrunfw` from t
 of `~/.iii/cache/` too. It holds pulled images, where 0.25 put them, so those are not pulled again.
 
 The state is now in `~/.iii/sandbox/workers/<vm_id>/`, owned by the adapter. Compose deletes it
-when you remove the VM container. Two cases leave it behind for you to delete by hand:
+when you remove the VM container, also after `compose::down`: it starts the declared adapter for
+the call. Two cases leave it behind for you to delete by hand:
 
-- You removed a VM container while the adapter was down, for example after `iii compose down`. The
-  warning names the container, the adapter, and the `vm_id`, and says where the state stays.
+- The adapter could not delete it: it failed to start, the compose file does not declare it and it
+  is not running, or the engine had already stopped. The warning names the container, the adapter,
+  and the `vm_id`, and says where the state stays.
 - You moved or renamed the project directory, or changed `III_COMPOSE_STATE_DIR`. Every VM then
   starts from fresh state, and the directories of the old location remain in
   `~/.iii/sandbox/workers/`.
