@@ -19,10 +19,11 @@
 //! above, so a stray publish on the topic cannot mint product events of its
 //! own naming. Everything else in the message becomes the event properties.
 //!
-//! The topic is a durable queue subscription, not fire-and-forget pub/sub: a
-//! turn ends once, and the message waits in the queue and is retried until
-//! this handler takes it, rather than being dropped when nothing is listening
-//! at that instant.
+//! The topic is a durable queue subscription (an observer of the `queue`
+//! worker's `queue::on-message`), not fire-and-forget pub/sub: a turn ends
+//! once, and the message waits in the queue and is retried until this handler
+//! takes it, rather than being dropped when nothing is listening at that
+//! instant.
 //!
 //! The worker decides WHAT is worth reporting and reports each thing once,
 //! durably. The `dedupe_key` it stamps on every message is the second line of
@@ -49,7 +50,7 @@ use crate::{
 /// Topic the `harness` worker publishes each reported moment on.
 pub const USAGE_TOPIC: &str = "harness:usage";
 pub const USAGE_FN_ID: &str = "iii-telemetry::on-harness-usage";
-pub const USAGE_TRIGGER_ID: &str = "iii-telemetry::harness-usage-watch";
+pub const USAGE_OBSERVER_ID: &str = "iii-telemetry::harness-usage-watch";
 
 /// Per-session progress, sent by harness releases before the machine-wide
 /// counts.
@@ -174,31 +175,15 @@ pub(super) fn register_drain(engine: &Arc<Engine>) {
     );
 }
 
-/// Subscribe the handler to the harness's topic in one namespace. The
-/// deterministic trigger id means a re-registration replaces rather than
-/// duplicates.
+/// Subscribe the handler to the harness's topic, in every namespace the
+/// `queue` worker runs in.
 ///
 /// Fire and forget, like every other part of this worker: a subscription this
 /// engine could not take is not the operator's problem and never becomes
-/// theirs. A binding registered before the `queue` worker connects is stored
-/// and replayed when the provider arrives, so a project without the harness,
-/// or without `queue`, simply never fires it.
-pub(super) async fn register_trigger_in(engine: &Arc<Engine>, namespace: &str) {
-    let _ = engine
-        .trigger_registry
-        .register_trigger(super::topic_watch(
-            USAGE_TRIGGER_ID,
-            USAGE_FN_ID,
-            USAGE_TOPIC,
-            namespace,
-        ))
-        .await;
-}
-
-/// Subscribe in the default namespace, which is where an unnamespaced project
-/// and the engine's own providers live.
-pub(super) async fn register_trigger(engine: &Arc<Engine>) {
-    register_trigger_in(engine, crate::protocol::DEFAULT_NAMESPACE).await;
+/// theirs. The observer waits for the `queue` worker to connect, so a project
+/// without the harness, or without `queue`, simply never delivers to it.
+pub(super) fn watch_topic(engine: &Arc<Engine>) {
+    super::watch_topic(engine, USAGE_OBSERVER_ID, USAGE_TOPIC, USAGE_FN_ID);
 }
 
 #[cfg(test)]

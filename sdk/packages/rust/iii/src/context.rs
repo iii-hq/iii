@@ -2,10 +2,9 @@
 //! and how deep in an observe chain.
 //!
 //! The SDK sets it around every handler it runs, remote (an `invokefunction`
-//! from the engine) or local (a [`trigger`](crate::IIIClient::trigger) of a
-//! function this worker hosts). Calls made from inside a handler read it to
-//! fill `caller` and `observe_depth`, and [`Observer::emit`](crate::Observer::emit)
-//! reads it to tell who caused an event.
+//! from the engine) or local (a [`call`](crate::IIIClient::call) of a
+//! function this worker hosts), and around the function's deliver hook.
+//! Calls made from inside them read it to fill `caller` and `observe_depth`.
 //!
 //! It lives in a [`tokio::task_local!`], so it follows the handler's future
 //! across `.await` points but not into a task the handler spawns. Carry it
@@ -37,14 +36,15 @@ pub struct InvocationCtx {
     /// or this worker (with the calling handler) for a local one. `None` when
     /// the engine did not say (an engine older than 0.25).
     pub caller: Option<Caller>,
-    /// Set when this invocation is an observer activation.
+    /// Set when this invocation is an observer activation, or the target's
+    /// call of a call through an observer.
     pub activation: Option<Activation>,
     /// Depth of the causal chain in observe hops; 0 outside observers.
     pub observe_depth: u32,
     /// The invocation's metadata sidecar.
     pub metadata: Option<Value>,
     /// W3C trace context of the invocation's `execute` span, when tracing is
-    /// on: events emitted from it join its trace.
+    /// on: the deliveries of its call join its trace.
     pub traceparent: Option<String>,
     /// W3C baggage of the invocation.
     pub baggage: Option<String>,

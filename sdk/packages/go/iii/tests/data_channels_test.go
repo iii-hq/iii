@@ -53,7 +53,7 @@ func TestChannelStreamSenderToProcessor(t *testing.T) {
 	}
 	settle()
 
-	// Sender side: create a channel, stream the JSON, close, then trigger the processor
+	// Sender side: create a channel, stream the JSON, close, then call the processor
 	// with the reader ref embedded in the payload.
 	ch, err := c.CreateChannel(ctxFor(t, 5*time.Second), nil)
 	if err != nil {
@@ -74,13 +74,13 @@ func TestChannelStreamSenderToProcessor(t *testing.T) {
 		"label":  "batch",
 		"reader": ch.ReaderRef,
 	})
-	res, err := c.Trigger(ctxFor(t, 15*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 15*time.Second), iii.CallRequest{
 		FunctionID: "test::chan::go::processor",
 		Payload:    procPayload,
 		Timeout:    15 * time.Second,
 	})
 	if err != nil {
-		t.Fatalf("Trigger processor: %v", err)
+		t.Fatalf("Call processor: %v", err)
 	}
 	var out struct {
 		Count int `json:"count"`

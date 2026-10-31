@@ -1,0 +1,14 @@
+{
+  "type": "invokefunction",
+  "function_id": "storefront::sync-stock",
+  "data": {
+    "sku": "A-1",
+    "available": 12
+  },
+  "action": {
+    "type": "void"
+  },
+  "activation": {
+    "observer_id": "868c8f79-e34f-4390-8ca6-7904b54ba84a"
+  }
+}

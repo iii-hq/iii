@@ -4,9 +4,9 @@
 
 
 This tutorial builds a real-time CRUD service with iii. You'll model your data on the iii state
-store, expose create/read/update/delete operations over HTTP triggers, and stream live changes to
-connected clients. By the end you'll have a service that streams state changes to clients in real
-time without writing pub/sub code.
+store, expose create/read/update/delete operations over HTTP by observing `http::on-request`, and
+stream live changes to connected clients. By the end you'll have a service that streams state
+changes to clients in real time without writing pub/sub code.
 
 ## Model and store
 
@@ -14,7 +14,8 @@ Define the data model and back it with an iii state store.
 
 ## CRUD endpoints
 
-Expose create, read, update, and delete functions over HTTP triggers.
+Expose create, read, update, and delete functions over HTTP: each route is an observer of
+`http::on-request` that runs one of them.
 
 ## Realtime subscriptions
 

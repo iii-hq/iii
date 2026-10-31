@@ -11,6 +11,7 @@
 export {
   type CompiledFilter,
   compileFilter,
+  type FilterDoc,
   FilterError,
   type FilterErrorCode,
   type FilterSource,

@@ -1039,8 +1039,8 @@ containers:
 }
 
 /// `name:` used to be rewritten to fit the namespace charset rather than
-/// checked against it. The value is what an operator types into `iii trigger
-/// --namespace` and into every `worker.trigger` call, so a value they cannot
+/// checked against it. The value is what an operator types into `iii call
+/// --namespace` and into every `worker.call`, so a value they cannot
 /// type back is worse than a refusal at load time.
 #[test]
 fn a_name_outside_the_namespace_charset_is_refused() {

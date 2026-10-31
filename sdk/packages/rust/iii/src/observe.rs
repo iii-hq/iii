@@ -1,23 +1,33 @@
 //! Observing: `iii.observe(source, target)`.
 //!
-//! The first argument is the left side, what is observed: a function, the
-//! `args` its owner needs and the `filters` that pick which of its events
-//! reach the target. The second is the right side: a function registered by
-//! any worker, invoked once per matching event. The optional third
-//! ([`ObserverOptions`]) is the observer's policy and metadata.
+//! When the source function runs, the target runs. The first argument is the
+//! left side, what is observed: a function, the `args` the worker that hosts
+//! it reads and the `filters` that pick which of its calls reach the target.
+//! The second is the right side: a function registered by any worker, called
+//! once per matching call. The optional third ([`ObserverOptions`]) is the
+//! observer's policy and metadata.
 //!
 //! ```rust,no_run
 //! use iii_sdk::{Capture, IIIClient, ObserverOptions, Source};
 //! use serde_json::json;
 //!
 //! # async fn demo(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
-//! // a regular function: large orders reach alerts::big-order
+//! // every successful call of orders::create runs alerts::new-order
+//! iii.observe("orders::create", "alerts::new-order");
+//!
+//! // large orders only
 //! let big_orders = iii.observe(
 //!     Source::function("orders::create")
 //!         .filters(json!({ "input.total": { "$gte": 500 } })),
 //!     "alerts::big-order",
 //! );
 //! big_orders.ready().await?;
+//!
+//! // a source with args for the worker that hosts it
+//! iii.observe(
+//!     Source::function("cron::on-tick").args(json!({ "expression": "0 0 9 * * * *" })),
+//!     "reports::daily-summary",
+//! );
 //!
 //! // failed charges above 500, with a policy
 //! iii.observe_with(
@@ -85,23 +95,25 @@ impl Source {
     }
 
     /// The namespace the function is in. Unset, it resolves like a
-    /// [`trigger`](crate::IIIClient::trigger): this worker's namespace
-    /// (`default` for `engine::*`).
+    /// [`call`](crate::IIIClient::call): this worker's namespace (`default`
+    /// for `engine::*`).
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
         self
     }
 
-    /// Args for the function's owner (owner-delivered functions only): what
-    /// to set up for this observer, validated against its `args_format`.
+    /// Args for the worker that hosts the function: what to set up for this
+    /// observer and which calls it wants, validated against the function's
+    /// `args_format` (`INVALID_ARGS`). The function's description says what
+    /// they mean.
     pub fn args(mut self, args: Value) -> Self {
         self.args = Some(args);
         self
     }
 
-    /// Which events reach the target: a filter over `input`, `output`,
+    /// Which calls reach the target: a filter over `input`, `output`,
     /// `error`, `caller` and `metadata`, with explicit operators
-    /// (`{ "input.amount": { "$gte": 500 } }`). Unset matches every event.
+    /// (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call.
     pub fn filters(mut self, filters: Value) -> Self {
         self.filters = Some(filters);
         self
@@ -113,15 +125,15 @@ impl Source {
         self
     }
 
-    /// Which outcomes activate the observer (auto functions only). Default
-    /// [`On::Success`].
+    /// Which outcomes reach the target. Default [`On::Success`].
     pub fn on(mut self, on: On) -> Self {
         self.on = Some(on);
         self
     }
 
-    /// What the target receives: the [`Observed`] envelope (default), or the
-    /// observed input or output alone.
+    /// What the target receives when iii delivers: the [`Observed`] envelope
+    /// (default), or the observed input or output alone. A function whose
+    /// deliver hook calls targets itself documents what they receive.
     pub fn deliver(mut self, deliver: Deliver) -> Self {
         self.deliver = Some(deliver);
         self
@@ -130,6 +142,26 @@ impl Source {
     /// The observed function id.
     pub fn function_id(&self) -> &str {
         &self.function_id
+    }
+}
+
+/// `iii.observe("orders::create", target)`: every successful call of the
+/// function, with the defaults.
+impl From<&str> for Source {
+    fn from(function_id: &str) -> Self {
+        Source::function(function_id)
+    }
+}
+
+impl From<String> for Source {
+    fn from(function_id: String) -> Self {
+        Source::function(function_id)
+    }
+}
+
+impl From<&String> for Source {
+    fn from(function_id: &String) -> Self {
+        Source::function(function_id.clone())
     }
 }
 
@@ -149,7 +181,7 @@ impl Target {
     }
 
     /// The target's namespace. Unset, it resolves like a
-    /// [`trigger`](crate::IIIClient::trigger).
+    /// [`call`](crate::IIIClient::call).
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
         self
@@ -204,14 +236,14 @@ impl ObserverOptions {
     }
 
     /// At most this many activations running at once; more queue in the
-    /// engine (or fail an owner's `call` with `OVERFLOW`).
+    /// engine, and a call through the observer fails with `OVERFLOW`.
     pub fn max_in_flight(mut self, max_in_flight: u32) -> Self {
         self.max_in_flight = Some(max_in_flight);
         self
     }
 
-    /// Delivered as the metadata sidecar of every activation. The function's
-    /// owner never sees it.
+    /// Delivered as the metadata sidecar of every activation. The worker that
+    /// hosts the function never sees it.
     pub fn metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
         self
@@ -269,6 +301,10 @@ pub(crate) fn deliver(job: Delivery) {
 /// The observing worker's record of one observer, replayed on reconnect.
 pub(crate) struct ObserverEntry {
     pub(crate) id: String,
+    /// When it was created, among this process's observers: replays send
+    /// observers in this order, so the engine announces them to their
+    /// functions' hosts in the order the worker created them.
+    pub(crate) seq: u64,
     /// The `observe` message, sent as is on every replay.
     pub(crate) message: Message,
     status: watch::Sender<ObserverStatus>,
@@ -284,6 +320,9 @@ pub(crate) struct ObserverEntry {
     pub(crate) send_lock: Mutex<()>,
 }
 
+/// The next [`ObserverEntry::seq`].
+static NEXT_OBSERVER_SEQ: AtomicU64 = AtomicU64::new(0);
+
 impl ObserverEntry {
     pub(crate) fn new(id: String, message: Message) -> Self {
         let (status, _) = watch::channel(ObserverStatus {
@@ -293,6 +332,7 @@ impl ObserverEntry {
         });
         Self {
             id,
+            seq: NEXT_OBSERVER_SEQ.fetch_add(1, Ordering::Relaxed),
             message,
             status,
             warnings: Mutex::new(Vec::new()),
@@ -408,8 +448,8 @@ impl ObserverHandle {
     }
 
     /// Why it is in `error` (or `suspended`, `disposed`): an engine code such
-    /// as `INVALID_ARGS`, `FORBIDDEN`, `UNSUPPORTED`, or the owner's own
-    /// rejection code.
+    /// as `INVALID_ARGS`, `FORBIDDEN`, `UNSUPPORTED`, or the rejection code of
+    /// an added hook of the worker that hosts the function.
     pub fn reason(&self) -> Option<ObserverReason> {
         self.entry.status.borrow().reason.clone()
     }
@@ -479,8 +519,8 @@ impl ObserverHandle {
     }
 
     /// Removes the observer. Once it resolves (the engine confirmed it, or
-    /// after 5 s without an answer), no new activation starts and the owner's
-    /// `call` for it fails with `OBSERVER_NOT_ACTIVE`.
+    /// after 5 s without an answer), no new activation starts and a call
+    /// through it fails with `OBSERVER_NOT_ACTIVE`.
     pub async fn dispose(&self) -> Result<(), Error> {
         let mut rx = self.entry.status.subscribe();
         let unobserved = {
@@ -536,8 +576,7 @@ impl ObserverHandle {
 }
 
 /// What an observer's target receives with the default `deliver: envelope`:
-/// the observed invocation (auto) or emitted event (owner `emit`), per the
-/// observer's `capture`.
+/// the observed call, per the observer's `capture`.
 ///
 /// ```rust,no_run
 /// # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction};
@@ -575,7 +614,7 @@ pub struct Observed<I = Value, O = Value> {
     pub duration_ms: f64,
 }
 
-/// [`Observed::error`].
+/// What a call failed with: [`Observed::error`], [`Call::error`](crate::Call::error).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ObservedError {
     pub code: String,
@@ -583,25 +622,28 @@ pub struct ObservedError {
 }
 
 impl IIIClient {
-    /// Observes `source` and invokes `target` once per matching event.
+    /// Observes `source` and calls `target` once per matching call.
     ///
-    /// Returns at once, before the engine answered: the handle starts
-    /// `pending`; [`ObserverHandle::ready`] resolves on `active` and fails on
-    /// `error` (`INVALID_ARGS`, `INVALID_FILTER`, `FORBIDDEN`, an owner
-    /// rejection, `UNSUPPORTED` against an engine without observe). There is
-    /// no inline handler: `target` is a registered function, and the observer
-    /// stays `pending` until it is registered.
-    pub fn observe(&self, source: Source, target: impl Into<Target>) -> ObserverHandle {
+    /// `source` is a [`Source`], or a function id for every successful call
+    /// with the defaults. Returns at once, before the engine answered: the
+    /// handle starts `pending`; [`ObserverHandle::ready`] resolves on
+    /// `active` and fails on `error` (`INVALID_ARGS`, `INVALID_FILTER`,
+    /// `FORBIDDEN`, `NOT_OBSERVABLE`, an added hook's rejection,
+    /// `UNSUPPORTED` against an engine without observe). There is no inline
+    /// handler: `target` is a registered function, and the observer stays
+    /// `pending` until it is registered.
+    pub fn observe(&self, source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle {
         self.observe_with(source, target, ObserverOptions::default())
     }
 
     /// [`observe`](Self::observe) with the observer's id, policy and metadata.
     pub fn observe_with(
         &self,
-        source: Source,
+        source: impl Into<Source>,
         target: impl Into<Target>,
         options: ObserverOptions,
     ) -> ObserverHandle {
+        let source = source.into();
         let target = target.into();
         let id = options
             .id
@@ -711,6 +753,25 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(serde_json::to_value(&message).unwrap(), fixture);
+    }
+
+    #[test]
+    fn a_function_id_is_the_minimal_source() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let message = iii
+            .build_observe(
+                "d94f3a5b-6c7d-4e8f-a01b-2c3d4e5f6a7b",
+                "orders::archive".into(),
+                "search::reindex-order".into(),
+                ObserverOptions::default(),
+            )
+            .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/protocol/observe/observe-minimal.json"
+        ))
+        .unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), fixture);
+        assert_eq!(Source::from(String::from("a::b")), Source::function("a::b"));
     }
 
     #[test]

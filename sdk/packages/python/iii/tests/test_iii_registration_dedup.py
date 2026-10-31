@@ -7,8 +7,19 @@ from typing import Any
 import pytest
 
 import iii.iii as iii_module
-from iii import TriggerAction
+from iii import CallAction
 from iii.iii import III
+
+V2 = ["observe.v1", "observe.v2", "local-dispatch.v1"]
+
+
+def _worker_registered(client: III) -> None:
+    """What the engine's ``workerregistered`` does on the client's loop."""
+
+    async def registered() -> None:
+        client._on_engine_features(V2)
+
+    client._run_on_loop(registered())
 
 
 @pytest.fixture(autouse=True)
@@ -90,17 +101,22 @@ def test_preconnect_registration_sent_once(monkeypatch: pytest.MonkeyPatch) -> N
         return data
 
     client.register_function("demo.fn", handler)
-    client.register_trigger({"type": "cron", "function_id": "demo.fn", "config": {"cron": "* * * * * *"}})
+    client.register_function("demo.source", handler, private=True)
+    client.observe("demo.source", "demo.fn")
 
+    time.sleep(0.05)
+    _worker_registered(client)
     time.sleep(0.05)
     client.shutdown()
 
     reg_fn = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.fn"]
-    reg_trigger = [m for m in ws.sent if m.get("type") == "registertrigger" and m.get("function_id") == "demo.fn"]
+    reg_source = [m for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.source"]
+    observe = [m for m in ws.sent if m.get("type") == "observe"]
 
     assert connect_calls == 1
     assert len(reg_fn) == 1, ws.sent
-    assert len(reg_trigger) == 1, ws.sent
+    assert len(reg_source) == 1, ws.sent
+    assert len(observe) == 1, ws.sent
 
 
 def test_reconnect_replays_durable_state_once_per_connection(
@@ -125,7 +141,10 @@ def test_reconnect_replays_durable_state_once_per_connection(
         return data
 
     client.register_function("demo.fn", handler)
-    client.register_trigger({"type": "cron", "function_id": "demo.fn", "config": {"cron": "* * * * * *"}})
+    client.register_function("demo.source", handler, private=True)
+    client.observe("demo.source", "demo.fn")
+    time.sleep(0.05)
+    _worker_registered(client)
     time.sleep(0.05)
 
     first_ws = client._ws
@@ -135,17 +154,18 @@ def test_reconnect_replays_durable_state_once_per_connection(
 
     client._run_on_loop(client._do_connect())
     time.sleep(0.05)
+    # held until the new connection's workerregistered
+    assert [m["id"] for m in sockets[1].sent if m.get("type") == "registerfunction"] == ["demo.fn"]
+    _worker_registered(client)
+    time.sleep(0.05)
     client.shutdown()
 
-    total_fn = sum(
-        1 for ws in sockets for m in ws.sent if m.get("type") == "registerfunction" and m.get("id") == "demo.fn"
-    )
-    total_trigger = sum(
-        1 for ws in sockets for m in ws.sent if m.get("type") == "registertrigger" and m.get("function_id") == "demo.fn"
-    )
+    def total(kind: str, key: str = "", value: str = "") -> int:
+        return sum(1 for ws in sockets for m in ws.sent if m.get("type") == kind and (not key or m.get(key) == value))
 
-    assert total_fn == 2
-    assert total_trigger == 2
+    assert total("registerfunction", "id", "demo.fn") == 2
+    assert total("registerfunction", "id", "demo.source") == 2
+    assert total("observe") == 2
 
 
 def test_call_void_queued_while_disconnected_flushes_after_connect(
@@ -164,7 +184,7 @@ def test_call_void_queued_while_disconnected_flushes_after_connect(
     client = III("ws://fake")
     time.sleep(0.05)
 
-    client.trigger({"function_id": "demo.fire", "payload": {"x": 1}, "action": TriggerAction.Void()})
+    client.call({"function_id": "demo.fire", "payload": {"x": 1}, "action": CallAction.Void()})
     time.sleep(0.05)
     client.shutdown()
 

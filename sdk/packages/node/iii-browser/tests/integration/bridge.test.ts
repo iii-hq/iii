@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { TriggerAction } from '../../src/iii'
+import { CallAction } from '../../src/iii'
 import { execute, iii, sleep } from './utils'
 
 type FunctionRow = { function_id: string }
 
 const fetchRegisteredFunctions = async (): Promise<FunctionRow[]> => {
-  const { functions } = await iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+  const { functions } = await iii.call<Record<string, never>, { functions: FunctionRow[] }>({
     function_id: 'engine::functions::list',
     payload: {},
   })
@@ -29,7 +29,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const result = await iii.trigger<Record<string, unknown>, { echoed: Record<string, unknown> }>({
+    const result = await iii.call<Record<string, unknown>, { echoed: Record<string, unknown> }>({
       function_id: 'browser.test.echo',
       payload: { message: 'hello from browser' },
     })
@@ -56,10 +56,10 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    iii.trigger({
+    iii.call({
       function_id: 'browser.test.void-receiver',
       payload: { value: 42 },
-      action: TriggerAction.Void(),
+      action: CallAction.Void(),
     })
 
     await Promise.race([
@@ -92,7 +92,7 @@ describe('Bridge Operations', () => {
 
   it('should reject when invoking non-existent function', async () => {
     await expect(
-      iii.trigger({ function_id: 'browser.nonexistent.function', payload: {}, timeoutMs: 2000 }),
+      iii.call({ function_id: 'browser.nonexistent.function', payload: {}, timeoutMs: 2000 }),
     ).rejects.toThrow()
   })
 
@@ -107,7 +107,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const result = await iii.trigger<{ items: number[] }, { count: number; sum: number; sorted: number[] }>({
+    const result = await iii.call<{ items: number[] }, { count: number; sum: number; sorted: number[] }>({
       function_id: 'browser.test.complex',
       payload: { items: [5, 3, 1, 4, 2] },
     })
@@ -124,7 +124,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const result = await iii.trigger<Record<string, never>, { ok: boolean }>({
+    const result = await iii.call<Record<string, never>, { ok: boolean }>({
       function_id: 'browser.test.unregister',
       payload: {},
     })
@@ -133,8 +133,6 @@ describe('Bridge Operations', () => {
     fn.unregister()
     await sleep(300)
 
-    await expect(
-      iii.trigger({ function_id: 'browser.test.unregister', payload: {}, timeoutMs: 2000 }),
-    ).rejects.toThrow()
+    await expect(iii.call({ function_id: 'browser.test.unregister', payload: {}, timeoutMs: 2000 })).rejects.toThrow()
   })
 })

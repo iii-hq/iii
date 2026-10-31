@@ -20,8 +20,9 @@ use super::{
     Departed, FnKey, ObserverRegistry,
     lifecycle::{
         CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy, Tombstone,
+        Transition,
     },
-    owner::check_descriptor,
+    owner::check_options,
 };
 use crate::{
     engine::Engine,
@@ -80,13 +81,25 @@ impl ObserveRequest {
             max_fires: self.max_fires,
             expires_in_ms: self.expires_in_ms,
             max_in_flight: self.max_in_flight.unwrap_or(default_max_in_flight),
-            legacy: None,
         }
     }
 }
 
 fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(code, message)
+}
+
+fn owned_by_another_connection(id: &str) -> ErrorBody {
+    reject(
+        observe_codes::OBSERVER_ID_CONFLICT,
+        format!("observer `{id}` is owned by another connection"),
+    )
+}
+
+/// `suspended` because its observing worker is away (decision 47): not
+/// disposed, not in `error`, its connection closed within the grace period.
+fn left_behind(flags: &Flags) -> bool {
+    flags.disposed.is_none() && flags.failed.is_none() && !flags.observing_connected
 }
 
 impl ObserverRegistry {
@@ -141,35 +154,35 @@ impl ObserverRegistry {
         // A replay: the same spec from the observing connection is a no-op
         // that answers with the current state.
         let spec = request.spec(self.config().default_max_in_flight);
-        if let Some(existing) = self.get(&request.id) {
-            if existing.observing().connection == worker.id && existing.spec == spec {
-                let (state, reason) = existing.snapshot_state();
-                let error = (state == ObserverState::Error).then_some(reason).flatten();
-                self.notify(
-                    worker.id,
-                    Message::ObserveResult {
-                        id: request.id,
-                        state,
-                        error,
-                        warnings: existing.warnings.clone(),
-                    },
-                );
-                return Ok(());
-            }
-            return Err(reject(
-                observe_codes::OBSERVER_ID_CONFLICT,
-                if existing.observing().connection == worker.id {
+        let existing = self.get(&request.id);
+        if let Some(existing) = &existing
+            && existing.observing_connection() == worker.id
+        {
+            if existing.spec != spec {
+                return Err(reject(
+                    observe_codes::OBSERVER_ID_CONFLICT,
                     format!(
                         "observer `{}` already exists with a different spec",
                         request.id
-                    )
-                } else {
-                    format!("observer `{}` is owned by another connection", request.id)
+                    ),
+                ));
+            }
+            let (state, reason) = existing.snapshot_state();
+            let error = (state == ObserverState::Error).then_some(reason).flatten();
+            self.notify(
+                worker.id,
+                Message::ObserveResult {
+                    id: request.id,
+                    state,
+                    error,
+                    warnings: existing.warnings.clone(),
                 },
-            ));
+            );
+            return Ok(());
         }
         // A replay of an observer disposed meanwhile (max_fires, expiry, an
-        // admin's dispose while the worker was away): it stays disposed.
+        // admin's dispose while the worker was away, a new connection of its
+        // worker replacing it) stays disposed, whichever observer holds the id.
         if let Some(tombstone) = self.tombstones.get(&request.id)
             && tombstone.connection == worker.id
             && tombstone.until > Instant::now()
@@ -187,6 +200,16 @@ impl ObserverRegistry {
             );
             return Ok(());
         }
+        // Another connection's observer holds the id. Its own worker, back
+        // on a new connection while it is suspended, replaces it (decision
+        // 51) when the new observer is created: every check below runs
+        // first, and the suspended observer keeps the id meanwhile. Anyone
+        // else waits for the grace period to end.
+        let replacing = match existing {
+            Some(existing) if self.left_behind_by(&existing, worker) => Some(existing),
+            Some(_) => return Err(owned_by_another_connection(&request.id)),
+            None => None,
+        };
 
         for (field, function_id) in [
             ("source.function_id", &request.source.function_id),
@@ -269,7 +292,7 @@ impl ObserverRegistry {
             .namespace
             .clone()
             .unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
-        // `null` is no args, stored (and shown to the owner) as `{}`.
+        // `null` is no args, stored (and shown to the host) as `{}`.
         let mut args = match &source.args {
             None | Some(Value::Null) => Value::Object(Map::new()),
             Some(args) => args.clone(),
@@ -278,8 +301,8 @@ impl ObserverRegistry {
         let mut activation_metadata = metadata;
 
         if let Some(session) = &worker.session {
-            // Same contract as `on_trigger_registration_function_id`: an
-            // object answer may rewrite the registration, anything else denies.
+            // An object answer may rewrite the registration, anything else
+            // denies.
             if let Some(hook) = session
                 .config
                 .rbac
@@ -336,8 +359,7 @@ impl ObserverRegistry {
                     }
                 }
             }
-            // A prefixed session's own functions live under `prefix::id`, as
-            // for a trigger's target.
+            // A prefixed session's own functions live under `prefix::id`.
             if let Some(prefix) = &session.function_registration_prefix {
                 target_id = format!("{prefix}::{target_id}");
             }
@@ -378,8 +400,8 @@ impl ObserverRegistry {
         let formats = self.function_formats(&function);
         match &formats {
             Some((request_format, response_format)) => {
-                let descriptor = self.function_entry(&function).and_then(|e| e.descriptor());
-                check_descriptor(descriptor.as_ref(), &function, &args)?;
+                let options = self.function_entry(&function).and_then(|e| e.options());
+                check_options(options.as_ref(), &function, &args)?;
                 warnings = filter
                     .check_schema_paths(request_format.as_ref(), response_format.as_ref())
                     .map_err(|err| reject(err.code.as_str(), err.message))?;
@@ -394,16 +416,10 @@ impl ObserverRegistry {
         }
 
         let config = self.config();
-        // Observers the legacy shim made from old triggers count against no
-        // limit (protocol.md §6).
         let owned = self
             .by_connection
             .get(&worker.id)
-            .map(|ids| {
-                ids.iter()
-                    .filter(|id| self.get(id).is_some_and(|o| o.legacy.is_none()))
-                    .count()
-            })
+            .map(|ids| ids.len())
             .unwrap_or(0);
         if owned >= config.max_per_connection {
             return Err(reject(
@@ -413,10 +429,15 @@ impl ObserverRegistry {
                 ),
             ));
         }
+        // The observer this one replaces leaves the function as it joins.
+        let replaced_here = usize::from(replacing.as_ref().is_some_and(|replaced| {
+            replaced.function == function && left_behind(&replaced.flags())
+        }));
         let on_function = self
             .function_entry(&function)
             .map(|e| e.limited_observer_count())
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .saturating_sub(replaced_here);
         if on_function >= config.max_per_function {
             return Err(reject(
                 observe_codes::LIMIT_EXCEEDED,
@@ -446,13 +467,14 @@ impl ObserverRegistry {
                 max_queue: config.max_queue_per_observer,
             },
             warnings: warnings.clone(),
-            observing: Observing {
-                connection: worker.id,
-                worker_name: self
-                    .deps
-                    .get()
-                    .and_then(|deps| deps.workers.get_worker_name(&worker.id)),
-                session: worker.session.clone(),
+            observing: {
+                let (worker_name, namespace) = self.worker_identity(worker.id);
+                Observing {
+                    connection: worker.id,
+                    worker_name,
+                    namespace,
+                    session: worker.session.clone(),
+                }
             },
             flags: Flags {
                 observing_connected: true,
@@ -466,15 +488,19 @@ impl ObserverRegistry {
                 disposed: None,
             },
             function,
-            legacy: None,
         }));
 
-        let inserted = self.publish(&observer, worker.id, warnings);
+        let inserted = self.publish(&observer, worker.id, warnings, replacing.as_ref());
         if !inserted {
-            return Err(reject(
-                observe_codes::OBSERVER_ID_CONFLICT,
-                format!("observer `{id}` was created concurrently"),
-            ));
+            // The suspended observer's connection came back meanwhile, or
+            // another `observe` created the id first.
+            return Err(match replacing {
+                Some(_) => owned_by_another_connection(&id),
+                None => reject(
+                    observe_codes::OBSERVER_ID_CONFLICT,
+                    format!("observer `{id}` was created concurrently"),
+                ),
+            });
         }
 
         // The registry may have changed between the checks above and the
@@ -499,38 +525,71 @@ impl ObserverRegistry {
         Ok(())
     }
 
-    /// Makes `observer` visible to every index and queues its
-    /// `observeresult` (not for a legacy observer, whose registrant sent no
-    /// `observe`), before any transition can be reported.
+    /// Makes `observer` visible to every index, queues its `observeresult`
+    /// and calls `engine::on-observers-changed` with the state it was created
+    /// in, before any transition can be reported.
+    ///
+    /// With `replacing`, a suspended observer of the same worker under the
+    /// same id (decision 51), the id passes from that observer to this one
+    /// in one step: it is disposed here, unless its connection came back or
+    /// it went meanwhile, and keeps the id until this one takes it, so no
+    /// other `observe` finds the id free in between. Returns whether
+    /// `observer` holds the id.
     pub(super) fn publish(
         self: &Arc<Self>,
         observer: &Arc<Observer>,
         connection: Uuid,
         warnings: Vec<String>,
+        replacing: Option<&Arc<Observer>>,
     ) -> bool {
-        let state = observer.state();
-        match self.by_id.entry(observer.id.clone()) {
-            dashmap::mapref::entry::Entry::Occupied(_) => return false,
-            dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                vacant.insert(observer.clone());
+        let replaced = replacing.and_then(|previous| {
+            self.dispose_left_behind(previous, connection)
+                .map(|transition| (previous, transition))
+        });
+        // Under the status lock, which a transition takes: it is reported
+        // after these.
+        let published = observer.with_state(|state, reason| {
+            match self.by_id.entry(observer.id.clone()) {
+                dashmap::mapref::entry::Entry::Occupied(mut held) => {
+                    // The observer just disposed stays in `by_id` until it
+                    // is settled below.
+                    let Some((previous, _)) = &replaced else {
+                        return None;
+                    };
+                    if !Arc::ptr_eq(held.get(), previous) {
+                        return None;
+                    }
+                    held.insert(observer.clone());
+                }
+                dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                    vacant.insert(observer.clone());
+                }
             }
+            self.state_counts.enter(state);
+            // The engine hears nothing about the observers it owns.
+            if !observer.is_engine_owned() {
+                self.notify(
+                    connection,
+                    Message::ObserveResult {
+                        id: observer.id.clone(),
+                        state: state.clone(),
+                        error: None,
+                        warnings,
+                    },
+                );
+            }
+            Some(self.observer_changed(observer, state, reason))
+        });
+        // Its index entries go before this observer's are added: both may
+        // file the same id under the same target.
+        if let Some((previous, transition)) = replaced {
+            self.settle(previous, transition);
         }
-        self.state_counts.enter(&state);
-        // Queued before the observer is reachable from the function and target
-        // indexes, which are what a concurrent registry change goes through:
-        // any transition it causes is reported after this.
-        if observer.legacy.is_none() {
-            self.notify(
-                connection,
-                Message::ObserveResult {
-                    id: observer.id.clone(),
-                    state: state.clone(),
-                    error: None,
-                    warnings,
-                },
-            );
-        } else if state == ObserverState::Active {
-            self.answer_legacy(observer, None);
+        let Some(unqueued) = published else {
+            return false;
+        };
+        if let Some(event) = unqueued {
+            event.evaluate();
         }
         self.by_connection
             .entry(connection)
@@ -541,9 +600,9 @@ impl ObserverRegistry {
             .or_default()
             .insert(observer.id.clone());
         self.attach_to_function(observer);
-        if state == ObserverState::Active {
-            self.refresh_active(&observer.function);
-        }
+        // Whatever state it reached since its creation: a transition made
+        // before it joined its function found it in no active set.
+        self.refresh_observer(observer);
         true
     }
 
@@ -568,6 +627,76 @@ impl ObserverRegistry {
         observer.set_expiry_timer(handle.abort_handle());
     }
 
+    /// The worker name and namespace `connection` registered with
+    /// (`engine::workers::register`), which identify its worker across
+    /// connections. No name until it registered one.
+    fn worker_identity(&self, connection: Uuid) -> (Option<String>, String) {
+        match self.deps.get() {
+            Some(deps) => (
+                deps.workers.get_worker_name(&connection),
+                deps.workers.get_namespace(&connection),
+            ),
+            None => (None, DEFAULT_NAMESPACE.to_string()),
+        }
+    }
+
+    /// Whether `worker`, observing under the id of `existing` (another
+    /// connection's observer), is that observer's worker back on a new
+    /// connection while the observer is suspended: the same worker name in
+    /// the same namespace, and `existing`'s observing connection away within
+    /// its grace period (decision 51). Such an `observe` replaces `existing`
+    /// when its observer is created ([`Self::publish`]). An observer
+    /// disposed meanwhile frees the id anyway.
+    fn left_behind_by(&self, existing: &Arc<Observer>, worker: &WorkerConnection) -> bool {
+        if existing.is_engine_owned() {
+            return false;
+        }
+        let observing = existing.observing();
+        let (worker_name, namespace) = self.worker_identity(worker.id);
+        if worker_name.is_none()
+            || observing.worker_name != worker_name
+            || observing.namespace != namespace
+        {
+            return false;
+        }
+        let flags = existing.flags();
+        flags.disposed.is_some() || left_behind(&flags)
+    }
+
+    /// Disposes `previous`, the suspended observer a new connection of its
+    /// worker replaces, when it is still suspended: under its status lock,
+    /// which a `Reattach` takes too, so an observer whose connection came
+    /// back first stays. The host let it go when the worker left, so nothing
+    /// more is sent to it; the disposal leaves a tombstone, so the earlier
+    /// connection, reattaching later, finds the observer disposed. Returns
+    /// the transition, which the caller settles after the new observer has
+    /// taken the id, or `None` when `previous` was not suspended.
+    fn dispose_left_behind(
+        &self,
+        previous: &Arc<Observer>,
+        connection: Uuid,
+    ) -> Option<Transition> {
+        let mut disposed = false;
+        let transition = self.transition(previous, |flags| {
+            if left_behind(flags) {
+                flags.disposed = Some(ErrorBody::new(
+                    observe_codes::OBSERVER_DISCONNECTED,
+                    "replaced by an observe under its id from a new connection of its worker",
+                ));
+                disposed = true;
+            }
+        });
+        if disposed {
+            tracing::info!(
+                observer_id = %previous.id,
+                previous = %previous.observing().connection,
+                connection = %connection,
+                "a new connection of the observing worker replaces its observer"
+            );
+        }
+        transition
+    }
+
     /// Handles `unobserve` from `connection`: only the observing connection may
     /// dispose its observer this way.
     pub fn unobserve(&self, connection: Uuid, id: &str) {
@@ -575,7 +704,7 @@ impl ObserverRegistry {
             tracing::debug!(observer_id = %id, "unobserve for an unknown observer; ignoring");
             return;
         };
-        if observer.observing().connection != connection {
+        if observer.observing_connection() != connection {
             tracing::debug!(
                 observer_id = %id,
                 connection = %connection,
@@ -588,6 +717,13 @@ impl ObserverRegistry {
             observe_codes::UNOBSERVED,
             "disposed by its observing worker",
         );
+        // A tombstone answers a replay of an observer disposed while its worker
+        // was not looking. This worker asked for the disposal and replays no
+        // handle it disposed, so the id is free for a new observer of its own
+        // at once: a queue subscriber observing again under its stable id
+        // finds its backlog.
+        self.tombstones
+            .remove_if(id, |_, tombstone| tombstone.connection == connection);
     }
 
     /// The observing connection is gone: its observers are `suspended` for
@@ -604,13 +740,15 @@ impl ObserverRegistry {
             .unwrap_or_default();
         let observers: Vec<Arc<Observer>> = observers
             .into_iter()
-            .filter(|o| o.observing().connection == connection)
+            .filter(|o| o.observing_connection() == connection)
             .collect();
         if observers.is_empty() {
             return;
         }
         for observer in &observers {
             self.update(observer, |flags| flags.observing_connected = false);
+            // Its function's owner lets it go until the worker reattaches.
+            self.withdraw_while_away(observer);
         }
         let Some(runtime) = self.runtime() else {
             for observer in &observers {
@@ -652,7 +790,7 @@ impl ObserverRegistry {
             .map(|ids| ids.iter().filter_map(|id| self.get(id)).collect())
             .unwrap_or_default();
         for observer in observers {
-            if observer.observing().connection == connection
+            if observer.observing_connection() == connection
                 && !observer.flags().observing_connected
             {
                 self.dispose(
@@ -685,7 +823,7 @@ impl ObserverRegistry {
     /// Re-parenting never rejects an observer: `max_per_connection` applies
     /// when observers are created, and these were created already.
     pub fn reattach(
-        &self,
+        self: &Arc<Self>,
         previous: Uuid,
         token: Option<&str>,
         connection: &WorkerConnection,
@@ -708,7 +846,7 @@ impl ObserverRegistry {
             .remove(&previous)
             .map(|(_, ids)| ids)
             .unwrap_or_default();
-        let mut moved = 0usize;
+        let mut moved = Vec::new();
         for id in ids {
             let Some(observer) = self.get(&id) else {
                 continue;
@@ -720,6 +858,7 @@ impl ObserverRegistry {
             observer.set_observing(Observing {
                 connection,
                 worker_name: observing.worker_name,
+                namespace: observing.namespace,
                 session: new_connection.session.clone(),
             });
             self.by_connection
@@ -739,17 +878,20 @@ impl ObserverRegistry {
                 continue;
             }
             self.update(&observer, |flags| flags.observing_connected = true);
-            moved += 1;
+            moved.push(observer);
         }
         for mut tombstone in self.tombstones.iter_mut() {
             if tombstone.connection == previous {
                 tombstone.connection = connection;
             }
         }
+        // Each function's owner let them go when the worker left; it hears
+        // about them again, in creation order, and they go active on its ack.
+        self.announce_returned(&moved);
         tracing::info!(
             previous = %previous,
             connection = %connection,
-            observers = moved,
+            observers = moved.len(),
             "Reattach: observers re-parented to the new connection"
         );
         true
@@ -947,6 +1089,105 @@ mod tests {
         let tombstone = registry.tombstones.get("obs").unwrap();
         assert_eq!(tombstone.connection, second.id);
         assert_eq!(tombstone.reason.code, observe_codes::OBSERVER_DISCONNECTED);
+    }
+
+    /// A worker's disconnect suspends each of its observers in `O(log n)` of
+    /// their function's active observers, and the end of its grace period
+    /// disposes each without copying any set: what each suspension copies
+    /// grows with the depth of the function's active set, not with its size.
+    /// Rebuilding the set for each would copy every observer, 16 times as
+    /// many at 4,000 as at 250.
+    #[tokio::test]
+    async fn a_workers_observers_are_suspended_and_disposed_in_log_n_each() {
+        use super::super::work;
+        async fn per_observer(n: usize) -> (f64, f64) {
+            let engine = engine_with_functions();
+            engine.observers.set_config(ObserversConfig {
+                observer_grace_ms: 600_000,
+                max_per_connection: n,
+                max_per_function: n,
+                ..ObserversConfig::default()
+            });
+            let (worker, mut socket) = test_support::worker(&engine);
+            let drain = tokio::spawn(async move { while socket.recv().await.is_some() {} });
+            for i in 0..n {
+                let request =
+                    test_support::request(&format!("obs-{i}"), "test::src", "test::dst", None);
+                engine.observers.observe(&engine, &worker, request).await;
+            }
+            assert_eq!(
+                engine.observers.count_in_state(&ObserverState::Active),
+                n as i64
+            );
+            let registry = engine.observers.clone();
+            work::take();
+            registry.connection_closed(worker.id, worker.reattach_token);
+            let suspended = work::take();
+            assert_eq!(registry.count_in_state(&ObserverState::Suspended), n as i64);
+            assert!(registry.watch("default", "test::src").is_none());
+            registry.grace_elapsed(worker.id);
+            let disposed = work::take();
+            assert!(registry.is_empty());
+            drain.abort();
+            (suspended as f64 / n as f64, disposed as f64 / n as f64)
+        }
+        let (small, small_disposed) = per_observer(250).await;
+        let (large, large_disposed) = per_observer(4_000).await;
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots copied per suspension: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+        assert_eq!((small_disposed, large_disposed), (0.0, 0.0));
+    }
+
+    /// A worker's `observe` and `unobserve` cost `O(log n)` each in its
+    /// function's `n` observers: neither scans them (to count them against
+    /// `max_per_function`, or to find the one leaving), so what each copies
+    /// grows with the depth of the function's active set, not with its size.
+    /// A scan of the function's observers on each would visit every one, 16
+    /// times as many at 4,000 as at 250.
+    #[tokio::test]
+    async fn a_workers_observe_and_unobserve_cost_log_n_each() {
+        use super::super::work;
+        async fn per_change(n: usize) -> (f64, f64) {
+            let engine = engine_with_functions();
+            engine.observers.set_config(ObserversConfig {
+                observer_grace_ms: 600_000,
+                max_per_connection: n,
+                max_per_function: n,
+                ..ObserversConfig::default()
+            });
+            let (worker, mut socket) = test_support::worker(&engine);
+            let drain = tokio::spawn(async move { while socket.recv().await.is_some() {} });
+            let registry = engine.observers.clone();
+            work::take();
+            for i in 0..n {
+                let request =
+                    test_support::request(&format!("obs-{i}"), "test::src", "test::dst", None);
+                registry.observe(&engine, &worker, request).await;
+            }
+            let observed = work::take();
+            assert_eq!(registry.count_in_state(&ObserverState::Active), n as i64);
+            for i in 0..n {
+                registry.unobserve(worker.id, &format!("obs-{i}"));
+            }
+            let unobserved = work::take();
+            assert!(registry.is_empty());
+            assert!(registry.watch("default", "test::src").is_none());
+            drain.abort();
+            (observed as f64 / n as f64, unobserved as f64 / n as f64)
+        }
+        let (small, small_unobserve) = per_change(250).await;
+        let (large, large_unobserve) = per_change(4_000).await;
+        assert!(
+            large < 3.0 * small && large < 256.0,
+            "slots per observe: {small:.1} with 250 observers, {large:.1} with 4,000"
+        );
+        assert!(
+            large_unobserve < 3.0 * small_unobserve && large_unobserve < 256.0,
+            "slots per unobserve: {small_unobserve:.1} with 250 observers, \
+             {large_unobserve:.1} with 4,000"
+        );
     }
 
     /// With `disposed_retention_ms: 0` nothing is remembered past the grace

@@ -41,13 +41,24 @@ describe('iii.observe', () => {
     ])
   })
 
-  it('sends the functions before the observers on every connection', () => {
+  it('sends the functions before the observers on every connection, those that wait for observe.v2 included', () => {
     const { sdk, socket } = worker()
-    sdk.registerFunction('audit::record', async () => null)
+    sdk.registerFunction('audit::record', async () => null, { private: true })
     sdk.observe({ function_id: 'orders::create' }, 'audit::record')
     socket.open()
     const types = socket.frames().map((f) => f.type)
+    expect(types.indexOf('registerfunction')).toBeGreaterThan(-1)
     expect(types.indexOf('registerfunction')).toBeLessThan(types.indexOf('observe'))
+  })
+
+  it("observe('fn::id', target) is observe({ function_id: 'fn::id' }, target)", () => {
+    const { sdk, socket } = worker()
+    socket.open()
+    sdk.observe('orders::create', 'audit::record', { id: 'short' })
+    sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'long' })
+    const [short, long] = socket.framesOf('observe')
+    expect({ ...short, id: 'long' }).toEqual(long)
+    expect(short.source).toEqual({ function_id: 'orders::create' })
   })
 
   it('fills the namespace from the worker, and `default` for engine builtins', () => {
@@ -234,6 +245,7 @@ describe('iii.observe', () => {
     sdk.observe({ function_id: 'a::b' }, 'c::d', { id: 'same' })
     expect(() => sdk.observe({ function_id: 'a::b' }, 'c::d', { id: 'same' })).toThrow(/already in use/)
     expect(() => sdk.observe({ function_id: '' }, 'c::d')).toThrow(/function_id/)
+    expect(() => sdk.observe('', 'c::d')).toThrow(/function_id/)
     expect(() => sdk.observe({ function_id: 'a::b' }, '')).toThrow(/target/)
   })
 

@@ -5,11 +5,11 @@
 // See LICENSE and PATENTS files for details.
 
 mod cli;
-mod cli_trigger;
+mod cli_call;
 mod legacy_worker_functions;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use cli_trigger::TriggerArgs;
+use cli_call::CallArgs;
 use iii::{EngineBuilder, logging, workers::config::EngineConfig};
 
 /// Walk the clap Command tree to find the deepest matching subcommand for the
@@ -76,7 +76,13 @@ fn print_subcommands_section(cmd: &clap::Command) {
     println!("{}", "Commands:".bold());
     for sub in subs {
         let name = sub.get_name();
-        let about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+        let mut about = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
+        let aliases: Vec<&str> = sub.get_visible_aliases().collect();
+        if !aliases.is_empty() {
+            about = format!("{about} [aliases: {}]", aliases.join(", "))
+                .trim_start()
+                .to_string();
+        }
         let padded = format!("{:<width$}", name, width = max_name);
         if about.is_empty() {
             println!("  {}", padded.bold());
@@ -128,9 +134,9 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Invoke a function on a running iii engine
-    #[command(visible_alias = "t")]
-    Trigger(TriggerArgs),
+    /// Call a function on a running iii engine
+    #[command(visible_aliases = ["trigger", "t"])]
+    Call(CallArgs),
 
     /// Removed: prints where the iii console moved (ADE) and exits non-zero.
     // TODO(MOT-3619): remove the iii console stub in the next release.
@@ -227,7 +233,8 @@ fn cli_usage_command_path(cli: &Cli) -> String {
     }
 
     match &cli.command {
-        Some(Commands::Trigger(_)) => "trigger".to_string(),
+        // Every form (`call`, `trigger`, `t`) is counted as `call`.
+        Some(Commands::Call(_)) => "call".to_string(),
         Some(Commands::Console { args }) => passthrough_command_path("console", args),
         Some(Commands::Cloud { args }) => passthrough_command_path("cloud", args),
         Some(Commands::Project(args)) => match args.action {
@@ -430,9 +437,9 @@ fn main() -> anyhow::Result<()> {
         Ok(c) => c,
         Err(err) => match err.kind() {
             // Intercept clap's default help output and re-render it via
-            // clap-help for a friendlier layout. Trigger has its own dynamic
+            // clap-help for a friendlier layout. Call has its own dynamic
             // help (engine query) and is opted out via disable_help_flag, so
-            // this only fires for root + non-trigger subcommands.
+            // this only fires for root + non-call subcommands.
             clap::error::ErrorKind::DisplayHelp
             | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                 print_help_and_exit(&argv);
@@ -512,11 +519,11 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
     }
 
     match &cli_args.command {
-        Some(Commands::Trigger(args)) => match cli_trigger::run_trigger(args).await {
+        Some(Commands::Call(args)) => match cli_call::run_call(args).await {
             Ok(()) => Ok(()),
             // exec::invoke already printed the structured JSON; exit silently.
-            Err(cli_trigger::TriggerCliError::RemoteAlreadyReported) => std::process::exit(1),
-            Err(cli_trigger::TriggerCliError::Other(e)) => Err(e),
+            Err(cli_call::CallCliError::RemoteAlreadyReported) => std::process::exit(1),
+            Err(cli_call::CallCliError::Other(e)) => Err(e),
         },
         // Handled before telemetry above.
         Some(Commands::Console { .. }) => unreachable!("the iii console stub returns early"),
@@ -590,11 +597,11 @@ mod tests {
     }
 
     #[test]
-    fn trigger_parses_with_positional_fn_path_only() {
-        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn"])
-            .expect("should parse trigger with fn path only");
+    fn call_parses_with_positional_fn_path_only() {
+        let cli = Cli::try_parse_from(["iii", "call", "my::fn"])
+            .expect("should parse call with fn path only");
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert!(args.kv.is_empty());
                 assert!(args.json.is_none());
@@ -604,79 +611,92 @@ mod tests {
                 assert_eq!(args.port, None);
                 assert_eq!(args.timeout_ms, 30_000);
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
     #[test]
-    fn trigger_parses_with_kv_pairs() {
-        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "a=10", "b=hello"])
-            .expect("should parse trigger with kv args");
+    fn call_parses_with_kv_pairs() {
+        let cli = Cli::try_parse_from(["iii", "call", "my::fn", "a=10", "b=hello"])
+            .expect("should parse call with kv args");
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert_eq!(args.kv, vec!["a=10", "b=hello"]);
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
     #[test]
-    fn trigger_parses_with_json_flag() {
-        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "--json", r#"{"a":1}"#])
-            .expect("should parse trigger --json");
+    fn call_parses_with_json_flag() {
+        let cli = Cli::try_parse_from(["iii", "call", "my::fn", "--json", r#"{"a":1}"#])
+            .expect("should parse call --json");
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert_eq!(args.json.as_deref(), Some(r#"{"a":1}"#));
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
     #[test]
-    fn trigger_parses_with_json_and_kv_together() {
+    fn call_parses_with_json_and_kv_together() {
         let cli = Cli::try_parse_from([
             "iii",
-            "trigger",
+            "call",
             "my::fn",
             "--json",
             r#"{"a":1,"b":2}"#,
             "a=99",
         ])
-        .expect("should parse trigger with --json and kv simultaneously");
+        .expect("should parse call with --json and kv simultaneously");
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert_eq!(args.kv, vec!["a=99"]);
                 assert_eq!(args.json.as_deref(), Some(r#"{"a":1,"b":2}"#));
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
     #[test]
-    fn trigger_alias_parses_with_kv_pairs() {
+    fn trigger_alias_parses_as_call() {
+        let cli = Cli::try_parse_from(["iii", "trigger", "my::fn", "a=10"])
+            .expect("should parse the trigger alias");
+        match cli.command {
+            Some(Commands::Call(args)) => {
+                assert_eq!(args.function_path.as_deref(), Some("my::fn"));
+                assert_eq!(args.kv, vec!["a=10"]);
+            }
+            _ => panic!("expected Call subcommand"),
+        }
+    }
+
+    #[test]
+    fn t_alias_parses_with_kv_pairs() {
         let cli = Cli::try_parse_from(["iii", "t", "my::fn", "a=10", "b=hello"])
             .expect("should parse t alias with kv args");
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.function_path.as_deref(), Some("my::fn"));
                 assert_eq!(args.kv, vec!["a=10", "b=hello"]);
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
     #[test]
-    fn trigger_legacy_function_id_flag_rejected() {
-        let result = Cli::try_parse_from(["iii", "trigger", "--function-id", "my::fn"]);
+    fn call_legacy_function_id_flag_rejected() {
+        let result = Cli::try_parse_from(["iii", "call", "--function-id", "my::fn"]);
         assert!(result.is_err(), "--function-id should fail to parse");
     }
 
     #[test]
-    fn trigger_legacy_payload_flag_rejected() {
-        let result = Cli::try_parse_from(["iii", "trigger", "my::fn", "--payload", r#"{"a":1}"#]);
+    fn call_legacy_payload_flag_rejected() {
+        let result = Cli::try_parse_from(["iii", "call", "my::fn", "--payload", r#"{"a":1}"#]);
         assert!(result.is_err(), "--payload should fail to parse");
     }
 
@@ -753,10 +773,60 @@ mod tests {
     }
 
     #[test]
-    fn cli_usage_command_path_does_not_capture_trigger_function_id() {
-        let cli = Cli::try_parse_from(["iii", "trigger", "orders::charge"])
-            .expect("should parse trigger");
-        assert_eq!(cli_usage_command_path(&cli), "trigger");
+    fn cli_usage_command_path_does_not_capture_call_function_id() {
+        let cli =
+            Cli::try_parse_from(["iii", "call", "orders::charge"]).expect("should parse call");
+        assert_eq!(cli_usage_command_path(&cli), "call");
+    }
+
+    #[test]
+    fn cli_usage_command_path_records_every_alias_as_call() {
+        for alias in ["call", "trigger", "t"] {
+            let cli = Cli::try_parse_from(["iii", alias, "orders::charge"])
+                .unwrap_or_else(|e| panic!("should parse {alias}: {e}"));
+            assert_eq!(cli_usage_command_path(&cli), "call", "{alias}");
+        }
+    }
+
+    /// "trigger" appears in the CLI's help only as an alias of `call` (F4):
+    /// no command's about text and no argument's help uses the word.
+    #[test]
+    fn help_text_says_trigger_only_as_an_alias() {
+        fn walk(command: &clap::Command, path: &str, hits: &mut Vec<String>) {
+            let texts = [command.get_about(), command.get_long_about()]
+                .into_iter()
+                .flatten()
+                .map(|text| (path.to_string(), text.to_string()))
+                .chain(command.get_arguments().flat_map(|arg| {
+                    [arg.get_help(), arg.get_long_help()]
+                        .into_iter()
+                        .flatten()
+                        .map(move |text| (format!("{path} --{}", arg.get_id()), text.to_string()))
+                }));
+            for (at, text) in texts {
+                if text.to_lowercase().contains("trigger") {
+                    hits.push(format!("{at}: {text}"));
+                }
+            }
+            for sub in command.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), hits);
+            }
+        }
+
+        let mut hits = Vec::new();
+        walk(&Cli::command(), "iii", &mut hits);
+        assert!(hits.is_empty(), "help text says trigger: {hits:#?}");
+    }
+
+    #[test]
+    fn call_lists_trigger_and_t_as_visible_aliases() {
+        let call = cli_subcommand("call").expect("call subcommand");
+        let aliases: Vec<&str> = call.get_visible_aliases().collect();
+        assert_eq!(aliases, ["trigger", "t"]);
+        assert_eq!(
+            cli_subcommand("trigger").map(|c| c.get_name().to_string()),
+            Some("call".to_string())
+        );
     }
 
     #[test]
@@ -1047,13 +1117,13 @@ mod tests {
         }
     }
 
-    /// The trigger alias shares the top-level argument space with every
-    /// subcommand, so a new one must not shadow it.
+    /// The call aliases share the top-level argument space with every
+    /// subcommand, so a new one must not shadow them.
     #[test]
     fn compose_does_not_shadow_the_trigger_alias() {
         let cli = Cli::try_parse_from(["iii", "trigger", "compose::up", "id=host-a"])
             .expect("trigger should still parse");
-        assert_eq!(cli_usage_command_path(&cli), "trigger");
+        assert_eq!(cli_usage_command_path(&cli), "call");
     }
 
     #[test]
@@ -1198,24 +1268,24 @@ mod tests {
     }
 
     #[test]
-    fn trigger_parses_namespace_flag_alongside_kv_pairs() {
+    fn call_parses_namespace_flag_alongside_kv_pairs() {
         let cli = Cli::try_parse_from([
             "iii",
-            "trigger",
+            "call",
             "compose::up",
             "--namespace",
             "host-a",
             "container=api",
         ])
-        .expect("should parse trigger --namespace");
+        .expect("should parse call --namespace");
 
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.namespace.as_deref(), Some("host-a"));
                 assert_eq!(args.function_path.as_deref(), Some("compose::up"));
                 assert_eq!(args.kv, vec!["container=api".to_string()]);
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
@@ -1223,7 +1293,7 @@ mod tests {
     fn compose_add_parses_repeated_worker_arguments() {
         let cli = Cli::try_parse_from([
             "iii",
-            "trigger",
+            "call",
             "-n",
             "dev",
             "compose::add",
@@ -1233,22 +1303,22 @@ mod tests {
         .expect("compose::add should parse repeated workers");
 
         match cli.command {
-            Some(Commands::Trigger(args)) => {
+            Some(Commands::Call(args)) => {
                 assert_eq!(args.namespace.as_deref(), Some("dev"));
                 assert_eq!(args.function_path.as_deref(), Some("compose::add"));
                 assert_eq!(args.kv, vec!["worker=database", "worker=web"]);
             }
-            _ => panic!("expected Trigger subcommand"),
+            _ => panic!("expected Call subcommand"),
         }
     }
 
     #[test]
-    fn trigger_without_the_flag_carries_no_namespace() {
-        let cli = Cli::try_parse_from(["iii", "trigger", "state::get", "key=a"])
-            .expect("should parse a plain trigger");
+    fn call_without_the_flag_carries_no_namespace() {
+        let cli = Cli::try_parse_from(["iii", "call", "state::get", "key=a"])
+            .expect("should parse a plain call");
         match cli.command {
-            Some(Commands::Trigger(args)) => assert!(args.namespace.is_none()),
-            _ => panic!("expected Trigger subcommand"),
+            Some(Commands::Call(args)) => assert!(args.namespace.is_none()),
+            _ => panic!("expected Call subcommand"),
         }
     }
 }

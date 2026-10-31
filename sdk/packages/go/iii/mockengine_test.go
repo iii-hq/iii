@@ -19,8 +19,8 @@ import (
 // (sdk/packages/rust/iii/tests/common/mock_engine.rs), extended with an outbound
 // scripting hook (OnReceive) because the Go client tests drive both directions of the
 // protocol: the engine sends workerregistered on connect, invokefunction to exercise a
-// worker's handler, and invocationresult / triggerregistrationresult acks for outbound
-// Trigger calls.
+// worker's handler, and invocationresult acks for outbound
+// Call invocations.
 //
 // Every received text frame is decoded as JSON and appended to a buffer observable via
 // the WaitFor* helpers. Concurrency: the buffer and the active-connection handle are
@@ -187,7 +187,7 @@ func (m *mockEngine) closeActiveConnection() {
 }
 
 // clear empties the recorded-frames buffer, e.g. between asserting the initial
-// registration set and triggering a reconnect. Mirrors clear() in the Rust mock.
+// registration set and causing a reconnect. Mirrors clear() in the Rust mock.
 func (m *mockEngine) clear() {
 	m.mu.Lock()
 	m.received = nil

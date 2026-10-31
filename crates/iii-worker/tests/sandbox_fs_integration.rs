@@ -1,9 +1,9 @@
-//! Integration tests for the `sandbox::fs::*` trigger surface.
+//! Integration tests for the `sandbox::fs::*` functions.
 //!
 //! Mirrors the workflows in `tmp/try-vm-exec/fs-example.mjs`:
 //! mkdir → write → stat → ls → grep → sed → chmod → mv → read → rm,
 //! plus a streaming write/read round-trip and the cross-handler
-//! invariants every `sandbox::fs::*` trigger shares (UUID validation,
+//! invariants every `sandbox::fs::*` function shares (UUID validation,
 //! missing sandbox, stopped sandbox, wire-error propagation, and the
 //! contract that fs ops do not gate on `exec_in_progress`).
 //!

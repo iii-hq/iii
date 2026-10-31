@@ -13,7 +13,7 @@
 //!
 //! Nothing is hashed into it. A namespace an operator cannot predict is one
 //! they cannot address, and addressing it is the whole point: `stop`, `logs`
-//! and every `iii trigger` take it by hand. The cost is that two copies of a
+//! and every `iii call` take it by hand. The cost is that two copies of a
 //! project sharing a `name:` now collide instead of quietly running side by
 //! side, which is the intended reading of a duplicate.
 
@@ -48,8 +48,8 @@ fn first_present(candidates: [Option<&str>; 2]) -> Option<&str> {
 ///
 /// Rejects rather than rewrites. Namespaces travel into queue names, metric
 /// labels and log lines, so the set is narrow — but the operator has to be
-/// able to *type* the value back: it is what goes into `iii trigger
-/// --namespace` and into every `worker.trigger` call. A value rewritten on the
+/// able to *type* the value back: it is what goes into `iii call
+/// --namespace` and into every `worker.call`. A value rewritten on the
 /// way in is one they cannot type, and the rewrite was lossy besides, so
 /// `My Shop!`, `my/shop`, `my shop` and `MY-SHOP` all became the same project
 /// without any of the four declarations saying so.

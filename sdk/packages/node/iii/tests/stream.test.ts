@@ -1,6 +1,3 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { createStream } from '../src/helpers'
-import { iii, sleep } from './utils'
 import type {
   StreamSetInput,
   StreamSetResult,
@@ -8,6 +5,9 @@ import type {
   UpdateAppend,
   UpdateOp,
 } from '@iii-dev/helpers/stream'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { createStream } from '../src/helpers'
+import { iii, sleep } from './utils'
 
 type TestData = {
   name?: string
@@ -22,7 +22,7 @@ describe('Stream Operations', () => {
 
   beforeEach(async () => {
     await iii
-      .trigger({
+      .call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -41,7 +41,7 @@ describe('Stream Operations', () => {
         metadata: { created: new Date().toISOString() },
       }
 
-      const result = await iii.trigger<StreamSetInput, StreamSetResult<TestData>>({
+      const result = await iii.call<StreamSetInput, StreamSetResult<TestData>>({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -59,7 +59,7 @@ describe('Stream Operations', () => {
       const initialData: TestData = { value: 1 }
       const updatedData: TestData = { value: 2, updated: true }
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -69,7 +69,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result: StreamSetResult<TestData> = await iii.trigger({
+      const result: StreamSetResult<TestData> = await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -88,7 +88,7 @@ describe('Stream Operations', () => {
     it('should get an existing stream item', async () => {
       const testData: TestData = { name: 'Test', value: 100 }
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -98,7 +98,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result: TestData = await iii.trigger({
+      const result: TestData = await iii.call({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -112,7 +112,7 @@ describe('Stream Operations', () => {
     })
 
     it('should return null for non-existent item', async () => {
-      const result = await iii.trigger({
+      const result = await iii.call({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -127,7 +127,7 @@ describe('Stream Operations', () => {
 
   describe('stream::delete', () => {
     it('should delete an existing stream item', async () => {
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -137,7 +137,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -146,7 +146,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result = await iii.trigger({
+      const result = await iii.call({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -160,7 +160,7 @@ describe('Stream Operations', () => {
 
     it('should handle deleting non-existent item gracefully', async () => {
       await expect(
-        iii.trigger({
+        iii.call({
           function_id: 'stream::delete',
           payload: {
             stream_name: testStreamName,
@@ -185,7 +185,7 @@ describe('Stream Operations', () => {
 
       // Set multiple items
       for (const item of items) {
-        await iii.trigger({
+        await iii.call({
           function_id: 'stream::set',
           payload: {
             stream_name: testStreamName,
@@ -196,7 +196,7 @@ describe('Stream Operations', () => {
         })
       }
 
-      const result: TestDataWithId[] = await iii.trigger({
+      const result: TestDataWithId[] = await iii.call({
         function_id: 'stream::list',
         payload: {
           stream_name: testStreamName,
@@ -215,7 +215,7 @@ describe('Stream Operations', () => {
     it('should return available groups', async () => {
       // Ported from motia-js integration test: stream#listGroups returns available groups
       const groupId = `list-groups-${Date.now()}`
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -225,18 +225,16 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result = await iii.trigger({
+      const result = await iii.call({
         function_id: 'stream::list_groups',
         payload: { stream_name: testStreamName },
       })
-      const groups = Array.isArray(result)
-        ? result
-        : ((result as { groups?: string[] })?.groups ?? [])
+      const groups = Array.isArray(result) ? result : ((result as { groups?: string[] })?.groups ?? [])
 
       expect(Array.isArray(groups)).toBe(true)
       expect(groups).toContain(groupId)
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -260,7 +258,7 @@ describe('Stream Operations', () => {
       const groupId = `update-group-${Date.now()}`
       const itemId = `update-item-${Date.now()}`
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -270,7 +268,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::update',
         payload: {
           stream_name: testStreamName,
@@ -280,7 +278,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result = await iii.trigger<unknown, { count?: number; name?: string }>({
+      const result = await iii.call<unknown, { count?: number; name?: string }>({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -292,7 +290,7 @@ describe('Stream Operations', () => {
       expect(result?.count).toBe(5)
       expect(result?.name).toBe('initial')
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -306,7 +304,7 @@ describe('Stream Operations', () => {
       const groupId = `append-group-${Date.now()}`
       const itemId = `append-item-${Date.now()}`
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -316,7 +314,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::update',
         payload: {
           stream_name: testStreamName,
@@ -329,7 +327,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result = await iii.trigger<unknown, { chunks?: unknown[]; transcript?: string }>({
+      const result = await iii.call<unknown, { chunks?: unknown[]; transcript?: string }>({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -341,7 +339,7 @@ describe('Stream Operations', () => {
       expect(result?.chunks).toEqual([{ text: 'hello' }])
       expect(result?.transcript).toBe('hello world')
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -355,7 +353,7 @@ describe('Stream Operations', () => {
       const groupId = `merge-group-${Date.now()}`
       const itemId = `merge-item-${Date.now()}`
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -365,7 +363,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const update = await iii.trigger<unknown, StreamUpdateResult<Record<string, unknown>>>({
+      const update = await iii.call<unknown, StreamUpdateResult<Record<string, unknown>>>({
         function_id: 'stream::update',
         payload: {
           stream_name: testStreamName,
@@ -383,7 +381,7 @@ describe('Stream Operations', () => {
         'session-abc': { author: 'alice', ts: 'chunk' },
       })
 
-      const result = await iii.trigger<unknown, Record<string, unknown>>({
+      const result = await iii.call<unknown, Record<string, unknown>>({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -394,7 +392,7 @@ describe('Stream Operations', () => {
 
       expect(result).toEqual(update.new_value)
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -408,7 +406,7 @@ describe('Stream Operations', () => {
       const groupId = `nested-merge-group-${Date.now()}`
       const itemId = `nested-merge-item-${Date.now()}`
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::set',
         payload: {
           stream_name: testStreamName,
@@ -418,7 +416,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const update = await iii.trigger<unknown, StreamUpdateResult<Record<string, unknown>>>({
+      const update = await iii.call<unknown, StreamUpdateResult<Record<string, unknown>>>({
         function_id: 'stream::update',
         payload: {
           stream_name: testStreamName,
@@ -436,7 +434,7 @@ describe('Stream Operations', () => {
         },
       })
 
-      const result = await iii.trigger<unknown, Record<string, unknown>>({
+      const result = await iii.call<unknown, Record<string, unknown>>({
         function_id: 'stream::get',
         payload: {
           stream_name: testStreamName,
@@ -447,7 +445,7 @@ describe('Stream Operations', () => {
 
       expect(result).toEqual(update.new_value)
 
-      await iii.trigger({
+      await iii.call({
         function_id: 'stream::delete',
         payload: {
           stream_name: testStreamName,
@@ -464,23 +462,23 @@ describe('Stream Operations', () => {
       const state: Map<string, TestData> = new Map()
 
       createStream(iii, testStreamName, {
-        get: async input => state.get(`${input.group_id}::${input.item_id}`),
-        set: async input => {
+        get: async (input) => state.get(`${input.group_id}::${input.item_id}`),
+        set: async (input) => {
           const key = `${input.group_id}::${input.item_id}`
           const oldValue = state.get(key)
           state.set(key, input.data)
 
           return { old_value: oldValue, new_value: input.data }
         },
-        delete: async input => {
+        delete: async (input) => {
           const oldValue = state.get(`${input.group_id}::${input.item_id}`)
           state.delete(`${input.group_id}::${input.item_id}`)
           return { old_value: oldValue }
         },
-        list: async input => {
+        list: async (input) => {
           return Array.from(state.keys())
-            .filter(key => key.startsWith(`${input.group_id}::`))
-            .map(key => state.get(key))
+            .filter((key) => key.startsWith(`${input.group_id}::`))
+            .map((key) => state.get(key))
         },
         listGroups: async () => Array.from(state.keys()),
         update: async () => {
@@ -497,17 +495,13 @@ describe('Stream Operations', () => {
         item_id: testItemId,
       }
 
-      await iii.trigger({ function_id: 'stream::set', payload: { ...getArgs, data: testData } })
+      await iii.call({ function_id: 'stream::set', payload: { ...getArgs, data: testData } })
 
       expect(state.get(`${testGroupId}::${testItemId}`)).toEqual(testData)
 
-      await expect(iii.trigger({ function_id: 'stream::get', payload: getArgs })).resolves.toEqual(
-        testData,
-      )
-      await iii.trigger({ function_id: 'stream::delete', payload: getArgs })
-      await expect(iii.trigger({ function_id: 'stream::get', payload: getArgs })).resolves.toEqual(
-        undefined,
-      )
+      await expect(iii.call({ function_id: 'stream::get', payload: getArgs })).resolves.toEqual(testData)
+      await iii.call({ function_id: 'stream::delete', payload: getArgs })
+      await expect(iii.call({ function_id: 'stream::get', payload: getArgs })).resolves.toEqual(undefined)
     })
   })
 })

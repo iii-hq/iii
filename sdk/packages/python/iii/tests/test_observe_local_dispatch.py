@@ -1,6 +1,6 @@
-"""The local path (sdk.md §3, §4.3): when ``trigger()`` runs in-process, the
-invocation context and caller propagation, value semantics, and the reports
-of local invocations of auto functions. Against a fake engine."""
+"""The local path: when ``call()`` runs in-process, the invocation context
+and caller propagation, value semantics, and the reports of what local calls
+delivered. Against a fake engine."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ import pytest
 from observe_fake_engine import (
     FakeEngine,
     acks,
+    answers,
     function_registered,
+    invoke,
     observer_added,
     observer_info,
     reported_items,
@@ -21,8 +23,9 @@ from observe_fake_engine import (
 )
 from pydantic import BaseModel
 
-from iii import InvocationError, TriggerAction, current_invocation
+from iii import Call, CallAction, InvocationError, current_invocation
 from iii.iii import III
+from iii.observable import same_data
 
 
 def _confirm(
@@ -37,7 +40,7 @@ def _confirm(
     state = client._functions[function_id].observe
     wait_until(lambda: state.confirmed, what=f"functionregistered for {function_id}")
     if observers:
-        wait_until(lambda: len(state.compiled) == len(observers), what="the observers")
+        wait_until(lambda: len(state.active.observers) == len(observers), what="the observers")
         # The acks go out after the filters compile; wait for them so a test that clears the frames next does not
         # see them arrive late.
         ids = {o["id"] for o in observers}
@@ -52,7 +55,7 @@ def _invocations(engine: FakeEngine) -> list[dict[str, Any]]:
     return [f for f in engine.frames_of("invokefunction") if f.get("function_id") != "engine::workers::register"]
 
 
-# ── when trigger() runs in-process ─────────────────────────────────────────
+# ── when call() runs in-process ─────────────────────────────────────────
 
 
 def test_a_confirmed_function_runs_in_process_and_puts_nothing_on_the_wire(engine: FakeEngine, connect: Any) -> None:
@@ -77,18 +80,18 @@ def test_a_confirmed_function_runs_in_process_and_puts_nothing_on_the_wire(engin
         if f.get("type") == "invokefunction" and f.get("invocation_id")
         else None
     )
-    assert client.trigger({"function_id": "math::add", "payload": {"a": 1, "b": 2}}) == 0
+    assert client.call({"function_id": "math::add", "payload": {"a": 1, "b": 2}}) == 0
     assert len(_invocations(engine)) == 1
 
     _confirm(client, engine, "math::add")
     engine.clear()
-    assert client.trigger({"function_id": "math::add", "payload": {"a": 1, "b": 2}}) == 3
+    assert client.call({"function_id": "math::add", "payload": {"a": 1, "b": 2}}) == 3
     # a sync handler runs on a thread of its own (so the caller can stop waiting), never on the SDK loop
     assert threads[-1] is not threading.current_thread()
     assert threads[-1] is not client._thread
 
     async def from_a_loop() -> int:
-        return await client.trigger_async({"function_id": "math::add", "payload": {"a": 2, "b": 2}})
+        return await client.call_async({"function_id": "math::add", "payload": {"a": 2, "b": 2}})
 
     assert asyncio.run(from_a_loop()) == 4
     assert threads[-1] is not threading.current_thread()  # on a thread of its own: the loop keeps running
@@ -96,11 +99,11 @@ def test_a_confirmed_function_runs_in_process_and_puts_nothing_on_the_wire(engin
     assert engine.frames() == []
 
     # dispatch="remote" and enqueue always go to the engine
-    assert client.trigger({"function_id": "math::add", "payload": {"a": 1, "b": 2}, "dispatch": "remote"}) == 0
-    client.trigger({"function_id": "math::add", "payload": {}, "action": TriggerAction.Enqueue(queue="q")})
+    assert client.call({"function_id": "math::add", "payload": {"a": 1, "b": 2}, "dispatch": "remote"}) == 0
+    client.call({"function_id": "math::add", "payload": {}, "action": CallAction.Enqueue(queue="q")})
     assert len(_invocations(engine)) == 2
     with pytest.raises(ValueError):
-        client.trigger({"function_id": "math::add", "payload": {}, "dispatch": "elsewhere"})
+        client.call({"function_id": "math::add", "payload": {}, "dispatch": "elsewhere"})
 
 
 def test_an_async_handler_runs_on_the_calling_loop(engine: FakeEngine, connect: Any) -> None:
@@ -115,14 +118,14 @@ def test_an_async_handler_runs_on_the_calling_loop(engine: FakeEngine, connect: 
     _confirm(client, engine, "loop::fn")
 
     async def caller() -> Any:
-        result = await client.trigger_async({"function_id": "loop::fn", "payload": 1})
+        result = await client.call_async({"function_id": "loop::fn", "payload": 1})
         return result, asyncio.get_running_loop()
 
     result, loop = asyncio.run(caller())
     assert result == 1
     assert loops[-1] is loop  # not the SDK loop
-    # from a thread (sync trigger): on the SDK loop
-    assert client.trigger({"function_id": "loop::fn", "payload": 2}) == 2
+    # from a thread (sync call): on the SDK loop
+    assert client.call({"function_id": "loop::fn", "payload": 2}) == 2
     assert loops[-1] is client._loop
 
 
@@ -130,8 +133,8 @@ def test_stays_local_for_the_namespace_the_function_registered_in(engine: FakeEn
     client = connect(engine, namespace="orders")
     client.register_function("ns::fn", lambda d: "local")
     _confirm(client, engine, "ns::fn", namespace="orders")
-    assert client.trigger({"function_id": "ns::fn", "payload": None}) == "local"
-    assert client.trigger({"function_id": "ns::fn", "payload": None, "namespace": "orders"}) == "local"
+    assert client.call({"function_id": "ns::fn", "payload": None}) == "local"
+    assert client.call({"function_id": "ns::fn", "payload": None, "namespace": "orders"}) == "local"
     engine.clear()
     engine.on_frame = lambda f: (
         [
@@ -145,7 +148,7 @@ def test_stays_local_for_the_namespace_the_function_registered_in(engine: FakeEn
         if f.get("type") == "invokefunction" and f.get("invocation_id")
         else None
     )
-    assert client.trigger({"function_id": "ns::fn", "payload": None, "namespace": "default"}) == "remote"
+    assert client.call({"function_id": "ns::fn", "payload": None, "namespace": "default"}) == "remote"
 
 
 def test_never_runs_an_http_invoked_function_locally(engine: FakeEngine, connect: Any) -> None:
@@ -155,7 +158,7 @@ def test_never_runs_an_http_invoked_function_locally(engine: FakeEngine, connect
     client.register_function("ext::fn", HttpInvocationConfig(url="http://127.0.0.1:9/fn"))
     _confirm(client, engine, "ext::fn")
     assert client._functions["ext::fn"].observe.local_dispatch is False
-    client.trigger({"function_id": "ext::fn", "payload": {}, "action": TriggerAction.Void()})
+    client.call({"function_id": "ext::fn", "payload": {}, "action": CallAction.Void()})
     engine.wait_for(lambda: _invocations(engine), what="the routed call")
 
 
@@ -168,7 +171,7 @@ def test_local_dispatch_false_and_an_unconfirmed_function_go_through_the_engine(
     _confirm(client, engine, "opt::out")
     _confirm(client, engine, "eng::off", local_dispatch=False)
     for fn in ("opt::out", "eng::off"):
-        client.trigger({"function_id": fn, "payload": {}, "action": TriggerAction.Void()})
+        client.call({"function_id": fn, "payload": {}, "action": CallAction.Void()})
     engine.wait_for(lambda: len(_invocations(engine)) == 2, what="two routed calls")
 
 
@@ -187,7 +190,7 @@ def test_void_runs_locally_fire_and_forget(engine: FakeEngine, connect: Any) -> 
 
     client.register_function("void::fn", blocked)
     _confirm(client, engine, "void::fn")
-    assert client.trigger({"function_id": "void::fn", "payload": 1, "action": TriggerAction.Void()}) is None
+    assert client.call({"function_id": "void::fn", "payload": 1, "action": CallAction.Void()}) is None
     got.append(("caller returned", None))
     returned.set()
     assert done.wait(2)
@@ -201,7 +204,7 @@ def test_local_dispatch_keeps_serving_while_disconnected(engine: FakeEngine, con
     _confirm(client, engine, "still::here")
     engine.stop()
     wait_until(lambda: client.get_connection_state() != "connected", what="the disconnect")
-    assert client.trigger({"function_id": "still::here", "payload": 21}) == 42
+    assert client.call({"function_id": "still::here", "payload": 21}) == 42
 
 
 # ── value semantics, errors and timeouts: as on the remote path ────────────
@@ -221,14 +224,14 @@ def test_a_handler_that_mutates_its_input_does_not_affect_the_caller_and_the_rev
     client.register_function("value::fn", mutate)
     _confirm(client, engine, "value::fn")
     payload = {"items": ["caller"]}
-    result = client.trigger({"function_id": "value::fn", "payload": payload})
+    result = client.call({"function_id": "value::fn", "payload": payload})
     assert payload == {"items": ["caller"]}
     result["nested"]["n"] = 99
     assert kept["out"] == {"nested": {"n": 1}}
 
     async def from_a_loop() -> None:
         p = {"items": []}
-        r = await client.trigger_async({"function_id": "value::fn", "payload": p})
+        r = await client.call_async({"function_id": "value::fn", "payload": p})
         assert p == {"items": []}
         r["nested"]["n"] = 5
         assert kept["out"] == {"nested": {"n": 1}}
@@ -250,13 +253,46 @@ def test_values_deepcopy_cannot_copy_fall_back_to_their_json_form(engine: FakeEn
     client.register_function("copy::fn", lambda data: seen.append(data) or "ok")
     _confirm(client, engine, "copy::fn")
     model = Model(name="a")
-    client.trigger({"function_id": "copy::fn", "payload": model})
+    client.call({"function_id": "copy::fn", "payload": model})
     assert seen[-1] == model and seen[-1] is not model  # deep copy keeps the model
     lock = threading.Lock()  # deepcopy refuses locks; JSON leaves them out
-    client.trigger({"function_id": "copy::fn", "payload": {"lock": lock, "n": 2}})
+    client.call({"function_id": "copy::fn", "payload": {"lock": lock, "n": 2}})
     assert seen[-1] == {"n": 2}
-    client.trigger({"function_id": "copy::fn", "payload": {"m": model, "u": Uncopyable(), "n": 1}})
+    client.call({"function_id": "copy::fn", "payload": {"m": model, "u": Uncopyable(), "n": 1}})
     assert seen[-1]["m"] == {"name": "a"} and seen[-1]["n"] == 1  # the JSON form
+
+
+def test_metadata_is_any_json_value_and_none_is_no_metadata_local_routed_and_received(
+    engine: FakeEngine, connect: Any
+) -> None:
+    """Decision 54: ``None`` is no metadata on every path; every other JSON value passes as given."""
+    client = connect(engine)
+    seen: list[Any] = []
+
+    def handler(data: Any, metadata: Any = "absent") -> None:
+        seen.append(metadata)
+
+    client.register_function("meta::fn", handler)
+    _confirm(client, engine, "meta::fn")
+    engine.clear()
+    values: list[Any] = [None, ["a", 1], "tag", 0, False, {"tenant": "acme"}]
+    # local: the handler gets None for None, every other value as given
+    for metadata in values:
+        client.call({"function_id": "meta::fn", "payload": {}, "metadata": metadata})
+    assert seen == values
+    assert _invocations(engine) == []
+    # routed: None is left off the frame
+    for metadata in values:
+        request = {"function_id": "meta::fn", "payload": {}, "metadata": metadata, "dispatch": "remote"}
+        client.call({**request, "action": CallAction.Void()})
+    sent = engine.wait_for(lambda: len(_invocations(engine)) == len(values) and _invocations(engine), what="calls")
+    assert [f.get("metadata", "absent") for f in sent] == ["absent", *values[1:]]
+    # received: an invokefunction with metadata null reaches the handler as None
+    seen.clear()
+    for i, metadata in enumerate(values):
+        engine.deliver(invoke("meta::fn", {}, f"in-{i}", metadata=metadata))
+        engine.wait_for(lambda i=i: answers(engine, f"in-{i}"), what="the answer")
+    assert seen == values
 
 
 def test_a_failing_handler_raises_the_invocation_error_the_remote_path_gives(engine: FakeEngine, connect: Any) -> None:
@@ -274,7 +310,7 @@ def test_a_failing_handler_raises_the_invocation_error_the_remote_path_gives(eng
     _confirm(client, engine, "fail::async")
     for fn in ("fail::sync", "fail::async"):
         with pytest.raises(InvocationError) as raised:
-            client.trigger({"function_id": fn, "payload": {}})
+            client.call({"function_id": fn, "payload": {}})
         assert raised.value.code == "invocation_failed"
         assert raised.value.message == "out of stock"
         assert raised.value.function_id == fn
@@ -304,13 +340,13 @@ def test_times_out_like_the_remote_path_and_the_handler_runs_to_its_end(engine: 
     _confirm(client, engine, "slow::sync")
     for fn in ("slow::async", "slow::sync"):
         with pytest.raises(InvocationError) as raised:
-            client.trigger({"function_id": fn, "payload": {}, "timeout_ms": 50})
+            client.call({"function_id": fn, "payload": {}, "timeout_ms": 50})
         assert raised.value.code == "TIMEOUT"
         events.append(f"{fn} timed out")
 
     async def from_a_loop() -> None:
         with pytest.raises(InvocationError) as raised:
-            await client.trigger_async({"function_id": "slow::sync", "payload": {}, "timeout_ms": 50})
+            await client.call_async({"function_id": "slow::sync", "payload": {}, "timeout_ms": 50})
         assert raised.value.code == "TIMEOUT"
         events.append("async caller timed out")
 
@@ -336,9 +372,9 @@ def test_no_message_size_limit_on_the_local_path(engine: FakeEngine, connect: An
     # Above the outbound message limit (64 MiB): smaller payloads go remote
     # as fragmented messages, so only this size is refused locally.
     big = "x" * (_MAX_JSON_OUTBOUND_BYTES + 1)
-    assert client.trigger({"function_id": "big::fn", "payload": big}) == len(big)
+    assert client.call({"function_id": "big::fn", "payload": big}) == len(big)
     with pytest.raises(InvocationError) as raised:
-        client.trigger({"function_id": "big::fn", "payload": big, "dispatch": "remote"})
+        client.call({"function_id": "big::fn", "payload": big, "dispatch": "remote"})
     assert raised.value.code == "payload_too_large"
 
 
@@ -358,13 +394,13 @@ def test_a_deep_chain_of_local_calls_falls_back_to_the_engine(engine: FakeEngine
     )
 
     def recurse(n: int) -> int:
-        return n if n == 0 else client.trigger({"function_id": "rec::fn", "payload": n - 1})
+        return n if n == 0 else client.call({"function_id": "rec::fn", "payload": n - 1})
 
     client.register_function("rec::fn", recurse)
     _confirm(client, engine, "rec::fn")
-    assert client.trigger({"function_id": "rec::fn", "payload": 63}) == 0  # 64 nested local calls
+    assert client.call({"function_id": "rec::fn", "payload": 63}) == 0  # 64 nested local calls
     assert _invocations(engine) == []
-    assert client.trigger({"function_id": "rec::fn", "payload": 64}) == -1  # the 65th goes remote
+    assert client.call({"function_id": "rec::fn", "payload": 64}) == -1  # the 65th goes remote
     assert len(_invocations(engine)) == 1
 
 
@@ -382,14 +418,14 @@ def test_current_invocation_in_a_local_handler_and_the_caller_chain_of_nested_lo
 
     async def outer(data: Any) -> None:
         seen["outer"] = current_invocation()
-        await client.trigger_async({"function_id": "ctx::inner", "payload": {}})
+        await client.call_async({"function_id": "ctx::inner", "payload": {}})
 
     client.register_function("ctx::inner", inner)
     client.register_function("ctx::outer", outer)
     _confirm(client, engine, "ctx::inner")
     _confirm(client, engine, "ctx::outer")
     assert client.current_invocation() is None
-    client.trigger({"function_id": "ctx::outer", "payload": {}})
+    client.call({"function_id": "ctx::outer", "payload": {}})
     out, inn = seen["outer"], seen["inner"]
     assert out.function_id == "ctx::outer"
     assert out.caller == {"worker_id": "worker-1", "worker_name": "observe-test"}
@@ -415,7 +451,7 @@ def test_an_inbound_activation_sets_the_context_is_answered_and_its_calls_carry_
         # a sync handler: its own thread, started in a copy of the context
         seen["inv"] = client.current_invocation()
         seen["thread"] = threading.current_thread()
-        client.trigger({"function_id": "elsewhere::fn", "payload": {}, "action": TriggerAction.Void()})
+        client.call({"function_id": "elsewhere::fn", "payload": {}, "action": CallAction.Void()})
         return "done"
 
     client.register_function("alerts::on-fail", target)
@@ -455,9 +491,9 @@ def test_an_inbound_activation_sets_the_context_is_answered_and_its_calls_carry_
 def test_omits_observe_depth_when_0_and_caller_outside_any_handler(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     client.register_function(
-        "app::fn", lambda d: client.trigger({"function_id": "x::y", "payload": {}, "action": TriggerAction.Void()})
+        "app::fn", lambda d: client.call({"function_id": "x::y", "payload": {}, "action": CallAction.Void()})
     )
-    client.trigger({"function_id": "outside::fn", "payload": {}, "action": TriggerAction.Void()})
+    client.call({"function_id": "outside::fn", "payload": {}, "action": CallAction.Void()})
     engine.deliver({"type": "invokefunction", "invocation_id": "i-1", "function_id": "app::fn", "data": {}})
     engine.wait_for(lambda: len(_invocations(engine)) == 2, what="both calls")
     outside, inside = _invocations(engine)
@@ -470,7 +506,7 @@ def test_sends_no_caller_to_an_engine_without_observe(engine_factory: Any, conne
     legacy = engine_factory("legacy")
     client = connect(legacy)
     client.register_function(
-        "app::fn", lambda d: client.trigger({"function_id": "x::y", "payload": {}, "action": TriggerAction.Void()})
+        "app::fn", lambda d: client.call({"function_id": "x::y", "payload": {}, "action": CallAction.Void()})
     )
     legacy.deliver({"type": "invokefunction", "invocation_id": "i-1", "function_id": "app::fn", "data": {}})
     call = legacy.wait_for(
@@ -491,7 +527,7 @@ def test_sync_handlers_keep_the_opentelemetry_context_on_their_thread(engine: Fa
     async def caller() -> None:
         token = otel_context.attach(otel_context.set_value(key, "carried"))
         try:
-            await client.trigger_async({"function_id": "otel::fn", "payload": {}})
+            await client.call_async({"function_id": "otel::fn", "payload": {}})
         finally:
             otel_context.detach(token)
 
@@ -499,16 +535,16 @@ def test_sync_handlers_keep_the_opentelemetry_context_on_their_thread(engine: Fa
     assert seen == ["carried"]
 
 
-# ── auto delivery: local invocations are evaluated and reported ────────────
+# ── delivery: local invocations are evaluated and reported ─────────────────
 
 
 def test_reports_a_matched_call_once_with_the_union_of_the_matched_captures(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
-    client.register_function("auto::price", lambda d: {"total": d["qty"] * 10})
+    client.register_function("local::price", lambda d: {"total": d["qty"] * 10})
     _confirm(
         client,
         engine,
-        "auto::price",
+        "local::price",
         [
             observer_info("a", "t", capture=["input"], filters={"$and": [{"input.qty": {"$gte": 2}}]}),
             observer_info("b", "t", capture=["output", "metadata"]),
@@ -517,7 +553,7 @@ def test_reports_a_matched_call_once_with_the_union_of_the_matched_captures(engi
     )
     engine.clear()
     payload = {"qty": 3}
-    client.trigger({"function_id": "auto::price", "payload": payload, "metadata": {"channel": "web"}})
+    client.call({"function_id": "local::price", "payload": payload, "metadata": {"channel": "web"}})
     settle(client, engine)
     [item] = reported_items(engine)
     assert item["matched"] == ["a", "b"]
@@ -531,6 +567,37 @@ def test_reports_a_matched_call_once_with_the_union_of_the_matched_captures(engi
     assert _invocations(engine) == []
 
 
+def test_capture_empty_reports_ids_status_and_timing_without_a_payload(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+
+    def checkout(data: dict[str, Any]) -> dict[str, Any]:
+        return client.call({"function_id": "local::price", "payload": data, "metadata": {"channel": "web"}})
+
+    client.register_function("local::price", lambda d: {"total": d["qty"] * 10})
+    client.register_function("local::checkout", checkout)
+    _confirm(client, engine, "local::price", [observer_info("bare", "t", capture=[])])
+    _confirm(client, engine, "local::checkout")
+    engine.clear()
+    # made from a handler, so the call has a caller too
+    assert client.call({"function_id": "local::checkout", "payload": {"qty": 3}}) == {"total": 30}
+    settle(client, engine)
+    [item] = reported_items(engine)
+    assert not {"input", "output", "output_is_input", "error", "caller", "metadata"} & item.keys()
+    assert {
+        "function_id",
+        "namespace",
+        "invocation_id",
+        "matched",
+        "status",
+        "started_at_ms",
+        "duration_ms",
+        "observe_depth",
+    } <= item.keys()
+    assert (item["function_id"], item["matched"], item["status"]) == ("local::price", ["bare"], "success")
+    assert isinstance(item["invocation_id"], str)
+    assert isinstance(item["started_at_ms"], int) and isinstance(item["duration_ms"], (int, float))
+
+
 def test_on_error_sees_only_failures_with_the_error_and_the_caller(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
 
@@ -539,46 +606,124 @@ def test_on_error_sees_only_failures_with_the_error_and_the_caller(engine: FakeE
             raise RuntimeError("flaky failed")
         return 1
 
-    client.register_function("auto::flaky", flaky)
-    _confirm(client, engine, "auto::flaky", [observer_info("e", "t", on="error", capture=["error", "caller"])])
-    client.trigger({"function_id": "auto::flaky", "payload": {"fail": False}})
+    client.register_function("local::flaky", flaky)
+    _confirm(client, engine, "local::flaky", [observer_info("e", "t", on="error", capture=["error", "caller"])])
+    client.call({"function_id": "local::flaky", "payload": {"fail": False}})
     with pytest.raises(InvocationError):
-        client.trigger({"function_id": "auto::flaky", "payload": {"fail": True}})
+        client.call({"function_id": "local::flaky", "payload": {"fail": True}})
     settle(client, engine)
     [item] = reported_items(engine)
     assert item["status"] == "error"
     assert item["error"]["code"] == "invocation_failed"
     assert item["error"]["message"] == "flaky failed"
-    assert item["caller"] == {"worker_id": "worker-1", "worker_name": "observe-test"}
+    # made outside any handler: no caller (the engine stamps this worker's on every item)
+    assert "caller" not in item
 
 
-def test_the_reported_input_is_the_callers_payload_not_what_the_handler_made_of_it(
+@pytest.mark.parametrize("hook", [False, True])
+def test_the_reported_input_and_metadata_are_the_callers_at_call_start(
+    engine: FakeEngine, connect: Any, hook: bool
+) -> None:
+    client = connect(engine)
+    delivered: list[tuple[Any, Any]] = []
+
+    def mutate(data: dict[str, Any], metadata: dict[str, Any]) -> dict[str, Any]:
+        data["touched"] = True
+        metadata["touched"] = True
+        return data
+
+    if hook:
+
+        @client.on_observer_deliver("local::mutate")
+        def keep(call: Call[Any, Any], observers: Any) -> Any:
+            delivered.append((call.input, call.metadata))
+            return call.output
+
+    client.register_function("local::mutate", mutate)
+    _confirm(client, engine, "local::mutate", [observer_info("o", "t", capture=["input", "output", "metadata"])])
+    payload = {"n": 1}
+    metadata = {"tenant": "acme"}
+    result = client.call({"function_id": "local::mutate", "payload": payload, "metadata": metadata})
+    # the handler works on its own copies; the caller keeps its values
+    assert result == {"n": 1, "touched": True}
+    assert payload == {"n": 1} and metadata == {"tenant": "acme"}
+    if hook:
+        assert delivered == [({"n": 1}, {"tenant": "acme"})]
+        return
+    [item] = engine.wait_for(lambda: reported_items(engine), what="the report")
+    # the payload and metadata as the caller passed them, apart from what the handler did to its copies
+    assert (item["input"], item["metadata"]) == ({"n": 1}, {"tenant": "acme"})
+    assert item["output"] == {"n": 1, "touched": True} and "output_is_input" not in item
+
+
+def test_a_non_private_handler_that_returns_its_own_input_unchanged_reports_it_once(
     engine: FakeEngine, connect: Any
 ) -> None:
     client = connect(engine)
+    client.register_function("echo::fn", lambda data: data)
+    _confirm(client, engine, "echo::fn", [observer_info("o", "audit::echo")])
+    engine.clear()
+    payload = {"n": 3, "tags": ["a"]}
+    out = client.call({"function_id": "echo::fn", "payload": payload})
+    assert out == payload and out is not payload
+    [item] = engine.wait_for(lambda: reported_items(engine), what="the report")
+    assert item["input"] == {"n": 3, "tags": ["a"]}
+    assert item.get("output_is_input") is True and "output" not in item
 
-    def mutate(data: dict[str, Any]) -> None:
-        data["touched"] = True
 
-    client.register_function("auto::mutate", mutate)
-    _confirm(client, engine, "auto::mutate", [observer_info("o", "t", capture=["input"])])
-    client.trigger({"function_id": "auto::mutate", "payload": {"n": 1}})
-    engine.wait_for(lambda: reported_items(engine), what="the report")
-    assert reported_items(engine)[0]["input"] == {"n": 1}
+def _bump(data: dict[str, Any]) -> dict[str, Any]:
+    data["n"] += 1
+    return data
+
+
+@pytest.mark.parametrize(
+    ("handler", "output"),
+    [
+        pytest.param(_bump, {"n": 4}, id="changes its input before returning it"),
+        pytest.param(lambda data: dict(data), {"n": 3}, id="returns an equal object of its own"),
+    ],
+)
+def test_a_non_private_handler_that_does_not_return_its_input_unchanged_reports_both(
+    engine: FakeEngine, connect: Any, handler: Any, output: dict[str, Any]
+) -> None:
+    client = connect(engine)
+    client.register_function("echo::fn", handler)
+    _confirm(client, engine, "echo::fn", [observer_info("o", "audit::echo")])
+    engine.clear()
+    assert client.call({"function_id": "echo::fn", "payload": {"n": 3}}) == output
+    [item] = engine.wait_for(lambda: reported_items(engine), what="the report")
+    # the input as the call started
+    assert (item["input"], item["output"]) == ({"n": 3}, output)
+    assert "output_is_input" not in item
+
+
+def test_same_data_compares_json_data_in_one_walk() -> None:
+    assert same_data({"a": [1, {"b": None}], "n": float("nan")}, {"n": float("nan"), "a": [1, {"b": None}]})
+    assert not same_data({"a": [1]}, {"a": [1, 2]})
+    assert not same_data({"a": 1}, {"a": True})
+    assert not same_data({"a": 1}, {"a": 1.0})
+    assert not same_data({"at": object()}, {"at": object()})
+    cycle: dict[str, Any] = {}
+    cycle["self"] = cycle
+    other: dict[str, Any] = {}
+    other["self"] = other
+    assert not same_data(cycle, other)
+    shared = {"n": 1}
+    assert not same_data({"x": shared, "y": shared}, {"x": {"n": 1}, "y": {"n": 1}})
 
 
 def test_reports_nothing_for_a_call_no_filter_matches_and_nothing_for_an_unobserved_function(
     engine: FakeEngine, connect: Any
 ) -> None:
     client = connect(engine)
-    client.register_function("auto::quiet", lambda d: d)
-    client.register_function("auto::unobserved", lambda d: d)
-    _confirm(client, engine, "auto::quiet", [observer_info("o", "t", filters={"$and": [{"input": {"$eq": "never"}}]})])
-    _confirm(client, engine, "auto::unobserved")
+    client.register_function("local::quiet", lambda d: d)
+    client.register_function("local::unobserved", lambda d: d)
+    _confirm(client, engine, "local::quiet", [observer_info("o", "t", filters={"$and": [{"input": {"$eq": "never"}}]})])
+    _confirm(client, engine, "local::unobserved")
     engine.clear()
     for _ in range(10):
-        client.trigger({"function_id": "auto::quiet", "payload": "x"})
-        client.trigger({"function_id": "auto::unobserved", "payload": "x"})
+        client.call({"function_id": "local::quiet", "payload": "x"})
+        client.call({"function_id": "local::unobserved", "payload": "x"})
     settle(client, engine)
     assert engine.frames() == []
 
@@ -592,18 +737,18 @@ def test_a_call_started_before_the_observer_was_added_is_not_reported(engine: Fa
         entered.set()
         release.wait(2)
 
-    client.register_function("auto::race", wait)
-    _confirm(client, engine, "auto::race")
-    runner = threading.Thread(target=lambda: client.trigger({"function_id": "auto::race", "payload": 1}))
+    client.register_function("local::race", wait)
+    _confirm(client, engine, "local::race")
+    runner = threading.Thread(target=lambda: client.call({"function_id": "local::race", "payload": 1}))
     runner.start()
     assert entered.wait(2)
-    engine.deliver(observer_added("auto::race", 1, observer_info("late", "t")))
+    engine.deliver(observer_added("local::race", 1, observer_info("late", "t")))
     engine.wait_for(lambda: acks(engine), what="the ack")
     release.set()
     runner.join(2)
     settle(client, engine)
     assert reported_items(engine) == []  # evaluated against the set captured at call start
-    client.trigger({"function_id": "auto::race", "payload": 2})
+    client.call({"function_id": "local::race", "payload": 2})
     engine.wait_for(lambda: reported_items(engine), what="the next call's report")
 
 
@@ -629,12 +774,12 @@ def test_zero_wire_unobserved_local_calls_send_zero_frames_with_a_positive_contr
 
     ws.send = counting_send  # type: ignore[method-assign]
     for i in range(calls):
-        client.trigger({"function_id": "zw::inc", "payload": i})
+        client.call({"function_id": "zw::inc", "payload": i})
     settle(client, engine)
     per_call = [d for d in sent if '"localinvocationstats"' not in d and "barrier" not in d]
     assert per_call == []
     # positive control: an observed function in the same harness does reach the socket
-    client.trigger({"function_id": "zw::observed", "payload": 1})
+    client.call({"function_id": "zw::observed", "payload": 1})
     wait_until(lambda: any('"invocationsobserved"' in d for d in sent), what="the control's report")
 
 
@@ -649,9 +794,9 @@ def test_counts_local_invocations_in_localinvocationstats_only_when_non_zero(eng
     _confirm(client, engine, "stats::fn")
     engine.clear()
     assert client._reporter.send_stats() is False  # nothing yet
-    client.trigger({"function_id": "stats::fn", "payload": False})
+    client.call({"function_id": "stats::fn", "payload": False})
     with pytest.raises(InvocationError):
-        client.trigger({"function_id": "stats::fn", "payload": True})
+        client.call({"function_id": "stats::fn", "payload": True})
 
     async def send() -> bool:
         return client._reporter.send_stats()
@@ -671,9 +816,7 @@ def test_a_local_calls_report_uses_the_metadata_snapshot_taken_at_call_start(eng
     _confirm(client, engine, "snap::fn", [observer_info("o", "t", capture=["input", "metadata"])])
     payload = {"n": 1}
     metadata = {"tag": "original"}
-    client.trigger(
-        {"function_id": "snap::fn", "payload": payload, "metadata": metadata, "action": TriggerAction.Void()}
-    )
+    client.call({"function_id": "snap::fn", "payload": payload, "metadata": metadata, "action": CallAction.Void()})
     # the caller changes its objects while the call is still running
     payload["n"] = 2
     metadata["tag"] = "changed"
@@ -695,7 +838,7 @@ def test_a_sync_local_handler_raising_a_base_exception_is_counted_and_reported(
     client.register_function("exit::fn", exits)
     _confirm(client, engine, "exit::fn", [observer_info("o", "t", on="error", capture=["error"])])
     with pytest.raises(InvocationError) as raised:
-        client.trigger({"function_id": "exit::fn", "payload": {}})
+        client.call({"function_id": "exit::fn", "payload": {}})
     assert raised.value.code == "invocation_failed"
     assert isinstance(raised.value.__cause__, SystemExit)
     stats = client._reporter._counters.stats["exit::fn"]
@@ -717,13 +860,13 @@ def test_an_async_handler_raising_a_base_exception_fails_the_call_and_the_sdk_lo
     _confirm(client, engine, "aexit::fn")
     _confirm(client, engine, "alive::fn")
     with pytest.raises(InvocationError) as raised:
-        client.trigger({"function_id": "aexit::fn", "payload": {}})
+        client.call({"function_id": "aexit::fn", "payload": {}})
     assert raised.value.code == "invocation_failed"
     assert isinstance(raised.value.__cause__, SystemExit)
 
     async def from_a_loop() -> None:
         with pytest.raises(InvocationError) as raised:
-            await client.trigger_async({"function_id": "aexit::fn", "payload": {}})
+            await client.call_async({"function_id": "aexit::fn", "payload": {}})
         assert isinstance(raised.value.__cause__, SystemExit)
 
     asyncio.run(from_a_loop())
@@ -731,13 +874,13 @@ def test_an_async_handler_raising_a_base_exception_fails_the_call_and_the_sdk_lo
     assert (stats.count, stats.errors) == (2, 2)
     # the SDK loop survived: local and remote work goes on
     assert client._thread.is_alive()
-    assert client.trigger({"function_id": "alive::fn", "payload": {}}) == "alive"
+    assert client.call({"function_id": "alive::fn", "payload": {}}) == "alive"
     # a remote invocation of it is answered with an error, not a dead loop
     engine.deliver({"type": "invokefunction", "invocation_id": "r-1", "function_id": "aexit::fn", "data": {}})
     [answer] = engine.wait_for(lambda: engine.frames_of("invocationresult"), what="the answer")
     assert answer["error"]["code"] == "invocation_failed"
     assert "SystemExit" in answer["error"]["message"]
-    assert client.trigger({"function_id": "alive::fn", "payload": {}}) == "alive"
+    assert client.call({"function_id": "alive::fn", "payload": {}}) == "alive"
 
 
 def test_a_void_local_call_that_raises_a_base_exception_is_logged(
@@ -758,8 +901,8 @@ def test_a_void_local_call_that_raises_a_base_exception_is_logged(
     _confirm(client, engine, "vexit::sync")
     _confirm(client, engine, "vexit::async")
     with caplog.at_level(logging.ERROR, logger="iii.iii"):
-        assert client.trigger({"function_id": "vexit::sync", "payload": {}, "action": TriggerAction.Void()}) is None
-        assert client.trigger({"function_id": "vexit::async", "payload": {}, "action": TriggerAction.Void()}) is None
+        assert client.call({"function_id": "vexit::sync", "payload": {}, "action": CallAction.Void()}) is None
+        assert client.call({"function_id": "vexit::async", "payload": {}, "action": CallAction.Void()}) is None
         wait_until(
             lambda: sum("Error invoking function vexit::" in r.getMessage() for r in caplog.records) == 2,
             what="both errors logged",

@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{Error, RegisterFunction};
 
 #[tokio::test]
@@ -86,7 +86,7 @@ async fn stream_data_from_sender_to_processor() {
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
                 let result = iii
-                    .trigger(TriggerRequest {
+                    .call(CallRequest {
                         function_id: "test::data::processor::rs".to_string(),
                         payload: json!({
                             "label": "metrics-batch",
@@ -114,7 +114,7 @@ async fn stream_data_from_sender_to_processor() {
     ]);
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::data::sender::rs".to_string(),
             payload: json!({"records": records}),
             action: None,
@@ -287,7 +287,7 @@ async fn bidirectional_streaming() {
                     let reader_ref = input_channel.reader_ref.clone();
                     let writer_ref = output_channel.writer_ref.clone();
                     tokio::spawn(async move {
-                        iii.trigger(TriggerRequest {
+                        iii.call(CallRequest {
                             function_id: "test::stream::worker::rs".to_string(),
                             payload: json!({
                                 "reader": reader_ref,
@@ -335,7 +335,7 @@ async fn bidirectional_streaming() {
     let text = "The quick brown fox jumps over the lazy dog and then runs around the park";
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "test::stream::coordinator::rs".to_string(),
             payload: json!({
                 "text": text,

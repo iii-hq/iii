@@ -1,6 +1,6 @@
 {
   "name": "iii-sdk",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -19,7 +19,8 @@
     "docs:json": "typedoc",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "bench": "vitest bench --run --config vitest.bench.config.ts"
   },
   "exports": {
     ".": {
@@ -46,11 +47,6 @@
       "types": "./dist/channel.d.ts",
       "import": "./dist/channel.mjs",
       "require": "./dist/channel.cjs"
-    },
-    "./trigger": {
-      "types": "./dist/trigger.d.ts",
-      "import": "./dist/trigger.mjs",
-      "require": "./dist/trigger.cjs"
     },
     "./runtime": {
       "types": "./dist/runtime.d.ts",

@@ -155,9 +155,10 @@ fn summary(out: &mut String, runs: &[RunResult]) {
     let _ = writeln!(
         out,
         "| profile | rpc: max calls/s | fanout: activations/s | filters: calls/s at the most observers | \
-         observers: bytes each | emit: sustained emits/s | local: calls/s unobserved | connections: bytes each |"
+         observers: bytes each | source: sustained activations/s | match-keys: calls/s at the most observers | \
+         local: calls/s unobserved | connections: bytes each |"
     );
-    let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|---:|");
+    let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|---:|---:|");
     for p in profiles {
         let steps = |scenario: &str| -> Vec<&Step> {
             runs.iter()
@@ -207,11 +208,14 @@ fn summary(out: &mut String, runs: &[RunResult]) {
                 })
                 .unwrap_or_else(|| "–".into())
         };
-        let filters_last = steps("filters")
-            .into_iter()
-            .last()
-            .map(|s| format!("{} ({})", fmt_rate(s.ops_per_sec), s.label))
-            .unwrap_or_else(|| "–".into());
+        let last_matching = |steps: Vec<&Step>| -> String {
+            steps
+                .into_iter()
+                .rev()
+                .find(|s| s.params.get("matching").and_then(Value::as_u64) != Some(0))
+                .map(|s| format!("{} ({})", fmt_rate(s.ops_per_sec), s.label))
+                .unwrap_or_else(|| "–".into())
+        };
         let local_unobserved = steps("local")
             .into_iter()
             .find(|s| s.label == "unobserved")
@@ -225,12 +229,13 @@ fn summary(out: &mut String, runs: &[RunResult]) {
             .unwrap_or_else(|| "–".into());
         let _ = writeln!(
             out,
-            "| {p} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {p} | {} | {} | {} | {} | {} | {} | {} | {} |",
             best(steps("rpc")),
             extra_max(steps("fanout"), "activations_per_sec"),
-            filters_last,
+            last_matching(steps("filters")),
             last_extra(steps("observers"), "rss_bytes_per_observer"),
-            sustained(steps("emit")),
+            sustained(steps("source")),
+            last_matching(steps("match-keys")),
             local_unobserved,
             last_extra(steps("connections"), "rss_bytes_per_worker"),
         );
@@ -305,10 +310,10 @@ fn notes(step: &Step) -> String {
         let list: Vec<String> = failed.iter().map(|(k, v)| format!("{k} {v}")).collect();
         parts.push(format!("failed: {}", list.join(", ")));
     }
-    if let Some(v) = e.get("emits_not_accepted").and_then(Value::as_u64)
+    if let Some(v) = e.get("calls_failed").and_then(Value::as_u64)
         && v > 0
     {
-        parts.push(format!("{v} emits not accepted"));
+        parts.push(format!("{v} calls failed"));
     }
     if let Some(v) = e.get("observers_created_per_sec").and_then(Value::as_f64) {
         parts.push(format!("observers created at {}/s", fmt_rate(v)));

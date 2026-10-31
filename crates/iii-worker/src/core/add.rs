@@ -11,10 +11,10 @@ use crate::core::project::ProjectCtx;
 use crate::core::types::{AddOptions, AddOutcome, WorkerSource};
 
 /// Provenance of a worker op. Carried into `WorkerOpEvent`s so subscribers
-/// can tell a CLI invocation from a bus-triggered one.
+/// can tell a CLI invocation from a call over the bus.
 ///
 /// NOTE: this no longer gates `kind: "local"`. Local installs used to be
-/// rejected over the trigger surface (W102); that guard was removed on
+/// rejected over a call (W102); that guard was removed on
 /// purpose so `worker::add { source: { kind: "local", path } }` works over
 /// the bus. The path resolves on the DAEMON host and the install runs the
 /// manifest's setup/install/start scripts there — same trust as the CLI,
@@ -23,7 +23,7 @@ use crate::core::types::{AddOptions, AddOutcome, WorkerSource};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerMode {
     Cli,
-    Trigger,
+    Call,
 }
 
 pub async fn run(
@@ -157,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn local_source_installs() {
         // Local-path installs are allowed regardless of caller. The W102
-        // trigger-surface rejection was removed on purpose; `run` no longer
+        // call rejection was removed on purpose; `run` no longer
         // takes a CallerMode and never rejects `kind: "local"`.
         let dir = TempDir::new().unwrap();
         let ctx = ProjectCtx::open_unlocked(dir.path().to_path_buf());

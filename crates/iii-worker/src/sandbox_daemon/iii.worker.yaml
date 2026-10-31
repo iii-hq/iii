@@ -1,7 +1,7 @@
 iii: v1
 name: iii-sandbox
 type: engine
-description: Spawn ephemeral microVMs and expose 14 sandbox::* triggers (lifecycle + filesystem) for isolated command execution and file ops.
+description: Spawn ephemeral microVMs and expose 16 sandbox::* functions (lifecycle, filesystem, run and catalog) for isolated command execution and file ops.
 repo: https://github.com/iii-hq/iii
 config:
   auto_install: true

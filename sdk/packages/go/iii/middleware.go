@@ -6,7 +6,7 @@ import "encoding/json"
 // function (the worker-manager rbac.middleware_function_id) on every function
 // invocation that arrives through the RBAC port. The middleware can inspect, modify or
 // reject the call before it reaches the target function: forward it with
-// [Client.Trigger], or return an error to reject it.
+// [Client.Call], or return an error to reject it.
 //
 // It mirrors MiddlewareFunctionInput in the Node and Rust SDKs field for field; the
 // JSON names are the wire contract. Register the
@@ -14,18 +14,18 @@ import "encoding/json"
 // handler payload into it.
 //
 // When forwarding, note that an empty Namespace means the engine's default namespace,
-// whereas an empty [TriggerRequest.Namespace] means this worker's own namespace: pass
+// whereas an empty [CallRequest.Namespace] means this worker's own namespace: pass
 // "default" explicitly when Namespace is empty and the worker is namespaced.
 type MiddlewareFunctionInput struct {
 	// FunctionID is the ID of the function being invoked.
 	FunctionID string `json:"function_id"`
 	// Payload is the payload sent by the caller, verbatim. Forward it as
-	// [TriggerRequest.Payload] or decode it to inspect the call.
+	// [CallRequest.Payload] or decode it to inspect the call.
 	Payload json.RawMessage `json:"payload"`
 	// Action is the routing action of the call, if any (nil for a synchronous
-	// request/response). Forward it as [TriggerRequest.Action] to keep enqueue/void
+	// request/response). Forward it as [CallRequest.Action] to keep enqueue/void
 	// semantics.
-	Action *TriggerAction `json:"action,omitempty"`
+	Action *CallAction `json:"action,omitempty"`
 	// Context is the auth context the RBAC auth function returned for this session
 	// (AuthResult.context in package helpers/workerconnection), as raw JSON.
 	Context json.RawMessage `json:"context"`

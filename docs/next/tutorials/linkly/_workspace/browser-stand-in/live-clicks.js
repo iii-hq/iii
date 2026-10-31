@@ -1,8 +1,8 @@
 // Stands in for the Chapter 7 live click counter. It connects through the
-// RBAC-gated listener in its own per-session namespace, binds ui::on_click to
-// click-streamer::click, reads the starting total with link::click_summary,
-// then follows a link and counts the clicks that arrive. Same logic as the
-// useEffect in the chapter's App.tsx.
+// RBAC-gated listener in its own per-session namespace, observes
+// click-streamer::on-click with ui::on_click, reads the starting total with
+// link::click_summary, then follows a link and counts the clicks that arrive.
+// Same logic as the useEffect in the chapter's App.tsx.
 import { registerWorker } from "iii-browser-sdk";
 import { randomUUID } from "node:crypto";
 
@@ -33,7 +33,7 @@ function apply(click) {
 
 async function sync() {
   ready = false;
-  const summary = await worker.trigger({
+  const summary = await worker.call({
     function_id: "link::click_summary",
     namespace: PROJECT_NAMESPACE,
     payload: {},
@@ -50,15 +50,13 @@ worker.registerFunction("ui::on_click", async (click) => {
   else early.push(click);
   return null;
 });
-worker.registerTrigger({
-  type: "click-streamer::click",
-  function_id: "ui::on_click",
-  config: {},
-  // App.tsx omits this: in `default` the engine falls back to it on its own.
-  trigger_namespace: PROJECT_NAMESPACE,
-});
+const listener = worker.observe(
+  // App.tsx names `default`; run.sh may move the project elsewhere.
+  { function_id: "click-streamer::on-click", namespace: PROJECT_NAMESPACE, deliver: "output" },
+  "ui::on_click",
+);
 
-await new Promise((resolve) => setTimeout(resolve, 3000));
+await listener.ready();
 await sync();
 const initial = count;
 

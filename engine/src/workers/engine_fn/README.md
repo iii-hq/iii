@@ -1,6 +1,6 @@
 # iii
 
-iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, triggers, and functions. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (events that invoke those functions). There is no direct worker-to-worker traffic — every call routes through the engine.
+iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, functions, and observers. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every observer between those functions. Workers are independent processes that open a WebSocket to the engine, register **Functions** (`service::name` handlers), and **observe** functions: each matching call of the observed function invokes a target function. There is no direct worker-to-worker traffic — every call routes through the engine.
 
 This registry worker documents the in-process **`engine::*`** introspection surface. It is always present in the engine and is not configured in `config.yaml`.
 
@@ -31,13 +31,13 @@ Use `engine::workers::info { name: "iii-engine-functions" }` (not `"iii"`) for f
 | Engine | One coordinator process. Routes every invocation. |
 | Worker | A process that opens a WebSocket to the engine. |
 | Function | A named handler inside a worker, id `service::name`. |
-| Trigger | A `(type, config, function_id)` triple that causes a function to run when an event fires. |
+| Observer | A `(source function, filters, target function)` binding: each matching call of the source invokes the target. |
 
 Every call is `caller → engine → handler`. The function id is the only contract between any two workers.
 
 ## Functions — `engine::*`
 
-Implemented in-process by mandatory worker **`iii-engine-functions`**. Filter lists with `prefix`, `search`, or `worker`. By default, `engine::functions::list`, `engine::triggers::list`, and `engine::registered-triggers::list` hide internal `engine::*` rows unless `include_internal: true`. `engine::registered-triggers::list` also hides registrations with `status: pending` (no provider for their trigger type yet) unless `include_pending: true`; every row carries a `status`.
+Implemented in-process by mandatory worker **`iii-engine-functions`**. Filter lists with `prefix`, `search`, or `worker`. By default, `engine::functions::list` hides internal `engine::*` rows unless `include_internal: true`.
 
 For exact request/response JSON Schemas, call `engine::functions::info { function_id: "engine::…" }`.
 
@@ -45,14 +45,13 @@ For exact request/response JSON Schemas, call `engine::functions::info { functio
 |---|---|
 | `engine::channels::create` | Create a streaming channel pair (writer + reader refs). |
 | `engine::functions::list` | List registered functions with their owning worker name. |
-| `engine::functions::info` | Inspect one function: schemas, owner, and registered triggers. |
-| `engine::triggers::list` | List trigger types registered with the engine. |
-| `engine::triggers::info` | Inspect one trigger type: schemas, owner, and live instance count. |
-| `engine::registered-triggers::list` | List registered trigger instances (subscriber rows). |
-| `engine::registered-triggers::info` | Inspect one registered trigger with denormalized trigger and function detail. |
+| `engine::functions::info` | Inspect one function: schemas, owner, `args_format`, `private`, `observable`, and its observer count. |
 | `engine::workers::list` | List workers connected to the engine (WebSocket-connected only). |
-| `engine::workers::info` | Inspect one connected worker's full surface (functions, trigger types, registered triggers). |
+| `engine::workers::info` | Inspect one connected worker's full surface (functions, and the ids of the observers it created). |
 | `engine::workers::register` | Register worker metadata (called by SDK workers on connect). |
+| `engine::observers::list` | List observers: function, args, filters, target, observing worker, state, reason, fires, and drops by reason. |
+| `engine::observers::get` | Get one observer by id. |
+| `engine::observers::dispose` | Dispose an observer by id (its creator, or a caller no RBAC restricts). |
 
 ### `engine::functions::list` filters
 
@@ -69,26 +68,27 @@ Project workers are declared in `worker-compose.yaml` and supervised by a Compos
 that daemon with its namespace:
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::status file=worker-compose.yaml
-iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
-iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
-iii trigger -n dev compose::update file=worker-compose.yaml worker=state
-iii trigger -n dev compose::down file=worker-compose.yaml
+iii call -n dev compose::add worker=state
+iii call -n dev compose::status file=worker-compose.yaml
+iii call -n dev compose::logs file=worker-compose.yaml worker=state tail=100
+iii call -n dev compose::restart file=worker-compose.yaml worker=state
+iii call -n dev compose::update file=worker-compose.yaml worker=state
+iii call -n dev compose::down file=worker-compose.yaml
 ```
 
 `iii worker` and `worker::*` no longer exist. Use `engine::workers::list` for live registrations and
 `compose::status` for process ownership and supervisor state. Use `compose::logs` for bounded raw
 stdout and stderr, or `iii compose logs state --follow --namespace dev` for a live view.
 
-## Trigger types
+## Engine-hosted sources
 
-### Reactive — owned by `iii-engine-functions`
+Owned by `iii-engine-functions`. Each is a private function: only the engine calls it, once per change, with the event as its input and output. Observe it like any function to react to the change.
 
-| Trigger type | Description |
+| Function | Called when |
 |---|---|
-| `engine::functions-available` | Fires when functions are registered/unregistered, driven by the registry itself (no polling); a burst is coalesced over ~100ms into one event. Payload includes `event: "functions_changed"` and the current function list. |
-| `engine::workers-available` | Fires when worker metadata is updated via `engine::workers::register`. |
+| `engine::on-functions-changed` | Functions are registered or unregistered, driven by the registry itself (no polling); a burst is coalesced over ~100ms into one call. Event: `{ event: "functions_changed", functions: [...] }`. |
+| `engine::on-workers-changed` | A worker connects, disconnects, or updates its metadata through `engine::workers::register`. Event: `{ event, worker_id }`. |
+| `engine::on-observers-changed` | An observer is created (with the state it starts in) or changes state. Event: `{ observer_id, function_id, target, state, reason? }`. |
 
 ## Before you build
 
@@ -99,14 +99,14 @@ Run these reads before authoring a new worker — the capability you need may al
 
 Only hand-author a worker when both come up empty.
 
-## Canonical trigger types (other workers)
+## Functions to observe (other workers)
 
-Pass these literal strings as `type` in `registerTrigger`. Provider READMEs on the registry are authoritative when versions drift.
+Observe these functions to react to the events of other workers. Provider READMEs on the registry are authoritative when versions drift.
 
-| `type` | Provider | Config keys |
+| Function | Provider | Args or filters |
 |---|---|---|
-| `http` | `http` | `{ http_method, api_path }` |
-| `cron` | `cron` | `{ expression }` — 7 fields: sec min hr dom mon dow year |
-| `queue` | `queue` | `{ queue, retries }` |
-| `state` | `state` | `{ scope, condition_function_id }` |
-| `stream` | `iii-stream` | `{ stream_name }` |
+| `http::on-request` | `http` | args `{ method, path }` |
+| `cron::on-tick` | `cron` | args `{ expression }` — 7 fields: sec min hr dom mon dow year |
+| `queue::on-message` | `queue` | args `{ topic, max_retries?, backoff_ms? }` |
+| `state::on-changed` | `state` | filters on `input.scope`, `input.key` |
+| `stream::on-changed` | `iii-stream` | filters on `input.stream_name`, `input.group_id` |

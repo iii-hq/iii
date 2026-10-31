@@ -1,5 +1,6 @@
-"""``iii.observe`` against the real engine, on the routed path (README §7
-phase 1): every call goes through the engine, which evaluates the filters."""
+"""``iii.observe`` against the real engine, on the routed path: every call
+goes through the engine, and the worker that hosts the function delivers it,
+listing the observers it matched on its answer."""
 
 from __future__ import annotations
 
@@ -7,7 +8,15 @@ import time
 from typing import Any
 
 import pytest
-from observe_e2e_utils import collector, drop_connection, exactly, settle_engine, wait_for
+from observe_e2e_utils import (
+    FrameCounter,
+    collector,
+    drop_connection,
+    exactly,
+    local_dispatch_ready,
+    settle_engine,
+    wait_for,
+)
 
 from iii import ObserveRejection
 
@@ -23,7 +32,7 @@ def test_activates_the_target_with_the_envelope_when_filters_on_input_output_and
     got = collector(watcher, fid("py-e2e::on-big-charge"))
     watcher.register_function(
         fid("py-e2e::checkout"),
-        lambda amount: watcher.trigger({"function_id": fid("py-e2e::charge"), "payload": {"amount": amount}}),
+        lambda amount: watcher.call({"function_id": fid("py-e2e::charge"), "payload": {"amount": amount}}),
     )
     handle = watcher.observe(
         {
@@ -40,10 +49,12 @@ def test_activates_the_target_with_the_envelope_when_filters_on_input_output_and
     )
     handle.ready(timeout=10)
     assert handle.state == "active"
+    wait_for(lambda: owner.is_observed(fid("py-e2e::charge")), "the observer on its host")
+    frames = FrameCounter(owner)
 
-    watcher.trigger({"function_id": fid("py-e2e::checkout"), "payload": 750})
-    watcher.trigger({"function_id": fid("py-e2e::checkout"), "payload": 10})  # filtered out by input
-    watcher.trigger({"function_id": fid("py-e2e::charge"), "payload": {"amount": 900}})  # no caller.function_id
+    watcher.call({"function_id": fid("py-e2e::checkout"), "payload": 750})
+    watcher.call({"function_id": fid("py-e2e::checkout"), "payload": 10})  # filtered out by input
+    watcher.call({"function_id": fid("py-e2e::charge"), "payload": {"amount": 900}})  # no caller.function_id
     exactly(got, 1, "one activation")
     [activation] = got
     data = activation.data
@@ -63,6 +74,10 @@ def test_activates_the_target_with_the_envelope_when_filters_on_input_output_and
     assert inv.caller is not None and inv.caller["worker_name"] == "iii-engine"
     assert (inv.caller["function_id"], inv.caller["invocation_id"]) == (fid("py-e2e::charge"), data["invocation_id"])
     assert inv.activation == {"observer_id": handle.id, "activation_id": data["activation_id"]}
+    # the host delivered: the match rode its answer, and nothing else went out
+    observed = [f.get("observed") for f in frames.frames if f.get("type") == "invocationresult"]
+    assert observed.count([handle.id]) == 1 and all(o in (None, [handle.id]) for o in observed)
+    assert "invocationsobserved" not in frames.types
 
 
 def test_on_error_sees_failures_only_capture_limits_what_travels_deliver_input_sends_the_input(
@@ -87,9 +102,9 @@ def test_on_error_sees_failures_only_capture_limits_what_travels_deliver_input_s
     )
     a.ready(timeout=10)
     b.ready(timeout=10)
-    watcher.trigger({"function_id": fid("py-e2e::flaky"), "payload": {"fail": False, "n": 1}})
+    watcher.call({"function_id": fid("py-e2e::flaky"), "payload": {"fail": False, "n": 1}})
     with pytest.raises(Exception):
-        watcher.trigger({"function_id": fid("py-e2e::flaky"), "payload": {"fail": True, "n": 2}})
+        watcher.call({"function_id": fid("py-e2e::flaky"), "payload": {"fail": True, "n": 2}})
     exactly(errors, 1, "the error activation")
     exactly(inputs, 2, "the input activations")
     assert errors[0].data["status"] == "error"
@@ -108,7 +123,7 @@ def test_a_target_that_is_not_registered_keeps_the_observer_pending_until_it_is(
     assert handle.state == "pending"
     got = collector(watcher, fid("py-e2e::late-target"))
     handle.ready(timeout=10)
-    watcher.trigger({"function_id": fid("py-e2e::tick"), "payload": {}})
+    watcher.call({"function_id": fid("py-e2e::tick"), "payload": {}})
     exactly(got, 1, "the activation")
 
 
@@ -134,6 +149,30 @@ def test_errors_turn_the_observer_to_error_and_ready_raises(
     assert handle.reason is not None and handle.reason["code"] == code
 
 
+@pytest.mark.parametrize(
+    ("code", "source_options", "target_options"),
+    [
+        ("NOT_OBSERVABLE", {"observable": False}, {}),  # D3
+        ("FORBIDDEN", {}, {"private": True}),  # D1: a private function is never a target
+    ],
+)
+def test_an_unobservable_function_or_a_private_target_turns_the_observer_to_error(
+    worker: Any, fid: Any, code: str, source_options: dict[str, Any], target_options: dict[str, Any]
+) -> None:
+    owner = worker("routed-owner")
+    watcher = worker("routed-watcher")
+    owner.register_function(fid("py-e2e::source"), lambda d: d, **source_options)
+    watcher.register_function(fid("py-e2e::target"), lambda d: None, **target_options)
+    local_dispatch_ready(owner, fid("py-e2e::source"))
+    local_dispatch_ready(watcher, fid("py-e2e::target"))
+    handle = watcher.observe(fid("py-e2e::source"), fid("py-e2e::target"))
+    with pytest.raises(ObserveRejection) as raised:
+        handle.ready(timeout=10)
+    assert raised.value.code == code
+    assert handle.state == "error"
+    assert owner.observers(fid("py-e2e::source")) == []
+
+
 def test_dispose_stops_the_activations_and_max_fires_disposes_after_the_last_one(worker: Any, fid: Any) -> None:
     owner = worker("routed-owner")
     watcher = worker("routed-watcher")
@@ -147,8 +186,8 @@ def test_dispose_stops_the_activations_and_max_fires_disposes_after_the_last_one
     a.dispose()
     assert a.state == "disposed"
     settle_engine()  # the unobserve reached the engine
-    watcher.trigger({"function_id": fid("py-e2e::ping"), "payload": {}})
-    watcher.trigger({"function_id": fid("py-e2e::ping"), "payload": {}})
+    watcher.call({"function_id": fid("py-e2e::ping"), "payload": {}})
+    watcher.call({"function_id": fid("py-e2e::ping"), "payload": {}})
     wait_for(lambda: b.state == "disposed", "max_fires to dispose the observer")
     settle_engine()
     assert disposed == []
@@ -167,7 +206,7 @@ def test_the_observer_survives_a_reconnect_of_its_worker(worker: Any, fid: Any) 
     wait_for(lambda: watcher.get_connection_state() != "connected", "the disconnect")
     wait_for(lambda: watcher._registered_on_connection, "the reconnect", timeout=10)
     settle_engine()  # the replayed observe reached the engine
-    owner.trigger({"function_id": fid("py-e2e::work"), "payload": {}})
+    owner.call({"function_id": fid("py-e2e::work"), "payload": {}})
     exactly(got, 1, "an activation after the reconnect")
     assert got[0].data["observer_id"] == handle.id
     assert handle.state == "active"
@@ -181,7 +220,7 @@ def test_expires_in_ms_an_expired_observer_is_disposed_and_fires_no_more(worker:
     handle = watcher.observe({"function_id": fid("py-e2e::lease")}, fid("py-e2e::on-lease"), {"expires_in_ms": 300})
     handle.ready(timeout=10)
     time.sleep(0.5)  # the lease (300 ms) runs out: time passing is the point here
-    owner.trigger({"function_id": fid("py-e2e::lease"), "payload": {}})
+    owner.call({"function_id": fid("py-e2e::lease"), "payload": {}})
     wait_for(lambda: handle.state == "disposed", "the expiry")
     settle_engine()
     assert got == []
@@ -200,16 +239,16 @@ def test_the_loop_guard_observe_depth_travels_with_the_calls_a_target_makes(work
     def on_loop(envelope: dict[str, Any]) -> None:
         inv = watcher.current_invocation()
         depths.append(inv.observe_depth if inv else -1)
-        watcher.trigger({"function_id": fid("py-e2e::loop"), "payload": envelope["input"] + 1})
+        watcher.call({"function_id": fid("py-e2e::loop"), "payload": envelope["input"] + 1})
 
     watcher.register_function(fid("py-e2e::on-loop"), on_loop)
     handle = watcher.observe({"function_id": fid("py-e2e::loop"), "capture": ["input"]}, fid("py-e2e::on-loop"))
     handle.ready(timeout=10)
-    watcher.trigger({"function_id": fid("py-e2e::loop"), "payload": 0})
+    watcher.call({"function_id": fid("py-e2e::loop"), "payload": 0})
     wait_for(lambda: len(depths) >= 8, "eight hops", timeout=10)
 
     def loop_guard_drops() -> int:
-        info = watcher.trigger({"function_id": "engine::observers::get", "payload": {"id": handle.id}})
+        info = watcher.call({"function_id": "engine::observers::get", "payload": {"id": handle.id}})
         info = info.get("observer", info) if isinstance(info, dict) else {}
         return int(info.get("dropped", {}).get("LOOP_GUARD", 0))
 

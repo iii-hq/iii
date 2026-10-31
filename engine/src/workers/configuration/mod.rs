@@ -10,12 +10,12 @@ mod config;
 #[allow(clippy::module_inception)]
 mod configuration;
 
+pub mod listeners;
 pub mod registry;
 /// `pub(crate)`: `expand_value` is reused by the early-boot read of the
 /// persisted `iii-observability` entry (engine/src/logging.rs).
 pub(crate) mod store;
 pub mod structs;
-mod trigger;
 
 #[cfg(test)]
 mod injection_tests;

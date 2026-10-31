@@ -19,8 +19,8 @@ async def get_health(engine_http_url: str) -> tuple[int, dict]:
 
 
 @pytest.mark.asyncio
-async def test_register_healthcheck_function_and_trigger(engine_http_url: str, iii_client: III):
-    """Registering a healthcheck function and HTTP trigger makes the endpoint live."""
+async def test_register_healthcheck_function_and_route(engine_http_url: str, iii_client: III):
+    """Registering a healthcheck function and observing ``http::on-request`` makes the endpoint live."""
 
     async def healthcheck_handler(_req):
         return {
@@ -37,13 +37,8 @@ async def test_register_healthcheck_function_and_trigger(engine_http_url: str, i
     status_before, _ = await get_health(engine_http_url)
     assert status_before == 404
 
-    trigger = iii_client.register_trigger({
-        "type": "http",
-        "function_id": fn.id,
-        "config": {"api_path": "health", "http_method": "GET", "description": "Healthcheck endpoint"},
-    })
-
-    await asyncio.sleep(0.3)
+    route = iii_client.observe({"function_id": "http::on-request", "args": {"method": "GET", "path": "/health"}}, fn.id)
+    await route.ready_async()
 
     async def assert_healthy():
         status, data = await get_health(engine_http_url)
@@ -63,7 +58,7 @@ async def test_register_healthcheck_function_and_trigger(engine_http_url: str, i
             await asyncio.sleep(0.1)
 
     fn.unregister()
-    trigger.unregister()
+    route.dispose()
 
     await asyncio.sleep(0.3)
 

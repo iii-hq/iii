@@ -5,15 +5,15 @@
 // See LICENSE and PATENTS files for details.
 
 //! End-to-end test for the `configuration` worker exercising the
-//! register / set / get / list / schema surface, the `configuration`
-//! trigger fan-out (with `${VAR:default}` expansion), and the file-watcher
-//! surfacing external edits as `configuration:updated` events.
+//! register / set / get / list / schema surface, the observers of
+//! `configuration::on-updated` (with `${VAR:default}` expansion), and the
+//! file-watcher surfacing external edits as `configuration:updated` events.
 //!
 //! Modeled on `engine/tests/state_stream_update_e2e.rs` — drives the
 //! worker through its public function surface against a real `FsAdapter`
 //! pointed at a `tempfile::tempdir()`. No engine boot, no WebSocket, no
 //! subprocess. Anything that needs the real engine routing is covered
-//! by the unit tests inside `configuration.rs` and `trigger.rs`.
+//! by the unit tests inside `configuration.rs`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +23,8 @@ use tokio::sync::mpsc;
 
 use iii::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
 use iii::function::FunctionResult;
-use iii::trigger::{Trigger, TriggerRegistrator};
+use iii::observer::{EngineObserver, events::CONFIGURATION_ON_UPDATED};
+use iii::protocol::{DEFAULT_NAMESPACE, Deliver};
 use iii::workers::configuration::ConfigurationWorker;
 use iii::workers::configuration::adapters::ConfigurationAdapter;
 use iii::workers::configuration::adapters::fs::FsAdapter;
@@ -35,11 +36,7 @@ use iii::workers::traits::Worker;
 
 /// Build a `ConfigurationWorker` backed by a real `FsAdapter` rooted at `dir`
 /// for direct, in-process end-to-end testing (no engine boot, no WebSocket).
-/// `ttl_seconds` sets the per-id cleanup countdown (`0` disables it).
-async fn build_worker(
-    dir: &std::path::Path,
-    ttl_seconds: u64,
-) -> (Arc<Engine>, ConfigurationWorker) {
+async fn build_worker(dir: &std::path::Path) -> (Arc<Engine>, ConfigurationWorker) {
     iii::workers::observability::metrics::ensure_default_meter();
     let adapter = Arc::new(
         FsAdapter::new(Some(json!({ "directory": dir.to_str().unwrap() })))
@@ -47,8 +44,29 @@ async fn build_worker(
             .expect("fs adapter"),
     ) as Arc<dyn ConfigurationAdapter>;
     let engine = Arc::new(Engine::new());
-    let worker = ConfigurationWorker::for_test(engine.clone(), adapter, ttl_seconds);
+    let worker = ConfigurationWorker::for_test(engine.clone(), adapter);
+    iii::observer::events::register_configuration_event_source(&engine);
     (engine, worker)
+}
+
+/// An observer of `configuration::on-updated` delivering each event of the
+/// entry `configuration_id` (every entry for `None`) to `target`.
+fn observe_updates(engine: &Arc<Engine>, target: (&str, &str), configuration_id: Option<&str>) {
+    engine
+        .observers
+        .observe_as_engine(EngineObserver {
+            id: format!("test-observer:{}:{}", target.0, target.1),
+            function: (
+                DEFAULT_NAMESPACE.to_string(),
+                CONFIGURATION_ON_UPDATED.to_string(),
+            ),
+            args: json!({}),
+            filters: configuration_id.map(|id| json!({ "input.id": { "$eq": id } })),
+            target: (target.0.to_string(), target.1.to_string()),
+            deliver: Deliver::Input,
+            metadata: None,
+        })
+        .expect("observe configuration::on-updated");
 }
 
 /// Subscribe a fresh handler that forwards every received event payload
@@ -80,7 +98,7 @@ fn install_event_capture(
 #[tokio::test]
 async fn register_set_get_round_trip_with_env_var_expansion() {
     let dir = tempfile::tempdir().unwrap();
-    let (_engine, worker) = build_worker(dir.path(), 0).await;
+    let (_engine, worker) = build_worker(dir.path()).await;
 
     unsafe {
         std::env::set_var("CFG_E2E_HOST", "expanded.local");
@@ -174,17 +192,15 @@ fn register_recording_handler(
     );
 }
 
-/// BUG 1 (real-user path): a configuration trigger registered by a namespaced
-/// worker must fire the target — and evaluate its condition — in that worker's
-/// namespace, not `default`. `cfg::react` exists in both `orders`
-/// ("from-orders") and `default` ("from-default"); the `orders` trigger must
-/// fire "from-orders". `cfg::cond` exists ONLY in `orders`, so a condition
-/// resolved in `default` is not-found → handler skipped (also RED). Drives the
-/// real mechanism: `worker.register_fn` emits `configuration:registered`.
+/// An observer's target runs in the namespace the observer names:
+/// `cfg::react` exists in both `orders` ("from-orders") and `default`
+/// ("from-default"), and an observer targeting the `orders` one runs only
+/// that one. Drives the real mechanism: `worker.register_fn` emits
+/// `configuration:registered`.
 #[tokio::test]
-async fn configuration_trigger_fires_target_and_condition_in_registering_namespace() {
+async fn an_observer_target_runs_in_the_namespace_it_names() {
     let dir = tempfile::tempdir().unwrap();
-    let (engine, worker) = build_worker(dir.path(), 0).await;
+    let (engine, worker) = build_worker(dir.path()).await;
 
     let fired = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     register_recording_handler(
@@ -201,34 +217,7 @@ async fn configuration_trigger_fires_target_and_condition_in_registering_namespa
         "from-default",
         fired.clone(),
     );
-    engine.register_function_handler_ns(
-        "orders",
-        RegisterFunctionRequest {
-            function_id: "cfg::cond".to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-        },
-        Handler::new(|_input: Value| async move { FunctionResult::Success(Some(json!(true))) }),
-    );
-
-    let trigger = Trigger {
-        id: "cfg-ns-trig".into(),
-        trigger_type: "configuration".into(),
-        function_id: "cfg::react".into(),
-        config: json!({ "configuration_id": "iii-stream", "condition_function_id": "cfg::cond" }),
-        worker_id: None,
-        metadata: None,
-        namespace: "orders".to_string(),
-        trigger_namespace: None,
-        home_namespace: iii::protocol::default_namespace(),
-        provider_namespace: iii::protocol::default_namespace(),
-    };
-    worker
-        .register_trigger(trigger)
-        .await
-        .expect("register configuration trigger");
+    observe_updates(&engine, ("orders", "cfg::react"), Some("iii-stream"));
 
     worker
         .register_fn(ConfigurationRegisterInput {
@@ -247,38 +236,26 @@ async fn configuration_trigger_fires_target_and_condition_in_registering_namespa
     assert_eq!(
         fired,
         vec!["from-orders".to_string()],
-        "the orders configuration trigger must fire the orders target via its orders condition; \
-         got: {fired:?}"
+        "the observer must run the orders target; got: {fired:?}"
     );
 }
 
 #[tokio::test]
-async fn trigger_fan_out_delivers_expanded_event_payload() {
+async fn observers_get_the_expanded_event_payload() {
     let dir = tempfile::tempdir().unwrap();
-    let (engine, worker) = build_worker(dir.path(), 0).await;
+    let (engine, worker) = build_worker(dir.path()).await;
 
     unsafe {
-        std::env::set_var("CFG_E2E_TRIGGER_HOST", "trigger.local");
+        std::env::set_var("CFG_E2E_OBSERVED_HOST", "observed.local");
     }
 
     let mut events = install_event_capture(&engine, "test::on_configuration_change");
 
-    let trigger = Trigger {
-        id: "trig-1".into(),
-        trigger_type: "configuration".into(),
-        function_id: "test::on_configuration_change".into(),
-        config: json!({ "configuration_id": "iii-stream" }),
-        worker_id: None,
-        metadata: None,
-        namespace: "default".to_string(),
-        trigger_namespace: None,
-        home_namespace: iii::protocol::default_namespace(),
-        provider_namespace: iii::protocol::default_namespace(),
-    };
-    worker
-        .register_trigger(trigger.clone())
-        .await
-        .expect("register configuration trigger");
+    observe_updates(
+        &engine,
+        (DEFAULT_NAMESPACE, "test::on_configuration_change"),
+        Some("iii-stream"),
+    );
 
     worker
         .register_fn(ConfigurationRegisterInput {
@@ -289,19 +266,19 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
                 "type": "object",
                 "properties": { "host": { "type": "string" } }
             }),
-            initial_value: Some(json!({ "host": "${CFG_E2E_TRIGGER_HOST:fallback}" })),
+            initial_value: Some(json!({ "host": "${CFG_E2E_OBSERVED_HOST:fallback}" })),
             metadata: None,
         })
         .await;
 
     let payload = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
-        .expect("trigger should fire")
+        .expect("the observer should run")
         .expect("channel open");
     assert_eq!(payload["type"], "configuration");
     assert_eq!(payload["event_type"], "configuration:registered");
     assert_eq!(payload["id"], "iii-stream");
-    assert_eq!(payload["new_value"]["host"], "trigger.local");
+    assert_eq!(payload["new_value"]["host"], "observed.local");
     assert!(payload["old_value"].is_null());
 
     worker
@@ -313,7 +290,7 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
         .await;
     let payload = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
-        .expect("set should fire trigger")
+        .expect("set should reach the observer")
         .expect("channel open");
     assert_eq!(payload["event_type"], "configuration:updated");
     assert_eq!(payload["new_value"]["host"], "set.local");
@@ -322,24 +299,14 @@ async fn trigger_fan_out_delivers_expanded_event_payload() {
 #[tokio::test]
 async fn fs_watcher_surfaces_external_file_edits_as_updates() {
     let dir = tempfile::tempdir().unwrap();
-    let (engine, worker) = build_worker(dir.path(), 0).await;
+    let (engine, worker) = build_worker(dir.path()).await;
 
     let mut events = install_event_capture(&engine, "test::on_external_change");
-    worker
-        .register_trigger(Trigger {
-            id: "trig-watch".into(),
-            trigger_type: "configuration".into(),
-            function_id: "test::on_external_change".into(),
-            config: json!({ "configuration_id": "iii-bridge" }),
-            worker_id: None,
-            metadata: None,
-            namespace: "default".to_string(),
-            trigger_namespace: None,
-            home_namespace: iii::protocol::default_namespace(),
-            provider_namespace: iii::protocol::default_namespace(),
-        })
-        .await
-        .unwrap();
+    observe_updates(
+        &engine,
+        (DEFAULT_NAMESPACE, "test::on_external_change"),
+        Some("iii-bridge"),
+    );
 
     // Boot the worker watcher so external file edits are picked up.
     worker.initialize().await.unwrap();
@@ -359,7 +326,7 @@ async fn fs_watcher_surfaces_external_file_edits_as_updates() {
 
     let payload = tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
-        .expect("file watcher should fire trigger")
+        .expect("file watcher should reach the observer")
         .expect("channel open");
     assert_eq!(payload["event_type"], "configuration:registered");
     assert_eq!(payload["id"], "iii-bridge");
@@ -369,88 +336,17 @@ async fn fs_watcher_surfaces_external_file_edits_as_updates() {
 }
 
 #[tokio::test]
-async fn ttl_cleanup_removes_configuration_after_last_trigger_unregistered() {
-    let dir = tempfile::tempdir().unwrap();
-    // 1-second TTL keeps the test fast while exercising the real
-    // tokio::time::sleep cleanup path.
-    let (engine, worker) = build_worker(dir.path(), 1).await;
-
-    let mut events = install_event_capture(&engine, "test::on_ttl_change");
-
-    let trigger = Trigger {
-        id: "trig-ttl".into(),
-        trigger_type: "configuration".into(),
-        function_id: "test::on_ttl_change".into(),
-        config: json!({ "configuration_id": "ephemeral" }),
-        worker_id: None,
-        metadata: None,
-        namespace: "default".to_string(),
-        trigger_namespace: None,
-        home_namespace: iii::protocol::default_namespace(),
-        provider_namespace: iii::protocol::default_namespace(),
-    };
-    worker.register_trigger(trigger.clone()).await.unwrap();
-
-    worker
-        .register_fn(ConfigurationRegisterInput {
-            id: "ephemeral".into(),
-            name: "Ephemeral".into(),
-            description: "Used by a worker that comes and goes.".into(),
-            schema: json!({ "type": "object" }),
-            initial_value: Some(json!({})),
-            metadata: None,
-        })
-        .await;
-    let _registered_evt = tokio::time::timeout(Duration::from_secs(2), events.recv())
-        .await
-        .expect("register fires trigger")
-        .expect("channel open");
-
-    worker.unregister_trigger(trigger).await.unwrap();
-
-    // Poll the public function surface until the entry vanishes or the
-    // deadline elapses. The cleanup task runs on tokio's real-time timer
-    // because the worker spawns it via `tokio::spawn`.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let after = worker
-            .get_fn(ConfigurationGetInput {
-                id: "ephemeral".into(),
-                raw: false,
-            })
-            .await;
-        if matches!(after, FunctionResult::Failure(_)) {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            panic!("ephemeral configuration should have been TTL-deleted");
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-#[tokio::test]
 /// Verify the routed ensure contract, first-registration event and preservation of later values.
 async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
     let dir = tempfile::tempdir().unwrap();
-    let (engine, worker) = build_worker(dir.path(), 0).await;
+    let (engine, worker) = build_worker(dir.path()).await;
 
     let mut events = install_event_capture(&engine, "test::on_ensure");
-    worker
-        .register_trigger(Trigger {
-            id: "trig-ensure".into(),
-            trigger_type: "configuration".into(),
-            function_id: "test::on_ensure".into(),
-            config: json!({ "configuration_id": "iii-stream" }),
-            worker_id: None,
-            metadata: None,
-            namespace: "default".to_string(),
-            trigger_namespace: None,
-            home_namespace: iii::protocol::default_namespace(),
-            provider_namespace: iii::protocol::default_namespace(),
-        })
-        .await
-        .unwrap();
+    observe_updates(
+        &engine,
+        (DEFAULT_NAMESPACE, "test::on_ensure"),
+        Some("iii-stream"),
+    );
 
     let schema = json!({
         "type": "object",
@@ -476,7 +372,7 @@ async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
 
     let evt = tokio::time::timeout(Duration::from_secs(2), events.recv())
         .await
-        .expect("ensure should fire a trigger")
+        .expect("ensure should reach the observer")
         .expect("channel open");
     assert_eq!(evt["event_type"], "configuration:registered");
     assert_eq!(evt["new_value"]["port"], 3112);
@@ -530,7 +426,7 @@ async fn ensure_seeds_once_then_preserves_and_fires_registered_event() {
 async fn migration_events_and_restart_preserve_the_entry() {
     use iii::workers::configuration::structs::{ConfigurationMigrateInput, MigrateAction};
     let dir = tempfile::tempdir().unwrap();
-    let (engine, worker) = build_worker(dir.path(), 0).await;
+    let (engine, worker) = build_worker(dir.path()).await;
     worker.initialize().await.unwrap();
     let original = json!({ "token": "${TOKEN}", "enabled": false, "count": 0, "empty": null });
     assert!(matches!(
@@ -563,21 +459,7 @@ async fn migration_events_and_restart_preserve_the_entry() {
         ));
     }
     let mut events = install_event_capture(&engine, "test::migration_events");
-    worker
-        .register_trigger(Trigger {
-            id: "migration-events".into(),
-            trigger_type: "configuration".into(),
-            function_id: "test::migration_events".into(),
-            config: json!({}),
-            worker_id: None,
-            metadata: None,
-            namespace: "default".into(),
-            trigger_namespace: None,
-            home_namespace: iii::protocol::default_namespace(),
-            provider_namespace: iii::protocol::default_namespace(),
-        })
-        .await
-        .unwrap();
+    observe_updates(&engine, (DEFAULT_NAMESPACE, "test::migration_events"), None);
     let input = ConfigurationMigrateInput {
         from_id: "default-harness-a14f3656efb8d5ea".into(),
         to_id: "default-harness".into(),
@@ -641,7 +523,7 @@ async fn migration_events_and_restart_preserve_the_entry() {
             .is_err()
     );
     worker.destroy().await.unwrap();
-    let (_, restarted) = build_worker(dir.path(), 0).await;
+    let (_, restarted) = build_worker(dir.path()).await;
     restarted.initialize().await.unwrap();
     let FunctionResult::Success(raw) = restarted
         .get_fn(ConfigurationGetInput {

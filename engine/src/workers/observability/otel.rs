@@ -129,7 +129,8 @@ pub enum ExporterType {
     Otlp,
     /// Store traces in memory (queryable via API)
     Memory,
-    /// Export traces via OTLP and store in memory (enables triggers with OTLP export)
+    /// Export traces via OTLP and store in memory (`observability::on-span` and the API
+    /// alongside OTLP export)
     Both,
 }
 
@@ -929,8 +930,8 @@ pub struct InMemorySpanStorage {
     low_watermark_ratio: AtomicU64,
     /// Cap on a single attribute value at ingest; zero = uncapped.
     max_attribute_bytes: AtomicU64,
-    /// Broadcast of every span as it lands, driving the `trace` trigger
-    /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
+    /// Broadcast of every span as it lands, driving
+    /// `observability::on-span`. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
     #[cfg(test)]
     full_payload_snapshot_reads: AtomicUsize,
@@ -1239,7 +1240,7 @@ impl InMemorySpanStorage {
     }
 
     /// Subscribe to a broadcast of every span as it lands in storage. Drives
-    /// the `trace` trigger fan-out (mirrors `InMemoryLogStorage::subscribe`).
+    /// `observability::on-span` (mirrors `InMemoryLogStorage::subscribe`).
     pub fn subscribe(&self) -> broadcast::Receiver<StoredSpan> {
         self.tx.subscribe()
     }
@@ -2446,7 +2447,7 @@ impl SpanExporter for InMemorySpanExporter {
 
 /// Mirrors spans into the in-memory store at START (as `pending` snapshots) so
 /// live trace views can render in-progress work — most importantly the
-/// engine-side parent spans (`trigger <fn>`, `enqueue`, `call <fn>`) that
+/// engine-side parent spans (`enqueue`, `call <fn>`) that
 /// otherwise only land after everything under them has finished.
 ///
 /// The final span still arrives exclusively via the exporter path on close and
@@ -2507,7 +2508,8 @@ impl SpanProcessor for LiveSpanProcessor {
 }
 
 /// Tee span exporter that sends spans to both OTLP collector and in-memory storage.
-/// This enables span triggers to work while still exporting to an external collector.
+/// This feeds `observability::on-span` and the trace API while still exporting to an
+/// external collector.
 #[derive(Debug)]
 pub struct TeeSpanExporter {
     otlp_exporter: opentelemetry_otlp::SpanExporter,
@@ -2534,7 +2536,7 @@ impl SpanExporter for TeeSpanExporter {
         &self,
         batch: Vec<SpanData>,
     ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
-        // Store in memory first (for triggers and API access).
+        // Store in memory first (for `observability::on-span` and API access).
         let stored: Vec<StoredSpan> = batch
             .iter()
             .map(|s| StoredSpan::from_span_data(s, &self.service_name))

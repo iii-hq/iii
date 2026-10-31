@@ -14,7 +14,6 @@ engine:
         name: fs
         config:
           directory: ./config
-      ttl_seconds: 0
 
     # Ephemeral sandboxes are an engine-owned exception to project containers.
     # iii-sandbox:

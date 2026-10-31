@@ -18,10 +18,10 @@ engine:
   [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
 </Note>
 
-You drive sandboxes by invoking the worker's `sandbox::*` triggers, the same way you call any
-function (see [Triggering functions](../using-iii/functions#triggering-invoking-functions)). Images
-are catalog names such as `python` or `node`, not arbitrary OCI references. The examples below
-capture the new sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
+You drive sandboxes by calling the worker's `sandbox::*` functions, the same way you call any
+function (see [Call a function](../using-iii/functions#call-a-function)). Images are catalog names
+such as `python` or `node`, not arbitrary OCI references. The examples below capture the new
+sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
 
 ## One-shot run
 
@@ -30,7 +30,7 @@ so there is nothing to clean up.
 
 ```bash
 # run a snippet and print just its stdout (-> 4)
-iii trigger sandbox::run image=python lang=python code='print(2+2)' | jq -r .stdout
+iii call sandbox::run image=python lang=python code='print(2+2)' | jq -r .stdout
 ```
 
 `lang` accepts `node`, `python`, `shell`, or an interpreter path. Pass `keep_sandbox=true` to leave
@@ -38,21 +38,21 @@ the VM running afterwards (then stop it yourself with `sandbox::stop`).
 
 ## Lifecycle
 
-For multi-step work, create a sandbox, operate on it with its id, then stop it. Most triggers take
+For multi-step work, create a sandbox, operate on it with its id, then stop it. Most functions take
 flat `key=value` arguments; only nested payloads need `--json`.
 
 ```bash
 # boot a sandbox and capture its id
-SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
+SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
 
 # run a command and print its stdout
-iii trigger sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
+iii call sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
 
 # list the active sandbox ids
-iii trigger sandbox::list | jq -r '.[].sandbox_id'
+iii call sandbox::list | jq -r '.[].sandbox_id'
 
 # stop when done
-iii trigger sandbox::stop sandbox_id=$SB
+iii call sandbox::stop sandbox_id=$SB
 ```
 
 A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
@@ -70,15 +70,16 @@ the sandbox and fetch it with `sandbox::fs::read`.
 ## Concurrency and idle cleanup
 
 A sandbox accepts up to `max_concurrent_exec_per_sandbox` simultaneous `sandbox::exec` calls (four
-by default). Concurrent execs share the guest filesystem and process table without mutual
-exclusion, so coordinate commands that mutate shared state. `sandbox::list` reports
-`exec_in_flight` and `exec_slots_free`; `exec_in_progress` only indicates whether at least one exec
-is running and does not mean the next call will be rejected.
+by default). Concurrent execs share the guest filesystem and process table without mutual exclusion,
+so coordinate commands that mutate shared state. `sandbox::list` reports `exec_in_flight` and
+`exec_slots_free`; `exec_in_progress` only indicates whether at least one exec is running and does
+not mean the next call will be rejected.
 
 Idle cleanup treats an active exec or relayed TCP, UDP, or DNS payload as activity, so a sandbox
 serving network traffic is not automatically stopped while it is handling requests. Bare
 acknowledgements and keepalive probes do not count as activity. Each exec remains bounded by
-`max_exec_timeout_ms`, and you should still call `sandbox::stop` when the sandbox is no longer needed.
+`max_exec_timeout_ms`, and you should still call `sandbox::stop` when the sandbox is no longer
+needed.
 
 ## Catalog
 
@@ -88,53 +89,53 @@ boot a sandbox, so there is nothing to stop.
 
 ```bash
 # list bootable image names (e.g. python, node)
-iii trigger sandbox::catalog::list | jq -r '.images[].name'
+iii call sandbox::catalog::list | jq -r '.images[].name'
 ```
 
 ## Filesystem
 
-The `sandbox::fs::*` triggers manipulate files inside a running sandbox. Each takes a `sandbox_id`
+The `sandbox::fs::*` functions manipulate files inside a running sandbox. Each takes a `sandbox_id`
 plus operation-specific fields.
 
 ```bash
 # boot a sandbox and capture its id
-SB=$(iii trigger sandbox::create image=python | jq -r .sandbox_id)
+SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
 
 # reuse a directory and file path across the calls
 D=/work; F=$D/main.py
 
 # create the directory
-iii trigger sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
+iii call sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
 
 # write a file
-iii trigger sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
+iii call sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
 
 # list the directory
-iii trigger sandbox::fs::ls sandbox_id=$SB path=$D | jq -r '.entries[].name'
+iii call sandbox::fs::ls sandbox_id=$SB path=$D | jq -r '.entries[].name'
 
 # stat the file
-iii trigger sandbox::fs::stat sandbox_id=$SB path=$F
+iii call sandbox::fs::stat sandbox_id=$SB path=$F
 
 # read the file contents
-iii trigger sandbox::fs::read sandbox_id=$SB path=$F | jq -r .body
+iii call sandbox::fs::read sandbox_id=$SB path=$F | jq -r .body
 
 # change permissions
-iii trigger sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
+iii call sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
 
 # search for a pattern
-iii trigger sandbox::fs::grep sandbox_id=$SB path=$D pattern=print
+iii call sandbox::fs::grep sandbox_id=$SB path=$D pattern=print
 
 # find and replace across files
-iii trigger sandbox::fs::sed sandbox_id=$SB path=$D pattern=print replacement=log
+iii call sandbox::fs::sed sandbox_id=$SB path=$D pattern=print replacement=log
 
 # move the file
-iii trigger sandbox::fs::mv sandbox_id=$SB src=$F dst=$D/app.py
+iii call sandbox::fs::mv sandbox_id=$SB src=$F dst=$D/app.py
 
 # remove the file
-iii trigger sandbox::fs::rm sandbox_id=$SB path=$D/app.py
+iii call sandbox::fs::rm sandbox_id=$SB path=$D/app.py
 
 # stop the sandbox
-iii trigger sandbox::stop sandbox_id=$SB
+iii call sandbox::stop sandbox_id=$SB
 ```
 
 For programmatic file transfer, use `sandbox::fs::write` and `sandbox::fs::read` from the previous

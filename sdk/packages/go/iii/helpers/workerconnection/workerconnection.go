@@ -7,10 +7,6 @@
 //
 //   - auth_function_id receives an [AuthInput] during the WebSocket upgrade and returns
 //     an [AuthResult] (or an error to refuse the connection).
-//   - on_trigger_type_registration_function_id receives an
-//     [OnTriggerTypeRegistrationInput] and returns an [OnTriggerTypeRegistrationResult].
-//   - on_trigger_registration_function_id receives an [OnTriggerRegistrationInput] and
-//     returns an [OnTriggerRegistrationResult].
 //   - on_function_registration_function_id receives an [OnFunctionRegistrationInput]
 //     and returns an [OnFunctionRegistrationResult].
 //
@@ -19,7 +15,7 @@
 // The middleware input is in the core package: iii.MiddlewareFunctionInput.
 //
 // The JSON names of every field are the wire contract and match the Node and Rust types
-// exactly. Arbitrary JSON values (context, config, metadata) are json.RawMessage, as in
+// exactly. Arbitrary JSON values (context, metadata, schemas) are json.RawMessage, as in
 // the core Go SDK.
 package workerconnection
 
@@ -42,9 +38,8 @@ type AuthInput struct {
 // the authenticated worker can invoke and what context is forwarded to the middleware.
 //
 // Every field is optional; the zero value of a field means "use the engine default":
-// no namespace-scoped grants, no extra allowed or forbidden functions, every trigger
-// type allowed, trigger type registration denied, function registration allowed, an
-// empty context and no function ID prefix.
+// no namespace-scoped grants, no extra allowed or forbidden functions, function
+// registration allowed, an empty context and no function ID prefix.
 type AuthResult struct {
 	// Namespaces grants functions scoped to one namespace each, for example
 	// {"orders": ["svc::*"]}. A value is an exact function ID or a wildcard, in either
@@ -62,13 +57,6 @@ type AuthResult struct {
 	// ForbiddenFunctions lists function IDs to deny even if they match
 	// expose_functions. It takes precedence over the allowed lists. Empty means none.
 	ForbiddenFunctions []string `json:"forbidden_functions,omitempty"`
-	// AllowedTriggerTypes lists the trigger type IDs the worker may register triggers
-	// for. nil (sent as null) allows every trigger type; a non-nil empty slice (sent as
-	// []) allows none.
-	AllowedTriggerTypes []string `json:"allowed_trigger_types"`
-	// AllowTriggerTypeRegistration reports whether the worker may register new trigger
-	// types. The default is false.
-	AllowTriggerTypeRegistration bool `json:"allow_trigger_type_registration,omitempty"`
 	// AllowFunctionRegistration reports whether the worker may register new functions.
 	// nil means the engine default, true; set it to new(bool) to deny function
 	// registration.
@@ -79,69 +67,6 @@ type AuthResult struct {
 	// FunctionRegistrationPrefix is an optional prefix applied to every function ID this
 	// worker registers (the engine registers prefix::id). Empty means no prefix.
 	FunctionRegistrationPrefix string `json:"function_registration_prefix,omitempty"`
-}
-
-// OnTriggerTypeRegistrationInput is the input passed to the
-// on_trigger_type_registration_function_id hook when a worker attempts to register a
-// new trigger type through the RBAC port. Return an [OnTriggerTypeRegistrationResult]
-// with the (possibly mapped) fields, or an error to deny the registration.
-type OnTriggerTypeRegistrationInput struct {
-	// TriggerTypeID is the ID of the trigger type being registered.
-	TriggerTypeID string `json:"trigger_type_id"`
-	// Description is the human-readable description of the trigger type.
-	Description string `json:"description"`
-	// Context is the auth context from [AuthResult].Context for this session.
-	Context json.RawMessage `json:"context"`
-}
-
-// OnTriggerTypeRegistrationResult is the result returned from the
-// on_trigger_type_registration_function_id hook. Every field is optional; an omitted
-// field keeps the original value from the registration request.
-type OnTriggerTypeRegistrationResult struct {
-	// TriggerTypeID is the mapped trigger type ID. Empty keeps the original.
-	TriggerTypeID string `json:"trigger_type_id,omitempty"`
-	// Description is the mapped description. nil keeps the original; a pointer to ""
-	// clears it.
-	Description *string `json:"description,omitempty"`
-}
-
-// OnTriggerRegistrationInput is the input passed to the
-// on_trigger_registration_function_id hook when a worker attempts to register a trigger
-// through the RBAC port. Return an [OnTriggerRegistrationResult] with the (possibly
-// mapped) fields, or an error to deny the registration.
-type OnTriggerRegistrationInput struct {
-	// TriggerID is the ID of the trigger being registered.
-	TriggerID string `json:"trigger_id"`
-	// TriggerType is the trigger type identifier.
-	TriggerType string `json:"trigger_type"`
-	// FunctionID is the ID of the function this trigger is bound to.
-	FunctionID string `json:"function_id"`
-	// Config is the trigger-specific configuration.
-	Config json.RawMessage `json:"config"`
-	// Metadata is the arbitrary metadata attached to the trigger, if any (the engine
-	// sends null when there is none).
-	Metadata json.RawMessage `json:"metadata,omitempty"`
-	// Namespace is the namespace the trigger's target resolves in (explicit, or
-	// "default" when the registration names none). The same function ID can exist in
-	// several namespaces, so the hook needs it to authorize per target namespace. Empty
-	// means "default".
-	Namespace string `json:"namespace,omitempty"`
-	// Context is the auth context from [AuthResult].Context for this session.
-	Context json.RawMessage `json:"context"`
-}
-
-// OnTriggerRegistrationResult is the result returned from the
-// on_trigger_registration_function_id hook. Every field is optional; an omitted field
-// keeps the original value from the registration request.
-type OnTriggerRegistrationResult struct {
-	// TriggerID is the mapped trigger ID. Empty keeps the original.
-	TriggerID string `json:"trigger_id,omitempty"`
-	// TriggerType is the mapped trigger type. Empty keeps the original.
-	TriggerType string `json:"trigger_type,omitempty"`
-	// FunctionID is the mapped function ID. Empty keeps the original.
-	FunctionID string `json:"function_id,omitempty"`
-	// Config is the mapped trigger configuration. nil keeps the original.
-	Config json.RawMessage `json:"config,omitempty"`
 }
 
 // OnFunctionRegistrationInput is the input passed to the
@@ -162,6 +87,15 @@ type OnFunctionRegistrationInput struct {
 	Namespace string `json:"namespace,omitempty"`
 	// Context is the auth context from [AuthResult].Context for this session.
 	Context json.RawMessage `json:"context"`
+	// Private is the registration's private option: only the registering connection
+	// may call the function.
+	Private bool `json:"private"`
+	// Observable is the registration's observable option: false refuses every
+	// observer of the function.
+	Observable bool `json:"observable"`
+	// ArgsFormat is the JSON Schema of the function's observer args, when the
+	// registration sets one.
+	ArgsFormat json.RawMessage `json:"args_format,omitempty"`
 }
 
 // OnFunctionRegistrationResult is the result returned from the
@@ -176,4 +110,11 @@ type OnFunctionRegistrationResult struct {
 	// Metadata is the mapped metadata. nil keeps the original; any value that is set,
 	// including the JSON literal null, replaces it.
 	Metadata json.RawMessage `json:"metadata,omitempty"`
+	// Private replaces the registration's private option. nil keeps the original.
+	Private *bool `json:"private,omitempty"`
+	// Observable replaces the registration's observable option. nil keeps the
+	// original.
+	Observable *bool `json:"observable,omitempty"`
+	// ArgsFormat replaces the registration's args_format. nil keeps the original.
+	ArgsFormat json.RawMessage `json:"args_format,omitempty"`
 }

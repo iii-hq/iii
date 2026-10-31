@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use iii_sdk::Source;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::{Value, json};
 
 use super::{
@@ -36,8 +36,7 @@ pub async fn run(env: &Env) -> Result<()> {
     let ctl = &observing;
     let callers = vec![local.clone()];
 
-    let calls =
-        |seq: u64| TriggerRequest::new("bench::local", json!({ "n": seq, "pct": seq % 100 }));
+    let calls = |seq: u64| CallRequest::new("bench::local", json!({ "n": seq, "pct": seq % 100 }));
     closed_loop(
         &callers,
         CONCURRENCY,
@@ -64,7 +63,7 @@ pub async fn run(env: &Env) -> Result<()> {
                 }
                 let h = observing.observe(source, "bench::sink");
                 env.guard(h.ready()).await??;
-                // The engine pushes the observer to the owner's SDK.
+                // The engine pushes the observer to the host's SDK.
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 Some(h)
             }

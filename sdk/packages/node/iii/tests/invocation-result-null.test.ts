@@ -9,7 +9,7 @@ import { MessageType } from '../src/iii-types'
  * that returned nothing omits the field, and that still resolves `undefined`.
  */
 type InternalSdk = {
-  trigger: (request: Record<string, unknown>) => Promise<unknown>
+  call: (request: Record<string, unknown>) => Promise<unknown>
   onMessage: (data: string) => void
   sendMessage: ReturnType<typeof vi.fn>
   shutdown: () => Promise<void>
@@ -26,9 +26,7 @@ function answer(sdk: InternalSdk, pending: Promise<unknown>, reply: Record<strin
   const invoke = sdk.sendMessage.mock.calls.find(([type]) => type === MessageType.InvokeFunction)
   expect(invoke).toBeDefined()
   const { invocation_id, function_id } = invoke?.[1] as { invocation_id: string; function_id: string }
-  sdk.onMessage(
-    JSON.stringify({ type: MessageType.InvocationResult, invocation_id, function_id, ...reply }),
-  )
+  sdk.onMessage(JSON.stringify({ type: MessageType.InvocationResult, invocation_id, function_id, ...reply }))
   return pending
 }
 
@@ -43,7 +41,7 @@ describe('invocation result: null vs absent', () => {
     sdk = makeSdk()
     sdk.sendMessage = vi.fn()
 
-    const pending = sdk.trigger({ function_id: 'state::get', payload: { scope: 's', key: 'missing' } })
+    const pending = sdk.call({ function_id: 'state::get', payload: { scope: 's', key: 'missing' } })
 
     await expect(answer(sdk, pending, { result: null })).resolves.toBeNull()
   })
@@ -52,7 +50,7 @@ describe('invocation result: null vs absent', () => {
     sdk = makeSdk()
     sdk.sendMessage = vi.fn()
 
-    const pending = sdk.trigger({ function_id: 'side::effect', payload: {} })
+    const pending = sdk.call({ function_id: 'side::effect', payload: {} })
 
     await expect(answer(sdk, pending, {})).resolves.toBeUndefined()
   })

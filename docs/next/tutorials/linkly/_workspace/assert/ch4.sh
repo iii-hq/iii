@@ -61,11 +61,10 @@ worker.registerFunction("peek-created::print", async (data) => {
   console.log(JSON.stringify(data));
   return null;
 });
-worker.registerTrigger({
-  type: "durable:subscriber",
-  function_id: "peek-created::print",
-  config: { topic: "link.created" },
-});
+worker.observe(
+  { function_id: "queue::on-message", args: { topic: "link.created" } },
+  "peek-created::print",
+);
 EOF
 peek_log="$(mktemp)"
 (cd "$PROJECT/link" && exec node peek-created.mjs) >"$peek_log" 2>&1 &
@@ -88,7 +87,7 @@ check "PUT /links/:code" 'https://iii.dev/updated' \
   "$(curl -s -X PUT "$HTTP/links/analyticslink1" -H 'Content-Type: application/json' \
     -d '{"url":"https://iii.dev/updated"}')"
 sleep 3
-check "cache refreshed by durable subscriber" 'https://iii.dev/updated' \
+check "cache refreshed by the link.updated subscriber" 'https://iii.dev/updated' \
   "$(t link::resolve code=analyticslink1)"
 
 finish

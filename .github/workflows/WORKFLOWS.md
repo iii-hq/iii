@@ -370,7 +370,7 @@ Only runs for stable (non-prerelease) versions.
 
 ### `_publish-engine-workers.yml` — Publish Builtin Engine Worker
 
-Collects a worker's live interface from a running III engine and POSTs to `POST /publish`. Called by `release-iii.yml` for each builtin engine worker.
+Collects a worker's live interface from a running III engine and POSTs to `POST /publish`. Called by `release-iii.yml` for each builtin engine worker. The interface is the worker's function rows (`engine::workers::info`, then `engine::functions::info`), read with `iii call`; each Registry row states `args_format`, `private` (an event source) and `observable`.
 
 ### `_publish-worker-skills.yml` — Publish Worker Skills
 

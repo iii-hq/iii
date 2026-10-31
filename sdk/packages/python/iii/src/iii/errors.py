@@ -101,14 +101,17 @@ def _wrap_wire_error(
 class ObserveRejection(Exception):
     """Rejects an observer with a code of its own.
 
-    Raise it from an ``on_observer_added`` hook (``HTTP_ROUTE_CONFLICT``,
-    ``INVALID_CRON_EXPRESSION``, ...); any other exception rejects the
-    observer with ``OBSERVE_REJECTED``. Also what ``ObserverHandle.ready()``
-    raises when the observer turns ``error`` or ``disposed``, with the
-    engine's code (``INVALID_ARGS``, ``FORBIDDEN``, ``UNSUPPORTED``, ...).
+    Raise it from an ``on_observer_added`` hook, at either level
+    (``HTTP_ROUTE_CONFLICT``, ``INVALID_CRON_EXPRESSION``, ...); any other
+    exception rejects the observer with ``OBSERVE_REJECTED``. Raised from an
+    ``on_observer_deliver`` hook, its code is the error the caller gets. Also
+    what ``ObserverHandle.ready()`` and ``Observer.accepted()`` raise when the
+    observer turns ``error`` or ``disposed``, with the engine's or the hook's
+    code (``INVALID_ARGS``, ``FORBIDDEN``, ``UNSUPPORTED``, ...).
 
     Examples:
-        >>> def on_observer_added(obs):
+        >>> @iii.on_observer_added("cron::on-tick")
+        ... def start(obs):
         ...     if not is_valid_cron(obs.args["expression"]):
         ...         raise ObserveRejection("INVALID_CRON_EXPRESSION", "invalid day-of-week field")
     """

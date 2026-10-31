@@ -67,7 +67,7 @@ pub enum EngineMode {
 /// The order is `--engine`, then `III_URL`, then the compose file, then the
 /// local engine address. The environment beats the file: an exported variable
 /// is the caller's live intent, while the file is only what the working
-/// directory happens to hold. `iii trigger` resolves its endpoint the same
+/// directory happens to hold. `iii call` resolves its endpoint the same
 /// way.
 ///
 /// `III_URL` selects an engine exactly as `--engine` does, ownership included:
@@ -220,7 +220,7 @@ async fn follow_worker_logs(
     follow: bool,
     stream: Option<logs::LogStream>,
 ) -> Result<()> {
-    use iii_sdk::{InitOptions, protocol::TriggerRequest, register_worker};
+    use iii_sdk::{InitOptions, protocol::CallRequest, register_worker};
 
     let local_config_path = file
         .as_deref()
@@ -303,7 +303,7 @@ async fn follow_worker_logs(
             payload.insert("wait_ms".to_string(), serde_json::json!(logs::MAX_WAIT_MS));
         }
 
-        let request = TriggerRequest {
+        let request = CallRequest {
             function_id: "compose::logs".to_string(),
             payload: serde_json::Value::Object(payload),
             action: None,
@@ -312,7 +312,7 @@ async fn follow_worker_logs(
         .namespace(&daemon_namespace);
 
         let result = tokio::select! {
-            result = client.trigger(request) => Some(result),
+            result = client.call(request) => Some(result),
             _ = tokio::signal::ctrl_c(), if follow => None,
         };
         let Some(result) = result else {
@@ -743,7 +743,7 @@ async fn serve_daemon(
     // and the line would be telling them to do what they just did.
     if start.is_none() {
         report::line(&format!(
-            "  {} iii trigger compose::up --namespace {} file=./worker-compose.yaml",
+            "  {} iii call compose::up --namespace {} file=./worker-compose.yaml",
             "start a project:".dimmed(),
             daemon.daemon_namespace
         ));

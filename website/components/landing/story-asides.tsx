@@ -98,7 +98,7 @@ const COMPOSE_STEPS = [
   {
     title: 'Add from the registry',
     aside: 'Registry workers',
-    command: 'iii trigger compose::add worker=http worker=database',
+    command: 'iii call compose::add worker=http worker=database',
     from: 1,
     to: 2,
     workers: [
@@ -109,7 +109,7 @@ const COMPOSE_STEPS = [
   {
     title: 'Connect your code',
     aside: 'Your worker',
-    command: 'iii trigger compose::add worker=./workers/api',
+    command: 'iii call compose::add worker=./workers/api',
     from: 3,
     to: 3,
     workers: [{ name: 'api', detail: 'orders::create', meta: 'Python', at: 3 }],

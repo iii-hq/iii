@@ -12,13 +12,13 @@ import (
 	"github.com/coder/websocket"
 )
 
-// A5: WithInvocationTimeout bounds a Trigger whose request has no Timeout.
-func TestWithInvocationTimeoutBoundsTrigger(t *testing.T) {
+// A5: WithInvocationTimeout bounds a Call whose request has no Timeout.
+func TestWithInvocationTimeoutBoundsCall(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m, WithInvocationTimeout(150*time.Millisecond)) // the engine never replies
 
 	start := time.Now()
-	_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::silent"})
+	_, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::silent"})
 	elapsed := time.Since(start)
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("error = %v, want ErrTimeout", err)
@@ -28,13 +28,13 @@ func TestWithInvocationTimeoutBoundsTrigger(t *testing.T) {
 	}
 }
 
-// A5: an explicit TriggerRequest.Timeout wins over WithInvocationTimeout.
-func TestTriggerTimeoutOverridesInvocationTimeout(t *testing.T) {
+// A5: an explicit CallRequest.Timeout wins over WithInvocationTimeout.
+func TestCallTimeoutOverridesInvocationTimeout(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m, WithInvocationTimeout(time.Minute))
 
 	start := time.Now()
-	_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::silent", Timeout: 100 * time.Millisecond})
+	_, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::silent", Timeout: 100 * time.Millisecond})
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("error = %v, want ErrTimeout", err)
 	}
@@ -51,15 +51,15 @@ func TestInvocationTimeoutDefault(t *testing.T) {
 		"negative": {WithInvocationTimeout(-time.Second)},
 	} {
 		c := New("ws://127.0.0.1:0", opts...)
-		if got := c.triggerTimeout(0); got != DefaultInvocationTimeout {
+		if got := c.callTimeout(0); got != DefaultInvocationTimeout {
 			t.Errorf("%s: timeout = %v, want %v", name, got, DefaultInvocationTimeout)
 		}
 	}
 	c := New("ws://127.0.0.1:0", WithInvocationTimeout(2*time.Second))
-	if got := c.triggerTimeout(0); got != 2*time.Second {
+	if got := c.callTimeout(0); got != 2*time.Second {
 		t.Errorf("timeout = %v, want 2s", got)
 	}
-	if got := c.triggerTimeout(time.Second); got != time.Second {
+	if got := c.callTimeout(time.Second); got != time.Second {
 		t.Errorf("explicit timeout = %v, want 1s", got)
 	}
 }

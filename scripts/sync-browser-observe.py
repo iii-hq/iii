@@ -7,7 +7,7 @@
 The browser SDK (`sdk/packages/node/iii-browser`) imports the Node SDK's
 filter evaluator (`src/filter`) directly. The rest of observe cannot be
 imported: it uses Node APIs (`Buffer`, `timer.unref()`, `AsyncLocalStorage`) and
-Node's types. So the browser's copies of the owner side, the reporter, the wire
+Node's types. So the browser's copies of the host side, the reporter, the wire
 format, the observer handle and the public types, and of the observe unit and
 integration tests, are *derived*: each one is the Node file plus the short,
 declared list of patches below, under a one-line header saying so. To change
@@ -57,16 +57,20 @@ def apply(source: str, patches) -> str:
 #
 # Error shapes: the browser SDK keeps its pre-0.25 rejections, so the derived
 # tests assert them instead of Node's (the parity note lives here):
-#   - a handler that throws (remote or local call): the engine's error body,
-#     a plain `{ code: 'invocation_failed', message, stacktrace }` object
-#     (Node: an `InvocationError` whose message is `invocation_failed: <message>`);
+#   - a handler or a deliver hook that throws (remote or local call): the
+#     engine's error body, a plain `{ code: 'invocation_failed', message,
+#     stacktrace }` object (Node: an `InvocationError` whose message is
+#     `invocation_failed: <message>`);
 #   - a call that times out (remote or local): an `Error` with the message
 #     `Invocation timeout after <ms>ms: <function_id>` and `code: 'TIMEOUT'`,
 #     `function_id` (Node: an `InvocationError` whose message is
 #     `TIMEOUT: invocation timed out after <ms>ms`);
-#   - errors the SDK raises itself (`NOT_OWNER_DELIVERED`, `FILTERS_NOT_MATCHED`,
-#     `OBSERVER_NOT_ACTIVE`, `INVALID_OBSERVE_DESCRIPTOR`): an `InvocationError`,
-#     as in Node.
+#   - errors the SDK raises itself (`LOCAL_DEPTH_EXCEEDED`, browser only): an
+#     `InvocationError`, as in Node.
+#
+# The invocation context is a synchronous scope in the browser
+# (`src/invocation-context.ts`): a handler or a deliver hook sees it up to its
+# first `await`. The derived tests read `currentInvocation()` before awaiting.
 #
 # Every Node file that matches OBSERVE_FILES is either derived (MODULES, TESTS)
 # or listed in EXCLUDED with the reason; `--check` fails on one that is neither.
@@ -109,23 +113,71 @@ MODULES = {
     ],
     'observable.ts': [
         (
-            "import type { Reporter } from './reporter'\n",
-            "import type { Reporter } from './reporter'\nimport { randomUUID, unrefTimer } from './utils'\n",
+            "import type { Reporter, ReportInit, ReportValues } from './reporter'\n",
+            "import type { Reporter, ReportInit, ReportValues } from './reporter'\nimport { unrefTimer } from './utils'\n",
             1,
         ),
         ('timer.unref?.()', 'unrefTimer(timer)', 1),
-        ('crypto.randomUUID()', 'randomUUID()', 1),
-        # Outside any synchronous scope (after an `await`), emits and calls use
-        # the browser's fallback context and depth, so the loop guard holds.
+        # The browser's error bodies of a failure (src/errors.ts). A handler's:
+        # an `Error` from any realm, an engine error body rethrown, anything
+        # else; it never throws. A deliver hook's also keeps the code of the
+        # browser's own rejections: an engine error body and a timed-out call.
         (
-            "import { type ActiveInvocation, currentContext } from './invocation-context'",
-            "import { type ActiveInvocation, callContext, callDepth } from './invocation-context'",
+            "import { InvocationError, ObserveRejection } from './errors'\n",
+            "import { deliverErrorBody, ObserveRejection } from './errors'\n",
             1,
         ),
-        ('const cur = currentContext()', 'const cur = callContext()', 2),
-        ('observe_depth: cur?.observe_depth ?? 0,', 'observe_depth: cur ? cur.observe_depth : callDepth(),', 1),
+        (
+            """/** The error a handler's failure becomes, the same on the local and the remote path. */
+export function handlerErrorBody(error: unknown): ErrorBody {
+  const isError = error instanceof Error
+  return {
+    code: 'invocation_failed',
+    message: isError ? error.message : String(error),
+    stacktrace: isError ? error.stack : undefined,
+  }
+}
+
+/**
+ * The error a deliver hook's failure becomes: an {@link ObserveRejection} or
+ * an {@link InvocationError} (a call it made that failed, rethrown) keeps its
+ * code and message; anything else is a handler failure (`invocation_failed`).
+ */
+export function deliverErrorBody(error: unknown): ErrorBody {
+  if (error instanceof ObserveRejection) return { code: error.code, message: error.message }
+  if (error instanceof InvocationError) {
+    const prefix = `${error.code}: `
+    return {
+      code: error.code,
+      message: error.message.startsWith(prefix) ? error.message.slice(prefix.length) : error.message,
+      stacktrace: error.stacktrace,
+    }
+  }
+  return handlerErrorBody(error)
+}
+
+""",
+            '',
+            1,
+        ),
     ],
     'observe-types.ts': [
+        (
+            """ * `obs.matches(call)`. It runs inside the function's invocation, so the calls
+ * it makes have that invocation as their caller.
+ */""",
+            """ * `obs.matches(call)`. It runs inside the function's invocation, so the calls
+ * it makes have that invocation as their caller.
+ *
+ * Browsers have no `AsyncLocalStorage`: the hook runs in the invocation's
+ * scope up to its first `await`. A call it makes after one still has the
+ * invocation as its caller while that invocation is the only one running on
+ * the page; to be sure, read `iii.currentInvocation()` first and re-enter it
+ * with `iii.withInvocation(inv, fn)`. A call through an observer is routed to
+ * the observer's target either way.
+ */""",
+            1,
+        ),
         (
             """/**
  * The invocation the current code runs in, in every handler, remote or
@@ -148,7 +200,7 @@ MODULES = {
             """  activation?: { observer_id: string; activation_id?: string }
   observe_depth: number
   /**
-   * The W3C `traceparent` the invocation arrived with (or was triggered with,
+   * The W3C `traceparent` the invocation arrived with (or was called with,
    * for a local call). Calls made inside the handler forward it. Browser SDK
    * only: there is no OpenTelemetry context to carry it.
    */
@@ -269,11 +321,66 @@ describe('filter conformance vectors', () => {""",
     ),
 ]
 
+HOOKS = UNIT + [
+    # The browser client has no `getConnectionState()`: the fake engine reads the state.
+    ('sdk.getConnectionState()', 'fake.connectionState(sdk)', 1),
+]
+
+DELIVER = UNIT + [
+    (
+        """    await expect(sdk.call({ function_id: 'http::on-request', payload: { path: '/boom' } })).rejects.toMatchObject({
+      code: 'invocation_failed',
+      message: 'invocation_failed: no route',
+      function_id: 'http::on-request',
+    })""",
+        """    // The browser SDK rejects with the error body the remote path gives.
+    await expect(sdk.call({ function_id: 'http::on-request', payload: { path: '/boom' } })).rejects.toEqual({
+      code: 'invocation_failed',
+      message: 'no route',
+      stacktrace: expect.any(String),
+    })""",
+        1,
+    ),
+    (
+        """    await expect(response).rejects.toMatchObject({
+      code: 'OBSERVER_NOT_ACTIVE',
+      message: 'OBSERVER_NOT_ACTIVE: observer users is not active',
+      function_id: 'http::on-request',
+    })""",
+        """    // The browser SDK rejects with the error body the remote path gives.
+    await expect(response).rejects.toEqual({ code: 'OBSERVER_NOT_ACTIVE', message: 'observer users is not active' })""",
+        1,
+    ),
+    (
+        """    ).rejects.toMatchObject({
+      code: 'OBSERVER_NOT_ACTIVE',
+      message: 'OBSERVER_NOT_ACTIVE: subscriber removed',
+      function_id: 'queue::on-message',
+    })""",
+        """    ).rejects.toEqual({ code: 'OBSERVER_NOT_ACTIVE', message: 'subscriber removed' }) // the remote path's error body""",
+        1,
+    ),
+    (
+        """      .onObserverDeliver(async (call) => {
+        await Promise.resolve()
+        inHook = sdk.currentInvocation()
+        void sdk.call({ function_id: 'audit::log', payload: {}, timeoutMs: 50 }).catch(() => undefined)""",
+        """      .onObserverDeliver(async (call) => {
+        // Browser SDK: the scope ends at the hook's first `await`. A call made
+        // after it still has the invocation as its caller: the only one running,
+        // and delivering.
+        inHook = sdk.currentInvocation()
+        await Promise.resolve()
+        void sdk.call({ function_id: 'audit::log', payload: {}, timeoutMs: 50 }).catch(() => undefined)""",
+        1,
+    ),
+]
+
 LOCAL_DISPATCH = UNIT + [
     ("import { InvocationError } from '../src/errors'\n", '', 1),
     (
-        "import { registerWorker, TriggerAction } from '../src/index'\n",
-        "import { registerWorker, TriggerAction } from '../src/index'\nimport { utf8ByteLength } from '../src/utils'\n",
+        "import { CallAction, registerWorker } from '../src/index'\n",
+        "import { CallAction, registerWorker } from '../src/index'\nimport { utf8ByteLength } from '../src/utils'\n",
         1,
     ),
     ('Buffer.byteLength(', 'utf8ByteLength(', ANY),
@@ -284,7 +391,7 @@ LOCAL_DISPATCH = UNIT + [
     socket.open()
     socket.deliver(functionRegistered('ext::lambda'))
     socket.clear()
-    void sdk.trigger({ function_id: 'ext::lambda', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'ext::lambda', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(invokes(socket)).toHaveLength(1)
   })
 
@@ -318,39 +425,51 @@ LOCAL_DISPATCH = UNIT + [
         1,
     ),
     (
-        """    await expect(sdk.trigger({ function_id: 'slow::fn', payload: {}, timeoutMs: 30 })).rejects.toMatchObject({
+        """    await expect(sdk.call({ function_id: 'slow::fn', payload: {}, timeoutMs: 30 })).rejects.toMatchObject({
       code: 'TIMEOUT',
       message: 'TIMEOUT: invocation timed out after 30ms',
       function_id: 'slow::fn',
     })""",
         """    // The browser SDK's timeout, on both paths: an Error with this message, a `code` and the `function_id`.
     const timedOut = { code: 'TIMEOUT', message: 'Invocation timeout after 30ms: slow::fn', function_id: 'slow::fn' }
-    await expect(sdk.trigger({ function_id: 'slow::fn', payload: {}, timeoutMs: 30 })).rejects.toMatchObject(timedOut)
+    await expect(sdk.call({ function_id: 'slow::fn', payload: {}, timeoutMs: 30 })).rejects.toMatchObject(timedOut)
     await expect(
-      sdk.trigger({ function_id: 'slow::fn', payload: {}, timeoutMs: 30, dispatch: 'remote' }),
+      sdk.call({ function_id: 'slow::fn', payload: {}, timeoutMs: 30, dispatch: 'remote' }),
     ).rejects.toMatchObject(timedOut)""",
         1,
     ),
-]
-
-DEPRECATION = UNIT + [
+    # Decision 22: only the Node SDK freezes a private function's values.
     (
-        """    trigger.unregister()
-    expect(socket.framesOf('unregistertrigger')).toHaveLength(1)
-  })
-})""",
-        """    trigger.unregister()
-    expect(socket.framesOf('unregistertrigger')).toHaveLength(1)
-
-    // unregisterTriggerType carries the marker only: no runtime warning, and it sends `{ id }`
-    type.unregister()
-    expect(socket.framesOf('unregistertriggertype')).toEqual([{ type: 'unregistertriggertype', id: 'webhook' }])
-    type.registerFunction('hooks::fn', async () => null, { path: '/d' })
-    expect(socket.framesOf('registertrigger')).toHaveLength(4)
-    const after = warn.mock.calls.map((c) => String(c[0]))
-    expect(after.filter((m) => m.includes('deprecated'))).toHaveLength(2)
-  })
-})""",
+        """  it("freezes both when NODE_ENV is 'development', so a write throws", async () => {
+    const { sdk, seen, result } = await source('development')
+    const payload = { list: [1, 2], at: new Date(0) }
+    const out = await sdk.call<typeof payload, { list: number[] }>({ function_id: 'cron::on-tick', payload })
+    expect(seen.input).toBe(payload)
+    expect(out).toBe(result)
+    expect(() => payload.list.push(3)).toThrow(TypeError)
+    expect(() => out.list.push(3)).toThrow(TypeError)
+    // a class instance is left alone
+    expect(Object.isFrozen(payload.at)).toBe(false)
+  })""",
+        """  it("never freezes them, also when NODE_ENV is 'development' (decision 22: only the Node SDK does)", async () => {
+    const { sdk, seen, result } = await source('development')
+    const payload = { list: [1, 2] }
+    const out = await sdk.call<typeof payload, { list: number[] }>({ function_id: 'cron::on-tick', payload })
+    expect(seen.input).toBe(payload)
+    expect(out).toBe(result)
+    expect(Object.isFrozen(payload)).toBe(false)
+    expect(Object.isFrozen(payload.list)).toBe(false)
+    expect(Object.isFrozen(out)).toBe(false)
+  })""",
+        1,
+    ),
+    # ... and so the hooks of a private function read its result as the handler returned it.
+    (
+        re.compile(
+            r"  it\('in development the result is frozen before the hooks read it: .*?\n  \}\)\n\n",
+            re.S,
+        ),
+        '',
         1,
     ),
 ]
@@ -364,7 +483,7 @@ PROTOCOL_FIXTURES = UNIT + [
     (
         re.compile(
             r'    const data = \{ \.\.\.\(frame\.data as Json\) \}\n.*?'
-            r"    expect\(data\.features\)\.toEqual\(\['observe\.v1', 'local-dispatch\.v1', 'large-messages\.v1'\]\)\n",
+            r"    expect\(data\.features\)\.toEqual\(\['observe\.v1', 'observe\.v2', 'local-dispatch\.v1', 'large-messages\.v1'\]\)\n",
             re.S,
         ),
         """    const data = frame.data as Json
@@ -377,8 +496,8 @@ PROTOCOL_FIXTURES = UNIT + [
     expect(data).toMatchObject({ runtime: 'browser', name: 'billing', namespace: 'default' })
     // The fixture is a native SDK's. A browser receives one 16 MiB frame at
     // most, so it declares every feature but `large-messages.v1`.
-    expect(want.features).toEqual(['observe.v1', 'local-dispatch.v1', 'large-messages.v1'])
-    expect(data.features).toEqual(['observe.v1', 'local-dispatch.v1'])
+    expect(want.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1'])
     expect(typeof data.os).toBe('string')
 """,
         1,
@@ -407,12 +526,13 @@ E2E_LOCAL = E2E + [('\n  dropConnection,', '\n  connectionState,\n  dropConnecti
 
 E2E_ROUTED = E2E + [
     (
-        "import { closeWorkers, collector, dropConnection, sleep, waitFor, worker } from './observe-utils'",
+        "import { closeWorkers, collector, dropConnection, frameCounter, sleep, waitFor, worker } from './observe-utils'",
         """import {
   closeWorkers,
   collector,
   connectionState,
   dropConnection,
+  frameCounter,
   sleep,
   traceId,
   waitFor,
@@ -435,7 +555,7 @@ E2E_ROUTED = E2E + [
     watcher.registerFunction(`e2e::on-await-loop-${RUN}`, async (envelope: { input: number }) => {
       depths.push(watcher.currentInvocation()?.observe_depth ?? -1)
       await sleep(5)
-      await watcher.trigger({ function_id: `e2e::await-loop-${RUN}`, payload: envelope.input + 1 })
+      await watcher.call({ function_id: `e2e::await-loop-${RUN}`, payload: envelope.input + 1 })
       return null
     })
     const handle = watcher.observe(
@@ -443,14 +563,14 @@ E2E_ROUTED = E2E + [
       `e2e::on-await-loop-${RUN}`,
     )
     await handle.ready()
-    await watcher.trigger({ function_id: `e2e::await-loop-${RUN}`, payload: 0 })
+    await watcher.call({ function_id: `e2e::await-loop-${RUN}`, payload: 0 })
     await waitFor(() => depths.length >= 8, 'eight hops')
     await sleep(1000)
     expect(depths).toEqual([1, 2, 3, 4, 5, 6, 7, 8])
   })
 
-  it('trigger sends metadata and traceparent: filters read metadata.*, and the activation continues the trace', async () => {
-    // Browser SDK: there is no OpenTelemetry, so the trace context is what trigger() is given.
+  it('call sends metadata and traceparent: filters read metadata.*, and the activation continues the trace', async () => {
+    // Browser SDK: there is no OpenTelemetry, so the trace context is what call() is given.
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
     owner.registerFunction(`e2e::tag-${RUN}`, async (input: { n: number }) => input.n)
@@ -465,13 +585,13 @@ E2E_ROUTED = E2E + [
     )
     await handle.ready()
     const traceparent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01'
-    await watcher.trigger({
+    await watcher.call({
       function_id: `e2e::tag-${RUN}`,
       payload: { n: 1 },
       metadata: { tenant: 'acme' },
       traceparent,
     })
-    await watcher.trigger({ function_id: `e2e::tag-${RUN}`, payload: { n: 2 }, metadata: { tenant: 'other' } })
+    await watcher.call({ function_id: `e2e::tag-${RUN}`, payload: { n: 2 }, metadata: { tenant: 'other' } })
     await waitFor(() => got.length >= 1, 'the activation')
     await sleep(200)
     expect(got).toHaveLength(1)
@@ -484,17 +604,25 @@ E2E_ROUTED = E2E + [
     ),
 ]
 
+# Pending until hosted, host restart and standby takeover, against a real
+# engine: the browser's integration helpers and ids of its own.
+FAULT_TOLERANCE = [
+    ("'../src/", "'../../src/", ANY),
+    ('IIIClient', 'ISdk', ANY),
+    ('-node-${RUN}', '-browser-${RUN}', 4),
+]
+
 TESTS = {
     'filter-conformance.test.ts': ('filter-conformance.test.ts', FILTER_CONFORMANCE),
     'observe-observer.test.ts': ('observe-observer.test.ts', UNIT),
-    'observe-hooks.test.ts': ('observe-hooks.test.ts', UNIT),
+    'observe-hooks.test.ts': ('observe-hooks.test.ts', HOOKS),
+    'observe-deliver.test.ts': ('observe-deliver.test.ts', DELIVER),
     'observe-local-dispatch.test.ts': ('observe-local-dispatch.test.ts', LOCAL_DISPATCH),
-    'observe-owner-delivery.test.ts': ('observe-owner-delivery.test.ts', UNIT),
     'observe-reporter.test.ts': ('observe-reporter.test.ts', REPORTER),
-    'observe-deprecation.test.ts': ('observe-deprecation.test.ts', DEPRECATION),
     'observe-protocol-fixtures.test.ts': ('observe-protocol-fixtures.test.ts', PROTOCOL_FIXTURES),
     'observe-e2e-routed.test.ts': ('integration/observe-routed.test.ts', E2E_ROUTED),
     'observe-e2e-local.test.ts': ('integration/observe-local.test.ts', E2E_LOCAL),
+    'observe-fault-tolerance.test.ts': ('integration/observe-fault-tolerance.test.ts', FAULT_TOLERANCE),
 }
 
 

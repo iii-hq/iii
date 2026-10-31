@@ -187,130 +187,6 @@ describe('Reporter', () => {
     expect(h.parsed()[1].dropped_reports).toEqual([{ function_id: 'fn::a', reason: 'BUFFER_FULL', count: 1 }])
   })
 
-  it('an emit merged into a buffered item stays within the bounds', () => {
-    const h = host({ online: false })
-    const r = reporter(h, { maxBytes: 1500 })
-    const event = { tick: 1, blob: 'b'.repeat(400) }
-    const ctx = {}
-    const emit = (observer_id: string, captures: string[]) =>
-      r.pushEmit({
-        function_id: 'cron::on-tick',
-        invocation_id: 'inv-e',
-        status: 'success',
-        values: { input: event, caller: { worker_name: 'c'.repeat(1200) } },
-        captures,
-        started_at_ms: 1,
-        duration_ms: 0,
-        observe_depth: 0,
-        observer_id,
-        event,
-        context: ctx,
-      })
-    expect(emit('a', ['input'])).toBe(true)
-    expect(emit('b', ['input', 'caller'])).toBe(false) // the caller part would pass the buffer: TOO_LARGE
-    expect(emit('c', ['input'])).toBe(true) // merged: no new part
-    h.state.online = true
-    r.flush()
-    expect(h.parsed()[0].items?.map((i) => [i.matched, 'caller' in i])).toEqual([[['a', 'c'], false]])
-    r.sendStats()
-    expect(h.parsed()[1].dropped_reports).toEqual([{ function_id: 'cron::on-tick', reason: 'TOO_LARGE', count: 1 }])
-  })
-
-  it('never merges an emit into an item a flush already sent (the 256th-item flush happens inside the push)', () => {
-    const h = host()
-    const r = reporter(h, { batchItems: 2 })
-    const ctx = {}
-    const e = { tick: 'E' }
-    const f = { tick: 'F' }
-    const emit = (observer_id: string, event: unknown) =>
-      r.pushEmit({
-        function_id: 'cron::on-tick',
-        invocation_id: `inv-${observer_id}`,
-        status: 'success',
-        values: { input: event },
-        captures: ['input'],
-        started_at_ms: 1,
-        duration_ms: 0,
-        observe_depth: 0,
-        observer_id,
-        event,
-        context: ctx,
-      })
-    emit('A', f)
-    emit('A', e) // the second item: flushed now, inside the push
-    expect(h.frames).toHaveLength(1)
-    emit('B', e) // same event, same context: a new item, not a merge into the sent one
-    r.flush()
-    expect(h.parsed().flatMap((fr) => fr.items?.map((i) => [i.input, i.matched]))).toEqual([
-      [{ tick: 'F' }, ['A']],
-      [{ tick: 'E' }, ['A']],
-      [{ tick: 'E' }, ['B']],
-    ])
-  })
-
-  it('an emit merged into an item put back after a failed send is sent exactly once', () => {
-    const h = host()
-    const r = reporter(h)
-    const event = { tick: 1 }
-    const ctx = {}
-    const emit = (observer_id: string) =>
-      r.pushEmit({
-        function_id: 'cron::on-tick',
-        invocation_id: 'inv-1',
-        status: 'success',
-        values: { input: event },
-        captures: ['input'],
-        started_at_ms: 1,
-        duration_ms: 0,
-        observe_depth: 0,
-        observer_id,
-        event,
-        context: ctx,
-      })
-    emit('A')
-    const send = h.sendFrame
-    h.sendFrame = () => false // the socket closed under the flush
-    r.flush()
-    expect(r.size).toBe(1)
-    h.sendFrame = send
-    emit('B') // merges into the requeued item
-    expect(r.size).toBe(1)
-    r.flush()
-    r.flush()
-    expect(
-      h
-        .parsed()
-        .flatMap((f) => f.items ?? [])
-        .map((i) => i.matched),
-    ).toEqual([['A', 'B']])
-  })
-
-  it('an undefined event emitted outside any handler coalesces also after the buffer was re-indexed', () => {
-    const h = host({ online: false })
-    const r = reporter(h)
-    const emit = (observer_id: string) =>
-      r.pushEmit({
-        function_id: 'cron::on-tick',
-        invocation_id: `inv-${observer_id}`,
-        status: 'success',
-        values: { input: undefined },
-        captures: ['input'],
-        started_at_ms: 1,
-        duration_ms: 0,
-        observe_depth: 0,
-        observer_id,
-        event: undefined,
-        context: undefined,
-      })
-    emit('A')
-    r.push(item(1, { function_id: 'fn::other' }))
-    r.discard('fn::other') // rebuilds the buffer and its index
-    emit('B')
-    h.state.online = true
-    r.flush()
-    expect(h.parsed()[0].items?.map((i) => i.matched)).toEqual([['A', 'B']])
-  })
-
   it("discards a function's held items as INACTIVE, keeping the others", () => {
     const h = host({ online: false })
     const r = reporter(h)
@@ -377,36 +253,21 @@ describe('Reporter', () => {
     expect(h.frames).toHaveLength(1)
   })
 
-  it('coalesces one event emitted to N observers from one context into one item, with the union of captures', () => {
-    const h = host({ online: false })
+  it('output_is_input: an item that captures both carries input once; otherwise output stays', () => {
+    const h = host()
     const r = reporter(h)
     const event = { tick: 1 }
-    const ctx = {}
-    const emit = (observer_id: string, captures: string[], context: unknown = ctx, e: unknown = event) =>
-      r.pushEmit({
-        function_id: 'cron::on-tick',
-        invocation_id: `inv-${observer_id}`,
-        status: 'success',
-        values: { input: e, caller: { worker_name: 'cron' } },
-        captures,
-        started_at_ms: 1,
-        duration_ms: 0,
-        observe_depth: 0,
-        observer_id,
-        event: e,
-        context,
-      })
-    emit('a', ['input'])
-    emit('b', ['caller'])
-    emit('a', ['input']) // the same observer again: a second event
-    emit('c', ['input'], {}) // another invocation context
-    emit('d', ['input'], ctx, { tick: 1 }) // an equal but different event value
-    h.state.online = true
+    r.push(item(1, { values: { input: event, output: event }, captures: ['input', 'output'], output_is_input: true }))
+    r.push(item(2, { values: { input: event, output: event }, captures: ['output'], output_is_input: true }))
+    r.push(item(3, { values: { input: event, output: event }, captures: ['input', 'output'] }))
     r.flush()
-    const items = h.parsed()[0].items ?? []
-    expect(items.map((i) => i.matched)).toEqual([['a', 'b'], ['a'], ['c'], ['d']])
-    expect(items[0]).toMatchObject({ input: { tick: 1 }, caller: { worker_name: 'cron' } })
-    expect(items[1]).not.toHaveProperty('caller')
+    const [flagged, outputOnly, plain] = h.parsed()[0].items ?? []
+    expect(flagged).toMatchObject({ input: event, output_is_input: true })
+    expect(flagged).not.toHaveProperty('output')
+    expect(outputOnly).toMatchObject({ output: event })
+    expect(outputOnly).not.toHaveProperty('output_is_input')
+    expect(plain).toMatchObject({ input: event, output: event })
+    expect(plain).not.toHaveProperty('output_is_input')
   })
 
   it('replaces lone surrogates with U+FFFD in strings and keys, so the engine can decode the frame', () => {

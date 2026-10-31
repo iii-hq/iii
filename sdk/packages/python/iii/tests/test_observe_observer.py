@@ -1,4 +1,4 @@
-"""``iii.observe`` and its handle (sdk.md §2, §4.5), against a fake engine."""
+"""``iii.observe`` and its handle, against a fake engine."""
 
 from __future__ import annotations
 
@@ -224,6 +224,18 @@ def test_forgets_an_observer_the_engine_disposed(engine: FakeEngine, connect: An
     assert engine.frames_of("observe", 1) == []
 
 
+def test_the_source_is_a_function_id_or_a_dict(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    client.observe("orders::create", "alerts::big-order", {"id": "short"})
+    client.observe({"function_id": "orders::create"}, "alerts::big-order", {"id": "long"})
+    short, long = engine.wait_for(
+        lambda: len(engine.frames_of("observe")) == 2 and engine.frames_of("observe"), what="both frames"
+    )
+    assert {**short, "id": "long"} == long
+    with pytest.raises(TypeError):
+        client.observe(["orders::create"], "alerts::big-order")  # type: ignore[arg-type]
+
+
 def test_refuses_a_reused_id_and_a_missing_source_or_target(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     client.observe({"function_id": "f::a"}, "t::a", {"id": "fixed"})
@@ -291,7 +303,7 @@ def test_state_listeners_run_off_the_event_loop_in_order_and_may_call_the_sync_a
     wait_until(lambda: client._functions["local::fn"].observe.local_dispatch, what="local dispatch")
     results: list[Any] = []
     handle.on_state_change(
-        lambda state, reason: results.append(client.trigger({"function_id": "local::fn", "payload": {}}))
+        lambda state, reason: results.append(client.call({"function_id": "local::fn", "payload": {}}))
     )
     _state(engine, handle.id, "suspended")
     wait_until(lambda: results == ["called"], what="a sync call from a listener")

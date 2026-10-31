@@ -17,9 +17,9 @@ pub struct ConfigurationModuleConfig {
     #[serde(default)]
     pub adapter: Option<AdapterEntry>,
 
-    /// Per-id TTL in seconds. When set to a non-zero value, an entry whose
-    /// last trigger has been unregistered is deleted after this many seconds
-    /// of inactivity. `0` (the default) disables the cleanup.
+    /// Accepted so a config written for an earlier engine still loads, and
+    /// ignored: entries persist until they are deleted. A value other than
+    /// `0` logs a warning.
     #[serde(default)]
     pub ttl_seconds: u64,
 }

@@ -38,7 +38,7 @@ const READ_CHUNK_SIZE: usize = 64 * 1024;
 /// Maximum idle time between `FsChunk` / `FsEnd` frames during a
 /// `WriteStart` session. The dispatcher's `fs_writes` registry
 /// holds the per-corr_id sender for the lifetime of the session,
-/// so a blocking `recv()` would wait forever if the host trigger
+/// so a blocking `recv()` would wait forever if the host function
 /// handler stalls (caller-side data channel hard-terminated, the
 /// worker's `ChannelReader::next_binary()` never resolves, etc.).
 /// On expiry we treat the session as aborted: unlink the temp

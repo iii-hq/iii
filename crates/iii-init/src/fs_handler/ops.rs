@@ -532,7 +532,7 @@ pub fn grep(
                     // Floor max_line_usize to the nearest boundary so a
                     // multi-byte UTF-8 codepoint straddling the cut doesn't
                     // crash the per-op thread (terminal frame would never
-                    // ship and the host trigger would hang to outer timeout).
+                    // ship and the host call would hang to outer timeout).
                     let cut = (0..=max_line_usize)
                         .rev()
                         .find(|&i| line.is_char_boundary(i))

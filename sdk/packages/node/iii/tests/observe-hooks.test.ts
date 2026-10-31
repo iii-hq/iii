@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Observer } from '../src/observe-types'
-import type { IIIClient } from '../src/types'
+import type { FunctionRef, IIIClient } from '../src/types'
 
-/** Owner hooks against a fake engine (sdk.md §1, §4.1, §4.2, CONTRACT D11). */
+/** Observer hooks against a fake engine (v2 §4.2, §4.3, §7, §11; decisions 18, 21, 41, 44). */
 vi.mock('ws', async () => (await import('./observe-fake-engine')).wsModule())
 vi.resetModules()
 const fake = await import('./observe-fake-engine')
 const { registerWorker } = await import('../src/index')
-const { ObserveRejection, InvocationError } = await import('../src/errors')
-const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle } = fake
+const { ObserveRejection } = await import('../src/errors')
+const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, invokeFunction } = fake
 
 let sdk: IIIClient | undefined
 afterEach(async () => {
@@ -41,20 +41,19 @@ function deferred<T = void>() {
 
 const acks = (socket: ReturnType<typeof fake.lastSocket>) => socket.framesOf('observerack')
 
+const warnings = () => vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
 describe('onObserverAdded / onObserverRemoved', () => {
   it('runs onObserverAdded once per add, and the observer is in the compiled set before the ack', async () => {
     const { sdk, socket } = worker()
     let observedAtAck: boolean | undefined
     const added: Observer[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: (obs) => {
-          added.push(obs)
-          expect(acks(socket)).toHaveLength(0) // before the ack
-        },
-      },
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((obs) => {
+        added.push(obs)
+        expect(acks(socket)).toHaveLength(0) // before the ack
+      })
     socket.open()
     const send = socket.send.bind(socket)
     vi.spyOn(socket, 'send').mockImplementation((data, cb) => {
@@ -94,19 +93,21 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(ref.observers()).toEqual([added[0]])
     expect(added[0].matches({ input: { n: 2 } })).toBe(true)
     expect(added[0].matches({ input: { n: 1 } })).toBe(false)
+    // `on` is matched against the call's status (an absent one reads as success)
+    expect(added[0].matches({ status: 'error', input: { n: 2 } })).toBe(false)
+    await expect(added[0].accepted()).resolves.toBeUndefined()
   })
 
   it('rejects with the ObserveRejection code, or OBSERVE_REJECTED for a plain error', async () => {
     const { sdk, socket } = worker()
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: (obs) => {
-          if (obs.id === 'bad-expr') throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'bad field')
-          throw new Error('nope')
-        },
-      },
-    })
+    const seen: Observer[] = []
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((obs) => {
+        seen.push(obs)
+        if (obs.id === 'bad-expr') throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'bad field')
+        throw new Error('nope')
+      })
     socket.open()
     socket.deliver(
       functionRegistered('cron::on-tick', [observerInfo('bad-expr', 't::a'), observerInfo('plain', 't::b')], {
@@ -119,6 +120,8 @@ describe('onObserverAdded / onObserverRemoved', () => {
       ['plain', { code: 'OBSERVE_REJECTED', message: 'nope' }],
     ])
     expect(ref.isObserved()).toBe(false)
+    await expect(seen[0].accepted()).rejects.toMatchObject({ code: 'INVALID_CRON_EXPRESSION' })
+    await expect(seen[1].accepted()).rejects.toMatchObject({ code: 'OBSERVE_REJECTED' })
   })
 
   it('rejects with OWNER_TIMEOUT when onObserverAdded runs too long, and undoes a late success', async () => {
@@ -126,9 +129,10 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker(40)
     const slow = deferred()
     const removed = vi.fn()
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: { delivery: 'owner', onObserverAdded: () => slow.promise, onObserverRemoved: removed },
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(() => slow.promise)
+      .onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('o-1', 't::a')], { revision: 1 }))
     await settle()
@@ -143,23 +147,40 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(removed).toHaveBeenCalledTimes(1)
   })
 
+  it('rejects with OWNER_TIMEOUT at 30 s by default, and not before', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    const slow = deferred()
+    sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded(() => slow.promise)
+    socket.open()
+    socket.deliver(functionRegistered('cron::on-tick', [observerInfo('o-1', 't::a')], { revision: 1 }))
+    await settle()
+    await fake.elapse(29_999)
+    expect(acks(socket)).toEqual([])
+    await fake.elapse(1)
+    expect(acks(socket)).toEqual([
+      expect.objectContaining({
+        id: 'o-1',
+        error: { code: 'OWNER_TIMEOUT', message: 'observer hook of cron::on-tick still running after 30000ms' },
+      }),
+    ])
+    slow.resolve()
+  })
+
   it('runs the hooks of one function one at a time, in revision order', async () => {
     const { sdk, socket } = worker()
     const first = deferred()
     const order: string[] = []
-    sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: async (obs) => {
-          order.push(`start ${obs.id}`)
-          if (obs.id === 'o-1') await first.promise
-          order.push(`end ${obs.id}`)
-        },
-        onObserverRemoved: (obs) => {
-          order.push(`removed ${obs.id}`)
-        },
-      },
-    })
+    sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(async (obs) => {
+        order.push(`start ${obs.id}`)
+        if (obs.id === 'o-1') await first.promise
+        order.push(`end ${obs.id}`)
+      })
+      .onObserverRemoved((obs) => {
+        order.push(`removed ${obs.id}`)
+      })
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [], { revision: 0 }))
     socket.deliver(observerAdded('cron::on-tick', 1, observerInfo('o-1', 't::a')))
@@ -181,15 +202,12 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const blocked = deferred()
     const started: string[] = []
     for (const id of ['a::on-x', 'b::on-y']) {
-      sdk.registerFunction(id, async () => null, {
-        observe: {
-          delivery: 'owner',
-          onObserverAdded: async () => {
-            started.push(id)
-            await blocked.promise
-          },
-        },
-      })
+      sdk
+        .registerFunction(id, async () => null)
+        .onObserverAdded(async () => {
+          started.push(id)
+          await blocked.promise
+        })
     }
     socket.open()
     socket.deliver(functionRegistered('a::on-x', [observerInfo('o-a', 't::a')]))
@@ -203,9 +221,10 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker()
     const added = vi.fn()
     const removed = vi.fn()
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: { delivery: 'owner', onObserverAdded: added, onObserverRemoved: removed },
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(added)
+      .onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('o-1', 't::a')], { revision: 5 }))
     socket.deliver(observerAdded('cron::on-tick', 5, observerInfo('o-2', 't::b')))
@@ -227,17 +246,14 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker()
     const added: string[] = []
     const removed: string[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: (obs) => {
-          added.push(obs.id)
-        },
-        onObserverRemoved: (obs) => {
-          removed.push(obs.id)
-        },
-      },
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((obs) => {
+        added.push(obs.id)
+      })
+      .onObserverRemoved((obs) => {
+        removed.push(obs.id)
+      })
     socket.open()
     socket.deliver(
       functionRegistered('cron::on-tick', [observerInfo('a', 't::a'), observerInfo('b', 't::b')], { revision: 9 }),
@@ -273,17 +289,14 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('treats changed args as a different observer (removed, then added)', async () => {
     const { sdk, socket } = worker()
     const calls: string[] = []
-    sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: (obs) => {
-          calls.push(`added ${JSON.stringify(obs.args)}`)
-        },
-        onObserverRemoved: (obs) => {
-          calls.push(`removed ${JSON.stringify(obs.args)}`)
-        },
-      },
-    })
+    sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((obs) => {
+        calls.push(`added ${JSON.stringify(obs.args)}`)
+      })
+      .onObserverRemoved((obs) => {
+        calls.push(`removed ${JSON.stringify(obs.args)}`)
+      })
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a', { args: { e: 1 } })]))
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a', { args: { e: 2 } })]))
@@ -295,12 +308,12 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker()
     const removed = vi.fn()
     const handler = vi.fn(async () => 'ok')
-    const ref = sdk.registerFunction('orders::archive', handler, { observe: { onObserverRemoved: removed } })
+    const ref = sdk.registerFunction('orders::archive', handler).onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('orders::archive', [observerInfo('a', 't::a')]))
     await settle()
     expect(ref.isObserved()).toBe(true)
-    await sdk.trigger({ function_id: 'orders::archive', payload: {} })
+    await sdk.call({ function_id: 'orders::archive', payload: {} })
     expect(handler).toHaveBeenCalledTimes(1) // local
 
     socket.deliver({
@@ -314,7 +327,7 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(ref.isObserved()).toBe(false)
     expect(removed).toHaveBeenCalledTimes(1)
     socket.clear()
-    void sdk.trigger({ function_id: 'orders::archive', payload: {}, timeoutMs: 50 }).catch(() => undefined)
+    void sdk.call({ function_id: 'orders::archive', payload: {}, timeoutMs: 50 }).catch(() => undefined)
     expect(socket.framesOf('invokefunction')).toHaveLength(1) // remote now
     expect(handler).toHaveBeenCalledTimes(1)
   })
@@ -322,9 +335,7 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('unregister removes the observers through onObserverRemoved', async () => {
     const { sdk, socket } = worker()
     const removed = vi.fn()
-    const ref = sdk.registerFunction('orders::archive', async () => null, {
-      observe: { onObserverRemoved: removed },
-    })
+    const ref = sdk.registerFunction('orders::archive', async () => null).onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('orders::archive', [observerInfo('a', 't::a'), observerInfo('b', 't::b')]))
     await settle()
@@ -337,13 +348,11 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('logs an onObserverRemoved error and goes on', async () => {
     const { sdk, socket } = worker()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
-    const ref = sdk.registerFunction('orders::archive', async () => null, {
-      observe: {
-        onObserverRemoved: () => {
-          throw new Error('cleanup failed')
-        },
-      },
-    })
+    const ref = sdk
+      .registerFunction('orders::archive', async () => null)
+      .onObserverRemoved(() => {
+        throw new Error('cleanup failed')
+      })
     socket.open()
     socket.deliver(functionRegistered('orders::archive', [observerInfo('a', 't::a')], { revision: 1 }))
     socket.deliver(observerRemoved('orders::archive', 2, 'a'))
@@ -356,7 +365,7 @@ describe('onObserverAdded / onObserverRemoved', () => {
   it('acks INVALID_FILTER for filters that are not an object (never match-all)', async () => {
     const { sdk, socket } = worker()
     const added = vi.fn()
-    const ref = sdk.registerFunction('orders::archive', async () => null, { observe: { onObserverAdded: added } })
+    const ref = sdk.registerFunction('orders::archive', async () => null).onObserverAdded(added)
     socket.open()
     socket.deliver(
       functionRegistered('orders::archive', [
@@ -375,17 +384,16 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(ref.observers().map((o) => o.id)).toEqual(['no-filters'])
   })
 
-  it('a kept observer whose new filters do not compile is acked INVALID_FILTER at the new revision, which reject() then uses', async () => {
+  it('a held observer announced again with filters that do not compile is removed, then refused INVALID_FILTER', async () => {
     const { sdk, socket } = worker()
     let obs: Observer | undefined
-    sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: (o) => {
-          obs = o
-        },
-      },
-    })
+    const removed = vi.fn()
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded((o) => {
+        obs = o
+      })
+      .onObserverRemoved(removed)
     socket.open()
     socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a')], { revision: 3 }))
     socket.deliver(
@@ -394,30 +402,136 @@ describe('onObserverAdded / onObserverRemoved', () => {
       }),
     )
     await settle()
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(ref.observers()).toEqual([])
+    // the observer it held is gone: its late rejection sends nothing
     obs?.reject('GONE', 'no longer wanted')
     expect(acks(socket).map((a) => [a.revision, (a.error as { code?: string } | undefined)?.code])).toEqual([
       [3, undefined],
       [5, 'INVALID_FILTER'],
-      [5, 'GONE'],
     ])
+  })
+
+  it('an observer announced again with the same args runs no hook and is served with the view announced (decision 44)', async () => {
+    const { sdk, socket } = worker()
+    const events: string[] = []
+    const ref = sdk
+      .registerFunction('ra::f', (input: unknown) => input)
+      .onObserverAdded((obs) => {
+        events.push(`add ${obs.id} ${JSON.stringify(obs.args)}`)
+      })
+      .onObserverRemoved((obs) => {
+        events.push(`remove ${obs.id} ${JSON.stringify(obs.args)}`)
+      })
+    socket.open()
+    socket.deliver(functionRegistered('ra::f', [observerInfo('a', 't::a', { args: { kind: 'a' } })], { revision: 1 }))
+    await settle()
+    const held = ref.observers()[0]
+    const above = (n: number) =>
+      observerInfo('a', 't::target', {
+        args: { kind: 'a' },
+        filters: { $and: [{ 'input.n': { $gt: n } }] },
+        capture: ['input', 'caller'],
+      })
+    let calls = 0
+    const observed = async (n: number) => {
+      const id = `i-${++calls}`
+      socket.deliver(invokeFunction('ra::f', { n }, { invocation_id: id }))
+      await settle()
+      return fake.resultOf(socket, id)?.observed
+    }
+
+    // listed by functionregistered
+    socket.deliver(functionRegistered('ra::f', [above(1)], { revision: 2 }))
+    await settle()
+    expect(await observed(1)).toBeUndefined()
+    expect(await observed(2)).toEqual(['a'])
+    // announced by observeradded
+    socket.deliver(observerAdded('ra::f', 3, above(5)))
+    await settle()
+    expect(await observed(2)).toBeUndefined()
+    expect(await observed(6)).toEqual(['a'])
+    expect(events).toEqual(['add a {"kind":"a"}'])
+    expect(acks(socket).map((a) => [a.id, a.revision, a.error])).toEqual([
+      ['a', 1, undefined],
+      ['a', 2, undefined],
+      ['a', 3, undefined],
+    ])
+    expect(ref.observers()).toEqual([held])
+    expect(held).toMatchObject({ target: 't::target', capture: ['input', 'caller'], filters: above(5).filters })
+
+    // its late rejection carries the revision announced last; listed again, it is re-acked with it
+    held.reject('GONE', 'config reloaded')
+    socket.deliver(
+      functionRegistered('ra::f', [observerInfo('a', 't::a', { args: { kind: 'other' } })], { revision: 4 }),
+    )
+    await settle()
+    expect(
+      acks(socket)
+        .slice(3)
+        .map((a) => [a.revision, (a.error as { code?: string } | undefined)?.code]),
+    ).toEqual([
+      [3, 'GONE'],
+      [4, 'GONE'],
+    ])
+    expect(ref.isObserved()).toBe(false)
+    expect(events).toEqual(['add a {"kind":"a"}', 'remove a {"kind":"a"}'])
+
+    // a fresh observeradded brings it back as a new observer; other args: removed, then added
+    socket.deliver(observerAdded('ra::f', 5, observerInfo('a', 't::a', { args: { kind: 'a' } })))
+    await settle()
+    expect(ref.isObserved()).toBe(true)
+    socket.deliver(observerAdded('ra::f', 6, observerInfo('a', 't::a', { args: { kind: 'b' } })))
+    await settle()
+    expect(events).toEqual([
+      'add a {"kind":"a"}',
+      'remove a {"kind":"a"}',
+      'add a {"kind":"a"}',
+      'remove a {"kind":"a"}',
+      'add a {"kind":"b"}',
+    ])
+    expect(ref.observers().map((o) => o.args)).toEqual([{ kind: 'b' }])
+    expect(
+      acks(socket)
+        .slice(5)
+        .map((a) => [a.revision, a.error]),
+    ).toEqual([
+      [5, undefined],
+      [6, undefined],
+    ])
+  })
+
+  it('on a function matched by keys, a held observer served a changed view is filed under its new keys', async () => {
+    const { sdk, socket } = worker()
+    const added = vi.fn()
+    const ref = sdk
+      .registerFunction('rk::f', (input: unknown) => input)
+      .onObserverAdded(added)
+      .onObserverMatch({ observer: (obs) => obs.target, call: (call) => (call.input as { to: string }).to })
+    socket.open()
+    socket.deliver(functionRegistered('rk::f', [observerInfo('a', 't::one')], { revision: 1 }))
+    await settle()
+    expect(ref.isObserved({ input: { to: 't::one' } })).toBe(true)
+    socket.deliver(observerAdded('rk::f', 2, observerInfo('a', 't::two')))
+    await settle()
+    expect(added).toHaveBeenCalledTimes(1)
+    expect(ref.isObserved({ input: { to: 't::one' } })).toBe(false)
+    expect(ref.isObserved({ input: { to: 't::two' } })).toBe(true)
   })
 
   it('a rejection made while onObserverAdded is still running wins over the add', async () => {
     const { sdk, socket } = worker()
     const gate = deferred()
     const pending: Observer[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: async (obs) => {
-          if (obs.id === 'sync') obs.reject('BAD_CONFIG', 'rejected inside the hook')
-          if (obs.id === 'async') {
-            pending.push(obs)
-            await gate.promise
-          }
-        },
-      },
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(async (obs) => {
+        if (obs.id === 'sync') obs.reject('BAD_CONFIG', 'rejected inside the hook')
+        if (obs.id === 'async') {
+          pending.push(obs)
+          await gate.promise
+        }
+      })
     socket.open()
     socket.deliver(
       functionRegistered('cron::on-tick', [observerInfo('sync', 't::a'), observerInfo('async', 't::b')], {
@@ -447,18 +561,15 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const { sdk, socket } = worker()
     const gate = deferred()
     const calls: string[] = []
-    const ref = sdk.registerFunction('cron::on-tick', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: async (obs) => {
-          calls.push(`added ${obs.id}`)
-          if (obs.id === 'slow') await gate.promise
-        },
-        onObserverRemoved: (obs) => {
-          calls.push(`removed ${obs.id}`)
-        },
-      },
-    })
+    const ref = sdk
+      .registerFunction('cron::on-tick', async () => null)
+      .onObserverAdded(async (obs) => {
+        calls.push(`added ${obs.id}`)
+        if (obs.id === 'slow') await gate.promise
+      })
+      .onObserverRemoved((obs) => {
+        calls.push(`removed ${obs.id}`)
+      })
     socket.open()
     socket.deliver(
       functionRegistered('cron::on-tick', [observerInfo('done', 't::a'), observerInfo('slow', 't::b')], {
@@ -483,52 +594,649 @@ describe('onObserverAdded / onObserverRemoved', () => {
     expect(ref.isObserved()).toBe(false)
     expect(ref.observers()).toEqual([])
   })
+})
 
-  it('carries the legacy trigger config of a shim observer', async () => {
+describe('both levels: the worker hooks and the function hooks', () => {
+  function recorder() {
+    const calls: string[] = []
+    const hook =
+      (name: string, fail?: (obs: Observer) => boolean) =>
+      (obs: Observer): void => {
+        calls.push(`${name} ${obs.id}`)
+        if (fail?.(obs)) throw new ObserveRejection('NO', `${name} refused ${obs.id}`)
+      }
+    return { calls, hook }
+  }
+
+  it('adds with the worker hook then the function hook, removes in reverse, for every hosted function', async () => {
     const { sdk, socket } = worker()
-    const added: Observer[] = []
-    sdk.registerFunction('http::on-request', async () => null, {
-      observe: {
-        delivery: 'owner',
-        legacy_trigger_type: 'http',
-        onObserverAdded: (obs) => {
-          added.push(obs)
-        },
-      },
-    })
+    const { calls, hook } = recorder()
+    sdk.onObserverAdded(hook('worker+')).onObserverRemoved(hook('worker-'))
+    sdk
+      .registerFunction('a::source', (e: unknown) => e)
+      .onObserverAdded(hook('a+'))
+      .onObserverRemoved(hook('a-'))
+    sdk.registerFunction('b::plain', async () => null)
     socket.open()
-    socket.deliver(functionRegistered('http::on-request', [], { revision: 3 }))
-    socket.deliver({
-      type: 'observeradded',
-      function_id: 'http::on-request',
-      namespace: 'default',
-      revision: 4,
-      observer: {
-        ...observerInfo('legacy-1', 'users::get'),
-        legacy: { trigger_type: 'http', config: { api_path: '/users/:id', http_method: 'GET' } },
-      },
-    })
+    socket.deliver(functionRegistered('a::source', [observerInfo('o-a', 't::a')], { revision: 1 }))
+    socket.deliver(functionRegistered('b::plain', [observerInfo('o-b', 't::b')], { revision: 1 }))
     await settle()
-    expect(added[0].legacy).toEqual({ trigger_type: 'http', config: { api_path: '/users/:id', http_method: 'GET' } })
+    socket.deliver(observerRemoved('a::source', 2, 'o-a'))
+    socket.deliver(observerRemoved('b::plain', 2, 'o-b'))
+    await settle()
+    // the hooks of different functions run concurrently: the order holds per observer
+    expect(calls.filter((c) => c.endsWith('o-a'))).toEqual(['worker+ o-a', 'a+ o-a', 'a- o-a', 'worker- o-a'])
+    expect(calls.filter((c) => c.endsWith('o-b'))).toEqual(['worker+ o-b', 'worker- o-b'])
+  })
+
+  it('a function hook that rejects unwinds the worker level; a worker hook that rejects runs nothing else', async () => {
+    const { sdk, socket } = worker()
+    const { calls, hook } = recorder()
+    sdk.onObserverAdded(hook('worker+', (obs) => obs.id === 'worker-refuses')).onObserverRemoved(hook('worker-'))
+    sdk
+      .registerFunction('a::source', (e: unknown) => e)
+      .onObserverAdded(hook('fn+', (obs) => obs.id === 'fn-refuses'))
+      .onObserverRemoved(hook('fn-'))
+    socket.open()
+    socket.deliver(
+      functionRegistered('a::source', [observerInfo('fn-refuses', 't::a'), observerInfo('worker-refuses', 't::b')]),
+    )
+    await settle()
+    expect(calls).toEqual(['worker+ fn-refuses', 'fn+ fn-refuses', 'worker- fn-refuses', 'worker+ worker-refuses'])
+    expect(acks(socket).map((a) => [a.id, (a.error as { message?: string }).message])).toEqual([
+      ['fn-refuses', 'fn+ refused fn-refuses'],
+      ['worker-refuses', 'worker+ refused worker-refuses'],
+    ])
+    // neither was accepted: removing them runs nothing
+    socket.deliver(observerRemoved('a::source', 1, 'fn-refuses'))
+    await settle()
+    expect(calls).toHaveLength(4)
+  })
+
+  it('an observer that is not accepted runs no onObserverRemoved at a level that had no onObserverAdded', async () => {
+    const { sdk, socket } = worker()
+    const workerRemoved = vi.fn()
+    const gate = deferred()
+    sdk.onObserverRemoved(workerRemoved)
+    sdk
+      .registerFunction('a::source', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        if (obs.id === 'refused') throw new ObserveRejection('NO_SOURCE', 'refused by the function')
+      })
+    sdk
+      .registerFunction('b::by-keys', (e: unknown) => e)
+      .onObserverMatch({
+        observer: (obs) => {
+          if (typeof obs.args.key !== 'string') throw new Error('no key')
+          return obs.args.key
+        },
+        call: () => 'k',
+      })
+    sdk.registerFunction('c::slow', (e: unknown) => e).onObserverAdded(() => gate.promise)
+    socket.open()
+    socket.deliver(functionRegistered('a::source', [observerInfo('refused', 't::a'), observerInfo('kept', 't::b')]))
+    socket.deliver(functionRegistered('b::by-keys', [observerInfo('keyless', 't::c', { args: {} })]))
+    socket.deliver(functionRegistered('c::slow', [observerInfo('released', 't::d')]))
+    await settle()
+    socket.deliver({
+      type: 'registrationrejected',
+      code: 'FUNCTION_NAMESPACE_CONFLICT',
+      namespace: 'default',
+      function_id: 'c::slow',
+      owner_worker_id: 'other',
+    })
+    gate.resolve()
+    await settle()
+    expect(
+      Object.fromEntries(acks(socket).map((a) => [a.id, (a.error as { code?: string } | undefined)?.code])),
+    ).toEqual({
+      refused: 'NO_SOURCE',
+      kept: undefined,
+      keyless: 'OBSERVE_REJECTED',
+    })
+    expect(workerRemoved).not.toHaveBeenCalled()
+    // an accepted observer is torn down at the worker level, which had no onObserverAdded
+    socket.deliver(observerRemoved('a::source', 1, 'kept'))
+    await settle()
+    expect(workerRemoved.mock.calls.map(([obs]) => obs.id)).toEqual(['kept'])
+  })
+
+  it('runs onObserverRemoved once per accepted observer: late rejection, then its removal', async () => {
+    const { sdk, socket } = worker()
+    const removed = vi.fn()
+    const workerRemoved = vi.fn()
+    sdk.onObserverRemoved(workerRemoved)
+    const ref = sdk.registerFunction('a::source', (e: unknown) => e).onObserverRemoved(removed)
+    socket.open()
+    socket.deliver(
+      functionRegistered('a::source', [observerInfo('a', 't::a'), observerInfo('b', 't::b')], { revision: 1 }),
+    )
+    await settle()
+    const [a] = ref.observers()
+    a.reject('RELOADED', 'config changed')
+    a.reject('RELOADED', 'config changed')
+    await settle()
+    expect(removed.mock.calls.map(([obs]) => obs.id)).toEqual(['a'])
+    socket.deliver(observerRemoved('a::source', 2, 'a'))
+    socket.deliver(observerRemoved('a::source', 3, 'b'))
+    await settle()
+    expect(removed.mock.calls.map(([obs]) => obs.id)).toEqual(['a', 'b'])
+    expect(workerRemoved.mock.calls.map(([obs]) => obs.id)).toEqual(['a', 'b'])
+    expect(acks(socket).filter((ack) => ack.error)).toHaveLength(1)
+  })
+
+  it('a late rejection while the socket is closed runs the removed hooks once, at once; replays send the rejection again and run none', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    const log: string[] = []
+    sdk
+      .onObserverAdded((obs) => {
+        log.push(`worker added ${obs.id}`)
+      })
+      .onObserverRemoved((obs) => {
+        log.push(`worker removed ${obs.id}`)
+      })
+    const ref = sdk
+      .registerFunction('offline::fn', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        log.push(`added ${obs.id}`)
+      })
+      .onObserverRemoved((obs) => {
+        log.push(`removed ${obs.id}`)
+      })
+    socket.open()
+    socket.deliver(functionRegistered('offline::fn', [observerInfo('o', 't::o')], { revision: 1 }))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(log).toEqual(['worker added o', 'added o'])
+    const [obs] = ref.observers()
+
+    socket.drop()
+    obs.reject('UNKNOWN_DB', 'removed while offline')
+    await vi.advanceTimersByTimeAsync(1)
+    // still closed: the function's removed hook, then the worker's, ran at the rejection
+    expect(fake.lastSocket()).toBe(socket)
+    expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o'])
+    expect(ref.isObserved()).toBe(false)
+    expect(acks(socket).filter((ack) => ack.error)).toEqual([])
+
+    const rejected = {
+      type: 'observerack',
+      function_id: 'offline::fn',
+      namespace: 'default',
+      id: 'o',
+      error: { code: 'UNKNOWN_DB', message: 'removed while offline' },
+    }
+    // each replay that lists it gets the rejection again, and no hook runs
+    const replay = async (previous: ReturnType<typeof fake.lastSocket>, revision: number) => {
+      await vi.advanceTimersByTimeAsync(50)
+      const next = fake.lastSocket()
+      expect(next).not.toBe(previous)
+      next.open()
+      next.deliver(functionRegistered('offline::fn', [observerInfo('o', 't::o')], { revision }))
+      await vi.advanceTimersByTimeAsync(1)
+      expect(acks(next)).toEqual([{ ...rejected, revision }])
+      expect(ref.isObserved()).toBe(false)
+      expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o'])
+      return next
+    }
+    const second = await replay(socket, 3)
+    second.drop()
+    const third = await replay(second, 2)
+
+    // the engine's removal runs nothing again; a fresh add is a new observer
+    third.deliver(observerRemoved('offline::fn', 4, 'o'))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o'])
+    third.deliver(observerAdded('offline::fn', 5, observerInfo('o', 't::o')))
+    await vi.advanceTimersByTimeAsync(1)
+    expect(log).toEqual(['worker added o', 'added o', 'removed o', 'worker removed o', 'worker added o', 'added o'])
+    expect(ref.isObserved()).toBe(true)
+  })
+
+  it('a timed-out function hook unwinds the worker level, and its late success is undone by its own level', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker(40)
+    const slow = deferred()
+    const { calls, hook } = recorder()
+    sdk.onObserverAdded(hook('worker+')).onObserverRemoved(hook('worker-'))
+    sdk
+      .registerFunction('a::source', (e: unknown) => e)
+      .onObserverAdded(async (obs) => {
+        calls.push(`fn+ ${obs.id}`)
+        await slow.promise
+      })
+      .onObserverRemoved(hook('fn-'))
+    socket.open()
+    socket.deliver(functionRegistered('a::source', [observerInfo('o', 't::a')]))
+    await settle()
+    await fake.elapse(40)
+    expect(acks(socket)).toMatchObject([{ id: 'o', error: { code: 'OWNER_TIMEOUT' } }])
+    expect(calls).toEqual(['worker+ o', 'fn+ o', 'worker- o'])
+    slow.resolve()
+    await settle()
+    expect(calls).toEqual(['worker+ o', 'fn+ o', 'worker- o', 'fn- o'])
   })
 })
 
-describe('the observe descriptor', () => {
-  it('throws INVALID_OBSERVE_DESCRIPTOR for args_format on an auto function', () => {
-    const { sdk } = worker()
-    const register = (observe: object) => () => sdk.registerFunction('x::y', async () => null, { observe } as never)
-    expect(register({ args_format: { type: 'object' } })).toThrow(InvocationError)
-    expect(register({ delivery: 'auto', args_format: { type: 'object' } })).toThrow(/INVALID_OBSERVE_DESCRIPTOR/)
-    expect(register({ delivery: 'sometimes' })).toThrow(/INVALID_OBSERVE_DESCRIPTOR/)
+describe('hooks by function id', () => {
+  it('set before registerFunction, chained on it, or later in the same synchronous block: each runs for every observer', async () => {
+    const { sdk, socket } = worker()
+    const seen: string[] = []
+    sdk.onObserverAdded('a::byid', (obs) => {
+      seen.push(`a ${obs.id}`)
+    })
+    sdk.registerFunction('a::byid', (e: unknown) => e)
+    sdk
+      .registerFunction('b::chained', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        seen.push(`b ${obs.id}`)
+      })
+    const c = sdk.registerFunction('c::later', (e: unknown) => e)
+    socket.open()
+    socket.deliver(functionRegistered('a::byid', [observerInfo('1', 't::a')]))
+    socket.deliver(functionRegistered('b::chained', [observerInfo('2', 't::b')]))
+    socket.deliver(functionRegistered('c::later', [observerInfo('3', 't::c')]))
+    c.onObserverAdded((obs) => {
+      seen.push(`c ${obs.id}`)
+    })
+    await settle()
+    expect(seen.sort()).toEqual(['a 1', 'b 2', 'c 3'])
   })
 
-  it('against an engine without observe.v1: registers a plain function and logs once that its hooks are inactive', () => {
+  it('stay in place across unregister() and a later registration of the id; null removes one', async () => {
     const { sdk, socket } = worker()
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    sdk.registerFunction('cron::on-tick', async () => null, { observe: { delivery: 'owner' } })
+    const added = vi.fn()
+    const removed = vi.fn()
+    const first = sdk
+      .registerFunction('a::again', (e: unknown) => e)
+      .onObserverAdded(added)
+      .onObserverRemoved(removed)
+    socket.open()
+    socket.deliver(functionRegistered('a::again', [observerInfo('1', 't::a')]))
+    await settle()
+    first.unregister()
+    await settle()
+    expect(removed).toHaveBeenCalledTimes(1)
+    const second = sdk.registerFunction('a::again', (e: unknown) => e)
+    socket.deliver(functionRegistered('a::again', [observerInfo('2', 't::a')]))
+    await settle()
+    expect(added.mock.calls.map(([obs]) => obs.id)).toEqual(['1', '2'])
+    second.onObserverAdded(null).onObserverRemoved(null)
+    socket.deliver(observerAdded('a::again', 1, observerInfo('3', 't::a')))
+    socket.deliver(observerRemoved('a::again', 2, '2'))
+    await settle()
+    expect(added).toHaveBeenCalledTimes(2)
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(second.observers().map((o) => o.id)).toEqual(['3'])
+  })
+
+  it('null removes a worker-wide hook: it runs for no observer added or removed after', async () => {
+    const { sdk, socket } = worker()
+    const added = vi.fn()
+    const removed = vi.fn()
+    sdk.onObserverAdded(added).onObserverRemoved(removed)
+    sdk.registerFunction('a::source', (e: unknown) => e)
+    socket.open()
+    socket.deliver(functionRegistered('a::source', [observerInfo('1', 't::a'), observerInfo('2', 't::a')]))
+    await settle()
+    expect(added.mock.calls.map(([obs]) => obs.id)).toEqual(['1', '2'])
+    socket.deliver(observerRemoved('a::source', 1, '1'))
+    await settle()
+    expect(removed.mock.calls.map(([obs]) => obs.id)).toEqual(['1'])
+
+    sdk.onObserverAdded(null).onObserverRemoved(null)
+    socket.deliver(observerAdded('a::source', 2, observerInfo('3', 't::a')))
+    socket.deliver(observerRemoved('a::source', 3, '2'))
+    await settle()
+    expect(added).toHaveBeenCalledTimes(2)
+    expect(removed).toHaveBeenCalledTimes(1)
+    expect(acks(socket).map((a) => [a.id, a.error])).toEqual([
+      ['1', undefined],
+      ['2', undefined],
+      ['3', undefined],
+    ])
+  })
+
+  it('refuses a hook that is neither a function nor null', () => {
+    const { sdk } = worker()
+    expect(() => sdk.onObserverAdded('a::b', 'nope' as never)).toThrow(TypeError)
+    expect(() => (sdk.onObserverAdded as unknown as (id: string) => unknown)('a::b')).toThrow(TypeError)
+    expect(() => sdk.onObserverRemoved({} as never)).toThrow(TypeError)
+    expect(() => sdk.onObserverDeliver('', () => null)).toThrow(TypeError)
+  })
+
+  it('warns once, when the connection is registered, for each hook id the worker has not registered', () => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    sdk.onObserverAdded('db::on-row-chnaged', () => undefined)
+    sdk.onObserverDeliver('cron::on-tick', (call) => call.output)
+    sdk.registerFunction('cron::on-tick', (e: unknown) => e)
+    sdk.onObserverRemoved('gone::fn', () => undefined).onObserverRemoved('gone::fn', null)
+    socket.open()
+    const about = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('has not registered'))
+    expect(about).toHaveLength(1)
+    expect(about[0]).toContain('db::on-row-chnaged')
+    socket.drop()
+  })
+})
+
+describe('catch-up: a hook set while observers are active', () => {
+  it('runs a late function hook for each active observer, warns once with the count, late-rejects on a throw', async () => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    const removed = vi.fn()
+    const ref = sdk.registerFunction('a::source', (e: unknown) => e)
+    socket.open()
+    socket.deliver(
+      functionRegistered('a::source', [observerInfo('ok', 't::a'), observerInfo('bad', 't::b')], { revision: 3 }),
+    )
+    await settle()
+    expect(ref.observers()).toHaveLength(2)
+    const added = vi.fn((obs: Observer) => {
+      if (obs.id === 'bad') throw new ObserveRejection('BAD_ARGS', 'no table')
+    })
+    ref.onObserverAdded(added).onObserverRemoved(removed)
+    await settle()
+    expect(added.mock.calls.map(([obs]) => obs.id)).toEqual(['ok', 'bad'])
+    const caughtUp = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('were active without it'))
+    expect(caughtUp).toHaveLength(1)
+    expect(caughtUp[0]).toContain('a::source while 2 observer(s)')
+    expect(acks(socket).filter((a) => a.error)).toEqual([
+      expect.objectContaining({ id: 'bad', revision: 3, error: { code: 'BAD_ARGS', message: 'no table' } }),
+    ])
+    expect(ref.observers().map((o) => o.id)).toEqual(['ok'])
+    // the function level of `bad` never resolved: nothing to tear down there
+    expect(removed).not.toHaveBeenCalled()
+    // setting it again runs nothing new: every active observer has run one
+    ref.onObserverAdded(added)
+    await settle()
+    expect(added).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs a late worker hook for the active observers of every hosted function', async () => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    sdk.registerFunction('a::one', (e: unknown) => e)
+    sdk.registerFunction('b::two', (e: unknown) => e)
+    socket.open()
+    socket.deliver(functionRegistered('a::one', [observerInfo('1', 't::a')]))
+    socket.deliver(functionRegistered('b::two', [observerInfo('2', 't::b'), observerInfo('3', 't::b')]))
+    await settle()
+    const added = vi.fn()
+    sdk.onObserverAdded(added)
+    await settle()
+    expect(added.mock.calls.map(([obs]) => obs.id).sort()).toEqual(['1', '2', '3'])
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('were active without it'))).toHaveLength(2)
+  })
+})
+
+describe('registrations that need observe.v2 (decisions 18, 41)', () => {
+  const v2Functions = (sdk: IIIClient) => {
+    sdk.registerFunction('a::plain', async () => null)
+    sdk.registerFunction('b::args', (e: unknown) => e, { args_format: { type: 'object' } })
+    sdk.registerFunction('c::private', (e: unknown) => e, { private: true })
+    sdk.registerFunction('d::secret', async () => null, { observable: false })
+    sdk.registerFunction('e::routed', async () => null).onObserverDeliver((call) => call.output)
+    sdk.onObserverMatch('e::matched', () => true)
+    sdk.registerFunction('e::matched', async () => null)
+  }
+
+  it('wait for WorkerRegistered, then go out when the engine advertises observe.v2', () => {
+    const { sdk, socket } = worker()
+    v2Functions(sdk)
+    socket.open(null)
+    expect(socket.framesOf('registerfunction').map((f) => f.id)).toEqual(['a::plain'])
+    socket.deliver({ type: 'workerregistered', worker_id: 'w-1', features: fake.ENGINE_FEATURES })
+    expect(socket.framesOf('registerfunction').map((f) => f.id)).toEqual([
+      'a::plain',
+      'b::args',
+      'c::private',
+      'd::secret',
+      'e::routed',
+      'e::matched',
+    ])
+  })
+
+  it('stay unregistered against an engine without it, logging UNSUPPORTED once per function; decided again on reconnect', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    v2Functions(sdk)
+    socket.open(fake.ENGINE_FEATURES_V1)
+    sdk.registerFunction('f::late', (e: unknown) => e, { private: true })
+    expect(socket.framesOf('registerfunction').map((f) => f.id)).toEqual(['a::plain'])
+    const unsupported = () => warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('[iii] UNSUPPORTED'))
+    expect(unsupported().map((m) => m.match(/"([^"]+)"/)?.[1])).toEqual([
+      'b::args',
+      'c::private',
+      'd::secret',
+      'e::routed',
+      'e::matched',
+      'f::late',
+    ])
+    // each line names every reason, the match and deliver hooks among them
+    for (const line of unsupported()) {
+      expect(line).toContain('(args_format, private, observable: false, onObserverMatch or onObserverDeliver)')
+    }
+
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const again = fake.lastSocket()
+    again.open(fake.ENGINE_FEATURES_V1)
+    expect(again.framesOf('registerfunction').map((f) => f.id)).toEqual(['a::plain'])
+    expect(unsupported()).toHaveLength(6) // once per function
+
+    again.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const upgraded = fake.lastSocket()
+    upgraded.open()
+    expect(upgraded.framesOf('registerfunction').map((f) => f.id)).toEqual([
+      'a::plain',
+      'b::args',
+      'c::private',
+      'd::secret',
+      'e::routed',
+      'e::matched',
+      'f::late',
+    ])
+  })
+
+  const setHook = {
+    deliver: (ref: FunctionRef, set: boolean) => ref.onObserverDeliver(set ? (call) => call.output : null),
+    match: (ref: FunctionRef, set: boolean) => ref.onObserverMatch(set ? () => true : null),
+  }
+
+  it.each([
+    'deliver',
+    'match',
+  ] as const)('a %s hook set later on a function registered with such an engine unregisters it; removing it registers it again', (kind) => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    const ref = sdk.registerFunction('a::plain', async () => null)
+    socket.open(fake.ENGINE_FEATURES_V1)
+    socket.clear()
+    setHook[kind](ref, true)
+    expect(socket.frames().map((f) => [f.type, f.id])).toEqual([['unregisterfunction', 'a::plain']])
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('[iii] UNSUPPORTED'))).toHaveLength(1)
+    setHook[kind](ref, false)
+    expect(socket.frames().map((f) => [f.type, f.id])).toEqual([
+      ['unregisterfunction', 'a::plain'],
+      ['registerfunction', 'a::plain'],
+    ])
+  })
+
+  it('an observer announced for a withdrawn registration, or queued before the withdrawal, runs no hook and gets no ack', async () => {
+    const { sdk, socket } = worker()
+    warnings()
+    const gate = deferred()
+    const ran: string[] = []
+    const ref = sdk
+      .registerFunction('w::f', async () => null)
+      .onObserverAdded(async (obs) => {
+        ran.push(obs.id)
+        if (obs.id === 'slow') await gate.promise
+      })
+    socket.open(fake.ENGINE_FEATURES_V1)
+    socket.deliver(functionRegistered('w::f', [observerInfo('slow', 't::a')], { revision: 1 }))
+    await settle()
+    expect(ran).toEqual(['slow'])
+    // queued behind the running hook, then the registration is withdrawn
+    socket.deliver(observerAdded('w::f', 2, observerInfo('queued', 't::b')))
+    ref.onObserverMatch(() => true)
+    expect(socket.framesOf('unregisterfunction').map((f) => f.id)).toEqual(['w::f'])
+    // announced by the engine before it handled the unregistration
+    socket.deliver(observerAdded('w::f', 3, observerInfo('after', 't::c')))
+    // registered again (the hook is removed) before the queued add runs: it stays not added
+    ref.onObserverMatch(null)
+    socket.deliver(functionRegistered('w::f', [], { revision: 4 }))
+    gate.resolve()
+    await settle()
+    expect(ran).toEqual(['slow'])
+    expect(acks(socket)).toEqual([])
+    expect(ref.isObserved()).toBe(false)
+    expect(socket.framesOf('registerfunction').map((f) => f.id)).toEqual(['w::f', 'w::f'])
+  })
+
+  it('a deliver hook chained before WorkerRegistered: against an engine without it, the function sent is unregistered', async () => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    socket.open(null)
+    const ref = sdk.registerFunction('a::plain', async () => 'here').onObserverDeliver((call) => call.output)
+    socket.deliver({ type: 'workerregistered', worker_id: 'w-1', features: fake.ENGINE_FEATURES_V1 })
+    expect(
+      socket
+        .frames()
+        .filter((f) => f.type === 'registerfunction' || f.type === 'unregisterfunction')
+        .map((f) => [f.type, f.id]),
+    ).toEqual([
+      ['registerfunction', 'a::plain'],
+      ['unregisterfunction', 'a::plain'],
+    ])
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith('[iii] UNSUPPORTED'))).toHaveLength(1)
+    // the engine's answer to the registration it then dropped confirms nothing
+    socket.deliver(functionRegistered('a::plain', [observerInfo('o', 't::a')]))
+    await settle()
+    expect(ref.isObserved()).toBe(false)
+    expect(acks(socket)).toEqual([])
+    socket.clear()
+    void sdk.call({ function_id: 'a::plain', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    expect(socket.framesOf('invokefunction').map((f) => f.function_id)).toEqual(['a::plain'])
+  })
+
+  it('held after a reconnect to an engine without it, a function releases what it held: local dispatch, observers, reports', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    warnings()
+    const removed: string[] = []
+    const ref = sdk
+      .registerFunction('c::private', (e: unknown) => e, { private: true })
+      .onObserverRemoved((obs) => {
+        removed.push(obs.id)
+      })
+    socket.open()
+    socket.deliver(functionRegistered('c::private', [observerInfo('a', 't::a'), observerInfo('b', 't::b')]))
+    await settle()
+    expect(ref.isObserved()).toBe(true)
+    socket.drop()
+    // run here while disconnected: its report waits for the next connection
+    await expect(sdk.call({ function_id: 'c::private', payload: { n: 1 } })).resolves.toEqual({ n: 1 })
+    await fake.elapse(50)
+    const again = fake.lastSocket()
+    expect(again).not.toBe(socket)
+    again.open(fake.ENGINE_FEATURES_V1)
+    await settle()
+    expect(again.framesOf('registerfunction')).toEqual([])
+    expect(removed).toEqual(['a', 'b'])
+    expect(ref.isObserved()).toBe(false)
+    void sdk.call({ function_id: 'c::private', payload: { n: 2 }, timeoutMs: 20 }).catch(() => undefined)
+    expect(again.framesOf('invokefunction').filter((f) => f.function_id === 'c::private')).toHaveLength(1)
+    await fake.elapse(10)
+    expect(again.framesOf('invocationsobserved')).toEqual([])
+  })
+
+  it('INVALID_ARGS_FORMAT and UNSUPPORTED refuse one function and keep the connection', async () => {
+    const { sdk, socket } = worker()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    sdk.registerFunction('queue::on-message', (m: unknown) => m, { args_format: { type: 'nonsense' } as never })
+    socket.open()
+    socket.deliver(fake.functionRegistered('queue::on-message', [observerInfo('o', 't::a')]))
+    await settle()
+    for (const code of ['INVALID_ARGS_FORMAT', 'UNSUPPORTED']) {
+      socket.deliver({
+        type: 'registrationrejected',
+        code,
+        namespace: 'default',
+        function_id: 'queue::on-message',
+        owner_worker_id: '',
+      })
+    }
+    await settle()
+    expect(sdk.getConnectionState()).toBe('connected')
+    expect(sdk.getFatalError()).toBeUndefined()
+    expect(sdk.isObserved('queue::on-message')).toBe(false)
+    expect(errors.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('INVALID_ARGS_FORMAT'))).toHaveLength(1)
+  })
+})
+
+describe('standby (decision 21)', () => {
+  const conflict = (fn: string) => ({
+    type: 'registrationrejected',
+    code: 'FUNCTION_NAMESPACE_CONFLICT',
+    namespace: 'default',
+    function_id: fn,
+    owner_worker_id: 'host-1',
+  })
+
+  it('retries the registration every second (±20 %) until the engine accepts it; then the hooks run', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const added = vi.fn()
+    sdk.registerFunction('cron::on-tick', (t: unknown) => t, { private: true, standby: true }).onObserverAdded(added)
+    socket.open()
+    socket.deliver(conflict('cron::on-tick'))
+    socket.clear()
+    await fake.elapse(799)
+    expect(socket.framesOf('registerfunction')).toHaveLength(0)
+    await fake.elapse(401)
+    expect(socket.framesOf('registerfunction')).toHaveLength(1)
+    socket.deliver(conflict('cron::on-tick'))
+    await fake.elapse(1200)
+    expect(socket.framesOf('registerfunction')).toHaveLength(2)
+    socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a'), observerInfo('b', 't::b')]))
+    await settle()
+    expect(added).toHaveBeenCalledTimes(2)
+    await fake.elapse(5000)
+    expect(socket.framesOf('registerfunction')).toHaveLength(2)
+  })
+
+  it('stops when the function is unregistered; a function without standby only logs the conflict', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    const warn = warnings()
+    const ref = sdk.registerFunction('cron::on-tick', (t: unknown) => t, { standby: true })
+    sdk.registerFunction('other::fn', async () => null)
+    socket.open()
+    socket.deliver(conflict('cron::on-tick'))
+    socket.deliver(conflict('other::fn'))
+    ref.unregister()
+    socket.clear()
+    await fake.elapse(5000)
+    expect(socket.framesOf('registerfunction')).toEqual([])
+    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('already exported'))).toHaveLength(1)
+  })
+})
+
+describe('an engine without observe (no observe.v1)', () => {
+  it('registers a plain function and logs once that its observer hooks are inactive', () => {
+    const { sdk, socket } = worker()
+    const warn = warnings()
+    sdk.registerFunction('cron::on-tick', async () => null).onObserverAdded(() => undefined)
     sdk.registerFunction('plain::fn', async () => null)
     socket.open('legacy')
-    sdk.registerFunction('db::on-row', async () => null, { observe: { onObserverAdded: () => undefined } })
+    sdk.onObserverRemoved('db::on-row', () => undefined)
+    sdk.registerFunction('db::on-row', async () => null)
     const inactive = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('hooks are inactive'))
     expect(inactive).toHaveLength(2)
     expect(inactive[0]).toContain('cron::on-tick')
@@ -550,16 +1258,16 @@ describe('FunctionObservers edge cases', () => {
     })
     const flush = vi.spyOn(reporter, 'flush')
     const errors: string[] = []
-    const state = new FunctionObservers('f::boom', undefined, true, true, {
-      identity: () => ({ worker_name: 'w' }),
+    const state = new FunctionObservers('f::boom', true, true, {
       sendAck: () => {
         throw new Error('ack failed')
       },
       reporter,
-      callTarget: async () => null,
+      hooks: () => ({}),
       logError: (message) => errors.push(message),
+      logWarn: () => undefined,
       hookTimeoutMs: () => 30_000,
-      traceContext: () => ({}),
+      observeV2: () => true,
     })
     state.onFunctionRegistered(
       { namespace: 'default', revision: 1, local_dispatch: true, observers: [observerInfo('a', 't::a') as never] },
@@ -582,13 +1290,17 @@ describe('FunctionObservers edge cases', () => {
     socket.deliver(functionRegistered('f::twice', [observerInfo('o', 'audit::any', { capture: ['input'] })]))
     await settle()
     socket.drop() // hold the new registration's reports
-    await sdk.trigger({ function_id: 'f::twice', payload: 1 })
+    await sdk.call({ function_id: 'f::twice', payload: 1 })
     const reporter = (sdk as unknown as { reporter: { size: number } }).reporter
     expect(reporter.size).toBe(1)
 
     first.unregister() // stale: the id belongs to `second` now
     expect(reporter.size).toBe(1)
     expect(second.isObserved()).toBe(true)
+    // each ref reads its own registration
+    expect(first.isObserved()).toBe(false)
+    expect(first.observers()).toEqual([])
+    expect(second.observers().map((o) => o.id)).toEqual(['o'])
     await fake.elapse(1500)
     const next = fake.lastSocket()
     next.open()

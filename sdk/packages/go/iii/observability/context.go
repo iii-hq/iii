@@ -54,7 +54,7 @@ func GetBaggageEntry(ctx context.Context, key string) (string, bool) {
 }
 
 // SetBaggageEntry returns ctx with the baggage member key set to value (Node
-// setBaggageEntry). The baggage travels with every Trigger made with the returned ctx
+// setBaggageEntry). The baggage travels with every Call made with the returned ctx
 // and is copied onto the spans started under it. An invalid key is an error.
 func SetBaggageEntry(ctx context.Context, key, value string) (context.Context, error) {
 	return telemetry.SetBaggageEntry(ctx, key, value)

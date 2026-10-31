@@ -5,34 +5,40 @@
 // See LICENSE and PATENTS files for details.
 
 //! Observers: the engine side of `iii.observe(source, target)`
-//! (`tech-specs/2026-10-13-observe/protocol.md` §3).
+//! (`tech-specs/2026-10-13-observe/protocol.md` §3,
+//! `tech-specs/2026-10-29-observe-v2`).
 //!
 //! - `registry`: `observe` / `unobserve`, validation, replay, the observing
 //!   connection's disconnect, grace and `Reattach`.
 //! - `owner`: the observed functions, kept in step with the function registry
-//!   (descriptor, availability, the routed hook's active sets).
+//!   (options, availability, host sync, the routed hook's active sets).
 //! - `lifecycle`: observer states, derived from facts, and
 //!   `observerstatechanged`.
-//! - `dispatch`: the routed hook, policy and activations.
+//! - `dispatch`: the routed hook, reports, calls through an observer, policy
+//!   and activations.
 //! - `context`: the caller / depth / activation of the running invocation.
 //! - `builtins`: `engine::observers::list | get | dispose`.
-//! - `legacy`: the phase 5 shim from `RegisterTrigger` to observers.
-//! - `events`: engine-hosted event sources (`engine::on-functions-changed`,
+//! - `events`: engine-hosted sources (`engine::on-functions-changed`,
 //!   `configuration::on-updated`, ...).
+//! - `engine_owned`: observers the engine creates for its own modules.
 
 pub mod builtins;
 mod config;
 mod context;
 mod dispatch;
+pub mod engine_owned;
 pub mod events;
-mod legacy;
 mod lifecycle;
 mod owner;
+mod persistent;
 mod registry;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock, Weak, atomic::AtomicU64},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, AtomicUsize},
+    },
 };
 
 use arc_swap::ArcSwap;
@@ -41,10 +47,10 @@ use uuid::Uuid;
 
 pub use config::ObserversConfig;
 pub use context::{ENGINE_CALLER_NAME, InvocationCtx};
-pub use dispatch::{Emission, ObservedCall, OwnerCall, ReportHold};
-pub use legacy::{LegacyRegistration, ShimBinding, ShimType};
+pub use dispatch::{Emission, HostDelivery, ObservedCall, ObserverCall, ReportHold, RoutedAnswers};
+pub use engine_owned::{ENGINE_CONNECTION, EngineObserver, StandingObserver};
 pub use lifecycle::Observer;
-pub use owner::{ActiveSet, validate_descriptor};
+pub use owner::{ActiveSet, FunctionOptions, validate_args_format};
 pub use registry::ObserveRequest;
 
 use crate::{
@@ -78,15 +84,20 @@ struct Departed {
 pub struct ObserverRegistry {
     config: ArcSwap<ObserversConfig>,
     deps: OnceLock<Deps>,
+    /// The `Arc` this registry lives in, for work started where only `&self`
+    /// is at hand (an engine-hosted source's event, a standing observer).
+    this: OnceLock<Weak<ObserverRegistry>>,
     runtime: OnceLock<tokio::runtime::Handle>,
     by_id: DashMap<String, Arc<Observer>>,
     by_connection: DashMap<Uuid, HashSet<String>>,
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
     by_target: DashMap<FnKey, HashSet<String>>,
-    /// The routed hook's view: auto functions with active observers. Read with
-    /// one atomic load per invocation, replaced (copy-on-write) on change.
-    observed: ArcSwap<HashMap<FnKey, Arc<ActiveSet>>>,
-    /// Serializes rebuilds of `observed`.
+    /// The routed hook's view (see [`ObserverRegistry::route`]): functions
+    /// with active observers and private functions a connection hosts. Read
+    /// with one atomic load per invocation, replaced (copy-on-write) on
+    /// change.
+    routed: ArcSwap<owner::RoutedView>,
+    /// Serializes rebuilds of `routed`.
     rebuild: Mutex<()>,
     notifiers: DashMap<Uuid, lifecycle::Notifier>,
     departed: DashMap<Uuid, Departed>,
@@ -119,14 +130,16 @@ pub struct ObserverRegistry {
     expired: DashMap<Uuid, lifecycle::Expired>,
     /// `expired` by expiry, oldest first.
     expired_order: Mutex<lifecycle::ExpiredOrder>,
-    /// Engine-hosted event sources (see [`events`]).
-    event_sources: DashMap<FnKey, ()>,
-    /// Functions registered with `observe.delivery: owner`: only their owner
-    /// invokes them (see [`ObserverRegistry::may_invoke`]). Read on every
-    /// invocation with one atomic load; replaced (copy-on-write) on change.
-    owner_delivered: ArcSwap<HashSet<FnKey>>,
+    /// Engine-owned observers kept in every namespace that registers their
+    /// function (see [`ObserverRegistry::observe_everywhere`]).
+    standing: Mutex<Vec<StandingObserver>>,
+    /// `standing.len()`, read on every registration with one atomic load.
+    standing_count: AtomicUsize,
     /// Owner announcements made so far: each one's generation.
     announcements: AtomicU64,
+    /// Observers that joined their function so far: the last one's
+    /// [`Observer::seq`].
+    created: AtomicU64,
     /// The last revision of functions whose entry was dropped as unused:
     /// revisions never go back within an engine's lifetime.
     revisions: DashMap<FnKey, u64>,
@@ -151,12 +164,13 @@ impl ObserverRegistry {
         Self {
             config: ArcSwap::from_pointee(ObserversConfig::default()),
             deps: OnceLock::new(),
+            this: OnceLock::new(),
             runtime: OnceLock::new(),
             by_id: DashMap::new(),
             by_connection: DashMap::new(),
             by_function: DashMap::new(),
             by_target: DashMap::new(),
-            observed: ArcSwap::from_pointee(HashMap::new()),
+            routed: ArcSwap::from_pointee(HashMap::new()),
             rebuild: Mutex::new(()),
             notifiers: DashMap::new(),
             departed: DashMap::new(),
@@ -174,9 +188,10 @@ impl ObserverRegistry {
             tombstone_order: Mutex::new(std::collections::VecDeque::new()),
             expired: DashMap::new(),
             expired_order: Mutex::new(lifecycle::ExpiredOrder::default()),
-            event_sources: DashMap::new(),
-            owner_delivered: ArcSwap::from_pointee(HashSet::new()),
+            standing: Mutex::new(Vec::new()),
+            standing_count: AtomicUsize::new(0),
             announcements: AtomicU64::new(0),
+            created: AtomicU64::new(0),
             revisions: DashMap::new(),
             revision_order: Mutex::new(std::collections::VecDeque::new()),
             drop_export: std::sync::atomic::AtomicBool::new(false),
@@ -185,18 +200,24 @@ impl ObserverRegistry {
     }
 
     pub(crate) fn attach(
-        &self,
+        self: &Arc<Self>,
         functions: Arc<FunctionsRegistry>,
         workers: Arc<WorkerConnectionRegistry>,
         invocations: Weak<InvocationHandler>,
         function_owners: Arc<DashMap<FnKey, (Uuid, crate::engine::InvocationKind)>>,
     ) {
+        let _ = self.this.set(Arc::downgrade(self));
         let _ = self.deps.set(Deps {
             functions,
             workers,
             invocations,
             function_owners,
         });
+    }
+
+    /// The `Arc` this registry lives in, once [`Self::attach`] ran.
+    fn this(&self) -> Option<Arc<Self>> {
+        self.this.get().and_then(Weak::upgrade)
     }
 
     pub fn config(&self) -> Arc<ObserversConfig> {
@@ -277,11 +298,174 @@ impl ObserverRegistry {
     pub fn count_in_state(&self, state: &ObserverState) -> i64 {
         self.state_counts.get(state)
     }
+
+    /// Live observers of `(namespace, function_id)`, in any state but
+    /// `disposed`.
+    pub fn observer_count(&self, namespace: &str, function_id: &str) -> usize {
+        self.function_entry(&(namespace.to_string(), function_id.to_string()))
+            .map_or(0, |entry| entry.len())
+    }
+
+    /// Ids of the live observers `connection` created, sorted.
+    pub fn created_by(&self, connection: Uuid) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .by_connection
+            .get(&connection)
+            .map(|ids| ids.iter().cloned().collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
 }
 
 /// The engine metrics, when the meter is initialized (it is on every serve
 /// path; unit tests that never call `ensure_default_meter` get `None`).
 pub(crate) fn metrics() -> Option<&'static EngineMetrics> {
+    #[cfg(test)]
+    if let Some(recorded) = test_metrics::RECORDING.with(std::cell::Cell::get) {
+        return Some(recorded);
+    }
     crate::workers::observability::metrics::get_meter()
         .map(|_| crate::workers::observability::metrics::get_engine_metrics())
+}
+
+/// What the complexity tests count: observer slots copied into a new node of
+/// an active set, or copied out of a function's observers in bulk, the one way
+/// to scan them, on this thread. A change that rebuilt a function's set from
+/// its observers, or scanned them, would count them all.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SLOTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn add(slots: usize) {
+        SLOTS.with(|counted| counted.set(counted.get() + slots));
+    }
+
+    /// What was counted since the last call.
+    pub(crate) fn take() -> usize {
+        SLOTS.with(|counted| counted.replace(0))
+    }
+}
+
+/// Reads back the observer metrics a test emits: [`test_metrics::record`]
+/// sends this thread's to a meter of its own, which the test reads.
+#[cfg(test)]
+pub(crate) mod test_metrics {
+    use std::{
+        cell::Cell,
+        sync::{Arc, Mutex},
+    };
+
+    use opentelemetry::{KeyValue, metrics::MeterProvider as _};
+    use opentelemetry_sdk::{
+        error::OTelSdkResult,
+        metrics::{
+            PeriodicReader, SdkMeterProvider, Temporality,
+            data::{AggregatedMetrics, MetricData, ResourceMetrics},
+            exporter::PushMetricExporter,
+        },
+    };
+
+    use crate::workers::observability::metrics::EngineMetrics;
+
+    thread_local! {
+        pub(super) static RECORDING: Cell<Option<&'static EngineMetrics>> =
+            const { Cell::new(None) };
+    }
+
+    /// One `u64` sum series: `(metric, attributes, value)`.
+    type Series = (String, Vec<KeyValue>, u64);
+
+    /// The `u64` sums of the last export.
+    #[derive(Clone, Default)]
+    struct Exported(Arc<Mutex<Vec<Series>>>);
+
+    impl PushMetricExporter for Exported {
+        fn export(
+            &self,
+            metrics: &ResourceMetrics,
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+            let mut sums = Vec::new();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
+                        for point in sum.data_points() {
+                            sums.push((
+                                metric.name().to_string(),
+                                point.attributes().cloned().collect(),
+                                point.value(),
+                            ));
+                        }
+                    }
+                }
+            }
+            *self.0.lock().unwrap() = sums;
+            std::future::ready(Ok(()))
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _: std::time::Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+
+    /// The metrics this thread emitted since [`record`].
+    pub(crate) struct Recorded {
+        provider: SdkMeterProvider,
+        exported: Exported,
+    }
+
+    impl Recorded {
+        /// The sum of counter `name` over its series carrying every one of
+        /// `attributes`.
+        pub(crate) fn sum(&self, name: &str, attributes: &[(&str, &str)]) -> u64 {
+            self.provider.force_flush().expect("export the metrics");
+            self.exported
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(metric, series, _)| {
+                    metric == name
+                        && attributes.iter().all(|(key, value)| {
+                            series
+                                .iter()
+                                .any(|kv| kv.key.as_str() == *key && kv.value.as_str() == *value)
+                        })
+                })
+                .map(|(_, _, value)| value)
+                .sum()
+        }
+    }
+
+    impl Drop for Recorded {
+        fn drop(&mut self) {
+            RECORDING.with(|slot| slot.set(None));
+        }
+    }
+
+    /// Sends the observer metrics this thread emits from now on to a meter
+    /// the returned [`Recorded`] reads. Async tests use a current-thread
+    /// runtime, so the tasks they spawn emit on this thread too.
+    pub(crate) fn record() -> Recorded {
+        let exported = Exported::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exported.clone()).build())
+            .build();
+        let metrics: &'static EngineMetrics =
+            Box::leak(Box::new(EngineMetrics::with_meter(&provider.meter("iii"))));
+        RECORDING.with(|slot| slot.set(Some(metrics)));
+        Recorded { provider, exported }
+    }
 }

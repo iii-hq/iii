@@ -8,7 +8,7 @@
 //!
 //! The types here track per-worker registrations so that when a worker is
 //! destroyed (on shutdown or during reload) the engine can roll back the
-//! functions / triggers it wrote into global registries.
+//! functions it wrote into global registries.
 
 use std::collections::HashMap;
 use std::sync::Arc;

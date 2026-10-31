@@ -39,6 +39,11 @@ const SIMPLIFY_PATHS: Record<string, string> = {
   'std::string::String': 'String',
 }
 
+/** `crate::Observer`, `crate::protocol::CallRequest`, `super::Call`, ... -> last path segment. */
+function stripCratePath(name: string): string {
+  return name.replace(/^(?:crate|self|super)::(?:\w+::)*/, '')
+}
+
 /** `::core::pin::Pin`, `alloc::boxed::Box`, ... -> last path segment. */
 function simplifyPathName(name: string): string {
   const mapped = SIMPLIFY_PATHS[name]
@@ -54,7 +59,7 @@ export function rustTypeToString(type: any): string {
   if (type.resolved_path != null) {
     const rp = type.resolved_path
     let name = rp.path ?? rp.name ?? 'unknown'
-    name = name.replace(/^crate::[\w:]+::/, '')
+    name = stripCratePath(name)
     name = simplifyPathName(name)
     if (rp.args?.angle_bracketed?.args?.length) {
       const args = rp.args.angle_bracketed.args
@@ -88,7 +93,7 @@ export function rustTypeToString(type: any): string {
         if (b.trait_bound) {
           const t = b.trait_bound.trait
           let name = t.path ?? t.name ?? '?'
-          name = simplifyPathName(name.replace(/^crate::[\w:]+::/, ''))
+          name = simplifyPathName(stripCratePath(name))
           if (t.args?.parenthesized) {
             const { inputs, output } = t.args.parenthesized
             const params = (inputs ?? []).map(rustTypeToString).join(', ')
@@ -101,6 +106,8 @@ export function rustTypeToString(type: any): string {
           }
           return name
         }
+        // A lifetime bound (`+ 'static`).
+        if (typeof b.outlives === 'string') return b.outlives
         return '?'
       })
       .join(' + ')
@@ -112,7 +119,7 @@ export function rustTypeToString(type: any): string {
       ?.map((b: any) => {
         const t = b.trait
         let name = t?.path ?? t?.name ?? '?'
-        name = simplifyPathName(name.replace(/^crate::[\w:]+::/, ''))
+        name = simplifyPathName(stripCratePath(name))
         if (t?.args?.parenthesized) {
           const { inputs, output } = t.args.parenthesized
           const params = (inputs ?? []).map(rustTypeToString).join(', ')
@@ -143,8 +150,8 @@ export function rustTypeToString(type: any): string {
  * The summary prose of a doc-comment: everything before the first `# Section`
  * heading. Fence-aware, since a hidden doctest line (`# use ...` inside a
  * fence) is not a heading. `# Examples` and friends are rendered separately.
- * A fenced block inside the prose (e.g. the `for_function` example on
- * `IIITrigger`) is kept on request, with hidden doctest lines stripped;
+ * A fenced block inside the prose is kept on request (`keepCodeBlocks`), with
+ * hidden doctest lines stripped;
  * otherwise the prose is cut at the first fence.
  */
 function extractDocs(item: RustDocItem, opts?: { keepCodeBlocks?: boolean }): string {
@@ -325,10 +332,8 @@ function extractMethodsFromStruct(structId: number, index: Record<string, RustDo
     for (const methodId of getImplItems(implItem)) {
       const method = index[methodId]
       if (!method || method.visibility !== 'public') continue
-      // Deprecated methods stay, with a deprecation callout: in 0.25
-      // `register_trigger` is still how a worker binds to providers that have
-      // not moved to observable functions. `#[doc(hidden)]` ones never reach
-      // the rustdoc JSON.
+      // Deprecated methods stay, with a deprecation callout (`trigger`, the
+      // alias of `call`). `#[doc(hidden)]` ones never reach the rustdoc JSON.
       if (exclude && exclude.has(method.name ?? '')) continue
       if (getItemKind(method) !== 'function') continue
       const doc = buildMethodDoc(method)
@@ -339,7 +344,7 @@ function extractMethodsFromStruct(structId: number, index: Record<string, RustDo
 }
 
 /** Public inherent-impl methods of a struct/enum, as callable-typed rows so
- * handles like `FunctionRef::unregister` and `TriggerTypeRef::register_trigger`
+ * handles like `FunctionRef::unregister` and `FunctionRef::on_observer_added`
  * are documented with their parameters. */
 function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>): ParamDoc[] {
   const rows: ParamDoc[] = []
@@ -377,10 +382,11 @@ function extractMethodRows(item: RustDocItem, index: Record<string, RustDocItem>
 
 /**
  * Whether a method row is a fluent builder setter/constructor (returns `Self`
- * or the owning type). On a type that also has data fields these duplicate or
- * shadow the fields (e.g. a `stream_name(self) -> Self` setter next to the
- * `stream_name` field), so they are dropped there; on a pure builder with no
- * data fields (e.g. `RegisterFunction`) they are the real API and kept.
+ * or the owning type). On a struct with data fields, a setter named after a
+ * field duplicates it (e.g. a `stream_name(self) -> Self` setter next to the
+ * `stream_name` field) and is dropped; constructors (`CallRequest::new`,
+ * `ObserveRejection::new`) and every builder of a pure builder with no data
+ * fields (e.g. `RegisterFunction`) are the real API and kept.
  */
 function isBuilderRow(rowType: string, typeName: string): boolean {
   return new RegExp(`->\\s*(Self|${typeName})$`).test(rowType)
@@ -388,9 +394,13 @@ function isBuilderRow(rowType: string, typeName: string): boolean {
 
 function withMethodRows(item: RustDocItem, index: Record<string, RustDocItem>, dataFields: ParamDoc[]): ParamDoc[] {
   const methodRows = extractMethodRows(item, index)
-  const kept = dataFields.length
-    ? methodRows.filter(m => !isBuilderRow(m.type, item.name ?? ''))
-    : methodRows
+  // An enum's constructors (`Match::predicate`, `Match::keys`) are how a value
+  // is built, so they stay; a struct drops the setters named after its fields.
+  const fieldNames = new Set(dataFields.map(f => f.name))
+  const kept =
+    dataFields.length && getItemKind(item) !== 'enum'
+      ? methodRows.filter(m => !isBuilderRow(m.type, item.name ?? '') || !fieldNames.has(m.name))
+      : methodRows
   return [...dataFields, ...kept]
 }
 
@@ -444,7 +454,7 @@ function extractEnumType(item: RustDocItem, index: Record<string, RustDocItem>):
 }
 
 /** A trait documents as one row per method; implementing the required ones is
- * the contract (e.g. `TriggerHandler` for `register_trigger_type`). */
+ * the contract (e.g. `AddedHook` for `on_observer_added`). */
 function extractTraitType(item: RustDocItem, index: Record<string, RustDocItem>): TypeDoc {
   const fields: ParamDoc[] = []
   for (const mid of item.inner.trait?.items ?? []) {
@@ -515,12 +525,12 @@ function collectCrateTypes(
  * The crate's curated public facade modules (`pub mod channel { pub use ... }`,
  * etc.) are the blessed import paths; the flat crate-root re-exports of the same
  * types are `#[deprecated]`. rustdoc attributes each type to its *definition*
- * module (`channels`, `error`, `triggers`, ...), so we read the facade modules'
+ * module (`channels`, `error`, ...), so we read the facade modules'
  * re-export (`use`) items and remap each type to the facade that exposes it.
- * This aligns Rust's channel/trigger/runtime/errors subpaths with the Node and
+ * This aligns Rust's channel/runtime/errors subpaths with the Node and
  * Python SDKs. Derived from the rustdoc index, not hardcoded.
  */
-const FACADE_MODULES = new Set(['channel', 'trigger', 'runtime', 'errors'])
+const FACADE_MODULES = new Set(['channel', 'runtime', 'errors'])
 function collectFacadeMap(data: RustDocIndex): Map<string, string> {
   const map = new Map<string, string>()
   for (const item of Object.values(data.index)) {
@@ -699,7 +709,7 @@ function collectRootFunctions(data: RustDocIndex, exclude: Set<string>): Functio
 const HELPERS_MODULE_DESCRIPTIONS: Record<string, string> = {
   http: 'HTTP request/response types, auth config, and the `http` helper.',
   queue: 'Queue enqueue result types.',
-  stream: 'Stream trigger configs, change events, IO inputs, and update operations.',
+  stream: 'Stream change events, IO inputs, and update operations.',
   worker_connection_manager: 'RBAC auth and registration callback types.',
   observability: 'Logger, OpenTelemetry config, and span helpers.',
 }

@@ -12,7 +12,7 @@ import asyncio
 
 from iii.iii import III
 from iii.iii_constants import InitOptions
-from iii.iii_types import MessageType
+from iii.iii_types import MessageType, RegisterFunctionMessage
 
 
 def test_reconnect_sends_reattach_first(monkeypatch) -> None:
@@ -38,8 +38,8 @@ def test_reconnect_sends_reattach_first(monkeypatch) -> None:
     monkeypatch.setattr(client, "_register_worker_metadata", lambda: None)
     client._ws = None  # _receive_loop returns immediately
 
-    # One binding to replay, so ordering (reattach before replay) is observable.
-    client._triggers["t1"] = {"type": "registertrigger", "id": "t1"}
+    # One registration to replay, so ordering (reattach before replay) is observable.
+    client.register_function("replay::fn", lambda data: data)
 
     async def drive() -> None:
         # First connect: no stored id yet -> no reattach.
@@ -72,6 +72,5 @@ def test_reconnect_sends_reattach_first(monkeypatch) -> None:
     assert first.get("reattach_token") == "tok-old"
     # And it must precede the replayed registration.
     assert any(
-        (m.get("type") if isinstance(m, dict) else getattr(m, "type", None)) == "registertrigger"
-        for m in sent[1:]
+        isinstance(m, RegisterFunctionMessage) and m.id == "replay::fn" for m in sent[1:]
     ), f"registration replay must follow the reattach: {sent}"

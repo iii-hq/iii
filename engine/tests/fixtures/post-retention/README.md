@@ -7,7 +7,7 @@ credentials are needed. `POST /probe` returns buffered JSON without opening
 
 ```sh
 cd engine/tests/fixtures/post-retention
-npm ci --ignore-scripts
+npm install --ignore-scripts
 cd ../../../..
 python3 engine/tests/fixtures/post-retention/run.py \
   --engine /absolute/path/to/iii \

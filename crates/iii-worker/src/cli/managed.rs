@@ -2252,7 +2252,7 @@ pub async fn handle_managed_remove_many(worker_names: &[String], yes: bool) -> i
                 list,
             );
             eprintln!(
-                "  Removing them from config.yaml triggers an engine reload that will tear the sandbox(es) down."
+                "  Removing them from config.yaml reloads the engine, which tears the sandbox(es) down."
             );
             if !confirm_prompt("  Continue? [y/N] ") {
                 eprintln!("  Aborted.");
@@ -4067,7 +4067,7 @@ pub async fn handle_managed_logs(worker_name: &str, follow: bool) -> i32 {
 
     // Check all possible log locations and prefer the one with the most
     // recently modified, non-empty log files. Shared with the daemon's
-    // `worker::logs` trigger so both surfaces read the same directory.
+    // `worker::logs` function so both surfaces read the same directory.
     let candidates = crate::core::logs::candidate_log_dirs(&home, worker_name);
     let unified_logs_dir = candidates[0].clone();
     let logs_dir = crate::core::logs::pick_best_logs_dir(&candidates).unwrap_or(unified_logs_dir);

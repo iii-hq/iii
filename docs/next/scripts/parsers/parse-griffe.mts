@@ -9,16 +9,115 @@ interface GriffeObject {
   target_path?: string
   docstring?: { value?: string; parsed?: { kind: string; value?: any }[] }
   members?: Record<string, GriffeObject>
-  parameters?: { name: string; annotation?: any; default?: string | null; kind?: string }[]
+  parameters?: { name: string; annotation?: any; default?: any; kind?: string }[]
   returns?: { annotation?: any }
   labels?: string[]
   annotation?: any
   value?: string | null
+  bases?: any[]
+  lineno?: number
+  filepath?: string
+  /** Set by applyTypedDictSemantics: a key of a `total=False` TypedDict. */
+  notRequired?: boolean
 }
 
 // ---------------------------------------------------------------------------
 // Annotation / docstring helpers
 // ---------------------------------------------------------------------------
+
+const SPHINX_ROLE_RE = /:(?:py:)?(?:meth|class|func|attr|data|mod|exc|obj|const|type):`(~?)([^`]+)`/g
+
+/**
+ * Sphinx cross-reference roles (``:meth:`call` ``, ``:class:`~iii.Observer` ``)
+ * as Markdown code: the role's title when it has one, the last segment of a
+ * `~` target, else the target as written.
+ */
+export function sphinxRolesToMarkdown(text: string): string {
+  return text.replace(SPHINX_ROLE_RE, (_m, tilde: string, target: string) => {
+    const titled = target.match(/^(.*?)\s*<[^>]+>$/)
+    const shown = titled ? titled[1] : tilde ? (target.split('.').pop() ?? target) : target
+    return `\`${shown}\``
+  })
+}
+
+/** Rewrites every string inside every `docstring` of a griffe dump with sphinxRolesToMarkdown. */
+function normalizeDocstrings(node: any, inDocstring = false): any {
+  if (typeof node === 'string') return inDocstring ? sphinxRolesToMarkdown(node) : node
+  if (Array.isArray(node)) return node.map(n => normalizeDocstrings(n, inDocstring))
+  if (node && typeof node === 'object') {
+    for (const key of Object.keys(node)) {
+      node[key] = normalizeDocstrings(node[key], inDocstring || key === 'docstring')
+    }
+  }
+  return node
+}
+
+/** The class header (`class X(Base, total=False):`) starting at `lineno` of `filepath`, or ''. */
+function classHeader(filepath: string | undefined, lineno: number | undefined): string {
+  if (!filepath || !lineno) return ''
+  try {
+    const lines = readFileSync(filepath, 'utf-8').split('\n').slice(lineno - 1, lineno + 9)
+    const header: string[] = []
+    for (const line of lines) {
+      header.push(line)
+      if (/:\s*(#.*)?$/.test(line)) break
+    }
+    return header.join(' ')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * TypedDicts as type checkers read them: a class lists the keys of the
+ * TypedDicts it extends in the same module (`ObserveSource` gets
+ * `function_id` from `_ObserveSourceRequired`), and the keys a
+ * `total=False` class declares are optional. griffe's dump has neither (no
+ * class keywords, no inherited members), so the header is read from source.
+ */
+function applyTypedDictSemantics(node: any): void {
+  if (!node || typeof node !== 'object') return
+  if (node.kind === 'module' && node.members) {
+    const classes = node.members as Record<string, GriffeObject>
+    const isTypedDict = (cls: GriffeObject | undefined, depth = 0): boolean =>
+      !!cls &&
+      cls.kind === 'class' &&
+      depth < 10 &&
+      (cls.bases ?? []).some(b => {
+        const name = annotationToString(b)
+        return name === 'TypedDict' || isTypedDict(classes[name], depth + 1)
+      })
+    const done = new Set<string>()
+    const complete = (name: string, depth = 0): void => {
+      const cls = classes[name]
+      if (done.has(name) || depth > 10 || !isTypedDict(cls)) return
+      done.add(name)
+      if (/\btotal\s*=\s*False\b/.test(classHeader(node.filepath, cls.lineno))) {
+        for (const m of Object.values(cls.members ?? {})) if (m.kind === 'attribute') m.notRequired = true
+      }
+      const inherited: Record<string, GriffeObject> = {}
+      for (const b of cls.bases ?? []) {
+        const baseName = annotationToString(b)
+        if (!isTypedDict(classes[baseName])) continue
+        complete(baseName, depth + 1)
+        for (const [k, m] of Object.entries(classes[baseName].members ?? {})) {
+          if (m.kind === 'attribute' && !(k in inherited)) inherited[k] = m
+        }
+      }
+      cls.members = { ...inherited, ...(cls.members ?? {}) }
+    }
+    for (const name of Object.keys(classes)) complete(name)
+  }
+  for (const value of Object.values(node)) {
+    if (value && typeof value === 'object') applyTypedDictSemantics(value)
+  }
+}
+
+function readGriffeDump(jsonPath: string): any {
+  const raw = normalizeDocstrings(JSON.parse(readFileSync(jsonPath, 'utf-8')))
+  applyTypedDictSemantics(raw)
+  return raw
+}
 
 export function annotationToString(ann: any): string {
   if (!ann) return ''
@@ -183,6 +282,16 @@ function returnAnnotation(obj: GriffeObject): any {
   return r.annotation ?? r
 }
 
+/**
+ * A parameter default as written: a string, or an expression griffe dumps as
+ * an object (`_MISSING`, `Foo.BAR`). A private sentinel (`_MISSING`) means
+ * "not passed" and renders as `...`.
+ */
+function defaultToString(def: any): string {
+  const s = typeof def === 'string' ? def : annotationToString(def)
+  return /^_\w*$/.test(s) ? '...' : s
+}
+
 function buildSignature(obj: GriffeObject): string {
   const asyncPrefix = isAsync(obj) ? 'async ' : ''
   const parts: string[] = []
@@ -195,7 +304,7 @@ function buildSignature(obj: GriffeObject): string {
     }
     const annStr = annotationToString(p.annotation)
     const ann = annStr ? `: ${annStr}` : ''
-    const def = p.default !== undefined && p.default !== null ? ` = ${p.default}` : ''
+    const def = p.default !== undefined && p.default !== null ? ` = ${defaultToString(p.default)}` : ''
     parts.push(`${p.name}${ann}${def}`)
   }
   const retStr = annotationToString(returnAnnotation(obj))
@@ -267,6 +376,7 @@ function extractAttributeDescriptions(obj: GriffeObject): Record<string, string>
  * `default_factory=`).
  */
 function attributeRequired(member: GriffeObject): boolean {
+  if (member.notRequired) return false
   const value: any = member.value
   if (value === undefined || value === null) return true
   if (value?.cls === 'ExprCall' && annotationToString(value.function) === 'Field') {
@@ -314,11 +424,13 @@ function griffeToType(obj: GriffeObject): TypeDoc {
         })
       } else if (member.kind === 'function') {
         // Methods document as callable-typed rows so their parameters survive
-        // (e.g. `Trigger.unregister`, `TriggerTypeRef.register_trigger`).
+        // (e.g. `FunctionRef.unregister`, `Observer.reject`).
         fields.push({
           name: member.name,
           type: buildSignature(member),
-          description: extractDocstring(member).split('\n')[0] ?? '',
+          // The first paragraph, on one line: a summary line can end
+          // mid-sentence, and a line break inside a code span would show.
+          description: (extractDocstring(member).split(/\n\s*\n/)[0] ?? '').replace(/\s*\n\s*/g, ' '),
           required: true,
         })
       }
@@ -355,7 +467,7 @@ function resolve(obj: GriffeObject | undefined, index: Map<string, GriffeObject>
   return obj
 }
 
-const PUBLIC_SUBMODULES = ['channel', 'errors', 'trigger', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state']
+const PUBLIC_SUBMODULES = ['channel', 'errors', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state']
 
 /** True if `path` belongs to one of our own packages (not typing.*, pydantic.*). */
 function isLocalPath(path: string | undefined, pkgs: string[]): boolean {
@@ -394,7 +506,7 @@ function collectResolved(
 // ---------------------------------------------------------------------------
 
 export function parseGriffe(jsonPath: string): SdkDoc {
-  const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
+  const raw = readGriffeDump(jsonPath)
   const root: GriffeObject = raw['iii'] ?? raw
   const index = buildIndex(root, 'iii')
   // The dump also carries the `iii_helpers` package; index it so aliases the SDK
@@ -511,13 +623,13 @@ export function parseGriffe(jsonPath: string): SdkDoc {
 const HELPERS_MODULE_DESCRIPTIONS: Record<string, string> = {
   http: 'HTTP request/response types, auth config, and the `http` helper.',
   queue: 'Queue enqueue result types.',
-  stream: 'Stream trigger configs, change events, IO inputs, and update operations.',
+  stream: 'Stream change events, IO inputs, and update operations.',
   worker_connection_manager: 'RBAC auth and registration callback types.',
   observability: 'Logger, OpenTelemetry config, and span helpers.',
 }
 
 export function parseHelpersGriffe(jsonPath: string): SdkDoc {
-  const raw = JSON.parse(readFileSync(jsonPath, 'utf-8'))
+  const raw = readGriffeDump(jsonPath)
   const root: GriffeObject = raw['iii_helpers'] ?? raw
   const index = buildIndex(root, 'iii_helpers')
   const rootMembers = root.members ?? {}

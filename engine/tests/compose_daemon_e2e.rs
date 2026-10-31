@@ -21,9 +21,8 @@ use iii_compose::{
     daemon::{Daemon, EnginePolicy},
     remote,
 };
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::triggers::Trigger;
-use iii_sdk::{IIIClient, InitOptions, RegisterFunction, register_worker};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Deliver, InitOptions, RegisterFunction, Source, register_worker};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -68,7 +67,7 @@ async fn spawn_engine_with_configuration_in(
         let adapter = FsAdapter::new(Some(json!({ "directory": directory })))
             .await
             .expect("configuration adapter");
-        let worker = ConfigurationWorker::for_test(engine.clone(), Arc::new(adapter), 0);
+        let worker = ConfigurationWorker::for_test(engine.clone(), Arc::new(adapter));
         worker.initialize().await.expect("configuration worker");
         worker.register_functions(engine.clone());
     }
@@ -134,15 +133,15 @@ async fn call_in(
         },
     );
 
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: function.to_string(),
         payload,
         action: None,
         timeout_ms: Some(30_000),
     };
     let result = match namespace {
-        Some(namespace) => client.trigger(request.namespace(namespace)).await,
-        None => client.trigger(request).await,
+        Some(namespace) => client.call(request.namespace(namespace)).await,
+        None => client.call(request).await,
     };
     client.shutdown_async().await;
 
@@ -310,55 +309,6 @@ async fn wait_for_operation(port: u16, namespace: Option<&str>, operation_id: &s
     .unwrap_or_else(|_| panic!("operation {operation_id} did not finish"))
 }
 
-async fn subscribe_to_terminal_operation(
-    port: u16,
-    operation_id: &str,
-) -> (
-    IIIClient,
-    Trigger,
-    tokio::sync::mpsc::UnboundedReceiver<(Value, Option<Value>)>,
-) {
-    let observer = register_worker(
-        &format!("ws://127.0.0.1:{port}"),
-        InitOptions {
-            metadata: Some(iii_sdk::iii::WorkerMetadata {
-                name: format!("operation-observer-{}", uuid::Uuid::new_v4()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        },
-    );
-    let callback_id = format!("test::compose-operation::{}", uuid::Uuid::new_v4());
-    let (events_tx, events_rx) = tokio::sync::mpsc::unbounded_channel();
-    observer.register_function(
-        callback_id.clone(),
-        RegisterFunction::new_async(move |event: Value, metadata: Option<Value>| {
-            let events_tx = events_tx.clone();
-            async move {
-                let _ = events_tx.send((event, metadata));
-                Ok(Value::Null)
-            }
-        }),
-    );
-    // `compose-operation` is still a trigger type of the compose daemon.
-    #[allow(deprecated)]
-    let trigger = observer
-        .register_trigger(
-            RegisterTriggerInput::new(
-                "compose-operation",
-                callback_id,
-                json!({
-                    "operation_id": operation_id,
-                    "terminal_only": true,
-                }),
-            )
-            .with_metadata(json!({ "__binding": "e2e-binding" })),
-        )
-        .expect("register compose-operation trigger");
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    (observer, trigger, events_rx)
-}
-
 fn operation_containers(operation: &Value) -> Vec<&str> {
     let mut names = operation["containers"]
         .as_array()
@@ -410,7 +360,7 @@ async fn the_daemon_serves_compose_functions_in_the_default_namespace() {
     let port = spawn_engine().await;
     let daemon = start_daemon(port).await;
 
-    // `default` is where an operator's `iii trigger` lands with no namespace
+    // `default` is where an operator's `iii call` lands with no namespace
     // flag, which is the whole point of moving the control surface here: the
     // namespace goes back to being the workers' address.
     let listed = call(port, "compose::list", json!({}))
@@ -912,7 +862,14 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
     )
     .await
     .expect("managed project should stop");
-    assert_eq!(stop["stopping"], json!([file.to_str().unwrap()]), "{stop}");
+    // The daemon names the project by its canonical path (on macOS the temp
+    // dir under /var is /private/var).
+    let canonical = std::fs::canonicalize(&file).expect("canonical compose file path");
+    assert_eq!(
+        stop["stopping"],
+        json!([canonical.to_str().unwrap()]),
+        "{stop}"
+    );
 
     worker.shutdown_async().await;
     daemon.shutdown().await;
@@ -940,9 +897,6 @@ containers:
         &[],
     );
     let operation_id = format!("compose:update-test:00000000-0000-0000-0000-{}", port);
-    let (observer, trigger, mut events) =
-        subscribe_to_terminal_operation(port, &operation_id).await;
-
     let result = call(
         port,
         "compose::update",
@@ -958,19 +912,96 @@ containers:
     assert_eq!(result["status"], "accepted", "{result}");
     assert_eq!(result["requested"], 2, "{result}");
     assert_eq!(result["operation_id"], operation_id, "{result}");
-    let (event, metadata) = tokio::time::timeout(Duration::from_secs(15), events.recv())
-        .await
-        .expect("update terminal event timed out")
-        .expect("update terminal event channel closed");
-    assert_eq!(event["operation_id"], operation_id, "{event}");
-    assert_eq!(event["terminal"], true, "{event}");
-    assert_eq!(metadata, Some(json!({ "__binding": "e2e-binding" })));
     let operation = wait_for_operation(port, None, &operation_id).await;
     assert_eq!(operation["status"], "succeeded", "{operation}");
     assert_eq!(operation["requested"], 2, "{operation}");
 
-    trigger.unregister();
-    observer.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+/// A client follows an operation by observing `compose::on-operation-progress`
+/// with filters on the operation id and on terminal events.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_observer_filtered_on_one_operation_receives_its_terminal_progress() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    let follower = register_worker(
+        &format!("ws://127.0.0.1:{port}"),
+        InitOptions {
+            metadata: Some(iii_sdk::iii::WorkerMetadata {
+                name: format!("progress-follower-{}", uuid::Uuid::new_v4()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    follower.register_function(
+        "test::operation-progress",
+        RegisterFunction::new(move |event: Value| {
+            let _ = events_tx.send(event);
+            Ok::<_, iii_sdk::Error>(Value::Null)
+        }),
+    );
+    let operation_id = format!("compose:progress-test:00000000-0000-0000-0000-{port}");
+    let observer = follower.observe(
+        Source::function(iii_compose::operation::PROGRESS_FUNCTION_ID)
+            .filters(json!({
+                "input.operation_id": { "$eq": operation_id },
+                "input.terminal": { "$eq": true },
+            }))
+            .deliver(Deliver::Input),
+        "test::operation-progress",
+    );
+    tokio::time::timeout(Duration::from_secs(5), observer.ready())
+        .await
+        .expect("observer should become active in time")
+        .expect("compose::on-operation-progress should be observable");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        r#"
+namespace: progress
+containers:
+  state:
+    worker: package://api.workers.iii.dev/state
+    version: "1.2.3"
+"#,
+        &[],
+    );
+    let result = call(
+        port,
+        "compose::update",
+        json!({
+            "file": file.to_str().unwrap(),
+            "workers": ["state@1.2.3"],
+            "operation_id": operation_id,
+        }),
+    )
+    .await
+    .expect("compose::update should answer");
+    assert_eq!(result["status"], "accepted", "{result}");
+
+    let event = tokio::time::timeout(Duration::from_secs(10), events.recv())
+        .await
+        .expect("the terminal progress event should be delivered")
+        .expect("progress channel open");
+    assert_eq!(event["operation_id"], operation_id, "{event}");
+    assert_eq!(event["terminal"], true, "{event}");
+    assert_eq!(event["phase"], "complete", "{event}");
+    let operation = wait_for_operation(port, None, &operation_id).await;
+    assert_eq!(operation["last_sequence"], event["sequence"], "{operation}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        events.try_recv().is_err(),
+        "the filters deliver only this operation's terminal event"
+    );
+
+    observer.dispose().await.expect("dispose observer");
+    follower.shutdown_async().await;
     daemon.shutdown().await;
 }
 
@@ -1055,8 +1086,6 @@ containers:
     };
     let keep_pid = pid(&before, "keep");
     let operation_id = format!("compose:remove-test:00000000-0000-0000-0000-{}", port);
-    let (observer, trigger, mut events) =
-        subscribe_to_terminal_operation(port, &operation_id).await;
     let result = call(
         port,
         "compose::remove",
@@ -1078,13 +1107,6 @@ containers:
             "mutation leaked {internal}: {result}"
         );
     }
-    let (event, metadata) = tokio::time::timeout(Duration::from_secs(15), events.recv())
-        .await
-        .expect("remove terminal event timed out")
-        .expect("remove terminal event channel closed");
-    assert_eq!(event["operation_id"], operation_id, "{event}");
-    assert_eq!(event["terminal"], true, "{event}");
-    assert_eq!(metadata, Some(json!({ "__binding": "e2e-binding" })));
     let operation = wait_for_operation(port, None, &operation_id).await;
     assert_eq!(operation["status"], "succeeded", "{operation}");
 
@@ -1155,8 +1177,6 @@ containers:
     foundation.shutdown_async().await;
     keep.shutdown_async().await;
     discard.shutdown_async().await;
-    trigger.unregister();
-    observer.shutdown_async().await;
     daemon.shutdown().await;
 }
 
@@ -2531,7 +2551,7 @@ async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
             .await
             .unwrap(),
     );
-    let local = ConfigurationWorker::for_test(local_engine, bridge, 0);
+    let local = ConfigurationWorker::for_test(local_engine, bridge);
     local.initialize().await.unwrap();
     let input = ConfigurationMigrateInput {
         from_id: "legacy".into(),
@@ -2609,6 +2629,65 @@ async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
         .unwrap()["value"],
         json!({"source": true})
     );
+    local.destroy().await.unwrap();
+}
+
+/// The bridge observes the remote engine's `configuration::on-updated`: a
+/// change made on the remote engine reaches the local listeners with its raw
+/// value.
+#[tokio::test(flavor = "multi_thread")]
+async fn bridge_relays_remote_configuration_changes_to_local_listeners() {
+    use iii::workers::configuration::structs::ConfigurationEventType;
+    use iii::workers::configuration::{ConfigurationWorker, adapters::bridge::BridgeAdapter};
+    isolate_state();
+    let port = spawn_engine().await;
+    call(
+        port,
+        "configuration::register",
+        json!({
+            "id": "relayed", "name": "Relayed", "description": "Remote", "schema": {},
+            "initial_value": {"n": 0},
+        }),
+    )
+    .await
+    .unwrap();
+    let local_engine = Arc::new(Engine::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    local_engine.configuration_listeners.listen(
+        "test",
+        "relayed",
+        &[ConfigurationEventType::Updated],
+        Arc::new(move |event| {
+            let _ = tx.send(event.clone());
+        }),
+    );
+    let bridge = Arc::new(
+        BridgeAdapter::new(format!("ws://127.0.0.1:{port}"))
+            .await
+            .unwrap(),
+    );
+    let local = ConfigurationWorker::for_test(local_engine, bridge);
+    local.initialize().await.unwrap();
+
+    // The remote observer becomes active asynchronously: change the value
+    // until one change is relayed.
+    let mut relayed = None;
+    for n in 1..=40 {
+        call(
+            port,
+            "configuration::set",
+            json!({"id": "relayed", "value": {"n": n}}),
+        )
+        .await
+        .unwrap();
+        if let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await {
+            relayed = Some(event);
+            break;
+        }
+    }
+    let event = relayed.expect("a remote change reaches the local listeners");
+    assert_eq!(event.id, "relayed");
+    assert!(event.new_value.as_ref().is_some_and(|v| v["n"].is_u64()));
     local.destroy().await.unwrap();
 }
 

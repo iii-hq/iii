@@ -102,6 +102,14 @@ pub trait Worker: Send + Sync {
     fn register_functions(&self, engine: Arc<Engine>) {
         // blank implementation since it going to be overriden by the macros
     }
+
+    /// The engine-hosted sources this worker registers when it initializes
+    /// (decision 7). They belong to the worker in `engine::workers::info` and
+    /// `engine::functions::list`, as the functions it registers in
+    /// [`Self::register_functions`] do.
+    fn hosted_sources(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
 }
 
 pub type AdapterFactory<A> = Arc<

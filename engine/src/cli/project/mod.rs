@@ -56,7 +56,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub docker: bool,
 
-    /// Scaffold from a named template (e.g. "quickstart"). Triggers the
+    /// Scaffold from a named template (e.g. "quickstart"). Opens the
     /// interactive scaffolder TUI.
     #[arg(short, long)]
     pub template: Option<String>,
@@ -106,7 +106,7 @@ pub struct GenerateDockerArgs {
 }
 
 fn template_flow_requested(args: &InitArgs) -> bool {
-    // Only --template triggers the interactive scaffolder TUI. The bare flow
+    // Only --template opens the interactive scaffolder TUI. The bare flow
     // also uses scaffolder-core under the hood, but goes through the
     // non-interactive `apply_template` helper.
     args.template.is_some()
@@ -705,7 +705,7 @@ async fn project_progress(
     compose_path: &Path,
     namespace: &str,
 ) -> Option<Progress> {
-    let request = iii_sdk::protocol::TriggerRequest {
+    let request = iii_sdk::protocol::CallRequest {
         function_id: "compose::status".to_string(),
         payload: serde_json::json!({ "file": compose_path }),
         action: None,
@@ -713,7 +713,7 @@ async fn project_progress(
     }
     .namespace(namespace);
 
-    let value = client.client().trigger(request).await.ok()?;
+    let value = client.client().call(request).await.ok()?;
     let containers = value.get("containers")?.as_array()?;
     read_progress(containers)
 }

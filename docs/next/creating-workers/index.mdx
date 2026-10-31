@@ -8,7 +8,7 @@ type: "explanation"
 
 Every new capability in a iii system is added by creating a Worker. A queue, a scheduler, an HTTP
 edge, a browser tab, an agent, a CRM integration, or a sandbox. Each is a Worker that connects to
-the Engine and registers Triggers and Functions. The Engine itself never needs to change.
+the Engine, registers Functions, and observes other Functions.
 
 ## Workers are the services
 
@@ -22,8 +22,8 @@ This is why "add a Worker" is the answer to almost every "how do I add X to iii?
 capability is missing, the gap is filled by a Worker, not by a change to iii itself.
 
 <Note>
-  For the mental model behind Workers, Triggers, Functions, and the Engine, see [Understanding iii /
-  Overview](../understanding-iii). To build Workers continue with this section.
+  For the mental model behind Workers, Functions, Observers, and the Engine, see [Understanding iii
+  / Overview](../understanding-iii). To build Workers continue with this section.
 </Note>
 
 ## Build on existing Workers
@@ -41,8 +41,7 @@ The ones you reach for most often are documented here under **Common Workers**:
 - [Access Control](./worker-manager), accept untrusted connections through RBAC-gated listeners.
 
 The full catalog of Workers is published at [workers.iii.dev](https://workers.iii.dev). If you need
-common
-functionality for your Worker, look in these two places first.
+common functionality for your Worker, look in these two places first.
 
 ## What's in this section
 
@@ -50,10 +49,10 @@ functionality for your Worker, look in these two places first.
   <Card title="Workers" href="./workers" icon="server">
     Connect a Worker to the Engine and deploy it.
   </Card>
-  <Card title="Triggers" href="./triggers" icon="bolt">
-    Declare what causes those Functions to run.
-  </Card>
   <Card title="Functions" href="./functions" icon="code">
     Register the Functions a Worker contributes.
+  </Card>
+  <Card title="Observable functions" href="./observable-functions" icon="bolt">
+    Decide what happens when your Functions are observed.
   </Card>
 </CardGroup>

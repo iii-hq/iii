@@ -262,14 +262,18 @@ pub struct EngineMetrics {
     pub worker_uptime_seconds: Gauge<i64>,
     // Observers (protocol.md §3.6). Per function, not per observer, to bound
     // cardinality.
-    /// Activations started, by observed `function_id` and `delivery`.
+    /// Activations started, by observed `function_id` and `delivery`:
+    /// `engine` (the engine evaluated the call), `host` (the call's host
+    /// listed or reported the match, for a routed or a local call) or
+    /// `observer_call` (a call through an observer).
     pub observer_activations_total: Counter<u64>,
     /// Events not delivered to an observer, by observed `function_id` and
     /// drop `reason`.
     pub observer_dropped_total: Counter<u64>,
     /// Live observers by `state`.
     pub observers: Gauge<i64>,
-    /// `invocationsobserved` items accepted, by observed `function_id`.
+    /// `invocationsobserved` items accepted (a host's local calls), by
+    /// observed `function_id`.
     pub observer_reports_total: Counter<u64>,
     /// Activations that started and did not complete, by observed
     /// `function_id` and `reason` (`TIMEOUT`, `TARGET_UNAVAILABLE`,
@@ -285,7 +289,11 @@ impl EngineMetrics {
     /// Panics if `GLOBAL_METER` has not been initialized via `init_metrics()`.
     pub fn new() -> Self {
         let meter = get_meter().expect("GLOBAL_METER not initialized - call init_metrics() first");
+        Self::with_meter(meter)
+    }
 
+    /// The engine metrics, created on `meter`.
+    pub(crate) fn with_meter(meter: &Meter) -> Self {
         Self {
             invocations_total: meter
                 .u64_counter("iii.invocations.total")
@@ -366,7 +374,7 @@ impl EngineMetrics {
                 .build(),
             observer_reports_total: meter
                 .u64_counter("iii.observer.reports.total")
-                .with_description("Reported invocations and emits accepted, by observed function")
+                .with_description("Reported local calls accepted, by observed function")
                 .with_unit("reports")
                 .build(),
             observer_activation_failures_total: meter

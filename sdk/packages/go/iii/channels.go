@@ -20,7 +20,7 @@ import (
 // A channel is a pair of capability-scoped WebSockets, SEPARATE from the main worker
 // socket: one to write, one to read. CreateChannel asks the engine for a writer ref and
 // a reader ref (sharing a channel_id + access_key); either ref can be embedded as plain
-// JSON in a trigger payload so another worker opens the other end.
+// JSON in a call payload so another worker opens the other end.
 //
 // Framing is the one load-bearing wire rule: discrete messages and streamed bytes share
 // the same socket and are told apart purely by WebSocket opcode. A TEXT frame is a
@@ -42,7 +42,7 @@ const channelFrameSize = 64 * 1024
 const channelFlushDelay = 10 * time.Millisecond
 
 // Channel is a freshly created channel: a live writer/reader plus the refs for each end.
-// Pass WriterRef or ReaderRef to another worker (in a trigger payload) so it opens the
+// Pass WriterRef or ReaderRef to another worker (in a call payload) so it opens the
 // opposite end with [Client.OpenReader] / [Client.OpenWriter]. Created by
 // [Client.CreateChannel].
 type Channel struct {
@@ -61,7 +61,7 @@ func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, 
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: FnCreateChannel, Payload: payload})
+	res, err := c.Call(ctx, CallRequest{FunctionID: FnCreateChannel, Payload: payload})
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func OpenWriter(engineWSBase string, ref StreamChannelRef) *ChannelWriter {
 }
 
 // OpenWriter returns a writer for the write end described by ref (typically received in
-// a trigger payload), against this client's engine address. Like the ends returned by
+// a call payload), against this client's engine address. Like the ends returned by
 // [Client.CreateChannel], its handshake sends the client's [WithHeaders] plus
 // "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no
 // Authorization header. The socket connects on first send.
@@ -237,7 +237,7 @@ func OpenReader(engineWSBase string, ref StreamChannelRef) *ChannelReader {
 }
 
 // OpenReader returns a reader for the read end described by ref (typically received in
-// a trigger payload), against this client's engine address. Like the ends returned by
+// a call payload), against this client's engine address. Like the ends returned by
 // [Client.CreateChannel], its handshake sends the client's [WithHeaders] plus
 // "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no
 // Authorization header. The socket connects on first read.
@@ -360,7 +360,7 @@ func (r *ChannelReader) Close() error {
 // found, keyed by its dotted path (e.g. "reader", "data.writer"). A node is a ref iff it
 // is an object with string channel_id, access_key, and direction fields. Mirrors
 // extract_channel_refs and is_channel_ref in the Rust SDK: the receiving worker uses it
-// to find a ref another worker embedded in a trigger payload.
+// to find a ref another worker embedded in a call payload.
 func ExtractChannelRefs(data json.RawMessage) (map[string]StreamChannelRef, error) {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {

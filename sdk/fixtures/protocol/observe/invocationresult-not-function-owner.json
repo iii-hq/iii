@@ -1,0 +1,9 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "5d7f9b1c-3e5a-4c7e-9a1c-3e5f7b9d1f3a",
+  "function_id": "users::get",
+  "error": {
+    "code": "NOT_FUNCTION_OWNER",
+    "message": "observer b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c observes a function this connection does not host"
+  }
+}

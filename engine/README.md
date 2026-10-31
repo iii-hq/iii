@@ -2,7 +2,7 @@
 
 The iii engine provides durable orchestration, interoperable cross-language execution, live
 discovery of functionality, live system extensibility, and live system observability from three
-simple primitives: Function, Trigger, and Worker.
+simple primitives: Function, Observer, and Worker.
 
 For complete documentation on iii please visit [iii.dev/docs](https://iii.dev/docs).
 
@@ -51,7 +51,7 @@ If you prefer a custom filename (for example `iii-config.yaml`), pass it explici
 Open the console: add the ADE worker to your project, then open `http://127.0.0.1:3113`:
 
 ```bash
-iii trigger compose::add worker=ade
+iii call compose::add worker=ade
 ```
 
 Your engine is running at `ws://localhost:49134` with HTTP API at `http://localhost:3111`.
@@ -119,10 +119,18 @@ Visit [iii.dev/docs](https://iii.dev/docs) to learn how to
 ## Protocol Summary
 
 The engine speaks JSON messages over WebSocket. Key message types: `registerfunction`,
-`invokefunction`, `invocationresult`, `registertrigger`, `unregistertrigger`,
-`triggerregistrationresult`, `registerservice`, `functionsavailable`, `ping`, `pong`.
+`invokefunction`, `invocationresult`, `observe`, `unobserve`, `observeresult`,
+`observerstatechanged`, `registerservice`, `ping`, `pong`.
 
 Invocations can be fire-and-forget by omitting `invocation_id`.
+
+The engine advertises `observe.v1`, `observe.v2` and `local-dispatch.v1` in
+`workerregistered`. A worker that declares `observe.v2` delivers the calls of the
+functions it hosts: it lists the observers its delivery matched on each
+`invocationresult` (`observed`), and reports its local calls in `invocationsobserved`.
+The engine activates those observers, and evaluates the observers of every other call
+itself: calls to workers without `observe.v2`, to engine-hosted and HTTP-invoked
+functions.
 
 ## Repository Layout
 

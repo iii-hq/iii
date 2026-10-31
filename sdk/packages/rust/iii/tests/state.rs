@@ -2,9 +2,6 @@
 //!
 //! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
 
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
-
 mod common;
 
 use std::sync::Arc;
@@ -13,8 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction};
+use iii_sdk::{CallRequest, Deliver, IIIClient, RegisterFunction, Source};
 
 const SCOPE: &str = "test-scope-rs";
 
@@ -28,7 +24,7 @@ fn unique_key(test_name: &str) -> String {
 
 async fn delete_state(iii: &IIIClient, key: &str) {
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::delete".to_string(),
             payload: json!({"scope": SCOPE, "key": key}),
             action: None,
@@ -46,7 +42,7 @@ async fn state_set_new_item() {
     let test_data = json!({"name": "Test Item", "value": 42});
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::set".to_string(),
             payload: json!({"scope": SCOPE, "key": key, "value": test_data}),
             action: None,
@@ -70,7 +66,7 @@ async fn state_set_overwrite() {
     let initial_data = json!({"value": 1});
     let updated_data = json!({"value": 2, "updated": true});
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({"scope": SCOPE, "key": key, "value": initial_data}),
         action: None,
@@ -80,7 +76,7 @@ async fn state_set_overwrite() {
     .expect("state::set initial");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::set".to_string(),
             payload: json!({"scope": SCOPE, "key": key, "value": updated_data}),
             action: None,
@@ -103,7 +99,7 @@ async fn state_get_existing_item() {
 
     let data = json!({"name": "Test", "value": 100});
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({"scope": SCOPE, "key": key, "value": data}),
         action: None,
@@ -113,7 +109,7 @@ async fn state_get_existing_item() {
     .expect("state::set");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".to_string(),
             payload: json!({"scope": SCOPE, "key": key}),
             action: None,
@@ -132,7 +128,7 @@ async fn state_get_non_existent_item() {
     let iii = common::shared_iii();
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".to_string(),
             payload: json!({"scope": SCOPE, "key": "non-existent-item"}),
             action: None,
@@ -150,7 +146,7 @@ async fn state_delete_existing_item() {
     let iii = common::shared_iii();
     delete_state(iii, &key).await;
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({"scope": SCOPE, "key": key, "value": {"test": true}}),
         action: None,
@@ -159,7 +155,7 @@ async fn state_delete_existing_item() {
     .await
     .expect("state::set");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".to_string(),
         payload: json!({"scope": SCOPE, "key": key}),
         action: None,
@@ -169,7 +165,7 @@ async fn state_delete_existing_item() {
     .expect("state::delete");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".to_string(),
             payload: json!({"scope": SCOPE, "key": key}),
             action: None,
@@ -185,7 +181,7 @@ async fn state_delete_existing_item() {
 async fn state_delete_non_existent_item() {
     let iii = common::shared_iii();
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".to_string(),
         payload: json!({"scope": SCOPE, "key": "non-existent"}),
         action: None,
@@ -214,7 +210,7 @@ async fn state_list_all_items_in_scope() {
     ];
 
     for item in &items {
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: "state::set".to_string(),
             payload: json!({"scope": scope, "key": item["id"], "value": item}),
             action: None,
@@ -224,7 +220,7 @@ async fn state_list_all_items_in_scope() {
         .expect("state::set");
     }
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::list".to_string(),
             payload: json!({"scope": scope}),
             action: None,
@@ -257,7 +253,7 @@ async fn state_list_groups_returns_available_scopes() {
         .as_millis();
     let scope = format!("list-groups-scope-rs-{ts}");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({"scope": scope, "key": "anchor", "value": {"present": true}}),
         action: None,
@@ -267,7 +263,7 @@ async fn state_list_groups_returns_available_scopes() {
     .expect("state::set anchor");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::list_groups".to_string(),
             payload: json!({}),
             action: None,
@@ -289,7 +285,7 @@ async fn state_list_groups_returns_available_scopes() {
         "expected groups to contain {scope}, got {groups:?}"
     );
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".to_string(),
         payload: json!({"scope": scope, "key": "anchor"}),
         action: None,
@@ -312,7 +308,7 @@ async fn state_update_applies_partial_updates_via_ops() {
     let scope = format!("update-scope-rs-{ts}");
     let key = format!("update-key-rs-{ts}");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({
             "scope": scope,
@@ -325,7 +321,7 @@ async fn state_update_applies_partial_updates_via_ops() {
     .await
     .expect("state::set initial");
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::update".to_string(),
         payload: json!({
             "scope": scope,
@@ -339,7 +335,7 @@ async fn state_update_applies_partial_updates_via_ops() {
     .expect("state::update");
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "state::get".to_string(),
             payload: json!({"scope": scope, "key": key}),
             action: None,
@@ -351,7 +347,7 @@ async fn state_update_applies_partial_updates_via_ops() {
     assert_eq!(result["count"], json!(5));
     assert_eq!(result["name"], json!("initial"));
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::delete".to_string(),
         payload: json!({"scope": scope, "key": key}),
         action: None,
@@ -370,7 +366,7 @@ async fn reactive_state() {
     let data = json!({"name": "Test", "value": 100});
     let updated_data = json!({"name": "New Test Data", "value": 200});
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "state::set".to_string(),
         payload: json!({"scope": SCOPE, "key": key, "value": data}),
         action: None,
@@ -397,18 +393,17 @@ async fn reactive_state() {
         }),
     );
 
-    let key_clone = key.clone();
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "state".to_string(),
-            fn_ref.id.clone(),
-            json!({"scope": SCOPE, "key": key_clone}),
-        ))
-        .expect("register state trigger");
+    let observer = iii.observe(
+        Source::function("state::on-changed")
+            .filters(json!({ "input.scope": { "$eq": SCOPE }, "input.key": { "$eq": key } }))
+            .deliver(Deliver::Input),
+        fn_ref.id.clone(),
+    );
+    observer.ready().await.expect("observe state::on-changed");
 
     let expected = Some(json!({"name": "New Test Data", "value": 200}));
     for attempt in 0..100 {
-        iii.trigger(TriggerRequest {
+        iii.call(CallRequest {
             function_id: "state::set".to_string(),
             payload: json!({"scope": SCOPE, "key": key, "value": updated_data}),
             action: None,
@@ -430,7 +425,7 @@ async fn reactive_state() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    trigger.unregister();
+    observer.dispose().await.expect("dispose");
     fn_ref.unregister();
     delete_state(iii, &key).await;
 }

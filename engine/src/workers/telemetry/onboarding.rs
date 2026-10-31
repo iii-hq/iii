@@ -22,11 +22,10 @@
 //! the tour's own state, and an engine that persisted a shadow copy of it
 //! would answer to nobody when the two disagreed.
 //!
-//! The `durable:subscriber` trigger type belongs to the `queue` worker. A
-//! binding registered before its provider connects is parked and replayed
-//! when the provider arrives (see `TriggerRegistry::register_trigger`), so
-//! this registration is unconditional: a project without the tour, or without
-//! `queue`, simply never fires it.
+//! The topic is observed on the `queue` worker's `queue::on-message`. The
+//! observer is made before the worker connects and waits for it, so this
+//! subscription is unconditional: a project without the tour, or without
+//! `queue`, simply never delivers to it.
 
 use std::{
     collections::HashSet,
@@ -45,7 +44,7 @@ use crate::{
 /// Topic the `onboarding` worker publishes each closed step on.
 pub const STEP_TOPIC: &str = "onboarding:steps:complete";
 pub const STEP_FN_ID: &str = "iii-telemetry::on-onboarding-step";
-pub const STEP_TRIGGER_ID: &str = "iii-telemetry::onboarding-step-watch";
+pub const STEP_OBSERVER_ID: &str = "iii-telemetry::onboarding-step-watch";
 pub const STEP_EVENT: &str = "onboarding_step";
 
 /// The properties the event carries: the tour message as published, or — for
@@ -122,29 +121,15 @@ pub(super) fn register_handler(
     );
 }
 
-/// Subscribe the handler to the tour's topic. The deterministic trigger id
-/// means a re-registration replaces rather than duplicates.
+/// Subscribe the handler to the tour's topic, in every namespace the `queue`
+/// worker runs in.
 ///
 /// Fire and forget, like every other part of this worker: a subscription
 /// this engine could not take is not the operator's problem and never
-/// becomes theirs. The outcome is dropped — nothing is returned to a caller,
-/// nothing is logged or traced here, and nothing about the tour changes.
-pub(super) async fn register_trigger_in(engine: &Arc<Engine>, namespace: &str) {
-    let _ = engine
-        .trigger_registry
-        .register_trigger(super::topic_watch(
-            STEP_TRIGGER_ID,
-            STEP_FN_ID,
-            STEP_TOPIC,
-            namespace,
-        ))
-        .await;
-}
-
-/// Subscribe in the default namespace, which is where an unnamespaced project
-/// and the engine's own providers live.
-pub(super) async fn register_trigger(engine: &Arc<Engine>) {
-    register_trigger_in(engine, crate::protocol::DEFAULT_NAMESPACE).await;
+/// becomes theirs. Nothing is returned to a caller, and nothing about the
+/// tour changes.
+pub(super) fn watch_topic(engine: &Arc<Engine>) {
+    super::watch_topic(engine, STEP_OBSERVER_ID, STEP_TOPIC, STEP_FN_ID);
 }
 
 #[cfg(test)]

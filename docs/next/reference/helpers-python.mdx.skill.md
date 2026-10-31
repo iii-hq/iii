@@ -242,7 +242,7 @@ extract_traceparent(traceparent: str) -> Any
 
 Force-flush all OTel providers without tearing them down.
 
-Counterpart to :func:`shutdown_otel`. Use before short-lived process exits
+Counterpart to `shutdown_otel`. Use before short-lived process exits
 where you want pending spans/metrics/logs delivered but plan to keep using
 OTel afterwards.
 
@@ -555,7 +555,7 @@ from iii_helpers.queue import ...
 
 ### EnqueueResult
 
-Result returned when a function is invoked with ``TriggerAction.Enqueue``.
+Result returned when a function is called with ``CallAction.Enqueue``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -563,7 +563,7 @@ Result returned when a function is invoked with ``TriggerAction.Enqueue``.
 
 ## stream
 
-Stream trigger configs, change events, IO inputs, and update operations.
+Stream change events, IO inputs, and update operations.
 
 **Import**
 
@@ -573,11 +573,15 @@ from iii_helpers.stream import ...
 
 ### Types
 
-[`StreamAuthInput`](#streamauthinput) · [`StreamAuthResult`](#streamauthresult) · [`StreamChangeEvent`](#streamchangeevent) · [`StreamChangeEventDetail`](#streamchangeeventdetail) · [`StreamDeleteInput`](#streamdeleteinput) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamGetInput`](#streamgetinput) · [`StreamJoinLeaveEvent`](#streamjoinleaveevent) · [`StreamJoinLeaveTriggerConfig`](#streamjoinleavetriggerconfig) · [`StreamJoinResult`](#streamjoinresult) · [`StreamListGroupsInput`](#streamlistgroupsinput) · [`StreamListInput`](#streamlistinput) · [`StreamSetInput`](#streamsetinput) · [`StreamSetResult`](#streamsetresult) · [`StreamTriggerConfig`](#streamtriggerconfig) · [`StreamUpdateInput`](#streamupdateinput) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateAppend`](#updateappend) · [`UpdateDecrement`](#updatedecrement) · [`UpdateIncrement`](#updateincrement) · [`UpdateMerge`](#updatemerge) · [`UpdateOpError`](#updateoperror) · [`UpdateRemove`](#updateremove) · [`UpdateSet`](#updateset)
+[`StreamAuthInput`](#streamauthinput) · [`StreamAuthResult`](#streamauthresult) · [`StreamChangeEvent`](#streamchangeevent) · [`StreamChangeEventDetail`](#streamchangeeventdetail) · [`StreamDeleteInput`](#streamdeleteinput) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamGetInput`](#streamgetinput) · [`StreamJoinLeaveEvent`](#streamjoinleaveevent) · [`StreamJoinResult`](#streamjoinresult) · [`StreamListGroupsInput`](#streamlistgroupsinput) · [`StreamListInput`](#streamlistinput) · [`StreamSetInput`](#streamsetinput) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateInput`](#streamupdateinput) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateAppend`](#updateappend) · [`UpdateDecrement`](#updatedecrement) · [`UpdateIncrement`](#updateincrement) · [`UpdateMerge`](#updatemerge) · [`UpdateOpError`](#updateoperror) · [`UpdateRemove`](#updateremove) · [`UpdateSet`](#updateset)
 
 ### StreamAuthInput
 
 Input for stream authentication.
+
+.. deprecated::
+    StreamAuthInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -592,6 +596,10 @@ Input for stream authentication.
 
 Result of stream authentication.
 
+.. deprecated::
+    StreamAuthResult is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `context` | `Any \| None` | No | Arbitrary context passed to stream handlers after authentication. |
@@ -600,7 +608,11 @@ Result of stream authentication.
 
 ### StreamChangeEvent
 
-Handler input for ``stream`` triggers, fired when an item changes via ``stream::set``, ``stream::update``, or ``stream::delete``.
+A stream change, from an item changed via ``stream::set``, ``stream::update``, or ``stream::delete``.
+
+.. deprecated::
+    StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -617,6 +629,10 @@ Handler input for ``stream`` triggers, fired when an item changes via ``stream::
 
 Detail of a stream change event containing the mutation type and data.
 
+.. deprecated::
+    StreamChangeEventDetail is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `data` | `Any` | Yes | The data associated with the event. |
@@ -627,6 +643,10 @@ Detail of a stream change event containing the mutation type and data.
 ### StreamDeleteInput
 
 Input for stream delete operation.
+
+.. deprecated::
+    StreamDeleteInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -650,6 +670,10 @@ Result of stream delete operation.
 
 Input for stream get operation.
 
+.. deprecated::
+    StreamGetInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `group_id` | `str` | Yes | Group identifier. |
@@ -662,9 +686,13 @@ Input for stream get operation.
 
 Event for stream join/leave.
 
+.. deprecated::
+    StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `context` | `Any \| None` | No | Auth context from :class:`StreamAuthResult`. |
+| `context` | `Any \| None` | No | Auth context from `StreamAuthResult`. |
 | `group_id` | `str` | Yes | Group identifier. |
 | `id` | `str \| None` | No | Item identifier (if applicable). |
 | `stream_name` | `str` | Yes | Name of the stream. |
@@ -672,19 +700,13 @@ Event for stream join/leave.
 
 ---
 
-### StreamJoinLeaveTriggerConfig
-
-Trigger config for ``stream:join`` and ``stream:leave`` triggers.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `condition_function_id` | `str \| None` | No | Function ID for conditional execution. If it returns ``False``, the handler is skipped. |
-
----
-
 ### StreamJoinResult
 
 Result of stream join.
+
+.. deprecated::
+    StreamJoinResult is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -696,6 +718,10 @@ Result of stream join.
 
 Input for stream list groups operation.
 
+.. deprecated::
+    StreamListGroupsInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `stream_name` | `str` | Yes | Name of the stream. |
@@ -705,6 +731,10 @@ Input for stream list groups operation.
 ### StreamListInput
 
 Input for stream list operation.
+
+.. deprecated::
+    StreamListInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -716,6 +746,10 @@ Input for stream list operation.
 ### StreamSetInput
 
 Input for stream set operation.
+
+.. deprecated::
+    StreamSetInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -737,22 +771,13 @@ Result of stream set operation.
 
 ---
 
-### StreamTriggerConfig
-
-Trigger config for ``stream`` triggers. Filters which item changes fire the handler.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `condition_function_id` | `str \| None` | No | Function ID for conditional execution. If it returns ``False``, the handler is skipped. |
-| `group_id` | `str \| None` | No | If set, only changes within this group fire the handler. |
-| `item_id` | `str \| None` | No | If set, only changes to this specific item fire the handler. |
-| `stream_name` | `str` | Yes | Stream name to watch. Only changes on this stream fire the handler. |
-
----
-
 ### StreamUpdateInput
 
 Input for stream update operation.
+
+.. deprecated::
+    StreamUpdateInput is deprecated (iii-stream) and will be removed in an upcoming release.
+    Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -784,7 +809,7 @@ or an empty list), a single first-level key (when ``path`` is a
 non-empty string), or an arbitrary nested location (when ``path``
 is a list of literal segments).
 
-Path forms accepted (mirrors :class:`UpdateMerge` after #1547):
+Path forms accepted (mirrors `UpdateMerge` after #1547):
   - ``None`` / ``""`` / ``[]``: append at the root.
   - ``"foo"``: append at the first-level key ``foo``. A dotted
     string like ``"a.b"`` is the literal key ``"a.b"``, *not*
@@ -811,7 +836,7 @@ append does not apply when an error is returned for that op.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `MergePath \| None` | No | Optional path to the append target. Accepts a single first-level key (legacy string) or a list of literal segments for nested append. See :data:`MergePath`. |
+| `path` | `MergePath \| None` | No | Optional path to the append target. Accepts a single first-level key (legacy string) or a list of literal segments for nested append. See `MergePath`. |
 | `type` | `str` | No | - |
 | `value` | `Any` | Yes | Value to append. String targets only accept string values. |
 
@@ -871,7 +896,7 @@ response. The merge does not apply when an error is returned.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `path` | `MergePath \| None` | No | Optional path to the merge target. See :data:`MergePath`. |
+| `path` | `MergePath \| None` | No | Optional path to the merge target. See `MergePath`. |
 | `type` | `str` | No | - |
 | `value` | `Any` | Yes | Object to merge. Must be a JSON object. |
 
@@ -928,7 +953,7 @@ from iii_helpers.worker_connection_manager import ...
 
 ### Types
 
-[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult)
 
 ### AuthInput
 
@@ -955,9 +980,7 @@ context is forwarded to the middleware.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `allow_function_registration` | `bool` | No | Whether the worker may register new functions. Defaults to ``True`` if omitted. |
-| `allow_trigger_type_registration` | `bool` | No | Whether the worker may register new trigger types. |
 | `allowed_functions` | `list[str]` | No | Additional function IDs to allow beyond ``expose_functions``, in the ``default`` namespace only. Put per-namespace grants in ``namespaces``. |
-| `allowed_trigger_types` | `list[str] \| None` | No | Trigger type IDs the worker may register triggers for. When ``None``, all types are allowed. |
 | `context` | `dict[str, Any]` | No | Arbitrary context forwarded to the middleware function on every invocation. |
 | `forbidden_functions` | `list[str]` | No | Function IDs to deny even if they match ``expose_functions``. |
 | `function_registration_prefix` | `str \| None` | No | Optional prefix applied to all function IDs registered by this worker. |
@@ -974,81 +997,28 @@ fields, or raise an exception to deny the registration.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `args_format` | `Any` | No | JSON Schema of the observers' ``args``, when the registration sets one. |
 | `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
 | `description` | `str \| None` | No | Human-readable description of the function. |
 | `function_id` | `str` | Yes | ID of the function being registered. |
 | `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the function. |
 | `namespace` | `str` | No | Namespace the function registers in. It is the explicit registration value, or ``default`` when the registration omitted it. |
+| `observable` | `bool` | No | Whether other workers may observe the function. |
+| `private` | `bool` | No | Whether only the registering worker may call the function. |
 
 ---
 
 ### OnFunctionRegistrationResult
 
 Result returned from the ``on_function_registration_function_id`` hook.
-Omitted fields keep the original value from the registration request.
+Omitted fields keep the original value from the registration request:
+return ``model_dump(exclude_none=True)``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `args_format` | `Any` | No | Replaces the registration's ``args_format``. |
 | `description` | `str \| None` | No | Mapped description. |
 | `function_id` | `str \| None` | No | Mapped function ID. |
 | `metadata` | `dict[str, Any] \| None` | No | Mapped metadata. |
-
----
-
-### OnTriggerRegistrationInput
-
-Input passed to the ``on_trigger_registration_function_id`` hook
-when a worker attempts to register a trigger through the RBAC port.
-Return an ``OnTriggerRegistrationResult`` with the (possibly mapped)
-fields, or raise an exception to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `Any` | No | Trigger-specific configuration. |
-| `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
-| `function_id` | `str` | Yes | ID of the function this trigger is bound to. |
-| `metadata` | `dict[str, Any] \| None` | No | Arbitrary metadata attached to the trigger. |
-| `namespace` | `str` | No | Namespace the trigger target resolves in. It is the explicit registration value, or ``default`` when the registration omitted it. |
-| `trigger_id` | `str` | Yes | ID of the trigger being registered. |
-| `trigger_type` | `str` | Yes | Trigger type identifier. |
-
----
-
-### OnTriggerRegistrationResult
-
-Result returned from the ``on_trigger_registration_function_id`` hook.
-Omitted fields keep the original value from the registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `Any` | No | Mapped trigger configuration. |
-| `function_id` | `str \| None` | No | Mapped function ID. |
-| `trigger_id` | `str \| None` | No | Mapped trigger ID. |
-| `trigger_type` | `str \| None` | No | Mapped trigger type. |
-
----
-
-### OnTriggerTypeRegistrationInput
-
-Input passed to the ``on_trigger_type_registration_function_id`` hook
-when a worker attempts to register a new trigger type through the RBAC port.
-Return an ``OnTriggerTypeRegistrationResult`` with the (possibly mapped)
-fields, or raise an exception to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `context` | `dict[str, Any]` | Yes | Auth context from ``AuthResult.context`` for this session. |
-| `description` | `str` | Yes | Human-readable description of the trigger type. |
-| `trigger_type_id` | `str` | Yes | ID of the trigger type being registered. |
-
----
-
-### OnTriggerTypeRegistrationResult
-
-Result returned from the ``on_trigger_type_registration_function_id`` hook.
-Omitted fields keep the original value from the registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `str \| None` | No | Mapped description. |
-| `trigger_type_id` | `str \| None` | No | Mapped trigger type ID. |
+| `observable` | `bool \| None` | No | Replaces the registration's ``observable``. |
+| `private` | `bool \| None` | No | Replaces the registration's ``private``. |

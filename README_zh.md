@@ -1,6 +1,6 @@
 <h1 align="center">iii</h1>
 
-> 本文件是 [README.md](README.md) 的简体中文翻译。为方便同步，正文中的代码、命令、专有名词（Worker、Trigger、Function、Compose、SDK 等）保持原文。
+> 本文件是 [README.md](README.md) 的简体中文翻译。为方便同步，正文中的代码、命令、专有名词（Worker、Function、Observer、Compose、SDK 等）保持原文。
 
 ![iii: 从点对点集成到基于共享运行时的零集成](.github/assets/zero-integration.png)
 
@@ -47,9 +47,9 @@ iii 是在实时场景中组合（compose）、观测（observe）、发现（di
 
 ```bash
 iii compose --namespace dev --up
-iii trigger -n dev compose::add worker=queue
-iii trigger -n dev compose::add worker=agent
-iii trigger -n dev compose::add worker=<anything>
+iii call -n dev compose::add worker=queue
+iii call -n dev compose::add worker=agent
+iii call -n dev compose::add worker=<anything>
 ```
 
 每个 Worker 都会加入实时目录（live catalog）。其他所有 Worker 会立即收到通知并可以直接调用它。可在 [workers.iii.dev](https://workers.iii.dev/) 浏览可用的 Worker。
@@ -60,11 +60,11 @@ iii trigger -n dev compose::add worker=<anything>
 
 iii 由 3 个原语驱动：
 
-**Workers** 是向 iii 引擎注册、随后再注册 Triggers 和 Functions 的进程。一个 TypeScript API 服务是一个 Worker，一个 Python 数据管道是一个 Worker，一个 Rust 微服务也是一个 Worker。只需几行代码，任何功能都可以被改造为一个 Worker。Compose 还能在运行时添加 Worker，因此 agent 和应用可以在系统运行的过程中对其扩展。
+**Workers** 是连接到 iii 引擎并注册 Functions 的进程。一个 TypeScript API 服务是一个 Worker，一个 Python 数据管道是一个 Worker，一个 Rust 微服务也是一个 Worker。只需几行代码，任何功能都可以被改造为一个 Worker。Compose 还能在运行时添加 Worker，因此 agent 和应用可以在系统运行的过程中对其扩展。
 
-**Triggers** 是任何会触发某个函数运行的东西。Trigger 可以是对函数的直接调用、一个 HTTP 端点、一个 cron 计划、一个队列订阅、一次状态变更、一个流事件，或其他任何事物。Triggers 是声明式的：Worker 声明“当某件事发生时运行这个函数”，而 iii 负责路由、序列化和投递。
+**Functions** 是具有稳定标识符的工作单元（例如 `content::classify`、`orders::validate`）。Function 接收输入、执行工作，并可选择性地返回输出。Functions 存在于 Worker 之中，任何 Worker 都可以用 `iii.call()` 调用任何 Function，无论它运行在哪里。
 
-**Functions** 是具有稳定标识符的工作单元（例如 `content::classify`、`orders::validate`）。它接收输入、执行工作，并可选择性地返回输出。Functions 存在于 Worker 之中。
+**Observers** 让系统具备响应能力。`iii.observe('orders::create', 'alerts::big-order')` 的含义是：当 `orders::create` 运行时，`alerts::big-order` 随之运行。每一个 Function 都可以被观测（observe），包括 Worker 为事件提供的 Function：一个 HTTP 请求是对 `http::on-request` 的一次调用，cron 的一次 tick 是对 `cron::on-tick` 的一次调用，一条队列消息是对 `queue::on-message` 的一次调用。iii 负责路由、序列化和投递。
 
 通过将服务所能做的一切映射到这三个原语，iii 打造出一个既毫不费力地可组合、又完全可观测的开发流程。
 
@@ -82,7 +82,7 @@ iii 由 3 个原语驱动：
 - 用 `iii compose --up` 运行它们
 - 完成。它已进入系统，可被追踪、可被调用。
 
-平台团队发布 Worker，应用团队注册函数、声明 Trigger，agent 使用同一份目录、同一套函数调用。
+平台团队发布 Worker，应用团队注册函数并观测（observe）它们要响应的函数，agent 使用同一份目录、同一套函数调用。
 
 扩展 iii 就是添加一个 Compose Worker；编排 iii 就是调用函数；观测 iii 就是打开那条链路追踪（trace）。
 
@@ -99,7 +99,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 在 `worker-compose.yaml` 中声明项目的 Worker，或通过一个正在运行的 Compose 守护进程添加它们：
 
 ```bash
-iii trigger -n dev compose::add worker=queue
+iii call -n dev compose::add worker=queue
 ```
 
 在 [workers.iii.dev](https://workers.iii.dev/) 浏览软件包，并查阅
@@ -124,7 +124,7 @@ iii trigger -n dev compose::add worker=queue
 npx skills add iii-hq/iii/skills
 ```
 
-这些 skills 覆盖了 iii 的每一个原语：HTTP 端点、队列、cron、状态、流、自定义 Trigger 等等。完整列表见 [skills/](skills/)。
+这些 skills 覆盖了 iii 的每一个原语：HTTP 端点、队列、cron、状态、流、Observer、可观测函数（observable function）等等。完整列表见 [skills/](skills/)。
 
 [iii-hq/workers](https://github.com/iii-hq/workers) 中的每个 Worker 也自带各自的 skill。可与 Worker 一起安装：
 
@@ -138,7 +138,7 @@ npx skills add iii-hq/workers --all         # 所有 worker skill
 
 ## 控制台 (Console)
 
-[iii-console](console/) 是面向开发者与运维的控制台，用于检查 Worker、函数、Trigger、队列、链路追踪、日志以及实时状态。安装与用法见
+[iii-console](console/) 是面向开发者与运维的控制台，用于检查 Worker、函数、Observer、队列、链路追踪、日志以及实时状态。安装与用法见
 [Console 文档](https://iii.dev/docs/using-iii/console)。
 
 ## 仓库结构

@@ -149,7 +149,7 @@ const MARKERS_RE = new RegExp(`${EXPAND_PARAMS_RE.source}|${INTERNAL_RE.source}`
 
 /**
  * A bracketed name go/doc did not resolve as a doc link (a field such as
- * `[TriggerRequest.Timeout]`): the author meant a link, so it renders as a code
+ * `[CallRequest.Timeout]`): the author meant a link, so it renders as a code
  * span like a resolved one.
  * Not after an identifier or `]`, so `map[string]any` and `Handler[Req]` stay.
  */
@@ -413,8 +413,8 @@ function isMethodLike(fn: GoFunc, pkg: GoPackage, owner: string): boolean {
 
 /**
  * The deprecated types of a package that the reader is still handed: those a
- * documented function or method returns, such as the TriggerTypeRef of
- * RegisterTriggerType. Their methods are documented nowhere else, so they stay
+ * documented function or method returns, such as the handle a deprecated
+ * method returns. Their methods are documented nowhere else, so they stay
  * in the Types section, marked deprecated; other deprecated types only expand
  * under the parameters of the methods that take them. Computed to a fixed
  * point, since the methods of a kept type count as documented too.
@@ -579,9 +579,9 @@ export function parseGodoc(jsonPath: string): SdkDoc {
   const packages = mod.packages.filter(p => !isGoHelpersPackage(p.relPath))
   const root = packages.find(p => p.relPath === '')
   const client = root?.types.find(t => t.name === MAIN_TYPE)
-  // Method headings carry their receiver (`Client.Trigger`), the way Go doc links
+  // Method headings carry their receiver (`Client.Call`), the way Go doc links
   // name methods. A type name has no dot, so a method never shares its anchor
-  // with a type of the same name (the Trigger handle, the ConnectionState type)
+  // with a type of the same name (the Call type, the ConnectionState type)
   // or with a package function (OpenReader).
   const methods = (client?.methods ?? [])
     .filter(m => !isInternalDoc(m.doc.raw))

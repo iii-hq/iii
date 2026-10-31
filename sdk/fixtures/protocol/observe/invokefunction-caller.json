@@ -7,7 +7,8 @@
     "sql": "UPDATE invoices SET status = 'paid' WHERE id = $1",
     "params": [
       77
-    ]
+    ],
+    "_caller_worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70"
   },
   "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
   "caller": {
@@ -21,6 +22,5 @@
       "function_id": "checkout::confirm",
       "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
     }
-  },
-  "observe_depth": 2
+  }
 }

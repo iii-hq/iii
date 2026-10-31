@@ -100,7 +100,7 @@ func (h *ObserverHandle) Ready(ctx context.Context) error {
 
 // OnStateChange calls listener on every state change, in order of the changes and of
 // registration, on a goroutine of the handle's own (one change at a time; never on the
-// SDK's read loop, so a listener may call Trigger). It returns the function that
+// SDK's read loop, so a listener may call the client). It returns the function that
 // unsubscribes it; a change already queued is not delivered to it afterwards.
 func (h *ObserverHandle) OnStateChange(listener func(state ObserverState, reason *ObserveReason)) (unsubscribe func()) {
 	h.mu.Lock()

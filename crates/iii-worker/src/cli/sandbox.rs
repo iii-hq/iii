@@ -5,9 +5,9 @@
 // See LICENSE and PATENTS files for details.
 
 //! `iii worker sandbox {run, create, exec, list, stop}` handlers. Thin CLI wrapper
-//! that calls the sandbox daemon directly via `iii.trigger(TriggerRequest{...})`.
+//! that calls the sandbox daemon directly via `iii.call(CallRequest{...})`.
 
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Error, IIIClient, InitOptions, register_worker};
 use serde_json::{Value, json};
 
@@ -15,13 +15,13 @@ use crate::cli::rootfs_cache;
 use crate::sandbox_daemon::catalog;
 
 /// Upper bound for cold-start `sandbox::create` (image pull + VM boot).
-const CREATE_TRIGGER_TIMEOUT_MS: u64 = 300_000;
+const CREATE_CALL_TIMEOUT_MS: u64 = 300_000;
 /// Matches the daemon's default exec timeout. If the daemon changes, update here.
 /// (See `sandbox_daemon::adapters::DEFAULT_EXEC_TIMEOUT_MS` — private there, so
 /// we maintain a mirrored constant on the CLI side.)
 const DAEMON_DEFAULT_EXEC_TIMEOUT_MS: u64 = 300_000;
-/// Safety margin so the daemon's deadline fires before the trigger does.
-const EXEC_TRIGGER_MARGIN_MS: u64 = 5_000;
+/// Safety margin so the daemon's deadline fires before the call's does.
+const EXEC_CALL_MARGIN_MS: u64 = 5_000;
 
 /// Connect to the local engine on the given port. Returns the connected
 /// `IIIClient` handle; callers are responsible for `iii.shutdown()` before return.
@@ -30,7 +30,7 @@ fn connect(port: u16) -> IIIClient {
 }
 
 /// Fail fast when no engine is listening on `port`, with a hint the raw
-/// trigger error doesn't carry. Checked BEFORE `preflight_pull_if_preset`
+/// call error doesn't carry. Checked BEFORE `preflight_pull_if_preset`
 /// so `sandbox create python` with no engine errors in milliseconds
 /// instead of pulling a multi-hundred-MiB preset image first.
 fn engine_down(port: u16) -> bool {
@@ -129,7 +129,7 @@ pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32,
     let iii = connect(port);
 
     let create_resp: Value = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::create".into(),
             payload: json!({
                 "image": image,
@@ -137,7 +137,7 @@ pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32,
                 "memory_mb": memory,
             }),
             action: None,
-            timeout_ms: Some(CREATE_TRIGGER_TIMEOUT_MS),
+            timeout_ms: Some(CREATE_CALL_TIMEOUT_MS),
         })
         .await
     {
@@ -159,7 +159,7 @@ pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32,
     };
 
     let exec_result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::exec".into(),
             payload: json!({
                 "sandbox_id": sandbox_id,
@@ -173,7 +173,7 @@ pub async fn handle_run(image: String, cmd: Vec<String>, cpus: u32, memory: u32,
 
     // Step 3: always attempt stop, even if exec failed.
     let _ = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::stop".into(),
             payload: json!({
                 "sandbox_id": sandbox_id,
@@ -252,11 +252,11 @@ pub async fn handle_create(
 
     let started_at = std::time::Instant::now();
     let code = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::create".into(),
             payload,
             action: None,
-            timeout_ms: Some(CREATE_TRIGGER_TIMEOUT_MS),
+            timeout_ms: Some(CREATE_CALL_TIMEOUT_MS),
         })
         .await
     {
@@ -329,11 +329,11 @@ pub async fn handle_exec(
 
     // When the user specifies a timeout, that value is passed to the handler;
     // when absent the handler defaults to DAEMON_DEFAULT_EXEC_TIMEOUT_MS. Either
-    // way we add EXEC_TRIGGER_MARGIN_MS so the daemon's own deadline fires before
-    // the trigger times out, ensuring proper timed_out signalling rather than a
+    // way we add EXEC_CALL_MARGIN_MS so the daemon's own deadline fires before
+    // the call times out, ensuring proper timed_out signalling rather than a
     // bare Error::Timeout.
-    let trigger_timeout_ms =
-        Some(timeout_ms.unwrap_or(DAEMON_DEFAULT_EXEC_TIMEOUT_MS) + EXEC_TRIGGER_MARGIN_MS);
+    let call_timeout_ms =
+        Some(timeout_ms.unwrap_or(DAEMON_DEFAULT_EXEC_TIMEOUT_MS) + EXEC_CALL_MARGIN_MS);
 
     let iii = connect(port);
 
@@ -350,11 +350,11 @@ pub async fn handle_exec(
     }
 
     let result = iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::exec".into(),
             payload: exec_payload,
             action: None,
-            timeout_ms: trigger_timeout_ms,
+            timeout_ms: call_timeout_ms,
         })
         .await;
 
@@ -400,7 +400,7 @@ pub async fn handle_list(_all: bool, port: u16) -> i32 {
     let iii = connect(port);
 
     let resp: Value = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::list".into(),
             payload: json!({}),
             action: None,
@@ -439,7 +439,7 @@ pub async fn handle_stop(id: String, port: u16) -> i32 {
     let iii = connect(port);
 
     let code = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::stop".into(),
             payload: json!({
                 "sandbox_id": id,
@@ -468,12 +468,12 @@ pub async fn handle_stop(id: String, port: u16) -> i32 {
 // upload / download
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Hard ceiling on the per-trigger timeout for upload/download. The
-/// trigger itself returns once the supervisor has fsync+rename'd
+/// Hard ceiling on the per-call timeout for upload/download. The
+/// call itself returns once the supervisor has fsync+rename'd
 /// (upload) or once the metadata frame is back (download), so this
 /// bounds the *handshake*, not the byte stream. The stream lives on
-/// the data channel after the trigger returns.
-const FS_TRIGGER_TIMEOUT_MS: u64 = 60_000;
+/// the data channel after the call returns.
+const FS_CALL_TIMEOUT_MS: u64 = 60_000;
 
 /// Build the engine WebSocket base URL from the port the CLI talked
 /// to. `ChannelReader` / `ChannelWriter` need this to dial the
@@ -509,9 +509,9 @@ pub async fn handle_upload(
     let writer = channel.writer;
 
     // Feed bytes from the local source into the channel on a separate
-    // task. The trigger call below races the feed: as soon as the
+    // task. The call below races the feed: as soon as the
     // supervisor sees `FsEnd` (which the channel surfaces when we
-    // close it), the trigger response comes back.
+    // close it), the call's response comes back.
     //
     // 64 KiB matches `ChannelWriter`'s internal frame size; using the
     // same chunk avoids re-chunking inside the writer.
@@ -552,8 +552,8 @@ pub async fn handle_upload(
         result
     });
 
-    let trigger_result = iii
-        .trigger(TriggerRequest {
+    let call_result = iii
+        .call(CallRequest {
             function_id: "sandbox::fs::write".into(),
             payload: json!({
                 "sandbox_id": id,
@@ -563,18 +563,18 @@ pub async fn handle_upload(
                 "content": reader_ref,
             }),
             action: None,
-            timeout_ms: Some(FS_TRIGGER_TIMEOUT_MS),
+            timeout_ms: Some(FS_CALL_TIMEOUT_MS),
         })
         .await;
 
     // Always join the feed so we don't leak the task or miss a local
-    // read error. If the trigger itself succeeded but the feed errored
+    // read error. If the call itself succeeded but the feed errored
     // (e.g. `--` source disappeared mid-stream), surface that — the
     // remote file may be truncated even though the supervisor reported
     // success on the bytes it received.
     let feed_outcome = feed.await;
 
-    let code = match (trigger_result, feed_outcome) {
+    let code = match (call_result, feed_outcome) {
         (Ok(resp), Ok(Ok(local_bytes))) => {
             let bytes_written = resp
                 .get("bytes_written")
@@ -620,14 +620,14 @@ pub async fn handle_download(
     let iii = connect(port);
 
     let resp: Value = match iii
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "sandbox::fs::read".into(),
             payload: json!({
                 "sandbox_id": id,
                 "path": remote_path,
             }),
             action: None,
-            timeout_ms: Some(FS_TRIGGER_TIMEOUT_MS),
+            timeout_ms: Some(FS_CALL_TIMEOUT_MS),
         })
         .await
     {
@@ -738,11 +738,11 @@ mod tests {
         assert_eq!(handler_error_message(&e), "some other error");
     }
 
-    /// FS-trigger response: the supervisor's verbatim message survives
+    /// FS call response: the supervisor's verbatim message survives
     /// (no doubled "fs path not found:" prefix), and the S-code lands
     /// in stderr where shell scripts can grep for it.
     #[test]
-    fn fs_trigger_payload_carries_s_code_without_doubled_prefix() {
+    fn fs_call_payload_carries_s_code_without_doubled_prefix() {
         let e = Error::Handler(
             r#"{"type":"filesystem","code":"S211","message":"path not found: /tmp/no/such/file","retryable":false}"#
                 .into(),

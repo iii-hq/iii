@@ -17,7 +17,7 @@ function pattern(size: number, marker: string): string {
   const seed = marker.charCodeAt(0)
   const cycle = Array.from(
     { length: PATTERN_CYCLE },
-    (_, index) => ALPHABET[(index % PATTERN_PERIOD + seed) % ALPHABET.length],
+    (_, index) => ALPHABET[((index % PATTERN_PERIOD) + seed) % ALPHABET.length],
   ).join('')
   return cycle.repeat(Math.ceil(size / PATTERN_CYCLE)).slice(0, size)
 }
@@ -29,29 +29,42 @@ function assertPattern(value: unknown, size: number, marker: string): asserts va
 }
 
 function checkLimitMessage(message: string): void {
-  const match = /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/.exec(message)
+  const match =
+    /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/.exec(
+      message,
+    )
   assert.ok(match, message)
   assert.ok(Number(match[1]) > MESSAGE_LIMIT_BYTES, `reported envelope size was ${match[1]}`)
 }
 
 sdk.registerFunction('size::node-ready', async () => true)
 sdk.registerFunction('size::node', async (input: string) => input)
-sdk.registerFunction('size::node-roundtrip', async ({ target, size, marker }: { target: string; size: number; marker: string }) => {
-  const result = await sdk.trigger<string, string>({ function_id: target, payload: pattern(size, marker), timeoutMs: 120_000 })
-  assertPattern(result, size, marker)
-  console.log('JSON_SIZE_NODE_CROSS_SDK_OK')
-  return true
-})
+sdk.registerFunction(
+  'size::node-roundtrip',
+  async ({ target, size, marker }: { target: string; size: number; marker: string }) => {
+    const result = await sdk.call<string, string>({
+      function_id: target,
+      payload: pattern(size, marker),
+      timeoutMs: 120_000,
+    })
+    assertPattern(result, size, marker)
+    console.log('JSON_SIZE_NODE_CROSS_SDK_OK')
+    return true
+  },
+)
 sdk.registerFunction('size::node-local-limit', async () => {
   try {
-    await sdk.trigger({ function_id: 'size::rust', payload: pattern(MESSAGE_LIMIT_BYTES, 'Z') })
+    await sdk.call({ function_id: 'size::rust', payload: pattern(MESSAGE_LIMIT_BYTES, 'Z') })
     assert.fail('Node accepted an envelope over 64 MiB')
   } catch (error) {
     const e = error as Error & { code?: string }
     assert.equal(e.code, 'payload_too_large')
     checkLimitMessage(e.message.replace(/^payload_too_large: /, ''))
   }
-  assert.equal(await sdk.trigger<string, string>({ function_id: 'size::rust', payload: 'after-node-limit' }), 'after-node-limit')
+  assert.equal(
+    await sdk.call<string, string>({ function_id: 'size::rust', payload: 'after-node-limit' }),
+    'after-node-limit',
+  )
   return true
 })
 

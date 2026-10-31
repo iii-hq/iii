@@ -1,15 +1,18 @@
-//! Running handlers.
+//! Running handlers and delivering their calls.
 //!
 //! Both paths go through [`execute`]: the remote one (an `invokefunction`
-//! from the engine) and the local one (a [`trigger`](crate::IIIClient::trigger)
-//! of a function this worker hosts, once the engine confirmed it). So both
+//! from the engine) and the local one (a [`call`](crate::IIIClient::call) of
+//! a function this worker hosts, once the engine confirmed it). So both
 //! create the same `execute <fn>` span, set the same current invocation and
 //! produce the same error shape.
 //!
-//! A local call of an auto function evaluates its observers' compiled filters
-//! after the handler returns and reports only the matches. With nobody
-//! observing it costs one atomic load and puts nothing on the wire.
-
+//! Then the host delivers the call. Its observers are matched (all of them,
+//! or those the function's match hook says want it), and iii's delivery
+//! evaluates their `on` and compiled filters and reports only the matches; or
+//! the function's deliver hook delivers the call itself. A local call's
+//! matches join the batched `invocationsobserved` reports; a routed call's
+//! ride its `invocationresult` (`observed`). A call with no observer and no
+//! deliver hook costs one atomic load and puts nothing on the wire.
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
@@ -18,20 +21,22 @@ use std::{
 };
 
 use futures_util::FutureExt;
-use iii_filter::Doc;
+use iii_filter::Roots;
 use iii_helpers::observability::opentelemetry::Context as OtelContext;
 use serde_json::{Value, json, value::to_raw_value};
 
 use crate::{
     context::{Frame, InvocationCtx, local_depth, scope_frame, with_current},
     error::Error,
+    hooks::{Call, DeliverHook, same_json},
     iii::{
         DEFAULT_TIMEOUT_MS, IIIClient, PreparedEnvelope, inject_trace_headers, now_ms, parent_of,
     },
-    observable::{CompiledSet, FunctionEntry, panic_message},
+    observable::{DocParts, FunctionEntry, Observer, panic_message},
+    observe::ObservedError,
     protocol::{
-        Caller, Delivery, DroppedReportStats, ErrorBody, InvocationStatus, LocalFunctionStats,
-        Message, TriggerAction, TriggerRequest,
+        CallAction, CallRequest, Caller, DroppedReportStats, ErrorBody, InvocationStatus,
+        LocalFunctionStats, Message, observe_codes,
     },
     reporter::{CaptureMask, Gate, PendingItem, STATS_INTERVAL},
     types::RemoteFunctionHandlerWithMetadata,
@@ -84,11 +89,11 @@ pub(crate) async fn execute(
     };
     use iii_helpers::observability::redact_and_truncate;
 
-    // INTERNAL and named `execute` (not `call`/`trigger`): the engine already
-    // emits the SERVER `call <fn>` span for a routed hop AND a `trigger <fn>`
-    // span from fire_triggers. Reusing either name would duplicate an engine
-    // span under the worker's service. `execute` is unique, so the worker
-    // handler span reads as a clean internal child of its caller.
+    // INTERNAL and named `execute` (not `call`): the engine already emits the
+    // SERVER `call <fn>` span for a routed hop. Reusing that name would
+    // duplicate an engine span under the worker's service. `execute` is
+    // unique, so the worker handler span reads as a clean internal child of
+    // its caller.
     let otel_cx = {
         let tracer = iii_helpers::observability::opentelemetry::global::tracer("iii-rust-sdk");
         let span = tracer
@@ -97,8 +102,8 @@ pub(crate) async fn execute(
             .start_with_context(&tracer, &parent_cx);
         parent_cx.with_span(span)
     };
-    // What events emitted from this invocation carry, so their activations
-    // join its trace (also from tasks the handler spawns with `scope`).
+    // What the reports of this invocation carry, so their activations join
+    // its trace (also from tasks the handler spawns with `scope`).
     (ctx.traceparent, ctx.baggage) = {
         let _guard = otel_cx.clone().attach();
         inject_trace_headers()
@@ -236,6 +241,204 @@ pub(crate) fn error_body(error: Error, stacktrace: Option<String>) -> ErrorBody 
     }
 }
 
+/// The wire error of a failed deliver hook, as Node and Python answer it: a
+/// call the hook made that failed, rethrown, keeps its code (`Remote`, and
+/// [`Error::Timeout`] as `TIMEOUT`); anything else is `invocation_failed`.
+pub(crate) fn deliver_error_body(error: Error) -> ErrorBody {
+    match error {
+        Error::Timeout => ErrorBody {
+            code: TIMEOUT.to_string(),
+            message: Error::Timeout.to_string(),
+            stacktrace: None,
+        },
+        other => error_body(other, None),
+    }
+}
+
+/// The code of a call that got no answer in time.
+const TIMEOUT: &str = "TIMEOUT";
+
+/// Who delivers a call of a function this worker hosts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// A local call: its matches are reported.
+    Local,
+    /// A call routed by an `observe.v2` engine: its matches ride the answer.
+    Routed,
+    /// A call routed by an engine that evaluates its observers itself.
+    Engine,
+}
+
+/// A call of a function this worker hosts, to run and deliver.
+pub(crate) struct Hosted {
+    pub handler: RemoteFunctionHandlerWithMetadata,
+    pub entry: Arc<FunctionEntry>,
+    pub ctx: InvocationCtx,
+    pub local_depth: u32,
+    pub parent_cx: OtelContext,
+    pub payload: Value,
+    pub route: Route,
+}
+
+/// What a call of a function this worker hosts produced, once delivered.
+pub(crate) struct Answer {
+    /// What the caller gets: the handler's outcome, or its deliver hook's.
+    pub result: Result<Value, ErrorBody>,
+    /// A routed call's matches, which ride its `invocationresult`.
+    pub observed: Vec<String>,
+    /// The `execute <fn>` span's context, for the answer's trace headers.
+    pub otel_cx: OtelContext,
+}
+
+/// Runs a deliver hook inside the call's invocation context and span; a
+/// panic is an error.
+async fn run_deliver_hook(
+    hook: Arc<dyn DeliverHook>,
+    call: Call,
+    observers: Vec<Observer>,
+    frame: Arc<Frame>,
+    otel_cx: &OtelContext,
+) -> Result<Value, Error> {
+    use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
+    let run = scope_frame(frame, async move { hook.on_deliver(call, observers).await });
+    AssertUnwindSafe(run.with_context(otel_cx.clone()))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            Err(Error::Handler(format!(
+                "on_observer_deliver panicked: {}",
+                panic_message(&panic)
+            )))
+        })
+}
+
+fn observed_error(body: &ErrorBody) -> ObservedError {
+    ObservedError {
+        code: body.code.clone(),
+        message: body.message.clone(),
+    }
+}
+
+/// A call as a filter and a report see it, borrowed.
+struct CallView<'a> {
+    input: Option<&'a Value>,
+    output: Option<&'a Value>,
+    error: Option<&'a ObservedError>,
+    caller: Option<&'a Caller>,
+    metadata: Option<&'a Value>,
+    success: bool,
+}
+
+impl<'a> CallView<'a> {
+    fn of(call: &'a Call) -> Self {
+        let success = call.status == InvocationStatus::Success;
+        Self {
+            input: Some(&call.input),
+            output: call.output.as_ref().filter(|_| success),
+            error: call.error.as_ref(),
+            caller: call.caller.as_ref(),
+            metadata: call.metadata.as_ref(),
+            success,
+        }
+    }
+}
+
+/// What every report item of one call shares.
+struct ReportCtx<'a> {
+    entry: &'a FunctionEntry,
+    invocation: &'a InvocationCtx,
+    started_at_ms: u64,
+    duration_ms: f64,
+}
+
+/// The observers of the function among `leaves` (a list, or the leaves of a
+/// compiled set, each a slice) that are active, accept the call's status and
+/// whose filters match it.
+fn select(
+    function_id: &str,
+    view: &CallView<'_>,
+    leaves: &[&[Observer]],
+) -> (Vec<String>, CaptureMask) {
+    let candidate = |obs: &&Observer| {
+        obs.function_id() == function_id && obs.is_active() && obs.accepts(view.success)
+    };
+    let mut roots = Roots::default();
+    for leaf in leaves {
+        for obs in leaf.iter().filter(candidate) {
+            let read = obs.filter().roots();
+            roots.error |= read.error;
+            roots.caller |= read.caller;
+        }
+    }
+    let parts = DocParts::of(roots, view.error, view.caller);
+    let doc = parts.doc(view.input, view.output, view.metadata);
+    let mut matched = Vec::new();
+    let mut mask = CaptureMask::default();
+    for leaf in leaves {
+        for obs in leaf.iter().filter(candidate) {
+            if obs.filter().matches(&doc) {
+                matched.push(obs.id().to_string());
+                mask = mask.union(obs.mask());
+            }
+        }
+    }
+    (matched, mask)
+}
+
+/// A report item: the parts of the call `mask` captures. An item that
+/// carries both the input and the output of a handler that returned its
+/// input carries the value once (`output_is_input`).
+fn item(
+    report: &ReportCtx<'_>,
+    view: &CallView<'_>,
+    matched: Vec<String>,
+    mask: CaptureMask,
+) -> PendingItem {
+    let raw = |value: &Value| to_raw_value(value).ok();
+    let input = view.input.filter(|_| mask.input);
+    let output = view.output.filter(|_| mask.output);
+    let output_is_input = matches!((input, output), (Some(i), Some(o)) if same_json(i, o));
+    PendingItem {
+        function_id: report.entry.id.clone(),
+        namespace: report.entry.namespace().map(|ns| ns.to_string()),
+        invocation_id: report.invocation.invocation_id.clone(),
+        matched,
+        status: if view.success {
+            InvocationStatus::Success
+        } else {
+            InvocationStatus::Error
+        },
+        input: input.and_then(raw),
+        output: output.filter(|_| !output_is_input).and_then(raw),
+        error: view
+            .error
+            .filter(|_| mask.error)
+            .and_then(|error| to_raw_value(error).ok()),
+        caller: view.caller.filter(|_| mask.caller).and_then(report_caller),
+        metadata: view.metadata.filter(|_| mask.metadata).and_then(raw),
+        started_at_ms: report.started_at_ms,
+        duration_ms: report.duration_ms,
+        observe_depth: report.invocation.observe_depth,
+        traceparent: report.invocation.traceparent.clone(),
+        baggage: report.invocation.baggage.clone(),
+        mask,
+        output_is_input,
+        seq: 0,
+    }
+}
+
+/// The `caller` a report item carries: the call's context, without the
+/// `worker_id` and `worker_name` the engine stamps itself; `None` for a call
+/// made outside any handler.
+fn report_caller(caller: &Caller) -> Option<Caller> {
+    let caller = Caller {
+        worker_id: None,
+        worker_name: None,
+        ..caller.clone()
+    };
+    (caller != Caller::default()).then_some(caller)
+}
+
 impl IIIClient {
     /// The local handler for a call, when the five local dispatch conditions
     /// (see [`Dispatch`](crate::protocol::Dispatch)) that depend on the
@@ -286,11 +489,11 @@ impl IIIClient {
         &self,
         handler: RemoteFunctionHandlerWithMetadata,
         entry: Arc<FunctionEntry>,
-        request: TriggerRequest,
+        request: CallRequest,
         metadata: Option<Value>,
     ) -> Result<Value, Error> {
         let ctx = self.local_ctx(&request.function_id, metadata);
-        let is_void = matches!(request.action, Some(TriggerAction::Void));
+        let is_void = matches!(request.action, Some(CallAction::Void));
         let depth = local_depth() + 1;
         let run = self.clone().run_local(
             handler,
@@ -341,136 +544,191 @@ impl IIIClient {
         parent_cx: OtelContext,
         payload: Value,
     ) -> Result<Value, Error> {
-        let observed = (entry.delivery == Delivery::Auto && entry.is_observed())
-            .then(|| entry.compiled())
-            .filter(|set| !set.is_empty());
-        // Only what a filter or a capture reads is kept: the handler owns the
-        // payload.
-        let input = match &observed {
-            Some(set) if set.needs.input => Some(payload.clone()),
-            _ => None,
-        };
-        let started_at_ms = if observed.is_some() { now_ms() } else { 0 };
+        let hosted = self
+            .run_hosted(Hosted {
+                handler,
+                entry,
+                ctx,
+                local_depth,
+                parent_cx,
+                payload,
+                route: Route::Local,
+            })
+            .await;
+        hosted.result.map_err(|body| Error::Remote {
+            code: body.code,
+            message: body.message,
+            stacktrace: body.stacktrace,
+        })
+    }
+
+    /// Runs the handler of a function this worker hosts, then delivers the
+    /// call: iii's delivery, or the function's deliver hook. With no observer
+    /// and no deliver hook, it only runs the handler.
+    pub(crate) async fn run_hosted(&self, run: Hosted) -> Answer {
+        let Hosted {
+            handler,
+            entry,
+            ctx,
+            local_depth,
+            parent_cx,
+            payload,
+            route,
+        } = run;
+        let local = route == Route::Local;
+        if route == Route::Engine || !entry.delivers() {
+            let started = Instant::now();
+            let metadata = ctx.metadata.clone();
+            let executed = execute(parent_cx, payload, metadata, handler, ctx, local_depth).await;
+            if local {
+                entry
+                    .stats
+                    .record(executed.result.is_ok(), started.elapsed());
+            }
+            return Answer {
+                result: executed
+                    .result
+                    .map_err(|error| error_body(error, executed.stacktrace)),
+                observed: Vec::new(),
+                otel_cx: executed.otel_cx,
+            };
+        }
+
+        let hook = entry.deliver_hook();
+        let matcher = entry.matcher();
+        let snapshot = entry.compiled();
+        // What a filter reads, what a report carries and what a match or
+        // deliver hook gets: only that is kept of the input, which the handler
+        // owns.
+        let keep_input = hook.is_some()
+            || matcher.is_some()
+            || snapshot.roots.input
+            || (local && snapshot.capture.input);
+        let input = keep_input.then(|| payload.clone());
+        let started_at_ms = now_ms();
         let started = Instant::now();
         let metadata = ctx.metadata.clone();
         let Executed {
             result,
             stacktrace,
+            otel_cx,
             frame,
-            ..
         } = execute(parent_cx, payload, metadata, handler, ctx, local_depth).await;
         let elapsed = started.elapsed();
-        entry.stats.record(result.is_ok(), elapsed);
-        let result = result.map_err(|error| {
-            let body = error_body(error, stacktrace);
-            Error::Remote {
-                code: body.code,
-                message: body.message,
-                stacktrace: body.stacktrace,
-            }
-        });
-        if let Some(set) = observed {
-            self.report_auto(
-                &entry,
-                &set,
-                frame.invocation(),
-                input,
-                &result,
-                started_at_ms,
-                elapsed,
-            );
+        if local {
+            entry.stats.record(result.is_ok(), elapsed);
         }
-        result
-    }
-
-    /// Evaluates the observers of an auto function against one finished
-    /// local call and buffers a report when any matches.
-    #[allow(clippy::too_many_arguments)]
-    fn report_auto(
-        &self,
-        entry: &FunctionEntry,
-        set: &CompiledSet,
-        ctx: &InvocationCtx,
-        input: Option<Value>,
-        result: &Result<Value, Error>,
-        started_at_ms: u64,
-        elapsed: Duration,
-    ) {
-        let success = result.is_ok();
-        // The error as the engine reports a routed one: the invocation's
-        // error body (`run_local` already shaped every error as `Remote`).
-        let error = match result {
-            Ok(_) => None,
-            Err(Error::Remote {
-                code,
-                message,
-                stacktrace,
-            }) => serde_json::to_value(ErrorBody {
-                code: code.clone(),
-                message: message.clone(),
-                stacktrace: stacktrace.clone(),
-            })
-            .ok(),
-            Err(other) => {
-                Some(json!({ "code": "invocation_failed", "message": other.to_string() }))
-            }
-        };
-        let caller = if set.needs.caller {
-            ctx.caller
-                .as_ref()
-                .and_then(|caller| serde_json::to_value(caller).ok())
-        } else {
-            None
-        };
-        let doc = Doc {
-            input: input.as_ref(),
-            output: result.as_ref().ok(),
-            error: error.as_ref(),
-            caller: caller.as_ref(),
-            metadata: ctx.metadata.as_ref(),
-        };
-        let mut matched = Vec::new();
-        let mut mask = CaptureMask::default();
-        for observer in &set.observers {
-            if observer.is_active() && observer.accepts(success) && observer.filter().matches(&doc)
-            {
-                matched.push(observer.id().to_string());
-                mask = mask.union(observer.mask());
-            }
-        }
-        if matched.is_empty() {
-            return;
-        }
-
-        let raw = |value: &Value| to_raw_value(value).ok();
-        self.reporter().push(PendingItem {
-            function_id: entry.id.clone(),
-            namespace: entry.namespace().map(|ns| ns.to_string()),
-            invocation_id: ctx.invocation_id.clone(),
-            matched,
-            status: if success {
-                InvocationStatus::Success
-            } else {
-                InvocationStatus::Error
-            },
-            input: input.as_ref().filter(|_| mask.input).and_then(raw),
-            output: result.as_ref().ok().filter(|_| mask.output).and_then(raw),
-            error: error.as_ref().filter(|_| mask.error).and_then(raw),
-            caller: ctx.caller.clone().filter(|_| mask.caller),
-            metadata: ctx
-                .metadata
-                .as_ref()
-                .filter(|_| mask.metadata)
-                .and_then(raw),
+        let result = result.map_err(|error| error_body(error, stacktrace));
+        let invocation = frame.invocation();
+        let report = ReportCtx {
+            entry: &entry,
+            invocation,
             started_at_ms,
             duration_ms: elapsed.as_secs_f64() * 1000.0,
-            observe_depth: ctx.observe_depth,
-            traceparent: ctx.traceparent.clone(),
-            baggage: ctx.baggage.clone(),
-            mask,
-            emitted: false,
-            seq: 0,
+        };
+
+        if hook.is_none() && matcher.is_none() {
+            // iii's delivery to every active observer: the call's parts are
+            // read in place.
+            let error = result.as_ref().err().map(observed_error);
+            let view = CallView {
+                input: input.as_ref(),
+                output: result.as_ref().ok(),
+                error: error.as_ref(),
+                caller: invocation.caller.as_ref(),
+                metadata: invocation.metadata.as_ref(),
+                success: result.is_ok(),
+            };
+            // A set that is one leaf is read as one slice, as a list is.
+            let observed = match snapshot.observers.as_slice() {
+                Some(observers) => self.deliver(&report, &view, &[observers], local),
+                None => {
+                    let leaves: Vec<&[Observer]> = snapshot.observers.leaves().collect();
+                    self.deliver(&report, &view, &leaves, local)
+                }
+            };
+            return Answer {
+                result,
+                observed,
+                otel_cx,
+            };
+        }
+
+        let (output, handler_error) = match result {
+            Ok(output) => (Some(output), None),
+            Err(body) => (None, Some(body)),
+        };
+        let mut call = Call {
+            function_id: entry.id.clone(),
+            invocation_id: invocation.invocation_id.clone(),
+            status: if handler_error.is_some() {
+                InvocationStatus::Error
+            } else {
+                InvocationStatus::Success
+            },
+            input: input.unwrap_or(Value::Null),
+            output,
+            error: handler_error.as_ref().map(observed_error),
+            caller: invocation.caller.clone(),
+            metadata: invocation.metadata.clone(),
+        };
+        let matched: Vec<Observer> = match &matcher {
+            Some(matcher) => matcher.matching(&entry.id, &snapshot, &call),
+            None => snapshot
+                .observers
+                .iter()
+                .filter(|obs| obs.is_active())
+                .cloned()
+                .collect(),
+        };
+
+        let Some(hook) = hook else {
+            let observed = self.deliver(&report, &CallView::of(&call), &[&matched], local);
+            let result = match handler_error {
+                Some(body) => Err(body),
+                None => Ok(call.output.take().unwrap_or(Value::Null)),
+            };
+            return Answer {
+                result,
+                observed,
+                otel_cx,
+            };
+        };
+
+        // The hook delivers the call itself: iii delivers nothing for it.
+        let answer = run_deliver_hook(hook, call, matched, frame.clone(), &otel_cx).await;
+        let result = answer.map_err(|error| match (&handler_error, &error) {
+            // the handler's own error, rethrown: its body, stacktrace included
+            (Some(body), Error::Remote { code, message, .. })
+                if body.code == *code && body.message == *message =>
+            {
+                body.clone()
+            }
+            _ => deliver_error_body(error),
         });
+        Answer {
+            result,
+            observed: Vec::new(),
+            otel_cx,
+        }
+    }
+
+    /// iii's delivery of a call to `observers`: those whose `on` and filters
+    /// match it. A routed call's matches ride its answer (returned); a local
+    /// call's are reported.
+    fn deliver(
+        &self,
+        report: &ReportCtx<'_>,
+        view: &CallView<'_>,
+        leaves: &[&[Observer]],
+        local: bool,
+    ) -> Vec<String> {
+        let (matched, mask) = select(&report.entry.id, view, leaves);
+        if matched.is_empty() || !local {
+            return matched;
+        }
+        self.reporter().push(item(report, view, matched, mask));
+        Vec::new()
     }
 
     /// Sends what is due from the report buffer: items of functions the
@@ -478,20 +736,22 @@ impl IIIClient {
     /// their confirmation, or are dropped when the function is gone.
     pub(crate) fn flush_reports(&self) {
         let epoch = self.connection_epoch();
-        let frames = self.reporter().take_report_frames(|function_id| {
-            match self.function_entry(function_id) {
+        let v2 = self.engine_observes_v2();
+        let frames = self.reporter().take_report_frames(
+            |function_id| match self.function_entry(function_id) {
                 None => Gate::Drop,
                 Some(entry) if entry.confirmed_on(epoch) => Gate::Send,
-                // Another worker owns it now: nothing of it will be accepted.
+                // Released: the engine accepts nothing of it.
                 Some(entry) if entry.is_revoked() => Gate::Drop,
                 Some(_) => Gate::Hold,
-            }
-        });
+            },
+            v2,
+        );
         for frame in frames {
             if !self.is_running() {
                 // the send path is closed: the frame would vanish
                 self.reporter()
-                    .count_items(&frame.functions, crate::protocol::observe_codes::INACTIVE);
+                    .count_items(&frame.functions, observe_codes::INACTIVE);
                 continue;
             }
             let envelope = PreparedEnvelope::from_json(frame.json, None, None)
@@ -500,7 +760,7 @@ impl IIIClient {
             if let Err(error) = self.send_prepared(envelope) {
                 tracing::debug!(error = %error, "report frame not sent");
                 self.reporter()
-                    .count_items(&frame.functions, crate::protocol::observe_codes::INACTIVE);
+                    .count_items(&frame.functions, observe_codes::INACTIVE);
             }
         }
     }

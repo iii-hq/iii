@@ -83,7 +83,7 @@ func TestInvocationErrorAsThroughWrap(t *testing.T) {
 // wrapped — the Go counterpart of Rust's IIIError::NotConnected / ::Timeout.
 func TestSentinelErrorsMatchWhenWrapped(t *testing.T) {
 	for _, sentinel := range []error{ErrNotConnected, ErrTimeout} {
-		wrapped := fmt.Errorf("trigger: %w", sentinel)
+		wrapped := fmt.Errorf("call: %w", sentinel)
 		if !errors.Is(wrapped, sentinel) {
 			t.Errorf("errors.Is failed to match wrapped %v", sentinel)
 		}

@@ -10,37 +10,36 @@ import (
 	"github.com/google/uuid"
 )
 
-// This file is the local path of Trigger (sdk.md §3, §4.3): a function this worker
-// hosts, confirmed by the engine for in-process calls, runs here without touching the
-// wire. Nobody observing it means zero frames; a matched observer means one report item.
+// This file is the local path of Call: a function this worker hosts, confirmed by the
+// engine for in-process calls, runs here without touching the wire, and is delivered
+// here as a routed call is. Nobody observing it means zero frames; matched observers
+// mean one report item.
 
-// localTarget returns the function Trigger may run in-process: registered here, the
-// engine confirmed it with local_dispatch, the local-dispatch option is on, and the
-// resolved namespace is the one the engine registered it in (empty: this worker's).
-func (c *Client) localTarget(functionID, namespace string) (registeredFunction, bool) {
+// localTarget returns the function Call may run in-process, with the call state it
+// starts with: registered here, the engine confirmed it with local_dispatch, the
+// local-dispatch option is on, and the resolved namespace is the one the engine
+// registered it in (empty: this worker's).
+func (c *Client) localTarget(functionID, namespace string) (registeredFunction, *callState, bool) {
 	c.mu.Lock()
 	fn, ok := c.functions[functionID]
 	c.mu.Unlock()
 	if !ok || fn.observe == nil {
-		return registeredFunction{}, false
+		return registeredFunction{}, nil, false
 	}
-	st := fn.observe.dispatch.Load()
-	if !st.enabled || (namespace != "" && namespace != st.namespace) {
-		return registeredFunction{}, false
+	st := fn.observe.state.Load()
+	if !st.local || (namespace != "" && namespace != st.namespace) {
+		return registeredFunction{}, nil, false
 	}
-	return fn, true
+	return fn, st, true
 }
 
-type localOutcome struct {
-	result json.RawMessage
-	err    *ErrorBody
-}
-
-// invokeLocal runs the handler in-process, inside a new invocation context, with a
-// copy of the payload (value semantics, as over the wire); the caller gets a fresh
-// encoding of the result. Timeouts and errors have the remote path's shape: ErrTimeout,
-// and an *InvocationError carrying the handler's error body.
-func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req TriggerRequest) (json.RawMessage, error) {
+// invokeLocal runs the handler in-process, inside a new invocation context, then
+// delivers the call with st, the call state it started with. The handler gets a copy of
+// the payload and the caller its own encoding of the result (value semantics, as over
+// the wire), except for a private function, whose payload and result pass by
+// reference. Timeouts and errors have the remote path's shape: ErrTimeout, and an
+// *InvocationError carrying the error body.
+func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest) (json.RawMessage, error) {
 	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -53,8 +52,15 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 		_, err := json.Marshal(req.Metadata)
 		return nil, err
 	}
-	obs := fn.observe
+	f := fn.observe
 	functionID := fn.message.ID
+	private := f.private
+	copyOf := func(raw json.RawMessage) json.RawMessage {
+		if private {
+			return raw
+		}
+		return bytes.Clone(raw)
+	}
 
 	parent := invocationFrom(ctx)
 	workerID, workerName := c.identity()
@@ -69,73 +75,65 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, req Tri
 		inv.localDepth = parent.localDepth + 1
 	}
 	if len(req.Metadata) > 0 {
-		inv.metadata = bytes.Clone(req.Metadata)
+		inv.metadata = copyOf(req.Metadata)
 	}
 
-	// Evaluated against the observers active when the call started: an unobserved
-	// call is never reported, and its input is not copied for it.
-	set := obs.compiledSet()
-	var observedInput json.RawMessage
-	if obs.delivery == DeliveryAuto && len(set) > 0 {
-		// what observers see is the payload as the caller passed it
-		observedInput = bytes.Clone(data)
+	// Delivered to the observers active when the call started, by the hooks set then:
+	// an unobserved call without a deliver hook is never reported, and its input is not
+	// copied for it.
+	delivering := st.delivering()
+	input := copyOf(data)
+	// what observers see is the payload as the caller passed it
+	observedInput := input
+	if delivering {
+		observedInput = copyOf(data)
 	}
-	input := bytes.Clone(data)
 	// The handler runs on the client's lifetime context, as a remote one runs on the
 	// connection's: the caller's cancellation and values do not reach it.
 	// The handler gets its own copy of the metadata: what it does with it cannot
 	// change the report (made from inv.metadata, the snapshot taken at call start).
 	// The caller's trace context does reach it (otel.go), so its span joins the trace.
-	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), bytes.Clone(inv.metadata)), inv)
+	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), copyOf(inv.metadata)), inv)
 
-	run := func() localOutcome {
+	run := func() outcome {
 		started := time.Now()
-		var out localOutcome
-		result, herr := c.runHandler(hctx, fn.handler, input)
-		if herr != nil {
-			out.err = errorBodyFromHandlerError(herr)
-		} else if encoded, err := json.Marshal(result); err != nil {
-			out.err = &ErrorBody{Code: "invocation_failed", Message: err.Error()}
-		} else {
-			out.result = encoded
-		}
-		duration := time.Since(started)
-		c.reporter.recordLocal(functionID, out.err == nil, float64(duration)/float64(time.Millisecond))
-		if len(set) > 0 {
-			obs.reportLocal(set, localCall{
-				invocationID: inv.invocationID,
-				ok:           out.err == nil,
-				input:        observedInput,
-				output:       out.result,
-				err:          out.err,
-				caller:       caller,
-				metadata:     inv.metadata,
+		return c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, handler outcome) outcome {
+			duration := time.Since(started)
+			c.reporter.recordLocal(functionID, handler.errBody == nil, float64(duration)/float64(time.Millisecond))
+			if !delivering {
+				return handler
+			}
+			answer, _ := f.deliver(ctx, &callDelivery{
+				state:        st,
+				call:         handlerCall(functionID, inv.invocationID, observedInput, handler, caller, inv.metadata),
+				handler:      handler,
+				copyRaw:      !private,
 				startedAt:    started,
 				duration:     duration,
 				observeDepth: inv.observeDepth,
 				trace:        inv.trace,
 			})
-		}
-		return out
+			return answer
+		})
 	}
 
 	if req.Action != nil && req.Action.Type == "void" {
 		go func() {
-			if out := run(); out.err != nil {
-				log.Printf("iii: error invoking function %q: %s: %s", functionID, out.err.Code, out.err.Message)
+			if out := run(); out.errBody != nil {
+				log.Printf("iii: error invoking function %q: %s: %s", functionID, out.errBody.Code, out.errBody.Message)
 			}
 		}()
 		return nil, nil
 	}
 
-	done := make(chan localOutcome, 1)
+	done := make(chan outcome, 1)
 	go func() { done <- run() }()
-	timer := time.NewTimer(c.triggerTimeout(req.Timeout))
+	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
 	select {
 	case out := <-done:
-		if out.err != nil {
-			return nil, newInvocationError(out.err, functionID)
+		if out.errBody != nil {
+			return nil, newInvocationError(out.errBody, functionID)
 		}
 		return out.result, nil
 	case <-timer.C:

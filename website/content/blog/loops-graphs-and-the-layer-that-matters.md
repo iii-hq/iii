@@ -87,7 +87,7 @@ Importantly you get to keep this work long term. Most loops are designed to
 be disposed of along with your token budget. In iii's case, once your loop
 works, you turn it into permanent workers and functions. The session showed
 you the shape: these three calls in sequence, this fan-out, this check before
-this write. That shape becomes reusable functions and triggers (aka events).
+this write. That shape becomes reusable functions and observers (aka events).
 The loop the agent ran becomes a durable subscriber on a queue topic. The
 fan-out becomes parallel function calls. The verification step becomes a
 policy gate function. The one-off session becomes a permanent capability of
@@ -97,7 +97,7 @@ At no point in that workflow did "loop engineering" or "graph engineering"
 appear as a discipline. The loop was how the agent happened to traverse the
 problem. The graph is the reusable workers and functions it produced. Both
 were inherent properties of the system. The work products are functions,
-triggers, and workers, and those can be used long after the pattern that
+observers, and workers, and those can be used long after the pattern that
 discovered them is gone.
 
 ## Why the disciplines keep multiplying everywhere else
@@ -121,12 +121,12 @@ integrating multiple graphs together, and it will trend, and it will also be
 real work, and it will also be redundant scaffolding.
 
 iii removes the need to reinvent the wheel. When the agent is just a worker,
-just a service, on the same engine as the backend, control flow is triggers,
+just a service, on the same engine as the backend, control flow is observers,
 state is Redis, retries are RabbitMQ, observability is any Otel provider, and
 topology is whatever shape the LLM chose that worked. There is no separate
 world to engineer.
 
-![The harness worker in the registry -- 18 functions, 8 triggers, 14 deps, installed with one command.](../../assets/blog/loops-graphs-and-the-layer-that-matters/harness-worker-registry.png)
+![The harness worker in the registry: 18 functions and 14 dependencies, installed with one command.](../../assets/blog/loops-graphs-and-the-layer-that-matters/harness-worker-registry.png)
 
 ## The test
 
@@ -137,14 +137,14 @@ A prompt is a discardable artifact until the model changes. A context layout
 persists only until the task changes. A loop, the same loop, is rebuilt every
 time you need it. Each one is scaffolding, and scaffolding comes down.
 
-A function can exist forever, same as a trigger, and a worker is a permanent
-collection of the two. A trace that shows exactly what ran, in what order,
+A function can exist forever, same as an observer, and a worker is a permanent
+collection of them. A trace that shows exactly what ran, in what order,
 with what result, makes sense in the world outside your LLM. These are the
 artifacts a session leaves behind on iii, and they are the same artifacts the
 rest of the system is made of. The pattern that discovered them can be
 thrown away, but nothing else is lost.
 
-Loops and graphs are how agents think. Workers, functions, and triggers are
+Loops and graphs are how agents think. Workers, functions, and observers are
 what systems are made of. The industry keeps naming the first category
 because it has not fixed the second. We fixed the second.
 

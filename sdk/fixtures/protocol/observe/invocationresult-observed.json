@@ -1,0 +1,14 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "1f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+  "function_id": "orders::create",
+  "result": {
+    "order_id": "ord_1002",
+    "total": 1250
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
+  "observed": [
+    "8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70",
+    "9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81"
+  ]
+}

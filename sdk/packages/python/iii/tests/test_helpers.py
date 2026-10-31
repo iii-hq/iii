@@ -170,32 +170,3 @@ def test_init_no_longer_exports_relocated_channel_items() -> None:
     ):
         assert name not in iii.__all__, f"{name} still in iii.__all__"
 
-
-def test_iii_register_and_unregister_trigger_type_round_trip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from iii.protocol import RegisterTriggerTypeInput
-    from iii.triggers import TriggerConfig, TriggerHandler
-
-    class DummyHandler(TriggerHandler[Any]):
-        async def register_trigger(self, config: TriggerConfig[Any]) -> None:
-            return None
-
-        async def unregister_trigger(self, config: TriggerConfig[Any]) -> None:
-            return None
-
-    _patch_ws(monkeypatch)
-    client = III("ws://fake", InitOptions())
-    try:
-        trigger_type = RegisterTriggerTypeInput(
-            id="helpers.test", description="from helpers"
-        )
-
-        ref = client.register_trigger_type(trigger_type, DummyHandler())
-        assert "helpers.test" in client._trigger_types
-        assert ref is not None
-
-        client.unregister_trigger_type(trigger_type)
-        assert "helpers.test" not in client._trigger_types
-    finally:
-        client.shutdown()

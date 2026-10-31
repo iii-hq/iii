@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! sandbox::fs::read — streaming file download trigger.
+//! sandbox::fs::read — streaming file download function.
 //!
 //! 1. Calls `runner.fs_read_stream()` to get `(meta, Box<dyn AsyncRead>)`.
 //! 2. Calls `iii.create_channel()` to allocate a fresh engine channel.
@@ -292,7 +292,7 @@ pub(super) fn register(
 // NOTE: S001/S002 tests are omitted here because constructing even a
 // disconnected `IIIClient` handle requires starting the background runtime thread
 // and a valid engine URL. The guard logic (UUID parse and registry lookup)
-// is identical to every other fs trigger and is covered by those test suites.
+// is identical to every other fs function and is covered by those test suites.
 // The background-task lifecycle (pump loop) is covered by Phase 6 e2e tests.
 //
 // #[ignore] marker is placed below as documentation that the full test is

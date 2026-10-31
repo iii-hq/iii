@@ -51,10 +51,11 @@ fn mdx_only_notes() -> BTreeMap<String, String> {
             .to_string(),
     );
     map.insert(
-        "iii trigger".to_string(),
-        "<Note>\n  `iii trigger <function> --help` additionally queries a running engine for \
-         the function's description and request schema. That output depends on which workers \
-         are registered and is not part of this page; see [Creating Workers / \
+        "iii call".to_string(),
+        "<Note>\n  `iii call <function> --help` also queries a running engine for the \
+         function's description, request schema and observer args, and says when the function \
+         is private (observed, not called). That output depends on which workers are registered \
+         and is not part of this page; see [Creating Workers / \
          Functions](../creating-workers/functions#attach-request-and-response-schemas).\n</Note>"
             .to_string(),
     );

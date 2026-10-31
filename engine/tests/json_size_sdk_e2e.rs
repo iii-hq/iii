@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use iii::{EngineBuilder, engine::EngineTrait};
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::iii::WorkerMetadata;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Dispatch, InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use std::{
@@ -327,8 +327,8 @@ async fn invoke_remote(
     payload: Value,
     ms: u64,
 ) -> Result<Value, iii_sdk::Error> {
-    sdk.trigger(
-        TriggerRequest {
+    sdk.call(
+        CallRequest {
             function_id: id.to_owned(),
             payload,
             timeout_ms: Some(ms),

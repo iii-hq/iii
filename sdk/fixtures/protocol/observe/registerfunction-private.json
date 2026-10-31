@@ -1,0 +1,58 @@
+{
+  "type": "registerfunction",
+  "id": "cron::on-tick",
+  "description": "One call per tick of a cron expression. Observe it with args { expression }.",
+  "request_format": {
+    "type": "object",
+    "required": [
+      "expression",
+      "scheduled_time"
+    ],
+    "properties": {
+      "expression": {
+        "type": "string"
+      },
+      "scheduled_time": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "actual_time": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "response_format": {
+    "type": "object",
+    "required": [
+      "expression",
+      "scheduled_time"
+    ],
+    "properties": {
+      "expression": {
+        "type": "string"
+      },
+      "scheduled_time": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "actual_time": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "args_format": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "expression"
+    ],
+    "properties": {
+      "expression": {
+        "type": "string"
+      }
+    }
+  },
+  "private": true
+}

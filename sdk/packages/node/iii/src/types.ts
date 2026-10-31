@@ -2,30 +2,28 @@ import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
 import type { ChannelReader, ChannelWriter } from './channels'
 import type { RegistrationRejectedError } from './errors'
 import type { IIIConnectionState } from './iii-constants'
-import type {
-  JsonValue,
-  RegisterFunctionMessage,
-  RegisterTriggerMessage,
-  RegisterTriggerTypeMessage,
-  StreamChannelRef,
-  TriggerRequest,
-} from './iii-types'
+import type { CallRequest, JsonValue, RegisterFunctionMessage, StreamChannelRef } from './iii-types'
 import type { FunctionObservers } from './observable'
 import type {
+  AddedHook,
+  Call,
+  DeliverHook,
   InvocationContext,
-  ObserveHooks,
+  MatchHook,
+  MatchKeys,
+  MatchPredicate,
   Observer,
   ObserverHandle,
   ObserverOptions,
   ObserveSource,
+  RemovedHook,
   Target,
 } from './observe-types'
-import type { TriggerHandler } from './triggers'
 
 /**
- * Async function handler for a registered function. Receives the invocation
- * payload and an optional per-invocation `metadata` value, and returns the
- * result.
+ * Handler of a registered function. Receives the invocation payload and an
+ * optional per-invocation `metadata` value, and returns the result (or a
+ * promise of it). The return value is what the function's observers observe.
  *
  * `metadata` is arbitrary JSON travelling on a separate channel from the
  * payload. It is `undefined` when the caller did not attach any. Existing
@@ -44,7 +42,7 @@ import type { TriggerHandler } from './triggers'
 export type RemoteFunctionHandler<TInput = any, TOutput = any> = (
   data: TInput,
   metadata?: JsonValue,
-) => Promise<TOutput>
+) => TOutput | Promise<TOutput>
 
 // biome-ignore lint/suspicious/noExplicitAny: generic default requires any for contravariant compatibility
 export type Invocation<TOutput = any> = {
@@ -59,25 +57,38 @@ export type Invocation<TOutput = any> = {
   function_id?: string
 }
 
+/** How a handler finished: what it returned, or what it threw. */
+export type HandlerOutcome = { ok: true; value: unknown } | { ok: false; error: unknown }
+
 /**
  * Internal handler type. Wraps the user {@link RemoteFunctionHandler} and adds
  * the trace context (traceparent/baggage) threaded internally by the SDK.
  * `metadata` mirrors the user-facing argument; trace context stays internal
- * and is not surfaced to the user handler.
+ * and is not surfaced to the user handler. `settle` receives the handler's
+ * outcome inside the invocation's span (the call's delivery runs there) and
+ * gives what the wrapper resolves to; without it the wrapper resolves to the
+ * handler's result.
  */
 // biome-ignore lint/suspicious/noExplicitAny: generic defaults require any for contravariant compatibility
-export type InternalFunctionHandler<TInput = any, TOutput = any> = (
+export type InternalFunctionHandler<TInput = any> = (
   data: TInput,
   metadata?: JsonValue,
   traceparent?: string,
   baggage?: string,
-) => Promise<TOutput>
+  settle?: (outcome: HandlerOutcome) => unknown,
+) => Promise<unknown>
 
 export type RemoteFunctionData = {
   message: RegisterFunctionMessage
   handler?: InternalFunctionHandler
-  /** Observers of this function as the engine pushed them, local dispatch state, hooks. */
-  observe?: FunctionObservers
+  /** Observers of this function as the engine pushed them, and local dispatch state. */
+  observe: FunctionObservers
+  /** When another connection hosts the id, retry the registration until it is free. */
+  standby: boolean
+  /** The connection (`epoch`) the registration was sent on; registrations that need `observe.v2` wait for it. */
+  sentEpoch?: number
+  /** Waiting, as a `standby`, for another connection to release the id. */
+  standingBy?: boolean
 }
 
 export type RemoteServiceFunctionData = {
@@ -85,28 +96,22 @@ export type RemoteServiceFunctionData = {
   handler: RemoteFunctionHandler
 }
 
-/** @deprecated Trigger types are replaced by functions with an observe descriptor. */
-export type RemoteTriggerTypeData = {
-  message: RegisterTriggerTypeMessage
-  // biome-ignore lint/suspicious/noExplicitAny: handler accepts any trigger config type
-  handler: TriggerHandler<any>
-}
-
-/** @deprecated Use `iii.observe(source, target, options)` and its {@link ObserveSource}. */
-export type RegisterTriggerInput = Omit<RegisterTriggerMessage, 'message_type' | 'id'>
 export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'>
 /**
- * Options of {@link IIIClient.registerFunction}: description, request/response
- * formats, metadata, and the observe hooks.
+ * Options of {@link IIIClient.registerFunction}: what describes the function
+ * to the engine (description, formats, metadata, `args_format`, `private`,
+ * `observable`), and what the SDK does with it (`standby`, `localDispatch`).
+ * What the worker does when the function is observed is set with hooks.
  */
-export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id' | 'observe'> & {
+export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'> & {
   /**
-   * Makes the function observable on its own terms: owner delivery
-   * (`delivery: 'owner'`, `args_format`), and callbacks when an observer is
-   * added or removed. Without it the function is still observable (auto
-   * delivery, no args).
+   * When another connection already hosts the id
+   * (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the
+   * registration is retried every second (±20 %) until the engine accepts it
+   * or the function is unregistered, and the hooks run for every observer
+   * once the engine confirms it (default `false`).
    */
-  observe?: ObserveHooks
+  standby?: boolean
   /**
    * Calls this worker makes to its own function run in-process once the
    * engine confirmed it (default `true`). Set `false` for a handler that must
@@ -114,41 +119,33 @@ export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_typ
    */
   localDispatch?: boolean
 }
-/** @deprecated Register a function with an observe descriptor instead. */
-export type RegisterTriggerTypeInput = Omit<RegisterTriggerTypeMessage, 'message_type'>
 
 export interface IIIClient {
   /**
-   * Registers a new trigger. A trigger is a way to invoke a function when a certain event occurs.
-   *
-   * @deprecated Use {@link IIIClient.observe} instead: `iii.observe({ function_id, args, filters }, target, { metadata })`.
-   * Logs a warning once per process. The http, cron, queue, state, stream, pubsub and database workers
-   * still publish trigger types: keep using `registerTrigger` for them until they ship source functions.
-   * Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
-   * <!-- docs:expand-params -->
-   * @param trigger - The trigger to register.
-   * @returns A trigger object that can be used to unregister the trigger.
-   *
-   * @example
-   * ```typescript
-   * const trigger = worker.registerTrigger({
-   *   type: 'cron',
-   *   function_id: 'my-service::process-batch',
-   *   config: { expression: '0 *\/5 * * * * *' },
-   * })
-   *
-   * // Later, remove the trigger
-   * trigger.unregister()
-   * ```
-   */
-  registerTrigger(trigger: RegisterTriggerInput): Trigger
-
-  /**
    * Registers a new function with a local handler or an HTTP invocation config.
+   * The handler's return value is what the function's observers observe; an
+   * event source's handler returns the event it is called with.
+   *
+   * Every call of the function, local or routed, runs the handler and then
+   * goes to the observers that want it (`onObserverMatch`; by default all of
+   * them): the function's `onObserverDeliver` hook delivers it, or iii does,
+   * to those whose `on` and filters match. What the worker does when the
+   * function is observed is set with the hooks (`onObserverAdded`,
+   * `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
+   * the returned {@link FunctionRef}. The SDK acks no observer before this
+   * call returns, so a hook set by id before it, chained on its result, or
+   * set later in the same synchronous block runs for every observer.
+   *
+   * A function that sets `args_format`, `private: true`, `observable: false`,
+   * an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+   * with `observe.v2`: it is registered once the connection's engine
+   * advertised it, and against an older engine it stays unregistered (logged
+   * once, `UNSUPPORTED`).
+   *
    * @param functionId - Unique identifier for the function.
-   * @param handler - Async handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.).
-   * @param options - Optional function registration options (description, request/response formats, metadata).
-   * @returns A handle that can be used to unregister the function.
+   * @param handler - Handler for local execution, or an HTTP invocation config for external functions (Lambda, Cloudflare Workers, etc.).
+   * @param options - Optional {@link RegisterFunctionOptions}: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`, `localDispatch`.
+   * @returns A {@link FunctionRef}: the hook methods with the id filled in, and `unregister()`.
    *
    * @example
    * ```typescript
@@ -158,6 +155,13 @@ export interface IIIClient {
    *   async (data: { name: string }) => ({ message: `Hello, ${data.name}!` }),
    *   { description: 'Returns a greeting' },
    * )
+   *
+   * // An event source: observed by everyone, called only by this worker,
+   * // set up for each observer by its args
+   * worker
+   *   .registerFunction('cron::on-tick', (tick: CronTick) => tick, { args_format: CronArgs, private: true })
+   *   .onObserverAdded((obs) => scheduler.retain(obs.args.expression as string))
+   *   .onObserverRemoved((obs) => scheduler.release(obs.args.expression as string))
    *
    * // HTTP invocation
    * const lambdaRef = worker.registerFunction(
@@ -175,23 +179,25 @@ export interface IIIClient {
    * ref.unregister()
    * ```
    */
-  registerFunction(
+  // biome-ignore lint/suspicious/noExplicitAny: the handler's types default to any so untyped handlers type-check
+  registerFunction<I = any, O = any>(
     functionId: string,
-    handler: RemoteFunctionHandler | HttpInvocationConfig,
+    handler: RemoteFunctionHandler<I, O> | HttpInvocationConfig,
     options?: RegisterFunctionOptions,
-  ): FunctionRef
+  ): FunctionRef<I, O>
 
   /**
-   * Invokes a function using a request object.
+   * Invokes a function: by id, or the target of an observer of a function
+   * this worker hosts (`{ observer, payload }`).
    * <!-- docs:expand-params -->
    *
-   * @param request - The trigger request containing function_id, payload, and optional action/timeout.
+   * @param request - The call request: `function_id` (or `observer`), `payload`, and optional action/timeout.
    * @returns The result of the function.
    *
    * @example
    * ```typescript
    * // Synchronous invocation
-   * const result = await worker.trigger<{ name: string }, { message: string }>({
+   * const result = await worker.call<{ name: string }, { message: string }>({
    *   function_id: 'greet',
    *   payload: { name: 'World' },
    *   timeoutMs: 5000,
@@ -199,104 +205,173 @@ export interface IIIClient {
    * console.log(result.message) // "Hello, World!"
    *
    * // Fire-and-forget
-   * await worker.trigger({
+   * await worker.call({
    *   function_id: 'send-email',
    *   payload: { to: 'user@example.com' },
-   *   action: TriggerAction.Void(),
+   *   action: CallAction.Void(),
    * })
    *
    * // Enqueue for async processing (the queue must be declared in the
    * // queue worker's queue_configs)
-   * const receipt = await worker.trigger({
+   * const receipt = await worker.call({
    *   function_id: 'process-order',
    *   payload: { orderId: '123' },
-   *   action: TriggerAction.Enqueue({ queue: 'orders' }),
+   *   action: CallAction.Enqueue({ queue: 'orders' }),
    * })
+   *
+   * // Through an observer, in the function's deliver hook: runs its target,
+   * // with its policy and metadata
+   * const response = await worker.call({ observer: route.obs, payload: request })
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
-  trigger<TInput = unknown, TOutput = any>(request: TriggerRequest<TInput>): Promise<TOutput>
+  call<TInput = unknown, TOutput = any>(request: CallRequest<TInput>): Promise<TOutput>
 
   /**
-   * Observes a function: every event of `source` that passes its `filters`
-   * invokes `target`, a registered function. Returns synchronously (also
-   * before the connection is up); the observer is replayed with the same id
-   * on reconnect. Errors show up as state `error` and reject `ready()`.
+   * Invokes a function using a request object.
    *
-   * @param source - What is observed: `function_id`, `args` (owner-delivered functions only), `filters`, `on`, `capture`, `deliver`.
+   * @deprecated Use {@link IIIClient.call}, the same function.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
+  trigger<TInput = unknown, TOutput = any>(request: CallRequest<TInput>): Promise<TOutput>
+
+  /**
+   * Observes a function: every call of `source` that passes its `filters`
+   * runs `target`, a registered function. Returns synchronously (also before
+   * the connection is up); the observer is replayed with the same id on
+   * reconnect. Errors show up as state `error` and reject `ready()`.
+   *
+   * @param source - What is observed: a function id, or `function_id`, `args` (read by the worker that hosts the function), `filters`, `on`, `capture`, `deliver`.
    * @param target - The function to invoke.
    * @param options - `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
    *
    * @example
    * ```typescript
-   * // A regular function: large orders reach alerts::big-order
+   * // every successful call of orders::create runs alerts::big-order
+   * worker.observe('orders::create', 'alerts::big-order')
+   *
+   * // only large orders
    * worker.observe(
    *   { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
    *   'alerts::big-order',
    * )
    *
-   * // An engine-hosted event source, delivered as the event itself
-   * const workers = worker.observe(
-   *   { function_id: 'engine::on-workers-changed', deliver: 'input' },
-   *   'ops::on-worker-change',
+   * // an event source with args for its worker: one tick every five minutes
+   * const ticks = worker.observe(
+   *   { function_id: 'cron::on-tick', args: { expression: '0 *\/5 * * * * *' } },
+   *   'reports::refresh',
    * )
-   * await workers.ready()
+   * await ticks.ready()
    * ```
    */
-  observe(source: ObserveSource, target: Target, options?: ObserverOptions): ObserverHandle
+  observe(source: string | ObserveSource, target: Target, options?: ObserverOptions): ObserverHandle
 
   /**
-   * The invocation the calling code runs in (remote or local handler), or
-   * `undefined` outside any handler.
+   * Runs `hook` when an observer of any function this worker hosts is added,
+   * before the SDK acks it; with a function id, for that function only. When
+   * both are set, the worker's runs first. Throw to reject the observer.
+   * `null` removes the hook. Hooks set by id stay in place across
+   * `unregister()` and a later registration of the same id.
+   *
+   * A hook set while the function already has active observers runs for each
+   * of them at once (a throw late-rejects that observer), and the SDK logs a
+   * warning.
+   *
+   * @example
+   * ```typescript
+   * // every function this worker hosts: keep the event stream open while anything is observed
+   * iii.onObserverAdded(async () => { await events.retain() })
+   * // one function, by id
+   * iii.onObserverAdded('database::on-row-changed', async (obs) => {
+   *   await capture.install(obs.args.db, obs.args.table)
+   * })
+   * ```
+   */
+  onObserverAdded(hook: AddedHook | null): IIIClient
+  onObserverAdded(functionId: string, hook: AddedHook | null): IIIClient
+
+  /**
+   * Runs `hook` once for every accepted observer when it is removed (on
+   * `unobserve`, disposal, unregister, late rejection); with a function id,
+   * for that function only. When both are set, the function's runs first. An
+   * error it throws is logged. `null` removes the hook.
+   */
+  onObserverRemoved(hook: RemovedHook | null): IIIClient
+  onObserverRemoved(functionId: string, hook: RemovedHook | null): IIIClient
+
+  /**
+   * Says which observers want each call of a function. By default every
+   * observer wants every call. A predicate `(obs, call) => boolean` is asked
+   * once per active observer per call; `{ observer, call }` key functions are
+   * computed once per observer, when it is accepted, and once per call, and an
+   * observer wants a call when they share a key (the SDK keeps an index). The
+   * observers' `on`, filters, policy and `deliver` still apply. A hook set
+   * while observers are active rebuilds the index from them. `null` removes
+   * the hook.
+   *
+   * A function with a match hook needs an engine with `observe.v2`: against
+   * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+   *
+   * @example
+   * ```typescript
+   * // an observer of expression X gets the ticks of expression X
+   * iii.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+   *
+   * // many observers: keys, one lookup per key
+   * iii.onObserverMatch('database::on-row-changed', {
+   *   observer: (obs) => `${obs.args.table}|${obs.args.op}`,
+   *   call: (call) => `${call.input.table}|${call.input.op}`,
+   * })
+   * ```
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
+  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchPredicate<I, O> | null): IIIClient
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped key functions read their input
+  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchKeys<I, O>): IIIClient
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
+  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchHook<I, O> | null): IIIClient
+
+  /**
+   * Delivers each call of a function itself: `hook` receives the call and the
+   * observers that matched it (a snapshot taken when the call started), and
+   * what it returns (or throws) is what the caller gets back. iii delivers
+   * nothing for that function: the hook calls through observers and applies
+   * their filters with `obs.matches(call)`. Without it, iii delivers every
+   * call to the matching observers whose `on` and filters accept it, and the
+   * caller gets the handler's result. `null` removes the hook.
+   *
+   * A function with a deliver hook needs an engine with `observe.v2`: against
+   * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+   *
+   * @example
+   * ```typescript
+   * iii.onObserverDeliver('http::on-request', async (call) => {
+   *   const route = routes.match(call.input)
+   *   if (!route) return { status_code: 404 }
+   *   if (!route.obs.matches(call)) return { status_code: 422 }
+   *   return iii.call({ observer: route.obs, payload: call.input })
+   * })
+   * ```
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
+  onObserverDeliver<I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient
+
+  /** The active observers of a function this worker hosts (empty for any other). */
+  observers(functionId: string): readonly Observer[]
+
+  /**
+   * Whether a call of a function this worker hosts would reach anyone.
+   * Without a call: any active observer. With a call, on a function matched
+   * by keys: an observer filed under one of the call's keys. On any other
+   * function the call is not read.
+   */
+  isObserved(functionId: string, call?: Partial<Call>): boolean
+
+  /**
+   * The invocation the calling code runs in (remote or local handler, or the
+   * function's deliver hook), or `undefined` outside any handler.
    */
   currentInvocation(): InvocationContext | undefined
-
-  /**
-   * Registers a new trigger type. A trigger type is a way to invoke a function when a certain event occurs.
-   *
-   * @deprecated Register a function with an observe descriptor instead:
-   * `registerFunction(id, handler, { observe: { delivery: 'owner', onObserverAdded, onObserverRemoved } })`.
-   * Logs a warning once per process. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
-   * @param triggerType - The trigger type to register.
-   * @param handler - The handler for the trigger type.
-   * @returns A trigger type object that can be used to unregister the trigger type.
-   *
-   * @example
-   * ```typescript
-   * type CronConfig = { expression: string }
-   *
-   * worker.registerTriggerType<CronConfig>(
-   *   { id: 'cron', description: 'Fires on a cron schedule' },
-   *   {
-   *     async registerTrigger({ id, function_id, config }) {
-   *       startCronJob(id, config.expression, () =>
-   *         worker.trigger({ function_id, payload: {} }),
-   *       )
-   *     },
-   *     async unregisterTrigger({ id }) {
-   *       stopCronJob(id)
-   *     },
-   *   },
-   * )
-   * ```
-   */
-  registerTriggerType<TConfig>(
-    triggerType: RegisterTriggerTypeInput,
-    handler: TriggerHandler<TConfig>,
-  ): TriggerTypeRef<TConfig>
-
-  /**
-   * Unregisters a trigger type.
-   *
-   * @deprecated Trigger types are replaced by functions with an observe descriptor.
-   * @param triggerType - The trigger type to unregister.
-   *
-   * @example
-   * ```typescript
-   * worker.unregisterTriggerType({ id: 'cron', description: 'Fires on a cron schedule' })
-   * ```
-   */
-  unregisterTriggerType(triggerType: RegisterTriggerTypeInput): void
 
   /**
    * Gracefully shutdown the iii, cleaning up all resources.
@@ -333,96 +408,43 @@ export interface IIIClient {
 }
 
 /**
- * Handle returned by {@link IIIClient.registerTrigger}. Use `unregister()` to
- * remove the trigger from the engine.
- *
- * @deprecated `registerTrigger` is replaced by `iii.observe`, which returns an {@link ObserverHandle}.
- */
-export type Trigger = {
-  /** Removes this trigger from the engine. */
-  unregister(): void
-}
-
-/**
- * Handle returned by {@link IIIClient.registerFunction}. Contains the function's
- * `id` and an `unregister()` method.
- */
-export type FunctionRef = {
-  /** The unique function identifier. */
-  id: string
-  /** Removes this function from the engine. */
-  unregister: () => void
-  /**
-   * Whether any observer is active on this function (one load, for the emit
-   * fast path: skip building an event nobody receives).
-   */
-  isObserved: () => boolean
-  /** The active observers, as this owner sees them. */
-  observers: () => readonly Observer[]
-}
-
-/**
- * Typed handle returned by {@link IIIClient.registerTriggerType}.
- *
- * @deprecated Trigger types are replaced by functions with an observe
- * descriptor, and these helpers by `iii.observe`. Migration guide:
- * https://iii.dev/docs/upgrading/from-0-24-x
- *
- * Provides convenience methods to register triggers and functions scoped
- * to this trigger type, so callers don't need to repeat the `type` field.
- *
- * @typeParam TConfig - Trigger-specific configuration type.
+ * Handle returned by {@link IIIClient.registerFunction}: the client's hook
+ * methods with the function id filled in. Each method returns the handle, so
+ * calls chain.
  *
  * @example
  * ```typescript
- * type CronConfig = { expression: string }
- *
- * const cron = worker.registerTriggerType<CronConfig>(
- *   { id: 'cron', description: 'Fires on a cron schedule' },
- *   cronHandler,
- * )
- *
- * // Register a trigger, type is inferred as CronConfig
- * cron.registerTrigger('my::fn', { expression: '0 *\/5 * * * * *' })
- *
- * // Register a function and bind a trigger in one call
- * cron.registerFunction(
- *   'my::fn',
- *   async (data) => { return { ok: true } },
- *   { expression: '0 *\/5 * * * * *' },
- * )
+ * iii.registerFunction('http::on-request', (request: HttpRequest) => request, { private: true })
+ *   .onObserverAdded((obs) => routes.add(obs))
+ *   .onObserverRemoved((obs) => routes.remove(obs.id))
  * ```
  */
-export type TriggerTypeRef<TConfig = unknown> = {
-  /** The trigger type identifier. */
-  id: string
+// biome-ignore lint/suspicious/noExplicitAny: refs of differently typed functions share one type (`FunctionRef[]`)
+export interface FunctionRef<I = any, O = any> {
+  /** The unique function identifier. */
+  readonly id: string
+  /** {@link IIIClient.onObserverAdded} for this function. */
+  onObserverAdded(hook: AddedHook | null): FunctionRef<I, O>
+  /** {@link IIIClient.onObserverRemoved} for this function. */
+  onObserverRemoved(hook: RemovedHook | null): FunctionRef<I, O>
+  /** {@link IIIClient.onObserverMatch} for this function. */
+  onObserverMatch(hook: MatchPredicate<I, O> | null): FunctionRef<I, O>
+  onObserverMatch(hook: MatchKeys<I, O>): FunctionRef<I, O>
+  onObserverMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
+  /** {@link IIIClient.onObserverDeliver} for this function. */
+  onObserverDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
   /**
-   * Register a trigger bound to this trigger type.
-   *
-   * @param functionId - The function to invoke when the trigger fires.
-   * @param config - Trigger-specific configuration.
-   * @param metadata - Optional arbitrary metadata attached to the trigger.
-   * @returns A {@link Trigger} handle with an `unregister()` method.
+   * The active observers of this registration, as this host sees them (none
+   * once the function is unregistered, also after the id is registered again).
    */
-  registerTrigger(functionId: string, config: TConfig, metadata?: Record<string, unknown>): Trigger
+  observers(): readonly Observer[]
   /**
-   * Register a function and immediately bind it to this trigger type.
-   *
-   * @param functionId - Unique function identifier.
-   * @param handler - Local function handler.
-   * @param config - Trigger-specific configuration.
-   * @param metadata - Optional arbitrary metadata attached to the trigger.
-   * @returns A {@link FunctionRef} handle.
+   * {@link IIIClient.isObserved} for this registration: skip building an event
+   * nobody receives. Without a call it is one load of this registration's
+   * active set.
    */
-  registerFunction(
-    functionId: string,
-    handler: RemoteFunctionHandler,
-    config: TConfig,
-    metadata?: Record<string, unknown>,
-  ): FunctionRef
-  /**
-   * Unregister this trigger type from the engine.
-   */
+  isObserved(call?: Partial<Call<I>>): boolean
+  /** Removes this function from the engine. Its hooks stay in place for a later registration of the id. */
   unregister(): void
 }
 
@@ -472,7 +494,7 @@ export type StreamResponse = {
 }
 
 /**
- * Incoming streaming request received by a function registered with a stream trigger.
+ * Incoming streaming request received by a function that serves an HTTP route.
  *
  * @typeParam TBody - Type of the parsed request body.
  */

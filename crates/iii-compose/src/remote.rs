@@ -10,7 +10,7 @@
 //! reached rather than another:
 //!
 //! ```text
-//! iii trigger compose::up --namespace dev file=./worker-compose.yaml
+//! iii call compose::up --namespace dev file=./worker-compose.yaml
 //! ```
 //!
 //! The flag picks the daemon; `file=` picks the project. Nothing else names a
@@ -94,7 +94,7 @@ pub struct ComposeRequest {
 #[derive(JsonSchema)]
 struct DaemonOptions {
     /// Which daemon the caller believed it reached. This is a guard, not a
-    /// route; use the trigger `--namespace` flag to select the daemon.
+    /// route; use the `iii call --namespace` flag to select the daemon.
     namespace: Option<String>,
 }
 
@@ -102,7 +102,7 @@ struct DaemonOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct LifecycleOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
@@ -115,7 +115,7 @@ struct LifecycleOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct UpOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
@@ -131,7 +131,7 @@ struct UpOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct ProjectOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
@@ -142,7 +142,7 @@ struct ProjectOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct BatchWorkerOptions<T> {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
@@ -163,7 +163,7 @@ struct BatchWorkerOptions<T> {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct RestartOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
@@ -178,7 +178,7 @@ struct RestartOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct LogsOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
@@ -201,7 +201,7 @@ struct LogsOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct SchemaRequest {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Function id such as `compose::up`, or the `worker-compose.yaml`
     /// pseudo-id. Omit to return every schema.
@@ -457,7 +457,7 @@ async fn dispatch(
             code: "WRONG_DAEMON".to_string(),
             message: format!(
                 "this daemon serves namespace '{}', not '{addressed}'. The namespace is a flag, \
-                 not a payload field: iii trigger compose::{function} --namespace {addressed} …",
+                 not a payload field: iii call compose::{function} --namespace {addressed} …",
                 daemon.daemon_namespace
             ),
             stacktrace: None,

@@ -16,7 +16,8 @@ export interface ConfigFormProps {
 
 export interface ConfigFormHost {
   iii: {
-    trigger<T = unknown>(
+    /** Calls a function and resolves to its result. */
+    call<T = unknown>(
       functionId: string,
       payload?: Record<string, JsonValue>,
     ): Promise<T>;

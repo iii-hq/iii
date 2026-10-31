@@ -19,18 +19,41 @@ pub struct RbacConfig {
     pub auth_function_id: Option<String>,
     #[serde(default)]
     pub expose_functions: Vec<FunctionFilter>,
-    #[serde(default)]
-    pub on_trigger_registration_function_id: Option<String>,
-    #[serde(default)]
-    pub on_trigger_type_registration_function_id: Option<String>,
+    /// Called before a function is registered, with its `function_id`,
+    /// `description`, `metadata`, `namespace`, `private`, `observable`,
+    /// `args_format` (when set) and the session's `context`. An object answer
+    /// may rewrite `function_id`, `description`, `metadata`, `private`,
+    /// `observable` and `args_format`; anything else denies.
     #[serde(default)]
     pub on_function_registration_function_id: Option<String>,
-    /// Called before an observer is created, with the same contract as
-    /// `on_trigger_registration_function_id`: an object answer may rewrite
+    /// Called before an observer is created. An object answer may rewrite
     /// `function_id`, `target_function_id`, `args`, `filters` and `metadata`;
     /// anything else denies (`FORBIDDEN`).
     #[serde(default)]
     pub on_observer_registration_function_id: Option<String>,
+}
+
+/// `rbac` keys an earlier engine read and this one ignores, with what
+/// replaces each.
+const REMOVED_KEYS: [(&str, &str); 2] = [
+    (
+        "on_trigger_registration_function_id",
+        "use on_observer_registration_function_id, which gates every observer",
+    ),
+    (
+        "on_trigger_type_registration_function_id",
+        "use on_function_registration_function_id: an event source is a function \
+         registered with args_format and private",
+    ),
+];
+
+/// Logs one `warn` for each removed key the raw `rbac` section sets.
+pub(crate) fn warn_removed_keys(rbac: &Value) {
+    for (key, replacement) in REMOVED_KEYS {
+        if rbac.get(key).is_some() {
+            tracing::warn!(key = %key, "rbac.{key} is ignored: {replacement}");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -625,26 +648,61 @@ mod tests {
             Some("my-project::auth".to_string())
         );
         assert_eq!(config.expose_functions.len(), 2);
-        assert!(config.on_trigger_registration_function_id.is_none());
-        assert!(config.on_trigger_type_registration_function_id.is_none());
+        assert!(config.on_function_registration_function_id.is_none());
+        assert!(config.on_observer_registration_function_id.is_none());
     }
 
-    #[test]
-    fn deserialize_config_with_trigger_hooks() {
+    /// The registration hooks of earlier engines still load, and are
+    /// ignored: the config parses, nothing reads them, and loading it logs
+    /// one warning per key, naming what replaces it.
+    #[tokio::test]
+    async fn removed_registration_hooks_are_ignored_with_one_warning_each() {
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        tracing::callsite::rebuild_interest_cache();
         let yaml = r#"
-            on_trigger_registration_function_id: my-project::on-trigger-reg
-            on_trigger_type_registration_function_id: my-project::on-trigger-type-reg
+            on_trigger_registration_function_id: my-project::on-reg
+            on_trigger_type_registration_function_id: my-project::on-type-reg
+            on_observer_registration_function_id: my-project::on-observe
             expose_functions: []
         "#;
         let config: RbacConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
-            config.on_trigger_registration_function_id,
-            Some("my-project::on-trigger-reg".to_string())
+            config.on_observer_registration_function_id,
+            Some("my-project::on-observe".to_string())
         );
-        assert_eq!(
-            config.on_trigger_type_registration_function_id,
-            Some("my-project::on-trigger-type-reg".to_string())
-        );
+        let reencoded = serde_json::to_value(&config).unwrap();
+        for (key, _) in REMOVED_KEYS {
+            assert!(reencoded.get(key).is_none(), "{key}");
+        }
+
+        let raw: Value = serde_yaml::from_str(yaml).unwrap();
+        let engine = std::sync::Arc::new(crate::engine::Engine::new());
+        <super::super::WorkerManager as crate::workers::traits::Worker>::create(
+            engine,
+            Some(serde_json::json!({ "host": "127.0.0.1", "port": 0, "rbac": raw })),
+        )
+        .await
+        .expect("the config loads");
+        let logs = logs.contents();
+        for (key, replacement) in [
+            (
+                "on_trigger_registration_function_id",
+                "on_observer_registration_function_id",
+            ),
+            (
+                "on_trigger_type_registration_function_id",
+                "on_function_registration_function_id",
+            ),
+        ] {
+            let lines: Vec<&str> = logs
+                .lines()
+                .filter(|line| line.contains(&format!("rbac.{key} is ignored")))
+                .collect();
+            assert_eq!(lines.len(), 1, "{key}: {logs}");
+            assert!(lines[0].contains("WARN"), "{}", lines[0]);
+            assert!(lines[0].contains(replacement), "{}", lines[0]);
+        }
+        assert_eq!(logs.lines().count(), 2, "nothing else: {logs}");
     }
 
     #[test]
@@ -652,8 +710,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::match_pattern("*")],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -675,8 +731,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -697,8 +751,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -718,8 +770,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::match_pattern("api::*")],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -741,8 +791,6 @@ mod tests {
                 .iter()
                 .map(|p| FunctionFilter::match_pattern(p))
                 .collect(),
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         }
@@ -990,8 +1038,6 @@ mod tests {
         let config = RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::match_pattern("svc::*").in_namespace("orders")],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };
@@ -1109,10 +1155,6 @@ mod tests {
             "engine::functions::info",
             "engine::workers::list",
             "engine::workers::info",
-            "engine::triggers::list",
-            "engine::triggers::info",
-            "engine::registered-triggers::list",
-            "engine::registered-triggers::info",
             "engine::traces::list",
             "engine::queue::list_topics",
             "engine::health::check",
@@ -1164,8 +1206,6 @@ mod tests {
                 FunctionFilter::match_pattern("stream::*"),
                 FunctionFilter::match_pattern("state::*"),
             ],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         };

@@ -29,15 +29,15 @@ A compose call names three things, and confusing any two of them is the mistake 
 front.
 
 The **daemon namespace** is which machine. It comes from `--namespace`, and it is where that daemon
-answers `compose::*`, so `iii trigger compose::up --namespace dev` reaches one daemon and not its
+answers `compose::*`, so `iii call compose::up --namespace dev` reaches one daemon and not its
 neighbour. Several daemons attach to one engine, which is what lets compose supervise workers where
 their resources are rather than only beside the engine.
 
 The **file** is which project. A daemon holds as many as it is given, and the compose file is the
 only thing that identifies one.
 
-The **project namespace** is where that project's workers register. It comes from `namespace:` in the
-compose file: the engine's routing dimension, the same one every other worker uses.
+The **project namespace** is where that project's workers register. It comes from `namespace:` in
+the compose file: the engine's routing dimension, the same one every other worker uses.
 
 ### Why the project has no name of its own
 
@@ -52,7 +52,7 @@ project however it was spelled, a mistyped file is a file that will not open, an
 only to police the divergence that can no longer happen.
 
 The namespace stays exactly what the compose file says, so an operator can read it off the file and
-type it into `iii trigger --namespace` or a `worker.trigger` call. Predictability is what makes a
+type it into `iii call --namespace` or pass it to `worker.call`. Predictability is what makes a
 namespace usable by hand, and it comes from being declared rather than derived.
 
 Two copies of one project therefore share a project namespace and collide, which is how the engine
@@ -89,11 +89,12 @@ workers one stable base for project-owned data. Letting the container replace th
 send a lifecycle edit to another project or write data outside that project.
 
 `III_CONFIG_NAME` identifies the configuration service entry. Compose reads the current value,
-merges execution overrides, and calls `configuration::set` with `flush: false` before spawn.
-Workers read that value through the same GET. Explicit saves persist the submitted object.
-Removing an override does not restore an older disk value. No snapshot file is delivered. The retired `III_CONFIG` name is rejected in explicit
-`environment` and `env_file` declarations with `RETIRED_CONFIG_ENV`; stale inherited values are
-removed. Matching is case-sensitive on Unix and follows native case-insensitive rules on Windows.
+merges execution overrides, and calls `configuration::set` with `flush: false` before spawn. Workers
+read that value through the same GET. Explicit saves persist the submitted object. Removing an
+override does not restore an older disk value. No snapshot file is delivered. The retired
+`III_CONFIG` name is rejected in explicit `environment` and `env_file` declarations with
+`RETIRED_CONFIG_ENV`; stale inherited values are removed. Matching is case-sensitive on Unix and
+follows native case-insensitive rules on Windows.
 
 ### A container that belongs in another namespace
 
@@ -127,7 +128,7 @@ The cache is keyed by name, version and target, so projects can reuse downloaded
 
 Compose determines ready state through the engine rather than locally as this is the one way to
 ensure dependencies are ready for a given worker. For example when `api` starts after `database`,
-`start_after` guarantees the engine can already route a trigger to `database`, so `api` can reliably
+`start_after` guarantees the engine can already route a call to `database`, so `api` can reliably
 use the `database` dependency from boot. A check on the process alone would guarantee only that
 something was launched.
 
@@ -161,9 +162,9 @@ the file instead of assuming that every container has the same blast radius.
 
 ### Saying it in the file
 
-A container is not required by default. Its failed start is reported against that container,
-nothing is rolled back, and the operation carries on. Set `required: true` when one container must
-make the operation fail:
+A container is not required by default. Its failed start is reported against that container, nothing
+is rolled back, and the operation carries on. Set `required: true` when one container must make the
+operation fail:
 
 ```yaml
 containers:
@@ -191,8 +192,8 @@ Here, `state` inherits `true`, while `queue` remains false. When neither `requir
 
 Dependents of a non-required container carry on too. A container that names it in `start_after`
 starts as if it had come up, because `start_after` is a start order rather than a claim that the
-dependent cannot run without it. A dependent that genuinely cannot run without it says so by
-failing on its own.
+dependent cannot run without it. A dependent that genuinely cannot run without it says so by failing
+on its own.
 
 That moves what `status: ok` means. It used to say every planned container is up; it now says every
 required one is, so the return names the rest in `not_required_failures` rather than leaving a
@@ -219,24 +220,24 @@ exit. A clean run-time exit with `on-failure` is recorded as `stopped`. `always`
 run-time exit, which is the answer for a worker that is only correct while it is running.
 
 A supervised restart is the same act as `compose::restart`: one container stops and starts, and the
-graph around it is left alone. So its dependents stay up while it is gone. This is the same reasoning
-that non-required starts use: `start_after` is a start order rather than a claim that the dependent
-cannot run without it. What that costs is a dependent holding a connection that drops and has to
-reconnect, which is the cost the file asked for by declaring a policy at all.
+graph around it is left alone. So its dependents stay up while it is gone. This is the same
+reasoning that non-required starts use: `start_after` is a start order rather than a claim that the
+dependent cannot run without it. What that costs is a dependent holding a connection that drops and
+has to reconnect, which is the cost the file asked for by declaring a policy at all.
 
-Replacement attempts are capped at five. The first retry is immediate. Later retries wait from
-500ms up to a ceiling of 30 seconds. Both limits are load-bearing: a policy with no backoff turns a
-crash loop into a busy loop, and a policy with no cap never lets the operator find out. A container
-that holds ready for a minute has recovered, so its run-time budget refills. A worker that crashes
-once an hour is therefore restarted every time, rather than five times ever.
+Replacement attempts are capped at five. The first retry is immediate. Later retries wait from 500ms
+up to a ceiling of 30 seconds. Both limits are load-bearing: a policy with no backoff turns a crash
+loop into a busy loop, and a policy with no cap never lets the operator find out. A container that
+holds ready for a minute has recovered, so its run-time budget refills. A worker that crashes once
+an hour is therefore restarted every time, rather than five times ever.
 
 When the budget runs out the supervisor does what it would have done with no policy at all. It fails
 the container, takes its dependents down, and says which in the log. That is the shape worth
 keeping: `restart` changes how many times compose tries, and never what happens when trying is over.
 
-`compose::status` reports a container waiting on a run-time replacement as `restarting`. It is
-not `ready`, because nothing is running under that name, and not `failed`, because the supervisor
-has not given up on it. It has no PID until the next process starts. During `up`, the active progress
+`compose::status` reports a container waiting on a run-time replacement as `restarting`. It is not
+`ready`, because nothing is running under that name, and not `failed`, because the supervisor has
+not given up on it. It has no PID until the next process starts. During `up`, the active progress
 row shows the retry attempt, its wait, and the successful recovery.
 
 ## Related

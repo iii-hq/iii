@@ -1,6 +1,6 @@
 # iii SDKs
 
-These are iii official SDKs for Node, Python, Rust, and Go. See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
+These are iii official SDKs for Node, the browser, Python, Rust, and Go. See the [engine README](../engine/README.md) for architecture details and the [documentation](https://iii.dev/docs) for full guides.
 
 ## SDKs
 
@@ -12,11 +12,16 @@ These are iii official SDKs for Node, Python, Rust, and Go. See the [engine READ
 | Package                                            | Language             | Install               | Docs                                      |
 | -------------------------------------------------- | -------------------- | --------------------- | ----------------------------------------- |
 | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | Node.js / TypeScript | `pnpm add iii-sdk` or `npm install iii-sdk` | [README](./packages/node/iii/README.md)   |
+| [`iii-browser-sdk`](https://www.npmjs.com/package/iii-browser-sdk) | Browser / TypeScript | `pnpm add iii-browser-sdk` | [README](./packages/node/iii-browser/README.md) |
 | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | Python               | `pip install iii-sdk` | [README](./packages/python/iii/README.md) |
 | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Rust                 | Add to `Cargo.toml`   | [README](./packages/rust/iii/README.md)   |
 | [`iii-sdk`](./packages/go/iii)                         | Go                   | `go get github.com/iii-hq/iii/sdk/packages/go/iii` | [README](./packages/go/iii/README.md) |
 
 ## Hello World
+
+Each example registers `hello::greet`, serves it on `POST /greet` by observing the http worker's
+`http::on-request` (`args` are the route), and calls it. A target of `http::on-request` receives
+the request (`{ path, method, body, headers, ... }`) and returns `{ status_code, body }`.
 
 ### Node.js
 
@@ -25,17 +30,17 @@ import { registerWorker } from 'iii-sdk';
 
 const iii = registerWorker('ws://localhost:49134');
 
-iii.registerFunction('hello::greet', async (input) => {
-  return { message: `Hello, ${input.name}!` };
+iii.registerFunction('hello::greet', async (req) => {
+  return { status_code: 200, body: { message: `Hello, ${req.body.name}!` } };
 });
 
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'hello::greet',
-  config: { api_path: '/greet', http_method: 'POST' },
-});
+// POST /greet runs hello::greet
+iii.observe(
+  { function_id: 'http::on-request', args: { method: 'POST', path: '/greet' } },
+  'hello::greet',
+);
 
-const result = await iii.trigger({ function_id: 'hello::greet', payload: { name: 'world' } });
+const result = await iii.call({ function_id: 'hello::greet', payload: { body: { name: 'world' } } });
 ```
 
 ### Python
@@ -45,43 +50,48 @@ from iii import register_worker
 
 iii = register_worker("ws://localhost:49134")
 
-def greet(data):
-    return {"message": f"Hello, {data['name']}!"}
+def greet(req):
+    return {"status_code": 200, "body": {"message": f"Hello, {req['body']['name']}!"}}
 
-iii.register_function({"id": "hello::greet"}, greet)
+iii.register_function("hello::greet", greet)
 
-iii.register_trigger({
-    "type": "http",
-    "function_id": "hello::greet",
-    "config": {"api_path": "/greet", "http_method": "POST"}
-})
+# POST /greet runs hello::greet
+iii.observe(
+    {"function_id": "http::on-request", "args": {"method": "POST", "path": "/greet"}},
+    "hello::greet",
+)
 
-result = iii.trigger({"function_id": "hello::greet", "payload": {"name": "world"}})
+result = iii.call({"function_id": "hello::greet", "payload": {"body": {"name": "world"}}})
 ```
 
 ### Rust
 
 ```rust
-use iii_sdk::{register_worker, InitOptions, TriggerRequest, RegisterFunctionMessage, RegisterTriggerInput};
-use serde_json::json;
+use iii_sdk::{register_worker, CallRequest, Error, InitOptions, RegisterFunction, Source};
+use serde_json::{json, Value};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default())?;
+    let iii = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-    iii.register_function(RegisterFunctionMessage::with_id("hello::greet".into()), |input| async move {
-        let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
-        Ok(json!({ "message": format!("Hello, {name}!") }))
-    });
+    iii.register_function(
+        "hello::greet",
+        RegisterFunction::new_async(|req: Value| async move {
+            let name = req["body"]["name"].as_str().unwrap_or("world");
+            Ok::<_, Error>(json!({ "status_code": 200, "body": { "message": format!("Hello, {name}!") } }))
+        }),
+    );
 
-    iii.register_trigger(RegisterTriggerInput::new("http", "hello::greet", json!({
-        "api_path": "/greet",
-        "http_method": "POST"
-    })))?;
+    // POST /greet runs hello::greet
+    iii.observe(
+        Source::function("http::on-request").args(json!({ "method": "POST", "path": "/greet" })),
+        "hello::greet",
+    );
 
-    let result: serde_json::Value = iii
-        .trigger(TriggerRequest::new("hello::greet", json!({ "name": "world" })))
+    let result: Value = iii
+        .call(CallRequest::new("hello::greet", json!({ "body": { "name": "world" } })))
         .await?;
+    println!("result: {result}");
 
     Ok(())
 }
@@ -110,7 +120,9 @@ func main() {
 				Name string `json:"name"`
 			} `json:"body"`
 		}
-		_ = json.Unmarshal(data, &req)
+		if err := json.Unmarshal(data, &req); err != nil {
+			return nil, err
+		}
 		return map[string]any{
 			"status_code": 200,
 			"body":        map[string]string{"message": "Hello, " + req.Body.Name + "!"},
@@ -120,11 +132,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-		Type:       "http",
-		FunctionID: greet.ID,
-		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
-	}); err != nil {
+	// POST /greet runs hello::greet
+	if _, err := client.Observe(iii.Source{
+		FunctionID: "http::on-request",
+		Args:       iii.Args{"method": "POST", "path": "/greet"},
+	}, greet.ID); err != nil {
 		log.Fatal(err)
 	}
 
@@ -139,6 +151,16 @@ func main() {
 			log.Printf("shutdown cut short: %v", err)
 		}
 	}()
+
+	result, err := client.Call(context.Background(), iii.CallRequest{
+		FunctionID: greet.ID,
+		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
+	})
+	if err != nil {
+		log.Printf("call: %v", err)
+		return
+	}
+	log.Printf("result: %s", result)
 }
 ```
 
@@ -147,14 +169,15 @@ func main() {
 | Operation                | Node.js                                              | Python                                      | Rust                                         | Go                                          | Description                                            |
 | ------------------------ | ---------------------------------------------------- | ------------------------------------------- | -------------------------------------------- | ------------------------------------------- | ------------------------------------------------------ |
 | Initialize               | `registerWorker(url)`                                | `register_worker(url, options?)`            | `register_worker(url, options)`              | `iii.RegisterWorker(url)`                   | Create an SDK instance and auto-connect                |
-| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler)`        | `iii.register_function(id, \|input\| ...)`   | `client.RegisterFunction(id, handler)`      | Register a function that can be invoked by name        |
-| Register trigger         | `iii.registerTrigger({ type, function_id, config })` | `iii.register_trigger({"type": ..., "function_id": ..., "config": ...})` | `iii.register_trigger(type, fn_id, config)?` | `client.RegisterTrigger(iii.RegisterTriggerInput{Type, FunctionID, Config})` | Bind a trigger (HTTP, cron, queue, etc.) to a function |
-| Invoke (await)           | `await iii.trigger({ function_id, payload })`        | `await iii.trigger({"function_id": id, "payload": data})` | `iii.trigger(TriggerRequest::new(id, data)).await?` | `client.Trigger(ctx, iii.TriggerRequest{...})` | Invoke a function and wait for the result              |
-| Invoke (fire-and-forget) | `iii.trigger({ function_id, payload, action: TriggerAction.Void() })` | Same | Same | `client.Trigger(ctx, iii.TriggerRequest{Action: iii.VoidAction()})` | Invoke without waiting |
+| Register function        | `iii.registerFunction(id, handler, options?)`        | `iii.register_function(id, handler, **options)` | `iii.register_function(id, RegisterFunction::new_async(f))` | `client.RegisterFunction(id, handler, opts...)` | Register a function that can be called by id and observed |
+| Call (await)             | `await iii.call({ function_id, payload })`           | `iii.call({"function_id": id, "payload": data})`, `await iii.call_async(...)` | `iii.call(CallRequest::new(id, data)).await?` | `client.Call(ctx, iii.CallRequest{FunctionID, Payload})` | Call a function and wait for the result              |
+| Call (fire-and-forget)   | `iii.call({ function_id, payload, action: CallAction.Void() })` | `iii.call({"function_id": id, "payload": data, "action": CallAction.Void()})` | `iii.call(CallRequest::new(id, data).action(CallAction::Void)).await?` | `client.Call(ctx, iii.CallRequest{FunctionID, Payload, Action: iii.VoidAction()})` | Call without waiting |
+| Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)` | `iii.observe("fn::id" \| {"function_id": ..., "args": ..., "filters": ...}, target, options?)` | `iii.observe(Source::function(id).args(..).filters(..), target)` | `client.Observe(iii.Source{FunctionID, Args, Filters}, target, opts...)`, `client.ObserveFunction(id, target, opts...)` | Run `target` when a function runs: `args` for the function's worker, `filters` for which calls |
+| Observer hooks           | `iii.onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`; the same on the `registerFunction` result | `iii.on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` | `iii.on_observer_added_for(id, h)`, `..._removed_for`, `..._match_for`, `..._deliver_for` | `client.OnObserverAddedFor(id, h)`, `...RemovedFor`, `...MatchFor`, `...DeliverFor`; `ref.OnObserver*` | What the worker that hosts a function does when it is observed |
 
-`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. All four SDKs expose the same API surface — register functions and triggers, then invoke them.
+`registerWorker()` / `register_worker()` creates an SDK instance and auto-connects to the engine. It handles WebSocket communication, automatic reconnection, and OpenTelemetry instrumentation. Every SDK exposes the same API: register functions, call them, and observe them.
 
-> `call`, `callVoid`, `triggerVoid` (and Python/Rust equivalents) have been removed. Use `trigger()` for all invocations. For fire-and-forget, use `trigger({ function_id, payload, action: TriggerAction.Void() })`.
+`trigger` (Python `trigger` / `trigger_async`, Go `client.Trigger`), `TriggerRequest` and `TriggerAction` are `call`, `CallRequest` and `CallAction` under their 0.25 names.
 
 For language-specific details (modules, streams, OpenTelemetry), see the per-SDK READMEs linked in the table above.
 

@@ -1,0 +1,12 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "e7c9a1b3-d5f7-4a9b-8d1f-3b5d7f9a1c3e",
+  "function_id": "users::get",
+  "result": {
+    "status_code": 200,
+    "body": {
+      "id": "42",
+      "name": "Ada Lovelace"
+    }
+  }
+}

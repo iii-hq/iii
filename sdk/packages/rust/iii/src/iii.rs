@@ -6,7 +6,6 @@ const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const JSON_FRAGMENT_BYTES: usize = 1024 * 1024;
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod json_size_tests {
     use super::*;
 
@@ -38,6 +37,7 @@ mod json_size_tests {
                 error: None,
                 traceparent: None,
                 baggage: None,
+                observed: Vec::new(),
             })
             .unwrap(),
             IIIClient::prepare_envelope(&Message::Pong).unwrap(),
@@ -54,7 +54,7 @@ mod json_size_tests {
     async fn local_argument_rejection_clears_pending_before_connection() {
         let sdk = IIIClient::new("ws://127.0.0.1:0");
         let error = sdk
-            .trigger(crate::protocol::TriggerRequest {
+            .call(crate::protocol::CallRequest {
                 function_id: "size::echo".into(),
                 payload: Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES)),
                 action: None,
@@ -64,56 +64,6 @@ mod json_size_tests {
             .unwrap_err();
         assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
         assert!(sdk.inner.pending.lock_or_recover().is_empty());
-    }
-
-    struct TestTriggerHandler;
-
-    #[async_trait::async_trait]
-    impl TriggerHandler for TestTriggerHandler {
-        async fn register_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
-            Ok(())
-        }
-
-        async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-
-    fn register_test_type(sdk: &IIIClient, description: String) {
-        sdk.register_trigger_type(RegisterTriggerType::new(
-            "size::custom",
-            description,
-            TestTriggerHandler,
-        ));
-    }
-
-    #[test]
-    fn rejected_replacement_preserves_accepted_trigger_type_ownership() {
-        let sdk = IIIClient::new("ws://127.0.0.1:0");
-        sdk.inner.running.store(true, Ordering::SeqCst);
-        register_test_type(&sdk, "accepted".into());
-        let accepted_handler = sdk.inner.trigger_types.lock_or_recover()["size::custom"]
-            .handler
-            .clone();
-        let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
-        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
-
-        register_test_type(&sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
-
-        let types = sdk.inner.trigger_types.lock_or_recover();
-        let accepted = &types["size::custom"];
-        assert_eq!(accepted.message.description, "accepted");
-        assert!(Arc::ptr_eq(&accepted.handler, &accepted_handler));
-        assert!(receiver.try_recv().is_err());
-        drop(types);
-        register_test_type(&sdk, "following".into());
-        assert_eq!(
-            sdk.inner.trigger_types.lock_or_recover()["size::custom"]
-                .message
-                .description,
-            "following"
-        );
-        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
     }
 
     #[test]
@@ -157,19 +107,7 @@ mod json_size_tests {
             None,
         );
         rejected.unregister();
-        register_test_type(&sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
-        let error = sdk
-            .register_trigger(RegisterTriggerInput::new(
-                "size::custom",
-                "size::handler",
-                Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES)),
-            ))
-            .err()
-            .expect("oversized trigger must fail");
-        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
         assert!(sdk.inner.functions.lock_or_recover().is_empty());
-        assert!(sdk.inner.trigger_types.lock_or_recover().is_empty());
-        assert!(sdk.inner.triggers.lock_or_recover().is_empty());
         assert!(
             sdk.inner
                 .receiver
@@ -179,74 +117,6 @@ mod json_size_tests {
                 .try_recv()
                 .is_err()
         );
-    }
-
-    #[test]
-    fn rejected_trigger_type_preflight_does_not_acquire_ownership_mutex() {
-        let sdk = IIIClient::new("ws://127.0.0.1:0");
-        sdk.inner.running.store(true, Ordering::SeqCst);
-        register_test_type(&sdk, "accepted".into());
-        let rejected_sdk = sdk.clone();
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let owned = sdk.inner.trigger_types.lock_or_recover();
-        let thread = std::thread::spawn(move || {
-            register_test_type(&rejected_sdk, "x".repeat(MAX_JSON_MESSAGE_BYTES));
-            finished_tx.send(()).unwrap();
-        });
-        // Holding the mutex makes the old insertion-before-validation path
-        // deterministically unable to finish; this is a timeout, not a sleep.
-        let completed_without_ownership = finished_rx.recv_timeout(Duration::from_secs(10)).is_ok();
-        assert_eq!(owned["size::custom"].message.description, "accepted");
-        drop(owned);
-        thread.join().unwrap();
-        assert!(
-            completed_without_ownership,
-            "rejected registration touched ownership"
-        );
-    }
-
-    #[test]
-    fn delayed_send_rejection_cannot_remove_a_newer_accepted_generation() {
-        let sdk = IIIClient::new("ws://127.0.0.1:0");
-        sdk.inner.running.store(true, Ordering::SeqCst);
-        register_test_type(&sdk, "previous".into());
-        let rejected_message = sdk.inner.trigger_types.lock_or_recover()["size::custom"]
-            .message
-            .clone();
-        let mut rejected_message = rejected_message.to_message();
-        if let Message::RegisterTriggerType { description, .. } = &mut rejected_message {
-            *description = "x".repeat(MAX_JSON_MESSAGE_BYTES);
-        }
-        let rejected_sdk = sdk.clone();
-        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            proceed_rx.recv().unwrap();
-            rejected_sdk.send_message(rejected_message).unwrap_err()
-        });
-        // Order the same shared-helper rejection after a newer accepted owner,
-        // exactly the harmful rollback interleaving, without timing guesses.
-        register_test_type(&sdk, "newer".into());
-        let newer_handler = sdk.inner.trigger_types.lock_or_recover()["size::custom"]
-            .handler
-            .clone();
-        proceed_tx.send(()).unwrap();
-        let error = thread.join().unwrap();
-        assert_eq!(error.invocation_error().unwrap().code, "payload_too_large");
-        let types = sdk.inner.trigger_types.lock_or_recover();
-        assert_eq!(types["size::custom"].message.description, "newer");
-        assert!(Arc::ptr_eq(&types["size::custom"].handler, &newer_handler));
-        drop(types);
-        let mut receiver = sdk.inner.receiver.lock_or_recover().take().unwrap();
-        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
-        assert!(matches!(receiver.try_recv(), Ok(Outbound::Message(_))));
-        assert!(receiver.try_recv().is_err());
-        sdk.send_message(Message::Pong).unwrap();
-        match receiver.try_recv().unwrap() {
-            Outbound::Message(envelope) => {
-                assert_eq!(envelope.payload.as_str(), "{\"type\":\"pong\"}");
-            }
-            Outbound::Shutdown => panic!("expected pong"),
-        }
     }
 
     fn invocation(data: String) -> Message {
@@ -579,6 +449,7 @@ mod json_size_tests {
             error: None,
             traceparent: None,
             baggage: Some("secret".repeat(1000)),
+            observed: vec!["o".to_string()],
         };
         let size = serde_json::to_string(&message).unwrap().len();
         let payload = IIIClient::prepare_envelope(&message).unwrap().payload;
@@ -592,6 +463,7 @@ mod json_size_tests {
             )
         );
         assert!(parsed.get("result").is_none());
+        assert!(parsed.get("observed").is_none());
         assert!(!payload.contains("secret"));
     }
 
@@ -656,23 +528,20 @@ use crate::{
         ChannelReader, ChannelWriter, StreamChannelRef, handshake_headers, handshake_request,
     },
     context::{InvocationCtx, with_current},
-    dispatch::{error_body, execute, run_reporter},
+    dispatch::{Hosted, Route, run_reporter},
     error::Error,
-    observable::{FunctionEntry, HookOp, Observe, Observer},
+    hooks::{AddedHook, Call, DeliverHook, HookStore, Match, Matcher, RemovedHook},
+    observable::{FunctionEntry, HookOp, Observer},
     observe::{ObserverEntry, ObserverReason},
     protocol::{
-        Activation, Caller, Dispatch, ErrorBody, FEATURE_OBSERVE_V1, FUNCTION_NAMESPACE_CONFLICT,
-        Message, ObserverState, ParentCaller, RegisterFunctionMessage, RegisterTriggerInput,
-        RegisterTriggerMessage, RegisterTriggerTypeMessage, SDK_FEATURES, TriggerAction,
-        TriggerRequest, TriggerRequestWithMetadata, UnregisterTriggerMessage,
-        UnregisterTriggerTypeMessage, WORKER_NAMESPACE_CONFLICT, observe_codes,
+        Activation, CallAction, CallRequest, CallRequestWithMetadata, Caller, Dispatch, ErrorBody,
+        FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, FUNCTION_NAMESPACE_CONFLICT, Message,
+        ObserverState, ParentCaller, RegisterFunctionMessage, SDK_FEATURES,
+        WORKER_NAMESPACE_CONFLICT, observe_codes,
     },
     reporter::Reporter,
     transport::{self, WsConnectResult, WsStream},
-    triggers::{Trigger, TriggerConfig, TriggerHandler},
-    types::{
-        Channel, RemoteFunctionData, RemoteFunctionHandlerWithMetadata, RemoteTriggerTypeData,
-    },
+    types::{Channel, RemoteFunctionData, RemoteFunctionHandlerWithMetadata},
 };
 
 use iii_helpers::observability as telemetry;
@@ -680,36 +549,10 @@ use iii_helpers::observability::OtelConfig;
 
 pub(crate) const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-/// Where the deprecated trigger APIs point to.
-const MIGRATION_GUIDE: &str = "https://iii.dev/docs/upgrading/from-0-24-x";
-
-/// Logs `message` the first time `warned` is seen unset: one warning per
-/// process per deprecated API.
-fn warn_deprecated_once(warned: &AtomicBool, message: &str) {
-    if !warned.swap(true, Ordering::Relaxed) {
-        tracing::warn!("{message} Migration guide: {MIGRATION_GUIDE}");
-    }
-}
-
-static WARNED_REGISTER_TRIGGER: AtomicBool = AtomicBool::new(false);
-static WARNED_REGISTER_TRIGGER_TYPE: AtomicBool = AtomicBool::new(false);
-
-fn warn_register_trigger() {
-    warn_deprecated_once(
-        &WARNED_REGISTER_TRIGGER,
-        "register_trigger is deprecated and will be removed in a future release. Use \
-         iii.observe(Source::function(..).args(..), target) instead.",
-    );
-}
-
-fn warn_register_trigger_type() {
-    warn_deprecated_once(
-        &WARNED_REGISTER_TRIGGER_TYPE,
-        "register_trigger_type is deprecated and will be removed in a future release. Register \
-         a function with an observe descriptor (RegisterFunction::observe(Observe::owner()..)) \
-         instead.",
-    );
-}
+/// The stack of the `iii-connection` thread, on which this worker's handlers,
+/// observer hooks and calls run: 8 MiB, the main thread's stack on Linux and
+/// macOS (a spawned thread gets 2 MiB by default).
+const CONNECTION_THREAD_STACK: usize = 8 * 1024 * 1024;
 
 /// Wall-clock milliseconds since the Unix epoch.
 pub(crate) fn now_ms() -> u64 {
@@ -730,7 +573,7 @@ pub(crate) fn parent_of(caller: &Caller) -> Option<ParentCaller> {
 pub(crate) struct RemoteCall {
     pub function_id: String,
     pub payload: Value,
-    pub action: Option<TriggerAction>,
+    pub action: Option<CallAction>,
     pub timeout: Option<Duration>,
     pub metadata: Option<Value>,
     pub namespace: Option<String>,
@@ -805,7 +648,11 @@ impl ObserveSupportListener {
 /// What the engine said it supports, on the current connection.
 const ENGINE_FEATURES_UNKNOWN: u8 = 0;
 const ENGINE_WITHOUT_OBSERVE: u8 = 1;
+/// `observe.v1` only: observers and host sync, the engine evaluates routed
+/// calls.
 const ENGINE_WITH_OBSERVE: u8 = 2;
+/// `observe.v2`: the host delivers every call of its functions.
+const ENGINE_WITH_OBSERVE_V2: u8 = 3;
 
 /// Observe messages (acks, unobserves) held at most across a reconnect, by
 /// count and by bytes; the rest are dropped. Reports go back in the report
@@ -846,183 +693,22 @@ pub struct FunctionInfo {
     pub metadata: Option<Value>,
     #[serde(default)]
     pub namespace: Option<String>,
-}
-
-/// Trigger information returned by `engine::triggers::list`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TriggerInfo {
-    pub id: String,
-    pub trigger_type: String,
-    pub function_id: String,
-    pub config: Value,
-    pub metadata: Option<Value>,
+    /// JSON Schema of the function's observer args, when it takes any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args_format: Option<Value>,
+    /// Only its host may call it.
     #[serde(default)]
-    pub namespace: Option<String>,
+    pub private: bool,
+    /// `false`: nobody may observe it.
+    #[serde(default = "observable_default")]
+    pub observable: bool,
+    /// Observers of the function.
+    #[serde(default)]
+    pub observer_count: u64,
 }
 
-/// Builder for registering a custom trigger type with optional format schemas.
-///
-/// **Deprecated since 0.25.0** together with
-/// [`IIIClient::register_trigger_type`]: register a function with an observe
-/// descriptor ([`RegisterFunction::observe`]) instead. Migration guide:
-/// <https://iii.dev/docs/upgrading/from-0-24-x>.
-///
-/// Type parameters:
-/// - `C` tracks the trigger registration type (set via `.trigger_request_format::<T>()`)
-/// - `R` tracks the call request type (set via `.call_request_format::<T>()`)
-///
-/// Both default to `Value` (untyped) and change when the respective builder
-/// method is called. This allows [`IIIClient::register_trigger_type`] to return a
-/// [`TriggerTypeRef<C, R>`] with compile-time safety for both config and
-/// function input types.
-pub struct RegisterTriggerType<H, C = Value, R = Value> {
-    id: String,
-    description: String,
-    handler: H,
-    trigger_request_format: Option<Value>,
-    call_request_format: Option<Value>,
-    _phantom: std::marker::PhantomData<(C, R)>,
-}
-
-impl<H: TriggerHandler> RegisterTriggerType<H> {
-    pub fn new(id: impl Into<String>, description: impl Into<String>, handler: H) -> Self {
-        Self {
-            id: id.into(),
-            description: description.into(),
-            handler,
-            trigger_request_format: None,
-            call_request_format: None,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<H: TriggerHandler, C, R> RegisterTriggerType<H, C, R> {
-    /// Set the trigger request format schema from a type.
-    /// Changes `C`, enabling compile-time validation on
-    /// [`TriggerTypeRef::register_trigger`].
-    pub fn trigger_request_format<T: schemars::JsonSchema + Serialize>(
-        self,
-    ) -> RegisterTriggerType<H, T, R> {
-        RegisterTriggerType {
-            id: self.id,
-            description: self.description,
-            handler: self.handler,
-            trigger_request_format: json_schema_for::<T>(),
-            call_request_format: self.call_request_format,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Set the call request format schema from a type.
-    /// Changes `R`, enabling compile-time validation on
-    /// [`TriggerTypeRef::register_function`].
-    pub fn call_request_format<T: schemars::JsonSchema>(self) -> RegisterTriggerType<H, C, T> {
-        RegisterTriggerType {
-            id: self.id,
-            description: self.description,
-            handler: self.handler,
-            trigger_request_format: self.trigger_request_format,
-            call_request_format: json_schema_for::<T>(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-/// Typed handle returned by [`IIIClient::register_trigger_type`].
-///
-/// **Deprecated since 0.25.0** with it; see
-/// <https://iii.dev/docs/upgrading/from-0-24-x>.
-///
-/// Type parameters:
-/// - `C`: trigger registration type for [`register_trigger`](Self::register_trigger)
-/// - `R`: call request type for [`register_function`](Self::register_function)
-#[derive(Clone)]
-pub struct TriggerTypeRef<C = Value, R = Value> {
-    iii: IIIClient,
-    trigger_type_id: String,
-    _phantom: std::marker::PhantomData<(C, R)>,
-}
-
-impl<C: Serialize, R> TriggerTypeRef<C, R> {
-    /// Register a trigger with compile-time validated trigger config.
-    #[deprecated(
-        since = "0.25.0",
-        note = "use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_trigger(
-        &self,
-        function_id: impl Into<String>,
-        config: C,
-    ) -> Result<Trigger, Error> {
-        #[allow(deprecated)]
-        self.register_trigger_with_metadata(function_id, config, None)
-    }
-
-    /// Register a trigger with compile-time validated trigger config and optional metadata.
-    ///
-    /// This typed helper pairs a function with its trigger, so it defaults the
-    /// trigger's namespace to this worker's — otherwise the function lands in the
-    /// worker's namespace and the trigger in `default`, never resolving it. The
-    /// low-level [`IIIClient::register_trigger`] keeps the engine default.
-    #[deprecated(
-        since = "0.25.0",
-        note = "use iii.observe_with(Source::function(..).args(..), target, ObserverOptions::default().metadata(..)) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_trigger_with_metadata(
-        &self,
-        function_id: impl Into<String>,
-        config: C,
-        metadata: Option<Value>,
-    ) -> Result<Trigger, Error> {
-        let mut input = RegisterTriggerInput::new(
-            self.trigger_type_id.clone(),
-            function_id,
-            serde_json::to_value(config).map_err(|e| Error::Handler(e.to_string()))?,
-        );
-        // This typed helper pairs a function with its trigger, so it names the
-        // worker's namespace for the target; the low-level path resolves the
-        // same thing, and saying it here keeps the two from drifting.
-        input.metadata = metadata;
-        input.namespace = self.iii.namespace();
-        #[allow(deprecated)]
-        self.iii.register_trigger(input)
-    }
-}
-
-impl<C, R> TriggerTypeRef<C, R>
-where
-    R: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static,
-{
-    /// Register a sync function whose input type must match
-    /// the call request format `R`.
-    #[deprecated(
-        since = "0.25.0",
-        note = "use iii.register_function(id, RegisterFunction::new(f)) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_function<O, F>(&self, id: impl Into<String>, f: F) -> FunctionRef
-    where
-        O: Serialize + schemars::JsonSchema + Send + 'static,
-        F: Fn(R) -> Result<O, Error> + Send + Sync + 'static,
-    {
-        self.iii.register_function(id, RegisterFunction::new(f))
-    }
-
-    /// Register an async function whose input type must match
-    /// the call request format `R`.
-    #[deprecated(
-        since = "0.25.0",
-        note = "use iii.register_function(id, RegisterFunction::new_async(f)) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_function_async<O, F, Fut>(&self, id: impl Into<String>, f: F) -> FunctionRef
-    where
-        O: Serialize + schemars::JsonSchema + Send + 'static,
-        F: Fn(R) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = Result<O, Error>> + Send + 'static,
-    {
-        self.iii
-            .register_function(id, RegisterFunction::new_async(f))
-    }
+fn observable_default() -> bool {
+    true
 }
 
 /// Worker metadata reported to the engine (language, framework, project).
@@ -1064,7 +750,7 @@ pub struct WorkerMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub isolation: Option<String>,
     /// Namespace this worker belongs to, and therefore the one its calls and
-    /// its trigger bindings resolve in unless they name another. Absent means
+    /// its observers resolve in unless they name another. Absent means
     /// the engine applies its default namespace. Managed clients also use
     /// `III_NAMESPACE` when no explicit namespace is present.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1151,7 +837,7 @@ fn apply_managed_identity_from_env(metadata: &mut WorkerMetadata) {
 /// A declared-but-blank namespace is refused rather than read as "no
 /// namespace". The two mean opposite things: absent asks for the engine's
 /// default, blank names a namespace and gives nothing to name it with. Read as
-/// absent, the worker registers in `default`, and every call and trigger it
+/// absent, the worker registers in `default`, and every call and observer it
 /// makes now follows it there — a whole project quietly serving from the wrong
 /// namespace, and the one thing an operator cannot see by reading the
 /// declaration.
@@ -1167,7 +853,7 @@ fn apply_managed_identity_from_env(metadata: &mut WorkerMetadata) {
 /// Absent and blank ask for opposite things. Absent asks for the engine's
 /// `default`; blank names a namespace and gives nothing to name it with. Read
 /// as absent, the worker registers in `default`, and since a worker's calls and
-/// triggers follow its namespace, the whole project quietly serves from a place
+/// observers follow its namespace, the whole project quietly serves from a place
 /// its declaration never named.
 ///
 /// Panics rather than returning an error: this is a mistake in the program
@@ -1182,7 +868,12 @@ pub(crate) fn reject_blank_namespace(declared: &str, source: &str) {
     }
 }
 
-/// The namespace one call or one binding resolves in.
+/// Why [`IIIClient::call`] refuses a call through an observer given metadata
+/// (v2 §4.6, decision 53); the same message in every SDK.
+pub(crate) const OBSERVER_CALL_METADATA: &str =
+    "a call through an observer takes no metadata; its target receives the observer's metadata";
+
+/// The namespace one call or one observer resolves in.
 ///
 /// `None` inherits the worker's. `Some("")` is refused: a namespace named and
 /// left blank asks for the opposite of what absent asks for, and the two are
@@ -1349,6 +1040,9 @@ pub(crate) struct PreparedEnvelope {
     /// A report frame's bytes, held against the report buffer's bound until
     /// the frame is written or dropped.
     report_lease: Option<crate::reporter::ReportLease>,
+    /// The `registerfunction` of a function that needs `observe.v2`: sent
+    /// again once the next connection's engine advertises it.
+    v2_registration: bool,
     /// A write of it failed: it may have reached the peer anyway.
     write_failed: bool,
     // The payload is dropped before its lease; send_ws borrows the envelope
@@ -1398,6 +1092,7 @@ impl PreparedEnvelope {
             registration_key,
             observe_family: false,
             report_lease: None,
+            v2_registration: false,
             write_failed: false,
             _spare_capacity: lease,
         }
@@ -1412,6 +1107,11 @@ impl PreparedEnvelope {
     /// Marks an observe message; see [`IIIClient::hold_observe_frames`].
     pub(crate) fn observe_family(mut self) -> Self {
         self.observe_family = true;
+        self
+    }
+
+    fn v2_registration(mut self) -> Self {
+        self.v2_registration = true;
         self
     }
 }
@@ -1469,14 +1169,34 @@ pub enum IIIConnectionState {
     Failed,
 }
 
+/// A function this worker registered, returned by
+/// [`IIIClient::register_function`]. Its hook methods are the client's, with
+/// the function id filled in; each returns the receiver, for chaining.
+///
+/// ```rust,no_run
+/// # use iii_sdk::{Error, IIIClient, Observer, RegisterFunction};
+/// # use serde_json::Value;
+/// # fn demo(iii: &IIIClient) {
+/// iii.register_function(
+///     "orders::on-placed",
+///     RegisterFunction::new(|order: Value| Ok::<_, Error>(order)).private(),
+/// )
+/// .on_observer_removed(|obs: Observer| async move {
+///     println!("{} stopped observing", obs.id());
+/// });
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct FunctionRef {
     pub id: String,
     unregister_fn: Arc<dyn Fn() + Send + Sync>,
     state: Arc<FunctionEntry>,
+    iii: IIIClient,
 }
 
 impl FunctionRef {
+    /// Unregisters the function. Its hooks stay set, for a later
+    /// registration of the same id.
     pub fn unregister(&self) {
         (self.unregister_fn)();
     }
@@ -1488,7 +1208,7 @@ impl FunctionRef {
     /// ```rust,no_run
     /// # fn demo(row_changed: &iii_sdk::runtime::FunctionRef) {
     /// if !row_changed.is_observed() {
-    ///     return; // nothing serialized, nothing sent
+    ///     return; // nothing built, nothing called
     /// }
     /// # }
     /// ```
@@ -1497,7 +1217,26 @@ impl FunctionRef {
         self.state.is_observed()
     }
 
-    /// The active observers, as the owner sees them.
+    /// Whether `call` would reach anyone. Matched by [`Match::keys`]: an
+    /// observer is filed under one of the call's keys, one hash lookup per
+    /// key and no allocation for keys borrowed from the call. Otherwise the
+    /// call is not looked at: as [`is_observed`](Self::is_observed).
+    ///
+    /// ```rust,no_run
+    /// # use iii_sdk::{Call, CallRequest, IIIClient};
+    /// # use serde_json::json;
+    /// # async fn demo(iii: &IIIClient, on_tick: &iii_sdk::runtime::FunctionRef) -> Result<(), iii_sdk::Error> {
+    /// let call = Call { input: json!({ "expression": "0 * * * * * *" }), ..Call::default() };
+    /// if on_tick.is_observed_for(&call) {
+    ///     iii.call(CallRequest::new("cron::on-tick", call.input)).await?;
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn is_observed_for(&self, call: &Call) -> bool {
+        self.state.is_observed_for(call)
+    }
+
+    /// The active observers, as the host sees them.
     pub fn observers(&self) -> Vec<Observer> {
         self.state.observers()
     }
@@ -1506,6 +1245,54 @@ impl FunctionRef {
     /// in-process (the engine confirmed it with `local_dispatch: true`).
     pub fn local_dispatch_active(&self) -> bool {
         self.state.local_dispatch()
+    }
+
+    /// [`IIIClient::on_observer_added_for`] this function.
+    pub fn on_observer_added(&self, hook: impl AddedHook) -> &Self {
+        self.iii.on_observer_added_for(&self.id, hook);
+        self
+    }
+
+    /// [`IIIClient::on_observer_removed_for`] this function.
+    pub fn on_observer_removed(&self, hook: impl RemovedHook) -> &Self {
+        self.iii.on_observer_removed_for(&self.id, hook);
+        self
+    }
+
+    /// [`IIIClient::on_observer_match_for`] this function.
+    pub fn on_observer_match(&self, rule: Match) -> &Self {
+        self.iii.on_observer_match_for(&self.id, rule);
+        self
+    }
+
+    /// [`IIIClient::on_observer_deliver_for`] this function.
+    pub fn on_observer_deliver(&self, hook: impl DeliverHook) -> &Self {
+        self.iii.on_observer_deliver_for(&self.id, hook);
+        self
+    }
+
+    /// [`IIIClient::clear_observer_added_for`] this function.
+    pub fn clear_observer_added(&self) -> &Self {
+        self.iii.clear_observer_added_for(&self.id);
+        self
+    }
+
+    /// [`IIIClient::clear_observer_removed_for`] this function.
+    pub fn clear_observer_removed(&self) -> &Self {
+        self.iii.clear_observer_removed_for(&self.id);
+        self
+    }
+
+    /// [`IIIClient::clear_observer_match_for`] this function.
+    pub fn clear_observer_match(&self) -> &Self {
+        self.iii.clear_observer_match_for(&self.id);
+        self
+    }
+
+    /// [`IIIClient::clear_observer_deliver_for`] this function.
+    pub fn clear_observer_deliver(&self) -> &Self {
+        self.iii.clear_observer_deliver_for(&self.id);
+        self
     }
 }
 
@@ -1516,6 +1303,30 @@ pub(crate) fn json_schema_for<T: schemars::JsonSchema>() -> Option<Value> {
             .into_root_schema_for::<T>(),
     )
     .ok()
+}
+
+/// `value` as a `B`, moved, when `A` and `B` are the same type; `value`
+/// back otherwise. No allocation either way.
+fn same_type<A: 'static, B: 'static>(value: A) -> Result<B, A> {
+    let mut slot = Some(value);
+    match (&mut slot as &mut dyn std::any::Any).downcast_mut::<Option<B>>() {
+        Some(same) => Ok(same.take().expect("the slot is filled")),
+        None => Err(slot.expect("the slot is filled")),
+    }
+}
+
+/// A handler's input as its `T`: a `Value` handler gets the value itself,
+/// any other type deserializes it.
+fn handler_input<T: serde::de::DeserializeOwned + 'static>(input: Value) -> Result<T, Error> {
+    same_type::<Value, T>(input)
+        .or_else(|input| serde_json::from_value(input).map_err(|e| Error::Serde(e.to_string())))
+}
+
+/// A handler's return value as JSON: a `Value` is the value itself, any
+/// other type serializes.
+fn handler_output<R: serde::Serialize + 'static>(output: R) -> Result<Value, Error> {
+    same_type::<R, Value>(output)
+        .or_else(|output| serde_json::to_value(&output).map_err(|e| Error::Serde(e.to_string())))
 }
 
 /// Helper trait used internally to convert a sync function into a
@@ -1531,7 +1342,8 @@ pub trait IntoSyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-// 1-arg sync, deserializes the entire JSON input as T.
+// 1-arg sync, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is).
 //
 // Error type is fixed to [`Error`] (instead of generic `E: Display`) so
 // closures using bare `Ok(...)` infer cleanly without explicit error
@@ -1546,12 +1358,9 @@ where
 {
     fn into_handler(self) -> RemoteFunctionHandlerWithMetadata {
         Arc::new(move |input: Value, _metadata: Option<Value>| {
-            let output = serde_json::from_value::<T>(input)
-                .map_err(|e| Error::Serde(e.to_string()))
+            let output = handler_input::<T>(input)
                 .and_then(&self)
-                .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                });
+                .and_then(handler_output);
             Box::pin(async move { output })
         })
     }
@@ -1565,8 +1374,9 @@ where
     }
 }
 
-// 2-arg sync, deserializes the entire JSON input as T and passes the
-// per-invocation metadata sidecar as the second handler argument.
+// 2-arg sync, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is) and passes the per-invocation metadata sidecar as the
+// second handler argument.
 impl<F, T, R> IntoSyncHandler<(T, Option<Value>, R)> for F
 where
     F: Fn(T, Option<Value>) -> Result<R, Error> + Send + Sync + 'static,
@@ -1575,12 +1385,9 @@ where
 {
     fn into_handler(self) -> RemoteFunctionHandlerWithMetadata {
         Arc::new(move |input: Value, metadata: Option<Value>| {
-            let output = serde_json::from_value::<T>(input)
-                .map_err(|e| Error::Serde(e.to_string()))
+            let output = handler_input::<T>(input)
                 .and_then(|arg| self(arg, metadata))
-                .and_then(|val| {
-                    serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                });
+                .and_then(handler_output);
             Box::pin(async move { output })
         })
     }
@@ -1611,9 +1418,9 @@ pub trait IntoAsyncHandler<Marker>: Send + Sync + 'static {
     }
 }
 
-/// Build the dispatchable handler for a typed async function: deserialize
-/// the JSON input as `T`, run `f`, serialize the result. Deserialization
-/// failures surface as [`Error::Serde`].
+/// Build the dispatchable handler for a typed async function: the JSON input
+/// as `T`, `f`, and its result as JSON, a `Value` passed as is both ways.
+/// Deserialization failures surface as [`Error::Serde`].
 fn async_handler<F, T, Fut, R>(f: F) -> RemoteFunctionHandlerWithMetadata
 where
     F: Fn(T) -> Fut + Send + Sync + 'static,
@@ -1627,19 +1434,12 @@ where
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
-            match serde_json::from_value::<T>(input) {
+            match handler_input::<T>(input) {
                 Ok(arg) => {
                     let fut = f(arg);
-                    Box::pin(async move {
-                        fut.await.and_then(|val| {
-                            serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                        })
-                    })
+                    Box::pin(async move { fut.await.and_then(handler_output) })
                 }
-                Err(e) => {
-                    let err = Error::Serde(e.to_string());
-                    Box::pin(async move { Err(err) })
-                }
+                Err(err) => Box::pin(async move { Err(err) }),
             }
         },
     )
@@ -1660,25 +1460,19 @@ where
               -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Value, Error>> + Send>,
         > {
-            match serde_json::from_value::<T>(input) {
+            match handler_input::<T>(input) {
                 Ok(arg) => {
                     let fut = f(arg, metadata);
-                    Box::pin(async move {
-                        fut.await.and_then(|val| {
-                            serde_json::to_value(&val).map_err(|e| Error::Serde(e.to_string()))
-                        })
-                    })
+                    Box::pin(async move { fut.await.and_then(handler_output) })
                 }
-                Err(e) => {
-                    let err = Error::Serde(e.to_string());
-                    Box::pin(async move { Err(err) })
-                }
+                Err(err) => Box::pin(async move { Err(err) }),
             }
         },
     )
 }
 
-// 1-arg async, deserializes the entire JSON input as T.
+// 1-arg async, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is).
 //
 // Error type is fixed to [`Error`] (see [`IntoSyncHandler`] for the
 // rationale). Use `From<E> for Error` to lift custom error types,
@@ -1703,8 +1497,9 @@ where
     }
 }
 
-// 2-arg async, deserializes the entire JSON input as T and passes the
-// per-invocation metadata sidecar as the second handler argument.
+// 2-arg async, deserializes the entire JSON input as T (a `Value` input and
+// result pass as is) and passes the per-invocation metadata sidecar as the
+// second handler argument.
 impl<F, T, Fut, R> IntoAsyncHandler<(T, Option<Value>, Fut, R)> for F
 where
     F: Fn(T, Option<Value>) -> Fut + Send + Sync + 'static,
@@ -1730,15 +1525,7 @@ where
 // =============================================================================
 
 fn empty_message() -> RegisterFunctionMessage {
-    RegisterFunctionMessage {
-        id: String::new(),
-        description: None,
-        request_format: None,
-        response_format: None,
-        metadata: None,
-        invocation: None,
-        observe: None,
-    }
+    RegisterFunctionMessage::with_id(String::new())
 }
 
 /// Function registration builder.
@@ -1751,7 +1538,8 @@ fn empty_message() -> RegisterFunctionMessage {
 /// - [`RegisterFunction::new`][]: sync function. Accepts both typed handlers
 ///   (schemas auto-extracted via `schemars`) and `Fn(Value, Option<Value>) -> Result<Value, Error>`
 ///   closures. The second argument is the per-invocation metadata sidecar and
-///   is `None` when absent.
+///   is `None` when absent. A `Value` input or result passes as is; other
+///   types go through serde.
 /// - [`RegisterFunction::new_async`][]: async equivalent of `new`.
 /// - [`RegisterFunction::http`][]: function invoked over HTTP (Lambda,
 ///   Cloudflare Workers, etc.).
@@ -1760,23 +1548,30 @@ fn empty_message() -> RegisterFunctionMessage {
 /// - [`description`](Self::description)
 /// - [`metadata`](Self::metadata)
 /// - [`request_format`](Self::request_format): overrides any auto-extracted schema.
-/// - [`response_format`](Self::response_format): overrides any auto-extracted schema.
-/// - [`observe`](Self::observe): how observers of the function are delivered,
-///   and the hooks that run when one is added or removed.
+/// - [`response_format`](Self::response_format): overrides any auto-extracted
+///   schema; it describes what observers observe.
+/// - [`args_format`](Self::args_format): the observers' args.
+/// - [`private`](Self::private): only this worker calls it.
+/// - [`observable`](Self::observable): `false` refuses every observer.
+/// - [`standby`](Self::standby): take over when another host leaves.
 /// - [`local_dispatch`](Self::local_dispatch): opt out of in-process calls.
+///
+/// The handler's return value is what observers observe. An event source's
+/// handler returns the event it is called with. What the worker does when
+/// the function is observed is set with hooks: see [`hooks`](crate::hooks).
 pub struct RegisterFunction {
     message: RegisterFunctionMessage,
     handler: Option<RemoteFunctionHandlerWithMetadata>,
-    observe: Option<Observe>,
     local_dispatch: bool,
+    standby: bool,
 }
 
 /// The parts of a [`RegisterFunction`].
 pub(crate) struct RegistrationParts {
     pub message: RegisterFunctionMessage,
     pub handler: Option<RemoteFunctionHandlerWithMetadata>,
-    pub observe: Option<Observe>,
     pub local_dispatch: bool,
+    pub standby: bool,
 }
 
 impl RegisterFunction {
@@ -1794,8 +1589,8 @@ impl RegisterFunction {
         Self {
             message,
             handler: Some(f.into_handler()),
-            observe: None,
             local_dispatch: true,
+            standby: false,
         }
     }
 
@@ -1813,8 +1608,8 @@ impl RegisterFunction {
         Self {
             message,
             handler: Some(f.into_handler()),
-            observe: None,
             local_dispatch: true,
+            standby: false,
         }
     }
 
@@ -1826,8 +1621,8 @@ impl RegisterFunction {
         Self {
             message,
             handler: None,
-            observe: None,
             local_dispatch: true,
+            standby: false,
         }
     }
 
@@ -1855,15 +1650,55 @@ impl RegisterFunction {
         self
     }
 
-    /// How observers of this function are delivered, and the hooks that run
-    /// when one is added or removed ([`Observe::owner`] / [`Observe::auto`]).
-    /// Every function is observable without it, as `auto` without hooks.
+    /// The JSON Schema of the observers' `args`, generated from `T`. The
+    /// engine validates every `observe` against it (`INVALID_ARGS`) before
+    /// the added hooks run, and they read the args with
+    /// [`Observer::args`]. `#[serde(deny_unknown_fields)]` on `T` rejects
+    /// argument typos. A function without it takes no args.
     ///
-    /// Against an engine without observe support the function registers as a
-    /// plain function and its hooks never run (one warning is logged).
-    pub fn observe(mut self, observe: Observe) -> Self {
-        self.message.observe = Some(observe.descriptor.clone());
-        self.observe = Some(observe);
+    /// Needs an engine that advertised `observe.v2`, as do
+    /// [`private`](Self::private) and [`observable(false)`](Self::observable):
+    /// against an older one the function stays unregistered, and the SDK logs
+    /// `UNSUPPORTED` once.
+    pub fn args_format<T: schemars::JsonSchema>(self) -> Self {
+        self.args_format_value(json_schema_for::<T>().unwrap_or(Value::Null))
+    }
+
+    /// [`args_format`](Self::args_format) from a JSON Schema value.
+    pub fn args_format_value(mut self, schema: Value) -> Self {
+        self.message.args_format = Some(schema);
+        self
+    }
+
+    /// Only this worker may call the function; any worker may observe it,
+    /// and its observers receive every call this worker makes. The engine
+    /// refuses a call from another connection (`FORBIDDEN`), and the function
+    /// as an observer's target. For event sources, whose calls from anywhere
+    /// else would be forged events.
+    ///
+    /// This worker's own calls pass the input and the result by move, as
+    /// every local call does: a handler that takes and returns [`Value`]
+    /// gets the caller's value, and the caller gets the handler's, neither
+    /// copied. A handler of other types costs its serde conversion only.
+    pub fn private(mut self) -> Self {
+        self.message.private = true;
+        self
+    }
+
+    /// `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one
+    /// whose payloads carry credentials. Default `true`.
+    pub fn observable(mut self, observable: bool) -> Self {
+        self.message.observable = observable;
+        self
+    }
+
+    /// When another connection already hosts the id
+    /// (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves:
+    /// the SDK registers the function again every second (±20 %) until the
+    /// engine accepts it or it is unregistered. The hooks run for every
+    /// observer once the engine confirms it.
+    pub fn standby(mut self) -> Self {
+        self.standby = true;
         self
     }
 
@@ -1884,8 +1719,8 @@ impl RegisterFunction {
         RegistrationParts {
             message: self.message,
             handler: self.handler,
-            observe: self.observe,
             local_dispatch: self.local_dispatch,
+            standby: self.standby,
         }
     }
 }
@@ -1930,8 +1765,8 @@ pub(crate) struct IIIInner {
     started: AtomicBool,
     pending: Mutex<HashMap<Uuid, PendingInvocation>>,
     functions: Mutex<HashMap<String, RemoteFunctionData>>,
-    trigger_types: Mutex<HashMap<String, RemoteTriggerTypeData>>,
-    triggers: Mutex<HashMap<String, RegisterTriggerMessage>>,
+    /// Observer hooks, by function id and for every function.
+    pub(crate) hooks: HookStore,
     worker_metadata: Mutex<Option<WorkerMetadata>>,
     connection_state: Mutex<IIIConnectionState>,
     /// Set when the engine rejects registration (fatal, no reconnect).
@@ -1951,7 +1786,7 @@ pub(crate) struct IIIInner {
     identity_mode: WorkerIdentityMode,
     registration_changed: Notify,
     /// Observers this worker created, replayed on every connection that
-    /// supports observe.
+    /// supports observe, in creation order ([`ObserverEntry::seq`]).
     observers: Mutex<HashMap<String, Arc<ObserverEntry>>>,
     /// `ENGINE_*` on the current connection: unknown until `WorkerRegistered`.
     engine_features: AtomicU8,
@@ -1959,16 +1794,16 @@ pub(crate) struct IIIInner {
     engine_observe_last: AtomicBool,
     /// Listeners of [`IIIClient::on_engine_supports_observe`].
     observe_support: Arc<Mutex<ObserveSupport>>,
-    /// Functions already named in the warning that the engine leaves their
-    /// observe hooks inactive; cleared by an engine that supports observe.
-    warned_no_observe: Mutex<HashSet<String>>,
+    /// Functions already named in the `UNSUPPORTED` warning of an engine
+    /// without `observe.v2`; cleared by an engine with it.
+    warned_unsupported: Mutex<HashSet<String>>,
     /// Incremented on every established connection; a function confirmed on
     /// an older one waits for its new `functionregistered`.
     pub(crate) connection_epoch: AtomicU64,
     /// This worker as a caller: `worker_id` from the engine, `worker_name`.
     identity: ArcSwap<Caller>,
     reporter: Reporter,
-    /// `on_observer_added` timeout; shortened by tests.
+    /// Added hook timeout; shortened by tests.
     hook_timeout_ms: AtomicU64,
     /// Observe messages queued on a connection that dropped, waiting for the
     /// next engine's features.
@@ -2020,8 +1855,7 @@ impl IIIClient {
             started: AtomicBool::new(false),
             pending: Mutex::new(HashMap::new()),
             functions: Mutex::new(HashMap::new()),
-            trigger_types: Mutex::new(HashMap::new()),
-            triggers: Mutex::new(HashMap::new()),
+            hooks: HookStore::default(),
             worker_metadata: Mutex::new(Some(metadata)),
             connection_state: Mutex::new(IIIConnectionState::Disconnected),
             fatal_error: Mutex::new(None),
@@ -2037,7 +1871,7 @@ impl IIIClient {
             engine_features: AtomicU8::new(ENGINE_FEATURES_UNKNOWN),
             engine_observe_last: AtomicBool::new(false),
             observe_support: Arc::default(),
-            warned_no_observe: Mutex::new(HashSet::new()),
+            warned_unsupported: Mutex::new(HashSet::new()),
             connection_epoch: AtomicU64::new(0),
             identity: ArcSwap::from_pointee(identity),
             reporter: Reporter::default(),
@@ -2083,9 +1917,22 @@ impl IIIClient {
         self.get_connection_state() == IIIConnectionState::Connected
     }
 
-    /// The engine on the current connection advertised `observe.v1`.
+    pub(crate) fn hooks(&self) -> &HookStore {
+        &self.inner.hooks
+    }
+
+    /// The engine on the current connection advertised `observe.v1` (or
+    /// `observe.v2`, which includes it).
     pub(crate) fn engine_observes(&self) -> bool {
-        self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITH_OBSERVE
+        matches!(
+            self.inner.engine_features.load(Ordering::SeqCst),
+            ENGINE_WITH_OBSERVE | ENGINE_WITH_OBSERVE_V2
+        )
+    }
+
+    /// The engine on the current connection advertised `observe.v2`.
+    pub(crate) fn engine_observes_v2(&self) -> bool {
+        self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITH_OBSERVE_V2
     }
 
     /// This worker as a caller: `{ worker_id, worker_name }`.
@@ -2257,6 +2104,9 @@ impl IIIClient {
         // run_connection() can exit cleanly before main() returns.
         let handle = std::thread::Builder::new()
             .name("iii-connection".into())
+            // Every handler, hook and call this worker serves runs on this
+            // thread: it gets the stack a process's main thread has.
+            .stack_size(CONNECTION_THREAD_STACK)
             .spawn(move || {
                 // Lets `iii ps` find this worker while the connection loop runs.
                 let _marker = crate::process_marker::Marker::announce(
@@ -2351,8 +2201,8 @@ impl IIIClient {
         self.register_function_parts(RegistrationParts {
             message,
             handler,
-            observe: None,
             local_dispatch: true,
+            standby: false,
         })
     }
 
@@ -2360,65 +2210,59 @@ impl IIIClient {
         let RegistrationParts {
             message,
             handler,
-            observe,
             local_dispatch,
+            standby,
         } = parts;
         let id = message.id.clone();
         if id.trim().is_empty() {
             panic!("id is required");
         }
-        if let Some(observe) = &observe {
-            if observe.descriptor.args_format.is_some()
-                && observe.delivery() != crate::protocol::Delivery::Owner
-            {
-                panic!(
-                    "{}: function '{id}' declares args_format with auto delivery; args are \
-                     for an owner that routes by them, use Observe::owner()",
-                    observe_codes::INVALID_OBSERVE_DESCRIPTOR
-                );
-            }
-        }
-        let state = Arc::new(FunctionEntry::new(
-            id.clone(),
-            observe.as_ref(),
-            handler.is_some(),
-            local_dispatch,
-        ));
+        let new_entry = |deliver: Option<Arc<dyn DeliverHook>>, matching: Option<Match>| {
+            Arc::new(FunctionEntry::new(
+                id.clone(),
+                message.declares_v2(),
+                handler.is_some(),
+                local_dispatch,
+                standby,
+                deliver,
+                matching.map(Matcher::new),
+            ))
+        };
         let envelope = match Self::prepare_envelope(&message.to_message()) {
             Ok(envelope) => envelope,
             Err(error) => {
                 tracing::warn!(error = %error, "Function registration rejected locally");
-                // A rejected handle must not unregister a previous owner of this ID.
+                // A rejected handle must not unregister a previous host of this ID.
+                let state = new_entry(None, None);
                 return FunctionRef {
                     id,
                     unregister_fn: Arc::new(|| {}),
                     state,
+                    iii: self.clone(),
                 };
             }
         };
-        let data = RemoteFunctionData {
-            message,
-            handler,
-            observe: state.clone(),
+        let state = {
+            // The match and deliver hooks are read and the entry filed under
+            // the hook store's lock: a hook set meanwhile reaches the entry.
+            let hooks = self.inner.hooks.lock();
+            let state = new_entry(hooks.deliver(&id), hooks.matching(&id));
+            let mut funcs = self.inner.functions.lock_or_recover();
+            match funcs.entry(id.clone()) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    panic!("function id '{}' already registered", id);
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(RemoteFunctionData {
+                        message,
+                        handler,
+                        observe: state.clone(),
+                    });
+                }
+            }
+            state
         };
-        let mut funcs = self.inner.functions.lock_or_recover();
-        match funcs.entry(id.clone()) {
-            std::collections::hash_map::Entry::Occupied(_) => {
-                panic!("function id '{}' already registered", id);
-            }
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(data);
-            }
-        }
-        drop(funcs);
-        let _ = self.send_prepared(envelope);
-        // Registered after this engine said it has no observe: warned here,
-        // as `on_engine_features` did for the functions it found.
-        if state.needs_observe
-            && self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITHOUT_OBSERVE
-        {
-            self.warn_no_observe(vec![id.clone()]);
-        }
+        self.send_registration(&state, envelope);
 
         let iii = self.clone();
         let unregister_id = id.clone();
@@ -2434,10 +2278,63 @@ impl IIIClient {
             });
         });
 
+        // No observer of it is acked before this returns.
+        state.open();
         FunctionRef {
             id,
             unregister_fn,
             state,
+            iii: self.clone(),
+        }
+    }
+
+    /// Sends a function's `registerfunction` on the current connection. One
+    /// that needs `observe.v2` waits for this connection's `workerregistered`
+    /// to advertise it, and stays unregistered on an engine without it.
+    fn send_registration(&self, entry: &Arc<FunctionEntry>, envelope: PreparedEnvelope) {
+        let epoch = self.connection_epoch();
+        if !entry.needs_v2() {
+            entry.mark_sent(epoch);
+            let _ = self.send_prepared(envelope);
+            return;
+        }
+        match self.inner.engine_features.load(Ordering::SeqCst) {
+            ENGINE_WITH_OBSERVE_V2 => {
+                if entry.mark_sent(epoch) {
+                    let _ = self.send_prepared(envelope.v2_registration());
+                }
+            }
+            // sent from this connection's `workerregistered`
+            ENGINE_FEATURES_UNKNOWN => {}
+            _ => self.warn_unsupported(vec![entry.id.clone()]),
+        }
+    }
+
+    /// A deliver or match hook was just set on a registered function, or
+    /// removed: a function that needs `observe.v2` and whose registration
+    /// went to an engine without it is withdrawn there and released here, and
+    /// an unregistered one that does not need it is registered. Until this
+    /// connection's engine said what it supports, its `workerregistered`
+    /// decides.
+    pub(crate) fn reconcile_registration(&self, entry: &Arc<FunctionEntry>) {
+        let features = self.inner.engine_features.load(Ordering::SeqCst);
+        if features == ENGINE_FEATURES_UNKNOWN {
+            return;
+        }
+        if entry.sent_on(self.connection_epoch()) {
+            if entry.needs_v2() && features != ENGINE_WITH_OBSERVE_V2 {
+                self.withdraw_registration(entry);
+                self.warn_unsupported(vec![entry.id.clone()]);
+            }
+            return;
+        }
+        let message = match self.functions().get(&entry.id) {
+            Some(data) if Arc::ptr_eq(&data.observe, entry) => data.message.to_message(),
+            _ => return,
+        };
+        match Self::prepare_envelope(&message) {
+            Ok(envelope) => self.send_registration(entry, envelope),
+            Err(error) => tracing::warn!(error = %error, "registration rejected locally"),
         }
     }
 
@@ -2454,9 +2351,7 @@ impl IIIClient {
     ///   `.response_format(...)` as needed.
     ///
     /// # Panics
-    /// Panics if `id` is empty or already registered, and with
-    /// `INVALID_OBSERVE_DESCRIPTOR` when an [`Observe::auto`] descriptor
-    /// declares an `args_format`.
+    /// Panics if `id` is empty or already registered.
     ///
     /// # Examples
     /// ```rust,no_run
@@ -2529,235 +2424,13 @@ impl IIIClient {
         self.register_function_parts(parts)
     }
 
-    /// Register a custom trigger type with the engine.
-    ///
-    /// Returns a [`TriggerTypeRef`] handle that can register triggers and
-    /// functions with compile-time validated types.
-    ///
-    /// It keeps working in 0.25 and logs one warning per process. A new
-    /// provider registers a function with an observe descriptor instead
-    /// (`RegisterFunction::new(..).observe(Observe::owner().args_format::<Config>().handler(..))`):
-    /// [`ObserveHandler`](crate::ObserveHandler) replaces [`TriggerHandler`],
-    /// and observers' args replace trigger configs.
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// # #![allow(deprecated)]
-    /// # use iii_sdk::{IIIClient, RegisterTriggerType};
-    /// # use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-    /// # struct MyHandler;
-    /// # #[async_trait::async_trait]
-    /// # impl TriggerHandler for MyHandler {
-    /// #     async fn register_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
-    /// #     async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> { Ok(()) }
-    /// # }
-    /// # #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)] struct MyConfig { url: String }
-    /// # #[derive(serde::Deserialize, schemars::JsonSchema)] struct MyRequest { data: String }
-    /// # let worker = IIIClient::new("ws://localhost:49134");
-    /// let my_trigger = worker.register_trigger_type(
-    ///     RegisterTriggerType::new("my-trigger", "My custom trigger", MyHandler)
-    ///         .trigger_request_format::<MyConfig>()
-    ///         .call_request_format::<MyRequest>(),
-    /// );
-    ///
-    /// // Compile-time safe: config must be MyConfig, function input must be MyRequest
-    /// my_trigger.register_function("my::handler", |req: MyRequest| -> Result<serde_json::Value, iii_sdk::Error> {
-    ///     Ok(serde_json::json!({ "data": req.data }))
-    /// });
-    /// my_trigger.register_trigger("my::handler", MyConfig { url: "/hook".into() });
-    /// ```
-    #[deprecated(
-        since = "0.25.0",
-        note = "register a function with RegisterFunction::observe(Observe::owner()..) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_trigger_type<H, C, R>(
-        &self,
-        trigger_type: RegisterTriggerType<H, C, R>,
-    ) -> TriggerTypeRef<C, R>
-    where
-        H: TriggerHandler + 'static,
-    {
-        warn_register_trigger_type();
-        self.register_trigger_type_inner(trigger_type)
-    }
-
-    /// [`register_trigger_type`](Self::register_trigger_type) without the
-    /// runtime deprecation warning: for iii's own crates that still provide a
-    /// trigger type while its subscribers move to observers, so a deprecation
-    /// meant for user code is not printed on every run. Not part of the
-    /// public API.
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.25.0",
-        note = "register a function with RegisterFunction::observe(Observe::owner()..) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_trigger_type_without_warning<H, C, R>(
-        &self,
-        trigger_type: RegisterTriggerType<H, C, R>,
-    ) -> TriggerTypeRef<C, R>
-    where
-        H: TriggerHandler + 'static,
-    {
-        self.register_trigger_type_inner(trigger_type)
-    }
-
-    fn register_trigger_type_inner<H, C, R>(
-        &self,
-        trigger_type: RegisterTriggerType<H, C, R>,
-    ) -> TriggerTypeRef<C, R>
-    where
-        H: TriggerHandler + 'static,
-    {
-        let message = RegisterTriggerTypeMessage {
-            id: trigger_type.id,
-            description: trigger_type.description,
-            trigger_request_format: trigger_type.trigger_request_format,
-            call_request_format: trigger_type.call_request_format,
-            // Left to the engine, which files it under this connection's
-            // namespace. A worker providing a trigger type provides it for the
-            // project it belongs to.
-            namespace: None,
-        };
-
-        let trigger_type_id = message.id.clone();
-
-        // Validate before touching ownership: rollback by ID could remove a
-        // previously accepted handler, including a newer concurrent generation.
-        match Self::prepare_envelope(&message.to_message()) {
-            Ok(envelope) => {
-                self.inner.trigger_types.lock_or_recover().insert(
-                    message.id.clone(),
-                    RemoteTriggerTypeData {
-                        message,
-                        handler: Arc::new(trigger_type.handler),
-                    },
-                );
-
-                let _ = self.send_prepared(envelope);
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "Trigger type registration rejected locally")
-            }
-        }
-
-        TriggerTypeRef {
-            iii: self.clone(),
-            trigger_type_id,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Unregister a previously registered trigger type.
-    ///
-    /// **Deprecated since 0.25.0** with [`register_trigger_type`](Self::register_trigger_type).
-    ///
-    /// # Examples
-    /// ```rust,no_run
-    /// # #![allow(deprecated)]
-    /// # use iii_sdk::{register_worker, InitOptions};
-    /// # let worker = register_worker("ws://localhost:49134", InitOptions::default());
-    /// worker.unregister_trigger_type("cron");
-    /// ```
-    #[deprecated(
-        since = "0.25.0",
-        note = "unregister the function registered with RegisterFunction::observe instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn unregister_trigger_type(&self, id: impl Into<String>) {
-        let id = id.into();
-        self.inner.trigger_types.lock_or_recover().remove(&id);
-        let msg = UnregisterTriggerTypeMessage { id };
-        let _ = self.send_message(msg.to_message());
-    }
-
-    /// Bind a trigger configuration to a registered function.
-    /// <!-- docs:expand-params -->
-    ///
-    /// It keeps working in 0.25 and logs one warning per process. The http,
-    /// cron, queue, state, stream, pubsub and database workers still publish
-    /// trigger types, so keep using it for them until they ship source
-    /// functions; observe any other function with [`observe`](Self::observe).
-    ///
-    /// # Arguments
-    /// * `input` - Trigger registration input with trigger_type, function_id, and config.
-    ///
-    /// # Examples
-    /// ```rust
-    /// # #![allow(deprecated)]
-    /// # use iii_sdk::IIIClient;
-    /// # use iii_sdk::protocol::RegisterTriggerInput;
-    /// # use serde_json::json;
-    /// # let worker = IIIClient::new("ws://localhost:49134");
-    /// let trigger = worker.register_trigger(RegisterTriggerInput::new(
-    ///     "http",
-    ///     "greet",
-    ///     json!({ "api_path": "/greet", "http_method": "GET" }),
-    /// ))?;
-    /// // Later...
-    /// trigger.unregister();
-    /// # Ok::<(), iii_sdk::Error>(())
-    /// ```
-    #[deprecated(
-        since = "0.25.0",
-        note = "use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
-    )]
-    pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, Error> {
-        warn_register_trigger();
-        let id = Uuid::new_v4().to_string();
-        let message = RegisterTriggerMessage {
-            id: id.clone(),
-            trigger_type: input.trigger_type,
-            function_id: input.function_id,
-            config: input.config,
-            metadata: input.metadata,
-            // Unset means this worker's namespace, not the engine's default.
-            // A trigger names a function, and the function a worker registers
-            // lands in the worker's namespace, so defaulting anywhere else
-            // registers a trigger that fires and resolves nothing. Naming
-            // another namespace, `default` included, stays a matter of saying
-            // so.
-            namespace: call_namespace(
-                input.namespace,
-                self.namespace(),
-                "RegisterTriggerInput.namespace",
-            )?,
-            // Passed through untouched, including when it is `None`. `None` is
-            // the engine's two-step resolution — this worker's namespace, then
-            // the engine's own — which is what lets a project ship its own
-            // provider for a type id the engine also provides while every
-            // unmigrated worker keeps reaching the engine's without saying so.
-            // The SDK cannot decide this locally: a sibling worker in the same
-            // project may be the one providing the type.
-            trigger_namespace: input.trigger_namespace,
-        };
-
-        self.send_message(message.to_message())?;
-        self.inner
-            .triggers
-            .lock_or_recover()
-            .insert(message.id.clone(), message.clone());
-
-        let iii = self.clone();
-        let trigger_type = message.trigger_type.clone();
-        let unregister_id = message.id.clone();
-        let unregister_fn = Arc::new(move || {
-            let _ = iii.inner.triggers.lock_or_recover().remove(&unregister_id);
-            let msg = UnregisterTriggerMessage {
-                id: unregister_id.clone(),
-                trigger_type: trigger_type.clone(),
-            };
-            let _ = iii.send_message(msg.to_message());
-        });
-
-        Ok(Trigger::new(unregister_fn))
-    }
-
-    /// Invoke a function.
-    /// <!-- docs:expand-params: TriggerRequest -->
+    /// Call a function: resolves to its result.
+    /// <!-- docs:expand-params: CallRequest -->
     ///
     /// The routing behavior depends on the `action` field of the request:
     /// - No action: synchronous, waits for the function to return.
-    /// - [`TriggerAction::Enqueue`]: async via named queue.
-    /// - [`TriggerAction::Void`][]: fire-and-forget.
+    /// - [`CallAction::Enqueue`]: async via named queue.
+    /// - [`CallAction::Void`][]: fire-and-forget.
     ///
     /// A function this worker registered itself runs in-process once the
     /// engine allowed it ("local dispatch", see [`Dispatch`]): same result,
@@ -2766,72 +2439,102 @@ impl IIIClient {
     /// caller's task, where the timeout cannot interrupt it: a sync handler
     /// that can block should be async, or registered with
     /// [`RegisterFunction::local_dispatch(false)`](RegisterFunction::local_dispatch).
-    /// [`TriggerRequest::dispatch`] with [`Dispatch::Remote`]
-    /// forces the engine path. Calls made from inside a handler carry that
-    /// handler as their `caller`.
+    /// [`CallRequest::dispatch`] with [`Dispatch::Remote`]
+    /// forces the engine path. Calls made from inside a handler (or a deliver
+    /// hook) carry that handler's invocation as their `caller`.
+    ///
+    /// A request built with [`CallRequest::observer`] calls through that
+    /// observer: the engine runs its target with the payload, as given.
     ///
     /// # Examples
     /// ```rust
-    /// # use iii_sdk::{IIIClient, TriggerAction};
-    /// # use iii_sdk::protocol::TriggerRequest;
+    /// # use iii_sdk::{CallAction, CallRequest, IIIClient};
     /// # use serde_json::json;
     /// # async fn example(worker: &IIIClient) -> Result<(), iii_sdk::Error> {
     /// // Synchronous
-    /// let result = worker.trigger(TriggerRequest {
-    ///     function_id: "greet".to_string(),
-    ///     payload: json!({"name": "World"}),
-    ///     action: None,
-    ///     timeout_ms: None,
-    /// }).await?;
+    /// let result = worker
+    ///     .call(CallRequest::new("greet", json!({"name": "World"})))
+    ///     .await?;
     ///
     /// // Fire-and-forget
-    /// worker.trigger(TriggerRequest {
-    ///     function_id: "notify".to_string(),
-    ///     payload: json!({}),
-    ///     action: Some(TriggerAction::Void),
-    ///     timeout_ms: None,
-    /// }).await?;
+    /// worker
+    ///     .call(CallRequest {
+    ///         function_id: "notify".to_string(),
+    ///         payload: json!({}),
+    ///         action: Some(CallAction::Void),
+    ///         timeout_ms: None,
+    ///     })
+    ///     .await?;
     ///
     /// // Enqueue (the queue must be declared in the queue worker's
     /// // queue_configs)
-    /// let receipt = worker.trigger(TriggerRequest {
-    ///     function_id: "iii::durable::publish".to_string(),
-    ///     payload: json!({"topic": "test"}),
-    ///     action: Some(TriggerAction::Enqueue { queue: "test".to_string() }),
-    ///     timeout_ms: None,
-    /// }).await?;
+    /// let receipt = worker
+    ///     .call(CallRequest {
+    ///         function_id: "iii::durable::publish".to_string(),
+    ///         payload: json!({"topic": "test"}),
+    ///         action: Some(CallAction::Enqueue { queue: "test".to_string() }),
+    ///         timeout_ms: None,
+    ///     })
+    ///     .await?;
     ///
     /// // Metadata
-    /// worker.trigger(
-    ///     TriggerRequest {
-    ///         function_id: "audit::write".to_string(),
-    ///         payload: json!({"event": "checkout"}),
-    ///         action: Some(TriggerAction::Void),
-    ///         timeout_ms: None,
-    ///     }
-    ///     .metadata(json!({"tenant": "acme"})),
-    /// ).await?;
+    /// worker
+    ///     .call(
+    ///         CallRequest::new("audit::write", json!({"event": "checkout"}))
+    ///             .metadata(json!({"tenant": "acme"}))
+    ///             .action(CallAction::Void),
+    ///     )
+    ///     .await?;
     ///
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn trigger(
-        &self,
-        request: impl Into<TriggerRequestWithMetadata>,
-    ) -> Result<Value, Error> {
-        let TriggerRequestWithMetadata {
+    pub async fn call(&self, request: impl Into<CallRequestWithMetadata>) -> Result<Value, Error> {
+        let CallRequestWithMetadata {
             request: req,
             metadata,
             namespace,
             dispatch,
+            observer,
         } = request.into();
+        // `null` metadata is no metadata, local or routed (decision 54).
+        let metadata = metadata.filter(|metadata| !metadata.is_null());
+
+        // Through an observer: the engine routes to the observer's stored
+        // target, whatever namespace a request names, and checks that this
+        // connection hosts the observer's function.
+        if let Some(observer_id) = observer {
+            // Its target's metadata is the observer's: refused before anything
+            // is sent, so no metadata is lost on the way (decision 53).
+            if metadata.is_some() {
+                return Err(Error::Handler(OBSERVER_CALL_METADATA.to_string()));
+            }
+            let (caller, observe_depth) = self.outgoing_caller();
+            return self
+                .invoke_remote(RemoteCall {
+                    function_id: req.function_id,
+                    payload: req.payload,
+                    action: req.action,
+                    timeout: req.timeout_ms.map(Duration::from_millis),
+                    metadata: None,
+                    namespace: None,
+                    caller,
+                    observe_depth,
+                    activation: Some(Activation {
+                        observer_id,
+                        activation_id: None,
+                    }),
+                })
+                .await;
+        }
+
         // Engine-owned builtins always live in `default`. Other implicit calls
         // stay in the caller's namespace. An explicit request namespace wins.
         let namespace = invocation_namespace(
             namespace,
             self.namespace(),
             &req.function_id,
-            "TriggerRequest.namespace",
+            "CallRequest.namespace",
         )?;
 
         // Local dispatch: a function this worker hosts, confirmed by the
@@ -2839,7 +2542,7 @@ impl IIIClient {
         // call nested too deep in local calls (a function recursing into
         // itself) goes through the engine rather than deeper into the stack.
         if dispatch == Dispatch::Auto
-            && !matches!(req.action, Some(TriggerAction::Enqueue { .. }))
+            && !matches!(req.action, Some(CallAction::Enqueue { .. }))
             && crate::context::local_depth() < crate::dispatch::MAX_LOCAL_DEPTH
         {
             if let Some((handler, entry)) =
@@ -2864,6 +2567,15 @@ impl IIIClient {
         .await
     }
 
+    /// [`call`](Self::call) under its 0.25 name.
+    #[deprecated(since = "0.26.0", note = "use call")]
+    pub async fn trigger(
+        &self,
+        request: impl Into<CallRequestWithMetadata>,
+    ) -> Result<Value, Error> {
+        self.call(request).await
+    }
+
     /// Sends an invocation through the engine and waits for its result (or
     /// its queue receipt), or returns at once for a `void` one.
     pub(crate) async fn invoke_remote(&self, call: RemoteCall) -> Result<Value, Error> {
@@ -2879,9 +2591,13 @@ impl IIIClient {
             activation,
         } = call;
         let (tp, bg) = inject_trace_headers();
+        // The engine refused this worker for good: nothing reaches it.
+        if let Some(error) = self.fatal_error() {
+            return Err(error);
+        }
 
         // Void is fire-and-forget, no invocation_id, no response
-        if matches!(action, Some(TriggerAction::Void)) {
+        if matches!(action, Some(CallAction::Void)) {
             self.send_message(Message::InvokeFunction {
                 invocation_id: None,
                 function_id,
@@ -2907,6 +2623,11 @@ impl IIIClient {
             .pending
             .lock_or_recover()
             .insert(invocation_id, tx);
+        // A fatal rejection that drained `pending` before the entry went in.
+        if let Some(error) = self.fatal_error() {
+            self.inner.pending.lock_or_recover().remove(&invocation_id);
+            return Err(error);
+        }
 
         if let Err(error) = self.send_message(Message::InvokeFunction {
             invocation_id: Some(invocation_id),
@@ -2954,10 +2675,9 @@ impl IIIClient {
     /// advertised `observe.v1` in its `WorkerRegistered`. `None` until that
     /// arrives, before the first connection and again while reconnecting.
     ///
-    /// Without it, `observe()` fails with `UNSUPPORTED` and observable
-    /// functions register as plain functions whose hooks never run; a
-    /// worker can keep a fallback for older engines (its former trigger
-    /// type, say) when this is `Some(false)`. Pair it with
+    /// Without it, `observe()` fails with `UNSUPPORTED` and the hooks of this
+    /// worker's functions never run; a worker can keep a fallback for older
+    /// engines when this is `Some(false)`. Pair it with
     /// [`on_engine_supports_observe`](Self::on_engine_supports_observe) to
     /// follow changes across reconnects.
     ///
@@ -2971,7 +2691,7 @@ impl IIIClient {
     /// ```
     pub fn engine_supports_observe(&self) -> Option<bool> {
         match self.inner.engine_features.load(Ordering::SeqCst) {
-            ENGINE_WITH_OBSERVE => Some(true),
+            ENGINE_WITH_OBSERVE | ENGINE_WITH_OBSERVE_V2 => Some(true),
             ENGINE_WITHOUT_OBSERVE => Some(false),
             _ => None,
         }
@@ -3065,7 +2785,7 @@ impl IIIClient {
                     data: value,
                     traceparent: None,
                     baggage: None,
-                    action: Some(TriggerAction::Void),
+                    action: Some(CallAction::Void),
                     metadata: None,
                     namespace: None,
                     caller: None,
@@ -3124,6 +2844,8 @@ impl IIIClient {
             ..
         } = message
         {
+            // An error answer: not the handler's outcome, so its matches do
+            // not ride it.
             let fallback = Message::InvocationResult {
                 invocation_id: *invocation_id,
                 function_id: function_id.clone(),
@@ -3135,6 +2857,7 @@ impl IIIClient {
                 }),
                 traceparent: None,
                 baggage: None,
+                observed: Vec::new(),
             };
             let payload = serde_json::to_string(&fallback)?;
             if payload.len() <= MAX_JSON_MESSAGE_BYTES {
@@ -3433,20 +3156,22 @@ impl IIIClient {
         self.inner.reporter.close();
     }
 
+    /// The registrations to replay on a new connection: every function but
+    /// those that need `observe.v2`, which wait for the engine's
+    /// `WorkerRegistered`.
     fn collect_registrations(&self) -> Vec<PreparedEnvelope> {
-        let mut messages = Vec::new();
-
-        for trigger_type in self.inner.trigger_types.lock_or_recover().values() {
-            messages.push(trigger_type.message.to_message());
-        }
-
-        for function in self.inner.functions.lock_or_recover().values() {
-            messages.push(function.message.to_message());
-        }
-
-        for trigger in self.inner.triggers.lock_or_recover().values() {
-            messages.push(trigger.to_message());
-        }
+        let epoch = self.connection_epoch();
+        let messages: Vec<Message> = self
+            .inner
+            .functions
+            .lock_or_recover()
+            .values()
+            .filter(|function| !function.observe.needs_v2())
+            .map(|function| {
+                function.observe.mark_sent(epoch);
+                function.message.to_message()
+            })
+            .collect();
 
         messages
             .into_iter()
@@ -3468,8 +3193,6 @@ impl IIIClient {
     /// re-sent via `collect_registrations()`.
     fn registration_key(message: &Message) -> Option<String> {
         match message {
-            Message::RegisterTriggerType { id, .. } => Some(format!("trigger_type:{id}")),
-            Message::RegisterTrigger { id, .. } => Some(format!("trigger:{id}")),
             Message::RegisterFunction { id, .. } => Some(format!("function:{id}")),
             Message::Observe { id, .. } => Some(format!("{OBSERVER_KEY_PREFIX}{id}")),
             _ => None,
@@ -3478,9 +3201,9 @@ impl IIIClient {
 
     /// Observe messages left over from a previous connection wait for this
     /// engine's `WorkerRegistered`: sent when it advertises observe, dropped
-    /// otherwise. Leftover `observe` frames are dropped now: every live
-    /// observer is replayed from the map once the engine said it can take
-    /// them.
+    /// otherwise. Leftover `observe` frames, and registrations that need
+    /// `observe.v2`, are dropped here: they are replayed from the maps once
+    /// the engine said it can take them.
     fn hold_observe_frames(
         &self,
         queue: &mut Vec<PreparedEnvelope>,
@@ -3490,10 +3213,11 @@ impl IIIClient {
         let mut held_bytes: usize = held.iter().map(|e| e.payload.len()).sum();
         let mut kept = Vec::with_capacity(queue.len());
         for envelope in queue.drain(..) {
-            let replayed = envelope
-                .registration_key
-                .as_deref()
-                .is_some_and(|key| key.starts_with(OBSERVER_KEY_PREFIX));
+            let replayed = envelope.v2_registration
+                || envelope
+                    .registration_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(OBSERVER_KEY_PREFIX));
             if replayed {
                 continue;
             }
@@ -3699,33 +3423,6 @@ impl IIIClient {
                     activation,
                 });
             }
-            Message::RegisterTrigger {
-                id,
-                trigger_type,
-                function_id,
-                config,
-                metadata,
-                // Surfaced to the handler via `TriggerConfig.namespace`: a custom
-                // provider that stores the config and later calls `trigger()`
-                // needs it to fire the target in the right namespace.
-                namespace,
-                // Which of this provider's namespaces the bind belongs to. Only
-                // meaningful to a provider serving more than one, and the
-                // engine has already routed the message here by it.
-                trigger_namespace: _,
-            } => {
-                self.handle_register_trigger(
-                    id,
-                    trigger_type,
-                    function_id,
-                    config,
-                    metadata,
-                    namespace,
-                );
-            }
-            Message::UnregisterTrigger { id, trigger_type } => {
-                self.handle_unregister_trigger(id, trigger_type);
-            }
             Message::Ping => {
                 let _ = self.send_message(Message::Pong);
             }
@@ -3738,7 +3435,9 @@ impl IIIClient {
                 self.update_identity(Some(worker_id.clone()), None);
                 *self.inner.worker_id.lock_or_recover() = Some(worker_id);
                 *self.inner.reattach_token.lock_or_recover() = reattach_token;
-                self.on_engine_features(features.iter().any(|f| f == FEATURE_OBSERVE_V1));
+                let v2 = features.iter().any(|f| f == FEATURE_OBSERVE_V2);
+                let observe = v2 || features.iter().any(|f| f == FEATURE_OBSERVE_V1);
+                self.on_engine_features(observe, v2);
                 self.inner.registration_changed.notify_waiters();
             }
             Message::FunctionRegistered {
@@ -3748,6 +3447,11 @@ impl IIIClient {
                 local_dispatch,
                 observers,
             } => match self.function_entry(&id) {
+                // The answer to a registration this connection withdrew: the
+                // function stays unregistered.
+                Some(entry) if !entry.sent_on(self.connection_epoch()) => {
+                    tracing::debug!(function_id = %id, "functionregistered for a withdrawn registration ignored")
+                }
                 Some(entry) => entry.enqueue(
                     self,
                     HookOp::Registered {
@@ -3769,6 +3473,11 @@ impl IIIClient {
                 revision,
                 observer,
             } => match self.function_entry(&function_id) {
+                // An observer of a registration this connection withdrew:
+                // the function stays unregistered.
+                Some(entry) if !entry.sent_on(self.connection_epoch()) => {
+                    tracing::debug!(function_id = %function_id, "observeradded for a withdrawn registration ignored")
+                }
                 Some(entry) => entry.enqueue(
                     self,
                     HookOp::Added {
@@ -3830,21 +3539,6 @@ impl IIIClient {
                     owner_worker_id,
                 );
             }
-            Message::TriggerRegistrationResult {
-                id,
-                trigger_type,
-                function_id: _,
-                error: Some(err),
-            } => {
-                tracing::error!(
-                    trigger_id = %id,
-                    trigger_type = %trigger_type,
-                    code = %err.code,
-                    "[iii] Trigger registration failed for {:?}: {}",
-                    id,
-                    err.message
-                );
-            }
             _ => {}
         }
 
@@ -3853,12 +3547,13 @@ impl IIIClient {
 
     /// Dispatch a `RegistrationRejected` message by its `code`.
     ///
-    /// The two rejection codes carry different semantics. A worker-name
-    /// conflict is fatal — the engine has closed the connection and the SDK
-    /// must not reconnect into the same collision. A function-id conflict costs
-    /// the worker only that one function: the connection stays open and every
-    /// other export keeps serving, so it must not be treated as fatal. Any
-    /// unrecognised code is treated as fatal, the safe default.
+    /// A worker-name conflict is fatal: the engine has closed the connection
+    /// and the SDK must not reconnect into the same collision. A rejection
+    /// that names a function (`FUNCTION_NAMESPACE_CONFLICT`,
+    /// `INVALID_ARGS_FORMAT`, `UNSUPPORTED`, or a code this SDK does not know)
+    /// refuses that one registration: the connection stays open and every
+    /// other export keeps serving. A rejection of an unknown code that names
+    /// no function is fatal, the safe default.
     fn handle_registration_rejected(
         &self,
         code: String,
@@ -3867,28 +3562,8 @@ impl IIIClient {
         function_id: Option<String>,
         owner_worker_id: String,
     ) {
-        match code.as_str() {
-            FUNCTION_NAMESPACE_CONFLICT => {
-                tracing::warn!(
-                    code = %code,
-                    namespace = %namespace,
-                    function_id = %function_id.as_deref().unwrap_or("<unknown>"),
-                    owner_worker_id = %owner_worker_id,
-                    "function registration rejected: another worker in this namespace already \
-                     owns this function id; the worker keeps serving its other functions"
-                );
-                // Another worker owns it now: calls go through the engine to
-                // that owner, and this worker's observer set is void.
-                if let Some(entry) = function_id
-                    .as_deref()
-                    .and_then(|id| self.function_entry(id))
-                {
-                    entry.release();
-                    self.inner.reporter.discard(&entry.id);
-                    entry.enqueue(self, HookOp::Reset { last: false });
-                }
-            }
-            WORKER_NAMESPACE_CONFLICT => {
+        match (code.as_str(), function_id.as_deref()) {
+            (WORKER_NAMESPACE_CONFLICT, _) => {
                 self.fail_registration_fatal(
                     code,
                     namespace,
@@ -3897,10 +3572,61 @@ impl IIIClient {
                     owner_worker_id,
                 );
             }
-            _ => {
+            (FUNCTION_NAMESPACE_CONFLICT, _) => {
+                let entry = function_id
+                    .as_deref()
+                    .and_then(|id| self.function_entry(id));
+                let function_id = function_id.as_deref().unwrap_or("<unknown>");
+                // Another worker hosts it: calls go through the engine to
+                // that host, and this worker's observer set is void. A
+                // standby registers it again until it takes over, and warns
+                // once per wait.
+                match entry.as_ref().filter(|entry| entry.standby) {
+                    Some(standby) if !standby.first_conflict() => tracing::debug!(
+                        function_id = %function_id,
+                        owner_worker_id = %owner_worker_id,
+                        "standby: another worker still hosts this function id"
+                    ),
+                    Some(_) => tracing::warn!(
+                        code = %code,
+                        namespace = %namespace,
+                        function_id = %function_id,
+                        owner_worker_id = %owner_worker_id,
+                        "another worker in this namespace hosts this function id; the standby \
+                         registers it again until it takes over"
+                    ),
+                    None => tracing::warn!(
+                        code = %code,
+                        namespace = %namespace,
+                        function_id = %function_id,
+                        owner_worker_id = %owner_worker_id,
+                        "function registration rejected: another worker in this namespace already \
+                         hosts this function id; the worker keeps serving its other functions"
+                    ),
+                }
+                if let Some(entry) = entry {
+                    self.release_function(&entry);
+                    if entry.standby {
+                        self.retry_standby(entry);
+                    }
+                }
+            }
+            (_, Some(id)) => {
                 tracing::error!(
                     code = %code,
-                    "registration rejected with an unknown code; treating as fatal"
+                    namespace = %namespace,
+                    function_id = %id,
+                    "function registration rejected ({code}): {id} is not registered; the \
+                     worker keeps serving its other functions"
+                );
+                if let Some(entry) = self.function_entry(id) {
+                    self.release_function(&entry);
+                }
+            }
+            (_, None) => {
+                tracing::error!(
+                    code = %code,
+                    "registration rejected with a code that names no function; treating as fatal"
                 );
                 self.fail_registration_fatal(
                     code,
@@ -3911,6 +3637,49 @@ impl IIIClient {
                 );
             }
         }
+    }
+
+    /// The engine does not host `entry` for this worker: another worker
+    /// hosts it, or the engine refused or withdrew its registration. Local
+    /// dispatch turns off, its reports are dropped, and the removed hooks run
+    /// for the observers it held. A later `functionregistered` starts over.
+    fn release_function(&self, entry: &Arc<FunctionEntry>) {
+        entry.release();
+        self.inner.reporter.discard(&entry.id);
+        entry.enqueue(self, HookOp::Reset { last: false });
+    }
+
+    /// Registers a standby function again in about a second (±20 %), unless
+    /// it was unregistered, the engine confirmed it, or the connection
+    /// changed (its replay registers it) meanwhile.
+    fn retry_standby(&self, entry: Arc<FunctionEntry>) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let iii = self.clone();
+        let epoch = self.connection_epoch();
+        let jitter = uuid::Uuid::new_v4().as_u128() % 401;
+        let delay = Duration::from_millis(800 + jitter as u64);
+        runtime.spawn(async move {
+            sleep(delay).await;
+            if !entry.is_revoked() || iii.connection_epoch() != epoch {
+                return;
+            }
+            let message = match iii.inner.functions.lock_or_recover().get(&entry.id) {
+                Some(data) if Arc::ptr_eq(&data.observe, &entry) => data.message.to_message(),
+                _ => return,
+            };
+            tracing::debug!(function_id = %entry.id, "standby: registering again");
+            match Self::prepare_envelope(&message) {
+                Ok(envelope) => {
+                    entry.unmark_sent();
+                    iii.send_registration(&entry, envelope);
+                }
+                Err(error) => {
+                    tracing::warn!(error = %error, "standby registration rejected locally")
+                }
+            }
+        });
     }
 
     /// Record a fatal registration rejection: surface the error, mark the
@@ -3932,8 +3701,12 @@ impl IIIClient {
             owner_worker_id,
         };
         tracing::error!(error = %err, "worker registration rejected; not reconnecting");
+        // Recorded first: a call that starts from here on fails with it
+        // (`invoke_remote` checks it once its pending entry is in), and one
+        // already waiting is failed below.
+        *self.inner.fatal_error.lock_or_recover() = Some(err.clone());
         // Fail every in-flight invocation now with the fatal error, so a
-        // `trigger()` awaiting a response returns `RegistrationRejected`
+        // `call()` awaiting a response returns `RegistrationRejected`
         // immediately instead of sitting on its oneshot until the invocation
         // timeout elapses. Mirrors Go's `handleRegistrationRejected`.
         let drained: Vec<PendingInvocation> = self
@@ -3946,7 +3719,6 @@ impl IIIClient {
         for sender in drained {
             let _ = sender.send(Err(err.clone()));
         }
-        *self.inner.fatal_error.lock_or_recover() = Some(err);
         self.set_connection_state(IIIConnectionState::Failed);
         self.inner.running.store(false, Ordering::SeqCst);
         self.inner.registration_changed.notify_waiters();
@@ -3986,21 +3758,21 @@ impl IIIClient {
         } = inbound;
         tracing::debug!(function_id = %function_id, traceparent = ?traceparent, baggage = ?baggage, "Invoking function");
 
-        // An observer activation is answered like any call: the engine
-        // discards the result of an auto or emit activation, and the answer
-        // frees the observer's in-flight slot.
+        // An observer activation, or the target's call of a call through an
+        // observer, is answered like any call: the answer frees the
+        // observer's in-flight slot.
         let reply_to = invocation_id;
 
         // Preserve HTTP-only registrations without copying their descriptors.
-        let function_handler = self
+        let function = self
             .inner
             .functions
             .lock_or_recover()
             .get(&function_id)
-            .map(|function| function.handler.clone());
+            .map(|function| (function.handler.clone(), function.observe.clone()));
 
-        let Some(Some(handler)) = function_handler else {
-            let (code, message) = match function_handler {
+        let Some((Some(handler), entry)) = function else {
+            let (code, message) = match function {
                 Some(_) => (
                     "function_not_invokable".to_string(),
                     "Function is HTTP-invoked and cannot be invoked locally".to_string(),
@@ -4027,6 +3799,7 @@ impl IIIClient {
                     error: Some(error),
                     traceparent: resp_tp,
                     baggage: resp_bg,
+                    observed: Vec::new(),
                 });
 
                 if let Err(err) = result {
@@ -4036,7 +3809,8 @@ impl IIIClient {
             return;
         };
 
-        // The current invocation, for calls and emits made by the handler.
+        // The current invocation, for calls made by the handler and its
+        // deliver hook.
         let ctx = InvocationCtx {
             function_id: function_id.clone(),
             invocation_id: invocation_id
@@ -4049,6 +3823,13 @@ impl IIIClient {
             traceparent: None,
             baggage: None,
         };
+        // An `observe.v2` engine leaves this host to deliver the call, and
+        // reads its matches from the answer.
+        let route = if reply_to.is_some() && self.engine_observes_v2() {
+            Route::Routed
+        } else {
+            Route::Engine
+        };
 
         let iii = self.clone();
 
@@ -4060,66 +3841,73 @@ impl IIIClient {
                 traceparent.as_deref(),
                 baggage.as_deref(),
             );
-            let executed = execute(parent_cx, data, metadata, handler, ctx, 0).await;
+            let answer = iii
+                .run_hosted(Hosted {
+                    handler,
+                    entry,
+                    ctx,
+                    local_depth: 0,
+                    parent_cx,
+                    payload: data,
+                    route,
+                })
+                .await;
 
             if let Some(invocation_id) = reply_to {
                 // Inject trace context from our span into the response.
                 // We briefly attach the otel context (no .await crossing)
                 // so inject_traceparent/inject_baggage can read it.
                 let (resp_tp, resp_bg) = {
-                    let _guard = executed.otel_cx.attach();
+                    let _guard = answer.otel_cx.attach();
                     inject_trace_headers()
                 };
-
-                let message = match executed.result {
-                    Ok(value) => Message::InvocationResult {
-                        invocation_id,
-                        function_id,
-                        result: Some(value),
-                        error: None,
-                        traceparent: resp_tp,
-                        baggage: resp_bg,
-                    },
-                    Err(err) => Message::InvocationResult {
-                        invocation_id,
-                        function_id,
-                        result: None,
-                        error: Some(error_body(err, executed.stacktrace)),
-                        traceparent: resp_tp,
-                        baggage: resp_bg,
-                    },
+                let (result, error) = match answer.result {
+                    Ok(value) => (Some(value), None),
+                    Err(body) => (None, Some(body)),
                 };
-
-                let _ = iii.send_message(message);
-            } else if let Err(err) = executed.result {
-                tracing::warn!(error = %err, "error handling async invocation");
+                let _ = iii.send_message(Message::InvocationResult {
+                    invocation_id,
+                    function_id,
+                    result,
+                    error,
+                    traceparent: resp_tp,
+                    baggage: resp_bg,
+                    observed: answer.observed,
+                });
+            } else if let Err(body) = answer.result {
+                tracing::warn!(code = %body.code, error = %body.message, "error handling async invocation");
             }
         });
     }
 
-    /// The engine's features on this connection are known: replay the
-    /// observers (or fail them with `UNSUPPORTED`), and say once when the
-    /// engine leaves functions' observe hooks inactive.
-    fn on_engine_features(&self, observe: bool) {
+    /// The engine's features on this connection are known: register the
+    /// functions that need `observe.v2` (or leave them unregistered), replay
+    /// the observers (or fail them with `UNSUPPORTED`), and name the hook ids
+    /// this worker has not registered.
+    fn on_engine_features(&self, observe: bool, v2: bool) {
         self.inner.engine_features.store(
-            if observe {
-                ENGINE_WITH_OBSERVE
-            } else {
-                ENGINE_WITHOUT_OBSERVE
+            match (observe, v2) {
+                (_, true) => ENGINE_WITH_OBSERVE_V2,
+                (true, false) => ENGINE_WITH_OBSERVE,
+                (false, false) => ENGINE_WITHOUT_OBSERVE,
             },
             Ordering::SeqCst,
         );
         self.inner
             .engine_observe_last
             .store(observe, Ordering::Relaxed);
+        self.register_v2_functions(v2);
         let held = std::mem::take(&mut *self.inner.held_frames.lock_or_recover());
-        let observers: Vec<Arc<ObserverEntry>> = self
+        let mut observers: Vec<Arc<ObserverEntry>> = self
             .inner
             .observers
             .lock_or_recover()
             .values()
             .cloned()
             .collect();
+        // In creation order: the engine announces them to each function's
+        // host in the order it receives them.
+        observers.sort_unstable_by_key(|entry| entry.seq);
         if observe {
             for envelope in held {
                 let _ = self.send_prepared(envelope);
@@ -4137,17 +3925,6 @@ impl IIIClient {
             for entry in observers {
                 Self::fail_unsupported(&entry);
             }
-            let inactive: Vec<String> = self
-                .functions()
-                .values()
-                .filter(|data| data.observe.needs_observe)
-                .map(|data| data.message.id.clone())
-                .collect();
-            self.warn_no_observe(inactive);
-        }
-        if observe {
-            // a later engine without observe is worth saying again
-            self.inner.warned_no_observe.lock_or_recover().clear();
         }
         {
             // each listener that has not heard this value yet: after a
@@ -4166,26 +3943,95 @@ impl IIIClient {
                 ObserveSupport::notify(tell, observe);
             }
         }
+        // The registered ids first: the hook store is never locked under
+        // the functions lock (a registration takes them the other way).
+        let registered: HashSet<String> = self.functions().keys().cloned().collect();
+        let unregistered = self
+            .inner
+            .hooks
+            .take_unregistered(|id| registered.contains(id));
+        for id in unregistered {
+            tracing::warn!(
+                function_id = %id,
+                "observer hooks are set for {id}, which this worker has not registered"
+            );
+        }
         // Reports buffered while disconnected wait for their functions'
         // confirmation; stats and anything else due go out now.
         self.inner.reporter.wake.notify_one();
     }
 
-    /// Warns, once per function, that the engine leaves these functions'
-    /// observe hooks inactive.
-    fn warn_no_observe(&self, functions: Vec<String>) {
+    /// The functions that need `observe.v2`, on a connection whose engine
+    /// just said whether it has it: registered when it does; otherwise left
+    /// unregistered, with one `UNSUPPORTED` warning. The engine does not host
+    /// them on such a connection: one whose registration went out on it is
+    /// withdrawn, and what one kept from an earlier connection (local
+    /// dispatch, its observers, its held reports) is released.
+    fn register_v2_functions(&self, v2: bool) {
+        let epoch = self.connection_epoch();
+        let pending: Vec<(Arc<FunctionEntry>, Message)> = self
+            .functions()
+            .values()
+            .filter(|data| data.observe.needs_v2())
+            .map(|data| (data.observe.clone(), data.message.to_message()))
+            .collect();
+        if v2 {
+            self.inner.warned_unsupported.lock_or_recover().clear();
+            for (entry, message) in pending {
+                if !entry.mark_sent(epoch) {
+                    continue;
+                }
+                match Self::prepare_envelope(&message) {
+                    Ok(envelope) => {
+                        let _ = self.send_prepared(envelope.v2_registration());
+                    }
+                    Err(error) => tracing::warn!(error = %error, "registration rejected locally"),
+                }
+            }
+            return;
+        }
+        let mut unsupported = Vec::with_capacity(pending.len());
+        for (entry, _) in pending {
+            if entry.sent_on(epoch) {
+                self.withdraw_registration(&entry);
+            } else if !entry.is_revoked() {
+                // what it kept from an earlier connection, released once
+                self.release_function(&entry);
+            }
+            unsupported.push(entry.id.clone());
+        }
+        self.warn_unsupported(unsupported);
+    }
+
+    /// Unregisters a function sent on this connection to an engine that
+    /// lacks `observe.v2`, which the function needs: it stays unregistered,
+    /// with local dispatch off and its observers removed here.
+    fn withdraw_registration(&self, entry: &Arc<FunctionEntry>) {
+        entry.unmark_sent();
+        let _ = self.send_message(Message::UnregisterFunction {
+            id: entry.id.clone(),
+        });
+        self.release_function(entry);
+    }
+
+    /// Warns, once per function, that the engine lacks `observe.v2`, which
+    /// these functions need: they stay unregistered.
+    fn warn_unsupported(&self, functions: Vec<String>) {
         let fresh: Vec<String> = {
-            let mut warned = self.inner.warned_no_observe.lock_or_recover();
+            let mut warned = self.inner.warned_unsupported.lock_or_recover();
             functions
                 .into_iter()
                 .filter(|id| warned.insert(id.clone()))
                 .collect()
         };
-        if !fresh.is_empty() {
+        for function_id in fresh {
             tracing::warn!(
-                functions = ?fresh,
-                "the engine does not support observe (no `observe.v1`): these functions are \
-                 registered as plain functions and their observe hooks will not run"
+                function_id = %function_id,
+                code = observe_codes::UNSUPPORTED,
+                "{}: {function_id} needs `observe.v2` (args_format, private, observable: false, \
+                 on_observer_match or on_observer_deliver), which the engine does not advertise; it \
+                 stays unregistered until the worker connects to an engine with it",
+                observe_codes::UNSUPPORTED
             );
         }
     }
@@ -4221,7 +4067,7 @@ impl IIIClient {
             .lock_or_recover()
             .insert(entry.id.clone(), entry.clone());
         match self.inner.engine_features.load(Ordering::SeqCst) {
-            ENGINE_WITH_OBSERVE => self.send_observe(&entry),
+            ENGINE_WITH_OBSERVE | ENGINE_WITH_OBSERVE_V2 => self.send_observe(&entry),
             ENGINE_WITHOUT_OBSERVE => Self::fail_unsupported(&entry),
             _ => {}
         }
@@ -4249,97 +4095,6 @@ impl IIIClient {
         }
         entry.set(state, reason.map(ObserverReason::from), fires);
     }
-
-    fn handle_register_trigger(
-        &self,
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        config: Value,
-        metadata: Option<Value>,
-        namespace: Option<String>,
-    ) {
-        let handler = self
-            .inner
-            .trigger_types
-            .lock_or_recover()
-            .get(&trigger_type)
-            .map(|data| data.handler.clone());
-
-        let iii = self.clone();
-
-        tokio::spawn(async move {
-            let message = if let Some(handler) = handler {
-                let config = TriggerConfig {
-                    id: id.clone(),
-                    function_id: function_id.clone(),
-                    config,
-                    metadata,
-                    namespace,
-                };
-
-                match handler.register_trigger(config).await {
-                    Ok(()) => Message::TriggerRegistrationResult {
-                        id,
-                        trigger_type,
-                        function_id,
-                        error: None,
-                    },
-                    Err(err) => Message::TriggerRegistrationResult {
-                        id,
-                        trigger_type,
-                        function_id,
-                        error: Some(ErrorBody {
-                            code: "trigger_registration_failed".to_string(),
-                            message: err.to_string(),
-                            stacktrace: None,
-                        }),
-                    },
-                }
-            } else {
-                Message::TriggerRegistrationResult {
-                    id,
-                    trigger_type,
-                    function_id,
-                    error: Some(ErrorBody {
-                        code: "trigger_type_not_found".to_string(),
-                        message: "Trigger type not found".to_string(),
-                        stacktrace: None,
-                    }),
-                }
-            };
-
-            let _ = iii.send_message(message);
-        });
-    }
-
-    fn handle_unregister_trigger(&self, id: String, trigger_type: String) {
-        let handler = self
-            .inner
-            .trigger_types
-            .lock_or_recover()
-            .get(&trigger_type)
-            .map(|data| data.handler.clone());
-
-        let Some(handler) = handler else {
-            return;
-        };
-
-        tokio::spawn(async move {
-            let config = TriggerConfig {
-                id: id.clone(),
-                function_id: String::new(),
-                config: Value::Null,
-                metadata: None,
-                // Unregister carries only the trigger id; no namespace to surface.
-                namespace: None,
-            };
-
-            if let Err(err) = handler.unregister_trigger(config).await {
-                tracing::warn!(trigger_id = %id, error = %err, "Error unregistering trigger");
-            }
-        });
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4353,12 +4108,10 @@ pub(crate) async fn internal_create_channel(
     buffer_size: Option<usize>,
 ) -> Result<Channel, Error> {
     let result = iii
-        .trigger(TriggerRequest {
-            function_id: "engine::channels::create".to_string(),
-            payload: serde_json::json!({ "buffer_size": buffer_size }),
-            action: None,
-            timeout_ms: None,
-        })
+        .call(CallRequest::new(
+            "engine::channels::create",
+            serde_json::json!({ "buffer_size": buffer_size }),
+        ))
         .await?;
 
     let writer_ref: StreamChannelRef = serde_json::from_value(
@@ -4387,7 +4140,6 @@ pub(crate) async fn internal_create_channel(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -4397,8 +4149,7 @@ mod tests {
     use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
 
     use super::*;
-    use crate::trigger::{TriggerConfig, TriggerHandler};
-    use crate::{InitOptions, protocol::RegisterTriggerInput, register_worker};
+    use crate::{InitOptions, register_worker};
 
     use std::sync::atomic::AtomicUsize;
 
@@ -4801,78 +4552,6 @@ mod tests {
         assert_eq!(handshake_headers(Some(explicit.clone())), explicit);
     }
 
-    struct NoopTriggerHandler;
-
-    #[async_trait::async_trait]
-    impl TriggerHandler for NoopTriggerHandler {
-        async fn register_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
-            Ok(())
-        }
-
-        async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), Error> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn register_trigger_unregister_removes_entry() {
-        let iii = register_worker("ws://localhost:1234", InitOptions::default());
-        let trigger = iii
-            .register_trigger(RegisterTriggerInput::new(
-                "demo",
-                "functions.echo",
-                json!({ "foo": "bar" }),
-            ))
-            .unwrap();
-
-        assert_eq!(iii.inner.triggers.lock().unwrap().len(), 1);
-
-        trigger.unregister();
-
-        assert_eq!(iii.inner.triggers.lock().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn typed_trigger_ref_register_trigger_keeps_legacy_two_arg_shape() {
-        let iii = register_worker("ws://localhost:1234", InitOptions::default());
-        let trigger_type = iii.register_trigger_type(
-            RegisterTriggerType::new("typed-trigger", "typed trigger", NoopTriggerHandler)
-                .trigger_request_format::<Value>(),
-        );
-
-        let trigger = trigger_type
-            .register_trigger("functions.echo", json!({ "foo": "bar" }))
-            .expect("register trigger");
-
-        assert_eq!(iii.inner.triggers.lock().unwrap().len(), 1);
-        trigger.unregister();
-    }
-
-    #[tokio::test]
-    async fn typed_trigger_ref_register_trigger_with_metadata_stores_metadata() {
-        let iii = register_worker("ws://localhost:1234", InitOptions::default());
-        let trigger_type = iii.register_trigger_type(
-            RegisterTriggerType::new("typed-trigger-meta", "typed trigger", NoopTriggerHandler)
-                .trigger_request_format::<Value>(),
-        );
-
-        let metadata = json!({ "owner": "billing-team" });
-        let trigger = trigger_type
-            .register_trigger_with_metadata(
-                "functions.echo",
-                json!({ "foo": "bar" }),
-                Some(metadata.clone()),
-            )
-            .expect("register trigger");
-
-        {
-            let triggers = iii.inner.triggers.lock().unwrap();
-            let stored = triggers.values().next().expect("stored trigger");
-            assert_eq!(stored.metadata, Some(metadata));
-        }
-        trigger.unregister();
-    }
-
     #[test]
     fn remote_function_handler_alias_remains_single_arg() {
         // Compile-time back-compat guard: the public RemoteFunctionHandler alias keeps
@@ -5072,24 +4751,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_request_metadata_is_sent_by_trigger() {
+    async fn call_request_metadata_is_sent_by_call() {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.inner
             .running
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _ = iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "svc::work".to_string(),
                     payload: json!({ "x": 1 }),
-                    action: Some(TriggerAction::Void),
+                    action: Some(CallAction::Void),
                     timeout_ms: None,
                 }
                 .metadata(json!({ "tenant": "acme" })),
             )
             .await
-            .expect("void trigger should enqueue");
+            .expect("void call should enqueue");
 
         let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
         let sent = rx.try_recv().expect("sent invoke");
@@ -5106,22 +4785,53 @@ mod tests {
         }
     }
 
+    /// `trigger`, `TriggerRequest` and `TriggerAction` are `call`,
+    /// `CallRequest` and `CallAction` under their 0.25 names: code written
+    /// against them keeps compiling, with the same wire frame.
     #[tokio::test]
-    async fn trigger_request_without_metadata_keeps_legacy_struct_literal_shape() {
+    #[allow(deprecated)]
+    async fn the_trigger_aliases_send_the_same_call() {
+        use crate::protocol::{TriggerAction, TriggerRequest};
+
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let request: TriggerRequest = TriggerRequest {
+            function_id: "svc::work".to_string(),
+            payload: json!({ "x": 1 }),
+            action: Some(TriggerAction::Void),
+            timeout_ms: None,
+        };
+        iii.trigger(request.clone()).await.unwrap();
+        iii.call(request).await.unwrap();
+
+        let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
+        let mut frames = Vec::new();
+        while let Ok(Outbound::Message(envelope)) = rx.try_recv() {
+            frames.push(serde_json::from_str::<Value>(envelope.payload.as_str()).unwrap());
+        }
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0], frames[1]);
+        assert_eq!(frames[0]["action"], json!({ "type": "void" }));
+    }
+
+    #[tokio::test]
+    async fn call_request_without_metadata_keeps_the_struct_literal_shape() {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.inner
             .running
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _ = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "svc::work".to_string(),
                 payload: json!({ "x": 1 }),
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             })
             .await
-            .expect("void trigger should enqueue");
+            .expect("void call should enqueue");
 
         let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
         let sent = rx.try_recv().expect("sent invoke");
@@ -5140,7 +4850,7 @@ mod tests {
     async fn invoke_function_times_out_and_clears_pending() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let result = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "functions.echo".to_string(),
                 payload: json!({ "a": 1 }),
                 action: None,
@@ -5174,6 +4884,38 @@ mod tests {
                 assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
             }
             other => panic!("expected RegistrationRejected, got {other:?}"),
+        }
+        assert!(iii.inner.pending.lock().unwrap().is_empty());
+    }
+
+    /// A call made after a fatal rejection fails at once with it, rather
+    /// than waiting out its timeout for an engine that will never answer
+    /// (two clients in one process with the default `hostname:pid` name).
+    #[tokio::test]
+    async fn a_call_after_a_fatal_rejection_fails_at_once_with_it() {
+        let iii = register_worker("ws://localhost:1234", InitOptions::default());
+        iii.fail_registration_fatal(
+            "WORKER_NAMESPACE_CONFLICT".to_string(),
+            "default".to_string(),
+            Some("host:42".to_string()),
+            None,
+            "owner-1".to_string(),
+        );
+        for action in [None, Some(CallAction::Void)] {
+            let mut request = CallRequest::new("engine::functions::info", json!({}));
+            request.action = action.clone();
+            let outcome = tokio::time::timeout(Duration::from_secs(1), iii.call(request))
+                .await
+                .unwrap_or_else(|_| panic!("{action:?}: waited for its timeout"));
+            match outcome {
+                Err(Error::RegistrationRejected {
+                    code, worker_name, ..
+                }) => {
+                    assert_eq!(code, "WORKER_NAMESPACE_CONFLICT");
+                    assert_eq!(worker_name.as_deref(), Some("host:42"));
+                }
+                other => panic!("{action:?}: expected RegistrationRejected, got {other:?}"),
+            }
         }
         assert!(iii.inner.pending.lock().unwrap().is_empty());
     }
@@ -5368,36 +5110,29 @@ mod tests {
     }
 
     fn make_register_function(id: &str) -> Message {
-        Message::RegisterFunction {
-            id: id.to_string(),
-            description: None,
-            request_format: None,
-            response_format: None,
-            metadata: None,
-            invocation: None,
-            observe: None,
-        }
+        RegisterFunctionMessage::with_id(id.to_string()).to_message()
     }
 
-    fn make_register_trigger(id: &str) -> Message {
-        Message::RegisterTrigger {
+    fn make_observe(id: &str) -> Message {
+        Message::Observe {
             id: id.to_string(),
-            trigger_type: "demo".to_string(),
-            function_id: "fn".to_string(),
-            config: json!({}),
+            source: Box::new(crate::protocol::ObserveSource {
+                function_id: "a::b".to_string(),
+                namespace: None,
+                args: None,
+                filters: None,
+                capture: None,
+                on: None,
+                deliver: None,
+            }),
+            target: crate::protocol::ObserveTarget {
+                function_id: "c::d".to_string(),
+                namespace: None,
+            },
             metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        }
-    }
-
-    fn make_register_trigger_type(id: &str) -> Message {
-        Message::RegisterTriggerType {
-            id: id.to_string(),
-            description: "tt".to_string(),
-            trigger_request_format: None,
-            call_request_format: None,
-            namespace: None,
+            max_fires: None,
+            expires_in_ms: None,
+            max_in_flight: None,
         }
     }
 
@@ -5424,12 +5159,8 @@ mod tests {
             Some("function:greet".to_string())
         );
         assert_eq!(
-            IIIClient::registration_key(&make_register_trigger("t1")),
-            Some("trigger:t1".to_string())
-        );
-        assert_eq!(
-            IIIClient::registration_key(&make_register_trigger_type("tt1")),
-            Some("trigger_type:tt1".to_string())
+            IIIClient::registration_key(&make_observe("o1")),
+            Some("observer:o1".to_string())
         );
     }
 
@@ -5469,17 +5200,17 @@ mod tests {
         ))
         .unwrap();
         tx.send(Outbound::Message(
-            IIIClient::prepare_envelope(&make_register_trigger("dup-trig")).unwrap(),
+            IIIClient::prepare_envelope(&make_observe("dup-obs")).unwrap(),
         ))
         .unwrap();
         tx.send(Outbound::Message(
-            IIIClient::prepare_envelope(&make_register_trigger("new-trig")).unwrap(),
+            IIIClient::prepare_envelope(&make_observe("new-obs")).unwrap(),
         ))
         .unwrap();
 
         let snapshot_ids: HashSet<String> = [
             "function:dup-fn".to_string(),
-            "trigger:dup-trig".to_string(),
+            "observer:dup-obs".to_string(),
         ]
         .into_iter()
         .collect();
@@ -5498,7 +5229,7 @@ mod tests {
                 None,
                 Some("function:new-fn".to_string()),
                 None,
-                Some("trigger:new-trig".to_string()),
+                Some("observer:new-obs".to_string()),
             ],
             "kept queue mismatch: {queue:#?}"
         );
@@ -5646,46 +5377,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[tracing_test::traced_test]
-    async fn trigger_registration_result_error_is_logged() {
-        let iii = register_worker("ws://localhost:1234", InitOptions::default());
-        let payload = serde_json::json!({
-            "type": "triggerregistrationresult",
-            "id": "trig-1",
-            "trigger_type": "http",
-            "function_id": "fn-1",
-            "error": {
-                "code": "trigger_type_not_found",
-                "message": "Trigger type \"http\" not found — worker http is missing. Run: iii trigger -n <compose-daemon-namespace> compose::add worker=http",
-            },
-        })
-        .to_string();
-
-        iii.handle_message(&payload).unwrap();
-
-        assert!(logs_contain("<compose-daemon-namespace>"));
-        assert!(logs_contain("compose::add worker=http"));
-        assert!(logs_contain("trig-1"));
-    }
-
-    #[tokio::test]
-    #[tracing_test::traced_test]
-    async fn trigger_registration_result_success_does_not_log_error() {
-        let iii = register_worker("ws://localhost:1234", InitOptions::default());
-        let payload = serde_json::json!({
-            "type": "triggerregistrationresult",
-            "id": "trig-2",
-            "trigger_type": "http",
-            "function_id": "fn-2",
-        })
-        .to_string();
-
-        iii.handle_message(&payload).unwrap();
-
-        assert!(!logs_contain("Trigger registration failed"));
-    }
-
     #[test]
     fn namespace_resolution_reads_env_and_prefers_explicit_option() {
         let env = ScopedEnvVar::new("III_NAMESPACE");
@@ -5714,24 +5405,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_request_namespace_is_sent_by_trigger() {
+    async fn call_request_namespace_is_sent_by_call() {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.inner
             .running
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _ = iii
-            .trigger(
-                TriggerRequest {
+            .call(
+                CallRequest {
                     function_id: "svc::work".to_string(),
                     payload: json!({ "x": 1 }),
-                    action: Some(TriggerAction::Void),
+                    action: Some(CallAction::Void),
                     timeout_ms: None,
                 }
                 .namespace("orders"),
             )
             .await
-            .expect("void trigger should enqueue");
+            .expect("void call should enqueue");
 
         let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
         let sent = rx.try_recv().expect("sent invoke");
@@ -5748,21 +5439,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trigger_request_without_namespace_omits_it_on_the_wire() {
+    async fn call_request_without_namespace_omits_it_on_the_wire() {
         let iii = IIIClient::new("ws://localhost:1234");
         iii.inner
             .running
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let _ = iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "svc::work".to_string(),
                 payload: json!({ "x": 1 }),
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 timeout_ms: None,
             })
             .await
-            .expect("void trigger should enqueue");
+            .expect("void call should enqueue");
 
         let mut rx = iii.inner.receiver.lock().unwrap().take().expect("receiver");
         let sent = rx.try_recv().expect("sent invoke");
@@ -5898,6 +5589,63 @@ mod tests {
         );
     }
 
+    /// A rejection that names a function refuses that one registration,
+    /// whatever its code, logged at error with the code: the worker keeps
+    /// running.
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_rejection_naming_a_function_is_not_fatal() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner.running.store(true, Ordering::SeqCst);
+        iii.set_connection_state(IIIConnectionState::Connected);
+        let fixture = |name: &str| -> serde_json::Value {
+            let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../fixtures/protocol/observe")
+                .join(name);
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        for rejection in [
+            fixture("registrationrejected-invalid-args-format.json"),
+            fixture("registrationrejected-unsupported.json"),
+            json!({ "type": "registrationrejected", "code": "FROM_THE_FUTURE",
+                    "namespace": "default", "function_id": "future::f",
+                    "owner_worker_id": "" }),
+        ] {
+            iii.handle_message(&rejection.to_string()).unwrap();
+            assert!(iii.inner.running.load(Ordering::SeqCst), "{rejection}");
+            assert_eq!(iii.get_connection_state(), IIIConnectionState::Connected);
+            assert!(iii.fatal_error().is_none(), "{rejection}");
+        }
+        logs_assert(|lines: &[&str]| {
+            for code in ["INVALID_ARGS_FORMAT", "UNSUPPORTED", "FROM_THE_FUTURE"] {
+                if !lines.iter().any(|l| {
+                    l.contains("ERROR") && l.contains(code) && l.contains("is not registered")
+                }) {
+                    return Err(format!("no error line for {code}"));
+                }
+            }
+            Ok(())
+        });
+    }
+
+    /// A rejection that names no function, with a code this SDK does not
+    /// know, is fatal.
+    #[test]
+    fn a_rejection_naming_no_function_is_fatal() {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.inner.running.store(true, Ordering::SeqCst);
+        let payload = json!({ "type": "registrationrejected", "code": "FROM_THE_FUTURE",
+                              "namespace": "orders", "owner_worker_id": "" })
+        .to_string();
+        iii.handle_message(&payload).unwrap();
+        assert!(!iii.inner.running.load(Ordering::SeqCst));
+        assert_eq!(iii.get_connection_state(), IIIConnectionState::Failed);
+        assert!(matches!(
+            iii.fatal_error(),
+            Some(Error::RegistrationRejected { code, .. }) if code == "FROM_THE_FUTURE"
+        ));
+    }
+
     #[test]
     fn function_info_captures_namespace_and_tolerates_absence() {
         // Engine listings now carry `namespace`; the typed struct exposes it.
@@ -5908,9 +5656,15 @@ mod tests {
             "response_format": null,
             "metadata": null,
             "namespace": "orders",
+            "args_format": { "type": "object" },
+            "private": true,
+            "observer_count": 2,
         }))
         .unwrap();
         assert_eq!(with_ns.namespace.as_deref(), Some("orders"));
+        assert_eq!(with_ns.args_format, Some(json!({ "type": "object" })));
+        assert!(with_ns.private && with_ns.observable);
+        assert_eq!(with_ns.observer_count, 2);
 
         // Legacy payloads without the field still deserialize.
         let without_ns: FunctionInfo = serde_json::from_value(json!({
@@ -5922,6 +5676,8 @@ mod tests {
         }))
         .unwrap();
         assert!(without_ns.namespace.is_none());
+        assert!(!without_ns.private && without_ns.observable);
+        assert_eq!(without_ns.observer_count, 0);
     }
 }
 
@@ -5981,7 +5737,7 @@ mod held_frames_tests {
         for _ in 0..items {
             assert!(iii.reporter().push(PendingItem::test(function_id)));
         }
-        let mut frames = iii.reporter().take_report_frames(|_| Gate::Send);
+        let mut frames = iii.reporter().take_report_frames(|_| Gate::Send, true);
         assert_eq!(frames.len(), 1);
         envelope(frames.pop().unwrap())
     }
@@ -6133,13 +5889,16 @@ mod held_frames_tests {
         reconnect(&iii, vec![a]);
         // B (of g) flushed on the second, f not confirmed there yet
         iii.reporter().push(PendingItem::test("g"));
-        let mut frames = iii.reporter().take_report_frames(|function_id| {
-            if function_id == "f" {
-                Gate::Hold
-            } else {
-                Gate::Send
-            }
-        });
+        let mut frames = iii.reporter().take_report_frames(
+            |function_id| {
+                if function_id == "f" {
+                    Gate::Hold
+                } else {
+                    Gate::Send
+                }
+            },
+            true,
+        );
         assert_eq!(frames.len(), 1, "B goes out, A is parked");
         reconnect(&iii, vec![envelope(frames.pop().unwrap())]);
         // f confirmed on the third

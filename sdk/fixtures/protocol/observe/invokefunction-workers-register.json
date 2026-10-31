@@ -3,7 +3,7 @@
   "function_id": "engine::workers::register",
   "data": {
     "runtime": "node",
-    "version": "0.25.0",
+    "version": "0.26.0",
     "name": "billing",
     "os": "linux 6.8.0",
     "pid": 4242,
@@ -15,6 +15,7 @@
     },
     "features": [
       "observe.v1",
+      "observe.v2",
       "local-dispatch.v1",
       "large-messages.v1"
     ]

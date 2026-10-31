@@ -18,9 +18,9 @@ import { cn } from '@/lib/utils'
 
 /* Title and description from the live iii.dev/manifesto. */
 const description =
-  'The iii manifesto. How software can be collapsed into three primitives: Worker, Trigger, Function. Linear scaling, zero integration cost, agent-native.'
+  'The iii manifesto. How software can be collapsed into three primitives: Worker, Function, Observer. Linear scaling, zero integration cost, agent-native.'
 const lede =
-  'How software collapses into three primitives: Worker, Trigger, Function. Linear scaling, zero integration cost, agent-native.'
+  'How software collapses into three primitives: Worker, Function, Observer. Linear scaling, zero integration cost, agent-native.'
 
 export const metadata: Metadata = pageMetadata({
   title: 'The iii manifesto: collapse the categories',

@@ -11,9 +11,10 @@ const LANG_MAP: Record<string, string> = {
 // Canonical ordering for the core worker-handle methods in the generated docs.
 // Matched case-insensitively and ignoring underscores so one list covers both
 // camelCase (Node/Browser) and snake_case (Python/Rust), and ignoring a
-// receiver prefix (Go headings read `Client.Trigger`). Methods not listed here
-// keep their existing alphabetical order and sort after these.
-const METHOD_ORDER = ['registertrigger', 'registerfunction', 'trigger', 'registertriggertype', 'unregistertriggertype']
+// receiver prefix (Go headings read `Client.Call`). Methods not listed here
+// keep their existing alphabetical order and sort after these. `trigger` is
+// the deprecated alias of `call` and sorts right after the core methods.
+const METHOD_ORDER = ['registerfunction', 'call', 'observe', 'trigger']
 
 function methodRank(name: string): number {
   const i = METHOD_ORDER.indexOf(name.replace(/^.*\./, '').toLowerCase().replace(/_/g, ''))
@@ -107,7 +108,8 @@ function attrSafe(value: string): string {
  */
 function renderDeprecation(deprecated: NonNullable<FunctionDoc['deprecated']>): string[] {
   const since = deprecated.since ? ` since ${deprecated.since}` : ''
-  const note = deprecated.note.replace(/\s*\n\s*/g, ' ').trim()
+  // A note is a sentence: `#[deprecated(note = "use call")]` ends without a period.
+  const note = deprecated.note.replace(/\s*\n\s*/g, ' ').trim().replace(/[^.!?]$/, '$&.')
   const sentence = note ? ` ${note.charAt(0).toUpperCase()}${note.slice(1)}` : ''
   const text = escapeMdxText(`**Deprecated${since}.**${sentence}`).replace(/``(?:[^`]|`(?!`))*``|`[^`]*`|--|\u2014/g, match =>
     match.startsWith('`') ? match : match === '--' ? "{'--'}" : ',',
