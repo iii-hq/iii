@@ -727,12 +727,68 @@ jobs:
             --test sandbox_shared_rootfs_boot_params --test sandbox_canonical_cache_boot_params
 
   # ──────────────────────────────────────────────────────────────
+  # SDK Test Workers — state, http, pubsub, cron and queue from
+  # iii-hq/workers at sdk/fixtures/workers-ref, built against this
+  # checkout's Rust SDK. Runs beside engine-build; every SDK job below
+  # starts its fixtures with these binaries.
+  # ──────────────────────────────────────────────────────────────
+
+  sdk-test-workers:
+    name: SDK Test Workers (build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache keys
+        id: keys
+        run: |
+          echo "workers=$(tr -d '[:space:]' < sdk/fixtures/workers-ref)" >> "$GITHUB_OUTPUT"
+          echo "sdk=${{ hashFiles('scripts/ci/sdk-test-workers.sh', 'Cargo.toml', 'sdk/packages/rust/**', 'crates/iii-filter/**') }}" >> "$GITHUB_OUTPUT"
+
+      # Exact match only: these binaries belong to one workers commit and one
+      # state of the Rust SDK sources.
+      - name: Restore built workers
+        id: bin-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+          key: sdk-test-workers-bin-${{ runner.os }}-${{ steps.keys.outputs.workers }}-${{ steps.keys.outputs.sdk }}
+
+      - name: Restore workers cargo build
+        if: steps.bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ runner.temp }}/sdk-test-workers/cargo-target
+          key: sdk-test-workers-cargo-${{ runner.os }}-${{ steps.keys.outputs.workers }}-${{ steps.keys.outputs.sdk }}
+          restore-keys: |
+            sdk-test-workers-cargo-${{ runner.os }}-${{ steps.keys.outputs.workers }}-
+            sdk-test-workers-cargo-${{ runner.os }}-
+
+      - name: Build workers
+        if: steps.bin-cache.outputs.cache-hit != 'true'
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+          if-no-files-found: error
+          retention-days: 1
+
+  # ──────────────────────────────────────────────────────────────
   # SDK Node
   # ──────────────────────────────────────────────────────────────
 
   sdk-node-ci:
     name: SDK Node Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -769,19 +825,30 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engines
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-bridge-backend.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-bridge-backend.yaml" \
             --port 49198 \
             --pid-file /tmp/iii-backend.pid \
             --log-file /tmp/iii-backend.log
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-bridge.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-bridge.yaml" \
             --port 49197 \
             --pid-file /tmp/iii-bridge.pid \
             --log-file /tmp/iii-bridge.log
@@ -802,7 +869,7 @@ jobs:
 
   sdk-node-browser-ci:
     name: SDK Browser Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -836,11 +903,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Run integration tests
@@ -859,7 +937,7 @@ jobs:
 
   sdk-python-ci:
     name: SDK Python (${{ matrix.python-version }})
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -896,11 +974,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Run tests with coverage
@@ -920,7 +1009,7 @@ jobs:
 
   sdk-rust-ci:
     name: SDK Rust Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -945,11 +1034,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Run tests
@@ -964,7 +1064,7 @@ jobs:
 
   sdk-go-ci:
     name: SDK Go Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -990,11 +1090,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Integration tests
