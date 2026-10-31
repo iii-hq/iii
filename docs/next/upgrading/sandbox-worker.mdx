@@ -84,7 +84,9 @@ engine, then run `compose::restart`.
 A bad value fails closed: the adapter exits at start, and `sandbox::*` calls fail with S301.
 Removing the key does not recover it, because the bad value stays in the entry. Set the key to a
 valid value in `config_override` and run `compose::restart` without a `worker` argument, or start
-from an engine that has no entry, as above.
+from an engine that has no entry, as above. A `custom_images` entry whose name is bad, such as one
+that names a built-in preset, has no valid value, and renaming it leaves the old entry in place:
+start from an engine that has no entry.
 
 ## Engines that no Compose file manages
 
