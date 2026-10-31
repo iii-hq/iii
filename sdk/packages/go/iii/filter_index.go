@@ -2,6 +2,7 @@ package iii
 
 import (
 	"cmp"
+	"container/heap"
 	"encoding/json"
 	"hash/maphash"
 	"maps"
@@ -245,7 +246,40 @@ func (x *filterIndex) each(doc filter.Doc, fn func(*Observer)) {
 		return
 	}
 	var held [4][]filedObserver
-	lists := held[:0]
+	lists, _ := x.lists(doc, held[:0])
+	mergeFiled(lists, fn)
+}
+
+// selecting calls fn, in seq order, with the observers of all (the observers x holds,
+// in seq order) that a local call's doc leaves to evaluate: those each yields, or every
+// observer of all where the lookups would spare little, as iii_filter::FilterIndex
+// does. That is when x files fewer than two observers per indexed path (a lookup costs
+// about what the evaluation it spares costs; no lookup is made), and when doc's lookups
+// leave half the observers or more (merging their lists costs more than evaluating the
+// rest). A call therefore costs at most about an evaluation of every observer plus one
+// lookup per indexed path.
+func (x *filterIndex) selecting(doc filter.Doc, all []*Observer, fn func(*Observer)) {
+	if x == nil || len(x.paths)*2 > len(all) {
+		for _, obs := range all {
+			fn(obs)
+		}
+		return
+	}
+	var held [4][]filedObserver
+	lists, candidates := x.lists(doc, held[:0])
+	if candidates > 0 && candidates*2 >= len(all) {
+		for _, obs := range all {
+			fn(obs)
+		}
+		return
+	}
+	mergeFiled(lists, fn)
+}
+
+// lists appends to lists the observers doc's lookups leave, a list per indexed path doc
+// meets and the scanned list, and returns them with how many observers they hold.
+func (x *filterIndex) lists(doc filter.Doc, lists [][]filedObserver) ([][]filedObserver, int) {
+	candidates := len(x.scanned)
 	for _, pi := range x.paths {
 		v, ok := pi.path.Resolve(doc)
 		if !ok {
@@ -253,18 +287,41 @@ func (x *filterIndex) each(doc filter.Doc, fn func(*Observer)) {
 		}
 		if bucket := pi.bucket(v); len(bucket) > 0 {
 			lists = append(lists, bucket)
+			candidates += len(bucket)
 		}
 	}
 	if len(x.scanned) > 0 {
 		lists = append(lists, x.scanned)
 	}
-	if len(lists) == 1 {
+	return lists, candidates
+}
+
+// fewLists is how many lists mergeFiled merges by comparing their heads; past it, a heap
+// of the heads costs fewer comparisons per observer.
+const fewLists = 4
+
+// mergeFiled calls fn with the observers of lists in seq order. An observer is filed in
+// one list only.
+func mergeFiled(lists [][]filedObserver, fn func(*Observer)) {
+	switch {
+	case len(lists) == 1:
 		for _, e := range lists[0] {
 			fn(e.obs)
 		}
 		return
+	case len(lists) > fewLists:
+		h := filedHeap(lists)
+		heap.Init(&h)
+		for len(h) > 0 {
+			fn(h[0][0].obs)
+			if h[0] = h[0][1:]; len(h[0]) == 0 {
+				heap.Pop(&h)
+			} else {
+				heap.Fix(&h, 0)
+			}
+		}
+		return
 	}
-	// An observer is filed in one list only: merge them by seq.
 	for {
 		first := -1
 		for i, list := range lists {
@@ -278,6 +335,20 @@ func (x *filterIndex) each(doc filter.Doc, fn func(*Observer)) {
 		fn(lists[first][0].obs)
 		lists[first] = lists[first][1:]
 	}
+}
+
+// filedHeap is lists of filed observers, none empty, ordered by the seq of their first.
+type filedHeap [][]filedObserver
+
+func (h filedHeap) Len() int           { return len(h) }
+func (h filedHeap) Less(i, j int) bool { return h[i][0].seq < h[j][0].seq }
+func (h filedHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *filedHeap) Push(x any)        { *h = append(*h, x.([]filedObserver)) }
+func (h *filedHeap) Pop() any {
+	old := *h
+	last := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return last
 }
 
 // len is how many observers x holds.

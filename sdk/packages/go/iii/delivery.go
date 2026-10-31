@@ -77,7 +77,7 @@ func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) o
 	selected := held[:0]
 	if st.match == nil {
 		ok, doc := call.succeeded(), call.doc()
-		st.filters.each(doc, func(obs *Observer) {
+		st.filters.selecting(doc, st.observers, func(obs *Observer) {
 			if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
 				selected = append(selected, obs)
 			}

@@ -71,6 +71,18 @@ func viaIndex(index *filterIndex, doc filter.Doc, ok bool) (ids []string, candid
 	return ids, candidates
 }
 
+// viaSelecting is the ids of the observers a local call of doc selects through the
+// index's plan (filterIndex.selecting), and how many it evaluates.
+func viaSelecting(x *indexed, doc filter.Doc, ok bool) (ids []string, evaluated int) {
+	x.index.selecting(doc, x.observers, func(obs *Observer) {
+		evaluated++
+		if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
+			ids = append(ids, obs.id)
+		}
+	})
+	return ids, evaluated
+}
+
 // byScan is the ids of the observers whose on and filters match doc.
 func byScan(observers []*Observer, doc filter.Doc, ok bool) []string {
 	var ids []string
@@ -277,6 +289,11 @@ func checkCall(t *testing.T, x *indexed, call *Call, what string) bool {
 	if !slices.Equal(got, want) {
 		in, _ := json.Marshal(call)
 		t.Errorf("%s: index %v, scan %v\ncall %s", what, got, want, in)
+		return false
+	}
+	if got, _ := viaSelecting(x, doc, ok); !slices.Equal(got, want) {
+		in, _ := json.Marshal(call)
+		t.Errorf("%s: selecting %v, scan %v\ncall %s", what, got, want, in)
 		return false
 	}
 	handed := handOver(call, x.index)
@@ -620,4 +637,60 @@ func TestFilterIndexFilesUnderTheLeastSharedCondition(t *testing.T) {
 	}
 	checkCall(t, x, &Call{Status: "success", Input: json.RawMessage(`{"kind":"x","tenant":7}`)}, "an $in of one")
 	checkCall(t, x, &Call{Status: "success", Input: json.RawMessage(`{"kind":"z","tenant":8}`)}, "an $in of several")
+}
+
+// A local call evaluates every observer where the index's lookups would spare little:
+// fewer than two observers filed per indexed path, or lookups that leave half of them
+// or more. Otherwise it evaluates the observers the lookups leave, merged in seq order
+// across however many lists a call meets (past four, through a heap of their heads).
+func TestALocalCallEvaluatesEveryObserverWhereLookupsSpareLittle(t *testing.T) {
+	call := func(input string) filter.Doc {
+		return (&Call{Status: "success", Input: json.RawMessage(input)}).doc()
+	}
+	sparse := newIndexed()
+	for i := range 8 {
+		sparse.add(t, fmt.Sprintf("p-%d", i), fmt.Sprintf(`{"input.p%d":{"$eq":1}}`, i), OnSuccess)
+	}
+	sparse.add(t, "exists", `{"input.p0":{"$exists":true}}`, OnSuccess)
+	ids, evaluated := viaSelecting(sparse, call(`{"p0":1,"p3":1,"p5":2}`), true)
+	if want := []string{"p-0", "p-3", "exists"}; !slices.Equal(ids, want) || evaluated != 9 {
+		t.Fatalf("eight paths for nine observers: %v (%d evaluated), want %v and all 9", ids, evaluated, want)
+	}
+
+	half := newIndexed()
+	for i := range 10 {
+		half.add(t, fmt.Sprintf("k-%d", i), fmt.Sprintf(`{"input.k":{"$eq":%d}}`, min(i/5, 1)), OnSuccess)
+	}
+	if ids, evaluated := viaSelecting(half, call(`{"k":1}`), true); len(ids) != 5 || evaluated != 10 {
+		t.Fatalf("a lookup leaving half: %v (%d evaluated), want 5 of all 10", ids, evaluated)
+	}
+	if ids, evaluated := viaSelecting(half, call(`{"k":2}`), true); len(ids) != 0 || evaluated != 0 {
+		t.Fatalf("a lookup leaving none: %v (%d evaluated)", ids, evaluated)
+	}
+
+	for paths := 1; paths <= 12; paths++ {
+		x := newIndexed()
+		input := map[string]int{}
+		var want []string
+		for key := range 240 {
+			path := key % paths
+			input[fmt.Sprintf("p%d", path)] = 1
+			id := fmt.Sprintf("o-%d", key)
+			if key%13 == 12 {
+				want = append(want, id)
+				x.add(t, id, fmt.Sprintf(`{"input.p%d":{"$gte":1}}`, path), OnSuccess)
+				continue
+			}
+			value := (key/paths)%4 + 1
+			if value == 1 {
+				want = append(want, id)
+			}
+			x.add(t, id, fmt.Sprintf(`{"input.p%d":{"$eq":%d}}`, path, value), OnSuccess)
+		}
+		encoded, _ := json.Marshal(input)
+		ids, evaluated := viaSelecting(x, call(string(encoded)), true)
+		if !slices.Equal(ids, want) || evaluated >= 120 {
+			t.Fatalf("%d paths: %d selected (%d evaluated), want %d in seq order, fewer than half evaluated", paths, len(ids), evaluated, len(want))
+		}
+	}
 }

@@ -11,8 +11,10 @@ import (
 // value of input.tenant ({"input.tenant": {"$eq": "tenant-<i>"}}), 1,000 or 4 of them: a
 // call that none of them match, and one that one of them matches (and is reported). A
 // function with a deliver hook, with no observers, and with 4 whose filters the hook
-// evaluates for none of them or for each (Observer.Matches). A function nobody observes
-// is the floor. The engine is the fake one; report frames are discarded.
+// evaluates for none of them or for each (Observer.Matches). 64 observers each on its own
+// path ({"input.p<i>": {"$eq": 1}}) and a call that meets every one: where the index's
+// lookups spare nothing. A function nobody observes is the floor. The engine is the fake
+// one; report frames are discarded.
 func BenchmarkLocalCall(b *testing.B) {
 	fe := newFakeEngine(b)
 	tenants := func(n int) []ObserverInfo {
@@ -29,6 +31,12 @@ func BenchmarkLocalCall(b *testing.B) {
 	for fn, n := range sizes {
 		fe.setObservers(fn, 1, tenants(n)...)
 	}
+	paths := make([]ObserverInfo, 64)
+	for i := range paths {
+		paths[i] = observerInfo(fmt.Sprintf("p-%04d", i), "x::y", "", fmt.Sprintf(`{"input.p%d":{"$eq":1}}`, i))
+	}
+	fe.setObservers("bench::paths", 1, paths...)
+	sizes["bench::paths"] = len(paths)
 	c := fe.client()
 	deliver := func(_ context.Context, call *Call, _ []*Observer) (any, error) { return call.Output, nil }
 	c.OnObserverDeliverFor("bench::deliver-none", deliver)
@@ -39,7 +47,7 @@ func BenchmarkLocalCall(b *testing.B) {
 		}
 		return call.Output, nil
 	})
-	fns := []string{"bench::plain", "bench::filtered", "bench::few", "bench::deliver-none", "bench::deliver-unread", "bench::deliver-matches"}
+	fns := []string{"bench::plain", "bench::filtered", "bench::few", "bench::paths", "bench::deliver-none", "bench::deliver-unread", "bench::deliver-matches"}
 	for _, fn := range fns {
 		registerHost(b, c, fn, echoHandler)
 	}
@@ -82,6 +90,12 @@ func BenchmarkLocalCall(b *testing.B) {
 	b.Run("1000_eq_observers_1_matching", run("bench::filtered", `{"tenant":"tenant-500","total":1250}`))
 	b.Run("4_eq_observers_none_matching", run("bench::few", none))
 	b.Run("4_eq_observers_1_matching", run("bench::few", one))
+	allPaths := map[string]int{}
+	for i := range paths {
+		allPaths[fmt.Sprintf("p%d", i)] = 1
+	}
+	meetsAll, _ := json.Marshal(allPaths)
+	b.Run("64_paths_all_matching", run("bench::paths", string(meetsAll)))
 	b.Run("deliver_hook_0_observers", run("bench::deliver-none", one))
 	b.Run("deliver_hook_4_observers_no_filters_read", run("bench::deliver-unread", one))
 	b.Run("deliver_hook_4_observers_matches_each", run("bench::deliver-matches", one))
