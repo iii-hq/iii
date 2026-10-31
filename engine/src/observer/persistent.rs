@@ -20,15 +20,20 @@
 //! goes into the next slot of the last leaf's chunk, which no version reads
 //! yet, and the first value of a leaf (its oldest observer) leaves it by the
 //! leaf starting one slot later. A leaf that has passed over [`SKIPPED`]
-//! values that way is copied without them.
+//! values that way is copied without them. A value is dropped with the last
+//! version that reads it: the chunk counts its leaves by the slot they start
+//! at, and once no leaf starts at or before a slot, it drops that slot's
+//! value, as the last version that held a copied leaf drops that leaf's.
 
 use std::{
     cell::UnsafeCell,
     iter,
+    marker::PhantomData,
     mem::MaybeUninit,
+    ptr::NonNull,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering, fence},
     },
 };
 
@@ -47,8 +52,8 @@ const BRANCH_MIN: usize = BRANCH_MAX / 4;
 /// What a branch holds when a set is built from a sorted list.
 const BRANCH_FILL: usize = BRANCH_MAX * 3 / 4;
 /// Values a leaf passes over at its front, removed from it without a copy,
-/// before it is copied without them: the most a chunk keeps of values no
-/// version holds anymore.
+/// before it is copied without them: the most slots a leaf starts into its
+/// chunk.
 const SKIPPED: usize = MIN;
 /// Levels a set has at most: every node but the root and the last of each
 /// level holds at least [`MIN`] or [`BRANCH_MIN`], so 13 levels hold more
@@ -83,32 +88,72 @@ impl<V> Clone for Node<V> {
     }
 }
 
-/// Slots written once each, front to back: `[0, written)` hold values in
-/// key order, the rest nothing yet. Leaves of several versions read runs of
-/// the same chunk; a slot is written before any leaf over it exists, and
-/// never again.
+/// Slots written once each, front to back: `[dropped, written)` hold values
+/// in key order, `[0, dropped)` values no leaf reads anymore, dropped, and
+/// the rest nothing yet. Leaves of several versions read runs of the same
+/// chunk; a slot is written before any leaf over it exists, and never again.
+/// The leaves over it hold it: it goes with the last of them.
 struct Chunk<V> {
     /// Slots written. It only grows: an append claims the next slot by
     /// moving it on, then writes the slot.
     written: AtomicUsize,
+    /// The leaves over the chunk by the slot they start at (at most
+    /// [`SKIPPED`]). A leaf is made over a new chunk, as a copy of one that
+    /// starts where it does, or from one that starts before it, so once none
+    /// starts at or before a slot, none ever reads it again.
+    starting: [AtomicU32; SKIPPED + 1],
+    /// The slots some leaf starts at: the chunk's references, one for each
+    /// such slot, taken by its first leaf and given up by its last.
+    starts: AtomicU32,
+    /// Slots whose values were dropped, as no leaf starts at or before them
+    /// ([`Chunk::drop_unread`]). It only grows, up to the first slot a leaf
+    /// starts at.
+    dropped: AtomicUsize,
     slots: Box<[UnsafeCell<MaybeUninit<V>>]>,
 }
 
-// SAFETY: the values are shared between threads only as `&V` (a slot is
-// written by the one append that claimed it, before any leaf that reads it
-// exists, and is read only after that), and dropped with the chunk, wherever
-// its last reference goes.
-unsafe impl<V: Send + Sync> Send for Chunk<V> {}
-// SAFETY: as for `Send`: concurrent users read written slots and claim
-// unwritten ones through `written`.
-unsafe impl<V: Send + Sync> Sync for Chunk<V> {}
+impl<V> Chunk<V> {
+    /// Drops the values of the slots before the first one a leaf over the
+    /// chunk starts at: no leaf reads them, and none will. The last leaf at
+    /// a slot calls it as it goes, while that slot still holds the chunk,
+    /// after a `SeqCst` fence: of two last leaves going at once, the one
+    /// whose fence comes second sees both gone.
+    fn drop_unread(&self) {
+        let mut dropped = self.dropped.load(Ordering::Acquire);
+        let Some(first) =
+            (dropped..=SKIPPED).find(|&at| self.starting[at].load(Ordering::Acquire) > 0)
+        else {
+            // No leaf is left: the chunk goes with the last of the leaves
+            // going, and drops the rest itself.
+            return;
+        };
+        while dropped < first {
+            match self
+                .dropped
+                .compare_exchange(dropped, first, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    for slot in &self.slots[dropped..first] {
+                        // SAFETY: a leaf starts at `first`, so it was at most
+                        // `written` when that leaf was made: the slots were
+                        // written. No leaf starts at or before them, so none
+                        // reads them, and this exchange alone claimed them.
+                        unsafe { (*slot.get()).assume_init_drop() };
+                    }
+                    return;
+                }
+                Err(now) => dropped = now,
+            }
+        }
+    }
+}
 
 impl<V> Drop for Chunk<V> {
     fn drop(&mut self) {
-        let written = *self.written.get_mut();
-        for slot in &mut self.slots[..written] {
-            // SAFETY: `[0, written)` were written, and nothing reads them
-            // once the last reference to the chunk is gone.
+        let (dropped, written) = (*self.dropped.get_mut(), *self.written.get_mut());
+        for slot in &mut self.slots[dropped..written] {
+            // SAFETY: `[dropped, written)` were written and not dropped, and
+            // nothing reads them once the last leaf over the chunk is gone.
             unsafe { slot.get_mut().assume_init_drop() };
         }
     }
@@ -116,34 +161,98 @@ impl<V> Drop for Chunk<V> {
 
 /// The values of slots `[start, end)` of a chunk.
 struct Leaf<V> {
-    chunk: Arc<Chunk<V>>,
+    /// Alive while this leaf is: its start holds it (`Chunk::starts`).
+    chunk: NonNull<Chunk<V>>,
     start: u32,
     end: u32,
+    /// The leaf shares in owning the chunk's values.
+    _values: PhantomData<V>,
 }
+
+// SAFETY: a leaf shares its chunk as an `Arc` would (the chunk goes with
+// its last leaf, on whichever thread). The values are shared between threads
+// only as `&V` (a slot is written by the one append that claimed it, before
+// any leaf that reads it exists, and is read only after that), and dropped
+// once each, where the last leaf that starts at or before them goes, or with
+// the chunk.
+unsafe impl<V: Send + Sync> Send for Leaf<V> {}
+// SAFETY: as for `Send`: concurrent users read written slots, claim
+// unwritten ones through `written` and unread ones through `dropped`.
+unsafe impl<V: Send + Sync> Sync for Leaf<V> {}
 
 impl<V> Clone for Leaf<V> {
     fn clone(&self) -> Self {
-        Self {
-            chunk: self.chunk.clone(),
-            start: self.start,
-            end: self.end,
+        self.over(self.start, self.end)
+    }
+}
+
+impl<V> Drop for Leaf<V> {
+    fn drop(&mut self) {
+        let chunk = self.chunk();
+        // Released, as an `Arc`'s drop is: whoever drops the values sees this
+        // leaf's reads of them done.
+        if chunk.starting[self.start as usize].fetch_sub(1, Ordering::Release) != 1 {
+            return;
+        }
+        // The last leaf at its slot: it acquires the other leaves' reads, and
+        // takes the one order `drop_unread` needs.
+        fence(Ordering::SeqCst);
+        chunk.drop_unread();
+        if chunk.starts.fetch_sub(1, Ordering::Release) == 1 {
+            fence(Ordering::Acquire);
+            // SAFETY: this was the last leaf over the chunk, and no leaf is
+            // made over a chunk but from one: nothing reads it anymore.
+            drop(unsafe { Box::from_raw(self.chunk.as_ptr()) });
         }
     }
 }
 
 impl<V> Leaf<V> {
+    #[inline]
+    fn chunk(&self) -> &Chunk<V> {
+        // SAFETY: the chunk lives while a leaf over it does.
+        unsafe { self.chunk.as_ref() }
+    }
+
+    /// Slots `[start, end)` of this leaf's chunk, where `start` is at or
+    /// past this leaf's start: counted among the leaves that start there,
+    /// and, as the first of them, with one reference more for the chunk.
+    /// Relaxed, as `Arc::clone` is: this leaf holds the chunk meanwhile.
+    fn over(&self, start: u32, end: u32) -> Self {
+        debug_assert!(start >= self.start);
+        let chunk = self.chunk();
+        let before = chunk.starting[start as usize].fetch_add(1, Ordering::Relaxed);
+        if before == 0 {
+            chunk.starts.fetch_add(1, Ordering::Relaxed);
+        } else if before >= u32::MAX / 2 {
+            // As `Arc` does past its most references: the count must not
+            // wrap.
+            std::process::abort();
+        }
+        Self {
+            chunk: self.chunk,
+            start,
+            end,
+            _values: PhantomData,
+        }
+    }
+
     /// A leaf of `values` (`len` of them, a run sorted by key), in a chunk
     /// with room for `room` values in all. One allocation for the chunk's
-    /// slots, one for its count.
+    /// slots, one for its counts.
     fn of(values: impl Iterator<Item = V>, len: usize, room: usize) -> Self {
         #[cfg(test)]
         super::work::add(len);
-        let mut chunk = Chunk {
+        let mut chunk = Box::new(Chunk {
             written: AtomicUsize::new(0),
+            // This leaf, at slot 0.
+            starting: std::array::from_fn(|at| AtomicU32::new(u32::from(at == 0))),
+            starts: AtomicU32::new(1),
+            dropped: AtomicUsize::new(0),
             slots: (0..room.max(len))
                 .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
                 .collect(),
-        };
+        });
         let mut written = 0;
         for value in values.take(len) {
             chunk.slots[written].get_mut().write(value);
@@ -151,9 +260,10 @@ impl<V> Leaf<V> {
             *chunk.written.get_mut() = written;
         }
         Self {
-            chunk: Arc::new(chunk),
+            chunk: NonNull::from(Box::leak(chunk)),
             start: 0,
             end: written as u32,
+            _values: PhantomData,
         }
     }
 
@@ -163,8 +273,11 @@ impl<V> Leaf<V> {
         let len = (self.end - self.start) as usize;
         // SAFETY: slots `[start, end)` were written before this leaf was
         // made (`end` was at most `written` then) and are never written
-        // again. `UnsafeCell<MaybeUninit<V>>` has the layout of `V`.
-        unsafe { std::slice::from_raw_parts(self.chunk.slots.as_ptr().add(start).cast::<V>(), len) }
+        // again, nor dropped while this leaf, which starts at `start`, lives.
+        // `UnsafeCell<MaybeUninit<V>>` has the layout of `V`.
+        unsafe {
+            std::slice::from_raw_parts(self.chunk().slots.as_ptr().add(start).cast::<V>(), len)
+        }
     }
 
     fn width(&self) -> usize {
@@ -177,9 +290,9 @@ impl<V> Leaf<V> {
     /// version from writing it. `Err` hands `value` back otherwise.
     fn appended(&self, value: V) -> Result<Self, V> {
         let end = self.end as usize;
-        if end >= self.chunk.slots.len()
-            || self
-                .chunk
+        let chunk = self.chunk();
+        if end >= chunk.slots.len()
+            || chunk
                 .written
                 .compare_exchange(end, end + 1, Ordering::AcqRel, Ordering::Relaxed)
                 .is_err()
@@ -189,26 +302,19 @@ impl<V> Leaf<V> {
         // SAFETY: the exchange gave this append slot `end`, unwritten until
         // now and read by no leaf: every leaf over the chunk ended at or
         // before it.
-        unsafe { (*self.chunk.slots[end].get()).write(value) };
-        Ok(Self {
-            chunk: self.chunk.clone(),
-            start: self.start,
-            end: self.end + 1,
-        })
+        unsafe { (*chunk.slots[end].get()).write(value) };
+        Ok(self.over(self.start, self.end + 1))
     }
 
     /// This leaf without its first value: the same chunk from the next
     /// slot, until it has passed over [`SKIPPED`]; then a copy of the rest.
+    /// The value goes once no leaf starts at or before its slot.
     fn without_first(&self, room: usize) -> Self
     where
         V: Clone,
     {
         if (self.start as usize) < SKIPPED {
-            return Self {
-                chunk: self.chunk.clone(),
-                start: self.start + 1,
-                end: self.end,
-            };
+            return self.over(self.start + 1, self.end);
         }
         let rest = &self.values()[1..];
         Self::of(rest.iter().cloned(), rest.len(), room)
@@ -808,8 +914,12 @@ mod tests {
                 Node::Leaf(leaf) => {
                     let values = leaf.values();
                     assert!(values.windows(2).all(|pair| pair[0].key() < pair[1].key()));
-                    assert!(leaf.end as usize <= leaf.chunk.written.load(Ordering::Acquire));
+                    assert!(leaf.end as usize <= leaf.chunk().written.load(Ordering::Acquire));
                     assert!((leaf.start as usize) <= SKIPPED);
+                    assert!(
+                        leaf.chunk().dropped.load(Ordering::Acquire) <= leaf.start as usize,
+                        "a leaf reads a dropped slot"
+                    );
                     depths.push(depth);
                     values.len()
                 }
@@ -1006,7 +1116,120 @@ mod tests {
             for version in &versions {
                 check(version);
             }
+            drop(versions);
+            assert_eq!(
+                alive.load(Ordering::Relaxed),
+                set.len(),
+                "a value goes with the last version that holds it"
+            );
         }
+        assert_eq!(alive.load(Ordering::Relaxed), 0, "each value dropped once");
+    }
+
+    /// A value a leaf passes over at its front (an oldest observer leaving)
+    /// goes with the last version that reads it, before and after the leaf
+    /// is copied without what it passed over, in the first leaf or another.
+    #[test]
+    fn a_value_passed_over_goes_with_the_last_version_that_reads_it() {
+        let alive = Arc::new(AtomicUsize::new(0));
+        let live = || alive.load(Ordering::Relaxed);
+        let counted = |keys: std::ops::Range<u64>| -> Vec<Counted> {
+            keys.map(|key| Counted::new(key, &alive)).collect()
+        };
+        {
+            let mut set = PersistentSet::from_sorted(counted(0..10));
+            let held = set.clone();
+            set = set.removed(0).unwrap();
+            assert_eq!(live(), 10, "an earlier version still reads 0");
+            drop(held);
+            assert_eq!(live(), 9, "0 goes with the last version that reads it");
+            assert_eq!(set.iter().next().map(|value| value.0), Some(1));
+
+            // Through `SKIPPED` front removals and past them, where the
+            // leaf is copied (with clones of what it keeps), each value goes
+            // with its removal.
+            let mut set = PersistentSet::from_sorted(counted(100..200));
+            for key in 100..190 {
+                set = set.removed(key).unwrap();
+                assert_eq!(live(), 9 + set.len(), "after removing {key}");
+                check(&set);
+            }
+
+            // A version held across front removals keeps what it reads
+            // until it goes.
+            let before = live();
+            let mut set = PersistentSet::from_sorted(counted(200..300));
+            let held = set.clone();
+            for key in 200..210 {
+                set = set.removed(key).unwrap();
+            }
+            assert_eq!(live(), before + 100, "the held version reads 200..210");
+            drop(held);
+            assert_eq!(live(), before + 90);
+
+            // The first value of a leaf other than the first.
+            let before = live();
+            let mut set = PersistentSet::from_sorted(counted(1_000..2_000));
+            let second = set.leaves().nth(1).unwrap()[0].0;
+            set = set.removed(second).unwrap();
+            assert_eq!(live(), before + 999);
+            check(&set);
+        }
+        assert_eq!(live(), 0);
+    }
+
+    /// Versions read and dropped on other threads, in any order, while one
+    /// thread changes the set: each reads as it was, every value is dropped
+    /// once, and once only the last version is left, only its values live.
+    #[test]
+    fn versions_dropped_on_other_threads_drop_each_value_once() {
+        let alive = Arc::new(AtomicUsize::new(0));
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let mut set =
+            PersistentSet::from_sorted((0..300u64).map(|key| Counted::new(key, &alive)).collect());
+        let (mut first, mut next) = (0u64, 300u64);
+        std::thread::scope(|scope| {
+            let senders: Vec<_> = (0..4)
+                .map(|seed| {
+                    let (send, receive) =
+                        std::sync::mpsc::channel::<(PersistentSet<Counted>, u64, u64)>();
+                    scope.spawn(move || {
+                        let mut rng = Rng(0x9e37_79b9 + seed);
+                        let mut held = Vec::new();
+                        for version in receive {
+                            held.push(version);
+                            if held.len() > 8 {
+                                let (version, from, to) =
+                                    held.swap_remove((rng.next() % held.len() as u64) as usize);
+                                let keys: Vec<u64> = version.iter().map(|v| v.0).collect();
+                                assert_eq!(keys, (from..to).collect::<Vec<_>>());
+                            }
+                        }
+                    });
+                    send
+                })
+                .collect();
+            // The oldest goes or a newest joins, as observers churn, with
+            // between 250 and 350 of them; the last changes are removals,
+            // so the first leaf has passed over values.
+            for step in 0..20_003u64 {
+                let len = set.len();
+                let remove =
+                    step >= 20_000 || len > 350 || (len >= 250 && rng.next().is_multiple_of(2));
+                if remove {
+                    set = set.removed(first).unwrap();
+                    first += 1;
+                } else {
+                    set = set.inserted(Counted::new(next, &alive)).unwrap();
+                    next += 1;
+                }
+                let to = (step % senders.len() as u64) as usize;
+                senders[to].send((set.clone(), first, next)).unwrap();
+            }
+        });
+        check(&set);
+        assert_eq!(alive.load(Ordering::Relaxed), set.len());
+        drop(set);
         assert_eq!(alive.load(Ordering::Relaxed), 0, "each value dropped once");
     }
 
@@ -1019,7 +1242,7 @@ mod tests {
         fn chunks(set: &PersistentSet<u64>) -> Vec<*const Chunk<u64>> {
             fn walk(node: &Node<u64>, out: &mut Vec<*const Chunk<u64>>) {
                 match node {
-                    Node::Leaf(leaf) => out.push(Arc::as_ptr(&leaf.chunk)),
+                    Node::Leaf(leaf) => out.push(leaf.chunk.as_ptr().cast_const()),
                     Node::Branch(children) => children.iter().for_each(|c| walk(&c.node, out)),
                 }
             }

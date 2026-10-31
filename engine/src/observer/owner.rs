@@ -2173,6 +2173,73 @@ mod tests {
         set.observers.iter().map(|o| o.id.clone()).collect()
     }
 
+    /// A disposed observer goes with the last version of its function's
+    /// active set that holds it, oldest observer included (it leaves its
+    /// leaf without a copy), and the drops it counted reach
+    /// `iii.observer.dropped.total` then: at once when no call holds an
+    /// older version, when the last call that does lets go otherwise.
+    #[tokio::test]
+    async fn a_disposed_oldest_observer_goes_with_the_last_set_that_holds_it() {
+        use super::super::{events::test_support, test_metrics};
+        let recorded = test_metrics::record();
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        for id in ["a", "b", "c", "d"] {
+            registry
+                .observe_as_engine(engine_observer(id, "test::dst"))
+                .unwrap();
+        }
+        let ns = crate::protocol::DEFAULT_NAMESPACE;
+        let dropped = || {
+            recorded.sum(
+                "iii.observer.dropped.total",
+                &[("function_id", "test::src")],
+            )
+        };
+        let count_drops = |id: &str, count: u64| {
+            let observer = registry.get(id).unwrap();
+            observer
+                .drops
+                .overflow
+                .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+            Arc::downgrade(&observer)
+        };
+
+        // No call holds an older version: `a` goes with its disposal.
+        let a = count_drops("a", 5);
+        assert!(registry.unobserve_as_engine("a"));
+        assert_eq!(
+            active_ids(&registry.watch(ns, "test::src").unwrap()),
+            ["b", "c", "d"]
+        );
+        assert_eq!(a.strong_count(), 0, "`a` outlived its disposal");
+        assert_eq!(dropped(), 5, "the drops `a` counted reach the metric");
+
+        // A call holds the version with `b`: `b` goes when it lets go.
+        let b = count_drops("b", 2);
+        let call = registry.watch(ns, "test::src").unwrap();
+        assert!(registry.unobserve_as_engine("b"));
+        assert_eq!(
+            active_ids(&registry.watch(ns, "test::src").unwrap()),
+            ["c", "d"]
+        );
+        assert_eq!(
+            active_ids(&call),
+            ["b", "c", "d"],
+            "the call keeps its version"
+        );
+        assert!(b.upgrade().is_some(), "the call's version still holds `b`");
+        drop(call);
+        assert_eq!(
+            b.strong_count(),
+            0,
+            "`b` outlived the last version holding it"
+        );
+        assert_eq!(dropped(), 7, "the drops `b` counted reach the metric");
+    }
+
     /// Adding an observer to a function and removing it cost `O(log n)` in
     /// the function's `n` active observers: a change copies at most the
     /// nodes on one path of the active set (appending the newest observer
