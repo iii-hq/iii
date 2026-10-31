@@ -948,8 +948,8 @@ impl ObserverRegistry {
 
     /// Activates the observers one completed invocation matched: those whose
     /// `on` and filters match it, among every active observer (looked up in
-    /// the function's filter index) or among the ones its host's match hook
-    /// named, in creation order.
+    /// the function's filter index, or scanned when it has none) or among the
+    /// ones its host's match hook named, in creation order.
     pub(super) fn evaluate(self: &Arc<Self>, evaluation: Evaluation) {
         let Evaluation {
             set,
@@ -978,13 +978,27 @@ impl ObserverRegistry {
             metadata: completed.metadata.as_deref(),
         };
         match matching {
-            Matching::Filters => {
-                for (_, observer) in set.filters.matches(&doc) {
-                    if accepts(&observer.on, completed.success) {
-                        self.activate(observer, &completed);
+            Matching::Filters => match &set.filters {
+                Some(filters) => {
+                    for (_, observer) in filters.matches(&doc) {
+                        if accepts(&observer.on, completed.success) {
+                            self.activate(observer, &completed);
+                        }
                     }
                 }
-            }
+                // No filter the index can serve: a scan is what it would do.
+                None => {
+                    for leaf in set.observers.leaves() {
+                        for observer in leaf {
+                            if accepts(&observer.on, completed.success)
+                                && observer.filter.matches(&doc)
+                            {
+                                self.activate(observer, &completed);
+                            }
+                        }
+                    }
+                }
+            },
             Matching::Matched(ids) => {
                 let mut held = Vec::with_capacity(ids.len());
                 for id in &ids {
