@@ -21546,5 +21546,661 @@
     ]
    }
   ]
+ },
+ "go_local_call_filters": {
+  "bench": "BenchmarkLocalCall (sdk/packages/go/iii/local_call_bench_test.go): Client.Call of a hosted function, in-process, against the fake engine; 1,000 observers each with {\"$and\":[{\"input.tenant\":{\"$eq\":\"tenant-<i>\"}}]}",
+  "commits": {
+   "before": "edc636d13 (observe-v2) with the bench file and testing.TB helpers added",
+   "after": "ov2/filters-go (decision 55: local calls match through the filter index)"
+  },
+  "toolchain": "go1.25.14 linux/arm64 (golang:1.25 image, Docker, 4 CPUs, GOMAXPROCS 4)",
+  "method": "go test -run '^$' -bench '^BenchmarkLocalCall$' -benchmem; round 1: -count 10 before then after; round 2: -count 5 before then after",
+  "machine_load": "other agents' builds and benches; load average 7.7 to 9.7",
+  "before": {
+   "no_observers": [
+    {
+     "ns_op": 2459.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2441.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2457.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2421.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2503.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2525.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2431.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2415.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2429.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2432.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2072.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2139.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2066.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2056.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2031.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    }
+   ],
+   "1000_eq_observers_none_matching": [
+    {
+     "ns_op": 100812.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 103654.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 104810.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 102464.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 106813.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 102309.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 107791.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 107600.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 106310.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 104195.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 89677.0,
+     "bytes_op": 130802,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 93922.0,
+     "bytes_op": 130802,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 90802.0,
+     "bytes_op": 130802,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 91134.0,
+     "bytes_op": 130803,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 105710.0,
+     "bytes_op": 130802,
+     "allocs_op": 2037,
+     "gomaxprocs": 4,
+     "round": 2
+    }
+   ],
+   "1000_eq_observers_1_matching": [
+    {
+     "ns_op": 104252.0,
+     "bytes_op": 134796,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 105940.0,
+     "bytes_op": 134805,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 106640.0,
+     "bytes_op": 134742,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 110032.0,
+     "bytes_op": 134761,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 104387.0,
+     "bytes_op": 134741,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 105035.0,
+     "bytes_op": 134735,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 104223.0,
+     "bytes_op": 134726,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 105680.0,
+     "bytes_op": 134760,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 106133.0,
+     "bytes_op": 134771,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 108660.0,
+     "bytes_op": 134761,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 176515.0,
+     "bytes_op": 134772,
+     "allocs_op": 2050,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 125722.0,
+     "bytes_op": 134770,
+     "allocs_op": 2049,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 95957.0,
+     "bytes_op": 134822,
+     "allocs_op": 2048,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 92814.0,
+     "bytes_op": 134862,
+     "allocs_op": 2048,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 88398.0,
+     "bytes_op": 134835,
+     "allocs_op": 2048,
+     "gomaxprocs": 4,
+     "round": 2
+    }
+   ]
+  },
+  "after": {
+   "no_observers": [
+    {
+     "ns_op": 2182.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2239.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2266.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2235.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2301.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2265.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2229.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2237.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2212.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2246.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 2240.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2303.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2348.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2347.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 2314.0,
+     "bytes_op": 1184,
+     "allocs_op": 20,
+     "gomaxprocs": 4,
+     "round": 2
+    }
+   ],
+   "1000_eq_observers_none_matching": [
+    {
+     "ns_op": 5152.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5067.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5077.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5152.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5210.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5249.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5132.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5168.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5256.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5247.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 5334.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 5224.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 5275.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 5258.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 5342.0,
+     "bytes_op": 2864,
+     "allocs_op": 38,
+     "gomaxprocs": 4,
+     "round": 2
+    }
+   ],
+   "1000_eq_observers_1_matching": [
+    {
+     "ns_op": 7972.0,
+     "bytes_op": 6992,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 8147.0,
+     "bytes_op": 7028,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 8371.0,
+     "bytes_op": 7012,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 8357.0,
+     "bytes_op": 6990,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 7825.0,
+     "bytes_op": 7014,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 7626.0,
+     "bytes_op": 7005,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 7734.0,
+     "bytes_op": 6997,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 7745.0,
+     "bytes_op": 7006,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 7950.0,
+     "bytes_op": 7012,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 7904.0,
+     "bytes_op": 6963,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 1
+    },
+    {
+     "ns_op": 8561.0,
+     "bytes_op": 7001,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 8422.0,
+     "bytes_op": 6997,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 8347.0,
+     "bytes_op": 6999,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 8226.0,
+     "bytes_op": 7014,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 2
+    },
+    {
+     "ns_op": 8190.0,
+     "bytes_op": 6994,
+     "allocs_op": 50,
+     "gomaxprocs": 4,
+     "round": 2
+    }
+   ]
+  }
  }
 }

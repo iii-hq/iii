@@ -14,8 +14,8 @@ import (
 // when it started. The function's match hook narrows them. Its deliver hook, when set,
 // delivers the call itself, and what the hook returns is the caller's answer. Otherwise
 // iii delivers the call to the matched observers whose on and filters accept it. For a
-// local call, which the engine never sees, this worker evaluates them and reports the
-// observers delivered in one report item. For a routed call the engine
+// local call, which the engine never sees, this worker evaluates them (filter_index.go)
+// and reports the observers delivered in one report item. For a routed call the engine
 // evaluates them (decision 55): it holds the input, the caller, the metadata and the
 // answer, and the answer says which observers it evaluates (routedAnswer).
 
@@ -33,6 +33,8 @@ type callState struct {
 	match     *MatchHook
 	// index is the active observers by key, for a match hook by keys; nil otherwise.
 	index *keyIndex
+	// filters is the active observers by the equality conditions of their filters.
+	filters *filterIndex
 }
 
 // delivering reports whether a local call is delivered at all: it has observers, or a
@@ -65,15 +67,26 @@ type callDelivery struct {
 // the caller's outcome: the deliver hook's answer, or the handler's own.
 func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) outcome {
 	st, call := d.state, d.call
+	if st.hooked() {
+		call.view = newCallView(call, st.filters)
+	}
 	if hook := st.deliver; hook != nil {
 		value, err := f.runDeliverHook(ctx, hook, call, f.matching(st, call))
 		return outcomeOf(value, err, d.copyRaw)
 	}
-	ok, doc := call.succeeded(), call.doc()
 	var selected []*Observer
-	for _, obs := range f.matching(st, call) {
-		if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
-			selected = append(selected, obs)
+	if st.match == nil {
+		ok, doc := call.succeeded(), call.doc()
+		st.filters.each(doc, func(obs *Observer) {
+			if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
+				selected = append(selected, obs)
+			}
+		})
+	} else {
+		for _, obs := range f.matching(st, call) {
+			if call.view.matches(obs) {
+				selected = append(selected, obs)
+			}
 		}
 	}
 	if len(selected) > 0 {
@@ -100,6 +113,7 @@ func (f *functionObservers) deliverRouted(ctx context.Context, d *callDelivery) 
 	if st.deliver == nil && len(st.observers) == 0 {
 		return d.handler, routedAnswer{matched: []string{}}
 	}
+	call.view = newCallView(call, st.filters)
 	matched := f.matching(st, call)
 	if hook := st.deliver; hook != nil {
 		value, err := f.runDeliverHook(ctx, hook, call, matched)

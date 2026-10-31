@@ -115,6 +115,10 @@ type Call struct {
 	Caller *Caller
 	// Metadata is the call's metadata sidecar; nil when it carries none.
 	Metadata json.RawMessage
+
+	// view is what Observer.Matches shares across the observers of a call the SDK
+	// hands a hook (callView); nil on a Call made elsewhere.
+	view *callView
 }
 
 // succeeded reports the call's status.
