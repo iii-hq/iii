@@ -170,8 +170,8 @@ fn unknown_message_types_and_enum_values_decode() {
 }
 
 /// `null` for a field with a default reads as that default: `private` and
-/// `observable` on `registerfunction`, `observed` on `invocationresult`,
-/// `output_is_input` on report items.
+/// `observable` on `registerfunction`, `matched` (absent) and `delivered`
+/// (`false`) on `invocationresult`, `output_is_input` on report items.
 #[test]
 fn defaults_sent_as_null_read_as_the_default() {
     let Message::RegisterFunction {
@@ -188,13 +188,16 @@ fn defaults_sent_as_null_read_as_the_default() {
     };
     assert!(!private && observable && args_format.is_none());
 
-    let Message::InvocationResult { observed, .. } = decode(&json!({
+    let Message::InvocationResult {
+        matched, delivered, ..
+    } = decode(&json!({
         "type": "invocationresult", "invocation_id": "1f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
-        "function_id": "f", "result": 1, "observed": null
-    })) else {
+        "function_id": "f", "result": 1, "matched": null, "delivered": null
+    }))
+    else {
         panic!()
     };
-    assert!(observed.is_empty());
+    assert!(matched.is_none() && !delivered);
 
     let mut source = fixture("invocationsobserved-event-source.json");
     source["items"][0]["output_is_input"] = Value::Null;
@@ -339,26 +342,37 @@ fn engine_to_worker_fixtures_carry_their_meaning() {
     assert!(items[0].output_is_input);
     assert!(items[0].output.is_none(), "the value travels once");
 
-    let Message::InvocationResult {
-        result, observed, ..
-    } = decode(&fixture("invocationresult-observed.json"))
-    else {
-        panic!()
+    // A routed call's answer says how the call is delivered (decision 55):
+    // to every observer, to those the match hook matched, or by the deliver
+    // hook.
+    let answer = |name: &str| match decode(&fixture(name)) {
+        Message::InvocationResult {
+            result,
+            error,
+            matched,
+            delivered,
+            ..
+        } => (result, error, matched, delivered),
+        other => panic!("{name}: {other:?}"),
     };
+    let (result, _, matched, delivered) = answer("invocationresult-routed.json");
     assert!(result.is_some());
-    assert_eq!(observed.len(), 2);
-    let Message::InvocationResult {
-        result,
-        error,
-        observed,
-        ..
-    } = decode(&fixture("invocationresult-observed-error.json"))
-    else {
-        panic!()
-    };
-    assert!(result.is_none());
+    assert!(matched.is_none() && !delivered, "every observer");
+    let (result, _, matched, delivered) = answer("invocationresult-matched.json");
+    assert!(result.is_some() && !delivered);
+    assert_eq!(matched.unwrap().len(), 2);
+    let (result, error, matched, delivered) = answer("invocationresult-matched-error.json");
+    assert!(result.is_none() && !delivered);
     assert_eq!(error.unwrap().code, "CARD_DECLINED");
-    assert_eq!(observed, vec!["c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60"]);
+    assert_eq!(
+        matched.unwrap(),
+        vec!["c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60"]
+    );
+    let (_, _, matched, delivered) = answer("invocationresult-matched-none.json");
+    assert_eq!(matched, Some(Vec::new()), "matched none: sent as []");
+    assert!(!delivered);
+    let (result, _, matched, delivered) = answer("invocationresult-delivered.json");
+    assert!(result.is_some() && delivered && matched.is_none());
 
     let Message::InvokeFunction { activation, .. } =
         decode(&fixture("invokefunction-observer-call-forwarded.json"))

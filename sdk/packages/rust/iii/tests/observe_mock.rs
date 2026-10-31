@@ -1404,40 +1404,39 @@ async fn a_replay_with_the_same_args_runs_no_hook() {
                 "filters": { "$and": [{ "input.n": { "$gt": n } }] },
                 "capture": ["input", "caller"], "on": "success" })
     };
-    let observed = |invocation_id: &'static str, n: i64| {
-        let mock = &mock;
+    // The `n` of each local call of `ns` reported to `a`, which the filters
+    // of its current view select.
+    let delivered = |ns: &'static [i64]| {
+        let (mock, iii) = (&mock, &iii);
         async move {
-            route_call(mock, "ra::f", invocation_id, json!({ "n": n }));
-            ids(&answer_to(mock, invocation_id).await["observed"])
+            mock.clear();
+            for n in ns {
+                iii.call(CallRequest::new("ra::f", json!({ "n": n })))
+                    .await
+                    .unwrap();
+            }
+            // past the reports' 5 ms linger
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            report_items_in(&mock.received_messages())
+                .iter()
+                .map(|item| {
+                    assert_eq!(item["matched"], json!(["a"]));
+                    item["input"]["n"].as_i64().unwrap()
+                })
+                .collect::<Vec<i64>>()
         }
     };
 
     confirm(&mock, "ra::f", 2, true, json!([above(1)]));
     acked_for(&mock, "ra::f", &[("a", 2)]).await;
-    assert!(
-        observed("a1b2c3d4-0001-4000-8000-000000000001", 1)
-            .await
-            .is_empty()
-    );
-    assert_eq!(
-        observed("a1b2c3d4-0001-4000-8000-000000000002", 2).await,
-        vec!["a"]
-    );
+    assert_eq!(delivered(&[1, 2]).await, [2]);
 
     mock.send_to_client(json!({
         "type": "observeradded", "function_id": "ra::f", "namespace": "default",
         "revision": 3, "observer": above(5)
     }));
     acked_for(&mock, "ra::f", &[("a", 3)]).await;
-    assert!(
-        observed("a1b2c3d4-0001-4000-8000-000000000003", 2)
-            .await
-            .is_empty()
-    );
-    assert_eq!(
-        observed("a1b2c3d4-0001-4000-8000-000000000004", 6).await,
-        vec!["a"]
-    );
+    assert_eq!(delivered(&[2, 6]).await, [6]);
     assert_eq!(
         *recorder.events.lock().unwrap(),
         vec!["add a"],
@@ -1986,7 +1985,7 @@ const FOR_B: &str = "4c9e1b2a-7d3f-4e5a-9b8c-1d2e3f4a5b6c";
 
 /// A local call's metadata reaches the handler, the match hook (a predicate
 /// and keys) and the report; a call with `metadata.for_observer` is reported
-/// for that observer alone, and a routed one lists only it on its answer.
+/// for that observer alone, and a routed one's answer lists only it.
 #[tokio::test]
 async fn a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_report() {
     for keys in [false, true] {
@@ -2054,14 +2053,14 @@ async fn a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_
             "keys {keys}: the match hook reads the call's metadata"
         );
 
-        // routed: the observer it names rides the answer
+        // routed: the match hook gives the call to the observer it names
         mock.send_to_client(json!({
             "type": "invokefunction", "invocation_id": FOR_B, "function_id": "tmux::on-changed",
             "data": { "session": "s1", "n": 3 }, "metadata": { "for_observer": "b" }
         }));
         let answer = answer_to(&mock, FOR_B).await;
         assert_eq!(answer["result"], json!({ "session": "s1", "n": 3 }));
-        assert_eq!(answer["observed"], json!(["b"]), "keys {keys}");
+        assert_eq!(answer["matched"], json!(["b"]), "keys {keys}");
         iii.shutdown_async().await;
     }
 }
@@ -3277,29 +3276,30 @@ async fn the_key_index_follows_adds_and_removes() {
 
 // ───────────────────────────── routed calls ──────────────────────────────
 
-fn ids(value: &Value) -> Vec<String> {
-    let mut ids: Vec<String> = value
-        .as_array()
-        .map(|ids| {
-            ids.iter()
-                .map(|id| id.as_str().unwrap().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    ids.sort();
-    ids
+/// The answer `answer` with the keys of `expected` that a host sets
+/// (`traceparent` and `baggage` come from the host's own span).
+fn assert_answer_is(answer: &Value, expected: &Value) {
+    let mut answer = answer.clone();
+    let mut expected = expected.clone();
+    for value in [&mut answer, &mut expected] {
+        let map = value.as_object_mut().unwrap();
+        map.remove("traceparent");
+        map.remove("baggage");
+    }
+    assert_eq!(answer, expected);
 }
 
-/// An `observe.v2` host delivers a routed call itself: the matches ride the
-/// answer, and nothing else is sent.
+/// An `observe.v2` host answers a routed call of a function without hooks
+/// with the handler's result alone (`invocationresult-routed.json`): the
+/// engine evaluates every active observer's `on` and filters, so the host
+/// evaluates none and reports nothing.
 #[tokio::test]
-async fn a_routed_call_rides_its_answer() {
+async fn a_routed_call_without_hooks_is_answered_with_its_result_alone() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "orders");
     connected(&mock, &iii, true).await;
-    let expected = fixture("invocationresult-observed.json");
+    let expected = fixture("invocationresult-routed.json");
     let result = expected["result"].clone();
-    let observed = ids(&expected["observed"]);
     hosted(
         &mock,
         &iii,
@@ -3307,10 +3307,10 @@ async fn a_routed_call_rides_its_answer() {
         RegisterFunction::new(move |_: Value| Ok::<_, Error>(result.clone())),
         json!([
             {
-                "id": observed[0], "args": {}, "target": "t::a", "capture": ["input"],
+                "id": "small", "args": {}, "target": "t::a", "capture": ["input"],
                 "filters": { "$and": [{ "input.qty": { "$gte": 1 } }] }, "on": "success"
             },
-            observer_with_args(&observed[1], json!({})),
+            observer_with_args("every", json!({})),
             { "id": "on-error", "args": {}, "filters": {}, "target": "t::b",
               "capture": ["error"], "on": "error" },
             { "id": "big", "args": {}, "target": "t::c", "capture": ["input"],
@@ -3318,7 +3318,72 @@ async fn a_routed_call_rides_its_answer() {
         ]),
     )
     .await;
-    acked(&mock, &[("on-error", 1), ("big", 1)]).await;
+    acked(
+        &mock,
+        &[("small", 1), ("every", 1), ("on-error", 1), ("big", 1)],
+    )
+    .await;
+    mock.clear();
+
+    let invocation = expected["invocation_id"].as_str().unwrap();
+    for (n, qty) in [0, 2, 500].into_iter().enumerate() {
+        let invocation_id = if n == 0 {
+            invocation.to_string()
+        } else {
+            format!("{n}f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f")
+        };
+        route_call(
+            &mock,
+            "orders::create",
+            &invocation_id,
+            json!({ "sku": "A-1", "qty": qty }),
+        );
+        let answer = answer_to(&mock, &invocation_id).await;
+        let mut expected = expected.clone();
+        expected["invocation_id"] = json!(invocation_id);
+        assert_answer_is(&answer, &expected);
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        frames(&mock, "invocationsobserved").is_empty(),
+        "a routed call is reported by no host"
+    );
+    iii.shutdown_async().await;
+}
+
+/// A function's match hook narrows a routed call's observers: the answer
+/// lists the observers the hook matched (`invocationresult-matched.json`),
+/// before `on` and filters, which the engine evaluates.
+#[tokio::test]
+async fn a_routed_answer_lists_what_the_match_hook_matched() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "orders");
+    connected(&mock, &iii, true).await;
+    let expected = fixture("invocationresult-matched.json");
+    let result = expected["result"].clone();
+    let ids: Vec<String> = serde_json::from_value(expected["matched"].clone()).unwrap();
+    iii.on_observer_match_for(
+        "orders::create",
+        Match::predicate(|obs, call| obs.args_value()["region"] == call.input["region"]),
+    );
+    hosted(
+        &mock,
+        &iii,
+        "orders::create",
+        RegisterFunction::new(move |_: Value| Ok::<_, Error>(result.clone())),
+        json!([
+            // a filter no call below passes, and `on: error`: the engine's to
+            // apply
+            { "id": ids[0], "args": { "region": "eu" }, "target": "t::a", "capture": ["input"],
+              "filters": { "$and": [{ "input.qty": { "$gte": 1000 } }] }, "on": "success" },
+            { "id": ids[1], "args": { "region": "eu" }, "target": "t::b", "capture": ["error"],
+              "filters": {}, "on": "error" },
+            { "id": "us", "args": { "region": "us" }, "target": "t::c", "capture": ["input"],
+              "filters": {}, "on": "success" }
+        ]),
+    )
+    .await;
+    acked(&mock, &[(&ids[0], 1), (&ids[1], 1), ("us", 1)]).await;
     mock.clear();
 
     let invocation = expected["invocation_id"].as_str().unwrap();
@@ -3326,40 +3391,42 @@ async fn a_routed_call_rides_its_answer() {
         &mock,
         "orders::create",
         invocation,
-        json!({ "sku": "A-1", "qty": 2 }),
+        json!({ "region": "eu", "qty": 2 }),
     );
     let answer = answer_to(&mock, invocation).await;
-    for key in ["type", "invocation_id", "function_id", "result"] {
-        assert_eq!(answer[key], expected[key], "{key}: {answer:#}");
-    }
-    assert_eq!(ids(&answer["observed"]), observed);
-    assert!(answer.get("error").is_none());
+    assert_answer_is(&answer, &expected);
 
-    // the filters pick: only the unfiltered observer matches qty 0
+    // matched none: `[]`, sent (`invocationresult-matched-none.json`)
+    let none = fixture("invocationresult-matched-none.json");
+    let invocation = none["invocation_id"].as_str().unwrap();
     route_call(
         &mock,
         "orders::create",
-        "2f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
-        json!({ "sku": "A-1", "qty": 0 }),
+        invocation,
+        json!({ "region": "apac", "qty": 2 }),
     );
-    let filtered = answer_to(&mock, "2f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
-    assert_eq!(ids(&filtered["observed"]), vec![observed[1].clone()]);
+    let answer = answer_to(&mock, invocation).await;
+    assert_eq!(answer["matched"], json!([]), "{answer:#}");
+    assert!(answer.get("delivered").is_none());
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        frames(&mock, "invocationsobserved").is_empty(),
-        "a match costs no frame"
-    );
+    assert!(frames(&mock, "invocationsobserved").is_empty());
     iii.shutdown_async().await;
 }
 
-/// The error the handler threw rides its answer with the `on: error`
-/// observers it matched.
+/// The error the handler threw is the answer's, with the observers the
+/// match hook matched (`invocationresult-matched-error.json`): an `on:
+/// error` observer whose filter the engine evaluates on the input it kept.
 #[tokio::test]
-async fn a_routed_error_rides_the_error_answer() {
+async fn a_routed_error_lists_what_the_match_hook_matched() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "payments");
     connected(&mock, &iii, true).await;
-    let expected = fixture("invocationresult-observed-error.json");
+    let expected = fixture("invocationresult-matched-error.json");
+    let on_error = fixture("observe-on-error.json");
+    iii.on_observer_match_for(
+        "payments::charge",
+        Match::predicate(|obs, _call| obs.args_value()["page"] == true),
+    );
     hosted(
         &mock,
         &iii,
@@ -3372,31 +3439,115 @@ async fn a_routed_error_rides_the_error_answer() {
             })
         }),
         json!([
-            { "id": expected["observed"][0], "args": {}, "target": "alerts::payment-failed",
+            { "id": on_error["id"], "args": { "page": true }, "target": "alerts::payment-failed",
               "filters": { "$and": [{ "input.amount": { "$gte": 500 } }] },
-              "capture": ["input", "error", "caller"], "on": "error" },
-            observer_with_args("on-success", json!({}))
+              "capture": on_error["source"]["capture"], "on": "error" },
+            observer_with_args("audit", json!({ "page": false }))
         ]),
     )
     .await;
-    acked(&mock, &[("on-success", 1)]).await;
+    acked(
+        &mock,
+        &[(on_error["id"].as_str().unwrap(), 1), ("audit", 1)],
+    )
+    .await;
     let invocation = expected["invocation_id"].as_str().unwrap();
+    // under the filter's 500: the engine's to rule out
     route_call(
         &mock,
         "payments::charge",
         invocation,
-        json!({ "amount": 1250 }),
+        json!({ "amount": 120 }),
     );
     let answer = answer_to(&mock, invocation).await;
-    assert_eq!(answer["error"]["code"], expected["error"]["code"]);
-    assert_eq!(answer["error"]["message"], expected["error"]["message"]);
-    assert!(answer.get("result").is_none());
-    assert_eq!(answer["observed"], expected["observed"]);
+    assert_answer_is(&answer, &expected);
+    iii.shutdown_async().await;
+}
+
+/// A match hook with no observer here to match answers `matched: []`: the
+/// engine delivers the call to none, as the hook would have.
+#[tokio::test]
+async fn a_match_hook_without_observers_matches_none() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "cron");
+    connected(&mock, &iii, true).await;
+    iii.on_observer_match_for(
+        "cron::empty",
+        Match::keys(
+            |obs| obs.args_value()["expression"].as_str().into(),
+            |call| call.input["expression"].as_str().into(),
+        ),
+    );
+    let function = hosted(&mock, &iii, "cron::empty", echo(), json!([])).await;
+    assert!(!function.is_observed());
+    route_call(
+        &mock,
+        "cron::empty",
+        "7f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        json!({ "expression": "A" }),
+    );
+    let answer = answer_to(&mock, "7f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(answer["matched"], json!([]), "{answer:#}");
+    assert!(answer.get("delivered").is_none());
+    assert_eq!(answer["result"]["expression"], "A");
+    iii.shutdown_async().await;
+}
+
+/// A deliver hook delivers a routed call itself: the answer is what it
+/// returned (`invocationresult-delivered.json`), with `delivered: true` and
+/// no `matched`, with a match hook or without.
+#[tokio::test]
+async fn a_routed_answer_says_the_deliver_hook_delivered() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "approvals");
+    connected(&mock, &iii, true).await;
+    let expected = fixture("invocationresult-delivered.json");
+    let result = expected["result"].clone();
+    iii.on_observer_deliver_for(
+        "approvals::request",
+        move |_call: Call, _observers: Vec<Observer>| {
+            let result = result.clone();
+            async move { Ok(result) }
+        },
+    );
+    hosted(
+        &mock,
+        &iii,
+        "approvals::request",
+        echo().private(),
+        json!([observer_with_args("risk-review", json!({}))]),
+    )
+    .await;
+    acked(&mock, &[("risk-review", 1)]).await;
+    let invocation = expected["invocation_id"].as_str().unwrap();
+    route_call(
+        &mock,
+        "approvals::request",
+        invocation,
+        json!({ "amount": 9000 }),
+    );
+    let answer = answer_to(&mock, invocation).await;
+    assert_answer_is(&answer, &expected);
+
+    // with a match hook too: `delivered` alone
+    iii.on_observer_match_for("approvals::request", Match::predicate(|_, _| true));
+    route_call(
+        &mock,
+        "approvals::request",
+        "8f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        json!({ "amount": 9000 }),
+    );
+    let answer = answer_to(&mock, "8f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
+    assert_eq!(answer["delivered"], true, "{answer:#}");
+    assert!(
+        answer.get("matched").is_none(),
+        "delivered outweighs matched"
+    );
     iii.shutdown_async().await;
 }
 
 /// A deliver hook answers a routed call itself: the answer is its value,
-/// with no `observed` and no report item, and it gets the observers the
+/// with `delivered: true` and no report item, and it gets the observers the
 /// match hook says want the call.
 #[tokio::test]
 async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
@@ -3457,7 +3608,8 @@ async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
         answer["result"],
         json!({ "acked_by": "sub-b", "matches": true })
     );
-    assert!(answer.get("observed").is_none(), "{answer:#}");
+    assert_eq!(answer["delivered"], true, "{answer:#}");
+    assert!(answer.get("matched").is_none(), "{answer:#}");
     assert_eq!(
         *got.lock().unwrap(),
         vec!["sub-b"],
@@ -3472,7 +3624,11 @@ async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
     }));
     let answer = answer_to(&mock, "5f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
     assert_eq!(answer["error"]["code"], "OBSERVER_NOT_ACTIVE");
-    assert!(answer.get("observed").is_none());
+    assert_eq!(
+        answer["delivered"], true,
+        "the hook's error is delivered too"
+    );
+    assert!(answer.get("matched").is_none());
 
     // and a local call: no report
     iii.call(
@@ -3526,7 +3682,7 @@ async fn a_deliver_hooks_rethrown_timeout_keeps_its_code() {
     );
     let answer = answer_to(&mock, "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
     assert_eq!(answer["error"]["code"], "TIMEOUT", "{answer:#}");
-    assert!(answer.get("observed").is_none());
+    assert_eq!(answer["delivered"], true);
 
     let err = iii
         .call(CallRequest::new(
@@ -3539,7 +3695,7 @@ async fn a_deliver_hooks_rethrown_timeout_keeps_its_code() {
     iii.shutdown_async().await;
 }
 
-/// A match hook narrows a routed call's observers; the matches ride its
+/// A match hook narrows a routed call's observers: its matches ride the
 /// answer.
 #[tokio::test]
 async fn a_match_hook_narrows_a_routed_calls_observers() {
@@ -3569,7 +3725,7 @@ async fn a_match_hook_narrows_a_routed_calls_observers() {
         json!({ "expression": "B" }),
     );
     let answer = answer_to(&mock, "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
-    assert_eq!(answer["observed"], json!(["five"]));
+    assert_eq!(answer["matched"], json!(["five"]));
     assert_eq!(answer["result"]["expression"], "B");
     iii.shutdown_async().await;
 }
@@ -3600,7 +3756,7 @@ async fn an_engine_without_observe_v2_evaluates_routed_calls() {
     acked(&mock, &[("o", 1)]).await;
     until("observed", || plain.is_observed()).await;
 
-    // a routed call: the engine evaluates it, the answer has no `observed`
+    // a routed call: the engine evaluates it, the answer says nothing more
     route_call(
         &mock,
         "v1::source",
@@ -3608,7 +3764,10 @@ async fn an_engine_without_observe_v2_evaluates_routed_calls() {
         json!({ "n": 1 }),
     );
     let answer = answer_to(&mock, "3f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
-    assert!(answer.get("observed").is_none(), "{answer:#}");
+    assert!(
+        answer.get("matched").is_none() && answer.get("delivered").is_none(),
+        "{answer:#}"
+    );
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(frames(&mock, "invocationsobserved").is_empty());
 

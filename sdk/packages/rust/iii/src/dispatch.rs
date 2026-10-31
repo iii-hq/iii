@@ -6,16 +6,28 @@
 //! create the same `execute <fn>` span, set the same current invocation and
 //! produce the same error shape.
 //!
-//! Then the host delivers the call. Its observers are matched (all of them,
-//! or those the function's match hook says want it), and iii's delivery
-//! evaluates their `on` and compiled filters and reports only the matches; or
-//! the function's deliver hook delivers the call itself. Without a match
-//! hook, the observers' equality conditions are looked up in an index of the
-//! call's outcome ([`FilterIndex`](iii_filter::FilterIndex)), and only the
-//! filters it does not rule out are evaluated. A local call's matches join
-//! the batched `invocationsobserved` reports; a routed call's ride its
-//! `invocationresult` (`observed`). A call with no observer and no deliver
-//! hook costs one atomic load and puts nothing on the wire.
+//! Then the call is delivered. Filters are iii's, and run where the call's
+//! parts are: the engine evaluates the `on` and filters of every call it
+//! routes (it holds the input, the answer, the caller and the metadata), and
+//! this host those of the calls it makes to its own functions, which the
+//! engine never sees. The host runs what is worker code for both: the
+//! function's match hook, which reads the observers' args, and its deliver
+//! hook.
+//!
+//! - A local call: its observers are matched (all of them, or those the
+//!   match hook says want it), and iii's delivery evaluates their `on` and
+//!   compiled filters, through an index of their equality conditions
+//!   ([`FilterIndex`](iii_filter::FilterIndex)), and reports the matches in
+//!   the batched `invocationsobserved` frames; or the deliver hook delivers
+//!   the call itself.
+//! - A routed call: the answer says how it is delivered. Without hooks it
+//!   carries nothing more, and the engine evaluates every active observer;
+//!   with a match hook it lists the observers the hook matched
+//!   (`invocationresult.matched`, before `on` and filters); with a deliver
+//!   hook it is the hook's answer, with `delivered: true`.
+//!
+//! A call with no observer and no deliver hook costs one atomic load and puts
+//! nothing on the wire.
 use std::{
     future::Future,
     panic::AssertUnwindSafe,
@@ -266,12 +278,41 @@ const TIMEOUT: &str = "TIMEOUT";
 /// Who delivers a call of a function this worker hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Route {
-    /// A local call: its matches are reported.
+    /// A local call: the host evaluates its observers and reports the
+    /// matches.
     Local,
-    /// A call routed by an `observe.v2` engine: its matches ride the answer.
+    /// A call routed by an `observe.v2` engine, which evaluates its
+    /// observers' `on` and filters: the host runs the function's match and
+    /// deliver hooks, and its answer says how the call is delivered.
     Routed,
-    /// A call routed by an engine that evaluates its observers itself.
+    /// A call routed by an engine without `observe.v2`, which delivers it.
     Engine,
+}
+
+/// How a routed call is delivered, as its `invocationresult` says
+/// (decision 55).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// To every active observer whose `on` and filters match: neither
+    /// `matched` nor `delivered`.
+    #[default]
+    Every,
+    /// To those of these observers, the ones the match hook matched, whose
+    /// `on` and filters match: `matched`, `[]` included.
+    Matched(Vec<String>),
+    /// By the function's deliver hook: `delivered: true`.
+    Delivered,
+}
+
+impl Delivery {
+    /// The answer's `matched` and `delivered`.
+    pub(crate) fn into_wire(self) -> (Option<Vec<String>>, bool) {
+        match self {
+            Delivery::Every => (None, false),
+            Delivery::Matched(ids) => (Some(ids), false),
+            Delivery::Delivered => (None, true),
+        }
+    }
 }
 
 /// A call of a function this worker hosts, to run and deliver.
@@ -289,8 +330,8 @@ pub(crate) struct Hosted {
 pub(crate) struct Answer {
     /// What the caller gets: the handler's outcome, or its deliver hook's.
     pub result: Result<Value, ErrorBody>,
-    /// A routed call's matches, which ride its `invocationresult`.
-    pub observed: Vec<String>,
+    /// How a routed call is delivered, which its `invocationresult` says.
+    pub delivery: Delivery,
     /// The `execute <fn>` span's context, for the answer's trace headers.
     pub otel_cx: OtelContext,
 }
@@ -624,7 +665,8 @@ impl IIIClient {
 
     /// Runs the handler of a function this worker hosts, then delivers the
     /// call: iii's delivery, or the function's deliver hook. With no observer
-    /// and no deliver hook, it only runs the handler.
+    /// and no deliver hook, it only runs the handler; so does a routed call
+    /// of a function without hooks, whose observers the engine evaluates.
     pub(crate) async fn run_hosted(&self, run: Hosted) -> Answer {
         let Hosted {
             handler,
@@ -636,7 +678,18 @@ impl IIIClient {
             route,
         } = run;
         let local = route == Route::Local;
-        if route == Route::Engine || !entry.delivers() {
+        let delivers = route != Route::Engine && entry.delivers();
+        let hook = delivers.then(|| entry.deliver_hook()).flatten();
+        let matcher = delivers.then(|| entry.matcher()).flatten();
+        if !delivers || (route == Route::Routed && hook.is_none() && matcher.is_none()) {
+            // The handler alone. A routed call's answer says how it is
+            // delivered: to every active observer, or, by a function whose
+            // match hook has no observer here to match, to none.
+            let delivery = if route == Route::Routed && !delivers && entry.has_match_hook() {
+                Delivery::Matched(Vec::new())
+            } else {
+                Delivery::Every
+            };
             let started = Instant::now();
             let metadata = ctx.metadata.clone();
             let executed = execute(parent_cx, payload, metadata, handler, ctx, local_depth).await;
@@ -649,21 +702,18 @@ impl IIIClient {
                 result: executed
                     .result
                     .map_err(|error| error_body(error, executed.stacktrace)),
-                observed: Vec::new(),
+                delivery,
                 otel_cx: executed.otel_cx,
             };
         }
 
-        let hook = entry.deliver_hook();
-        let matcher = entry.matcher();
         let snapshot = entry.compiled();
         // What a filter reads, what a report carries and what a match or
         // deliver hook gets: only that is kept of the input, which the handler
-        // owns.
+        // owns. The filters of a routed call are the engine's.
         let keep_input = hook.is_some()
             || matcher.is_some()
-            || snapshot.roots.input
-            || (local && snapshot.capture.input);
+            || (local && (snapshot.roots.input || snapshot.capture.input));
         let input = keep_input.then(|| payload.clone());
         let started_at_ms = now_ms();
         let started = Instant::now();
@@ -688,8 +738,10 @@ impl IIIClient {
         };
 
         if hook.is_none() && matcher.is_none() {
-            // iii's delivery to every active observer: the call's parts are
-            // read in place.
+            // A local call, delivered by iii to every active observer whose
+            // `on` and filters match: the call's parts are read in place, and
+            // the index of the call's outcome rules out the observers with an
+            // equality condition the call fails.
             let error = result.as_ref().err().map(observed_error);
             let view = CallView {
                 input: input.as_ref(),
@@ -699,13 +751,10 @@ impl IIIClient {
                 metadata: invocation.metadata.as_ref(),
                 success: result.is_ok(),
             };
-            // The index of the call's outcome rules out the observers with
-            // an equality condition the call fails.
-            let selected = select_indexed(&entry.id, &view, &snapshot);
-            let observed = self.deliver(&report, &view, selected, local);
+            self.report(&report, &view, select_indexed(&entry.id, &view, &snapshot));
             return Answer {
                 result,
-                observed,
+                delivery: Delivery::Every,
                 otel_cx,
             };
         }
@@ -739,16 +788,23 @@ impl IIIClient {
         };
 
         let Some(hook) = hook else {
-            let view = CallView::of(&call);
-            let selected = select(&entry.id, &view, &[&matched]);
-            let observed = self.deliver(&report, &view, selected, local);
+            // iii delivers the call to the observers the match hook matched
+            // whose `on` and filters match it: evaluated here for a local
+            // call, by the engine for a routed one.
+            let delivery = if local {
+                let view = CallView::of(&call);
+                self.report(&report, &view, select(&entry.id, &view, &[&matched]));
+                Delivery::Every
+            } else {
+                Delivery::Matched(matched.iter().map(|obs| obs.id().to_string()).collect())
+            };
             let result = match handler_error {
                 Some(body) => Err(body),
                 None => Ok(call.output.take().unwrap_or(Value::Null)),
             };
             return Answer {
                 result,
-                observed,
+                delivery,
                 otel_cx,
             };
         };
@@ -766,26 +822,22 @@ impl IIIClient {
         });
         Answer {
             result,
-            observed: Vec::new(),
+            delivery: Delivery::Delivered,
             otel_cx,
         }
     }
 
-    /// iii's delivery of a call to the observers `selected` (whose `on` and
-    /// filters match it, with what they capture). A routed call's matches
-    /// ride its answer (returned); a local call's are reported.
-    fn deliver(
+    /// Reports a local call's matches, `(ids, what they capture)`, when there
+    /// are any.
+    fn report(
         &self,
         report: &ReportCtx<'_>,
         view: &CallView<'_>,
         (matched, mask): (Vec<String>, CaptureMask),
-        local: bool,
-    ) -> Vec<String> {
-        if matched.is_empty() || !local {
-            return matched;
+    ) {
+        if !matched.is_empty() {
+            self.reporter().push(item(report, view, matched, mask));
         }
-        self.reporter().push(item(report, view, matched, mask));
-        Vec::new()
     }
 
     /// Sends what is due from the report buffer: items of functions the
