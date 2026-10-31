@@ -25,6 +25,7 @@
 package iii
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -316,10 +317,52 @@ type InvocationResultMessage struct {
 	Error        *ErrorBody      `json:"error,omitempty"`
 	Traceparent  *string         `json:"traceparent,omitempty"`
 	Baggage      *string         `json:"baggage,omitempty"`
-	// Observed lists the observers an observe.v2 host delivered the routed call to:
-	// the engine activates them with the call's input and this answer. Omitted when
-	// empty; the engine strips it before forwarding a result to the caller.
-	Observed []string `json:"observed,omitempty"`
+	// Matched lists, on an observe.v2 host's answer to a routed call of a function with
+	// a match hook, the observers the hook matched, each once ([] when it matched
+	// none): the engine evaluates the on and filters of those that are active
+	// observers of the function, with the call's input, caller and metadata and this
+	// answer. Absent (nil) when the host did not narrow the call's observers: the
+	// engine then evaluates every active observer of the function. Decoded leniently,
+	// as the engine reads it: null is absent, a value that is not an array is [], and
+	// an id that is not a string is skipped.
+	Matched []string `json:"matched,omitzero"`
+	// Delivered is set on an observe.v2 host's answer to a routed call of a function
+	// whose deliver hook delivered the call: the engine activates no observer for it.
+	// It outweighs Matched. Only true sets it on decode. The engine strips both before
+	// forwarding a result to the caller.
+	Delivered bool `json:"delivered,omitempty"`
+}
+
+// UnmarshalJSON decodes an InvocationResult, reading matched and delivered leniently,
+// as the engine does: a malformed value never costs the result.
+func (m *InvocationResultMessage) UnmarshalJSON(data []byte) error {
+	type plain InvocationResultMessage
+	var aux struct {
+		*plain
+		Matched   json.RawMessage `json:"matched"`
+		Delivered json.RawMessage `json:"delivered"`
+	}
+	aux.plain = (*plain)(m)
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	m.Matched = nil
+	if trimmed := bytes.TrimSpace(aux.Matched); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		var items []json.RawMessage
+		m.Matched = []string{}
+		if json.Unmarshal(trimmed, &items) == nil {
+			for _, item := range items {
+				if item = bytes.TrimSpace(item); len(item) == 0 || item[0] != '"' {
+					continue // not a string: skipped
+				}
+				if id, ok := jsonString(item); ok {
+					m.Matched = append(m.Matched, id)
+				}
+			}
+		}
+	}
+	m.Delivered = bytes.Equal(bytes.TrimSpace(aux.Delivered), []byte("true"))
+	return nil
 }
 
 // RegisterService groups functions under a service for the dashboard.
@@ -411,7 +454,8 @@ type ObserverAckMessage struct {
 }
 
 // InvocationsObservedMessage carries the matches of the local calls this worker
-// delivered, batched. A routed call's matches ride its answer (Observed).
+// delivered, batched. The engine delivers routed calls itself (InvocationResultMessage
+// says which observers it evaluates).
 type InvocationsObservedMessage struct {
 	Items []ObservedItem `json:"items"`
 }

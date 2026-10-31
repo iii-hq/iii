@@ -20,8 +20,9 @@ import (
 // connection.
 
 // Features this SDK declares in its engine::workers::register payload. The engine
-// advertises the first three in WorkerRegistered: observe.v2 includes observe.v1 and
-// makes this worker deliver the routed calls of the functions it hosts.
+// advertises the first three in WorkerRegistered: observe.v2 includes observe.v1, and
+// with it this worker runs the match and deliver hooks of the functions it hosts for
+// their routed calls, whose observers' on and filters the engine evaluates.
 // FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to
 // 64 MiB, so the engine sends it messages of that size whatever version it reports.
 const (

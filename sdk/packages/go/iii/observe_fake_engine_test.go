@@ -20,7 +20,7 @@ import (
 // lets a test push observeradded / observerremoved / observe results, route calls to
 // the worker and reply to the worker's calls.
 type fakeEngine struct {
-	t *testing.T
+	t testing.TB
 	m *mockEngine
 
 	mu            sync.Mutex
@@ -38,7 +38,7 @@ type fakeEngine struct {
 	gate chan struct{}
 }
 
-func newFakeEngine(t *testing.T) *fakeEngine {
+func newFakeEngine(t testing.TB) *fakeEngine {
 	t.Helper()
 	fe := &fakeEngine{
 		t:             t,
@@ -374,7 +374,7 @@ func (fe *fakeEngine) countFrames(mark int, except ...MessageType) int {
 
 func (fe *fakeEngine) mark() int { return len(fe.m.receivedMessages()) }
 
-func decodeRecorded(t *testing.T, raw map[string]json.RawMessage) *DecodedMessage {
+func decodeRecorded(t testing.TB, raw map[string]json.RawMessage) *DecodedMessage {
 	t.Helper()
 	data, err := json.Marshal(raw)
 	if err != nil {
@@ -387,7 +387,7 @@ func decodeRecorded(t *testing.T, raw map[string]json.RawMessage) *DecodedMessag
 	return d
 }
 
-func waitUntil(t *testing.T, what string, cond func() bool) {
+func waitUntil(t testing.TB, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for !cond() {
@@ -448,7 +448,7 @@ func (b *syncBuffer) count(substr string) int { return strings.Count(b.String(),
 
 func echoHandler(_ context.Context, data json.RawMessage) (any, error) { return data, nil }
 
-func jsonEq(t *testing.T, got, want []byte) bool {
+func jsonEq(t testing.TB, got, want []byte) bool {
 	t.Helper()
 	var a, b any
 	if err := json.Unmarshal(got, &a); err != nil {

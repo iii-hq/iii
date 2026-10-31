@@ -1,0 +1,10 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "5d7f9b1c-3e5a-4c7e-9a1c-5e7a9c1e3a5c",
+  "function_id": "orders::create",
+  "result": {
+    "order_id": "ord_1003",
+    "total": 980
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01"
+}
