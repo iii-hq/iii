@@ -12,10 +12,11 @@ observed function reaches one observer's target. The language is declarative JSO
 small, total, without side effects or regular expressions, so the same filter gives the same answer
 wherever it runs:
 
-- in the SDK of the worker that hosts the function, for every call it delivers: in iii's delivery
-  and in `obs.matches(call)`;
-- in the engine, for routed calls to hosts that did not declare `observe.v2`, for engine-hosted
-  functions, and for functions registered with `invocation` (HTTP-invoked).
+- in the engine, for every call it routes: it holds the call's input, caller, and metadata, and
+  takes its output or error from the answer of the worker that ran it. Engine-hosted functions and
+  functions registered with `invocation` (HTTP-invoked) are among them;
+- in the SDK of the worker that hosts the function, for the calls it makes to its own functions,
+  which the engine never sees, and in `obs.matches(call)`.
 
 The engine, the Rust SDK (`iii-filter` crate), and the Node, browser, Python, and Go evaluators all
 run the same conformance vectors
@@ -148,6 +149,21 @@ one `$any` object is `INVALID_FILTER`.
   a `Date` is its ISO string, and a `BigInt` or `Decimal` compares through its JSON number.
 - **Totality.** A filter that was valid at creation answers true or false for every document. It
   never fails.
+
+## Many observers
+
+The engine matches a call against all of a function's observers through an index of their filters'
+equality conditions. It files each observer under one `$eq` (or `$in`) condition of its top-level
+`$and` whose operand is a scalar (a number, a string, a boolean, or `null`), by path and value, and
+keeps the observers without one in a list. A call costs one lookup per indexed path, plus a full
+evaluation of the filters it finds there and of those in the list: with 4,000 observers that each
+filter on their own `input.tenant`, a call evaluates one filter. The index uses the equality rules
+above (`1` and `1.0` are one value), so its matches are exactly the observers whose filters match.
+
+A filter costs a call nothing when it holds a top-level `$eq` or `$in` of a scalar that the call's
+value does not equal. A filter without one (its conditions are ranges, `$ne`, `$nin`, `$exists`,
+`$prefix`, conditions inside `$or`, `$not`, or `$any`, or an `$eq` of an array or an object) is
+evaluated on every call.
 
 ## Validation
 
