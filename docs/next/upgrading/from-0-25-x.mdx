@@ -39,7 +39,7 @@ engine, the iii workers your project runs, and every worker that binds to them i
 Search each worker for the removed APIs:
 
 ```bash
-rg -n 'registerTrigger|register_trigger|RegisterTrigger|TriggerHandler|IIITrigger|TriggerConfig|unregisterTrigger|unregister_trigger|UnregisterTrigger|[dD]elivery\s*[:=]|legacy_trigger_type|ObserveHooks|ObserveHandler|Observe::owner|Observe::auto|EngineTriggers|allow:\s*false|\.emit\(|\.Emit\(|obs\.call|\.trigger\(|trigger_async|\.Trigger\(|TriggerRequest|TriggerAction|iii trigger|engine::triggers|registered-triggers|allowed_trigger_types|allow_trigger_type_registration|on_trigger_registration_function_id|on_trigger_type_registration_function_id'
+rg -n 'registerTrigger|register_trigger|RegisterTrigger|TriggerHandler|IIITrigger|TriggerConfig|unregisterTrigger|unregister_trigger|UnregisterTrigger|[dD]elivery\s*[:=]|legacy_trigger_type|ObserveHooks|ObserveHandler|ObserveDoc|LegacyTrigger|TriggerInfo|TriggerTypeRef|Observe::owner|Observe::auto|EngineTriggers|allow:\s*false|\.emit\(|\.Emit\(|obs\.call|\.trigger\(|trigger_async|\.Trigger\(|TriggerRequest|TriggerAction|iii trigger|engine::triggers|registered-triggers|allowed_trigger_types|allow_trigger_type_registration|on_trigger_registration_function_id|on_trigger_type_registration_function_id'
 ```
 
 Then work through the sections below:
@@ -89,6 +89,9 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `engine::register_trigger`, `engine::unregister_trigger`                          | `observe` from an SDK; `engine::observers::dispose`                                                                                                                   |
 | typed trigger configs (`IIITrigger`, `HttpTriggerConfig`, `CronTriggerConfig`, …) | `observe` with `args`                                                                                                                                                 |
 | `EngineTriggers`                                                                  | `EngineSources`: `FUNCTIONS_CHANGED`, `WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`, `STREAM_CHANGED`, `STREAM_JOIN`, `STREAM_LEAVE` |
+| Node: `ObserveDoc` type export                                                    | none; filters run in the engine, so a worker no longer builds or matches a filter document                                                                            |
+| Rust: `LegacyTrigger`, `Observe`, `ObserveHandler`                                | none; `observe` takes `Source` and `Target`, and the hooks are `AddedHook`, `RemovedHook`, `DeliverHook`, and `Match`                                                 |
+| Rust: `TriggerInfo`, `TriggerTypeRef` (and the `iii_sdk::runtime` re-exports)     | none; a trigger type is a function (`FunctionInfo`, `FunctionRef`) and a trigger is an observer (`Observer`)                                                          |
 
 ### Trigger types and their functions
 
@@ -175,11 +178,18 @@ function is observable, so it has no replacement. For the model, see
 | telemetry fields `trigger_count`, `trigger_types`, `trigger_registrations`                                                      | `observer_count`, `observable_function_count`, `private_function_count`                                                                                                                                  |
 | `durable:subscriber` served by the engine's queue compatibility module                                                          | `queue::on-message`, served by the queue worker                                                                                                                                                          |
 
-The engine ignores `on_trigger_registration_function_id` and
-`on_trigger_type_registration_function_id` when an `rbac` config still sets them, and logs one
-`warn` for each at load, naming the replacement. It ignores `allowed_trigger_types` and
-`allow_trigger_type_registration` in an auth function's result, and logs one `warn` per engine
-process the first time a result sets them.
+An `rbac` config that sets `on_trigger_registration_function_id` without
+`on_observer_registration_function_id`, or `on_trigger_type_registration_function_id` without
+`on_function_registration_function_id`, makes the engine refuse to start, with an error that names
+the replacement key. Setting the replacement too turns the old key into a `warn` at load, and the
+engine ignores it. The engine ignores `allowed_trigger_types` and `allow_trigger_type_registration`
+in an auth function's result, and logs one `warn` per engine process the first time a result sets
+them.
+
+The `configuration` worker still accepts `ttl_seconds` so an existing config loads, and a non-zero
+value only logs a `warn` at startup. The worker no longer sweeps entries: they persist until
+deleted. To expire an entry, delete it from your own code (for example from a `cron::on-tick`
+observer that deletes stale ids), then remove `ttl_seconds` from the config.
 
 ## Call functions with `call`
 
