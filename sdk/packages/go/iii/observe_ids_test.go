@@ -62,8 +62,16 @@ func TestObserveRefusesAHeldID(t *testing.T) {
 			if string(first.State()) != held {
 				t.Errorf("holder state %s, want %s", first.State(), held)
 			}
-			// the holder still holds it: its Dispose unobserves
+			// the holder still holds it: its Dispose unobserves, except a refused one's,
+			// which the engine does not hold
 			_ = first.Dispose(context.Background())
+			if held == "error" {
+				time.Sleep(20 * time.Millisecond)
+				if n := unobserveFrames(fe, "held"); n != 0 {
+					t.Errorf("the refused holder's Dispose sent %d unobserves", n)
+				}
+				return
+			}
 			fe.waitFrames(MsgUnobserve, 1, func(d *DecodedMessage) bool { return d.Unobserve.ID == "held" })
 		})
 	}

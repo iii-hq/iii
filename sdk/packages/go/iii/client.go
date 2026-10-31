@@ -168,8 +168,9 @@ type Client struct {
 	observers   map[string]*ObserverHandle
 	observerSeq uint64
 	// observeSent lists, per id, the handles whose observe went out on the current
-	// connection, oldest first. The engine's answers name an observer by id only;
-	// their order tells the observers of a reused id apart (observe.go, answerOf).
+	// connection, oldest first; a refused one leaves when its refusal arrives. The
+	// engine's answers name an observer by id only; their order tells the observers
+	// of a reused id apart (observe.go, onObserveResult).
 	observeSent map[string][]sentObserve
 	// pendingUnobserve holds unobserves of observers disposed while disconnected.
 	pendingUnobserve []string
