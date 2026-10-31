@@ -74,6 +74,31 @@ impl Node {
         matches!(self, Node::And(nodes) if nodes.is_empty())
     }
 
+    /// The equality conditions a document must meet for the filter to match
+    /// it: for each clause of the top-level `$and` on a document path (not
+    /// `@`), its `$eq` operand, or its `$in` operands, as `(path, operands)`.
+    /// A document whose value at `path` equals none of `operands` does not
+    /// match (an absent path equals nothing).
+    pub fn equality_terms(&self) -> impl Iterator<Item = (&Path, &[Value])> {
+        let clauses: &[Node] = match self {
+            Node::And(nodes) => nodes,
+            _ => &[],
+        };
+        clauses
+            .iter()
+            .filter_map(|node| match node {
+                Node::Path(clause) if clause.path.root != Root::Element => Some(clause),
+                _ => None,
+            })
+            .flat_map(|clause| {
+                clause.ops.iter().filter_map(move |op| match op {
+                    Op::Eq(literal) => Some((&clause.path, std::slice::from_ref(literal))),
+                    Op::In(literals) => Some((&clause.path, &literals[..])),
+                    _ => None,
+                })
+            })
+    }
+
     pub fn collect_roots(&self, roots: &mut Roots) {
         match self {
             Node::And(nodes) | Node::Or(nodes) => {
