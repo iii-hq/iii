@@ -33,27 +33,36 @@ pub struct RbacConfig {
     pub on_observer_registration_function_id: Option<String>,
 }
 
-/// `rbac` keys an earlier engine read and this one ignores, with what
-/// replaces each.
-const REMOVED_KEYS: [(&str, &str); 2] = [
+/// `rbac` keys an earlier engine read and this one ignores: the key, the key
+/// that replaces it and what to do.
+const REMOVED_KEYS: [(&str, &str, &str); 2] = [
     (
         "on_trigger_registration_function_id",
+        "on_observer_registration_function_id",
         "use on_observer_registration_function_id, which gates every observer",
     ),
     (
         "on_trigger_type_registration_function_id",
+        "on_function_registration_function_id",
         "use on_function_registration_function_id: an event source is a function \
          registered with args_format and private",
     ),
 ];
 
-/// Logs one `warn` for each removed key the raw `rbac` section sets.
-pub(crate) fn warn_removed_keys(rbac: &Value) {
-    for (key, replacement) in REMOVED_KEYS {
-        if rbac.get(key).is_some() {
-            tracing::warn!(key = %key, "rbac.{key} is ignored: {replacement}");
+/// A removed key whose replacement is set is logged as a `warn`. One whose
+/// replacement is not set is an error: the old config relied on a gate this
+/// engine no longer applies under that key, and would boot with it off.
+pub(crate) fn warn_removed_keys(rbac: &Value) -> anyhow::Result<()> {
+    for (key, replacement_key, replacement) in REMOVED_KEYS {
+        if rbac.get(key).is_none() {
+            continue;
         }
+        if rbac.get(replacement_key).is_none_or(Value::is_null) {
+            anyhow::bail!("rbac.{key} is no longer read and its gate would be off: {replacement}");
+        }
+        tracing::warn!(key = %key, "rbac.{key} is ignored: {replacement}");
     }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -663,6 +672,7 @@ mod tests {
             on_trigger_registration_function_id: my-project::on-reg
             on_trigger_type_registration_function_id: my-project::on-type-reg
             on_observer_registration_function_id: my-project::on-observe
+            on_function_registration_function_id: my-project::on-function
             expose_functions: []
         "#;
         let config: RbacConfig = serde_yaml::from_str(yaml).unwrap();
@@ -671,7 +681,7 @@ mod tests {
             Some("my-project::on-observe".to_string())
         );
         let reencoded = serde_json::to_value(&config).unwrap();
-        for (key, _) in REMOVED_KEYS {
+        for (key, _, _) in REMOVED_KEYS {
             assert!(reencoded.get(key).is_none(), "{key}");
         }
 
