@@ -341,10 +341,13 @@ id is free again at once after that. Errors
 (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
 ``NOT_OBSERVABLE``, the rejection of the source's worker,
 ``UNSUPPORTED`` against an engine without observe) show up as state
-``error`` and make ``ready()`` raise `ObserveRejection`. The
-engine's refusal is the handle's final answer: it is not replayed,
-it holds its id until its ``dispose()``, and that ``dispose()``
-sends nothing.
+``error`` and make ``ready()`` raise `ObserveRejection`. An
+``error`` answer to the handle's first ``observe`` is the engine's
+refusal and the handle's final answer: it is not replayed, it holds
+its id until its ``dispose()``, and that ``dispose()`` sends nothing.
+An ``error`` answer to a replay after a reconnect keeps the handle
+replayed, and its ``dispose()`` sends an ``unobserve``, since the
+engine may hold the observer in ``error``.
 
 **Signature**
 
@@ -1279,10 +1282,12 @@ keeps it in its own index (route table, consumers, ...).
 What ``iii.observe`` returns, synchronously.
 
 The observer is replayed with the same id on every reconnect until it is
-disposed. The engine's refusal of its ``observe`` is final: the engine
-holds nothing for it, and it is not replayed. State listeners are called in order, on a callback thread of the
-SDK (never on the event loop that reads the engine's frames), so they may
-call the sync API.
+disposed. An ``error`` answer to its first ``observe`` is the engine's
+refusal and is final: the engine holds nothing for it, and it is not
+replayed. An ``error`` answer to a replay keeps it replayed, since the
+engine may hold the observer in that state. State listeners are called in
+order, on a callback thread of the SDK (never on the event loop that reads
+the engine's frames), so they may call the sync API.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
