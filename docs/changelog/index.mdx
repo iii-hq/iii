@@ -98,7 +98,8 @@ type: "reference"
     `on_trigger_type_registration_function_id`. A config that sets one without its replacement
     (`on_observer_registration_function_id`, `on_function_registration_function_id`) makes the
     engine refuse to start, with an error naming the replacement; with the replacement set, the old
-    key is ignored with one `warn` at load. The auth result fields `allowed_trigger_types` and
+    key is ignored with one `warn` at load. A key set to `null` (a `${VAR:}` template whose
+    variable is unset) counts as unset. The auth result fields `allowed_trigger_types` and
     `allow_trigger_type_registration`: the engine ignores them, with one `warn` per process.
   - 0.25 owner delivery: `observe.delivery`, `obs.emit`, `obs.call`, `legacy_trigger_type` with the
     engine's legacy shim, `Observer.legacy`, and Rust's `Observe::owner()`, `Observe::auto()`, and
