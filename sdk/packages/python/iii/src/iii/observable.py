@@ -3,6 +3,10 @@
 :class:`Observer` handed to them, matching (``on_observer_match``, the key
 index) and each call's delivery (iii's, or ``on_observer_deliver``).
 
+iii's delivery applies ``on`` and filters to the observers of a call through
+an index of the filters' equality conditions
+(:class:`~iii.filter._index.FilterIndex`), built once per active set.
+
 Threading: the engine's messages are handled on the SDK loop, and the hooks
 of one function id run there one at a time, in the order the engine announced
 the observers (sync hooks on a thread of their own). ``Observer.matches`` /
@@ -22,10 +26,12 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Literal, Protocol, Union, cast
 
 from .errors import ObserveRejection
 from .filter import CompiledFilter, compile_filter
+from .filter._index import FilterIndex
 from .iii_types import ObserverInfoWire
 from .invocation_context import run_in_thread
 from .observe_types import AddedHook, Call, DeliverHook, MatchHook, MatchKeys, MatchPredicate, RemovedHook
@@ -42,6 +48,15 @@ Level = Literal["worker", "function"]
 
 #: A partial call (``{"input": ...}``) or a :class:`Call`, for ``matches`` and ``is_observed``.
 CallLike = Union[Call[Any, Any], Mapping[str, Any]]
+
+#: iii's delivery of a call evaluates the filters of up to this many
+#: observers one by one; past it, it matches them through the active set's
+#: filter index, built once per set.
+SCAN_MAX = 8
+
+#: The ``on`` values that accept a call that succeeded, and one that failed.
+_ON_SUCCESS = frozenset({"success", "complete"})
+_ON_ERROR = frozenset({"error", "complete"})
 
 _PARTS = ("input", "output", "error", "caller", "metadata")
 
@@ -434,6 +449,19 @@ class ActiveSet:
     match: MatchHook | None = None
     #: Matching by keys: key → the observers filed under it.
     index: Mapping[str, tuple[Observer, ...]] | None = None
+
+    @cached_property
+    def filters(self) -> FilterIndex[Observer]:
+        """The observers' filters, indexed by their equality conditions, in
+        the order of :attr:`observers`. Built on the first read (the first
+        call that matches through it), then kept: an observer whose
+        filters change goes into a new set (:meth:`renewed`)."""
+        return FilterIndex((obs, obs._filter) for obs in self.observers)
+
+    def renewed(self) -> ActiveSet:
+        """The same set as a new snapshot, for observers whose filters
+        changed: its filter index is built from their current filters."""
+        return ActiveSet(self.observers, self.match, self.index)
 
     def adding(self, obs: Observer) -> ActiveSet:
         """This set with ``obs``, filed under its keys."""
@@ -867,6 +895,8 @@ class FunctionObservers:
                 if keys is not None and obs._active and self.active.match is match:
                     self.active = self.active.refiling(obs, keys)
                     obs._keys = keys
+                if obs._active and filter_ is not obs._filter:
+                    self.active = self.active.renewed()
                 obs._update(info, filter_)
             obs._revision = revision
         self._ack(obs, revision, namespace, rejection)
@@ -1144,15 +1174,7 @@ class Delivery:
         match the call. Returns the handler's outcome."""
         call = self.call
         ok = call.status == "success"
-        doc: dict[str, Any] | None = None
-        selected: list[Observer] = []
-        for obs in matched:
-            if not _on_accepts(obs.on, ok):
-                continue
-            if doc is None:
-                doc = call_doc(call)
-            if obs._filter.matches(doc):
-                selected.append(obs)
+        selected = self._select(matched, ok)
         if selected:
             if self._routed:
                 self.observed = [obs.id for obs in selected]
@@ -1161,6 +1183,26 @@ class Delivery:
         if ok:
             return True, call.output
         return False, self.handler_error
+
+    def _select(self, matched: Sequence[Observer], ok: bool) -> list[Observer]:
+        """The matched observers whose ``on`` and filters match the call, in
+        order. Past :data:`SCAN_MAX` observers, through the active set's
+        filter index: every observer when there is no match hook, or the
+        match hook's choice, each looked up before its filter runs."""
+        if not matched:
+            return []
+        doc = call_doc(self.call)
+        accepted = _ON_SUCCESS if ok else _ON_ERROR  # what `_on_accepts` accepts
+        if len(matched) <= SCAN_MAX:
+            return [obs for obs in matched if obs.on in accepted and obs._filter.matches(doc)]
+        active = self._active
+        if matched is active.observers:
+            return [
+                entry.key
+                for entry in active.filters.candidate_entries(doc)
+                if entry.key.on in accepted and entry.filter.matches(doc)
+            ]
+        return active.filters.select(matched, doc, lambda obs: obs.on in accepted)
 
     def _item(self, selected: list[Observer]) -> tuple[ReportInit, set[str]]:
         """The report item of a local call delivered to ``selected``."""
