@@ -845,6 +845,10 @@ impl ObserverRegistry {
             return false;
         };
         departed.timer.abort();
+        // `Held` hashes and compares the observer's address, which never
+        // changes while the entry holds it: its interior mutability is not
+        // part of the key.
+        #[allow(clippy::mutable_key_type)]
         let held = self
             .by_connection
             .remove(&previous)

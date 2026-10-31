@@ -201,6 +201,9 @@ fn lock_if_live(entry: &FunctionEntry) -> Option<std::sync::MutexGuard<'_, Owner
     (!entry.dead.load(Ordering::Acquire)).then_some(sync)
 }
 
+/// One observer joining its function's active set (`true`) or leaving it.
+type Change<'a> = (&'a Arc<Observer>, bool);
+
 /// Functions whose last revision is kept after their entry is dropped.
 const MAX_KEPT_REVISIONS: usize = 65_536;
 
@@ -1039,7 +1042,7 @@ impl ObserverRegistry {
         }
         let _serialized = lock(&self.rebuild);
         // What changes, by function, in the order given.
-        let mut changes: Vec<(&FnKey, Vec<(&Arc<Observer>, bool)>)> = Vec::new();
+        let mut changes: Vec<(&FnKey, Vec<Change<'_>>)> = Vec::new();
         for observer in observers {
             if observer.seq().is_none() {
                 continue;
