@@ -1233,7 +1233,7 @@ impl ObserverRegistry {
             handler,
             traceparent,
             baggage,
-            observer.observing().session.clone(),
+            observer.observing_session(),
             observer.metadata.clone(),
             ctx,
         );
