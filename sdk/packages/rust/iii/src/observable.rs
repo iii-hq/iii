@@ -149,6 +149,9 @@ enum Acceptance {
 struct ObserverInner {
     view: ObserverView,
     filter: Filter,
+    /// Whether a [`FilterIndex`] files `filter` under one of its equality
+    /// conditions; one it does not is evaluated on every call.
+    indexed: bool,
     mask: CaptureMask,
     function_id: String,
     namespace: String,
@@ -230,10 +233,12 @@ impl Observer {
         state: Arc<ObserverState>,
     ) -> Self {
         let mask = capture_mask(&view.capture);
+        let indexed = filed_under_a_condition(&filter);
         Self {
             inner: Arc::new(ObserverInner {
                 view,
                 filter,
+                indexed,
                 mask,
                 function_id,
                 namespace,
@@ -487,6 +492,12 @@ impl Observer {
         self.inner.mask
     }
 
+    /// Whether a [`FilterIndex`] files its filter under one of its equality
+    /// conditions.
+    pub(crate) fn indexed(&self) -> bool {
+        self.inner.indexed
+    }
+
     pub(crate) fn filter(&self) -> &Filter {
         &self.inner.filter
     }
@@ -504,6 +515,15 @@ impl Observer {
             On::Unknown(_) => false,
         }
     }
+}
+
+/// Whether a [`FilterIndex`] files `filter` under one of its equality
+/// conditions: an index of it alone finds nothing in a document that
+/// resolves no path, where it finds every entry filed under no condition.
+fn filed_under_a_condition(filter: &Filter) -> bool {
+    let mut index: FilterIndex<(), ()> = FilterIndex::new();
+    index.insert((), filter, ());
+    index.candidates(&Doc::default()) == 0
 }
 
 /// The parts of a filter document that are built for it: `error` and
@@ -574,6 +594,42 @@ impl Ord for ById {
 /// equality conditions of their filters.
 pub(crate) type OutcomeIndex = FilterIndex<ById, ()>;
 
+/// A set of at most this many observers is matched by a scan: below it, the
+/// index's lookups and the merge of what they find cost more than evaluating
+/// every filter.
+pub(crate) const SCAN_MAX: usize = 16;
+
+/// How a local call that ended with one outcome is matched against a
+/// compiled set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Plan {
+    /// No observer's `on` accepts the outcome: nothing to evaluate.
+    #[default]
+    Nothing,
+    /// Every observer of the set evaluated, in id order: a set of at most
+    /// [`SCAN_MAX`] observers, or one in which more than half are observers
+    /// of the outcome the index files under no condition, which it would
+    /// evaluate too.
+    Scan,
+    /// The outcome's index: only the observers it does not rule out are
+    /// evaluated.
+    Index,
+}
+
+impl Plan {
+    /// The plan of an outcome whose observers are `index`, `scanned` of them
+    /// filed under no condition, in a set of `len` observers.
+    fn of(len: usize, index: &OutcomeIndex, scanned: usize) -> Self {
+        if index.is_empty() {
+            Plan::Nothing
+        } else if len <= SCAN_MAX || scanned * 2 > len {
+            Plan::Scan
+        } else {
+            Plan::Index
+        }
+    }
+}
+
 /// The active observers of a function, swapped whole on every change so the
 /// hot path reads it with one load. A change makes a new version that shares
 /// all but `O(log n)` nodes of its observers with the one before, which a
@@ -584,12 +640,19 @@ pub(crate) struct CompiledSet {
     pub observers: ObserverSet,
     /// The observers whose `on` accepts a call that succeeded (`success`,
     /// `complete`), indexed by their filters' equality conditions: what a
-    /// local call that succeeded is matched against.
+    /// local call that succeeded is looked up in when its plan is
+    /// [`Plan::Index`].
     pub on_success: OutcomeIndex,
     /// The same for a call that failed (`error`, `complete`).
     pub on_error: OutcomeIndex,
+    /// How a local call that succeeded, and one that failed, is matched.
+    plans: [Plan; 2],
     /// The roots any observer's filter reads.
     pub roots: Roots,
+    /// The roots the filters of the observers whose `on` accepts a call that
+    /// succeeded, and one that failed, read: what a local call of that
+    /// outcome builds of its `error` and `caller`.
+    reads: [Roots; 2],
     /// What any observer captures.
     pub capture: CaptureMask,
     /// The newest [`Observer::seq`] that joined the set: an active observer
@@ -607,23 +670,38 @@ pub(crate) struct CompiledSet {
 struct PartCounts {
     roots: [usize; 5],
     capture: [usize; 5],
+    /// `roots` of the observers whose `on` accepts a call that succeeded,
+    /// and of those that accept one that failed.
+    reads: [[usize; 5]; 2],
+    /// The observers whose `on` accepts a call that succeeded, and those
+    /// that accept one that failed, that the index files under no
+    /// condition.
+    scanned: [usize; 2],
 }
 
 impl PartCounts {
     fn count(&mut self, obs: &Observer, joined: bool) {
         let roots = obs.filter().roots();
+        let roots = [
+            roots.input,
+            roots.output,
+            roots.error,
+            roots.caller,
+            roots.metadata,
+        ];
         let mask = obs.mask();
-        for (counts, parts) in [
-            (
-                &mut self.roots,
-                [
-                    roots.input,
-                    roots.output,
-                    roots.error,
-                    roots.caller,
-                    roots.metadata,
-                ],
-            ),
+        for (scanned, success) in self.scanned.iter_mut().zip([true, false]) {
+            if obs.accepts(success) && !obs.indexed() {
+                if joined {
+                    *scanned += 1;
+                } else {
+                    *scanned -= 1;
+                }
+            }
+        }
+        let [on_success, on_error] = &mut self.reads;
+        for (counts, parts, counted) in [
+            (&mut self.roots, roots, true),
             (
                 &mut self.capture,
                 [
@@ -633,8 +711,14 @@ impl PartCounts {
                     mask.caller,
                     mask.metadata,
                 ],
+                true,
             ),
+            (on_success, roots, obs.accepts(true)),
+            (on_error, roots, obs.accepts(false)),
         ] {
+            if !counted {
+                continue;
+            }
             for (count, part) in counts.iter_mut().zip(parts) {
                 if part {
                     if joined {
@@ -648,6 +732,18 @@ impl PartCounts {
     }
 }
 
+/// The roots whose count is not zero.
+fn roots_of(counts: [usize; 5]) -> Roots {
+    let [input, output, error, caller, metadata] = counts.map(|count| count > 0);
+    Roots {
+        input,
+        output,
+        error,
+        caller,
+        metadata,
+    }
+}
+
 impl CompiledSet {
     fn of(
         observers: ObserverSet,
@@ -655,14 +751,13 @@ impl CompiledSet {
         counts: PartCounts,
         seq: u64,
     ) -> Self {
-        let [input, output, error, caller, metadata] = counts.roots.map(|count| count > 0);
-        let roots = Roots {
-            input,
-            output,
-            error,
-            caller,
-            metadata,
-        };
+        let roots = roots_of(counts.roots);
+        let reads = counts.reads.map(roots_of);
+        let [on_success_scanned, on_error_scanned] = counts.scanned;
+        let plans = [
+            Plan::of(observers.len(), &on_success, on_success_scanned),
+            Plan::of(observers.len(), &on_error, on_error_scanned),
+        ];
         let [input, output, error, caller, metadata] = counts.capture.map(|count| count > 0);
         let capture = CaptureMask {
             input,
@@ -675,7 +770,9 @@ impl CompiledSet {
             observers,
             on_success,
             on_error,
+            plans,
             roots,
+            reads,
             capture,
             seq,
             counts,
@@ -690,6 +787,20 @@ impl CompiledSet {
         } else {
             &self.on_error
         }
+    }
+
+    /// How a local call that succeeded (`success`), or one that failed, is
+    /// matched.
+    #[inline]
+    pub(crate) fn plan(&self, success: bool) -> Plan {
+        self.plans[usize::from(!success)]
+    }
+
+    /// The roots the filters of the observers whose `on` accepts a call
+    /// that succeeded (`success`), or one that failed, read.
+    #[inline]
+    pub(crate) fn reads(&self, success: bool) -> Roots {
+        self.reads[usize::from(!success)]
     }
 
     /// The two indexes with `obs` filed in those its `on` accepts, in place

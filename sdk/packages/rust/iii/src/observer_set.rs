@@ -6,8 +6,8 @@
 //!
 //! Each node is one allocation, its slots right after its reference count,
 //! so a scan reaches a leaf's observers with one pointer from its branch. Up
-//! to [`MAX`] observers fit in one leaf, read as one slice without walking
-//! any branch.
+//! to [`MAX`] observers fit in one leaf, which a call reads as one slice
+//! ([`ObserverSet::as_slice`]) without walking any branch.
 
 use std::{iter, sync::Arc};
 
@@ -167,7 +167,7 @@ impl ObserverSet {
 
     /// The observers in id order as one slice, when the set is one leaf (at
     /// most [`MAX`] observers); `None` when it is deeper.
-    #[cfg(test)]
+    #[inline]
     pub(crate) fn as_slice(&self) -> Option<&[Observer]> {
         match &self.root {
             None => Some(&[]),
