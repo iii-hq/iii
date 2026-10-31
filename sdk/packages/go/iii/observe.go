@@ -58,7 +58,11 @@ var unsupportedReason = &ObserveReason{
 // UNSUPPORTED against an engine without observe) show up as state error and fail
 // [ObserverHandle.Ready].
 // The returned error is for a request that cannot be sent at all: a missing function
-// or target, a reused id, a blank namespace, args or filters that are not JSON.
+// or target, a blank namespace, args or filters that are not JSON, and an id a handle
+// of this client holds. A handle holds its id until it is disposed (by
+// [ObserverHandle.Dispose] or by the engine); an Observe of a held id sends nothing,
+// leaves the holder alone and returns an *ObserveRejectionError with code
+// OBSERVER_ID_CONFLICT. Once the holder is disposed the id is free at once.
 //
 //	client.RegisterFunction("alerts::payment-failed", notify)
 //	failures, err := client.Observe(iii.Source{
@@ -140,9 +144,9 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	}
 
 	c.mu.Lock()
-	if _, dup := c.observers[id]; dup {
+	if _, held := c.observers[id]; held {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("iii: Observe: observer id already in use: %s", id)
+		return nil, &ObserveRejectionError{Code: "OBSERVER_ID_CONFLICT", Message: "observer id already in use: " + id}
 	}
 	c.observerSeq++
 	h := newObserverHandle(c, id, frame, c.observerSeq)
@@ -219,11 +223,18 @@ func (c *Client) sendObserve(h *ObserverHandle, epoch uint64) {
 
 // sendObserveLocked queues h's observe frame for connection epoch, unless h was
 // disposed meanwhile or that connection is no longer the registered one (its own
-// replay sends it then). The caller holds observeMu, which orders observe and
-// unobserve frames.
+// replay sends it then), and lists h for the engine's answers. The caller holds
+// observeMu, which orders observe and unobserve frames, so the list is in the order
+// the frames go out.
 func (c *Client) sendObserveLocked(h *ObserverHandle, epoch uint64) {
 	c.mu.Lock()
 	live := c.registeredLocked(epoch) && c.engineFeatures[FeatureObserveV1] && c.observers[h.id] == h
+	if live {
+		if c.observeSent == nil {
+			c.observeSent = map[string][]sentObserve{}
+		}
+		c.observeSent[h.id] = append(c.observeSent[h.id], sentObserve{handle: h})
+	}
 	c.mu.Unlock()
 	if !live {
 		return
@@ -484,27 +495,89 @@ func (c *Client) checkHookIDs(epoch uint64) {
 	}
 }
 
-func (c *Client) onObserverState(id, state string, reason *ErrorBody) {
+// sentObserve is a handle whose observe went out on the current connection, and
+// whether its observeresult arrived.
+type sentObserve struct {
+	handle   *ObserverHandle
+	answered bool
+}
+
+// The engine reads a connection's messages in order, sends that connection its observe
+// answers in the order it makes them, and answers every observe with exactly one
+// observeresult (decision 56). So an observeresult for an id answers the oldest listed
+// handle of the id still unanswered, and an observerstatechanged is about the newest
+// listed one that has its observeresult. A disposed handle stays listed until the
+// engine's disposed for it arrives, a newer handle of the id has its observeresult, or
+// the connection closes: the late disposed of an earlier observer reaches the earlier
+// handle, never the one that observes under its id again.
+
+// onObserveResult applies an observeresult to the oldest listed handle of id still
+// unanswered; with none it is dropped.
+func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
+	st := toObserverState(state)
 	c.mu.Lock()
-	h := c.observers[id]
-	c.mu.Unlock()
-	if h == nil {
+	list := c.observeSent[id]
+	i := slices.IndexFunc(list, func(s sentObserve) bool { return !s.answered })
+	if i < 0 {
+		c.mu.Unlock()
 		return
 	}
-	st := toObserverState(state)
-	var r *ObserveReason
-	if reason != nil {
-		r = &ObserveReason{Code: reason.Code, Message: reason.Message}
-	}
-	h.setState(st, r)
+	h := list[i].handle
+	// the handles before it are answered, and disposed: a newer one has its answer now
+	list = slices.Delete(list, 0, i)
+	list[0].answered = true
+	c.observeSent[id] = list
 	if st == ObserverDisposed {
-		// disposed by the engine (max_fires, expiry): not replayed
-		c.mu.Lock()
-		if c.observers[id] == h {
-			delete(c.observers, id)
-		}
-		c.mu.Unlock()
+		c.forgetLocked(h)
 	}
+	c.mu.Unlock()
+	h.setState(st, observeReason(reason))
+}
+
+// onObserverStateChanged applies an observerstatechanged to the newest listed handle
+// of id that has its observeresult; with none it is dropped (a reattached connection
+// hears its observers resume before its replayed observes are answered, and each
+// replay's observeresult carries the current state).
+func (c *Client) onObserverStateChanged(id, state string, reason *ErrorBody) {
+	st := toObserverState(state)
+	c.mu.Lock()
+	list := c.observeSent[id]
+	i := len(list) - 1
+	for i >= 0 && !list[i].answered {
+		i--
+	}
+	if i < 0 {
+		c.mu.Unlock()
+		return
+	}
+	h := list[i].handle
+	if st == ObserverDisposed {
+		// disposed by the engine (unobserve, max_fires, expiry): not replayed
+		c.forgetLocked(h)
+	}
+	c.mu.Unlock()
+	h.setState(st, observeReason(reason))
+}
+
+// forgetLocked drops h, which the engine disposed, from the answer list and frees its
+// id. The caller holds mu.
+func (c *Client) forgetLocked(h *ObserverHandle) {
+	list := slices.DeleteFunc(c.observeSent[h.id], func(s sentObserve) bool { return s.handle == h })
+	if len(list) == 0 {
+		delete(c.observeSent, h.id)
+	} else {
+		c.observeSent[h.id] = list
+	}
+	if c.observers[h.id] == h {
+		delete(c.observers, h.id)
+	}
+}
+
+func observeReason(reason *ErrorBody) *ObserveReason {
+	if reason == nil {
+		return nil
+	}
+	return &ObserveReason{Code: reason.Code, Message: reason.Message}
 }
 
 // isObserveFrame reports the observe-family frames (SDK-PARITY decision 16) and, for
@@ -560,10 +633,10 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		if len(msg.Warnings) > 0 {
 			log.Printf("iii: observer %s: %s", msg.ID, strings.Join(msg.Warnings, "; "))
 		}
-		c.onObserverState(msg.ID, msg.State, msg.Error)
+		c.onObserveResult(msg.ID, msg.State, msg.Error)
 	case MsgObserverStateChanged:
 		msg := dec.ObserverStateChanged
-		c.onObserverState(msg.ID, msg.State, msg.Reason)
+		c.onObserverStateChanged(msg.ID, msg.State, msg.Reason)
 	}
 }
 
