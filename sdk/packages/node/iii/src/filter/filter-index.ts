@@ -100,10 +100,24 @@ export class FilterIndex<T> {
   /** Entries without a condition the index serves. */
   private readonly scanned = new Set<Entry<T>>()
   private readonly paths = new Map<string, PathIndex<T>>()
+  /** Entries filed under an indexed path. */
+  private indexed = 0
 
   /** Entries held. */
   get size(): number {
     return this.filed.size
+  }
+
+  /**
+   * Whether {@link FilterIndex.matches} can evaluate fewer filters than
+   * evaluating each entry's would. Looking a document's value up at an
+   * indexed path costs about one evaluation, and rules out the entries filed
+   * there under other values, so it can only when some indexed path files
+   * more than one entry. Otherwise evaluating each filter in order costs less
+   * and yields the same matches.
+   */
+  get narrows(): boolean {
+    return this.indexed > this.paths.size
   }
 
   has(value: T): boolean {
@@ -136,6 +150,7 @@ export class FilterIndex<T> {
       else index.buckets.set(scalar, new Set([entry]))
     }
     index.entries++
+    this.indexed++
     this.filed.set(value, { entry, path: condition.path, values: condition.values })
   }
 
@@ -150,6 +165,7 @@ export class FilterIndex<T> {
     }
     const index = this.paths.get(filed.path)
     if (!index) return
+    this.indexed--
     for (const scalar of filed.values) {
       const bucket = index.buckets.get(scalar)
       if (!bucket) continue
@@ -168,23 +184,35 @@ export class FilterIndex<T> {
    */
   matches(doc: FilterDoc, accept?: (value: T) => boolean): T[] {
     const found: Entry<T>[] = []
-    const consider = (entry: Entry<T>) => {
-      if ((accept === undefined || accept(entry.value)) && entry.filter.matches(doc)) found.push(entry)
-    }
-    for (const index of this.paths.values()) {
-      const bucket = this.bucket(index, doc)
-      if (bucket) for (const entry of bucket) consider(entry)
-    }
-    for (const entry of this.scanned) consider(entry)
+    // Sorted only when found out of order.
     let sorted = true
-    for (let i = 1; i < found.length; i++) {
-      if (found[i - 1].order > found[i].order) {
-        sorted = false
-        break
+    let last = -Infinity
+    if (this.paths.size > 0) {
+      for (const index of this.paths.values()) {
+        const bucket = this.bucket(index, doc)
+        if (bucket === undefined) continue
+        for (const entry of bucket) {
+          if ((accept === undefined || accept(entry.value)) && entry.filter.matches(doc)) {
+            if (entry.order < last) sorted = false
+            last = entry.order
+            found.push(entry)
+          }
+        }
+      }
+    }
+    if (this.scanned.size > 0) {
+      for (const entry of this.scanned) {
+        if ((accept === undefined || accept(entry.value)) && entry.filter.matches(doc)) {
+          if (entry.order < last) sorted = false
+          last = entry.order
+          found.push(entry)
+        }
       }
     }
     if (!sorted) found.sort((a, b) => a.order - b.order)
-    return found.map((entry) => entry.value)
+    const values = new Array<T>(found.length)
+    for (let i = 0; i < found.length; i++) values[i] = found[i].value
+    return values
   }
 
   /** How many filters a match of `doc` evaluates: the entries filed under its values, and the scanned ones. */
