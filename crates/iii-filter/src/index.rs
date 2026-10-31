@@ -123,6 +123,12 @@ impl Scalar {
     }
 }
 
+/// Whether an equality condition with these operands can be indexed: at
+/// least one, and every one a scalar.
+pub(crate) fn indexable_literals(literals: &[Value]) -> bool {
+    !literals.is_empty() && literals.iter().all(|literal| Scalar::of(literal).is_some())
+}
+
 /// One entry as a lookup finds it.
 #[derive(Clone)]
 struct Slot<T> {
@@ -570,6 +576,29 @@ mod tests {
             .matches(&Doc::from_value(doc))
             .map(|(_, value)| *value)
             .collect()
+    }
+
+    #[test]
+    fn a_filter_is_indexable_when_the_index_files_it() {
+        for (src, indexable) in [
+            (json!({ "input.k": { "$eq": 1 } }), true),
+            (
+                json!({ "input.k": { "$in": ["a", null] }, "input.n": { "$gt": 1 } }),
+                true,
+            ),
+            (json!({ "input.k": { "$eq": [1] } }), false),
+            (json!({ "input.k": { "$in": [] } }), false),
+            (json!({ "input.k": { "$in": [1, { "a": 1 }] } }), false),
+            (json!({ "$or": [{ "input.k": { "$eq": 1 } }] }), false),
+            (json!({ "input.k": { "$any": { "$eq": 1 } } }), false),
+            (json!({}), false),
+        ] {
+            let filter = filter(src.clone());
+            assert_eq!(filter.is_indexable(), indexable, "{src}");
+            let mut index = FilterIndex::new();
+            index.insert(1u32, &filter, 1u32);
+            assert_eq!(index.scanned.is_empty(), indexable, "{src}");
+        }
     }
 
     #[test]
