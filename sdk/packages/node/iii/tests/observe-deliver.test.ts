@@ -725,6 +725,41 @@ describe('local calls: observers matched through the index of their equality con
     await flushed()
     expect(reportedItems(socket).map((i) => i.matched)).toEqual([['tenant-1', 'tenant-0']])
   })
+
+  it('evaluates each observer in order while no path files two of them; once one does, the index rules out the rest', async () => {
+    const { sdk, socket, ref } = await events([
+      observerInfo('all', 'audit::all'),
+      observerInfo('t-1', 'audit::t1', { filters: { 'input.tenant': { $eq: 't-1' } } }),
+      observerInfo('big', 'audit::big', { filters: { 'input.n': { $gte: 10 } } }),
+    ])
+    // the observers whose filters a call evaluates (internal)
+    const evaluated = async (input: Event) => {
+      const held = ref.observers() as unknown as (Observer & { filter: { matches: (doc: unknown) => boolean } })[]
+      const spies = held.map((obs) => [obs.id, vi.spyOn(obs.filter, 'matches')] as const)
+      await sdk.call({ function_id: 'events::on-event', payload: input })
+      const ids = spies.filter(([, spy]) => spy.mock.calls.length > 0).map(([id]) => id)
+      for (const [, spy] of spies) spy.mockRestore()
+      return ids
+    }
+    // one observer under input.tenant: each observer is evaluated
+    expect(await evaluated({ tenant: 't-2', n: 12 })).toEqual(['all', 't-1', 'big'])
+    socket.deliver(
+      observerAdded(
+        'events::on-event',
+        2,
+        observerInfo('t-2', 'audit::t2', { filters: { 'input.tenant': { $eq: 't-2' } } }),
+      ),
+    )
+    await settle()
+    // two: the index rules out t-1
+    expect(await evaluated({ tenant: 't-2', n: 12 })).toEqual(['all', 'big', 't-2'])
+    socket.deliver(observerRemoved('events::on-event', 3, 't-1'))
+    await settle()
+    // one again
+    expect(await evaluated({ tenant: 't-1', n: 1 })).toEqual(['all', 'big', 't-2'])
+    await flushed()
+    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['all', 'big'], ['all', 'big', 't-2'], ['all']])
+  })
 })
 
 describe('routed calls: the answer says how the call is delivered (v2 §8.2, decision 55)', () => {

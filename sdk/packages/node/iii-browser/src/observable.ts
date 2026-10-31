@@ -391,11 +391,16 @@ export class FunctionObservers {
   /**
    * The active observers whose `on` accepts a call that succeeded (`ok`) or
    * failed and whose filters match `doc`, in the order of `compiled`. Matched
-   * through the index of their filters' equality conditions: the call
-   * evaluates the filters of the observers the index does not rule out.
+   * through the index of their filters' equality conditions when it narrows
+   * them (`FilterIndex.narrows`): the call evaluates the filters of the
+   * observers the index does not rule out. Otherwise each observer of
+   * `compiled` is evaluated in order, which costs less and yields the same
+   * observers in the same order.
    */
   selectActive(doc: FilterDoc, ok: boolean): ObserverImpl[] {
-    return this.filterIndex.matches(doc, (obs) => onAccepts(obs.on, ok))
+    const index = this.filterIndex
+    if (!index.narrows) return this.compiled.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
+    return index.matches(doc, (obs) => onAccepts(obs.on, ok))
   }
 
   observers(): readonly Observer[] {
@@ -956,8 +961,9 @@ export class Delivery {
    * The matched observers whose `on` and filters accept `call`, in the order
    * of `matched`. Without a match hook `matched` is the call's snapshot; while
    * it is also the active set (no observer joined or left since the call
-   * started), they are found through the index of the filters' equality
-   * conditions. Otherwise each matched observer's filters are evaluated.
+   * started), {@link FunctionObservers.selectActive} selects them, through
+   * the index of the filters' equality conditions when it narrows them.
+   * Otherwise each matched observer's filters are evaluated.
    */
   private select(call: Call, matched: readonly ObserverImpl[]): ObserverImpl[] {
     const ok = call.status !== 'error'

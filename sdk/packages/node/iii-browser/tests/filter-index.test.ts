@@ -488,6 +488,36 @@ describe('FilterIndex: inserts, removals and replacements', () => {
     expect(index.size).toBe(0)
     expect(index.candidates({ input: { k: 2 } })).toBe(0)
   })
+
+  it('narrows only while some indexed path files more than one entry, through inserts, replacements and removals', () => {
+    const index = new FilterIndex<string>()
+    expect(index.narrows).toBe(false)
+    index.insert('all', compileFilter({}), 1)
+    index.insert('big', compileFilter({ 'input.n': { $gte: 10 } }), 2)
+    // nothing indexed
+    expect(index.narrows).toBe(false)
+    index.insert('k1', compileFilter({ 'input.k': { $eq: 1 } }), 3)
+    // one entry under one path
+    expect(index.narrows).toBe(false)
+    index.insert('region', compileFilter({ 'input.region': { $in: ['eu', 'us'] } }), 4)
+    // one entry under each of two paths, an $in filed under several values of its path included
+    expect(index.narrows).toBe(false)
+    index.insert('k2', compileFilter({ 'input.k': { $eq: 2 } }), 5)
+    expect(index.narrows).toBe(true)
+    // refiled in the scanned list
+    index.insert('k2', compileFilter({ 'input.n': { $lt: 0 } }), 5)
+    expect(index.narrows).toBe(false)
+    // under the value k1 is filed under
+    index.insert('k2', compileFilter({ 'input.k': { $eq: 1 } }), 5)
+    expect(index.narrows).toBe(true)
+    index.remove('k1')
+    expect(index.narrows).toBe(false)
+    for (const value of ['all', 'big', 'region', 'k2']) index.remove(value)
+    expect(index.size).toBe(0)
+    expect(index.narrows).toBe(false)
+    index.insert('k3', compileFilter({ 'input.k': { $eq: 3 } }), 6)
+    expect(index.narrows).toBe(false)
+  })
 })
 
 describe('FilterIndex: what it evaluates', () => {
