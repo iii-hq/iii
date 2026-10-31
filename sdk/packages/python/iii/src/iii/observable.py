@@ -898,12 +898,17 @@ class FunctionObservers:
                 if view is None:
                     return False
                 filter_, keys, match = view
-                if keys is not None and obs._active and self.active.match is match:
-                    self.active = self.active.refiling(obs, keys)
+                active = self.active
+                if keys is not None and obs._active and active.match is match:
+                    active = active.refiling(obs, keys)
                     obs._keys = keys
-                if obs._active and filter_ is not obs._filter:
-                    self.active = self.active.renewed()
+                if obs._active and filter_ is not obs._filter and active is self.active:
+                    active = active.renewed()
+                # The observer takes its new filters before the set that
+                # serves them is published, so the filter index a call on
+                # any thread builds for that set files these filters.
                 obs._update(info, filter_)
+                self.active = active
             obs._revision = revision
         self._ack(obs, revision, namespace, rejection)
         return True
