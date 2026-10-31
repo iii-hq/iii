@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // addObserver attaches an observer to fn and waits until the SDK accepted it.
-func addObserver(t *testing.T, fe *fakeEngine, fn string, info ObserverInfo) {
+func addObserver(t testing.TB, fe *fakeEngine, fn string, info ObserverInfo) {
 	t.Helper()
 	rev := fe.add(fn, info)
 	if a := fe.waitAck(fn, info.ID, rev); a.Error != nil {
@@ -89,8 +91,10 @@ func keyIndexOf(c *Client, fn string) *keyIndex {
 }
 
 // A predicate match hook narrows iii's delivery to the observers it accepts, on local
-// and routed calls, and their filters still apply. The handler returns its input, so
-// the local item carries it once, with output_is_input.
+// and routed calls. Their filters still apply: this worker evaluates them for the local
+// call, and the routed answer lists in matched the observers the hook matched, whose
+// filters the engine evaluates. The handler returns its input, so the local item
+// carries it once, with output_is_input.
 func TestMatchFuncNarrowsTheDelivery(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -109,7 +113,7 @@ func TestMatchFuncNarrowsTheDelivery(t *testing.T) {
 		t.Errorf("item %+v", item)
 	}
 	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "cron::on-tick", Data: tick}))
-	if !slices.Equal(res.Observed, []string{"hourly"}) || string(res.Result) != string(tick) {
+	if !slices.Equal(res.Matched, []string{"hourly", "hourly-late"}) || res.Delivered || string(res.Result) != string(tick) {
 		t.Errorf("routed answer %+v", res)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -169,7 +173,7 @@ func sessionMatch(keys bool, asked func(*Call)) *MatchHook {
 
 // Decision 52: a local call's metadata reaches the handler, the match hook (a predicate
 // and keys) and the report; a call with metadata.for_observer is delivered to that
-// observer alone, and a routed one lists only it on its answer.
+// observer alone, and a routed one lists only it in its answer's matched.
 func TestACallForOneObserverCarriesItsMetadata(t *testing.T) {
 	for _, form := range []string{"predicate", "keys"} {
 		t.Run(form, func(t *testing.T) {
@@ -221,7 +225,7 @@ func TestACallForOneObserverCarriesItsMetadata(t *testing.T) {
 				Data:       json.RawMessage(`{"session":"s1","n":3}`),
 				Metadata:   json.RawMessage(`{"for_observer":"b"}`),
 			}))
-			if !slices.Equal(res.Observed, []string{"b"}) || !jsonEq(t, res.Result, json.RawMessage(`{"session":"s1","n":3}`)) {
+			if !slices.Equal(res.Matched, []string{"b"}) || !jsonEq(t, res.Result, json.RawMessage(`{"session":"s1","n":3}`)) {
 				t.Errorf("routed answer %+v", res)
 			}
 		})
@@ -294,8 +298,8 @@ func TestKeyIndexUnderAddAndRemove(t *testing.T) {
 		t.Error("removing one observer unfiled another")
 	}
 	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "database::on-row-changed", Data: rowChange("users", "update")}))
-	if !slices.Equal(res.Observed, []string{"users"}) {
-		t.Errorf("routed observed %v, want [users]", res.Observed)
+	if !slices.Equal(res.Matched, []string{"users"}) {
+		t.Errorf("routed matched %v, want [users]", res.Matched)
 	}
 	for _, obs := range c.Observers("database::on-row-changed") {
 		if obs.ID == "orders-insert" {
@@ -430,7 +434,7 @@ func TestKeysThatPanic(t *testing.T) {
 
 // The deliver hook receives the observers the match hook matched, as they were when the
 // call started, and its value is the caller's answer. iii delivers nothing for the
-// function: no report item for a local call, no observed on a routed answer.
+// function: no report item for a local call, and a routed answer says delivered.
 func TestDeliverHookReceivesTheMatchedObservers(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -460,7 +464,7 @@ func TestDeliverHookReceivesTheMatchedObservers(t *testing.T) {
 		t.Errorf("local: the hook got %v, want [a]", ids)
 	}
 	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "route::fn", Data: payload}))
-	if string(res.Result) != `{"routes":1}` || len(res.Observed) != 0 {
+	if string(res.Result) != `{"routes":1}` || !res.Delivered || res.Matched != nil {
 		t.Errorf("routed answer %+v", res)
 	}
 	if ids := <-got; !slices.Equal(ids, []string{"a"}) {
@@ -516,7 +520,7 @@ func TestDeliverHookGetsTheObserversOfTheCallStart(t *testing.T) {
 }
 
 // Matched by keys, a call matches only the observers active when it started: one
-// accepted while the handler runs is not delivered the call (decision 20).
+// accepted while the handler runs is not in the routed answer's matched (decision 20).
 func TestKeyMatchingUsesTheObserversOfTheCallStart(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -533,12 +537,12 @@ func TestKeyMatchingUsesTheObserversOfTheCallStart(t *testing.T) {
 	<-entered
 	addObserver(t, fe, "db::start", observerInfo("during", "x::y", orders, ""))
 	close(release)
-	if got := fe.waitResult(id).Observed; !slices.Equal(got, []string{"before"}) {
-		t.Errorf("observed %v, want [before]", got)
+	if got := fe.waitResult(id).Matched; !slices.Equal(got, []string{"before"}) {
+		t.Errorf("matched %v, want [before]", got)
 	}
 	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "db::start", Data: rowChange("orders", "insert")}))
-	if !slices.Equal(res.Observed, []string{"before", "during"}) {
-		t.Errorf("the next call observed %v, want [before during]", res.Observed)
+	if !slices.Equal(res.Matched, []string{"before", "during"}) {
+		t.Errorf("the next call matched %v, want [before during]", res.Matched)
 	}
 }
 
@@ -628,46 +632,106 @@ func TestDeliverHookAnswersTheCaller(t *testing.T) {
 	}
 }
 
-// A routed call delivered by iii: the answer lists the matched observers in observed
-// (invocationresult-observed.json), and no report frame is sent.
-func TestRoutedCallListsObservedOnTheAnswer(t *testing.T) {
+// The answer to a routed call says how the engine delivers it (decision 55), and this
+// worker sends nothing else for it. A function without hooks answers with the handler's
+// result alone, and the engine evaluates every observer
+// (invocationresult-routed.json). With a match hook the answer lists in matched the
+// observers the hook matched, before their filters, which the engine evaluates
+// (invocationresult-matched.json), [] when it matched none
+// (invocationresult-matched-none.json). A deliver hook's answer says delivered
+// (invocationresult-delivered.json).
+func TestRoutedCallAnswers(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	registerHost(t, c, "orders::create", func(context.Context, json.RawMessage) (any, error) {
-		return json.RawMessage(`{"order_id":"ord_1002","total":1250}`), nil
+	// the handler returns the input's out
+	registerHost(t, c, "orders::create", func(_ context.Context, data json.RawMessage) (any, error) {
+		var in struct {
+			Out json.RawMessage `json:"out"`
+		}
+		_ = json.Unmarshal(data, &in)
+		return in.Out, nil
 	})
-	addObserver(t, fe, "orders::create", observerInfo("8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70", "x::y", "", ""))
-	addObserver(t, fe, "orders::create", observerInfo("9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81", "x::y", "", ""))
-	var fixture InvocationResultMessage
-	if err := json.Unmarshal(observeFixture(t, "invocationresult-observed.json"), &fixture); err != nil {
-		t.Fatal(err)
+	first, second := "8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70", "9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81"
+	addObserver(t, fe, "orders::create", observerInfo(first, "x::y", "", ""))
+	// a filter these calls do not meet: the engine evaluates it, not this worker
+	addObserver(t, fe, "orders::create", observerInfo(second, "x::y", "", `{"$and":[{"input.region":{"$eq":"eu"}}]}`))
+	c.OnObserverDeliverFor("approvals::request", func(context.Context, *Call, []*Observer) (any, error) {
+		return map[string]any{"approved": true, "by": "risk-review"}, nil
+	})
+	registerHost(t, c, "approvals::request", echoHandler)
+
+	answer := func(fixture, fn string, data json.RawMessage) {
+		t.Helper()
+		var want InvocationResultMessage
+		if err := json.Unmarshal(observeFixture(t, fixture), &want); err != nil {
+			t.Fatal(err)
+		}
+		mark := fe.mark()
+		fe.invoke(InvokeFunctionMessage{
+			InvocationID: &want.InvocationID,
+			FunctionID:   fn,
+			Data:         data,
+			Traceparent:  want.Traceparent,
+			Caller:       &Caller{WorkerID: "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f", WorkerName: "checkout", FunctionID: "checkout::confirm", InvocationID: "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"},
+		})
+		got, _ := MarshalMessage(fe.waitResult(want.InvocationID))
+		assertJSONEqual(t, fixture, got, observeFixture(t, fixture))
+		time.Sleep(20 * time.Millisecond)
+		if n := fe.countFrames(mark, MsgInvocationResult); n != 0 {
+			t.Errorf("%s: %d frames besides the answer", fixture, n)
+		}
 	}
-	mark := fe.mark()
-	fe.invoke(InvokeFunctionMessage{
-		InvocationID: &fixture.InvocationID,
-		FunctionID:   "orders::create",
-		Data:         json.RawMessage(`{"sku":"A-1","qty":2,"_caller_worker_id":"2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f"}`),
-		Traceparent:  fixture.Traceparent,
-		Caller:       &Caller{WorkerID: "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f", WorkerName: "checkout", FunctionID: "checkout::confirm", InvocationID: "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"},
-	})
-	got, _ := MarshalMessage(fe.waitResult(fixture.InvocationID))
-	assertJSONEqual(t, "invocationresult-observed.json", got, observeFixture(t, "invocationresult-observed.json"))
-	time.Sleep(20 * time.Millisecond)
-	if n := fe.countFrames(mark, MsgInvocationResult); n != 0 {
-		t.Errorf("%d frames besides the answer", n)
+	answer("invocationresult-routed.json", "orders::create", json.RawMessage(`{"out":{"order_id":"ord_1003","total":980}}`))
+
+	// the match hook picks the observers the input names
+	c.OnObserverMatchFor("orders::create", MatchFunc(func(obs *Observer, call *Call) bool {
+		var in struct{ Match []string }
+		_ = json.Unmarshal(call.Input, &in)
+		return slices.Contains(in.Match, obs.ID)
+	}))
+	waitUntil(t, "the match hook installed", func() bool { return c.functionObservers("orders::create").state.Load().match != nil })
+	answer("invocationresult-matched.json", "orders::create",
+		json.RawMessage(`{"out":{"order_id":"ord_1002","total":1250},"match":["`+first+`","`+second+`"]}`))
+	answer("invocationresult-matched-none.json", "orders::create", json.RawMessage(`{"out":{"order_id":"ord_1005","total":310},"match":[]}`))
+	answer("invocationresult-delivered.json", "approvals::request", json.RawMessage(`{"amount":1250}`))
+}
+
+// A function with a match hook and no active observer answers matched [] without
+// running the hook: the engine evaluates no observer this worker has not accepted.
+func TestRoutedCallWithAMatchHookAndNoObservers(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	var ran atomic.Bool
+	c.OnObserverMatchFor("lonely::fn", MatchKeys(
+		func(*Observer) []string { return []string{"k"} },
+		func(*Call) []string { ran.Store(true); return []string{"k"} },
+	))
+	registerHost(t, c, "lonely::fn", echoHandler)
+	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "lonely::fn", Data: json.RawMessage(`{"a":1}`)}))
+	if res.Matched == nil || len(res.Matched) != 0 || res.Delivered || string(res.Result) != `{"a":1}` {
+		t.Errorf("answer %+v", res)
+	}
+	if ran.Load() {
+		t.Error("the call keys ran for a function without observers")
+	}
+	got, _ := MarshalMessage(res)
+	if !strings.Contains(string(got), `"matched":[]`) {
+		t.Errorf("matched [] left out: %s", got)
 	}
 }
 
-// A routed call whose handler failed: iii's delivery puts the on: error observer in the
-// error answer's observed (invocationresult-observed-error.json). A deliver hook that
-// rethrows the error answers with it and lists nothing, as does one that turns the error
-// into a result; neither sends a report item.
-func TestRoutedErrorAnswerCarriesObserved(t *testing.T) {
+// A routed call whose handler failed: the answer carries the error, and with a match
+// hook it lists in matched the on: error observer the hook matched, whose on and filter
+// the engine evaluates (invocationresult-matched-error.json). A deliver hook that
+// rethrows the error answers with it and delivered, as does one that turns the error
+// into a result; none sends a report item.
+func TestRoutedErrorAnswerCarriesMatched(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	failing := func(context.Context, json.RawMessage) (any, error) {
 		return nil, &InvocationError{Code: "CARD_DECLINED", Message: "card declined by issuer"}
 	}
+	c.OnObserverMatchFor("payments::charge", MatchFunc(func(*Observer, *Call) bool { return true }))
 	registerHost(t, c, "payments::charge", failing)
 	c.OnObserverDeliverFor("payments::refund", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
 		return nil, newInvocationError(call.Error, call.FunctionID)
@@ -683,15 +747,15 @@ func TestRoutedErrorAnswerCarriesObserved(t *testing.T) {
 		addObserver(t, fe, fn, onError)
 	}
 	var fixture InvocationResultMessage
-	_ = json.Unmarshal(observeFixture(t, "invocationresult-observed-error.json"), &fixture)
+	_ = json.Unmarshal(observeFixture(t, "invocationresult-matched-error.json"), &fixture)
 	fe.invoke(InvokeFunctionMessage{InvocationID: &fixture.InvocationID, FunctionID: "payments::charge", Traceparent: fixture.Traceparent})
 	got, _ := MarshalMessage(fe.waitResult(fixture.InvocationID))
-	assertJSONEqual(t, "invocationresult-observed-error.json", got, observeFixture(t, "invocationresult-observed-error.json"))
+	assertJSONEqual(t, "invocationresult-matched-error.json", got, observeFixture(t, "invocationresult-matched-error.json"))
 
-	if res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "payments::refund"})); res.Error == nil || res.Error.Code != "CARD_DECLINED" || len(res.Observed) != 0 {
+	if res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "payments::refund"})); res.Error == nil || res.Error.Code != "CARD_DECLINED" || !res.Delivered || res.Matched != nil {
 		t.Errorf("rethrown by the hook: %+v", res)
 	}
-	if res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "payments::soft"})); res.Error != nil || string(res.Result) != `{"declined":"card declined by issuer"}` || len(res.Observed) != 0 {
+	if res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "payments::soft"})); res.Error != nil || string(res.Result) != `{"declined":"card declined by issuer"}` || !res.Delivered || res.Matched != nil {
 		t.Errorf("turned into a result by the hook: %+v", res)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -701,7 +765,7 @@ func TestRoutedErrorAnswerCarriesObserved(t *testing.T) {
 }
 
 // A routed call of a function with a deliver hook is answered with the hook's value, its
-// trace context echoed and no observed, and nothing else is sent for it.
+// trace context echoed and delivered, and nothing else is sent for it.
 func TestRoutedDeliverHookAnswer(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
@@ -726,7 +790,7 @@ func TestRoutedDeliverHookAnswer(t *testing.T) {
 		Traceparent: &tp,
 		Caller:      &Caller{WorkerID: "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f", WorkerName: "checkout", FunctionID: "checkout::confirm", InvocationID: "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"},
 	}))
-	if string(res.Result) != `{"order_id":"ord_1004","status":"accepted"}` || res.Error != nil || res.Observed != nil ||
+	if string(res.Result) != `{"order_id":"ord_1004","status":"accepted"}` || res.Error != nil || !res.Delivered || res.Matched != nil ||
 		res.Traceparent == nil || *res.Traceparent != tp {
 		t.Errorf("answer %+v", res)
 	}
@@ -737,7 +801,7 @@ func TestRoutedDeliverHookAnswer(t *testing.T) {
 }
 
 // Against an engine without observe.v2 the engine delivers routed calls: the answer
-// carries no observed and nothing is reported for them.
+// carries neither matched nor delivered, and nothing is reported for them.
 func TestRoutedCallsAreNotDeliveredWithoutObserveV2(t *testing.T) {
 	fe := newFakeEngine(t).v1Engine()
 	c := fe.client()
@@ -745,7 +809,7 @@ func TestRoutedCallsAreNotDeliveredWithoutObserveV2(t *testing.T) {
 	addObserver(t, fe, "v1::fn", observerInfo("o1", "x::y", "", ""))
 	mark := fe.mark()
 	res := fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "v1::fn", Data: json.RawMessage(`{"a":1}`)}))
-	if len(res.Observed) != 0 || string(res.Result) != `{"a":1}` {
+	if res.Matched != nil || res.Delivered || string(res.Result) != `{"a":1}` {
 		t.Errorf("answer %+v", res)
 	}
 	time.Sleep(20 * time.Millisecond)

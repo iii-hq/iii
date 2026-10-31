@@ -793,6 +793,71 @@ Not run. The `filters` scenario's host is the Rust SDK, which evaluates the
 filters of its routed calls until it answers with decision 55's `matched` and
 `delivered`; the scenario measures decision 55 with the SDKs that do.
 
+## Go local calls with equality-filtered observers (decision 55)
+
+`BenchmarkLocalCall` (`sdk/packages/go/iii/local_call_bench_test.go`) times
+`Client.Call` of a function the worker hosts, run in-process, against the fake
+engine (report frames discarded). Its function has no observers, or 1,000
+observers that each filter on their own `input.tenant`
+(`{"$and":[{"input.tenant":{"$eq":"tenant-<i>"}}]}`): a call that none of them
+matches, and one that one of them matches and reports.
+
+- **Before:** observe-v2 `edc636d13` with the bench file (and its test helpers
+  taking `testing.TB`) added. A local call evaluates every observer's filter.
+- **After:** `ov2/filters-go`. A local call looks its `input.tenant` up in the
+  function's filter index and evaluates the filters of the observers filed
+  there: one for the matching call, none for the other.
+- **Setup:** go1.25.14 linux/arm64, golang:1.25 image, Docker with 4 CPUs,
+  GOMAXPROCS 4, on the machine of "Setup" with other agents' builds and
+  benches running (load average 7.7 to 9.7). Two rounds, each before then
+  after: 10 runs per version, then 5. Means and ranges over the 15 runs.
+
+| Sub-benchmark | Before | After | B/op before → after | allocs/op before → after | Verdict |
+|---|---:|---:|---:|---:|---|
+| `no_observers` | 2.33 µs (2.03–2.53) | 2.26 µs (2.18–2.35) | 1,184 → 1,184 | 20 → 20 | the same within noise: the path is unchanged, and the two rounds of before differ by 18% |
+| `1000_eq_observers_none_matching` | 101.2 µs (89.7–107.8) | 5.21 µs (5.07–5.34) | 130,803 → 2,864 | 2,037 → 38 | 19.4x faster |
+| `1000_eq_observers_1_matching` | 109.4 µs (88.4–176.5) | 8.09 µs (7.63–8.56) | 134,796 → 6,992 | 2,049 → 50 | 13.5x faster |
+
+Round means, before then after: `no_observers` 2.45 / 2.07 µs and 2.24 /
+2.31 µs; `none_matching` 104.7 / 94.2 µs and 5.17 / 5.29 µs; `1_matching`
+106.1 / 115.9 µs and 7.96 / 8.35 µs. The runs are in `bench-baseline.json`
+(`go_local_call_filters`).
+
+### Few observers and deliver hooks
+
+`BenchmarkLocalCall` also times a function with 4 such observers, and three
+functions with a deliver hook: one with no observers, and two with 4 observers
+whose hook evaluates the filters of none of them or of each
+(`Observer.Matches`).
+
+- **Base:** `f7d7b52ad`, `ov2/filters-go` before the filter index, with the
+  bench file added. A local call evaluates every observer's filter, and each
+  `Observer.Matches` decodes the call.
+- **Index:** `78414f4b0`, the filter index, with the bench file added. A call
+  handed to a hook carries a view of the call, made with its document when the
+  call is handed over.
+- **Fix:** `ov2/filters-go` after its review. The view shares the Call's
+  allocation and is made on the first `Observer.Matches`; a function with no
+  observers hands its hooks a Call without one. A local call's selected
+  observers start on the stack, and the evaluator reads a string, boolean or
+  number member without allocating.
+- **Setup:** as above, with load average 8.5 to 14.5. Three rounds, each base,
+  index, fix: 4 runs per version of `-benchtime 20000x`. Means and ranges over
+  the 12 runs.
+
+| Sub-benchmark | Base | Index | Fix | B/op base → index → fix | allocs/op base → index → fix | Verdict, fix against base |
+|---|---:|---:|---:|---:|---:|---|
+| `no_observers` | 2.69 µs (1.92–3.86) | 2.34 µs (2.20–2.56) | 2.03 µs (1.82–2.21) | 1,184 → 1,184 → 1,184 | 20 → 20 → 20 | the same within noise: the path is unchanged, and base's first round measured 3.56 µs |
+| `4_eq_observers_none_matching` | 5.93 µs (5.18–6.51) | 5.45 µs (4.56–6.05) | 4.73 µs (4.46–5.14) | 3,296 → 2,864 → 2,848 | 45 → 38 → 37 | 20.1% faster |
+| `4_eq_observers_1_matching` | 8.46 µs (7.61–9.61) | 8.29 µs (6.96–10.53) | 7.25 µs (6.76–7.89) | 7,141 → 6,842 → 6,790 | 54 → 50 → 47 | 14.3% faster |
+| `deliver_hook_0_observers` | 2.60 µs (2.25–2.95) | 2.71 µs (2.37–3.26) | 2.42 µs (2.22–3.06) | 1,448 → 1,832 → 1,448 | 24 → 26 → 24 | the same within noise, with the same allocations |
+| `deliver_hook_4_observers_no_filters_read` | 2.56 µs (2.22–2.88) | 3.36 µs (2.45–7.11) | 2.39 µs (2.19–2.57) | 1,480 → 1,936 → 1,512 | 25 → 29 → 25 | the same within noise; 32 B more, the view's fields in the Call's allocation |
+| `deliver_hook_4_observers_matches_each` | 9.89 µs (9.08–11.13) | 6.64 µs (5.34–10.52) | 5.52 µs (5.17–5.77) | 7,817 → 3,392 → 3,296 | 93 → 46 → 43 | 44.2% faster: one document for the four |
+| `1000_eq_observers_none_matching` | 99.6 µs (84.3–138.3) | 5.38 µs (4.89–6.15) | 4.67 µs (4.23–5.00) | 130,803 → 2,864 → 2,848 | 2,037 → 38 → 37 | 21.3x faster |
+| `1000_eq_observers_1_matching` | 96.8 µs (86.9–109.4) | 8.71 µs (7.78–12.08) | 7.28 µs (6.98–7.67) | 134,830 → 6,996 → 6,937 | 2,048 → 50 → 47 | 13.3x faster |
+
+The runs are in `bench-baseline.json` (`go_local_call_review`).
+
 ## Slower than 0.25
 
 With the observer churn fix (`d37f78f42`), from its pass; first-pass figures
@@ -892,6 +957,7 @@ pnpm --filter iii-sdk bench
 
 # Go SDK
 (cd sdk/packages/go/iii && go test -run '^$' -bench '^BenchmarkIsObserved$' -benchmem -count 10 .)
+(cd sdk/packages/go/iii && go test -run '^$' -bench '^BenchmarkLocalCall$' -benchmem -count 10 .)   # decision 55
 
 # Load test (Linux; here in Docker, linux/arm64)
 cargo build --release -p iii -p iii-loadtest

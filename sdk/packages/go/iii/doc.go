@@ -98,6 +98,16 @@
 // it as their caller. A function this worker registered runs in-process once the
 // engine confirmed it for local dispatch.
 //
+// Filters run where the call is. The engine evaluates the observers' on and filters for
+// every call it routes: it holds the call's input, its output or error, its caller and
+// its metadata. The worker that hosts a function evaluates them for the calls it makes
+// to that function in-process, which the engine never sees, and in [Observer.Matches].
+// Both match through an index of the observers' equality conditions: each observer is
+// filed under one $eq of a scalar, or one $in of scalars, on a path of its filter's
+// top-level $and, and a call evaluates the whole filter of only the observers filed
+// under its value there and of those without such a condition. With 1,000 observers that each filter on their
+// own input.tenant, a call evaluates one filter.
+//
 // # Hosting observed functions
 //
 // The worker that hosts a function decides what observing it means with four hooks,
