@@ -478,7 +478,7 @@ impl ObserverRegistry {
             return None;
         }
         view.get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
-            .and_then(|routed| routed.active.clone())
+            .and_then(|routed| routed.active.load_full())
     }
 
     /// Whether `(namespace, function_id)` has an active observer: what an

@@ -35,12 +35,17 @@ use super::{
     lifecycle::{CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy},
     owner::check_options,
 };
-use crate::protocol::{
-    DEFAULT_NAMESPACE, Deliver, ErrorBody, ObserverState, On, default_capture, observe_codes,
-};
+use crate::protocol::{DEFAULT_NAMESPACE, Deliver, ErrorBody, ObserverState, On, observe_codes};
 
 /// The observing "connection" of every engine-owned observer.
 pub const ENGINE_CONNECTION: Uuid = Uuid::nil();
+
+/// The worker name and namespace every engine-owned observer observes
+/// under, shared.
+fn engine_names() -> &'static (Arc<str>, Arc<str>) {
+    static NAMES: std::sync::OnceLock<(Arc<str>, Arc<str>)> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| (Arc::from(ENGINE_CALLER_NAME), Arc::from(DEFAULT_NAMESPACE)))
+}
 
 /// An observer the engine creates: `function` observed with `args` and
 /// `filters`, `target` invoked with what `deliver` names and `metadata` as
@@ -121,25 +126,19 @@ impl ObserverRegistry {
             }
             None => Filter::match_all(),
         };
-        if self.is_registered(&function) {
+        let function_registered = self.is_registered(&function);
+        if function_registered {
             let options = self.function_entry(&function).and_then(|e| e.options());
             check_options(options.as_ref(), &function, &args)?;
         }
-        let settings = self.config();
-        let capture = CaptureSet::from_list(&default_capture());
-        let spec = ObserveSpec {
-            function: function.clone(),
-            target: target.clone(),
-            args: args.clone(),
-            filters: filter.normalized().clone(),
-            capture: capture.to_list(),
-            on: On::default(),
-            deliver: deliver.clone(),
-            metadata: metadata.clone(),
-            max_fires: None,
-            expires_in_ms: None,
-            max_in_flight: settings.default_max_in_flight,
+        let (default_max_in_flight, max_queue) = {
+            let settings = self.config.load();
+            (
+                settings.default_max_in_flight,
+                settings.max_queue_per_observer,
+            )
         };
+        let capture = CaptureSet::DEFAULT;
 
         if let Some(existing) = self.get(&id) {
             if !existing.is_engine_owned() {
@@ -148,7 +147,20 @@ impl ObserverRegistry {
                     format!("observer `{id}` belongs to a worker"),
                 ));
             }
-            if existing.spec == spec && existing.state() != ObserverState::Error {
+            let spec = ObserveSpec {
+                function: function.clone(),
+                target: target.clone(),
+                args: args.clone(),
+                filters: filter.normalized().clone(),
+                capture: capture.to_list(),
+                on: On::default(),
+                deliver: deliver.clone(),
+                metadata: metadata.clone(),
+                max_fires: None,
+                expires_in_ms: None,
+                max_in_flight: default_max_in_flight,
+            };
+            if existing.spec_matches(&spec) && existing.state() != ObserverState::Error {
                 return Ok(());
             }
             self.dispose(
@@ -157,12 +169,14 @@ impl ObserverRegistry {
                 "replaced by the engine",
             );
         }
-        self.tombstones.remove(&id);
+        // A worker's tombstone under the id: the engine's observer takes it.
+        self.tombstones.remove(id.as_str());
 
         let observer = Arc::new(Observer::new(NewObserver {
             id: id.clone(),
             target: target.clone(),
-            spec,
+            // Its fields are its spec: nothing rewrote them.
+            spec: None,
             args,
             filter,
             capture,
@@ -173,19 +187,19 @@ impl ObserverRegistry {
                 max_fires: None,
                 expires_in_ms: None,
                 expires_at: None::<Instant>,
-                max_in_flight: settings.default_max_in_flight.max(1),
-                max_queue: settings.max_queue_per_observer,
+                max_in_flight: default_max_in_flight.max(1),
+                max_queue,
             },
             warnings: Vec::new(),
             observing: Observing {
                 connection: ENGINE_CONNECTION,
-                worker_name: Some(ENGINE_CALLER_NAME.to_string()),
-                namespace: DEFAULT_NAMESPACE.to_string(),
+                worker_name: Some(engine_names().0.clone()),
+                namespace: engine_names().1.clone(),
                 session: None,
             },
             flags: Flags {
                 observing_connected: true,
-                function_available: self.is_registered(&function),
+                function_available: function_registered,
                 target_available: self.is_registered(&target),
                 owner_acked: self.acked_by_default(&function),
                 announced: None,
@@ -193,6 +207,7 @@ impl ObserverRegistry {
                 activated_once: false,
                 failed: None,
                 disposed: None,
+                tombstone: true,
             },
             function,
         }));
@@ -223,11 +238,7 @@ impl ObserverRegistry {
     pub fn unobserve_as_engine(&self, id: &str) -> bool {
         match self.get(id) {
             Some(observer) if observer.is_engine_owned() => {
-                self.dispose(
-                    &observer,
-                    observe_codes::UNOBSERVED,
-                    "disposed by the engine",
-                );
+                self.dispose_unobserved(&observer);
                 true
             }
             _ => false,

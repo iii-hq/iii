@@ -137,7 +137,7 @@ impl ObserverRegistry {
             deliver: observer.deliver.to_string(),
             worker: ObservingWorkerInfo {
                 worker_id: observing.connection.to_string(),
-                worker_name: observing.worker_name,
+                worker_name: observing.worker_name.as_deref().map(str::to_string),
             },
             state: state.to_string(),
             reason: reason.map(|r| ReasonInfo {
