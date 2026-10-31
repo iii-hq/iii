@@ -57,7 +57,7 @@ CallLike = Union[Call[Any, Any], Mapping[str, Any]]
 
 #: iii's delivery of a local call evaluates the filters of up to this many
 #: observers one by one; past it, it matches them through the active set's
-#: filter index, built once per set.
+#: filter index, which a set builds once (:meth:`ActiveSet.filter_index`).
 SCAN_MAX = 8
 
 #: The ``on`` values that accept a call that succeeded, and one that failed.
@@ -459,10 +459,30 @@ class ActiveSet:
     @cached_property
     def filters(self) -> FilterIndex[Observer]:
         """The observers' filters, indexed by their equality conditions, in
-        the order of :attr:`observers`. Built on the first read (the first
-        local call that matches through it), then kept: an observer whose
-        filters change goes into a new set (:meth:`renewed`)."""
+        the order of :attr:`observers`. Built on the first read, then kept:
+        an observer whose filters change goes into a new set
+        (:meth:`renewed`)."""
         return FilterIndex((obs, obs._filter) for obs in self.observers)
+
+    def filter_index(self, evaluating: int) -> FilterIndex[Observer] | None:
+        """The filter index for a local call that would otherwise evaluate
+        ``evaluating`` filters one by one, or ``None``: that call evaluates
+        them one by one. Building the index costs about what evaluating every
+        observer's filter once costs, so a set builds it once its calls have
+        evaluated as many filters one by one as it has observers, and keeps
+        it. A call that matches every observer (a function without a match
+        hook) builds it at once. The calls of a match hook that picks a few
+        observers evaluate those observers' filters until the set has served
+        enough of them, so a set that serves a few such calls before its
+        observers change builds none."""
+        state = self.__dict__  # what `filters` caches into; the dataclass is frozen
+        if "filters" not in state:
+            evaluated = state.get("_evaluated", 0) + evaluating
+            if evaluated < len(self.observers):
+                # Counted without a lock: a count lost to a race only delays the build.
+                state["_evaluated"] = evaluated
+                return None
+        return self.filters
 
     def renewed(self) -> ActiveSet:
         """The same set as a new snapshot, for observers whose filters
@@ -1205,22 +1225,24 @@ class Delivery:
     def _select(self, matched: Sequence[Observer], ok: bool) -> list[Observer]:
         """The matched observers whose ``on`` and filters match the call, in
         order. Past :data:`SCAN_MAX` observers, through the active set's
-        filter index: every observer when there is no match hook, or the
-        match hook's choice, each looked up before its filter runs."""
+        filter index once the set has one (:meth:`ActiveSet.filter_index`):
+        every observer when there is no match hook, or the match hook's
+        choice, each looked up before its filter runs."""
         if not matched:
             return []
         doc = call_doc(self.call)
         accepted = _ON_SUCCESS if ok else _ON_ERROR  # what `_on_accepts` accepts
-        if len(matched) <= SCAN_MAX:
-            return [obs for obs in matched if obs.on in accepted and obs._filter.matches(doc)]
         active = self._active
+        index = active.filter_index(len(matched)) if len(matched) > SCAN_MAX else None
+        if index is None:
+            return [obs for obs in matched if obs.on in accepted and obs._filter.matches(doc)]
         if matched is active.observers:
             return [
                 entry.key
-                for entry in active.filters.candidate_entries(doc)
+                for entry in index.candidate_entries(doc)
                 if entry.key.on in accepted and entry.filter.matches(doc)
             ]
-        return active.filters.select(matched, doc, lambda obs: obs.on in accepted)
+        return index.select(matched, doc, lambda obs: obs.on in accepted)
 
     def _item(self, selected: list[Observer]) -> tuple[ReportInit, set[str]]:
         """The report item of a local call delivered to ``selected``."""
