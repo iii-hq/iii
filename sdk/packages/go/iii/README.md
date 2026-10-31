@@ -381,6 +381,18 @@ client.Observe(iii.Source{FunctionID: iii.FnOnWorkersChanged, Deliver: iii.Deliv
 The filter evaluator is the `filter` subpackage
 (`github.com/iii-hq/iii/sdk/packages/go/iii/filter`), the same language the engine runs.
 
+Filters run where the call is. The engine evaluates the observers' `on` and filters for
+every call it routes: it holds the call's input, its output or error, its caller and its
+metadata. The worker that hosts a function evaluates them for the calls it makes to that
+function in-process, which the engine never sees, and in `obs.Matches(call)`. Both match
+through an index of the observers' equality conditions: each observer is filed under one
+`$eq` (or `$in`) of a scalar on a path of its filter's top-level `$and`, and a call
+evaluates the whole filter of only the observers filed under its value there and of
+those without such a condition. With 1,000 observers that each filter on their own
+`input.tenant`, a call evaluates one filter. A filter without such a condition (ranges,
+`$ne`, `$exists`, `$prefix`, conditions inside `$or`, `$not` or `$any`) is evaluated on
+every call.
+
 ### Hosting observed functions
 
 The worker that hosts a function decides what observing it means with four hooks. Each
@@ -459,6 +471,8 @@ How the added and removed hooks run:
 
 The match hook answers one question: does this observer want this call? iii does
 everything else as usual: the observer's `on`, filters, policy and `deliver` still apply.
+For a call the engine routes to this worker, the SDK runs the match hook and its answer
+lists the observers the hook matched; the engine evaluates their `on` and filters.
 `iii.MatchFunc` is a predicate, asked once per active observer per call; a predicate
 that panics counts as no match, and the SDK logs it once per function.
 
@@ -533,6 +547,12 @@ client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *
 	return client.Call(ctx, iii.CallRequest{Observer: route.Obs, Payload: call.Input})
 })
 ```
+
+On the call the SDK hands a hook, `obs.Matches(call)` shares the call's decoded document
+and its values at the indexed paths across observers: checking every observer costs each
+its own filter, and an observer whose equality condition the call fails costs a
+comparison. A routed call's answer says `delivered`, and the engine activates no observer
+for it.
 
 Choose observers in the match hook when an observer's args and the call settle it: a
 cron expression, a table, a subscriber id. Choose them in the deliver hook when choosing

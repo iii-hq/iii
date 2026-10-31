@@ -1338,7 +1338,7 @@ func MatchFunc(predicate func(obs *Observer, call *Call) bool) *MatchHook
       DecodeArgs unmarshals the observer's args into v (a struct, typically).
     </ParamField>
     <ParamField body="Matches" type="func(call *Call) bool" required>
-      Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own.
+      Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. On a call the SDK hands a hook, the observers share the call's decoded document and its values at the paths of the function's filter index, so each costs its own filter, and an observer whose equality condition the call fails costs a comparison.
     </ParamField>
     <ParamField body="Reject" type="func(code, message string)" required>
       Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs.
@@ -1409,7 +1409,7 @@ func MatchKeys(observerKeys func(obs *Observer) []string, callKeys func(call *Ca
       DecodeArgs unmarshals the observer's args into v (a struct, typically).
     </ParamField>
     <ParamField body="Matches" type="func(call *Call) bool" required>
-      Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own.
+      Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. On a call the SDK hands a hook, the observers share the call's decoded document and its values at the paths of the function's filter index, so each costs its own filter, and an observer whose equality condition the call fails costs a comparison.
     </ParamField>
     <ParamField body="Reject" type="func(code, message string)" required>
       Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs.
@@ -2178,7 +2178,7 @@ Log function paths. Mirrors LogFunctions in the Node SDK. Call these with `VoidA
 | `LogError` | `"engine::log::error"` | - |
 | `LogDebug` | `"engine::log::debug"` | - |
 
-Features this SDK declares in its engine::workers::register payload. The engine advertises the first three in WorkerRegistered: observe.v2 includes observe.v1 and makes this worker deliver the routed calls of the functions it hosts. FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it messages of that size whatever version it reports.
+Features this SDK declares in its engine::workers::register payload. The engine advertises the first three in WorkerRegistered: observe.v2 includes observe.v1, and with it this worker runs the match and deliver hooks of the functions it hosts for their routed calls, whose observers' on and filters the engine evaluates. FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it messages of that size whatever version it reports.
 
 | Name | Value | Description |
 | --- | --- | --- |
@@ -2536,6 +2536,8 @@ Filters is a declarative filter over input, output, error, caller and metadata, 
 iii.Filters{"input.amount": iii.Op{"$gte": 500}}
 ```
 
+The engine evaluates them for the calls it routes, and the worker that hosts the function for the calls it makes to it in-process. Both match through an index of the observers' equality conditions: a filter with a top-level $eq or $in of a scalar costs a call nothing when the call's value at that path is none of its values.
+
 ```go
 type Filters map[string]any
 ```
@@ -2658,13 +2660,15 @@ InvocationResult is the worker's reply to a non-fire-and-forget InvokeFunction. 
 | `Error` | *[`ErrorBody`](#errorbody) | No | - |
 | `Traceparent` | `*string` | No | - |
 | `Baggage` | `*string` | No | - |
-| `Observed` | `[]string` | No | Observed lists the observers an observe.v2 host delivered the routed call to: the engine activates them with the call's input and this answer. Omitted when empty; the engine strips it before forwarding a result to the caller. |
+| `Matched` | `[]string` | No | Matched lists, on an observe.v2 host's answer to a routed call of a function with a match hook, the observers the hook matched, each once ([] when it matched none): the engine evaluates the on and filters of those that are active observers of the function, with the call's input, caller and metadata and this answer. Absent (nil) when the host did not narrow the call's observers: the engine then evaluates every active observer of the function. Decoded leniently, as the engine reads it: null is absent, a value that is not an array is [], and an id that is not a string is skipped. |
+| `Delivered` | `bool` | No | Delivered is set on an observe.v2 host's answer to a routed call of a function whose deliver hook delivered the call: the engine activates no observer for it. It outweighs Matched. Only true sets it on decode. The engine strips both before forwarding a result to the caller. |
+| `UnmarshalJSON` | `func(data []byte) error` | Yes | UnmarshalJSON decodes an InvocationResult, reading matched and delivered leniently, as the engine does: a malformed value never costs the result. |
 
 ---
 
 #### InvocationsObservedMessage
 
-InvocationsObservedMessage carries the matches of the local calls this worker delivered, batched. A routed call's matches ride its answer (Observed).
+InvocationsObservedMessage carries the matches of the local calls this worker delivered, batched. The engine delivers routed calls itself (InvocationResultMessage says which observers it evaluates).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -2973,7 +2977,7 @@ The engine may announce an observer again with the same args and other filters, 
 | `On` | [`On`](#on) | Yes | On selects the calls the observer receives by status. |
 | `Accepted` | `func(ctx context.Context) error` | Yes | Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once. |
 | `DecodeArgs` | `func(v any) error` | Yes | DecodeArgs unmarshals the observer's args into v (a struct, typically). |
-| `Matches` | func(call *[`Call`](#call)) bool | Yes | Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. |
+| `Matches` | func(call *[`Call`](#call)) bool | Yes | Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. On a call the SDK hands a hook, the observers share the call's decoded document and its values at the paths of the function's filter index, so each costs its own filter, and an observer whose equality condition the call fails costs a comparison. |
 | `Reject` | `func(code, message string)` | Yes | Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs. |
 
 ---
