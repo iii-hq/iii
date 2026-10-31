@@ -7,7 +7,7 @@
     "message": "card declined by issuer"
   },
   "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
-  "observed": [
+  "matched": [
     "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60"
   ]
 }

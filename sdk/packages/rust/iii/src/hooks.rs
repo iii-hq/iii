@@ -2,7 +2,11 @@
 //! observed.
 //!
 //! Every function is observable, and iii delivers each of its calls to the
-//! observers whose `on` and filters match. Four hooks override that default:
+//! observers whose `on` and filters match. iii evaluates them where the
+//! call's parts are: the engine for the calls it routes, and this SDK for the
+//! calls a worker makes to its own functions, both through an index of the
+//! filters' equality conditions. Four hooks override that default; the
+//! worker that hosts the function runs them for every call:
 //!
 //! | Hook | The question it answers | What iii does by default |
 //! |---|---|---|

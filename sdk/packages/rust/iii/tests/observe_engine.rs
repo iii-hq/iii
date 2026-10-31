@@ -952,6 +952,72 @@ async fn hosts_get_validated_args_route_by_them_and_can_reject() {
     }
 }
 
+/// A routed call of a function with a match hook: the host's answer names
+/// the observers the hook matched, and the engine applies their `on` and
+/// filters (decision 55). Needs an engine that evaluates routed calls.
+#[tokio::test]
+async fn routed_calls_reach_the_matched_observers_whose_filters_match() {
+    let id = uid();
+    let source = format!("it{id}::topics");
+    let host = client(&format!("host-{id}")).await;
+    host.on_observer_match_for(
+        &source,
+        Match::keys(
+            |obs| obs.args_value()["topic"].as_str().into(),
+            |call| call.input["topic"].as_str().into(),
+        ),
+    );
+    host.register_function(
+        &source,
+        RegisterFunction::new(|event: Value| Ok::<_, Error>(event)).args_format::<TopicArgs>(),
+    );
+    let observer = client(&format!("observer-{id}")).await;
+    let (a, b) = (Inbox::default(), Inbox::default());
+    observer.register_function(format!("it{id}::a"), a.function());
+    observer.register_function(format!("it{id}::b"), b.function());
+    let to_a = observer.observe(
+        Source::function(&source).args(json!({ "topic": "a" })),
+        format!("it{id}::a"),
+    );
+    let to_b = observer.observe(
+        Source::function(&source)
+            .args(json!({ "topic": "b" }))
+            .filters(json!({ "input.n": { "$gt": 1 } })),
+        format!("it{id}::b"),
+    );
+    for handle in [&to_a, &to_b] {
+        tokio::time::timeout(WAIT, handle.ready())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    let caller = client(&format!("caller-{id}")).await;
+    for event in [
+        json!({ "topic": "a", "n": 1 }),
+        json!({ "topic": "b", "n": 1 }),
+        json!({ "topic": "b", "n": 2 }),
+        json!({ "topic": "c", "n": 5 }),
+    ] {
+        let out = caller.call(call_req(&source, event.clone())).await.unwrap();
+        assert_eq!(
+            (&out["topic"], &out["n"]),
+            (&event["topic"], &event["n"]),
+            "the caller gets the handler's return value"
+        );
+    }
+    let got_a = a.wait(1).await;
+    let got_b = b.wait(1).await;
+    settle().await;
+    assert_eq!((a.len(), b.len()), (1, 1), "b's filters said no to n: 1");
+    assert_eq!(got_a[0]["input"], json!({ "topic": "a", "n": 1 }));
+    assert_eq!(got_a[0]["caller"]["worker_name"], format!("caller-{id}"));
+    assert_eq!(got_b[0]["input"], json!({ "topic": "b", "n": 2 }));
+    for c in [host, observer, caller] {
+        c.shutdown_async().await;
+    }
+}
+
 #[tokio::test]
 async fn calls_through_an_observer_return_the_targets_result() {
     let id = uid();

@@ -1,0 +1,11 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "9a1c3e5b-7d9f-4b1d-8f3b-5d7f9b1d3f5b",
+  "function_id": "approvals::request",
+  "result": {
+    "approved": true,
+    "by": "risk-review"
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
+  "delivered": true
+}

@@ -896,6 +896,11 @@ impl FunctionEntry {
         self.matcher.load_full()
     }
 
+    /// Whether the function has a match hook.
+    pub(crate) fn has_match_hook(&self) -> bool {
+        self.matcher.load().is_some()
+    }
+
     /// Replaces the match hook with the one `rule` reads under the index
     /// lock, its index built from the active observers before it is
     /// published, so no call matches by an empty index. Returns the observers
@@ -2157,8 +2162,8 @@ mod tests {
     }
 
     /// A function with a deliver hook delivers its calls itself: a routed
-    /// call's answer is the hook's, with no `observed` and no report, and the
-    /// hook gets the observers its match hook says want the call.
+    /// call's answer is the hook's, with `delivered: true` and no report,
+    /// and the hook gets the observers its match hook says want the call.
     #[tokio::test]
     async fn a_deliver_hook_answers_and_iii_delivers_nothing() {
         let (iii, mut rx) = client();
@@ -2187,7 +2192,8 @@ mod tests {
         );
         let answer = next_frame(&mut rx, "invocationresult").await;
         assert_eq!(answer["result"], 2, "the two observers of kind a");
-        assert!(answer.get("observed").is_none());
+        assert_eq!(answer["delivered"], true, "{answer:#}");
+        assert!(answer.get("matched").is_none(), "delivered outweighs it");
         iii.flush_reports();
         assert!(
             sent(&mut rx)
@@ -2234,7 +2240,7 @@ mod tests {
                         "function_id": "pp::f", "data": {} }),
             );
             let answer = next_frame(&mut rx, "invocationresult").await;
-            assert_eq!(answer["observed"], json!(["fine"]));
+            assert_eq!(answer["matched"], json!(["fine"]));
         }
         let lines = warnings.0.lock().unwrap().clone();
         let logged = lines
@@ -2318,9 +2324,9 @@ mod tests {
             .into()
     }
 
-    /// The `observed` ids of the answer to a routed call of `function_id`
-    /// with `input`.
-    async fn routed_observed(
+    /// The `matched` ids of the answer to a routed call of `function_id`
+    /// with `input`: the observers its match hook matched.
+    async fn routed_matched(
         iii: &IIIClient,
         rx: &mut UnboundedReceiver<Outbound>,
         function_id: &str,
@@ -2333,7 +2339,10 @@ mod tests {
                     "function_id": function_id, "data": input }),
         );
         let answer = next_frame(rx, "invocationresult").await;
-        answer.get("observed").cloned().unwrap_or(json!([]))
+        answer
+            .get("matched")
+            .cloned()
+            .unwrap_or_else(|| panic!("no matched: {answer:#}"))
     }
 
     /// A match hook set while observers are active matches them from the
@@ -2369,7 +2378,7 @@ mod tests {
         assert!(function.is_observed_for(&call("b")));
         assert!(!function.is_observed_for(&call("c")));
         sent(&mut rx);
-        let observed = routed_observed(
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "ml::f",
@@ -2377,7 +2386,7 @@ mod tests {
             json!({ "kind": "b" }),
         )
         .await;
-        assert_eq!(observed, json!(["b"]));
+        assert_eq!(matched, json!(["b"]));
     }
 
     /// Matched by keys, an observer filed under several keys of a call is
@@ -2405,12 +2414,12 @@ mod tests {
         )
         .await;
         sent(&mut rx);
-        let sorted = |observed: Value| {
-            let mut ids: Vec<String> = serde_json::from_value(observed).unwrap();
+        let sorted = |matched: Value| {
+            let mut ids: Vec<String> = serde_json::from_value(matched).unwrap();
             ids.sort();
             ids
         };
-        let observed = routed_observed(
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "mk::f",
@@ -2418,8 +2427,8 @@ mod tests {
             json!({ "keys": ["x", "*", "x", "y"] }),
         )
         .await;
-        assert_eq!(sorted(observed), vec!["both", "star", "y"]);
-        let observed = routed_observed(
+        assert_eq!(sorted(matched), vec!["both", "star", "y"]);
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "mk::f",
@@ -2427,7 +2436,7 @@ mod tests {
             json!({ "keys": ["*"] }),
         )
         .await;
-        assert_eq!(sorted(observed), vec!["both", "star"]);
+        assert_eq!(sorted(matched), vec!["both", "star"]);
     }
 
     fn kind_keys() -> crate::Match {
@@ -2558,7 +2567,7 @@ mod tests {
             gate.notify_one();
             let answer = next_frame(&mut rx, "invocationresult").await;
             match function_id {
-                "kd::f" => assert_eq!(answer["observed"], json!(["a"])),
+                "kd::f" => assert_eq!(answer["matched"], json!(["a"])),
                 _ => assert_eq!(answer["result"], json!(["a"])),
             }
         }
@@ -3029,7 +3038,8 @@ mod tests {
             answer["result"], 1,
             "the deliver hook got the one of kind a"
         );
-        assert!(answer.get("observed").is_none());
+        assert_eq!(answer["delivered"], true);
+        assert!(answer.get("matched").is_none());
 
         iii.clear_observer_added()
             .clear_observer_added_for("cl::f")
@@ -3060,17 +3070,20 @@ mod tests {
         routed(1, json!({ "kind": "b" }));
         let answer = next_frame(&mut rx, "invocationresult").await;
         assert_eq!(answer["result"], json!({ "kind": "b" }), "the handler's");
-        let mut observed: Vec<String> = serde_json::from_value(answer["observed"].clone()).unwrap();
-        observed.sort();
-        assert_eq!(observed, vec!["b", "c"]);
+        assert!(answer.get("delivered").is_none());
+        let mut matched: Vec<String> = serde_json::from_value(answer["matched"].clone()).unwrap();
+        matched.sort();
+        assert_eq!(matched, vec!["b", "c"]);
 
-        // every observer wants every call
+        // every observer wants every call: the engine evaluates them all
         iii.clear_observer_match_for("cl::f");
         routed(2, json!({ "kind": "b" }));
         let answer = next_frame(&mut rx, "invocationresult").await;
-        let mut observed: Vec<String> = serde_json::from_value(answer["observed"].clone()).unwrap();
-        observed.sort();
-        assert_eq!(observed, vec!["b", "c", "d"]);
+        assert_eq!(answer["result"], json!({ "kind": "b" }));
+        assert!(
+            answer.get("matched").is_none() && answer.get("delivered").is_none(),
+            "{answer:#}"
+        );
     }
 
     /// Matched by keys, a call's keys are computed once per call, routed or
@@ -3102,7 +3115,7 @@ mod tests {
         .await;
         assert_eq!(computed.load(Ordering::SeqCst), 0);
         sent(&mut rx);
-        let observed = routed_observed(
+        let matched = routed_matched(
             &iii,
             &mut rx,
             "ck::f",
@@ -3110,7 +3123,7 @@ mod tests {
             json!({ "kind": "a" }),
         )
         .await;
-        assert_eq!(observed, json!(["a"]));
+        assert_eq!(matched, json!(["a"]));
         assert_eq!(
             computed.load(Ordering::SeqCst),
             1,

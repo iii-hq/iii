@@ -37,7 +37,8 @@ mod json_size_tests {
                 error: None,
                 traceparent: None,
                 baggage: None,
-                observed: Vec::new(),
+                matched: None,
+                delivered: false,
             })
             .unwrap(),
             IIIClient::prepare_envelope(&Message::Pong).unwrap(),
@@ -449,7 +450,8 @@ mod json_size_tests {
             error: None,
             traceparent: None,
             baggage: Some("secret".repeat(1000)),
-            observed: vec!["o".to_string()],
+            matched: Some(vec!["o".to_string()]),
+            delivered: false,
         };
         let size = serde_json::to_string(&message).unwrap().len();
         let payload = IIIClient::prepare_envelope(&message).unwrap().payload;
@@ -463,8 +465,28 @@ mod json_size_tests {
             )
         );
         assert!(parsed.get("result").is_none());
-        assert!(parsed.get("observed").is_none());
+        assert_eq!(
+            parsed["matched"],
+            serde_json::json!(["o"]),
+            "how it is delivered"
+        );
         assert!(!payload.contains("secret"));
+
+        let delivered = Message::InvocationResult {
+            invocation_id: Uuid::nil(),
+            function_id: "size::echo".into(),
+            result: Some(Value::String("x".repeat(MAX_JSON_MESSAGE_BYTES))),
+            error: None,
+            traceparent: None,
+            baggage: None,
+            matched: None,
+            delivered: true,
+        };
+        let payload = IIIClient::prepare_envelope(&delivered).unwrap().payload;
+        let parsed: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(parsed["error"]["code"], "payload_too_large");
+        assert_eq!(parsed["delivered"], true);
+        assert!(parsed.get("matched").is_none());
     }
 
     #[test]
@@ -648,10 +670,11 @@ impl ObserveSupportListener {
 /// What the engine said it supports, on the current connection.
 const ENGINE_FEATURES_UNKNOWN: u8 = 0;
 const ENGINE_WITHOUT_OBSERVE: u8 = 1;
-/// `observe.v1` only: observers and host sync, the engine evaluates routed
+/// `observe.v1` only: observers and host sync, the engine delivers routed
 /// calls.
 const ENGINE_WITH_OBSERVE: u8 = 2;
-/// `observe.v2`: the host delivers every call of its functions.
+/// `observe.v2`: the engine evaluates the observers of routed calls, and the
+/// host runs its functions' match and deliver hooks for them.
 const ENGINE_WITH_OBSERVE_V2: u8 = 3;
 
 /// Observe messages (acks, unobserves) held at most across a reconnect, by
@@ -2841,11 +2864,15 @@ impl IIIClient {
         if let Message::InvocationResult {
             invocation_id,
             function_id,
+            matched,
+            delivered,
             ..
         } = message
         {
-            // An error answer: not the handler's outcome, so its matches do
-            // not ride it.
+            // An error answer in place of one too large to send. It keeps how
+            // the call is delivered: a call the deliver hook delivered is
+            // delivered by no one else, and one the match hook narrowed goes
+            // to the observers it matched.
             let fallback = Message::InvocationResult {
                 invocation_id: *invocation_id,
                 function_id: function_id.clone(),
@@ -2857,7 +2884,8 @@ impl IIIClient {
                 }),
                 traceparent: None,
                 baggage: None,
-                observed: Vec::new(),
+                matched: matched.clone(),
+                delivered: *delivered,
             };
             let payload = serde_json::to_string(&fallback)?;
             if payload.len() <= MAX_JSON_MESSAGE_BYTES {
@@ -3799,7 +3827,8 @@ impl IIIClient {
                     error: Some(error),
                     traceparent: resp_tp,
                     baggage: resp_bg,
-                    observed: Vec::new(),
+                    matched: None,
+                    delivered: false,
                 });
 
                 if let Err(err) = result {
@@ -3823,8 +3852,8 @@ impl IIIClient {
             traceparent: None,
             baggage: None,
         };
-        // An `observe.v2` engine leaves this host to deliver the call, and
-        // reads its matches from the answer.
+        // An `observe.v2` engine evaluates the call's observers itself, and
+        // reads from the answer how the function's hooks delivered it.
         let route = if reply_to.is_some() && self.engine_observes_v2() {
             Route::Routed
         } else {
@@ -3865,6 +3894,9 @@ impl IIIClient {
                     Ok(value) => (Some(value), None),
                     Err(body) => (None, Some(body)),
                 };
+                // How the call is delivered: to an engine without
+                // `observe.v2` (`Route::Engine`), always `Delivery::Every`.
+                let (matched, delivered) = answer.delivery.into_wire();
                 let _ = iii.send_message(Message::InvocationResult {
                     invocation_id,
                     function_id,
@@ -3872,7 +3904,8 @@ impl IIIClient {
                     error,
                     traceparent: resp_tp,
                     baggage: resp_bg,
-                    observed: answer.observed,
+                    matched,
+                    delivered,
                 });
             } else if let Err(body) = answer.result {
                 tracing::warn!(code = %body.code, error = %body.message, "error handling async invocation");
