@@ -168,6 +168,12 @@ _OBSERVE_FAMILY = frozenset(
     }
 )
 
+
+def _observer_id_conflict(observer_id: str) -> ObserveRejection:
+    """What ``observe`` raises for an id a handle of this client holds (decision 56)."""
+    return ObserveRejection("OBSERVER_ID_CONFLICT", f"observe: observer id already in use: {observer_id}")
+
+
 _UNSUPPORTED_REASON: ObserveReason = {
     "code": "UNSUPPORTED",
     "message": "the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later",
@@ -607,9 +613,17 @@ class III:
         self._fatal_error: RegistrationRejectedError | None = None
         self._reattach_token: str | None = None
 
-        # observe (0.25). Observers this worker created, replayed (same id) on
-        # every connection, until disposed.
+        # observe (0.25). Observers this worker created, by the id each holds,
+        # replayed (same id) on every connection, until disposed. Changed under
+        # `_observers_lock` (any thread), together with scheduling the frame
+        # the change sends, so the frames of one id leave in the order of the
+        # changes.
         self._observers: dict[str, ObserverHandle] = {}
+        self._observers_lock = threading.Lock()
+        # SDK loop: per id, the handles whose `observe` went out on the current
+        # connection, oldest first; the engine's answers are attributed by
+        # their order (decision 56).
+        self._observe_sent: dict[str, list[ObserverHandle]] = {}
         # The engine's features (`WorkerRegistered.features`), kept across a
         # disconnect until the next `WorkerRegistered` replaces them.
         self._engine_features: frozenset[str] = frozenset()
@@ -901,6 +915,8 @@ class III:
     async def _on_connected(self) -> None:
         self._connection_epoch += 1
         self._registered_on_connection = False
+        # The engine answers the observes of this connection only.
+        self._observe_sent.clear()
         self._set_connection_state("connected")
         # Reconnect: present the previous engine-assigned identity BEFORE the
         # registration replay so the engine retires the old connection and the
@@ -1046,14 +1062,22 @@ class III:
             ),
         )
         if data.get("type") == MessageType.INVOCATION_RESULT.value:
-            fallback = _wire_json.dumps(
-                {
-                    "type": MessageType.INVOCATION_RESULT.value,
-                    "invocation_id": data.get("invocation_id"),
-                    "function_id": data.get("function_id"),
-                    "error": {"code": error.code, "message": error.message},
-                }
-            )
+            answer: dict[str, Any] = {
+                "type": MessageType.INVOCATION_RESULT.value,
+                "invocation_id": data.get("invocation_id"),
+                "function_id": data.get("function_id"),
+                "error": {"code": error.code, "message": error.message},
+            }
+            # Not the handler's outcome, so it activates no observer: to an
+            # engine with observe.v2 it says `delivered` when the deliver hook
+            # delivered the call, and `matched: []` otherwise, whatever the
+            # function's hooks. An engine without observe.v2 gets the bare error.
+            if FEATURE_OBSERVE_V2 in self._engine_features:
+                if data.get("delivered") is True:
+                    answer["delivered"] = True
+                else:
+                    answer["matched"] = []
+            fallback = _wire_json.dumps(answer)
             if len(fallback.encode("utf-8")) <= _MAX_JSON_OUTBOUND_BYTES:
                 return fallback
         raise error
@@ -1191,10 +1215,12 @@ class III:
             result = ObserveResultMessage.model_validate(data)
             if result.warnings:
                 log.warning("Observer %s: %s", result.id, "; ".join(result.warnings))
-            self._on_observer_state(result.id, result.state, result.error.model_dump() if result.error else None)
+            self._on_observe_result(result.id, result.state, result.error.model_dump() if result.error else None)
         elif msg_type == MessageType.OBSERVER_STATE_CHANGED.value:
             changed = ObserverStateChangedMessage.model_validate(data)
-            self._on_observer_state(changed.id, changed.state, changed.reason.model_dump() if changed.reason else None)
+            self._on_observer_state_changed(
+                changed.id, changed.state, changed.reason.model_dump() if changed.reason else None
+            )
         elif msg_type == MessageType.WORKER_REGISTERED.value:
             worker = WorkerRegisteredMessage.model_validate(data)
             self._worker_id = worker.worker_id
@@ -1328,18 +1354,26 @@ class III:
         self._schedule_hook_id_check()
         held, self._held_observe_frames = self._held_observe_frames, []
         if FEATURE_OBSERVE_V1 in self._engine_features:
+            # The unobserves queued while disconnected go out before any
+            # replay: the engine disposes an earlier observer of an id before
+            # it reads the observe of the handle that holds the id now.
             for frame in held:
-                self._spawn(self._send(frame))
-            for handle in list(self._observers.values()):
+                if not self._send_frame(self._prepare_json(frame)):
+                    self._enqueue(frame)
+            for handle in self._held_observers():
                 self._send_observe(handle)
             self._reporter.flush()
             return
-        for handle in list(self._observers.values()):
+        for handle in self._held_observers():
             handle._set_state("error", _UNSUPPORTED_REASON)
         for function_id in list(self._functions):
             if self._has_observer_hooks(function_id):
                 self._warn_hooks_inactive(function_id)
         self._reporter.clear()
+
+    def _held_observers(self) -> list[ObserverHandle]:
+        with self._observers_lock:
+            return list(self._observers.values())
 
     def _has_observer_hooks(self, function_id: str) -> bool:
         return (
@@ -1447,21 +1481,63 @@ class III:
         log.debug("Retrying the standby registration of %r", function_id)
         self._sync_registration(function_id)
 
-    def _on_observer_state(self, observer_id: str, wire_state: str, reason: dict[str, Any] | None) -> None:
-        handle = self._observers.get(observer_id)
-        if handle is None:
+    def _on_observe_result(self, observer_id: str, wire_state: str, error: dict[str, Any] | None) -> None:
+        """SDK loop: an ``observeresult`` answers the oldest ``observe`` of the
+        id sent on this connection that has no answer yet. The handles listed
+        before it are disposed ones, which hear nothing more."""
+        listed = self._observe_sent.get(observer_id)
+        if not listed:
             return
+        for position, handle in enumerate(listed):
+            if not handle._answered:
+                break
+        else:
+            return  # every observe of the id sent here has its answer
+        handle._answered = True
+        del listed[:position]
+        self._apply_observer_state(handle, wire_state, error)
+
+    def _on_observer_state_changed(self, observer_id: str, wire_state: str, reason: dict[str, Any] | None) -> None:
+        """SDK loop: an ``observerstatechanged`` is about the newest handle of
+        the id whose ``observeresult`` arrived on this connection. One that
+        arrives before any answer is dropped: a reattached connection hears
+        its observers resume before their replays are answered, and each
+        replay's answer carries the current state."""
+        listed = self._observe_sent.get(observer_id)
+        if not listed:
+            return
+        handle = next((h for h in reversed(listed) if h._answered), None)
+        if handle is not None:
+            self._apply_observer_state(handle, wire_state, reason)
+
+    def _apply_observer_state(self, handle: ObserverHandle, wire_state: str, reason: dict[str, Any] | None) -> None:
         state = to_observer_state(wire_state)
         body = decode_error(reason)
         if state == "disposed":
-            # Forgotten first: it is not replayed once anyone sees it disposed.
-            self._observers.pop(observer_id, None)
+            # The engine disposed it: the id is free, nothing is replayed, and
+            # its dispose() sends no unobserve.
+            handle._engine_disposed = True
+            with self._observers_lock:
+                if self._observers.get(handle.id) is handle:
+                    del self._observers[handle.id]
+            listed = self._observe_sent.get(handle.id)
+            if listed is not None and handle in listed:
+                listed.remove(handle)
+                if not listed:
+                    del self._observe_sent[handle.id]
         handle._set_state(state, cast(ObserveReason, body) if body else None)
 
     def _send_observe(self, handle: ObserverHandle) -> None:
-        """Sends (or replays) an observer on the SDK loop, when the socket is open."""
+        """SDK loop: sends (or replays) a held observer once per connection,
+        when the socket is open, and lists it for its id's answers."""
+        epoch = self._connection_epoch
+        if handle._sent_epoch == epoch or self._observers.get(handle.id) is not handle:
+            return
         if self._send_frame(self._prepare_json(handle._message)):
             handle._sent = True
+            handle._sent_epoch = epoch
+            handle._answered = False
+            self._observe_sent.setdefault(handle.id, []).append(handle)
 
     def _after_observe(self, handle: ObserverHandle) -> None:
         """SDK loop: a new observer goes out now if this connection is registered."""
@@ -1473,17 +1549,34 @@ class III:
             handle._set_state("error", _UNSUPPORTED_REASON)
 
     def _dispose_observer(self, handle: ObserverHandle) -> None:
-        if self._observers.get(handle.id) is handle:
-            del self._observers[handle.id]
-        if not handle._sent:
+        """Any thread: the handle gives up its id at once. Its ``unobserve``
+        is decided on the SDK loop, scheduled under the lock, so it goes out
+        before the ``observe`` of a handle that takes the id next."""
+        with self._observers_lock:
+            if handle._disposed_by_worker:
+                return  # a dispose() on another thread got here first
+            handle._disposed_by_worker = True
+            if self._observers.get(handle.id) is handle:
+                del self._observers[handle.id]
+            try:
+                self._loop.call_soon_threadsafe(self._unobserve, handle)
+            except RuntimeError:
+                pass  # shut down: nothing more is sent
+
+    def _unobserve(self, handle: ObserverHandle) -> None:
+        """SDK loop: the ``unobserve`` of a disposed handle the engine may
+        hold. Queued while disconnected and held until the connection is
+        registered, so it goes out before the replays; a reattach would
+        otherwise keep the observer alive."""
+        if not handle._sent or handle._engine_disposed:
             return
-
-        async def unobserve() -> None:
-            # Queued while disconnected: a reattach would otherwise keep it alive.
-            if not self._is_open() or FEATURE_OBSERVE_V1 in self._engine_features:
-                await self._send(UnobserveMessage(id=handle.id))
-
-        self._schedule_on_loop(unobserve())
+        frame = self._to_dict(UnobserveMessage(id=handle.id))
+        if not self._is_open():
+            self._enqueue(frame)
+        elif not self._registered_on_connection:
+            self._held_observe_frames.append(frame)
+        elif FEATURE_OBSERVE_V1 in self._engine_features:
+            self._send_frame(self._prepare_json(frame))
 
     def _send_frame(
         self,
@@ -3215,7 +3308,9 @@ class III:
         in its ``on_observer_deliver``.
 
         Returns synchronously, also before the connection is up; the observer
-        is replayed with the same id on every reconnect. Errors
+        is replayed with the same id on every reconnect. The handle holds its
+        id until its ``dispose()`` is called or the engine disposes it; the
+        id is free again at once after that. Errors
         (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
         ``NOT_OBSERVABLE``, the rejection of the source's worker,
         ``UNSUPPORTED`` against an engine without observe) show up as state
@@ -3233,8 +3328,9 @@ class III:
                 ``max_in_flight``, ``metadata`` (the activation's metadata sidecar).
 
         Raises:
-            ValueError: ``source["function_id"]`` or ``target`` missing, or
-                the id is already in use.
+            ObserveRejection: ``OBSERVER_ID_CONFLICT``: a handle of this
+                client holds the id. Nothing is sent, and that handle is untouched.
+            ValueError: ``source["function_id"]`` or ``target`` missing.
             TypeError: The source, target or options are not JSON.
 
         Examples:
@@ -3264,7 +3360,7 @@ class III:
         if not isinstance(observer_id, str):
             raise TypeError("observe: options.id must be a string")
         if observer_id in self._observers:
-            raise ValueError(f"observe: observer id already in use: {observer_id}")
+            raise _observer_id_conflict(observer_id)
         message = build_observe_message(
             observer_id,
             cast("dict[str, Any]", source),
@@ -3280,13 +3376,14 @@ class III:
             lambda: threading.current_thread() is self._thread,
             self._run_callback,
         )
-        # setdefault is atomic: of two threads racing past the check above, one loses here.
-        if self._observers.setdefault(observer_id, handle) is not handle:
-            raise ValueError(f"observe: observer id already in use: {observer_id}")
-        try:
-            self._loop.call_soon_threadsafe(self._after_observe, handle)
-        except RuntimeError:
-            pass  # shut down: it stays pending
+        with self._observers_lock:
+            # Of two threads racing past the check above, one loses here.
+            if self._observers.setdefault(observer_id, handle) is not handle:
+                raise _observer_id_conflict(observer_id)
+            try:
+                self._loop.call_soon_threadsafe(self._after_observe, handle)
+            except RuntimeError:
+                pass  # shut down: it stays pending
         return handle
 
     def current_invocation(self) -> InvocationContext | None:
