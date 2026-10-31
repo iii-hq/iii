@@ -1579,6 +1579,57 @@ async fn rbac_gates_the_source_and_the_target() {
     watcher.state_becomes("allowed", "disposed").await;
 }
 
+/// An activation runs under the session of the worker that created the
+/// observer, not unrestricted: a restricted worker cannot use `deliver: input`
+/// on `engine::observers::dispose` to dispose another worker's observer.
+#[tokio::test]
+async fn an_activation_cannot_dispose_another_workers_observer_under_rbac() {
+    let rbac = json!({
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let mut orders = host(&t, "orders", true, &["api::orders", "api::sink"]).await;
+    let mut victim = connect(&t, "victim", true).await;
+    victim
+        .observe_active(observer(
+            "victim-obs",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let mut attacker = connect(&t, "attacker", true).await;
+    attacker
+        .observe_active(observer(
+            "attack",
+            json!({ "function_id": "api::orders", "deliver": "input" }),
+            "engine::observers::dispose",
+        ))
+        .await;
+
+    let mut caller = connect(&t, "caller", true).await;
+    let call = caller
+        .call("api::orders", json!({ "id": "victim-obs" }))
+        .await;
+    orders.serve("api::orders", json!({})).await;
+    caller.result(call).await;
+
+    assert!(
+        eventually(|| {
+            info(&t, "attack").is_some_and(|i| {
+                i.fires == 1
+            })
+        })
+        .await
+    );
+    // The activation of `attack` has had its chance; give it time to run.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        info(&t, "victim-obs").expect("the victim's observer is gone: the attacker disposed it").state,
+        "active",
+        "the victim's observer survived the attacker's activation"
+    );
+}
+
 /// `list` / `get` show only observers of functions the caller may invoke; the
 /// rest do not exist for it.
 #[tokio::test]
