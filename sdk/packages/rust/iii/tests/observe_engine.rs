@@ -331,6 +331,70 @@ async fn max_fires_and_dispose_end_an_observer() {
     iii.shutdown_async().await;
 }
 
+/// A held id is refused at the call with nothing sent, and an id is free
+/// once `dispose()` is called: observed again under it at once, the new
+/// observer stays active through the engine's late `disposed` for the
+/// earlier one.
+#[tokio::test]
+async fn an_observer_id_is_refused_while_held_and_free_at_dispose() {
+    let id = uid();
+    let (source, target) = (format!("it{id}::src"), format!("it{id}::t"));
+    let iii = client(&format!("w-{id}")).await;
+    iii.register_function(&source, RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
+    let inbox = Inbox::default();
+    iii.register_function(&target, inbox.function());
+    let stable = format!("stable-{id}");
+    let options = || ObserverOptions::default().id(&stable);
+    let first = iii.observe_with(Source::function(&source), &target, options());
+    tokio::time::timeout(WAIT, first.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    let held = iii.observe_with(Source::function(&source), &target, options());
+    let reason = held.reason().unwrap();
+    assert_eq!(reason.code, "OBSERVER_ID_CONFLICT");
+    assert_eq!(
+        reason.message,
+        format!("observer id already in use: {stable}")
+    );
+    held.dispose().await.unwrap();
+    assert_eq!(first.state(), ObserverState::Active);
+
+    let disposing = first.dispose();
+    tokio::pin!(disposing);
+    // The first poll queues the unobserve and frees the id; a local engine
+    // may confirm the disposal within it.
+    let confirmed = tokio::time::timeout(Duration::ZERO, &mut disposing).await;
+    let second = iii.observe_with(Source::function(&source), &target, options());
+    assert_eq!(
+        second.state(),
+        ObserverState::Pending,
+        "{:?}",
+        second.reason()
+    );
+    match confirmed {
+        Ok(disposed) => disposed.unwrap(),
+        Err(_) => tokio::time::timeout(WAIT, disposing)
+            .await
+            .unwrap()
+            .unwrap(),
+    }
+    tokio::time::timeout(WAIT, second.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.state(), ObserverState::Disposed);
+    settle().await;
+    assert_eq!(second.state(), ObserverState::Active);
+    iii.call(call_req(&source, json!({ "n": 1 })).dispatch(Dispatch::Remote))
+        .await
+        .unwrap();
+    inbox.wait(1).await;
+    assert_eq!(inbox.inputs()[0]["observer_id"], json!(stable));
+    second.dispose().await.unwrap();
+    iii.shutdown_async().await;
+}
+
 /// A call made from a handler names it as `caller`, also from a task the
 /// handler spawned with `scope`; the engine stamps the worker.
 #[tokio::test]

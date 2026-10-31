@@ -218,6 +218,14 @@ pub struct ObserverOptions {
 
 impl ObserverOptions {
     /// The observer's id. Default: a random UUID v4, kept across replays.
+    ///
+    /// The handle [`observe_with`](IIIClient::observe_with) returns holds
+    /// the id until its [`dispose`](ObserverHandle::dispose) is called or the
+    /// engine disposes the observer, and the id is free again at once: a
+    /// queue consumer observes again under its stable id as soon as it
+    /// disposes the observer before. While a handle of this client holds the
+    /// id, in any state, another `observe_with` under it is refused with
+    /// nothing sent (see [`observe_with`](IIIClient::observe_with)).
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
@@ -313,6 +321,9 @@ pub(crate) struct ObserverEntry {
     next_listener: AtomicU64,
     /// Sent to an engine at least once: `dispose` must tell it.
     pub(crate) sent: AtomicBool,
+    /// The connection epoch its `observe` last went out on
+    /// ([`NOT_SENT`] before that): sent once per connection.
+    pub(crate) sent_epoch: AtomicU64,
     /// `dispose` was called: never replayed again.
     pub(crate) disposing: AtomicBool,
     /// Orders a replayed `observe` against `dispose`'s `unobserve`: whichever
@@ -322,6 +333,9 @@ pub(crate) struct ObserverEntry {
 
 /// The next [`ObserverEntry::seq`].
 static NEXT_OBSERVER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// [`ObserverEntry::sent_epoch`] of an observer not sent yet.
+pub(crate) const NOT_SENT: u64 = u64::MAX;
 
 impl ObserverEntry {
     pub(crate) fn new(id: String, message: Message) -> Self {
@@ -339,6 +353,7 @@ impl ObserverEntry {
             listeners: Mutex::new(Vec::new()),
             next_listener: AtomicU64::new(0),
             sent: AtomicBool::new(false),
+            sent_epoch: AtomicU64::new(NOT_SENT),
             disposing: AtomicBool::new(false),
             send_lock: Mutex::new(()),
         }
@@ -518,12 +533,18 @@ impl ObserverHandle {
         }
     }
 
-    /// Removes the observer. Once it resolves (the engine confirmed it, or
-    /// after 5 s without an answer), no new activation starts and a call
-    /// through it fails with `OBSERVER_NOT_ACTIVE`.
+    /// Removes the observer, and frees its id at once: an
+    /// [`observe_with`](IIIClient::observe_with) under the same id makes a
+    /// new observer while this one is still being disposed, and each handle
+    /// hears the engine's answers to its own messages only. Once it resolves
+    /// (the engine confirmed it, or after 5 s without an answer), no new
+    /// activation starts and a call through it fails with
+    /// `OBSERVER_NOT_ACTIVE`. A handle `observe_with` refused (state
+    /// `error`, with no observer of its own) sends nothing and leaves the
+    /// handle that holds the id alone.
     pub async fn dispose(&self) -> Result<(), Error> {
         let mut rx = self.entry.status.subscribe();
-        let unobserved = {
+        let answered_here = {
             let _order = self
                 .entry
                 .send_lock
@@ -536,7 +557,7 @@ impl ObserverHandle {
             }
             // Only an observer some engine heard of needs an `unobserve`; one
             // never sent stays unsent (`send_observe` checks `disposing`).
-            self.entry.sent.load(Ordering::Acquire)
+            let unobserved = self.entry.sent.load(Ordering::Acquire)
                 && match self.iii.send_message(Message::Unobserve {
                     id: self.entry.id.clone(),
                 }) {
@@ -545,9 +566,18 @@ impl ObserverHandle {
                         tracing::debug!(observer_id = %self.entry.id, error = %error, "unobserve not sent");
                         false
                     }
-                }
+                };
+            // The id is free once the `unobserve` is queued: a new observer's
+            // `observe` goes out after it, and the engine reads them in order.
+            self.iii.forget_observer(&self.entry);
+            // The engine's `disposed` reaches this handle when its `observe`
+            // went out on this connection; an earlier connection's is not
+            // routed to it.
+            unobserved
+                && self.iii.engine_observes()
+                && self.entry.sent_epoch.load(Ordering::Acquire) == self.iii.connection_epoch()
         };
-        if unobserved && self.iii.engine_observes() {
+        if answered_here {
             let _ = tokio::time::timeout(DISPOSE_WAIT, async {
                 loop {
                     if rx.borrow_and_update().state == ObserverState::Disposed {
@@ -560,7 +590,6 @@ impl ObserverHandle {
             })
             .await;
         }
-        self.iii.forget_observer(&self.entry);
         if self.entry.state() != ObserverState::Disposed {
             self.entry.set(
                 ObserverState::Disposed,
@@ -637,6 +666,20 @@ impl IIIClient {
     }
 
     /// [`observe`](Self::observe) with the observer's id, policy and metadata.
+    ///
+    /// An id ([`ObserverOptions::id`]) that a handle of this client holds,
+    /// in any state, is refused at the call: nothing is sent, the holding
+    /// handle and its observer are untouched, and the handle returned is in
+    /// state `error` with the reason `OBSERVER_ID_CONFLICT`,
+    /// `observer id already in use: <id>`. Its [`ready`](ObserverHandle::ready)
+    /// fails with that code, and its [`dispose`](ObserverHandle::dispose)
+    /// sends nothing.
+    ///
+    /// The id is free again as soon as `dispose()` is called on the handle
+    /// that held it, before the engine confirms the disposal. The engine answers a connection's
+    /// observes in the order it reads them, so each handle of the id gets the
+    /// answers to its own `observe` and `unobserve`: a late `disposed` for
+    /// the earlier observer never disposes the new one.
     pub fn observe_with(
         &self,
         source: impl Into<Source>,
@@ -666,7 +709,7 @@ impl IIIClient {
         }
         if !self.track_observer(entry.clone()) {
             let reason = ObserverReason {
-                code: observe_codes::INVALID_ARGS.to_string(),
+                code: observe_codes::OBSERVER_ID_CONFLICT.to_string(),
                 message: format!("observer id already in use: {}", entry.id),
             };
             entry.set(ObserverState::Error, Some(reason), None);
