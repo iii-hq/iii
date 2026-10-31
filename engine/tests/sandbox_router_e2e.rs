@@ -277,7 +277,7 @@ async fn bound_router_without_adapter_answers_s301() {
     assert_eq!(p["retryable"], true);
     assert_eq!(
         p["message"],
-        "adapter fake not connected in namespace fake-ns; compose::add iii-sandbox in that project installs it"
+        "adapter fake not connected in namespace fake-ns; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a container with worker: package://fake in a worker-compose.yaml for fake-ns"
     );
 
     let info = call(&engine, ROUTER_INFO_ID, json!({}), None).await;
@@ -416,7 +416,7 @@ async fn idle_adapter_disconnect_answers_s301_and_clears_handshake() {
     assert_eq!(p["retryable"], true);
     assert_eq!(
         p["message"],
-        "adapter fake not connected in namespace fake-ns; compose::add iii-sandbox in that project installs it"
+        "adapter fake not connected in namespace fake-ns; compose::add iii-sandbox installs it in the Compose project there, or, if none runs, declare a container with worker: package://fake in a worker-compose.yaml for fake-ns"
     );
 
     let _fake = fake_adapter(port, 2, &engine).await;
