@@ -38,7 +38,7 @@ async def test_register_healthcheck_function_and_route(engine_http_url: str, iii
     assert status_before == 404
 
     route = iii_client.observe({"function_id": "http::on-request", "args": {"method": "GET", "path": "/health"}}, fn.id)
-    await route.ready_async()
+    await asyncio.wait_for(route.ready_async(), timeout=10.0)
 
     async def assert_healthy():
         status, data = await get_health(engine_http_url)
