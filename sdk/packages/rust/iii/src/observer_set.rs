@@ -5,8 +5,9 @@
 //! version it was made from, which a call that loaded it keeps reading.
 //!
 //! Each node is one allocation, its slots right after its reference count,
-//! so a scan reaches a leaf's observers with one pointer from its branch. A
-//! function with up to [`MAX`] observers is one leaf.
+//! so a scan reaches a leaf's observers with one pointer from its branch. Up
+//! to [`MAX`] observers fit in one leaf, which a call reads as one slice
+//! ([`ObserverSet::as_slice`]) without walking any branch.
 
 use std::{iter, sync::Arc};
 
@@ -164,17 +165,50 @@ impl ObserverSet {
         })
     }
 
-    /// The observers in id order.
-    pub(crate) fn iter(&self) -> Iter<'_> {
-        let mut iter = Iter {
-            branches: std::array::from_fn(|_| [].iter()),
-            depth: 0,
-            leaf: [].iter(),
-        };
-        if let Some(root) = self.root.as_ref() {
-            iter.descend(root);
+    /// The observers in id order as one slice, when the set is one leaf (at
+    /// most [`MAX`] observers); `None` when it is deeper.
+    #[inline]
+    pub(crate) fn as_slice(&self) -> Option<&[Observer]> {
+        match &self.root {
+            None => Some(&[]),
+            Some(Node::Leaf(observers)) => Some(observers),
+            Some(Node::Branch(_)) => None,
         }
-        iter
+    }
+
+    /// The observers in id order.
+    #[inline]
+    pub(crate) fn iter(&self) -> Iter<'_> {
+        let mut leaves = self.leaves();
+        let leaf = leaves.next().unwrap_or_default().iter();
+        Iter { leaves, leaf }
+    }
+
+    /// The leaves in id order, each a slice of observers. A set that is one
+    /// leaf is read as that slice, with no walk of branches.
+    #[inline]
+    pub(crate) fn leaves(&self) -> Leaves<'_> {
+        match &self.root {
+            None => Leaves {
+                next: None,
+                deeper: None,
+            },
+            Some(Node::Leaf(observers)) => Leaves {
+                next: Some(observers),
+                deeper: None,
+            },
+            Some(Node::Branch(children)) => {
+                let mut deeper = Deeper {
+                    branches: std::array::from_fn(|_| [].iter()),
+                    depth: 0,
+                };
+                let next = deeper.descend(children);
+                Leaves {
+                    next: Some(next),
+                    deeper: Some(deeper),
+                }
+            }
+        }
     }
 }
 
@@ -327,48 +361,70 @@ pub(crate) mod work {
     }
 }
 
+/// The leaves of an [`ObserverSet`] in id order (see
+/// [`ObserverSet::leaves`]).
+pub(crate) struct Leaves<'a> {
+    /// The leaf to yield next.
+    next: Option<&'a [Observer]>,
+    /// Where the leaves after it are, in a set deeper than one leaf.
+    deeper: Option<Deeper<'a>>,
+}
+
+impl<'a> Iterator for Leaves<'a> {
+    type Item = &'a [Observer];
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a [Observer]> {
+        let leaf = self.next.take()?;
+        self.next = self.deeper.as_mut().and_then(Deeper::next_leaf);
+        Some(leaf)
+    }
+}
+
 /// The observers of an [`ObserverSet`] in id order.
 pub(crate) struct Iter<'a> {
-    /// The children left to visit at each level above the current leaf.
-    branches: [std::slice::Iter<'a, Child>; MAX_DEPTH],
-    depth: usize,
+    leaves: Leaves<'a>,
     leaf: std::slice::Iter<'a, Observer>,
 }
 
-impl<'a> Iter<'a> {
-    /// Goes down `node`'s first children to its first leaf.
-    fn descend(&mut self, mut node: &'a Node) {
+/// The branches above the leaf a [`Leaves`] is at.
+struct Deeper<'a> {
+    /// The children left to visit at each level above the current leaf.
+    branches: [std::slice::Iter<'a, Child>; MAX_DEPTH],
+    depth: usize,
+}
+
+impl<'a> Deeper<'a> {
+    /// Goes down the first children of `children` to its first leaf.
+    fn descend(&mut self, mut children: &'a [Child]) -> &'a [Observer] {
         loop {
-            match node {
-                Node::Leaf(observers) => {
-                    self.leaf = observers.iter();
-                    return;
-                }
-                Node::Branch(children) => {
-                    let mut rest = children.iter();
-                    let Some(first) = rest.next() else {
-                        return;
-                    };
-                    assert!(self.depth < MAX_DEPTH, "a set deeper than MAX_DEPTH");
-                    self.branches[self.depth] = rest;
-                    self.depth += 1;
-                    node = &first.node;
-                }
+            let mut rest = children.iter();
+            let Some(first) = rest.next() else {
+                return &[];
+            };
+            assert!(self.depth < MAX_DEPTH, "a set deeper than MAX_DEPTH");
+            self.branches[self.depth] = rest;
+            self.depth += 1;
+            match &first.node {
+                Node::Leaf(observers) => return observers,
+                Node::Branch(next) => children = next,
             }
         }
     }
 
-    /// Moves on to the next leaf: the next child of the nearest level that
-    /// has one. `false` when there is none.
-    fn next_leaf(&mut self) -> bool {
+    /// The next leaf: under the next child of the nearest level that has
+    /// one.
+    fn next_leaf(&mut self) -> Option<&'a [Observer]> {
         loop {
             if self.depth == 0 {
-                return false;
+                return None;
             }
             match self.branches[self.depth - 1].next() {
                 Some(child) => {
-                    self.descend(&child.node);
-                    return true;
+                    return Some(match &child.node {
+                        Node::Leaf(observers) => observers,
+                        Node::Branch(children) => self.descend(children),
+                    });
                 }
                 None => self.depth -= 1,
             }
@@ -385,9 +441,7 @@ impl<'a> Iterator for Iter<'a> {
             if let Some(observer) = self.leaf.next() {
                 return Some(observer);
             }
-            if !self.next_leaf() {
-                return None;
-            }
+            self.leaf = self.leaves.next()?.iter();
         }
     }
 }
@@ -435,7 +489,20 @@ pub(crate) mod tests {
     }
 
     fn ids(set: &ObserverSet) -> Vec<String> {
-        set.iter().map(|o| o.id().to_string()).collect()
+        let ids: Vec<String> = set.iter().map(|o| o.id().to_string()).collect();
+        let by_leaf: Vec<String> = set
+            .leaves()
+            .flat_map(|leaf| leaf.iter().map(|o| o.id().to_string()))
+            .collect();
+        assert_eq!(by_leaf, ids, "the leaves hold what the iterator yields");
+        if let Some(observers) = set.as_slice() {
+            let listed: Vec<&str> = observers.iter().map(Observer::id).collect();
+            assert_eq!(listed, ids, "the one leaf holds what the iterator yields");
+            assert!(set.len() <= MAX);
+        } else {
+            assert!(set.len() >= 2 * MIN, "a branch holds two nodes or more");
+        }
+        ids
     }
 
     struct Rng(u64);
