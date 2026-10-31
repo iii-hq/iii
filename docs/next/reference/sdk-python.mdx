@@ -335,7 +335,9 @@ value instead. The worker that hosts the source can decide otherwise
 in its ``on_observer_deliver``.
 
 Returns synchronously, also before the connection is up; the observer
-is replayed with the same id on every reconnect. Errors
+is replayed with the same id on every reconnect. The handle holds its
+id until its ``dispose()`` is called or the engine disposes it; the
+id is free again at once after that. Errors
 (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
 ``NOT_OBSERVABLE``, the rejection of the source's worker,
 ``UNSUPPORTED`` against an engine without observe) show up as state

@@ -60,6 +60,14 @@ class ObserverHandle:
         self._changed = threading.Condition()
         #: Sent on some connection: the engine may hold it, so disposing it needs an ``unobserve``.
         self._sent = False
+        #: The connection (``III._connection_epoch``) it was last sent on, and
+        #: whether that connection's ``observeresult`` for it arrived.
+        self._sent_epoch = -1
+        self._answered = False
+        #: The engine's ``disposed`` for it arrived: it holds nothing there.
+        self._engine_disposed = False
+        #: Its ``dispose()`` released the id (once, whichever thread called it).
+        self._disposed_by_worker = False
 
     @property
     def state(self) -> ObserverState:
