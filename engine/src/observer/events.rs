@@ -68,8 +68,14 @@ impl ObserverRegistry {
         &self,
         observer: &Observer,
         state: &ObserverState,
-        reason: Option<&ErrorBody>,
+        reason: &dyn Fn() -> Option<ErrorBody>,
     ) -> Option<UnqueuedEvent> {
+        if !self
+            .observers_changed_watched
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
         let registry = self.this()?;
         let evaluation = registry.emission(
             DEFAULT_NAMESPACE,
@@ -83,7 +89,7 @@ impl ObserverRegistry {
                     "target": observer.target.1,
                     "state": state.as_str(),
                 });
-                if let Some(reason) = reason {
+                if let Some(reason) = reason() {
                     event["reason"] = json!({ "code": reason.code, "message": reason.message });
                 }
                 Some(event)

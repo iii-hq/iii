@@ -7,17 +7,19 @@
 //! The routed hook, reports, calls through an observer and activations
 //! (protocol.md §3.2, §3.4; v2 §4.6).
 //!
-//! `InvocationHandler::handle_invocation_inner` asks [`ObserverRegistry::route`]
-//! before running a handler: one atomic load and, only when some function is
-//! observed or hosted privately by a connection, one hash lookup. Unobserved,
-//! nothing is copied. Observed, the hook keeps the parts of the invocation the
-//! active observers need, and once the result is known
-//! [`ObserverRegistry::complete`] hands it to an evaluator task, so the
-//! caller's reply never waits for filters or activations. There is one
-//! evaluator per runtime worker thread, and a function's completions always go
-//! to the same one, which handles them in the order they completed: an
-//! observer watches one function, so its activations stay in engine arrival
-//! order while different functions are evaluated in parallel.
+//! `InvocationHandler::handle_invocation_inner` asks
+//! [`ObserverRegistry::route`] before running a handler: one atomic load of the
+//! routed view and, only when some function is observed or hosted privately by
+//! a connection, one hash lookup, then one atomic load of the function's active
+//! set when the view holds the function. Unobserved, nothing is copied.
+//! Observed, the hook keeps the parts of the invocation the active observers
+//! need, and once the result is known [`ObserverRegistry::complete`] hands it
+//! to an evaluator task, so the caller's reply never waits for filters or
+//! activations. There is one evaluator per runtime worker thread, and a
+//! function's completions always go to the same one, which handles them in the
+//! order they completed: an observer watches one function, so its activations
+//! stay in engine arrival order while different functions are evaluated in
+//! parallel.
 //!
 //! Who matches a call's observers (v2 §8.2, decisions 2 and 55). The engine
 //! evaluates the observers' `on` and filters of every routed call, with the
@@ -518,8 +520,9 @@ impl Drop for Slot {
 impl ObserverRegistry {
     /// The active observers of `(namespace, function_id)`, when it has any:
     /// what [`Self::route`] answers, without the caller check. One atomic
-    /// load while nothing is observed or hosted privately by a connection,
-    /// and otherwise one more hash lookup.
+    /// load while nothing is observed or hosted privately by a connection;
+    /// otherwise one hash lookup more, and one atomic load more for the
+    /// function's set when the view holds the function.
     #[inline]
     pub fn watch(&self, namespace: &str, function_id: &str) -> Option<Arc<ActiveSet>> {
         let view = self.routed.load();
@@ -527,7 +530,7 @@ impl ObserverRegistry {
             return None;
         }
         view.get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
-            .and_then(|routed| routed.active.clone())
+            .and_then(|routed| routed.active.load_full())
     }
 
     /// Whether `(namespace, function_id)` has an active observer: what an
@@ -598,7 +601,7 @@ impl ObserverRegistry {
                 delivery: ENGINE_DELIVERY,
                 namespace: namespace.to_string(),
                 function_id: function_id.to_string(),
-                invocation_id: Uuid::new_v4().to_string(),
+                invocation_id: super::new_uuid().to_string(),
                 success: true,
                 input: event.clone().filter(|_| set.needs.input),
                 output: event.filter(|_| set.needs.output),
@@ -1066,7 +1069,7 @@ impl ObserverRegistry {
             drop_event(observer, observe_codes::INACTIVE);
             return false;
         }
-        let max_depth = self.config().max_observe_depth;
+        let max_depth = self.config.load().max_observe_depth;
         if completed.depth.saturating_add(1) > max_depth {
             drop_event(observer, observe_codes::LOOP_GUARD);
             warn_loop_guard(observer, completed.depth, max_depth);
@@ -1151,7 +1154,7 @@ impl ObserverRegistry {
             metrics.observer_activations_total.add(
                 1,
                 &[
-                    KeyValue::new("function_id", observer.function.1.clone()),
+                    KeyValue::new("function_id", observer.function_label()),
                     KeyValue::new("delivery", pending.event.delivery),
                 ],
             );
@@ -1161,7 +1164,7 @@ impl ObserverRegistry {
         // answers.
         let event = pending.event.clone();
         drop(pending);
-        let activation_id = Uuid::new_v4().to_string();
+        let activation_id = super::new_uuid().to_string();
         let envelope = project(observer, &event, &activation_id);
         let ctx = InvocationCtx::activation(
             Caller {
@@ -1178,7 +1181,7 @@ impl ObserverRegistry {
         );
         let (traceparent, baggage) = (event.traceparent.clone(), event.baggage.clone());
         drop(event);
-        let invocation_id = Uuid::new_v4();
+        let invocation_id = super::new_uuid();
         let call = invocations.handle_invocation_with_handler(
             Some(invocation_id),
             None,
@@ -1192,7 +1195,7 @@ impl ObserverRegistry {
             observer.metadata.clone(),
             ctx,
         );
-        let timeout = Duration::from_millis(self.config().activation_timeout_ms);
+        let timeout = Duration::from_millis(self.config.load().activation_timeout_ms);
         let outcome = tokio::time::timeout(timeout, call).await;
         if outcome.is_err() {
             self.abandon(&observer.target, invocation_id).await;
@@ -1960,7 +1963,7 @@ fn count_failure(observer: &Observer, reason: &str) {
         metrics.observer_activation_failures_total.add(
             1,
             &[
-                KeyValue::new("function_id", observer.function.1.clone()),
+                KeyValue::new("function_id", observer.function_label()),
                 KeyValue::new("reason", reason.to_string()),
             ],
         );
@@ -2150,7 +2153,7 @@ pub(crate) fn export_drops(observer: &Observer) {
         metrics.observer_dropped_total.add(
             count,
             &[
-                KeyValue::new("function_id", observer.function.1.clone()),
+                KeyValue::new("function_id", observer.function_label()),
                 KeyValue::new("reason", reason),
             ],
         );
