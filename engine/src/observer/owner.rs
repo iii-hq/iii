@@ -749,7 +749,8 @@ impl ObserverRegistry {
     /// calls are what its observers observe, so a call from anyone else, the
     /// engine included, would be one it never made. One atomic load while no
     /// function is observed or hosted privately by a connection; otherwise
-    /// one hash lookup more, whatever the function.
+    /// one hash lookup more, whatever the function, and one atomic load more
+    /// for the function's set when the view holds the function.
     #[inline]
     pub fn route(
         &self,
@@ -989,9 +990,11 @@ impl ObserverRegistry {
     /// Puts `observer` in its function's active set, or takes it out, as its
     /// current state and its function's current observers say: it is one of
     /// the function's active observers when it is one of its live observers
-    /// and `active`. `O(log n)` in the function's active observers.
-    /// Copy-on-write, so the hot path reads a consistent snapshot with one
-    /// atomic load, and a call keeps the set it started with.
+    /// and `active`. `O(log n)` in the function's active observers. The
+    /// function's set is replaced by a new version (copy-on-write), and the
+    /// view only when the function joins or leaves it: the hot path reads
+    /// the view, then the function's set, with one atomic load each, and a
+    /// call keeps the set it started with.
     pub(crate) fn refresh_observer(&self, observer: &Arc<Observer>) {
         // Not one of its function's observers yet: in no active set.
         let Some(seq) = observer.seq() else {

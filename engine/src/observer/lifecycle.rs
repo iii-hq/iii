@@ -865,8 +865,9 @@ pub(crate) fn now_ms() -> u64 {
 }
 
 /// Live observers by state, for the `iii.observers` gauge: counted on every
-/// transition, and sent to the gauge with the drop counts
-/// ([`ObserverRegistry::export_drops`]), not on each transition.
+/// transition, and sent to the gauge every
+/// [`DROP_EXPORT_INTERVAL`](super::dispatch::DROP_EXPORT_INTERVAL) with the
+/// drop counts ([`ObserverRegistry::export_drops`]).
 #[derive(Default)]
 pub(crate) struct StateCounts {
     pending: AtomicI64,
