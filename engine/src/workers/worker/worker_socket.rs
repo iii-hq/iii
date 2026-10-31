@@ -151,15 +151,20 @@ pub(crate) fn json_frames(payload: String) -> Vec<Message> {
         .collect()
 }
 
-/// Writes one serialized JSON envelope as [`json_frames`]. The connection's
-/// single writer task calls it, so no other data frame can land between the
-/// fragments of a message.
-pub(crate) async fn send_json<S>(sink: &mut S, payload: String) -> Result<(), S::Error>
+/// Writes one serialized JSON envelope as [`json_frames`] to the sink's
+/// write buffer, without flushing it: tungstenite writes the buffer out past
+/// its `write_buffer_size` and on the next flush, which the connection's
+/// writer does once its queue is empty. The writer is the connection's only
+/// one, so no other data frame can land between the fragments of a message.
+pub(crate) async fn feed_json<S>(sink: &mut S, payload: String) -> Result<(), S::Error>
 where
     S: Sink<Message> + Unpin,
 {
+    if payload.len() <= JSON_FRAGMENT_BYTES {
+        return sink.feed(Message::Text(payload.into())).await;
+    }
     for frame in json_frames(payload) {
-        sink.send(frame).await?;
+        sink.feed(frame).await?;
     }
     Ok(())
 }
@@ -565,6 +570,91 @@ mod tests {
             let (_client, received) = deliver(config, &payload).await;
             let message = received.expect("every frame must fit in 1 MiB");
             assert!(message["result"] == payload.as_str());
+        }
+
+        /// Messages queued faster than the writer sends them reach the worker
+        /// in order, a fragmented one among them intact, and the last one
+        /// arrives with nothing sent after it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn queued_messages_arrive_in_order_and_the_last_one_is_flushed() {
+            let (address, engine) = serve().await;
+            let (mut client, worker_id) = connect(address).await;
+            let worker = engine.worker_registry.get_worker(&worker_id).unwrap();
+            worker
+                .receive_message_limit
+                .store(MAX_JSON_MESSAGE_BYTES, std::sync::atomic::Ordering::Relaxed);
+            let large = "x".repeat(JSON_FRAGMENT_BYTES + 3);
+            let sent: Vec<Uuid> = (0..500).map(|_| Uuid::new_v4()).collect();
+            for (index, invocation_id) in sent.iter().enumerate() {
+                let result = if index == 250 { large.as_str() } else { "ok" };
+                worker
+                    .channel
+                    .send(Outbound::Protocol(protocol::Message::InvocationResult {
+                        invocation_id: *invocation_id,
+                        function_id: "test::burst".to_string(),
+                        result: Some(Value::String(result.to_string())),
+                        error: None,
+                        traceparent: None,
+                        baggage: None,
+                        matched: None,
+                        delivered: false,
+                    }))
+                    .await
+                    .unwrap();
+            }
+            for (index, invocation_id) in sent.iter().enumerate() {
+                let message = next_json(&mut client).await.unwrap();
+                assert_eq!(
+                    message["invocation_id"],
+                    invocation_id.to_string(),
+                    "{index}"
+                );
+                let expected = if index == 250 { large.len() } else { 2 };
+                assert_eq!(
+                    message["result"].as_str().unwrap().len(),
+                    expected,
+                    "{index}"
+                );
+            }
+        }
+
+        /// A close frame queued with messages behind it reaches the worker
+        /// after the messages queued before it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_close_frame_queued_before_more_messages_reaches_the_worker() {
+            let (address, engine) = serve().await;
+            let (mut client, worker_id) = connect(address).await;
+            let worker = engine.worker_registry.get_worker(&worker_id).unwrap();
+            let result = |invocation_id| {
+                Outbound::Protocol(protocol::Message::InvocationResult {
+                    invocation_id,
+                    function_id: "test::close".to_string(),
+                    result: Some(Value::Null),
+                    error: None,
+                    traceparent: None,
+                    baggage: None,
+                    matched: None,
+                    delivered: false,
+                })
+            };
+            let before = Uuid::new_v4();
+            worker.channel.send(result(before)).await.unwrap();
+            worker
+                .channel
+                .send(Outbound::Raw(Message::Close(None)))
+                .await
+                .unwrap();
+            for _ in 0..10 {
+                worker.channel.send(result(Uuid::new_v4())).await.unwrap();
+            }
+            let message = next_json(&mut client).await.unwrap();
+            assert_eq!(message["invocation_id"], before.to_string());
+            let frame = tokio::time::timeout(Duration::from_secs(10), client.next())
+                .await
+                .expect("timed out waiting for the close frame")
+                .expect("connection ended without a close frame")
+                .unwrap();
+            assert!(matches!(frame, Message::Close(_)), "{frame:?}");
         }
 
         /// Connects a raw worker; returns it with its worker id.
