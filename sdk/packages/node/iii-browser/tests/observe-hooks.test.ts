@@ -7,7 +7,7 @@ import type { FunctionRef, ISdk } from '../src/types'
 import * as fake from './observe-fake-engine'
 
 /** Observer hooks against a fake engine (v2 §4.2, §4.3, §7, §11; decisions 18, 21, 41, 44). */
-const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, invokeFunction } = fake
+const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle } = fake
 
 let sdk: ISdk | undefined
 afterEach(async () => {
@@ -424,30 +424,34 @@ describe('onObserverAdded / onObserverRemoved', () => {
     socket.deliver(functionRegistered('ra::f', [observerInfo('a', 't::a', { args: { kind: 'a' } })], { revision: 1 }))
     await settle()
     const held = ref.observers()[0]
-    const above = (n: number) =>
+    const view = (tenant: string, n: number) =>
       observerInfo('a', 't::target', {
         args: { kind: 'a' },
-        filters: { $and: [{ 'input.n': { $gt: n } }] },
+        filters: { $and: [{ 'input.tenant': { $eq: tenant } }, { 'input.n': { $gt: n } }] },
         capture: ['input', 'caller'],
       })
-    let calls = 0
-    const observed = async (n: number) => {
-      const id = `i-${++calls}`
-      socket.deliver(invokeFunction('ra::f', { n }, { invocation_id: id }))
-      await settle()
-      return fake.resultOf(socket, id)?.observed
+    let reported = 0
+    // a local call: the observers its delivery matched (with the filters' index), as reported
+    const observed = async (tenant: string, n: number) => {
+      await sdk.call({ function_id: 'ra::f', payload: { tenant, n } })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const items = fake.reportedItems(socket).slice(reported)
+      reported += items.length
+      return items[0]?.matched
     }
 
     // listed by functionregistered
-    socket.deliver(functionRegistered('ra::f', [above(1)], { revision: 2 }))
+    socket.deliver(functionRegistered('ra::f', [view('one', 1)], { revision: 2 }))
     await settle()
-    expect(await observed(1)).toBeUndefined()
-    expect(await observed(2)).toEqual(['a'])
+    expect(await observed('one', 1)).toBeUndefined()
+    expect(await observed('one', 2)).toEqual(['a'])
     // announced by observeradded
-    socket.deliver(observerAdded('ra::f', 3, above(5)))
+    socket.deliver(observerAdded('ra::f', 3, view('two', 5)))
     await settle()
-    expect(await observed(2)).toBeUndefined()
-    expect(await observed(6)).toEqual(['a'])
+    expect(await observed('two', 2)).toBeUndefined()
+    expect(await observed('one', 6)).toBeUndefined()
+    expect(await observed('two', 6)).toEqual(['a'])
+    expect(held.matches({ input: { tenant: 'two', n: 6 } })).toBe(true)
     expect(events).toEqual(['add a {"kind":"a"}'])
     expect(acks(socket).map((a) => [a.id, a.revision, a.error])).toEqual([
       ['a', 1, undefined],
@@ -455,7 +459,7 @@ describe('onObserverAdded / onObserverRemoved', () => {
       ['a', 3, undefined],
     ])
     expect(ref.observers()).toEqual([held])
-    expect(held).toMatchObject({ target: 't::target', capture: ['input', 'caller'], filters: above(5).filters })
+    expect(held).toMatchObject({ target: 't::target', capture: ['input', 'caller'], filters: view('two', 5).filters })
 
     // its late rejection carries the revision announced last; listed again, it is re-acked with it
     held.reject('GONE', 'config reloaded')

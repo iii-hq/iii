@@ -496,11 +496,20 @@ export type InvocationResultMessage = {
    */
   baggage?: string
   /**
-   * Host → engine (`observe.v2`): the observers iii's delivery selected for
-   * this routed call. Left out when empty, and by a function with
-   * `onObserverDeliver`.
+   * Host → engine (`observe.v2`): the observers the function's match hook
+   * (`onObserverMatch`) matched for this routed call, before their `on` and
+   * filters, which the engine evaluates; `[]` when it matched none. Left out
+   * by a function without a match hook: the engine then evaluates every
+   * active observer of the function.
    */
-  observed?: string[]
+  matched?: string[]
+  /**
+   * Host → engine (`observe.v2`): the function's deliver hook
+   * (`onObserverDeliver`) delivered this routed call, and the engine
+   * activates no observer for it. Sent only as `true`, and without
+   * `matched`.
+   */
+  delivered?: boolean
 }
 
 export type WorkerRegisteredMessage = {

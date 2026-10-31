@@ -14,8 +14,9 @@ import {
 
 /**
  * `iii.observe` against the real engine, on the routed path: every call goes
- * through the engine, and the worker that hosts the function delivers it
- * (observe.v2): it evaluates the filters, and the matched ids ride its answer.
+ * through the engine, which evaluates the observers' `on` and filters
+ * (decision 55). The worker that hosts the function runs its match and
+ * deliver hooks, and its answer says how the call is delivered.
  */
 afterEach(closeWorkers)
 
@@ -24,7 +25,7 @@ const RUN = crypto.randomUUID().slice(0, 8)
 
 const ALL = ['input', 'output', 'error', 'caller', 'metadata'] as const
 
-describe('observe: routed invocations (delivered by the host)', () => {
+describe('observe: routed invocations (filters evaluated by the engine)', () => {
   it('activates the target with the envelope when the filters on input, output and caller match', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
@@ -78,7 +79,7 @@ describe('observe: routed invocations (delivered by the host)', () => {
     })
   })
 
-  it('the host lists the matched observers on its answer, and sends no report for them', async () => {
+  it('the host answers with the result alone and sends no report: the engine activates the observer', async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
     owner.registerFunction(`e2e::quote-${RUN}`, async (qty: number) => ({ total: qty * 3 }))
@@ -89,9 +90,74 @@ describe('observe: routed invocations (delivered by the host)', () => {
     await expect(watcher.call({ function_id: `e2e::quote-${RUN}`, payload: 2 })).resolves.toEqual({ total: 6 })
     await waitFor(() => got.length === 1, 'the activation')
     const answer = frames.frames.find((f) => f.type === 'invocationresult')
-    expect(answer?.observed).toEqual([handle.id])
+    expect(answer).toBeDefined()
+    expect(answer).not.toHaveProperty('matched')
+    expect(answer).not.toHaveProperty('delivered')
     expect(frames.types).not.toContain('invocationsobserved')
     expect(got[0].data).toMatchObject({ input: 2, output: { total: 6 } })
+  })
+
+  it('a match hook names the observers on the answer (matched); the engine evaluates their filters', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner
+      .registerFunction(`e2e::ship-${RUN}`, async (input: { region: string; weight: number }) => input, {
+        args_format: { type: 'object', properties: { region: { type: 'string' } } },
+      })
+      .onObserverMatch({ observer: (obs) => obs.args.region as string, call: (call) => call.input.region })
+    const eu = collector(watcher, `e2e::on-eu-${RUN}`)
+    const heavy = collector(watcher, `e2e::on-eu-heavy-${RUN}`)
+    const us = collector(watcher, `e2e::on-us-${RUN}`)
+    const handles = [
+      watcher.observe({ function_id: `e2e::ship-${RUN}`, args: { region: 'eu' } }, `e2e::on-eu-${RUN}`),
+      watcher.observe(
+        { function_id: `e2e::ship-${RUN}`, args: { region: 'eu' }, filters: { 'input.weight': { $gte: 10 } } },
+        `e2e::on-eu-heavy-${RUN}`,
+      ),
+      watcher.observe({ function_id: `e2e::ship-${RUN}`, args: { region: 'us' } }, `e2e::on-us-${RUN}`),
+    ]
+    await Promise.all(handles.map((h) => h.ready()))
+    const frames = frameCounter(owner)
+    await watcher.call({ function_id: `e2e::ship-${RUN}`, payload: { region: 'eu', weight: 2 } })
+    await watcher.call({ function_id: `e2e::ship-${RUN}`, payload: { region: 'eu', weight: 12 } })
+    await waitFor(() => eu.length >= 2 && heavy.length >= 1, 'the activations')
+    await sleep(200)
+    expect(eu.map((a) => a.data.input)).toEqual([
+      { region: 'eu', weight: 2 },
+      { region: 'eu', weight: 12 },
+    ])
+    expect(heavy.map((a) => a.data.input)).toEqual([{ region: 'eu', weight: 12 }])
+    expect(us).toHaveLength(0)
+    const answers = frames.frames.filter((f) => f.type === 'invocationresult')
+    expect(answers.map((a) => (a.matched as string[]).sort())).toEqual([
+      [handles[0].id, handles[1].id].sort(),
+      [handles[0].id, handles[1].id].sort(),
+    ])
+  })
+
+  it('a deliver hook answers delivered: the engine activates nothing for the call', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    owner
+      .registerFunction(`e2e::ask-${RUN}`, async (q: string) => q)
+      .onObserverDeliver(async (call, observers) => {
+        const [obs] = observers
+        if (!obs) return 'nobody'
+        return owner.call({ observer: obs, payload: call.input })
+      })
+    const plain = collector(watcher, `e2e::on-ask-${RUN}`)
+    const handle = watcher.observe({ function_id: `e2e::ask-${RUN}` }, `e2e::on-ask-${RUN}`)
+    await handle.ready()
+    const frames = frameCounter(owner)
+    await watcher.call({ function_id: `e2e::ask-${RUN}`, payload: 'q-1' })
+    await waitFor(() => plain.length === 1, 'the call through the observer')
+    await sleep(200)
+    // the target received the hook's call through the observer, not an activation envelope
+    expect(plain).toHaveLength(1)
+    expect(plain[0].data).toBe('q-1')
+    const answer = frames.frames.find((f) => f.type === 'invocationresult' && f.function_id === `e2e::ask-${RUN}`)
+    expect(answer).toMatchObject({ delivered: true })
+    expect(answer).not.toHaveProperty('matched')
   })
 
   it("on: 'error' sees failures only; capture limits what travels; deliver: 'input' sends the input alone", async () => {

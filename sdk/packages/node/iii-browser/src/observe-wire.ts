@@ -167,8 +167,10 @@ export function decodeInvokeFunction(v: Raw): Omit<InvokeFunctionMessage, 'messa
 
 /**
  * An `invocationresult`. `result: null` is a value; an absent one is a
- * function that returned nothing. An empty `observed` is left out, and a
- * non-array one is read as absent.
+ * function that returned nothing. `matched` and `delivered` are read as the
+ * engine reads them (decision 55): `matched: null` is absent, an array is its
+ * string ids (`[]` included), and any other value is `[]`; `delivered` is
+ * kept only when it is `true`.
  */
 export function decodeInvocationResult(v: Raw): Omit<InvocationResultMessage, 'message_type'> {
   const msg: Omit<InvocationResultMessage, 'message_type'> = {
@@ -180,10 +182,10 @@ export function decodeInvocationResult(v: Raw): Omit<InvocationResultMessage, 'm
   if (error) msg.error = error
   if (typeof v.traceparent === 'string') msg.traceparent = v.traceparent
   if (typeof v.baggage === 'string') msg.baggage = v.baggage
-  if (Array.isArray(v.observed)) {
-    const observed = v.observed.filter((id): id is string => typeof id === 'string')
-    if (observed.length > 0) msg.observed = observed
+  if (v.matched !== undefined && v.matched !== null) {
+    msg.matched = Array.isArray(v.matched) ? v.matched.filter((id): id is string => typeof id === 'string') : []
   }
+  if (v.delivered === true) msg.delivered = true
   return msg
 }
 
@@ -296,7 +298,10 @@ export function buildInvokeFunction(init: {
 
 /**
  * An outbound `invocationresult`: `result` is left out when the function
- * returned nothing (`undefined`), `observed` when empty.
+ * returned nothing (`undefined`). A routed call's answer says how the call
+ * is delivered (decision 55): `delivered: true` (its deliver hook delivered
+ * it), or `matched` (the observers its match hook matched, `[]` when none),
+ * or neither; `delivered` outweighs `matched`, and only one is sent.
  */
 export function buildInvocationResult(init: {
   invocation_id: string
@@ -305,14 +310,16 @@ export function buildInvocationResult(init: {
   error?: ErrorBody
   traceparent?: string
   baggage?: string
-  observed?: readonly string[]
+  matched?: readonly string[]
+  delivered?: boolean
 }): Record<string, unknown> {
   const msg: Record<string, unknown> = { invocation_id: init.invocation_id, function_id: init.function_id }
   if (init.result !== undefined) msg.result = init.result
   if (init.error !== undefined) msg.error = init.error
   if (init.traceparent !== undefined) msg.traceparent = init.traceparent
   if (init.baggage !== undefined) msg.baggage = init.baggage
-  if (init.observed !== undefined && init.observed.length > 0) msg.observed = [...init.observed]
+  if (init.delivered === true) msg.delivered = true
+  else if (init.matched !== undefined) msg.matched = [...init.matched]
   return msg
 }
 

@@ -23,8 +23,9 @@
  *   (`output_is_input`);
  * - a routed call (an `invokefunction` from the engine, answered with
  *   `invocationresult`) of a function nobody observes, of one with a
- *   matching observer (its id rides the answer, no extra frame), and of the
- *   function with 1,000 equality-filtered observers.
+ *   matching observer, and of the function with 1,000 equality-filtered
+ *   observers: the engine evaluates their filters, so the host evaluates
+ *   none and its answer carries the result alone (decision 55).
  *
  * The fake engine (tests/observe-fake-engine.ts) confirms the functions with
  * the observers each case needs; the socket counts what the SDK sends, and
@@ -45,7 +46,8 @@ const FILTERED_OBSERVERS = 1_000
 const TIME_MS = 1000
 
 /** What the SDK put on the wire, counted without keeping the frames. */
-const wire = { reportFrames: 0, results: 0, observedResults: 0, other: 0 }
+/** `invocationresult` frames, and of them those that carry `matched` or `delivered` (decision 55). */
+const wire = { reportFrames: 0, results: 0, matchedResults: 0, deliveredResults: 0, other: 0 }
 /** Report items per function, and how many carried the value once (`output_is_input`, no `output`). */
 const items = new Map<string, { items: number; once: number }>()
 let answered: (() => void) | undefined
@@ -75,7 +77,8 @@ socket.send = (data: Buffer | string, callback?: (err?: Error | null) => void) =
     countItems(text)
   } else if (text.includes('"type":"invocationresult"')) {
     wire.results++
-    if (text.includes('"observed":')) wire.observedResults++
+    if (text.includes('"matched":')) wire.matchedResults++
+    if (text.includes('"delivered":')) wire.deliveredResults++
     answered?.()
   } else {
     wire.other++

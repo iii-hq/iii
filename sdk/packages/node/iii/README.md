@@ -92,6 +92,14 @@ await observer.ready()
 await observer.dispose()
 ```
 
+Filters are evaluated where the call is. The engine evaluates them for every
+call it routes, holding the call's input, caller and metadata and the
+answer's output or error. The SDK evaluates them for the calls a worker makes
+to its own functions in-process, which the engine never sees, and matches
+each call through an index of the filters' `$eq` and `$in` conditions: with
+1,000 observers that each filter on their own `input.tenant`, a call
+evaluates one filter.
+
 ### Hosting Observable Functions
 
 The worker that hosts a function decides what observing it means with four
