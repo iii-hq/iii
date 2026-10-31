@@ -8,10 +8,11 @@
 //! (protocol.md §3.2, §3.4; v2 §4.6).
 //!
 //! `InvocationHandler::handle_invocation_inner` asks
-//! [`ObserverRegistry::route`] before running a handler: one atomic load of the
-//! routed view and, only when some function is observed or hosted privately by
-//! a connection, one hash lookup, then one atomic load of the function's active
-//! set when the view holds the function. Unobserved, nothing is copied.
+//! [`ObserverRegistry::route`] before running a handler: one atomic load (how
+//! many functions the routed view routes) and, only when some function is
+//! observed or hosted privately by a connection, a load of the routed view and
+//! one hash lookup, then one atomic load of the function's active set when the
+//! view holds the function. Unobserved, nothing is copied.
 //! Observed, the hook keeps the parts of the invocation the active observers
 //! need, and once the result is known [`ObserverRegistry::complete`] hands it
 //! to an evaluator task, so the caller's reply never waits for filters or
@@ -521,15 +522,17 @@ impl ObserverRegistry {
     /// The active observers of `(namespace, function_id)`, when it has any:
     /// what [`Self::route`] answers, without the caller check. One atomic
     /// load while nothing is observed or hosted privately by a connection;
-    /// otherwise one hash lookup more, and the function's set cloned under
-    /// its read lock when the view holds the function.
+    /// otherwise the view's load and one hash lookup more, and the
+    /// function's set cloned under its read lock when the view holds the
+    /// function.
     #[inline]
     pub fn watch(&self, namespace: &str, function_id: &str) -> Option<Arc<ActiveSet>> {
-        let view = self.routed.load();
-        if view.is_empty() {
+        if self.routed_live.load(Ordering::Acquire) == 0 {
             return None;
         }
-        view.get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+        self.routed
+            .load()
+            .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
             .and_then(|routed| routed.active.load_full())
     }
 
@@ -537,9 +540,10 @@ impl ObserverRegistry {
     /// event source checks before building an event.
     #[inline]
     pub fn is_observed(&self, namespace: &str, function_id: &str) -> bool {
-        let view = self.routed.load();
-        !view.is_empty()
-            && view
+        self.routed_live.load(Ordering::Acquire) != 0
+            && self
+                .routed
+                .load()
                 .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
                 .is_some_and(|routed| routed.active.is_some())
     }

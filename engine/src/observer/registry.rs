@@ -843,30 +843,65 @@ impl ObserverRegistry {
             }
             return;
         };
-        let grace = Duration::from_millis(self.config().observer_grace_ms);
-        let registry = Arc::downgrade(self);
-        let timer = runtime.spawn(async move {
-            tokio::time::sleep(grace).await;
-            if let Some(registry) = registry.upgrade() {
-                registry.grace_elapsed(connection);
-            }
-        });
+        let now = tokio::time::Instant::now();
+        // A grace period past what an `Instant` holds ends in 30 years, as
+        // `tokio::time::sleep` takes it.
+        let deadline = now
+            .checked_add(Duration::from_millis(self.config().observer_grace_ms))
+            .unwrap_or_else(|| now + Duration::from_secs(86_400 * 365 * 30));
         if let Some(previous) = self.departed.insert(
             connection,
             Departed {
                 token: reattach_token,
-                timer: timer.abort_handle(),
+                deadline,
+                timer: None,
             },
-        ) {
-            previous.timer.abort();
+        ) && let Some(timer) = previous.timer
+        {
+            timer.abort();
+        }
+        if self.queue_grace(deadline, connection) {
+            return;
+        }
+        let registry = Arc::downgrade(self);
+        let timer = runtime.spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            if let Some(registry) = registry.upgrade() {
+                registry.grace_due(connection, deadline);
+            }
+        });
+        // Unless a `Reattach` or another close came first.
+        if let Some(mut departed) = self.departed.get_mut(&connection)
+            && departed.deadline == deadline
+        {
+            departed.timer = Some(timer.abort_handle());
         }
     }
 
-    fn grace_elapsed(&self, connection: Uuid) {
+    /// The grace period that `connection`'s close started, ending at
+    /// `deadline`, ended: its observers are disposed, unless a `Reattach`
+    /// came first or a later close started another grace period.
+    pub(super) fn grace_due(&self, connection: Uuid, deadline: tokio::time::Instant) {
         // A `Reattach` that claimed the record first owns these observers now.
+        let Some((_, departed)) = self
+            .departed
+            .remove_if(&connection, |_, departed| departed.deadline == deadline)
+        else {
+            return;
+        };
+        self.end_grace(connection, departed);
+    }
+
+    /// Ends `connection`'s grace period now, whatever its deadline.
+    #[cfg(test)]
+    fn grace_elapsed(&self, connection: Uuid) {
         let Some((_, departed)) = self.departed.remove(&connection) else {
             return;
         };
+        self.end_grace(connection, departed);
+    }
+
+    fn end_grace(&self, connection: Uuid, departed: Departed) {
         for observer in self.observing_for(connection) {
             if observer.observing_connection() == connection
                 && !observer.with_flags(|flags| flags.observing_connected)
@@ -924,7 +959,9 @@ impl ObserverRegistry {
             self.reattach_late(previous, token, connection);
             return false;
         };
-        departed.timer.abort();
+        if let Some(timer) = &departed.timer {
+            timer.abort();
+        }
         // `Held` hashes and compares the observer's address, which never
         // changes while the entry holds it: its interior mutability is not
         // part of the key.
@@ -1488,6 +1525,188 @@ mod tests {
         assert!(registry.is_empty());
         assert!(registry.by_connection.is_empty(), "nothing by connection");
         assert!(registry.by_target.is_empty(), "nothing by target");
+    }
+
+    /// An engine whose observers wait `grace_ms` for their worker, with one
+    /// active observer `obs` of `test::src` from the returned worker. The
+    /// drop-export task runs: the worker's `observe` started it.
+    async fn observing_with_grace(
+        grace_ms: u64,
+    ) -> (
+        Arc<Engine>,
+        crate::worker_connections::WorkerConnection,
+        tokio::sync::mpsc::Receiver<crate::engine::Outbound>,
+    ) {
+        let engine = engine_with_functions();
+        engine.observers.set_config(ObserversConfig {
+            observer_grace_ms: grace_ms,
+            ..(*engine.observers.config()).clone()
+        });
+        let (worker, socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &worker,
+            test_support::request("obs", "test::src", "test::dst", None),
+        )
+        .await;
+        assert!(engine.observers.drop_export.load(Ordering::Acquire));
+        (engine, worker, socket)
+    }
+
+    /// The drop-export task ends a grace period at its deadline, longer than
+    /// the task's interval or shorter: the disconnect starts no timer of its
+    /// own.
+    #[tokio::test(start_paused = true)]
+    async fn the_drop_export_task_ends_a_grace_period_at_its_deadline() {
+        use std::time::Duration;
+        for grace_ms in [30_000, 100] {
+            let (engine, worker, _socket) = observing_with_grace(grace_ms).await;
+            let registry = engine.observers.clone();
+            registry.connection_closed(worker.id, worker.reattach_token);
+            assert!(
+                registry
+                    .departed
+                    .get(&worker.id)
+                    .is_some_and(|departed| departed.timer.is_none()),
+                "no timer of its own"
+            );
+            tokio::time::sleep(Duration::from_millis(grace_ms - 1)).await;
+            assert_eq!(state(&engine, "obs"), Some(ObserverState::Suspended));
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            assert!(
+                registry.get("obs").is_none(),
+                "disposed after {grace_ms} ms"
+            );
+            assert!(registry.departed.is_empty());
+        }
+    }
+
+    /// A second close of a connection starts a grace period of its own: the
+    /// first one's deadline passes with the observers still suspended,
+    /// whether the drop-export task or the connection's own timer ends it.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_close_starts_a_grace_period_of_its_own() {
+        use std::time::Duration;
+        for swept in [true, false] {
+            let (engine, worker, _socket) = observing_with_grace(300).await;
+            let registry = engine.observers.clone();
+            if !swept {
+                registry.drop_export.store(false, Ordering::Release);
+            }
+            registry.connection_closed(worker.id, worker.reattach_token);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            registry.connection_closed(worker.id, worker.reattach_token);
+            assert_eq!(
+                registry
+                    .departed
+                    .get(&worker.id)
+                    .is_some_and(|departed| departed.timer.is_some()),
+                !swept
+            );
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert_eq!(state(&engine, "obs"), Some(ObserverState::Suspended));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(registry.get("obs").is_none(), "disposed");
+        }
+    }
+
+    /// A worker that reattaches within its grace period keeps its observers
+    /// past the deadline, whether the drop-export task or the connection's
+    /// own timer would have ended it.
+    #[tokio::test(start_paused = true)]
+    async fn a_reattach_within_the_grace_period_outlives_its_deadline() {
+        use std::time::Duration;
+        for swept in [true, false] {
+            let (engine, first, _first_socket) = observing_with_grace(100).await;
+            let registry = engine.observers.clone();
+            if !swept {
+                registry.drop_export.store(false, Ordering::Release);
+            }
+            registry.connection_closed(first.id, first.reattach_token);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let (second, _second_socket) = test_support::worker(&engine);
+            let token = first.reattach_token.to_string();
+            assert!(
+                registry
+                    .reattach(&engine, first.id, Some(&token), &second)
+                    .await
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
+            assert_eq!(
+                registry.get("obs").unwrap().observing().connection,
+                second.id
+            );
+        }
+    }
+
+    /// A function whose last active observer leaves stays in the routed
+    /// view, found by nobody: the view is not copied, and the function's
+    /// next active observer takes the same entry. A copy of the view, when
+    /// another function joins it, leaves the function out.
+    #[tokio::test]
+    async fn a_function_without_active_observers_keeps_its_routed_entry_unfound() {
+        use crate::function::FunctionKey;
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let entry = |function: &str| {
+            registry
+                .routed
+                .load()
+                .get(&("default", function) as &dyn FunctionKey)
+                .cloned()
+        };
+        let (first, _first_socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &first,
+            test_support::request("obs", "test::src", "test::dst", None),
+        )
+        .await;
+        let held = entry("test::src").expect("in the view");
+        let view = registry.routed.load_full();
+
+        registry.connection_closed(first.id, first.reattach_token);
+        assert!(
+            Arc::ptr_eq(&registry.routed.load_full(), &view),
+            "not copied"
+        );
+        assert!(!registry.is_observed("default", "test::src"));
+        assert!(registry.watch("default", "test::src").is_none());
+        assert!(matches!(
+            registry.route("default", "test::src", None),
+            Ok(None)
+        ));
+        assert!(!registry.hosts_privately("default", "test::src", first.id));
+        assert_eq!(registry.routed_live.load(Ordering::Acquire), 0);
+
+        let (second, _second_socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(
+            registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await
+        );
+        assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
+        assert!(
+            Arc::ptr_eq(&registry.routed.load_full(), &view),
+            "not copied"
+        );
+        assert!(Arc::ptr_eq(&entry("test::src").unwrap(), &held));
+        assert!(registry.is_observed("default", "test::src"));
+        assert_eq!(registry.routed_live.load(Ordering::Acquire), 1);
+
+        registry.unobserve(second.id, "obs");
+        test_support::observe_request(
+            &engine,
+            &second,
+            test_support::request("back", "test::dst", "test::src", None),
+        )
+        .await;
+        assert!(entry("test::src").is_none(), "left out of the copy");
+        assert!(registry.is_observed("default", "test::dst"));
+        assert_eq!(registry.routed.load().len(), 1);
+        assert_eq!(registry.routed_live.load(Ordering::Acquire), 1);
     }
 
     /// With `disposed_retention_ms: 0` nothing is remembered past the grace
