@@ -788,15 +788,23 @@ impl Daemon {
         .cloned()
     }
 
-    /// The project `file` declares when it already finished loading. Never
-    /// loads one: a project read after a mutation reads the file it wrote.
+    /// The project `file` declares once a load of it finishes. Never starts
+    /// one: a project read after a mutation reads the file it wrote.
+    ///
+    /// A load already under way is waited for, not skipped: it may have read
+    /// the file before the caller's mutation wrote it, and would otherwise
+    /// finish afterwards holding what the mutation replaced. Loading takes no
+    /// daemon lock, so a caller holding the mutation lock cannot deadlock here.
     async fn loaded_project(&self, file: &Path) -> Option<Arc<Project>> {
         let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-        self.projects
-            .lock()
+        // The map lock is released before waiting, as in `project`.
+        let cell = self.projects.lock().await.get(&key).cloned()?;
+        // Holding no load, the cell runs this initializer, which fails and
+        // leaves it empty for the next caller to load from the new file.
+        cell.get_or_try_init(|| std::future::ready(Err(())))
             .await
-            .get(&key)
-            .and_then(|cell| cell.get().cloned())
+            .ok()
+            .cloned()
     }
 
     /// Every project that finished loading. A cell still being filled has no
@@ -3283,18 +3291,15 @@ containers:
         );
     }
 
-    /// `compose::update worker=state@latest` where `latest` is the release the
-    /// lock already holds rewrites the file and the lock and restarts nothing.
-    /// Status must report the new selector, not the one the held declaration
-    /// was loaded with.
+    /// Runs one ignored fixture of this module alone in a subprocess, so the
+    /// state directory it sets is its own.
     #[cfg(unix)]
-    #[test]
-    fn a_selector_only_update_reaches_status_without_a_restart() {
+    fn run_subprocess_fixture(name: &str) {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--ignored",
                 "--exact",
-                "daemon::tests::selector_only_update_fixture",
+                &format!("daemon::tests::{name}"),
                 "--nocapture",
             ])
             .env_remove("III_COMPOSE_STATE_DIR")
@@ -3313,10 +3318,31 @@ containers:
         );
     }
 
+    /// `compose::update worker=state@latest` where `latest` is the release the
+    /// lock already holds rewrites the file and the lock and restarts nothing.
+    /// Status must report the new selector, not the one the held declaration
+    /// was loaded with.
     #[cfg(unix)]
-    #[tokio::test]
-    #[ignore = "subprocess fixture: installs into a package cache of its own"]
-    async fn selector_only_update_fixture() {
+    #[test]
+    fn a_selector_only_update_reaches_status_without_a_restart() {
+        run_subprocess_fixture("selector_only_update_fixture");
+    }
+
+    /// The same update while a status call that read the file before the
+    /// update wrote it is still opening the project. Skipped, that load would
+    /// finish afterwards with the replaced selector, and status would report it
+    /// until the next restart.
+    #[cfg(unix)]
+    #[test]
+    fn a_selector_only_update_reaches_a_project_still_loading() {
+        run_subprocess_fixture("selector_only_update_during_a_load_fixture");
+    }
+
+    /// A project declaring `state@0.22.8`, locked, and a registry whose
+    /// `latest` for it is that same release. Sets this process's state
+    /// directory: call it only from a subprocess fixture.
+    #[cfg(unix)]
+    async fn selector_only_update_project() -> (tempfile::TempDir, wiremock::MockServer, PathBuf) {
         use sha2::{Digest, Sha256};
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
@@ -3389,23 +3415,35 @@ containers:
             serde_yaml::to_string(&lock).unwrap(),
         )
         .unwrap();
+        (root, server, path)
+    }
 
+    /// The selector and the locked version status reports for `state`.
+    #[cfg(unix)]
+    fn reported_state(
+        status: Vec<crate::project::ContainerStatus>,
+    ) -> (Option<String>, Option<String>) {
+        status
+            .into_iter()
+            .find(|container| container.container == "state")
+            .map(|container| (container.requested, container.version))
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "subprocess fixture: installs into a package cache of its own"]
+    async fn selector_only_update_fixture() {
+        let (_root, server, path) = selector_only_update_project().await;
         let daemon = Daemon::start(
             "ws://127.0.0.1:1/ws".to_string(),
             "selector-update".to_string(),
             None,
             EnginePolicy::External,
         );
-        let reported = |status: Vec<crate::project::ContainerStatus>| {
-            status
-                .into_iter()
-                .find(|container| container.container == "state")
-                .map(|container| (container.requested, container.version))
-                .unwrap()
-        };
         let before = daemon.status(Some(&path)).await.unwrap();
         assert_eq!(
-            reported(before.status().await),
+            reported_state(before.status().await),
             (Some("0.22.8".to_string()), Some("0.22.8".to_string()))
         );
 
@@ -3432,7 +3470,105 @@ containers:
             "the update restarted the project, so this is not the no-restart path"
         );
         assert_eq!(
-            reported(after.status().await),
+            reported_state(after.status().await),
+            (Some("latest".to_string()), Some("0.22.8".to_string()))
+        );
+        daemon.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "subprocess fixture: installs into a package cache of its own"]
+    async fn selector_only_update_during_a_load_fixture() {
+        let (_root, server, path) = selector_only_update_project().await;
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "selector-update-loading".to_string(),
+            None,
+            EnginePolicy::External,
+        );
+
+        // Stands in for `Daemon::project` behind a status call, held after it
+        // read the file: the update finds this project still loading.
+        let cell = Arc::clone(
+            daemon
+                .projects
+                .lock()
+                .await
+                .entry(path.canonicalize().unwrap())
+                .or_default(),
+        );
+        let (file_read, read) = tokio::sync::oneshot::channel();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let loading = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            let path = path.clone();
+            async move {
+                cell.get_or_try_init(|| async move {
+                    let mut compose = ComposeFile::load(&path)?;
+                    crate::lockfile::attach(&mut compose)?;
+                    file_read.send(()).unwrap();
+                    held.await.unwrap();
+                    Project::open_with_shutdown(
+                        &daemon.daemon_namespace,
+                        daemon.project_namespace(&compose),
+                        compose,
+                        Arc::clone(&daemon.engine),
+                        daemon.engine_url.clone(),
+                        daemon.shutdown.clone(),
+                    )
+                    .await
+                })
+                .await
+                .cloned()
+            }
+        });
+        read.await.unwrap();
+
+        let update = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            let path = path.clone();
+            crate::registry::TEST_REGISTRY.scope(server.uri(), async move {
+                daemon
+                    .update(
+                        Some(&path),
+                        &["state@latest".to_string()],
+                        "selector-update".to_string(),
+                    )
+                    .await
+            })
+        });
+        // The load finishes only once the update has written the file.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while crate::ComposeFile::load(&path)
+                .ok()
+                .and_then(|written| written.containers["state"].version.clone())
+                .as_deref()
+                != Some("latest")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the update never wrote the file");
+        release.send(()).unwrap();
+
+        let loaded = loading.await.unwrap().unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(10), update)
+            .await
+            .expect("the update must not wait on anything but the load")
+            .unwrap()
+            .unwrap();
+        let outcome = serde_json::to_value(outcome).unwrap();
+        assert_eq!(outcome["status"], "ok", "{outcome}");
+        assert_eq!(outcome["changed"], true, "{outcome}");
+        let after = daemon.status(Some(&path)).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&loaded, &after),
+            "status must answer with the project the held load produced"
+        );
+        assert_eq!(
+            reported_state(after.status().await),
             (Some("latest".to_string()), Some("0.22.8".to_string()))
         );
         daemon.shutdown().await;
