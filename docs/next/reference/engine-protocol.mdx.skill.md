@@ -436,9 +436,10 @@ through an observer that names metadata before sending it. The engine checks, in
 It then adds the observer's metadata, an `activation_id`, and `observe_depth + 1`, and routes the
 call. The call runs as an activation of the observer: the target runs under the session of the
 worker that created the observer, and the payload goes as given less a top-level
-`_caller_worker_id`, so the host's identity and grants authorize nothing the target does. The host
-is the call's `caller`. The deliver hook applies the observer's `on` and filters with
-`obs.matches(call)` before it calls.
+`_caller_worker_id`, so the host's identity and grants authorize nothing the target does. It is that
+worker's call: a private target takes it only when that worker hosts the target. The host is the
+call's `caller`. The deliver hook applies the observer's `on` and filters with `obs.matches(call)`
+before it calls.
 
 ```json
 {
@@ -929,10 +930,16 @@ has unobserved the earlier observer of that id. It tells the two observers' answ
   carries the current state.
 - On a new connection, the `Unobserve`s queued while disconnected go out before any replayed
   `Observe`, so the engine disposes the earlier observer before it reads the new one's `Observe`.
+- An `ObserveResult` that refuses the `Observe` (`state: "error"`) is that observer's last answer,
+  and the observer leaves the list when it arrives. Disposing a refused observer sends nothing. A
+  dispose whose `Unobserve` went out before the refusal arrived ends when the refusal arrives.
 
-The engine's `disposed` for the earlier observer, sent before it read the new `Observe`, reaches
-the earlier observer's handle, and the new handle gets its own answers only. An SDK refuses an
-`observe` whose id one of its live handles holds, with `OBSERVER_ID_CONFLICT` and nothing sent.
+The engine's `disposed` for the earlier observer, sent before it read the new `Observe`, reaches the
+earlier observer's handle, and the new handle gets its own answers only. The engine stores nothing
+for a refused `Observe`, and ignores an `Unobserve` of an id that none of the connection's observers
+holds: nothing answers it, and another connection's observer of that id stays as it was. An SDK
+refuses an `observe` whose id one of its live handles holds, with `OBSERVER_ID_CONFLICT` and nothing
+sent.
 
 ### `FunctionRegistered`
 

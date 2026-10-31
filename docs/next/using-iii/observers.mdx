@@ -706,7 +706,9 @@ metric, by function and reason.
 - `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
   each state change with its reason, and returns a way to unsubscribe. Listeners run outside the
   connection's read path, so a listener can call the worker.
-- `dispose()` (`Dispose(ctx)` in Go) removes the observer. A disposed observer is not replayed.
+- `dispose()` (`Dispose(ctx)` in Go) removes the observer. A disposed observer is not replayed. When
+  the engine refused the `observe`, `dispose()` sends nothing and returns at once. Called before the
+  refusal arrives, it returns when the refusal arrives.
 
 <Tabs>
   <Tab title="Node / TypeScript">

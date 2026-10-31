@@ -194,7 +194,8 @@ differ, this file wins, and the spec is updated to match.
     `_caller_worker_id` from its payload, as from every observed value it
     delivers (decision 40). The host chose the payload and the observing
     worker chose the target, so the host's authority reaches neither the
-    target nor what the target calls. The host is the call's `caller`.
+    target nor what the target calls. The host is the call's `caller`. A
+    private target checks the observing worker too (decision 57).
 50. **Engine-hosted ids.** The engine hosts the sources it registers. A
     worker that registers one of their ids while the engine module that
     hosts it is running is refused (`FUNCTION_NAMESPACE_CONFLICT`, naming no
@@ -315,6 +316,17 @@ differ, this file wins, and the spec is updated to match.
     40, 49), the reports of local calls, match keys and `for_observer`
     (decision 52) behave as their own decisions say, and every observer
     receives what it receives for every call.
+
+57. **A call through an observer is the observing worker's call.** The
+    engine checks a private target against the observing connection, the
+    one whose session the call runs under (decision 49): the target takes
+    the call when the observing worker hosts it, and refuses it
+    (`FORBIDDEN`) otherwise, whichever connection hosts the observed
+    function and sent the call. An activation is the engine's call, which a
+    private target refuses. A private function cannot be a target (spec
+    §6: `FORBIDDEN` at `observe`, and an observer whose target registers as
+    private goes to `error`), so the check decides the calls that arrive
+    while such a registration reaches the observer.
 
 ## SDKs (all five)
 
@@ -489,6 +501,16 @@ differ, this file wins, and the spec is updated to match.
       The engine's late `disposed` for the earlier observer, sent before the
       engine read the new `observe`, therefore reaches the earlier handle,
       and the new handle hears its own answers only.
+    - **A refusal is the handle's last answer.** An `observeresult` that
+      refuses an `observe` (state `error`) answers the oldest listed handle
+      of the id that has no answer yet (rule 2), and that handle leaves the
+      id's list when the refusal arrives. Its `dispose()` then sends nothing
+      and resolves at once. A `dispose()` called before the refusal arrived
+      has sent its `unobserve` already, and resolves when the refusal
+      arrives, with no wait for a `disposed`. The engine stores nothing for
+      a refused `observe`, and ignores an `unobserve` of an id that none of
+      the connection's observers holds: that `unobserve` changes nothing,
+      and nothing answers it.
 
 ## CLI and crates
 

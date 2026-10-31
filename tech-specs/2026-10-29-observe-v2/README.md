@@ -133,6 +133,12 @@ iii.observe(
   `error`). Once the handle is disposed the id is free at once: the SDK
   attributes the engine's answers by the order of the frames, so the late
   `disposed` of the earlier observer never reaches the new one (decision 56).
+- **A refused `observe`** (its `observeresult` is `error`) gets no other
+  answer. Its handle's `dispose()` sends nothing and resolves at once; a
+  `dispose()` called before the refusal arrived resolves when it arrives.
+  The engine stores nothing for a refused `observe` and ignores an
+  `unobserve` of an id none of the connection's observers holds (decision
+  56).
 
 ### 3.1 Calling functions
 
@@ -460,6 +466,8 @@ iii.call({ observer: obs, payload, action: CallAction.Void() })        // fire-a
   observing worker's session, and the payload goes as given less a top-level
   `_caller_worker_id` (decision 49). The host is the call's `caller`. The
   hook applies the observer's filters with `obs.matches(call)`, as above.
+- It is the observing worker's call: a private target takes it only when
+  the observing worker hosts the target (decision 57).
 - It takes no metadata: its target's metadata argument is the observer's
   registration metadata (`options.metadata` of `observe`), as for iii's
   delivery. Every SDK refuses a call through an observer that names metadata
@@ -668,7 +676,8 @@ carrying the source's identity.
 
 - The engine accepts an `InvokeFunction` of a private function only from the
   connection that hosts it. Any other connection, and the engine itself
-  (hooks, middleware), gets `FORBIDDEN`.
+  (hooks, middleware), gets `FORBIDDEN`. A call through an observer is the
+  observing worker's call, and an activation is the engine's (decision 57).
 - A private function is observable, and its observers receive every call its
   worker makes.
 - A private function cannot be an observer's target (`FORBIDDEN` at `observe`).
