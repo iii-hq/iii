@@ -983,6 +983,15 @@ impl ObserverRegistry {
         };
         let run_now = {
             let mut flow = lock(&observer.flow);
+            // Disposal sets the state and then drains this queue under the
+            // lock: judging again here keeps an activation that passed the
+            // check above from running after it.
+            if !observer.is_active() {
+                drop(flow);
+                observer.fires.fetch_sub(1, Ordering::AcqRel);
+                drop_event(observer, observe_codes::INACTIVE);
+                return false;
+            }
             if flow.running < observer.policy.max_in_flight && flow.queue.is_empty() {
                 flow.running += 1;
                 Some(PendingActivation::running(completed.clone()))
@@ -3142,6 +3151,41 @@ mod tests {
             engine.observers.queue_budget.bytes.load(Ordering::SeqCst),
             0
         );
+    }
+
+    /// An activation that passed the state check and then waits for the
+    /// observer's flow lock while the observer is disposed must not run: it is
+    /// dropped `INACTIVE` and its fire is given back. The interleaving is
+    /// forced with the lock held, by sleeps (a late thread only makes the
+    /// test pass early, never fail).
+    #[tokio::test]
+    async fn an_activation_that_loses_a_race_with_dispose_does_not_fire() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let _sink = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let request = test_support::request("obs", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &worker, request).await;
+        let observer = engine.observers.get("obs").unwrap();
+        let registry = engine.observers.clone();
+
+        let held = super::lock(&observer.flow);
+        let activate = std::thread::spawn({
+            let (registry, observer) = (registry.clone(), observer.clone());
+            move || registry.activate(&observer, &event(0))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let dispose = std::thread::spawn({
+            let (registry, observer) = (registry.clone(), observer.clone());
+            move || registry.dispose(&observer, "UNOBSERVED", "disposed")
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        drop(held);
+        activate.join().unwrap();
+        dispose.join().unwrap();
+
+        assert_eq!(observer.fires.load(Ordering::SeqCst), 0, "no fire counted");
+        assert_eq!(observer.drops.snapshot().get("INACTIVE"), Some(&1));
     }
 
     /// An event larger than the whole of the queues' budget never queues:
