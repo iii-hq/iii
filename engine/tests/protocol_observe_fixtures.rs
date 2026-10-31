@@ -239,9 +239,12 @@ const OPTIONAL: &[(&str, &str)] = &[
     ("invokefunction-observer-call-namespace", "/namespace"),
     ("invokefunction-observer-call", "/caller"),
     ("invokefunction-workers-register", "/data/features"),
-    ("invocationresult-observed", "/observed"),
-    ("invocationresult-observed", "/result"),
-    ("invocationresult-observed-error", "/error"),
+    ("invocationresult-routed", "/result"),
+    ("invocationresult-matched", "/matched"),
+    ("invocationresult-matched", "/result"),
+    ("invocationresult-matched-error", "/error"),
+    ("invocationresult-matched-none", "/matched"),
+    ("invocationresult-delivered", "/delivered"),
     ("workerregistered", "/reattach_token"),
     ("workerregistered", "/features"),
     ("observeresult-error", "/error"),
@@ -457,16 +460,33 @@ fn fixtures_carry_the_documented_variants() {
         assert!(owner_worker_id.is_empty(), "{name}");
     }
 
-    for (name, observed) in [
-        ("invocationresult-observed", 2),
-        ("invocationresult-observed-error", 1),
-        ("invocationresult", 0),
-        ("invocationresult-not-function-owner", 0),
+    // How each answer says its routed call is delivered (decision 55):
+    // `None` not narrowed, `Some(n)` narrowed to n observers.
+    for (name, matched, delivered) in [
+        ("invocationresult-routed", None, false),
+        ("invocationresult-matched", Some(2), false),
+        ("invocationresult-matched-error", Some(1), false),
+        ("invocationresult-matched-none", Some(0), false),
+        ("invocationresult-delivered", None, true),
+        ("invocationresult", None, false),
+        ("invocationresult-not-function-owner", None, false),
     ] {
-        let Message::InvocationResult { observed: ids, .. } = message(name) else {
+        let Message::InvocationResult {
+            matched: ids,
+            delivered: by_host,
+            error,
+            ..
+        } = message(name)
+        else {
             panic!("{name}");
         };
-        assert_eq!(ids.len(), observed, "{name}");
+        assert_eq!(ids.as_ref().map(Vec::len), matched, "{name}");
+        assert_eq!(by_host, delivered, "{name}");
+        assert_eq!(
+            error.is_some(),
+            name.ends_with("error") || name.ends_with("owner"),
+            "{name}"
+        );
     }
 
     let Message::InvokeFunction {

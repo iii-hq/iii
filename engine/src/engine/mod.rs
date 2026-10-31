@@ -785,7 +785,8 @@ impl Engine {
                     error: Some(payload_too_large_error(size, limit, upgrade)),
                     traceparent,
                     baggage,
-                    observed: Vec::new(),
+                    matched: None,
+                    delivered: false,
                 };
                 let fallback_payload = serde_json::to_string(&fallback).ok()?;
                 (fallback_payload.len() <= limit).then_some((fallback, fallback_payload))
@@ -1051,7 +1052,8 @@ impl Engine {
                                             error: None,
                                             traceparent: response_traceparent,
                                             baggage: response_baggage,
-                                            observed: Vec::new(),
+                                            matched: None,
+                                            delivered: false,
                                         },
                                     )
                                     .await;
@@ -1068,7 +1070,8 @@ impl Engine {
                                             error: Some(err),
                                             traceparent: response_traceparent,
                                             baggage: response_baggage,
-                                            observed: Vec::new(),
+                                            matched: None,
+                                            delivered: false,
                                         },
                                     )
                                     .await;
@@ -1091,7 +1094,8 @@ impl Engine {
                                         }),
                                         traceparent: response_traceparent,
                                         baggage: response_baggage,
-                                        observed: Vec::new(),
+                                        matched: None,
+                                        delivered: false,
                                     },
                                 )
                                 .await;
@@ -1468,7 +1472,8 @@ impl Engine {
                                         error,
                                         traceparent: None,
                                         baggage: None,
-                                        observed: Vec::new(),
+                                        matched: None,
+                                        delivered: false,
                                     },
                                 )
                                 .await;
@@ -1508,7 +1513,8 @@ impl Engine {
                                     )),
                                     traceparent: None,
                                     baggage: None,
-                                    observed: Vec::new(),
+                                    matched: None,
+                                    delivered: false,
                                 },
                             )
                             .await;
@@ -1553,7 +1559,8 @@ impl Engine {
                                 )),
                                 traceparent: traceparent.clone(),
                                 baggage: baggage.clone(),
-                                observed: Vec::new(),
+                                matched: None,
+                                delivered: false,
                             },
                         )
                         .await;
@@ -1596,7 +1603,8 @@ impl Engine {
                                         )),
                                         traceparent: traceparent.clone(),
                                         baggage: baggage.clone(),
-                                        observed: Vec::new(),
+                                        matched: None,
+                                        delivered: false,
                                     },
                                 )
                                 .await;
@@ -1691,7 +1699,8 @@ impl Engine {
                                     error: None,
                                     traceparent,
                                     baggage,
-                                    observed: Vec::new(),
+                                    matched: None,
+                                    delivered: false,
                                 },
                                 Err(err) => Message::InvocationResult {
                                     invocation_id: inv_id,
@@ -1700,7 +1709,8 @@ impl Engine {
                                     error: Some(err),
                                     traceparent,
                                     baggage,
-                                    observed: Vec::new(),
+                                    matched: None,
+                                    delivered: false,
                                 },
                             };
                             engine.send_msg(&w, response).await;
@@ -1824,7 +1834,8 @@ impl Engine {
                                                         error: None,
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
-                                                        observed: Vec::new(),
+                                                        matched: None,
+                                                        delivered: false,
                                                     },
                                                 )
                                                 .await;
@@ -1862,7 +1873,8 @@ impl Engine {
                                                         )),
                                                         traceparent: traceparent.clone(),
                                                         baggage: baggage.clone(),
-                                                        observed: Vec::new(),
+                                                        matched: None,
+                                                        delivered: false,
                                                     },
                                                 )
                                                 .await;
@@ -1920,14 +1932,16 @@ impl Engine {
                 error,
                 traceparent: _,
                 baggage: _,
-                observed,
+                matched,
+                delivered,
             } => {
                 tracing::debug!(
                     function_id = %function_id,
                     invocation_id = %invocation_id,
                     result = ?result,
                     error = ?error,
-                    observed = observed.len(),
+                    matched = ?matched.as_ref().map(Vec::len),
+                    delivered,
                     "InvocationResult"
                 );
 
@@ -1941,23 +1955,26 @@ impl Engine {
                     let Message::InvocationResult {
                         result,
                         error,
-                        observed,
+                        matched,
+                        delivered,
                         ..
                     } = msg.into_owned()
                     else {
                         unreachable!("matched InvocationResult above");
                     };
-                    // An `observe.v2` host delivered the call itself: the
-                    // routed hook activates the observers it lists (v2
-                    // §8.2). The list is read from no other connection, and
-                    // never reaches the caller.
+                    // An `observe.v2` host's answer says how the call is
+                    // delivered (v2 §8.2, decision 55): to the observers the
+                    // engine's evaluation selects, among all of them or among
+                    // those the function's match hook matched, or by the
+                    // function's deliver hook. Read from no other connection,
+                    // and never forwarded to the caller.
                     let delivered =
                         worker
                             .features
                             .observe_v2()
-                            .then_some(crate::observer::HostDelivery {
+                            .then(|| crate::observer::HostDelivery {
                                 host: worker.id,
-                                observed,
+                                delivery: crate::observer::RoutedDelivery::of(matched, delivered),
                             });
                     let result = match error {
                         Some(err) => Err(err),
@@ -2890,7 +2907,8 @@ impl Engine {
                         error: Some(error),
                         traceparent: None,
                         baggage: None,
-                        observed: Vec::new(),
+                        matched: None,
+                        delivered: false,
                     },
                 )
                 .await;
@@ -2904,7 +2922,8 @@ impl Engine {
                     error: Some(error),
                     traceparent: None,
                     baggage: None,
-                    observed: Vec::new(),
+                    matched: None,
+                    delivered: false,
                 };
                 // A result never waits on report backpressure, so it takes a
                 // hold of its own.
@@ -3011,7 +3030,8 @@ impl Engine {
                             )),
                             traceparent: None,
                             baggage: None,
-                            observed: Vec::new(),
+                            matched: None,
+                            delivered: false,
                         },
                     )
                     .await;
@@ -5185,7 +5205,8 @@ mod tests {
             error: None,
             traceparent: None,
             baggage: None,
-            observed: Vec::new(),
+            matched: None,
+            delivered: false,
         };
 
         engine
@@ -5452,7 +5473,8 @@ mod tests {
                     error: None,
                     traceparent: None,
                     baggage: None,
-                    observed: Vec::new(),
+                    matched: None,
+                    delivered: false,
                 },
             )
             .await
@@ -6670,7 +6692,8 @@ mod tests {
             }),
             traceparent: None,
             baggage: None,
-            observed: Vec::new(),
+            matched: None,
+            delivered: false,
         };
 
         engine
@@ -8746,7 +8769,8 @@ mod tests {
                     error: Some(payload_too_large_error(70_000_000, 67_108_864, false)),
                     traceparent: None,
                     baggage: None,
-                    observed: Vec::new(),
+                    matched: None,
+                    delivered: false,
                 },
             )
             .await
@@ -8779,7 +8803,8 @@ mod tests {
             error: None,
             traceparent: None,
             baggage: None,
-            observed: Vec::new(),
+            matched: None,
+            delivered: false,
         };
 
         let (fallback, fallback_payload) = engine
@@ -8900,7 +8925,8 @@ mod tests {
             error: None,
             traceparent: None,
             baggage: None,
-            observed: Vec::new(),
+            matched: None,
+            delivered: false,
         };
         let serialized = serde_json::to_string(&message).expect("serialize oversized result");
         assert!(serialized.len() > crate::workers::worker::MAX_JSON_MESSAGE_BYTES);

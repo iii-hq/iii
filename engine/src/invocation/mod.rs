@@ -45,12 +45,13 @@ async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
 }
 
 /// How a routed call ended: the executor's answer and, from a host that
-/// declared `observe.v2`, the observers its delivery matched.
+/// declared `observe.v2`, how its observers are delivered.
 #[derive(Debug)]
 pub struct Completion {
     pub result: Result<Option<Value>, ErrorBody>,
-    /// Set when the answering connection declared `observe.v2`: it delivered
-    /// the call itself, and the engine evaluates none of its observers.
+    /// Set when the answering connection declared `observe.v2`: whether its
+    /// match hook narrowed the call's observers, or its deliver hook
+    /// delivered the call (decision 55).
     pub delivered: Option<HostDelivery>,
 }
 
@@ -513,11 +514,15 @@ impl InvocationHandler {
                             );
                         }
                     }
-                    // Unobserved when it began: what its host listed is
-                    // counted, not activated.
+                    // Unobserved when it began: the observers its host's
+                    // match hook named are counted, not activated.
                     None => {
                         if let Some(delivered) = delivered {
-                            registry.not_held(namespace, &function_id, &delivered.observed);
+                            registry.not_held(
+                                namespace,
+                                &function_id,
+                                delivered.delivery.named(),
+                            );
                         }
                     }
                 }

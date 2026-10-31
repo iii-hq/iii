@@ -270,7 +270,8 @@ async fn run_service_worker(ws_url: String) {
                             error: None,
                             traceparent,
                             baggage,
-                            observed: Vec::new(),
+                            matched: None,
+                            delivered: false,
                         };
                         socket
                             .send(WsMessage::Text(

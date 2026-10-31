@@ -474,15 +474,30 @@ impl Client {
     }
 
     /// Answers a forwarded `invokefunction` with `result`, as a host that
-    /// declared `observe.v2` does: listing the observers its delivery
-    /// matched.
-    pub async fn reply_observed(&mut self, invoke: &Value, result: Value, observed: &[&str]) {
+    /// declared `observe.v2` does for a function with a match hook: listing
+    /// the observers the hook matched (`matched`, decision 55). A plain
+    /// [`Self::reply`] is the answer for a function without one.
+    pub async fn reply_matched(&mut self, invoke: &Value, result: Value, matched: &[&str]) {
         self.send(json!({
             "type": "invocationresult",
             "invocation_id": invoke["invocation_id"],
             "function_id": invoke["function_id"],
             "result": result,
-            "observed": observed,
+            "matched": matched,
+        }))
+        .await;
+    }
+
+    /// Answers a forwarded `invokefunction` with `result`, as a host that
+    /// declared `observe.v2` does for a function whose deliver hook
+    /// delivered the call (`delivered: true`, decision 55).
+    pub async fn reply_delivered(&mut self, invoke: &Value, result: Value) {
+        self.send(json!({
+            "type": "invocationresult",
+            "invocation_id": invoke["invocation_id"],
+            "function_id": invoke["function_id"],
+            "result": result,
+            "delivered": true,
         }))
         .await;
     }

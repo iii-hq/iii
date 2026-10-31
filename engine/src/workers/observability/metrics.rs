@@ -263,8 +263,9 @@ pub struct EngineMetrics {
     // Observers (protocol.md §3.6). Per function, not per observer, to bound
     // cardinality.
     /// Activations started, by observed `function_id` and `delivery`:
-    /// `engine` (the engine evaluated the call), `host` (the call's host
-    /// listed or reported the match, for a routed or a local call) or
+    /// `engine` (the engine matched the call among every active observer),
+    /// `host` (the call's host named the observer: its match hook's
+    /// `matched` on a routed call's answer, or a report of a local call) or
     /// `observer_call` (a call through an observer).
     pub observer_activations_total: Counter<u64>,
     /// Events not delivered to an observer, by observed `function_id` and

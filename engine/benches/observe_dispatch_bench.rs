@@ -4,7 +4,8 @@
 //!
 //! The observed function and the observers' target both run in-process, so
 //! the measurement is the engine's own work: the call, the routed-path hook
-//! that evaluates every observer's filters, and the activations it starts.
+//! that matches the observers' filters (through the function's filter index),
+//! and the activations it starts.
 //! An iteration ends when every activation it started has reached the target,
 //! so fan-out is paid for inside the measured time, not left as a backlog;
 //! calls go in batches that wait for the evaluator, so none is dropped.
@@ -12,8 +13,8 @@
 //! - `observe_dispatch/default/<n>`: `n` observers without filters on the
 //!   function: every call activates all of them (0 is the unobserved baseline).
 //! - `observe_dispatch/filtered/<n>`: `n` observers each filtering on its own
-//!   value of `input.k`: every call matches exactly one, so what grows with `n`
-//!   is the filter work.
+//!   value of `input.k`: every call matches exactly one. The index finds it
+//!   with one lookup, so the cost does not grow with `n`.
 //!
 //! The observers are created by a WebSocket worker, as in the observe e2e
 //! tests (their support module is shared).
@@ -51,6 +52,9 @@ async fn setup(observers: usize, filtered: bool) -> Bench {
         // the drop policy.
         default_max_in_flight: 4096,
         max_queue_per_observer: 65_536,
+        // Every observer comes from one connection.
+        max_per_connection: 8192,
+        max_per_function: 8192,
         ..ObserversConfig::default()
     })
     .await;
@@ -132,7 +136,7 @@ fn observe_dispatch(c: &mut Criterion) {
                 .iter_custom(|iters| run(&bench, iters, n as u64, 0));
         });
     }
-    for n in [16usize, 256, 1024] {
+    for n in [16usize, 256, 1024, 4000] {
         let bench = rt.block_on(setup(n, true));
         group.bench_with_input(BenchmarkId::new("filtered", n), &n, |b, &n| {
             b.to_async(&rt)

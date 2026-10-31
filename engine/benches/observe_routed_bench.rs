@@ -1,16 +1,23 @@
-//! What observing a function costs a routed call whose host delivers it
-//! (v2 §8.2): the host lists the observers its delivery matched on its
-//! answer (`invocationresult.observed`), so an observed call takes the same
-//! frames as an unobserved one.
+//! What observing a function costs a routed call whose host declared
+//! `observe.v2` (v2 §8.2, decision 55): the engine evaluates the observers'
+//! filters with the input it kept and the answer's result, and the host's
+//! answer says among which observers (`invocationresult.matched`), so an
+//! observed call takes the same frames as an unobserved one.
 //!
 //! A WebSocket worker that declared `observe.v2` hosts the function and
-//! answers every call at once, listing every observer of the function. The
-//! observers' target runs in-process. An iteration is one call, from the
-//! engine to the host and back, and ends when every activation it started
-//! has reached the target.
+//! answers every call at once. The observers' target runs in-process. An
+//! iteration is one call, from the engine to the host and back, and ends
+//! when every activation it started has reached the target.
 //!
-//! - `observe_routed/observed/<n>`: `n` observers listed on every answer (0
-//!   is the unobserved baseline).
+//! - `observe_routed/observed/<n>`: `n` observers without filters, the
+//!   answer the result alone (a function without a match hook): the engine
+//!   evaluates every observer (0 is the unobserved baseline).
+//! - `observe_routed/matched/<n>`: the same observers, every one named in
+//!   the answer's `matched` (a match hook that matched them all).
+//! - `observe_routed/filtered/<n>`: `n` observers each filtering on its own
+//!   value of `input.k`, the answer the result alone: every call matches one
+//!   observer, found through the function's filter index (the load test's
+//!   `filters` scenario).
 //!
 //! The host counts what crosses its socket while the bench runs, and each
 //! measurement asserts it: one `invokefunction` in and one
@@ -55,12 +62,27 @@ struct Bench {
     _observer: observe_support::Client,
 }
 
-async fn setup(observers: usize) -> Bench {
+/// The observers a case creates, and what the host answers.
+#[derive(Clone, Copy, PartialEq)]
+enum Case {
+    /// No filters; the answer carries the result alone.
+    Observed,
+    /// No filters; the answer names every observer in `matched`.
+    Matched,
+    /// Observer `i` filters on `input.k == i`; the answer carries the result
+    /// alone.
+    Filtered,
+}
+
+async fn setup(observers: usize, case: Case) -> Bench {
     let t = spawn_engine(ObserversConfig {
         // Room for every activation: the bench measures work, not the drop
         // policy.
         default_max_in_flight: 4096,
         max_queue_per_observer: 65_536,
+        // Every observer comes from one connection.
+        max_per_connection: 8192,
+        max_per_function: 8192,
         ..ObserversConfig::default()
     })
     .await;
@@ -78,11 +100,16 @@ async fn setup(observers: usize) -> Bench {
 
     let mut observer = connect(&t, "observer", true).await;
     let ids: Vec<String> = (0..observers).map(|i| format!("obs-{i}")).collect();
-    for id in &ids {
+    for (i, id) in ids.iter().enumerate() {
+        let source = if case == Case::Filtered {
+            json!({ "function_id": OBSERVED, "filters": { "input.k": { "$eq": i } } })
+        } else {
+            json!({ "function_id": OBSERVED })
+        };
         observer
             .observe_active(json!({
                 "id": id,
-                "source": { "function_id": OBSERVED },
+                "source": source,
                 "target": { "function_id": TARGET },
             }))
             .await;
@@ -98,8 +125,12 @@ async fn setup(observers: usize) -> Bench {
         while let Some(frame) = host.recv().await {
             if frame["type"] == "invokefunction" && frame["function_id"] == OBSERVED {
                 seen.invoked.fetch_add(1, Ordering::Relaxed);
-                host.reply_observed(&frame, json!({ "ok": true }), &listed)
-                    .await;
+                if case == Case::Matched {
+                    host.reply_matched(&frame, json!({ "ok": true }), &listed)
+                        .await;
+                } else {
+                    host.reply(&frame, json!({ "ok": true })).await;
+                }
                 seen.answered.fetch_add(1, Ordering::Relaxed);
             } else {
                 seen.other.fetch_add(1, Ordering::Relaxed);
@@ -115,16 +146,18 @@ async fn setup(observers: usize) -> Bench {
     }
 }
 
-/// `iters` calls, one at a time, then until `per_call * iters` activations
-/// arrived. Asserts the frames the host saw meanwhile.
-async fn run(b: &Bench, iters: u64, per_call: u64) -> Duration {
+/// `iters` calls, one at a time (call `i` with `input.k = i % keys`), then
+/// until `per_call * iters` activations arrived. Asserts the frames the host
+/// saw meanwhile.
+async fn run(b: &Bench, iters: u64, per_call: u64, keys: u64) -> Duration {
     let expected = b.delivered.load(Ordering::Relaxed) + per_call * iters;
     let invoked = b.frames.invoked.load(Ordering::Relaxed);
     let answered = b.frames.answered.load(Ordering::Relaxed);
     let deadline = Instant::now() + Duration::from_secs(60);
     let start = Instant::now();
     for i in 0..iters {
-        let out = b.t.engine.call(OBSERVED, json!({ "k": i })).await;
+        let k = if keys > 0 { i % keys } else { i };
+        let out = b.t.engine.call(OBSERVED, json!({ "k": k })).await;
         assert!(out.is_ok(), "call failed: {out:?}");
     }
     while b.delivered.load(Ordering::Relaxed) < expected {
@@ -153,22 +186,33 @@ fn observe_routed(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(8));
     group.throughput(Throughput::Elements(1));
 
-    for n in [0usize, 1, 8, 64] {
-        let bench = rt.block_on(setup(n));
-        group.bench_with_input(BenchmarkId::new("observed", n), &n, |b, &n| {
-            b.to_async(&rt)
-                .iter_custom(|iters| run(&bench, iters, n as u64));
-        });
-        let calls = bench.calls.load(Ordering::Relaxed);
-        let invoked = bench.frames.invoked.load(Ordering::Relaxed);
-        let answered = bench.frames.answered.load(Ordering::Relaxed);
-        let per_call = |frames: u64| frames as f64 / calls.max(1) as f64;
-        eprintln!(
-            "observe_routed/observed/{n}: {calls} calls; at the host {invoked} invokefunction in ({:.3} per call), {answered} invocationresult out ({:.3} per call), {} other frames",
-            per_call(invoked),
-            per_call(answered),
-            bench.frames.other.load(Ordering::Relaxed),
-        );
+    let cases = [
+        (Case::Observed, "observed", &[0usize, 1, 8, 64][..]),
+        (Case::Matched, "matched", &[1, 8, 64][..]),
+        (Case::Filtered, "filtered", &[16, 256, 1024, 4000][..]),
+    ];
+    for (case, name, sizes) in cases {
+        for &n in sizes {
+            let bench = rt.block_on(setup(n, case));
+            let (per_call, keys) = match case {
+                Case::Filtered => (1, n as u64),
+                Case::Observed | Case::Matched => (n as u64, 0),
+            };
+            group.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
+                b.to_async(&rt)
+                    .iter_custom(|iters| run(&bench, iters, per_call, keys));
+            });
+            let calls = bench.calls.load(Ordering::Relaxed);
+            let invoked = bench.frames.invoked.load(Ordering::Relaxed);
+            let answered = bench.frames.answered.load(Ordering::Relaxed);
+            let frames_per_call = |frames: u64| frames as f64 / calls.max(1) as f64;
+            eprintln!(
+                "observe_routed/{name}/{n}: {calls} calls; at the host {invoked} invokefunction in ({:.3} per call), {answered} invocationresult out ({:.3} per call), {} other frames",
+                frames_per_call(invoked),
+                frames_per_call(answered),
+                bench.frames.other.load(Ordering::Relaxed),
+            );
+        }
     }
     group.finish();
 }

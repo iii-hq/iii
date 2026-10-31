@@ -19,15 +19,21 @@
 //! observer watches one function, so its activations stay in engine arrival
 //! order while different functions are evaluated in parallel.
 //!
-//! Who matches a call's observers (v2 §8.2, decision 2): a host that declared
-//! `observe.v2` delivers its own calls, listing the observers its delivery
-//! matched on each routed answer (`invocationresult.observed`) and reporting
-//! its local calls (`invocationsobserved`); the engine activates those. A
-//! routed call of such a host that ends without its answer (its caller left,
-//! the engine could not send it, the host went away) activates nothing: each
-//! of its observers counts a `CANCELLED` drop. The engine evaluates the
-//! observers' `on` and filters itself for every other call: to a host without
-//! `observe.v2`, and to an engine-hosted or HTTP-invoked function.
+//! Who matches a call's observers (v2 §8.2, decisions 2 and 55). The engine
+//! evaluates the observers' `on` and filters of every routed call, with the
+//! input it kept and the answer's result, through each function's
+//! [`iii_filter::FilterIndex`]: about one lookup per indexed path, whatever
+//! the number of observers. A host that declared `observe.v2` keeps what is
+//! worker code: its answer (`invocationresult`) lists the observers its
+//! function's match hook matched (`matched`), among which the engine
+//! evaluates, or says that its deliver hook delivered the call
+//! (`delivered`), and the engine activates nothing; an answer with neither
+//! leaves every active observer to the engine's evaluation. A routed call of
+//! such a host that ends without its answer (its caller left, the engine
+//! could not send it, the host went away) activates nothing: each of its
+//! observers counts a `CANCELLED` drop. The host matches and reports its
+//! local calls itself (`invocationsobserved`), and the engine activates the
+//! observers each report names.
 //!
 //! A matched event is shared, not copied, by the observers it activates: a
 //! queued activation holds a pointer to it, and the target's argument is built
@@ -75,10 +81,10 @@ pub struct ObservedCall {
 
 struct Tracked {
     set: Arc<ActiveSet>,
-    /// The function's host delivers its calls itself: only its answer
-    /// activates the call's observers.
+    /// The function's host declared `observe.v2`: only its answer says how
+    /// the call is delivered.
     host_delivers: bool,
-    /// What the call keeps (see [`ActiveSet::needs_for`]).
+    /// What the call keeps (see [`ActiveSet::needs`]).
     needs: Needs,
     /// The evaluator had room when the call began: what it needs was kept.
     admitted: bool,
@@ -301,9 +307,11 @@ fn approx_size(value: &Value) -> usize {
     }
 }
 
-/// `delivery` label: the engine evaluated the call.
+/// `delivery` label: the engine matched the call among every active
+/// observer.
 const ENGINE_DELIVERY: &str = "engine";
-/// `delivery` label: the call's host reported the match.
+/// `delivery` label: the call's host named the observer (its match hook's
+/// `matched`, or a report).
 const HOST_DELIVERY: &str = "host";
 /// `delivery` label: a call through an observer.
 const OBSERVER_CALL_DELIVERY: &str = "observer_call";
@@ -326,31 +334,70 @@ fn unstamped(mut value: Value) -> Value {
 }
 
 /// What a host that declared `observe.v2` answered a routed call with besides
-/// its result (`invocationresult.observed`, v2 §8.2).
+/// its result (v2 §8.2, decision 55).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostDelivery {
     /// The connection that answered.
     pub host: Uuid,
-    /// The observers its delivery matched, as listed: empty when it matched
-    /// none, or when the function delivers its calls itself.
-    pub observed: Vec<String>,
+    /// How the call is delivered.
+    pub delivery: RoutedDelivery,
 }
 
-/// Which of a completion's active observers it activates.
+/// How a routed call an `observe.v2` host answered is delivered: what its
+/// `invocationresult` says with `matched` and `delivered` (decision 55).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoutedDelivery {
+    /// Neither: the host did not narrow the call's observers (its function
+    /// has no match hook). The engine activates every active observer whose
+    /// `on` and filters match the call.
+    Every,
+    /// `matched`: the observers the function's match hook matched, possibly
+    /// none. The engine activates those of them that are active observers of
+    /// the function and whose `on` and filters match the call.
+    Matched(Vec<String>),
+    /// `delivered: true`: the function's deliver hook delivered the call. The
+    /// engine activates nothing.
+    Delivered,
+}
+
+impl RoutedDelivery {
+    /// What an answer's `matched` and `delivered` say; `delivered` outweighs
+    /// `matched`.
+    pub fn of(matched: Option<Vec<String>>, delivered: bool) -> Self {
+        match (delivered, matched) {
+            (true, _) => Self::Delivered,
+            (false, None) => Self::Every,
+            (false, Some(ids)) => Self::Matched(ids),
+        }
+    }
+
+    /// The observers the host's match hook named: none unless `Matched`.
+    pub fn named(&self) -> &[String] {
+        match self {
+            Self::Matched(ids) => ids,
+            Self::Every | Self::Delivered => &[],
+        }
+    }
+}
+
+/// Which of a completion's active observers it activates: those whose `on`
+/// and filters match it, among all of them or among the ones its host's
+/// match hook named.
 enum Matching {
-    /// Those whose `on` and filters match it: the engine evaluates the call.
+    /// Among every active observer: the engine matched the call by itself.
     Filters,
-    /// Those the call's host listed (sorted, each once) whose `on` takes its
-    /// status: the host evaluated the call.
-    Listed(Vec<String>),
+    /// Among the ones the call's host named (sorted, each once): its
+    /// function's match hook matched them.
+    Matched(Vec<String>),
 }
 
 impl Matching {
-    /// The `delivery` label of the activations it starts.
+    /// The `delivery` label of the activations it starts: who chose the
+    /// observers it evaluates.
     fn delivery(&self) -> &'static str {
         match self {
             Self::Filters => ENGINE_DELIVERY,
-            Self::Listed(_) => HOST_DELIVERY,
+            Self::Matched(_) => HOST_DELIVERY,
         }
     }
 
@@ -359,7 +406,7 @@ impl Matching {
     fn concerns(&self, observer: &Observer) -> bool {
         match self {
             Self::Filters => true,
-            Self::Listed(ids) => is_listed(ids, &observer.id),
+            Self::Matched(ids) => is_listed(ids, &observer.id),
         }
     }
 }
@@ -572,12 +619,12 @@ impl ObserverRegistry {
     }
 
     /// Starts tracking an observed invocation: copies the input and metadata
-    /// only when an active observer needs them, and only when the evaluator
-    /// has room (otherwise the call counts an `OVERFLOW` drop when it
-    /// completes, without having copied anything). The input is kept whoever
-    /// will match the call's observers: the envelope of an observer its host
-    /// lists is built from it too. Whether its host or the engine matches
-    /// them is decided when the call begins, from the host it goes to.
+    /// only when an active observer needs them (its filters read them, or it
+    /// captures or delivers them), and only when the evaluator has room
+    /// (otherwise the call counts an `OVERFLOW` drop when it completes,
+    /// without having copied anything). Whether only the host's answer says
+    /// how the call is delivered is decided when the call begins, from the
+    /// host it goes to.
     ///
     /// Observers see the payload as the caller sent it: a call a worker makes
     /// carries the engine's `_caller_worker_id` stamp, which the copy leaves
@@ -592,7 +639,7 @@ impl ObserverRegistry {
     ) -> ObservedCall {
         let admitted = self.evaluator_has_room(&set);
         let host_delivers = self.host_delivers(&set.function);
-        let needs = set.needs_for(host_delivers);
+        let needs = set.needs;
         let input = (admitted && needs.input).then(|| {
             self.payload_copies.fetch_add(1, Ordering::Relaxed);
             Arc::new(unstamped(body.clone()))
@@ -638,8 +685,9 @@ impl ObserverRegistry {
         self.events_built.load(Ordering::Relaxed)
     }
 
-    /// Observed routed invocations the evaluators handled so far: evaluated,
-    /// or activated from the observers their host listed.
+    /// Observed routed invocations the evaluators handled so far: evaluated
+    /// against every active observer, or against the ones their host's match
+    /// hook named.
     pub fn evaluated(&self) -> u64 {
         self.evaluated.load(Ordering::Acquire)
     }
@@ -654,16 +702,19 @@ impl ObserverRegistry {
     /// goes out without waiting for filters or activations. Keeps the output
     /// only when an active observer needs it.
     ///
-    /// `delivered` is what an `observe.v2` host answered besides the result:
-    /// the call's observers are then the ones it listed, each activated once
-    /// it is checked to be an active observer of the function (decisions 3,
-    /// 36). Its result is their `output`, and its `error` their `error`. An
-    /// answer from a connection that does not host the function activates
-    /// nothing it lists (`REPORTER_NOT_OWNER`). Without `delivered`, a call
-    /// whose host delivers its calls ended without its answer: each active
-    /// observer counts a `CANCELLED` drop, since only the host knows which of
-    /// them would have matched. The engine evaluates the observers of every
-    /// other call itself.
+    /// `delivered` is what an `observe.v2` host answered besides the result
+    /// (decision 55): nothing, and the engine evaluates every active
+    /// observer; the observers its match hook matched, and the engine
+    /// evaluates those of them that are active observers of the function; or
+    /// that its deliver hook delivered the call, and nothing is activated.
+    /// The answer's result is the observers' `output`, and its `error` their
+    /// `error` (decisions 36, 39). An answer from a connection that does not
+    /// host the function activates none of the observers it names
+    /// (`REPORTER_NOT_OWNER`). Without `delivered`, a call whose host
+    /// declared `observe.v2` ended without its answer: each active observer
+    /// counts a `CANCELLED` drop, since only the host's match and deliver
+    /// hooks know which of them it is for. The engine evaluates the
+    /// observers of every other call against all of them.
     #[allow(clippy::too_many_arguments)]
     pub fn complete(
         self: &Arc<Self>,
@@ -686,20 +737,24 @@ impl ObserverRegistry {
                 return;
             }
             None => Matching::Filters,
-            Some(HostDelivery { host, observed }) => {
-                if observed.is_empty() {
-                    return;
+            Some(HostDelivery { host, delivery }) => match delivery {
+                RoutedDelivery::Delivered => return,
+                RoutedDelivery::Every => Matching::Filters,
+                RoutedDelivery::Matched(ids) => {
+                    if ids.is_empty() {
+                        return;
+                    }
+                    if !self.hosts(host, namespace, function_id) {
+                        let key = (namespace.to_string(), function_id.to_string());
+                        self.drop_matched(&key, &ids, observe_codes::REPORTER_NOT_OWNER);
+                        return;
+                    }
+                    let mut ids = ids;
+                    ids.sort_unstable();
+                    ids.dedup();
+                    Matching::Matched(ids)
                 }
-                if !self.hosts(host, namespace, function_id) {
-                    let key = (namespace.to_string(), function_id.to_string());
-                    self.drop_matched(&key, &observed, observe_codes::REPORTER_NOT_OWNER);
-                    return;
-                }
-                let mut ids = observed;
-                ids.sort_unstable();
-                ids.dedup();
-                Matching::Listed(ids)
-            }
+            },
         };
         if !call.admitted || !self.evaluator_has_room(&call.set) {
             for observer in call.set.observers.iter().filter(|o| matching.concerns(o)) {
@@ -767,16 +822,17 @@ impl ObserverRegistry {
         })
     }
 
-    /// The observers a host listed for a call of `(namespace, function_id)`
-    /// that had no active observer when it began: the engine kept nothing to
-    /// build their events from, so each is counted as `INACTIVE`.
+    /// The observers a host's match hook named for a call of `(namespace,
+    /// function_id)` that had no active observer when it began: the engine
+    /// kept nothing to build their events from, so each is counted as
+    /// `INACTIVE`.
     pub(crate) fn not_held(&self, namespace: &str, function_id: &str, observed: &[String]) {
         for id in observed {
             self.drop_not_held(namespace, function_id, id);
         }
     }
 
-    /// One id a host listed that the call cannot activate: an observer of the
+    /// One id a host named that the call cannot activate: an observer of the
     /// function that was not active when the call began, or no observer of
     /// it (gone since, or another function's). `INACTIVE`, as for a report
     /// item naming one.
@@ -890,9 +946,10 @@ impl ObserverRegistry {
         self.evaluators.get().map(Vec::as_slice)
     }
 
-    /// Activates the observers one completed invocation matched: evaluating
-    /// the active observers' `on` and filters, or taking the ones its host
-    /// listed.
+    /// Activates the observers one completed invocation matched: those whose
+    /// `on` and filters match it, among every active observer (looked up in
+    /// the function's filter index) or among the ones its host's match hook
+    /// named, in creation order.
     pub(super) fn evaluate(self: &Arc<Self>, evaluation: Evaluation) {
         let Evaluation {
             set,
@@ -902,7 +959,7 @@ impl ObserverRegistry {
             ctx,
             ..
         } = evaluation;
-        let needs = set.needs_for(matches!(matching, Matching::Listed(_)));
+        let needs = set.needs;
         completed.error = error
             .and_then(|e| serde_json::to_value(e).ok())
             .map(Arc::new);
@@ -913,41 +970,35 @@ impl ObserverRegistry {
                 .map(Arc::new);
         }
         let completed = Arc::new(completed);
+        let doc = Doc {
+            input: completed.input.as_deref(),
+            output: completed.output.as_deref(),
+            error: completed.error.as_deref(),
+            caller: completed.caller.as_deref(),
+            metadata: completed.metadata.as_deref(),
+        };
         match matching {
             Matching::Filters => {
-                let doc = Doc {
-                    input: completed.input.as_deref(),
-                    output: completed.output.as_deref(),
-                    error: completed.error.as_deref(),
-                    caller: completed.caller.as_deref(),
-                    metadata: completed.metadata.as_deref(),
-                };
-                for leaf in set.observers.leaves() {
-                    for observer in leaf {
-                        if accepts(&observer.on, completed.success) && observer.filter.matches(&doc)
-                        {
-                            self.activate(observer, &completed);
-                        }
+                for (_, observer) in set.filters.matches(&doc) {
+                    if accepts(&observer.on, completed.success) {
+                        self.activate(observer, &completed);
                     }
                 }
             }
-            Matching::Listed(ids) => {
-                let mut held = vec![false; ids.len()];
-                for leaf in set.observers.leaves() {
-                    for observer in leaf {
-                        let Ok(at) = ids.binary_search_by(|id| id.as_str().cmp(&observer.id))
-                        else {
-                            continue;
-                        };
-                        held[at] = true;
-                        if accepts(&observer.on, completed.success) {
-                            self.activate(observer, &completed);
+            Matching::Matched(ids) => {
+                let mut held = Vec::with_capacity(ids.len());
+                for id in &ids {
+                    match set.held(self, id) {
+                        Some(observer) => held.push(observer),
+                        None => {
+                            self.drop_not_held(&completed.namespace, &completed.function_id, id)
                         }
                     }
                 }
-                for (id, held) in ids.iter().zip(held) {
-                    if !held {
-                        self.drop_not_held(&completed.namespace, &completed.function_id, id);
+                held.sort_by_key(|observer| observer.seq());
+                for observer in &held {
+                    if accepts(&observer.on, completed.success) && observer.filter.matches(&doc) {
+                        self.activate(observer, &completed);
                     }
                 }
             }
@@ -1215,8 +1266,8 @@ impl ObserverRegistry {
     /// its `output`. Observers receive `input` and `output` without the
     /// engine's `_caller_worker_id` stamp.
     ///
-    /// A routed call's host reports its matches on the call's answer
-    /// (`invocationresult.observed`) only: an item for a call the engine
+    /// A routed call's host names its observers on the call's answer
+    /// (`invocationresult.matched`) only: an item for a call the engine
     /// routed to the reporting connection is dropped as `INVALID_REPORT`
     /// (decision 38), while the engine waits on it and, once it is
     /// answered, while `answered` (the connection's) keeps it.
@@ -2373,9 +2424,9 @@ mod tests {
         (host, a, b, socket)
     }
 
-    /// Completes one observed call of `test::src` with `{ n }` as its input,
-    /// answered by `host` listing `observed`.
-    fn complete_delivered(engine: &Engine, n: u64, host: Uuid, observed: &[&str]) {
+    /// Completes one observed call of `test::src` with `{ n }` as its input
+    /// and output, answered by `host` with `delivery`.
+    fn complete_delivered(engine: &Engine, n: u64, host: Uuid, delivery: super::RoutedDelivery) {
         let registry = &engine.observers;
         let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
         let set = registry.watch(DEFAULT_NAMESPACE, "test::src").unwrap();
@@ -2386,39 +2437,74 @@ mod tests {
             "test::src",
             Uuid::new_v4(),
             &Ok(Ok(Some(json!({ "n": n })))),
-            Some(super::HostDelivery {
-                host,
-                observed: observed.iter().map(|id| id.to_string()).collect(),
-            }),
+            Some(super::HostDelivery { host, delivery }),
             &ctx,
         );
     }
 
-    /// A completion its host delivered activates each active observer it
-    /// lists once, whatever the observer's filters, and nothing else.
-    #[tokio::test]
-    async fn a_delivered_completion_activates_what_its_host_lists() {
-        let engine = Arc::new(Engine::new());
-        let (host, mut a, mut b, _socket) = hosted_source(&engine).await;
-        let before = engine.observers.evaluated();
-        complete_delivered(&engine, 1, host, &["a", "a", "not-an-observer"]);
-        assert_eq!(test_support::next(&mut a).await, json!({ "n": 1 }));
-        until(|| engine.observers.evaluated() == before + 1).await;
-        assert_eq!(engine.observers.fires("a"), Some(1), "listed twice");
-        assert_eq!(engine.observers.fires("b"), Some(0), "not listed");
-        assert!(b.try_recv().is_err());
-
-        // From anyone but the host, the list activates nothing.
-        complete_delivered(&engine, 2, Uuid::new_v4(), &["a"]);
-        let info = engine.observers.get_info(&engine, None, "a").unwrap();
-        assert_eq!(info.dropped.get("REPORTER_NOT_OWNER"), Some(&1));
-        assert_eq!(engine.observers.fires("a"), Some(1));
+    fn matched(ids: &[&str]) -> super::RoutedDelivery {
+        super::RoutedDelivery::Matched(ids.iter().map(|id| id.to_string()).collect())
     }
 
-    /// When the evaluator has no room for a delivered completion, only the
-    /// observers its host listed count the `OVERFLOW`.
+    /// An `observe.v2` host's answer (decision 55): without `matched`, the
+    /// engine activates every active observer whose filters match; with it,
+    /// those of the named ones whose filters match, each once; with
+    /// `delivered`, none.
     #[tokio::test]
-    async fn a_delivered_completion_without_room_charges_what_it_lists() {
+    async fn a_hosts_answer_says_among_which_observers_the_engine_evaluates() {
+        let engine = Arc::new(Engine::new());
+        let (host, mut a, mut b, _socket) = hosted_source(&engine).await;
+        let fires = |id: &str| engine.observers.fires(id).unwrap_or_default();
+        async fn settled(engine: &Engine, before: u64) {
+            until(|| engine.observers.evaluated() > before).await;
+        }
+
+        // Not narrowed: `a`'s filter takes 99 only, `b` takes everything.
+        let before = engine.observers.evaluated();
+        complete_delivered(&engine, 1, host, super::RoutedDelivery::Every);
+        assert_eq!(test_support::next(&mut b).await, json!({ "n": 1 }));
+        settled(&engine, before).await;
+        assert_eq!((fires("a"), fires("b")), (0, 1));
+        let before = engine.observers.evaluated();
+        complete_delivered(&engine, 99, host, super::RoutedDelivery::Every);
+        assert_eq!(test_support::next(&mut a).await, json!({ "n": 99 }));
+        assert_eq!(test_support::next(&mut b).await, json!({ "n": 99 }));
+        settled(&engine, before).await;
+        assert_eq!((fires("a"), fires("b")), (1, 2));
+
+        // Narrowed to `a` (named twice) and an id that is no observer: `a`
+        // fires once when its filter matches, `b` is not named.
+        let before = engine.observers.evaluated();
+        complete_delivered(&engine, 99, host, matched(&["a", "a", "not-an-observer"]));
+        assert_eq!(test_support::next(&mut a).await, json!({ "n": 99 }));
+        settled(&engine, before).await;
+        assert_eq!((fires("a"), fires("b")), (2, 2));
+        let before = engine.observers.evaluated();
+        complete_delivered(&engine, 1, host, matched(&["a", "b"]));
+        assert_eq!(test_support::next(&mut b).await, json!({ "n": 1 }));
+        settled(&engine, before).await;
+        assert_eq!((fires("a"), fires("b")), (2, 3), "a's filter refuses 1");
+        assert!(a.try_recv().is_err() && b.try_recv().is_err());
+
+        // Narrowed to none, and delivered by the host: nothing is evaluated.
+        let before = engine.observers.evaluated();
+        complete_delivered(&engine, 99, host, matched(&[]));
+        complete_delivered(&engine, 99, host, super::RoutedDelivery::Delivered);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(engine.observers.evaluated(), before);
+        assert_eq!((fires("a"), fires("b")), (2, 3));
+
+        // From anyone but the host, the named observers activate nothing.
+        complete_delivered(&engine, 99, Uuid::new_v4(), matched(&["a"]));
+        let info = engine.observers.get_info(&engine, None, "a").unwrap();
+        assert_eq!(info.dropped.get("REPORTER_NOT_OWNER"), Some(&1));
+        assert_eq!(fires("a"), 2);
+    }
+
+    /// When the evaluator has no room for a completion its host narrowed,
+    /// only the observers its match hook named count the `OVERFLOW`.
+    #[tokio::test]
+    async fn a_narrowed_completion_without_room_charges_what_it_names() {
         let engine = Arc::new(Engine::new());
         engine
             .observers
@@ -2427,7 +2513,7 @@ mod tests {
         let (host, _a, _b, _socket) = hosted_source(&engine).await;
         // No yield in between: the evaluator task cannot drain the queue.
         for n in 0..2 {
-            complete_delivered(&engine, n, host, &["a"]);
+            complete_delivered(&engine, n, host, matched(&["a"]));
         }
         let dropped = |id: &str| {
             engine
@@ -2586,9 +2672,10 @@ mod tests {
         })
     }
 
-    /// `iii.observer.activations.total` labels an activation by who matched
-    /// it (decision 12): `engine` when the engine evaluated the call, `host`
-    /// when the call's host listed it on its answer or reported it.
+    /// `iii.observer.activations.total` labels an activation by who chose
+    /// the observers it was matched among (decision 12): `engine` when the
+    /// engine evaluated every active observer, `host` when the call's host
+    /// named it, on its answer (its match hook) or in a report.
     #[tokio::test]
     async fn activations_are_labelled_by_who_matched_them() {
         let engine = Arc::new(Engine::new());
@@ -2608,7 +2695,7 @@ mod tests {
         complete_call(&engine, json!({ "n": 0 }));
         until(|| engine.observers.in_flight("obs") == Some((1, 0))).await;
         complete_call(&engine, json!({ "n": 1 }));
-        complete_delivered(&engine, 2, host, &["obs"]);
+        complete_delivered(&engine, 2, host, matched(&["obs"]));
         let full = engine.observers.report(
             host,
             DEFAULT_NAMESPACE,
@@ -2668,7 +2755,8 @@ mod tests {
 
     /// `iii.observer.activations.total` counts each activation under the
     /// delivery that started it (decision 12): `engine` for a call the engine
-    /// evaluated, `host` for one whose host listed the observer, and
+    /// evaluated against every active observer (whoever hosts it), `host`
+    /// for one whose host's match hook named the observer, and
     /// `observer_call` for a call through the observer.
     #[tokio::test]
     async fn the_activation_counter_is_labelled_by_delivery() {
@@ -2698,9 +2786,12 @@ mod tests {
             (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
             (host.id, crate::engine::InvocationKind::Regular),
         );
-        complete_delivered(&engine, 2, host.id, &["obs"]);
+        complete_delivered(&engine, 2, host.id, matched(&["obs"]));
         test_support::next(&mut delivered).await;
         assert_eq!(count(super::HOST_DELIVERY), 1);
+        complete_delivered(&engine, 3, host.id, super::RoutedDelivery::Every);
+        test_support::next(&mut delivered).await;
+        assert_eq!(count(super::ENGINE_DELIVERY), 2);
 
         engine
             .observers
@@ -2729,14 +2820,14 @@ mod tests {
                 count(super::HOST_DELIVERY),
                 count(super::OBSERVER_CALL_DELIVERY),
             ],
-            [1, 1, 1]
+            [2, 1, 1]
         );
         assert_eq!(
             recorded.sum(
                 "iii.observer.activations.total",
                 &[("function_id", "test::src")]
             ),
-            3,
+            4,
             "no other label"
         );
     }
