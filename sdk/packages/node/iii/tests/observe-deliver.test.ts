@@ -603,6 +603,123 @@ describe('onObserverDeliver', () => {
   })
 })
 
+describe('local calls: observers matched through the index of their equality conditions (decision 55)', () => {
+  type Event = { tenant: string; n: number; fail?: boolean }
+  const tenantObservers = (count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      observerInfo(`tenant-${i}`, 'audit::tenant', {
+        filters: { 'input.tenant': { $eq: `t-${i % 500}` } },
+        on: i % 7 === 0 ? 'complete' : 'success',
+      }),
+    )
+  const others = [
+    observerInfo('big', 'audit::big', { filters: { 'input.n': { $gte: 10 } } }),
+    observerInfo('failures', 'audit::failures', { filters: { 'input.tenant': { $in: ['t-7', 't-8'] } }, on: 'error' }),
+    observerInfo('all', 'audit::all'),
+  ]
+
+  async function events(observers: Json[]) {
+    const { sdk, socket } = worker()
+    const ref = sdk.registerFunction('events::on-event', (event: Event) => {
+      if (event.fail) throw new Error('failed')
+      return event
+    })
+    socket.deliver(functionRegistered('events::on-event', observers, { revision: 1 }))
+    await settle()
+    socket.clear()
+    return { sdk, socket, ref }
+  }
+
+  it("reports the observers each observer's own evaluation accepts, in the order they joined, and evaluates a few filters", async () => {
+    const { sdk, socket, ref } = await events([...others.slice(0, 1), ...tenantObservers(1000), ...others.slice(1)])
+    const held = ref.observers() as unknown as (Observer & { filter: { matches: (doc: unknown) => boolean } })[]
+    expect(held).toHaveLength(1003)
+    const spies = held.map((obs) => vi.spyOn(obs.filter, 'matches'))
+    const calls: Event[] = [
+      { tenant: 't-7', n: 1 },
+      { tenant: 't-7', n: 12 },
+      { tenant: 't-499', n: 0 },
+      { tenant: 'nobody', n: 3 },
+      { tenant: 't-8', n: 1, fail: true },
+    ]
+    const expected: string[][] = []
+    for (const input of calls) {
+      const call = input.fail
+        ? { input, status: 'error' as const, error: { code: 'invocation_failed', message: 'failed' } }
+        : { input, output: input, status: 'success' as const }
+      expected.push(held.filter((obs) => obs.matches(call)).map((obs) => obs.id))
+    }
+    for (const spy of spies) spy.mockClear()
+    for (const input of calls)
+      await sdk.call({ function_id: 'events::on-event', payload: input }).catch(() => undefined)
+    await flushed()
+    expect(reportedItems(socket).map((i) => i.matched)).toEqual(expected.filter((ids) => ids.length > 0))
+    expect(expected[0]).toEqual(['tenant-7', 'tenant-507', 'all'])
+    // per call: the two filed under its tenant, and the two observers without an equality condition
+    const evaluated = spies.reduce((n, spy) => n + spy.mock.calls.length, 0)
+    expect(evaluated).toBeLessThanOrEqual(calls.length * 5)
+  })
+
+  it('a call matches the observers active when it started: one that joins or leaves while it runs is delivered as the snapshot says', async () => {
+    let release: () => void = () => undefined
+    const { sdk, socket } = worker()
+    sdk.registerFunction('events::on-event', async (event: Event) => {
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return event
+    })
+    socket.deliver(functionRegistered('events::on-event', tenantObservers(20), { revision: 1 }))
+    await settle()
+    socket.clear()
+    const during = async (change: Json) => {
+      const call = sdk.call({ function_id: 'events::on-event', payload: { tenant: 't-3', n: 1 } })
+      await settle()
+      socket.deliver(change)
+      await settle()
+      release()
+      await call
+      await flushed()
+    }
+    // joins: not delivered
+    await during(
+      observerAdded(
+        'events::on-event',
+        2,
+        observerInfo('late', 'audit::late', { filters: { 'input.tenant': { $eq: 't-3' } } }),
+      ),
+    )
+    // leaves: delivered, as the snapshot holds it
+    await during(observerRemoved('events::on-event', 3, 'tenant-3'))
+    // after both: the index holds the active set
+    const after = sdk.call({ function_id: 'events::on-event', payload: { tenant: 't-3', n: 2 } })
+    await settle()
+    release()
+    await after
+    await flushed()
+    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['tenant-3'], ['tenant-3', 'late'], ['late']])
+  })
+
+  it('an observer rejected late leaves the index; added again, it joins at the end', async () => {
+    const { sdk, socket, ref } = await events(tenantObservers(10))
+    const first = ref.observers()[0]
+    first.reject('GONE', 'released')
+    await settle()
+    await sdk.call({ function_id: 'events::on-event', payload: { tenant: 't-0', n: 1 } })
+    socket.deliver(
+      observerAdded(
+        'events::on-event',
+        2,
+        observerInfo('tenant-0', 'audit::tenant', { filters: { 'input.tenant': { $eq: 't-1' } } }),
+      ),
+    )
+    await settle()
+    await sdk.call({ function_id: 'events::on-event', payload: { tenant: 't-1', n: 1 } })
+    await flushed()
+    expect(reportedItems(socket).map((i) => i.matched)).toEqual([['tenant-1', 'tenant-0']])
+  })
+})
+
 describe('routed calls: the host delivers (v2 §8.2)', () => {
   const answer = (socket: ReturnType<typeof fake.lastSocket>, id: string) => fake.resultOf(socket, id)
 

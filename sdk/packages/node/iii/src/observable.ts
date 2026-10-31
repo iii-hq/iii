@@ -1,11 +1,11 @@
 /**
  * The host side of observe (v2 §4): per-function observer state, the
  * observer hooks of the worker and of the function, the `Observer` object
- * handed to them, matching (the key index), and the delivery of each call of
- * a hosted function.
+ * handed to them, matching (the key index, and the index of the filters'
+ * equality conditions), and the delivery of each call of a hosted function.
  */
 import { InvocationError, ObserveRejection } from './errors'
-import { type CompiledFilter, compileFilter, type FilterDoc } from './filter'
+import { type CompiledFilter, compileFilter, type FilterDoc, FilterIndex } from './filter'
 import type { CallerWire, ErrorBody, ObserverInfoWire } from './iii-types'
 import type {
   AddedHook,
@@ -335,6 +335,12 @@ export class FunctionObservers {
   private matchKeys?: MatchKeys
   /** Matching by keys: the active observers by key. */
   private index?: Map<string, Set<ObserverImpl>>
+  /**
+   * The active observers by their filters' equality conditions, in the order
+   * they joined the active set (decision 55). It changes with `compiled`, in
+   * the same step, and with the filters of a held observer served a new view.
+   */
+  private readonly filterIndex = new FilterIndex<ObserverImpl>()
   /** A match hook threw: logged once per function. */
   private matchFailureLogged = false
 
@@ -401,6 +407,16 @@ export class FunctionObservers {
       for (const obs of filed) if (obs.activatedSeq <= activations) found.add(obs)
     }
     return [...found]
+  }
+
+  /**
+   * The active observers whose `on` accepts a call that succeeded (`ok`) or
+   * failed and whose filters match `doc`, in the order of `compiled`. Matched
+   * through the index of their filters' equality conditions: the call
+   * evaluates the filters of the observers the index does not rule out.
+   */
+  selectActive(doc: FilterDoc, ok: boolean): ObserverImpl[] {
+    return this.filterIndex.matches(doc, (obs) => onAccepts(obs.on, ok))
   }
 
   observers(): readonly Observer[] {
@@ -575,6 +591,7 @@ export class FunctionObservers {
     obs.active = true
     obs.activatedSeq = ++this.activations
     this.compiled = [...this.compiled, obs]
+    this.filterIndex.insert(obs, obs.filter, obs.activatedSeq)
     this.file(obs)
   }
 
@@ -582,6 +599,7 @@ export class FunctionObservers {
     if (!obs.active) return
     obs.active = false
     this.compiled = this.compiled.filter((o) => o !== obs)
+    this.filterIndex.remove(obs)
     this.unfile(obs)
   }
 
@@ -680,11 +698,14 @@ export class FunctionObservers {
       }
       const keys = this.viewKeys(held, info, filter)
       if (keys === null) return false
-      // Filed again under the keys of the view it is served with.
+      // Filed again under the keys and the filters of the view it is served with.
       if (held.active) this.unfile(held)
       held.update(info, filter)
       if (keys !== undefined) held.keys = keys
-      if (held.active) this.file(held)
+      if (held.active) {
+        this.file(held)
+        this.filterIndex.insert(held, held.filter, held.activatedSeq)
+      }
     }
     held.revision = revision
     this.ack(info, revision, namespace)
@@ -937,10 +958,17 @@ export class Delivery {
     return error === thrown && call.error ? call.error : deliverErrorBody(error)
   }
 
-  /** The matched observers whose `on` and filters accept `call`. */
+  /**
+   * The matched observers whose `on` and filters accept `call`, in the order
+   * of `matched`. Without a match hook `matched` is the call's snapshot; while
+   * it is also the active set (no observer joined or left since the call
+   * started), they are found through the index of the filters' equality
+   * conditions. Otherwise each matched observer's filters are evaluated.
+   */
   private select(call: Call, matched: readonly ObserverImpl[]): ObserverImpl[] {
     const ok = call.status !== 'error'
     const doc = filterDoc(call)
+    if (matched === this.init.snapshot && matched === this.owner.compiled) return this.owner.selectActive(doc, ok)
     return matched.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
   }
 
