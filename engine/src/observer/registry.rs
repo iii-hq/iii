@@ -272,11 +272,11 @@ impl ObserverRegistry {
             return Ok(());
         }
         // A replay of an observer disposed meanwhile (max_fires, expiry, an
-        // admin's dispose while the worker was away, a new connection of its
-        // worker replacing it) stays disposed, whichever observer holds the id.
+        // admin's dispose, a new connection of its worker replacing it) stays
+        // disposed, whichever observer holds the id. The connection told of
+        // the disposal replays nothing: the id is free for it at once.
         if let Some(tombstone) = self.tombstones.get(request.id.as_str())
-            && tombstone.connection == worker.id
-            && tombstone.until > Instant::now()
+            && tombstone.answers(worker.id, Instant::now())
         {
             let reason = ErrorBody::clone(&tombstone.reason);
             drop(tombstone);
@@ -1056,6 +1056,8 @@ impl ObserverRegistry {
                 id,
                 Tombstone {
                     connection,
+                    // `connection` heard nothing of these disposals.
+                    told: None,
                     reason,
                     until,
                 },
@@ -1253,6 +1255,64 @@ mod tests {
         let observer = registry.get("obs").unwrap();
         assert_eq!(observer.observing_connection(), second.id);
         assert_eq!(observer.function.1, "test::dst");
+    }
+
+    /// An observer the engine disposes while its worker is connected frees
+    /// its id on that connection, which was told of the disposal: an
+    /// `observe` of the id from it is a new observer (decision 56). A replay
+    /// on a reattached connection is answered with the disposal: the
+    /// `disposed` may have been lost with the earlier connection.
+    #[tokio::test]
+    async fn an_id_the_engine_disposed_is_free_on_the_connection_it_told() {
+        use crate::protocol::Message;
+
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (first, _first_socket) = test_support::worker(&engine);
+        // Held across the reattach, which re-parents it.
+        test_support::observe_request(
+            &engine,
+            &first,
+            test_support::request("kept", "test::dst", "test::src", None),
+        )
+        .await;
+        let request = test_support::request("obs", "test::src", "test::dst", None);
+        for _ in 0..2 {
+            test_support::observe_request(&engine, &first, request.clone()).await;
+            registry.dispose(
+                &registry.get("obs").unwrap(),
+                observe_codes::EXPIRED,
+                "the observer's expires_in_ms elapsed",
+            );
+            assert!(registry.get("obs").is_none());
+            let tombstone = registry.tombstones.get("obs").unwrap();
+            assert_eq!(tombstone.told, Some(first.id));
+        }
+
+        registry.connection_closed(first.id, first.reattach_token);
+        let (second, mut socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(
+            registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await
+        );
+        received(&mut socket);
+        registry.observe(&engine, &second, request).await;
+        assert!(
+            registry.get("obs").is_none(),
+            "the replay did not create it"
+        );
+        match received(&mut socket).as_slice() {
+            [
+                Message::ObserveResult {
+                    state: ObserverState::Disposed,
+                    error: Some(error),
+                    ..
+                },
+            ] => assert_eq!(error.code, observe_codes::EXPIRED),
+            other => panic!("the disposal answers the replay, got {other:?}"),
+        }
     }
 
     /// An `observe` handled while its connection is being torn down joins
