@@ -9,7 +9,16 @@
 //! Matching a document resolves each indexed path once, looks its value up,
 //! and evaluates the whole filter of only the entries found there and of the
 //! scanned ones: about one lookup per indexed path plus one evaluation per
-//! candidate, however many filters the index holds.
+//! candidate, however many filters the index holds. The lists a document
+//! hits are merged in key order: a few by comparing their heads, more
+//! through a heap of their heads, so a document that hits `s` lists costs
+//! `O(log s)` per candidate. Where the lookups would spare little, the
+//! index evaluates every filter in key order, as a scan does: when it files
+//! fewer than two entries per indexed path, a lookup costs about what the
+//! evaluation it spares costs, and when a document's lookups leave half the
+//! entries or more, merging them costs more than evaluating the rest. A
+//! match therefore costs at most about a scan, plus one lookup per indexed
+//! path.
 //!
 //! The index rules out only entries whose condition the document fails, and
 //! evaluates every other entry's filter in full, so its matches are exactly
@@ -29,6 +38,7 @@
 //! next one.
 
 use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -146,7 +156,7 @@ struct Condition {
 /// An entry filed under a condition.
 #[derive(Clone)]
 struct Filed<T> {
-    value: T,
+    slot: Slot<T>,
     condition: Condition,
 }
 
@@ -254,26 +264,57 @@ impl<K, T> FilterIndex<K, T> {
     /// indexed path of `doc` once, and evaluates the filters of the entries
     /// filed under the value found there and of the entries filed under no
     /// condition ([`Self::candidates`] counts them); every other entry has a
-    /// condition `doc` fails.
+    /// condition `doc` fails. It evaluates every entry's filter instead,
+    /// when it files fewer than two entries per indexed path (without a
+    /// lookup), or when the lookups leave half the entries or more.
     pub fn matches<'s, 'd>(&'s self, doc: &Doc<'d>) -> Matches<'s, 'd, K, T>
     where
         K: Ord,
     {
+        let len = self.len();
         let mut streams = Streams::None;
-        for (path, index) in self.paths.iter() {
-            if let Some(bucket) = index.bucket(path, doc) {
-                streams.push(bucket);
+        let mut every = self.paths.len() * 2 > len;
+        if !every {
+            let mut candidates = self.scanned.len();
+            for (path, index) in self.paths.iter() {
+                if let Some(bucket) = index.bucket(path, doc) {
+                    candidates += bucket.len();
+                    streams.push(bucket);
+                }
             }
+            every = candidates > 0 && candidates * 2 >= len;
         }
-        if !self.scanned.is_empty() {
-            streams.push(&self.scanned);
+        if every {
+            streams = self.every();
+        } else {
+            if !self.scanned.is_empty() {
+                streams.push(&self.scanned);
+            }
+            streams.heap_many();
         }
         Matches { doc: *doc, streams }
     }
 
-    /// How many filters a match of `doc` evaluates: the entries filed under
-    /// `doc`'s values of the indexed paths, and those filed under no
-    /// condition.
+    /// Every entry, in key order, each to be evaluated.
+    #[cold]
+    #[inline(never)]
+    fn every(&self) -> Streams<'_, K, T> {
+        if self.scanned.is_empty() {
+            Streams::Filed(self.filed.iter())
+        } else if self.filed.is_empty() {
+            Streams::One(self.scanned.iter())
+        } else {
+            Streams::Every(Box::new(Every {
+                filed: Stream::of(self.filed.iter()),
+                scanned: Stream::of(self.scanned.iter()),
+            }))
+        }
+    }
+
+    /// How many entries `doc`'s lookups leave: those filed under `doc`'s
+    /// values of the indexed paths, and those filed under no condition.
+    /// Every other entry has a condition `doc` fails. A match evaluates
+    /// these filters, or every filter (see [`Self::matches`]).
     pub fn candidates(&self, doc: &Doc<'_>) -> usize {
         let indexed: usize = self
             .paths
@@ -289,7 +330,7 @@ impl<K: Ord, T> FilterIndex<K, T> {
     pub fn get(&self, key: &K) -> Option<&T> {
         match self.scanned.get(key) {
             Some(slot) => Some(&slot.value),
-            None => self.filed.get(key).map(|filed| &filed.value),
+            None => self.filed.get(key).map(|filed| &filed.slot.value),
         }
     }
 
@@ -338,13 +379,7 @@ impl<K: Ord + Clone, T: Clone> FilterIndex<K, T> {
             }
         }
         index.entries += 1;
-        self.filed.insert(
-            key,
-            Filed {
-                value: slot.value,
-                condition,
-            },
-        );
+        self.filed.insert(key, Filed { slot, condition });
         replaced
     }
 
@@ -354,7 +389,8 @@ impl<K: Ord + Clone, T: Clone> FilterIndex<K, T> {
         if let Some(slot) = self.scanned.remove(key) {
             return Some(slot.value);
         }
-        let Filed { value, condition } = self.filed.remove(key)?;
+        let Filed { slot, condition } = self.filed.remove(key)?;
+        let value = slot.value;
         let Some(index) = self.paths.get_mut(&condition.path) else {
             return Some(value);
         };
@@ -416,7 +452,7 @@ impl<K: Ord + Clone, T: Clone> FilterIndex<K, T> {
     }
 }
 
-/// A condition [`FilterIndex::place`] may file an entry under.
+/// A condition [`FilterIndex::condition_for`] may file an entry under.
 struct Choice {
     /// Lower is better: an `$in` after an `$eq`, then the entries already
     /// filed under its values, then how many values it has.
@@ -443,17 +479,73 @@ impl<K, T> PathIndex<K, T> {
 enum Streams<'s, K, T> {
     None,
     One(pmap::Iter<'s, K, Slot<T>>),
-    Many(Vec<Stream<'s, K, T>>),
+    /// At most [`FEW_LISTS`]: the next candidate is the smallest head, found
+    /// by comparing each.
+    Few(Vec<Stream<'s, K, Slot<T>>>),
+    /// More: their heads in a heap, smallest first.
+    Heap(Heap<'s, K, T>),
+    /// Every entry, when none is scanned.
+    Filed(pmap::Iter<'s, K, Filed<T>>),
+    /// Every entry: the filed ones and the scanned ones, merged (boxed: a
+    /// list's iterator holds its stack inline, and the other plans keep the
+    /// match the size of one).
+    Every(Box<Every<'s, K, T>>),
+}
+
+/// Every entry of an index, merged in key order.
+struct Every<'s, K, T> {
+    filed: Stream<'s, K, Filed<T>>,
+    scanned: Stream<'s, K, Slot<T>>,
+}
+
+/// How many lists a match merges by comparing their heads; past it, a heap
+/// of the heads costs fewer comparisons per candidate.
+const FEW_LISTS: usize = 4;
+
+/// Many lists merged through a heap of their heads.
+struct Heap<'s, K, T> {
+    heads: BinaryHeap<Head<'s, K, T>>,
+    /// Each list past its head.
+    rests: Vec<pmap::Iter<'s, K, Slot<T>>>,
+}
+
+/// The next entry of list `list`.
+struct Head<'s, K, T> {
+    key: &'s K,
+    slot: &'s Slot<T>,
+    list: usize,
+}
+
+impl<K: Ord, T> PartialEq for Head<'_, K, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl<K: Ord, T> Eq for Head<'_, K, T> {}
+
+impl<K: Ord, T> PartialOrd for Head<'_, K, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Reversed, so the [`BinaryHeap`] (a max-heap) yields the smallest key
+/// first. Keys are unique in an index, so no two heads compare equal.
+impl<K: Ord, T> Ord for Head<'_, K, T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.key.cmp(self.key)
+    }
 }
 
 /// One list, with its next entry read ahead.
-struct Stream<'s, K, T> {
-    head: Option<(&'s K, &'s Slot<T>)>,
-    rest: pmap::Iter<'s, K, Slot<T>>,
+struct Stream<'s, K, V> {
+    head: Option<(&'s K, &'s V)>,
+    rest: pmap::Iter<'s, K, V>,
 }
 
-impl<'s, K, T> Stream<'s, K, T> {
-    fn of(mut rest: pmap::Iter<'s, K, Slot<T>>) -> Self {
+impl<'s, K, V> Stream<'s, K, V> {
+    fn of(mut rest: pmap::Iter<'s, K, V>) -> Self {
         Self {
             head: rest.next(),
             rest,
@@ -465,12 +557,45 @@ impl<'s, K, T> Streams<'s, K, T> {
     fn push(&mut self, list: &'s PMap<K, Slot<T>>) {
         *self = match std::mem::replace(self, Streams::None) {
             Streams::None => Streams::One(list.iter()),
-            Streams::One(first) => Streams::Many(vec![Stream::of(first), Stream::of(list.iter())]),
-            Streams::Many(mut streams) => {
+            Streams::One(first) => Streams::Few(vec![Stream::of(first), Stream::of(list.iter())]),
+            Streams::Few(mut streams) => {
                 streams.push(Stream::of(list.iter()));
-                Streams::Many(streams)
+                Streams::Few(streams)
             }
+            streams @ (Streams::Heap(_) | Streams::Filed(_) | Streams::Every(_)) => streams,
         };
+    }
+
+    /// Puts more than [`FEW_LISTS`] lists in a heap of their heads, in
+    /// place (the lists' iterators are large: a match moves them once).
+    #[inline]
+    fn heap_many(&mut self)
+    where
+        K: Ord,
+    {
+        if matches!(self, Streams::Few(streams) if streams.len() > FEW_LISTS) {
+            self.heap_of_heads();
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn heap_of_heads(&mut self)
+    where
+        K: Ord,
+    {
+        let Streams::Few(streams) = self else {
+            return;
+        };
+        let mut heads = BinaryHeap::with_capacity(streams.len());
+        let mut rests = Vec::with_capacity(streams.len());
+        for (list, Stream { head, rest }) in std::mem::take(streams).into_iter().enumerate() {
+            if let Some((key, slot)) = head {
+                heads.push(Head { key, slot, list });
+            }
+            rests.push(rest);
+        }
+        *self = Streams::Heap(Heap { heads, rests });
     }
 }
 
@@ -499,7 +624,7 @@ impl<'s, K: Ord, T> Iterator for Iter<'s, K, T> {
         } else {
             let (key, filed) = self.next_filed.take()?;
             self.next_filed = self.filed.next();
-            Some((key, &filed.value))
+            Some((key, &filed.slot.value))
         }
     }
 
@@ -527,7 +652,10 @@ impl<'s, K: Ord, T> Matches<'s, '_, K, T> {
         match &mut self.streams {
             Streams::None => None,
             Streams::One(list) => list.next(),
-            Streams::Many(streams) => {
+            Streams::Filed(list) => list.next().map(|(key, entry)| (key, &entry.slot)),
+            Streams::Every(every) => every.next(),
+            Streams::Heap(heap) => heap.next(),
+            Streams::Few(streams) => {
                 let mut smallest: Option<usize> = None;
                 for (at, stream) in streams.iter().enumerate() {
                     let Some((key, _)) = stream.head else {
@@ -545,6 +673,38 @@ impl<'s, K: Ord, T> Matches<'s, '_, K, T> {
                 candidate
             }
         }
+    }
+}
+
+impl<'s, K: Ord, T> Every<'s, K, T> {
+    /// The smaller head of the two lists.
+    fn next(&mut self) -> Option<(&'s K, &'s Slot<T>)> {
+        let filed_first = match (self.filed.head, self.scanned.head) {
+            (None, None) => return None,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some((a, _)), Some((b, _))) => a < b,
+        };
+        if filed_first {
+            let (key, entry) = self.filed.head.take()?;
+            self.filed.head = self.filed.rest.next();
+            Some((key, &entry.slot))
+        } else {
+            let (key, slot) = self.scanned.head.take()?;
+            self.scanned.head = self.scanned.rest.next();
+            Some((key, slot))
+        }
+    }
+}
+
+impl<'s, K: Ord, T> Heap<'s, K, T> {
+    /// The smallest head, and the next entry of its list in its place.
+    fn next(&mut self) -> Option<(&'s K, &'s Slot<T>)> {
+        let Head { key, slot, list } = self.heads.pop()?;
+        if let Some((key, slot)) = self.rests[list].next() {
+            self.heads.push(Head { key, slot, list });
+        }
+        Some((key, slot))
     }
 }
 
@@ -599,6 +759,87 @@ mod tests {
             index.insert(1u32, &filter, 1u32);
             assert_eq!(index.scanned.is_empty(), indexable, "{src}");
         }
+    }
+
+    /// The plan a match of `doc` follows.
+    fn plan(index: &FilterIndex<u32, u32>, doc: &Value) -> &'static str {
+        match index.matches(&Doc::from_value(doc)).streams {
+            Streams::None => "none",
+            Streams::One(_) => "one",
+            Streams::Few(_) => "few",
+            Streams::Heap(_) => "heap",
+            Streams::Filed(_) | Streams::Every(_) => "every",
+        }
+    }
+
+    /// However many lists a document hits, their entries come out in key
+    /// order, each once: a few merged by comparing heads, more through the
+    /// heap of their heads.
+    #[test]
+    fn the_lists_a_document_hits_merge_in_key_order() {
+        for paths in 1..=12u32 {
+            let mut index = FilterIndex::new();
+            let mut input = serde_json::Map::new();
+            let mut expected = Vec::new();
+            // Keys interleaved across the paths, four values on each, and
+            // every thirteenth key in the scanned list; the document has `1`
+            // on every path.
+            for key in 0..240u32 {
+                let path = key % paths;
+                input.insert(format!("p{path}"), json!(1));
+                let src = if key % 13 == 12 {
+                    expected.push(key);
+                    json!({ format!("input.p{path}"): { "$gte": 1 } })
+                } else {
+                    let value = (key / paths) % 4 + 1;
+                    if value == 1 {
+                        expected.push(key);
+                    }
+                    json!({ format!("input.p{path}"): { "$eq": value } })
+                };
+                index.insert(key, &filter(src), key);
+            }
+            let doc = Value::Object(serde_json::Map::from_iter([(
+                "input".to_owned(),
+                Value::Object(input),
+            )]));
+            let lists = paths as usize + 1;
+            let wanted = if lists > FEW_LISTS { "heap" } else { "few" };
+            assert_eq!(plan(&index, &doc), wanted, "{lists} lists");
+            assert_eq!(matched(&index, &doc), expected, "{lists} lists");
+        }
+    }
+
+    /// Every filter is evaluated, in key order, where lookups would spare
+    /// little: an index filing fewer than two entries per path, and a
+    /// document whose lookups leave half the entries or more.
+    #[test]
+    fn where_lookups_spare_little_every_filter_is_evaluated() {
+        let mut index = FilterIndex::new();
+        for key in 0..8u32 {
+            let src = json!({ format!("input.p{key}"): { "$eq": 1 } });
+            index.insert(key, &filter(src), key);
+        }
+        index.insert(8, &filter(json!({ "input.p0": { "$exists": true } })), 8);
+        let doc = json!({ "input": { "p0": 1, "p3": 1, "p5": 2 } });
+        assert_eq!(plan(&index, &doc), "every", "eight paths for nine entries");
+        assert_eq!(matched(&index, &doc), [0, 3, 8]);
+
+        let mut index = FilterIndex::new();
+        for key in 0..10u32 {
+            let value = u32::from(key >= 5);
+            index.insert(key, &filter(json!({ "input.k": { "$eq": value } })), key);
+        }
+        let half = json!({ "input": { "k": 1 } });
+        assert_eq!(plan(&index, &half), "every", "the lookup leaves half");
+        assert_eq!(matched(&index, &half), [5, 6, 7, 8, 9]);
+        assert_eq!(index.candidates(&Doc::from_value(&half)), 5);
+        let none = json!({ "input": { "k": 2 } });
+        assert_eq!(plan(&index, &none), "none");
+        assert!(matched(&index, &none).is_empty());
+        index.insert(10, &filter(json!({ "input.k": { "$eq": 2 } })), 10);
+        assert_eq!(plan(&index, &none), "one");
+        assert_eq!(matched(&index, &none), [10]);
     }
 
     #[test]
