@@ -326,10 +326,18 @@ pub(crate) struct ObserverEntry {
     pub(crate) sent_epoch: AtomicU64,
     /// `dispose` was called: never replayed again.
     pub(crate) disposing: AtomicBool,
-    /// The engine refused its `observe` (an `observeresult` in `error`):
-    /// that is its final answer. The engine keeps nothing for it, so it is
-    /// never sent again and `dispose` sends no `unobserve`. Set under the
-    /// listeners lock, with the transition to `error`.
+    /// The engine may hold an observer it created for it: an
+    /// `observeresult` in a state other than `error` or `disposed` came for
+    /// it, or a connection closed before the answer to its `observe` (the
+    /// engine may have created the observer, and holds it again on a
+    /// reattach). An `observeresult` in `error` is then that observer's
+    /// state, the answer to its replay, and `dispose` sends `unobserve`.
+    created: AtomicBool,
+    /// The engine refused its `observe` (an `observeresult` in `error` while
+    /// it holds no observer for it, see `created`): that is its final
+    /// answer. The engine keeps nothing for it, so it is never sent again
+    /// and `dispose` sends no `unobserve`. Set under the listeners lock, with
+    /// the transition to `error`.
     refused: AtomicBool,
     /// Orders a replayed `observe` against `dispose`'s `unobserve`: whichever
     /// takes it first, the other sees its outcome.
@@ -360,6 +368,7 @@ impl ObserverEntry {
             sent: AtomicBool::new(false),
             sent_epoch: AtomicU64::new(NOT_SENT),
             disposing: AtomicBool::new(false),
+            created: AtomicBool::new(false),
             refused: AtomicBool::new(false),
             send_lock: Mutex::new(()),
         }
@@ -367,6 +376,15 @@ impl ObserverEntry {
 
     pub(crate) fn state(&self) -> ObserverState {
         self.status.borrow().state.clone()
+    }
+
+    /// The engine may hold an observer for it (see `created`).
+    pub(crate) fn is_created(&self) -> bool {
+        self.created.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_created(&self) {
+        self.created.store(true, Ordering::Release);
     }
 
     /// The engine refused its `observe` ([`refuse`](Self::refuse)).
@@ -576,10 +594,14 @@ impl ObserverHandle {
     /// `OBSERVER_NOT_ACTIVE`. A handle `observe_with` refused (state
     /// `error`, with no observer of its own) sends nothing and leaves the
     /// handle that holds the id alone. The engine's refusal of an `observe`
-    /// (its answer in state `error`) is the handle's final answer: the
-    /// engine keeps no observer for it and the handle is not sent again, so
-    /// `dispose()` sends nothing and resolves at once, or, called before
-    /// the refusal arrives, when it arrives.
+    /// (its answer in state `error`, before any answer in another state and
+    /// before any connection closed without its answer) is the handle's
+    /// final answer: the engine keeps no observer for it and the handle is
+    /// not sent again, so `dispose()` sends nothing and resolves at once,
+    /// or, called before the refusal arrives, when it arrives. After an
+    /// answer in another state, or a connection that closed before the
+    /// answer, the engine may hold an observer for the handle: an answer in
+    /// `error` is that observer's state, and `dispose()` sends `unobserve`.
     pub async fn dispose(&self) -> Result<(), Error> {
         let mut rx = self.entry.status.subscribe();
         let answered_here = {
