@@ -371,6 +371,27 @@ async fn an_observer_made_after_the_hello_is_sent_at_once() {
     }
 }
 
+/// A second observer with a taken id is refused without a frame, and
+/// disposing either handle never touches the live observer.
+#[tokio::test]
+async fn a_duplicate_observer_id_is_refused_and_leaves_the_first_alone() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let first = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("x"));
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "x").await;
+    let dup = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("x"));
+    assert_eq!(dup.state(), ObserverState::Error);
+    assert!(dup.reason().unwrap().message.contains("already in use"));
+    dup.dispose().await.unwrap();
+    assert_eq!(frames(&mock, "observe").len(), 1);
+    assert!(frames(&mock, "unobserve").is_empty());
+    assert_ne!(first.state(), ObserverState::Disposed);
+    first.dispose().await.unwrap();
+    assert_eq!(frames(&mock, "unobserve").len(), 1);
+    iii.shutdown_async().await;
+}
+
 #[tokio::test]
 async fn observers_are_replayed_with_the_same_id_after_functions() {
     let mock = MockEngine::start().await;
