@@ -100,10 +100,46 @@ pub async fn spawn(setup: Setup) -> TestEngine {
     }
 }
 
-async fn try_spawn(setup: &Setup) -> anyhow::Result<TestEngine> {
+/// A port nothing listens on now.
+async fn free_port() -> anyhow::Result<u16> {
     let probe = TcpListener::bind("127.0.0.1:0").await?;
     let port = probe.local_addr()?.port();
     drop(probe);
+    Ok(port)
+}
+
+/// A second worker manager on `t`'s engine, with no `rbac` section: the
+/// trusted port a deployment's own workers connect to, next to `t.port`.
+/// Returns its port.
+pub async fn unrestricted_listener(t: &TestEngine) -> u16 {
+    let mut attempt = 1;
+    loop {
+        let started = async {
+            let port = free_port().await?;
+            let manager = WorkerManager::create(
+                t.engine.clone(),
+                Some(json!({ "port": port, "host": "127.0.0.1" })),
+            )
+            .await?;
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            manager
+                .start_background_tasks(shutdown_rx, shutdown_tx)
+                .await?;
+            anyhow::Ok(port)
+        };
+        match started.await {
+            Ok(port) => return port,
+            Err(err) if attempt < 5 => {
+                eprintln!("second listener did not start (attempt {attempt}): {err:#}");
+                attempt += 1;
+            }
+            Err(err) => panic!("start the second WorkerManager: {err:#}"),
+        }
+    }
+}
+
+async fn try_spawn(setup: &Setup) -> anyhow::Result<TestEngine> {
+    let port = free_port().await?;
 
     let engine = Arc::new(Engine::new());
     engine.observers.set_config(setup.observers.clone());

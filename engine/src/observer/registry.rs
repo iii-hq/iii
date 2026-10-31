@@ -89,6 +89,91 @@ fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(code, message)
 }
 
+/// The input of `rbac.on_observer_registration_function_id`: the
+/// registration as the observing worker asked for it, and its session's
+/// context.
+fn registration_hook_input(
+    id: &str,
+    function: (&str, &str),
+    target: (&str, &str),
+    args: &Value,
+    filters: Option<&Value>,
+    metadata: Option<&Value>,
+    context: &Value,
+) -> Value {
+    serde_json::json!({
+        "observer_id": id,
+        "function_id": function.1,
+        "namespace": function.0,
+        "args": args,
+        "filters": filters,
+        "target_function_id": target.1,
+        "target_namespace": target.0,
+        "metadata": metadata,
+        "context": context,
+    })
+}
+
+/// [`registration_hook_input`] for an observer that exists: the
+/// registration its observing worker asked for (before a hook or a function
+/// prefix rewrote it), its filters in normal form, absent when they match
+/// everything.
+fn requested_registration_hook_input(observer: &Observer, context: &Value) -> Value {
+    let (function, target, args, filters, metadata) = match observer.requested_spec() {
+        Some(spec) => (
+            &spec.function,
+            &spec.target,
+            &spec.args,
+            &spec.filters,
+            spec.metadata.as_ref(),
+        ),
+        None => (
+            &observer.function,
+            &observer.target,
+            &observer.args,
+            observer.filter.normalized(),
+            observer.metadata.as_ref(),
+        ),
+    };
+    let filters = (!filters.as_object().is_some_and(Map::is_empty)).then_some(filters);
+    registration_hook_input(
+        &observer.id,
+        (&function.0, &function.1),
+        (&target.0, &target.1),
+        args,
+        filters,
+        metadata,
+        context,
+    )
+}
+
+/// Calls the registration hook `hook` for observer `id` of connection
+/// `worker`: its object answer, which may rewrite the registration, or
+/// `None` when it denies it (any other answer, or a failed call).
+async fn registration_hook(
+    engine: &Engine,
+    hook: &str,
+    worker: Uuid,
+    id: &str,
+    input: Value,
+) -> Option<Map<String, Value>> {
+    match engine
+        .call_value_with_metadata_ns(DEFAULT_NAMESPACE, hook, input, None)
+        .await
+    {
+        Ok(Some(Value::Object(answer))) => Some(answer),
+        other => {
+            tracing::warn!(
+                worker_id = %worker,
+                observer_id = %id,
+                result = ?other,
+                "observer registration denied by hook"
+            );
+            None
+        }
+    }
+}
+
 fn owned_by_another_connection(id: &str) -> ErrorBody {
     reject(
         observe_codes::OBSERVER_ID_CONFLICT,
@@ -309,22 +394,17 @@ impl ObserverRegistry {
                 .as_ref()
                 .and_then(|rbac| rbac.on_observer_registration_function_id.as_ref())
             {
-                let hook_input = serde_json::json!({
-                    "observer_id": id,
-                    "function_id": function_id,
-                    "namespace": function_namespace,
-                    "args": args,
-                    "filters": filters,
-                    "target_function_id": target_id,
-                    "target_namespace": target_namespace,
-                    "metadata": activation_metadata,
-                    "context": session.context,
-                });
-                match engine
-                    .call_value_with_metadata_ns(DEFAULT_NAMESPACE, hook, hook_input, None)
-                    .await
-                {
-                    Ok(Some(Value::Object(answer))) => {
+                let hook_input = registration_hook_input(
+                    &id,
+                    (&function_namespace, &function_id),
+                    (&target_namespace, &target_id),
+                    &args,
+                    filters.as_ref(),
+                    activation_metadata.as_ref(),
+                    &session.context,
+                );
+                match registration_hook(engine, hook, worker.id, &id, hook_input).await {
+                    Some(answer) => {
                         if let Some(s) = answer.get("function_id").and_then(Value::as_str) {
                             function_id = s.to_string();
                         }
@@ -345,13 +425,7 @@ impl ObserverRegistry {
                             activation_metadata = (!v.is_null()).then(|| v.clone());
                         }
                     }
-                    other => {
-                        tracing::warn!(
-                            worker_id = %worker.id,
-                            observer_id = %id,
-                            result = ?other,
-                            "observer registration denied by hook"
-                        );
+                    None => {
                         return Err(reject(
                             observe_codes::FORBIDDEN,
                             "observer registration denied by the registration hook",
@@ -827,8 +901,12 @@ impl ObserverRegistry {
     ///
     /// `max_per_connection` is not applied again: these were created already.
     /// RBAC is: the new connection's session may be narrower, so an observer
-    /// whose function or target it may not invoke is disposed `FORBIDDEN`.
-    pub fn reattach(
+    /// whose function or target it may not invoke is disposed `FORBIDDEN`,
+    /// and so is one its `rbac.on_observer_registration_function_id` denies,
+    /// called as at creation with the new session's context. An object
+    /// answer keeps the observer as it is: a rewrite applies to a new
+    /// registration.
+    pub async fn reattach(
         self: &Arc<Self>,
         engine: &Engine,
         previous: Uuid,
@@ -857,7 +935,7 @@ impl ObserverRegistry {
             .remove(&previous)
             .map(|(_, held)| held)
             .unwrap_or_default();
-        let mut moved = Vec::new();
+        let mut admitted = Vec::new();
         for Held(observer) in held {
             let observing = observer.observing();
             if observing.connection != previous {
@@ -906,13 +984,41 @@ impl ObserverRegistry {
                     continue;
                 }
             }
-            self.update(&observer, |flags| flags.observing_connected = true);
-            moved.push(observer);
+            admitted.push(observer);
         }
         for mut tombstone in self.tombstones.iter_mut() {
             if tombstone.connection == previous {
                 tombstone.connection = connection;
             }
+        }
+        let hook = new_connection.session.as_ref().and_then(|session| {
+            let hook = session
+                .config
+                .rbac
+                .as_ref()?
+                .on_observer_registration_function_id
+                .as_ref()?;
+            Some((hook, &session.context))
+        });
+        let mut moved = Vec::with_capacity(admitted.len());
+        for observer in admitted {
+            if let Some((hook, context)) = hook {
+                let input = requested_registration_hook_input(&observer, context);
+                if registration_hook(engine, hook, connection, &observer.id, input)
+                    .await
+                    .is_none()
+                {
+                    self.dispose(
+                        &observer,
+                        observe_codes::FORBIDDEN,
+                        "observer registration denied by the registration hook for the \
+                         reconnected worker",
+                    );
+                    continue;
+                }
+            }
+            self.update(&observer, |flags| flags.observing_connected = true);
+            moved.push(observer);
         }
         // Each function's owner let them go when the worker left; it hears
         // about them again, in creation order, and they go active on its ack.
@@ -1062,7 +1168,11 @@ mod tests {
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Suspended));
         let (second, _second_socket) = test_support::worker(&engine);
         let token = first.reattach_token.to_string();
-        assert!(registry.reattach(&engine, first.id, Some(&token), &second));
+        assert!(
+            registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await
+        );
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
         registry.grace_elapsed(first.id);
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
@@ -1077,7 +1187,11 @@ mod tests {
         assert!(registry.get("obs").is_none(), "disposed");
         let (third, _third_socket) = test_support::worker(&engine);
         let token = second.reattach_token.to_string();
-        assert!(!registry.reattach(&engine, second.id, Some(&token), &third));
+        assert!(
+            !registry
+                .reattach(&engine, second.id, Some(&token), &third)
+                .await
+        );
     }
 
     /// A worker that reattaches after its grace period ended finds its
@@ -1096,7 +1210,11 @@ mod tests {
         assert!(registry.get("obs").is_none(), "disposed");
 
         let (intruder, _intruder_socket) = test_support::worker(&engine);
-        assert!(!registry.reattach(&engine, first.id, Some("not-the-token"), &intruder));
+        assert!(
+            !registry
+                .reattach(&engine, first.id, Some("not-the-token"), &intruder)
+                .await
+        );
         assert!(
             registry
                 .tombstones
@@ -1107,7 +1225,9 @@ mod tests {
         let (second, _second_socket) = test_support::worker(&engine);
         let token = first.reattach_token.to_string();
         assert!(
-            !registry.reattach(&engine, first.id, Some(&token), &second),
+            !registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await,
             "nothing to re-parent"
         );
         registry.observe(&engine, &second, request).await;
@@ -1390,7 +1510,9 @@ mod tests {
 
         let (second, _second_socket) = test_support::worker(&engine);
         let token = first.reattach_token.to_string();
-        registry.reattach(&engine, first.id, Some(&token), &second);
+        registry
+            .reattach(&engine, first.id, Some(&token), &second)
+            .await;
         test_support::observe_request(&engine, &second, request).await;
         assert_eq!(
             registry.get("obs").unwrap().observing().connection,

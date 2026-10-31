@@ -72,9 +72,15 @@ differ, this file wins, and the spec is updated to match.
    engine) is deleted.
 10. **RBAC.** `allow_trigger_type_registration`, `allowed_trigger_types`,
     `on_trigger_registration_function_id` and
-    `on_trigger_type_registration_function_id` are removed. The two
-    `on_trigger_*` config keys, when present in an `rbac` config, are ignored
-    with one `warn` at load naming the observe equivalent. The two auth
+    `on_trigger_type_registration_function_id` are removed. An `rbac` config
+    that sets one of the two `on_trigger_*` keys without its replacement
+    (`on_observer_registration_function_id`,
+    `on_function_registration_function_id`) makes the engine refuse to
+    start, with an error naming the replacement: the config relied on a gate
+    that would be off. With the replacement set, the old key is ignored with
+    one `warn` at load naming the replacement. A key set to `null` (a `${VAR:}` template whose variable is
+    unset resolves to it) counts as unset, the removed key and the
+    replacement alike. The two auth
     result fields, when an auth function's result sets them, are ignored with
     one `warn` per process. The `on_function_registration_function_id` hook input gains
     top-level `private` and `observable` (always sent) and `args_format`
@@ -167,16 +173,26 @@ differ, this file wins, and the spec is updated to match.
     `accepted()` resolving means a call through the observer reaches an active
     observer (decision 19). An observer that does not come back is disposed
     with nothing more sent to the host, as is one its worker replaces from a
-    new connection (decision 51).
+    new connection (decision 51). A `Reattach` applies the creation rules of
+    the new connection's session to each observer it re-parents, before the
+    host hears of it: an observer whose function or target the session may
+    not invoke, or that `rbac.on_observer_registration_function_id` denies,
+    is disposed `FORBIDDEN`. The hook gets the registration as the worker
+    asked for it (filters in normal form) and the new session's context; an
+    object answer keeps the observer as it is, since a rewrite applies to a
+    registration being created.
 48. **The announced `capture`** (`observeradded`, `functionregistered`) also
     names the part `deliver` hands the target: `input` under `deliver: input`,
     `output` under `deliver: output`. A host's report of a local call carries
     the parts its matched observers' announced `capture` names, so the engine
     has what it delivers.
-49. **`_caller_worker_id` on calls through an observer.** The engine adds it
-    to the payload of a call through an observer (the host's connection id),
-    as on every call a worker makes. Decision 40 covers the observed values
-    iii delivers.
+49. **A call through an observer runs as an activation of the observer.**
+    Its target runs under the observing worker's session (none for an
+    engine-owned observer), and the engine removes a top-level
+    `_caller_worker_id` from its payload, as from every observed value it
+    delivers (decision 40). The host chose the payload and the observing
+    worker chose the target, so the host's authority reaches neither the
+    target nor what the target calls. The host is the call's `caller`.
 50. **Engine-hosted ids.** The engine hosts the sources it registers. A
     worker that registers one of their ids while the engine module that
     hosts it is running is refused (`FUNCTION_NAMESPACE_CONFLICT`, naming no
