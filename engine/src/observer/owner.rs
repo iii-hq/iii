@@ -1853,7 +1853,7 @@ mod tests {
                 engine
                     .observers
                     .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
-                    .map(|set| set.observers.iter().len()),
+                    .map(|set| set.observers.iter().count()),
                 Some(n)
             );
             for i in 0..n {
@@ -1915,7 +1915,7 @@ mod tests {
             .chain((0..200).map(|n| format!("x{n:03}")))
             .collect();
         assert_eq!(active_ids(&later), expected);
-        assert_eq!(later.observers.iter().len(), 203);
+        assert_eq!(later.observers.iter().count(), 203);
     }
 
     /// Observers that become active out of their creation order are still
