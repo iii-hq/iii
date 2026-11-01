@@ -835,16 +835,35 @@ lookup rules.
 
 ## Providers not migrated yet
 
-The http, cron, queue (`durable:subscriber`), state, stream, pubsub (`subscribe`), and database
-workers live in the workers repository and still register trigger types in 0.25. Until they ship
-source functions (such as `http::on-request`, `cron::on-tick`, or `database::on-row-changed`):
+In their latest releases, the http, cron, queue (`durable:subscriber`), state, pubsub (`subscribe`),
+and database workers still register trigger types. The stream worker, which ships with the engine,
+does too. Some of these workers also ship a source function, starting with the release listed:
 
-- keep using `registerTrigger` to bind functions to them; the deprecation warning is informational,
-  and Rust code needs `#[allow(deprecated)]` on those calls;
+| Worker   | Source function            | Since   |
+| -------- | -------------------------- | ------- |
+| http     | `http::on-request`         | 0.22.8  |
+| cron     | `cron::on-tick`            | 0.21.27 |
+| queue    | `queue::on-message`        | 0.21.25 |
+| state    | `state::on-changed`        | 0.22.22 |
+| database | `database::on-row-changed` | 0.5.23  |
+
+None of them declares `legacy_trigger_type`, and none will: 0.26 removes `registerTrigger`, trigger
+types, and the legacy shim. A 0.26 engine drops trigger registrations and logs a warning in its own
+log; the worker gets no error, and the bound function never runs. On 0.25:
+
+- your `registerTrigger` calls to these workers keep working; the deprecation warning is
+  informational, and Rust code needs `#[allow(deprecated)]` on those calls;
 - their documentation, including the config shapes at [workers.iii.dev](https://workers.iii.dev),
   stays valid;
-- once a provider ships its function with `legacy_trigger_type`, your existing `registerTrigger`
-  calls keep working through the engine, and you can move them to `iii.observe` at your own pace.
+- to move a binding to `iii.observe`, upgrade the worker to a release that ships its source
+  function, and observe that function with the args its documentation lists (they are not the
+  trigger config: an http route takes `{ method, path }`, with a leading slash on `path`). Remove
+  the `registerTrigger` call in the same deploy, so each route, schedule, or subscriber has one
+  binding.
+
+Move every binding before you upgrade the engine to 0.26, or move them all in that upgrade. The 0.26
+engine, these workers' 0.26 releases, and the workers that bind to them upgrade together; see
+[Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
 
 What you can observe in 0.25: any regular function, the
 [engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources), and providers
@@ -861,6 +880,8 @@ that already moved to [observable functions](../creating-workers/observable-func
       `configuration`, `log`, `trace`) to `iii.observe`
 - [ ] Move your own trigger types to observable functions with `legacy_trigger_type`
 - [ ] Keep `registerTrigger` for the http, cron, queue, state, stream, pubsub, and database workers
+      on 0.25, and move those bindings to `iii.observe` before or with the 0.26 upgrade (see
+      [Providers not migrated yet](#providers-not-migrated-yet))
 
 ## Result
 
