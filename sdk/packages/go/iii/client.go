@@ -168,8 +168,9 @@ type Client struct {
 	observers   map[string]*ObserverHandle
 	observerSeq uint64
 	// observeSent lists, per id, the handles whose observe went out on the current
-	// connection, oldest first. The engine's answers name an observer by id only;
-	// their order tells the observers of a reused id apart (observe.go, answerOf).
+	// connection, oldest first; a refused one leaves when its refusal arrives. The
+	// engine's answers name an observer by id only; their order tells the observers
+	// of a reused id apart (observe.go, onObserveResult).
 	observeSent map[string][]sentObserve
 	// pendingUnobserve holds unobserves of observers disposed while disconnected.
 	pendingUnobserve []string
@@ -1231,7 +1232,7 @@ func (c *Client) runConnection() (bool, error) {
 	c.epoch++
 	epoch := c.epoch
 	c.registeredOnConnection = false
-	c.observeSent = nil
+	c.dropObserveSentLocked()
 	c.mu.Unlock()
 	c.replyMu.Lock()
 	c.reply = reply
@@ -1282,9 +1283,9 @@ func (c *Client) runConnection() (bool, error) {
 	c.connCancel = nil
 	registered := c.registeredOnConnection
 	// Local dispatch and the compiled observer sets survive; what was sent on this
-	// connection is replayed on the next one.
+	// connection is replayed on the next one, except a refused observe.
 	c.registeredOnConnection = false
-	c.observeSent = nil
+	c.dropObserveSentLocked()
 	if c.state == StateConnected {
 		c.setStateLocked(StateDisconnected)
 	}
