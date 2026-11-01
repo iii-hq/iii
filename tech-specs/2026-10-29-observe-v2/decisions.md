@@ -214,7 +214,10 @@ differ, this file wins, and the spec is updated to match.
     period ends. The worker name and namespace are the ones each connection
     declared on `engine::workers::register`, the pair the engine admits one
     live worker for (`WORKER_NAMESPACE_CONFLICT`); a connection that declared
-    no name replaces nothing. The replaced observer is disposed with
+    no name replaces nothing. Any connection can declare any name, so on an
+    RBAC port the two must also be the same principal: sessions whose auth
+    context is equal. A connection with no RBAC session and one with a
+    session are never the same worker. The replaced observer is disposed with
     `OBSERVER_DISCONNECTED`, and the earlier connection, reattaching, has
     its replayed `observe` answered `disposed`, as for any observer disposed
     while its worker was away.
