@@ -28,6 +28,11 @@ A worker that binds with `registerTrigger` receives no events on a 0.26 engine, 
 releases of the http, cron, queue, state, and database workers need a 0.26 engine. Upgrade the
 engine, the iii workers your project runs, and every worker that binds to them in one release.
 
+The worker gets no error for a dropped registration. The engine logs one `warn` per connection and
+message type, such as
+``dropping `registertrigger` frames from this worker: this engine has no such message``, so search
+the engine log for `dropping` to find a worker that still binds the old way.
+
 ### Find what to change
 
 Search each worker for the removed APIs:
