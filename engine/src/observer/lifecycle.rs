@@ -721,8 +721,10 @@ impl Observer {
     /// was disposed for reaching `max_fires`. That disposal keeps the queue,
     /// so every fire counted within `max_fires` runs, including one whose
     /// activation the last fire overtook. Any other state drops the fire.
-    /// `active` is stored with the state under the status lock, so an
-    /// active observer answers without the lock.
+    ///
+    /// `active` is stored with the state, under the status lock, so an
+    /// active observer answers without taking the lock: what each activation
+    /// asks under its flow lock, its observer's queue full or not.
     pub(crate) fn runs_counted_fires(&self) -> bool {
         if self.is_active() {
             return true;
@@ -778,6 +780,14 @@ impl Observer {
     /// [`Self::observing`].
     pub(crate) fn observing_connection(&self) -> Uuid {
         self.status.read().observing.connection
+    }
+
+    /// The observing connection's session, read without copying the rest of
+    /// [`Self::observing`]: what each activation runs with.
+    pub(crate) fn observing_session(
+        &self,
+    ) -> Option<Arc<crate::workers::worker::rbac_session::Session>> {
+        self.status.read().observing.session.clone()
     }
 
     /// The `function_id` label of its metrics: its function's id, shared.
