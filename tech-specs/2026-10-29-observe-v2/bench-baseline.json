@@ -24283,5 +24283,1460 @@
     }
    ]
   }
+ },
+ "final_pass": {
+  "date": "2026-10-31",
+  "commits": {
+   "v025": "b0b86fd37751c6ed8f894e0ae6f491f26403df49 (main; the earlier passes' tree, observe_routed port and load-test binaries)",
+   "v026": "ac89e90f6b7ef86478d94800aa8c70d644ff430e (observe-v2, head of iii-hq/iii#2433)"
+  },
+  "toolchain": {
+   "host": "rustc 1.98.0 (88d9e12ae 2026-08-18), aarch64-apple-darwin; criterion 0.5.1; cargo bench -p iii (0.26 with --locked), one target directory per version",
+   "loadtest": "rust:1.97 image (sha256:b1b3c9c0d921d7fa0a6d1f9ec7e4eab87f8c8ec97644c3d791450f131dec813f, rustc 1.97.1), linux/arm64, Docker Desktop 29.2.0, VM with 16 vCPUs and 8 GB, kernel 6.12.67-linuxkit"
+  },
+  "machine_load": "load average 4.6 to 8.4 during the runs (its readings include each bench's own threads)",
+  "method": {
+   "engine": "criterion --warm-up-time 1 --measurement-time 3 --noplot, versions interleaved bench by bench; worker_cleanup and control_plane_churn 5 rounds, observe_dispatch, observe_fanout (0.25: trigger_fanout) and observe_routed (0.25: the first pass's port) 3 rounds",
+   "worker_cleanup": "both versions with the same bench fix: 0.26's observers row returns the engine and 0.25's triggers row returns its trigger registry (a change not committed to 0.25), so criterion drops them after the measurement; the other registries drop inside it in both; v025_without_the_fix_ns_runs is 0.25's bench as released",
+   "figure": "criterion's point estimate (the middle value of its time line), median over rounds",
+   "verdict": "worse when every run under test is worse than every reference run and the medians differ by more than 5%; better the other way; otherwise the same within noise",
+   "loadtest": "iii-loadtest suite --profiles host --engine-cpus 4-7 --load-cpus 0-3 --step-secs 5 --port 59420, container limited to CPUs 0-7 and 6 GB; fanout and filters 8 runs per version (3 rounds of fanout,filters,observers then 5 of fanout,filters), observers 3; each round runs every version, order alternating by round; figures are medians"
+  },
+  "criterion": [
+   {
+    "id": "worker_cleanup/observers/10",
+    "v025_id": "worker_cleanup/triggers/10",
+    "compare": "0.25's bench with the same fix as 0.26's (the registry holding the worker's triggers is returned and dropped after the measurement)",
+    "v025_ns_runs": [
+     14779.0,
+     14713.0,
+     14766.0,
+     14373.0,
+     14328.0
+    ],
+    "v025_ns": 14713.0,
+    "v026_ns_runs": [
+     4290.2,
+     4509.599999999999,
+     4672.7,
+     3964.6,
+     3944.9
+    ],
+    "v026_ns": 4290.2,
+    "delta_vs_v025": -0.7084075307551145,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "v025_without_the_fix_ns_runs": [
+     16796.0,
+     16760.0,
+     17024.0,
+     16263.000000000002,
+     16437.0
+    ]
+   },
+   {
+    "id": "worker_cleanup/observers/50",
+    "v025_id": "worker_cleanup/triggers/50",
+    "compare": "0.25's bench with the same fix as 0.26's (the registry holding the worker's triggers is returned and dropped after the measurement)",
+    "v025_ns_runs": [
+     44694.0,
+     45235.0,
+     44404.0,
+     43130.0,
+     42792.0
+    ],
+    "v025_ns": 44404.0,
+    "v026_ns_runs": [
+     7237.8,
+     7300.900000000001,
+     7834.900000000001,
+     7659.099999999999,
+     7406.0
+    ],
+    "v026_ns": 7406.0,
+    "delta_vs_v025": -0.8332132240338708,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "v025_without_the_fix_ns_runs": [
+     46513.0,
+     47095.0,
+     46036.0,
+     46336.0,
+     46765.0
+    ]
+   },
+   {
+    "id": "worker_cleanup/observers/200",
+    "v025_id": "worker_cleanup/triggers/200",
+    "compare": "0.25's bench with the same fix as 0.26's (the registry holding the worker's triggers is returned and dropped after the measurement)",
+    "v025_ns_runs": [
+     159370.0,
+     161440.0,
+     161510.0,
+     158640.0,
+     159730.0
+    ],
+    "v025_ns": 159730.0,
+    "v026_ns_runs": [
+     21175.0,
+     20730.0,
+     20462.0,
+     19417.0,
+     19134.0
+    ],
+    "v026_ns": 20462.0,
+    "delta_vs_v025": -0.8718963250485194,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "v025_without_the_fix_ns_runs": [
+     165870.0,
+     165560.0,
+     166280.0,
+     167190.0,
+     169470.0
+    ]
+   },
+   {
+    "id": "control_plane_churn/observers_add_remove/100",
+    "v025_id": "control_plane_churn/triggers_register_unregister/100",
+    "compare": "0.25 registers and unregisters n triggers of n functions; 0.26 adds and removes n observers of one function",
+    "v025_ns_runs": [
+     139050.0,
+     138990.0,
+     139060.0,
+     138690.0,
+     138360.0
+    ],
+    "v025_ns": 138990.0,
+    "v026_ns_runs": [
+     140850.0,
+     141930.0,
+     141700.0,
+     140100.0,
+     139630.0
+    ],
+    "v026_ns": 140850.0,
+    "delta_vs_v025": 0.013382257716382462,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "id": "control_plane_churn/observers_add_remove/1000",
+    "v025_id": "control_plane_churn/triggers_register_unregister/1000",
+    "compare": "0.25 registers and unregisters n triggers of n functions; 0.26 adds and removes n observers of one function",
+    "v025_ns_runs": [
+     1418800.0,
+     1420300.0,
+     1423000.0,
+     1421500.0,
+     1415700.0
+    ],
+    "v025_ns": 1420300.0,
+    "v026_ns_runs": [
+     1446600.0,
+     1456500.0,
+     1445900.0,
+     1448200.0,
+     1444500.0
+    ],
+    "v026_ns": 1446600.0,
+    "delta_vs_v025": 0.018517214672956417,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "id": "control_plane_churn/observers_add_remove/5000",
+    "v025_id": "control_plane_churn/triggers_register_unregister/5000",
+    "compare": "0.25 registers and unregisters n triggers of n functions; 0.26 adds and removes n observers of one function",
+    "v025_ns_runs": [
+     7521500.0,
+     7555500.0,
+     7575000.0,
+     7567100.0,
+     7542700.0
+    ],
+    "v025_ns": 7555500.0,
+    "v026_ns_runs": [
+     7803100.0,
+     7923600.0,
+     7732600.0,
+     7825300.0,
+     7738300.0
+    ],
+    "v026_ns": 7803100.0,
+    "delta_vs_v025": 0.03277082919727348,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "id": "observe_dispatch/default/0",
+    "v025_id": "observe_dispatch/auto/0",
+    "v026_ns_runs": [
+     1794.3,
+     1782.1,
+     1786.1
+    ],
+    "v026_ns": 1786.1,
+    "v025_ns_runs": [
+     1827.2,
+     1811.1,
+     1812.8999999999999
+    ],
+    "v025_ns": 1812.8999999999999,
+    "delta_vs_v025": -0.014782944453637814,
+    "verdict_vs_v025": "same as 0.25 within noise",
+    "compare": "0.25's port of the bench (auto delivery)"
+   },
+   {
+    "id": "observe_dispatch/default/1",
+    "v025_id": "observe_dispatch/auto/1",
+    "v026_ns_runs": [
+     4527.8,
+     4441.3,
+     4499.3
+    ],
+    "v026_ns": 4499.3,
+    "v025_ns_runs": [
+     4792.900000000001,
+     4691.7,
+     4676.2
+    ],
+    "v025_ns": 4691.7,
+    "delta_vs_v025": -0.04100858963701848,
+    "verdict_vs_v025": "same as 0.25 within noise",
+    "compare": "0.25's port of the bench (auto delivery)"
+   },
+   {
+    "id": "observe_dispatch/default/64",
+    "v025_id": "observe_dispatch/auto/64",
+    "v026_ns_runs": [
+     63980.0,
+     64530.0,
+     63342.0
+    ],
+    "v026_ns": 63980.0,
+    "v025_ns_runs": [
+     76564.0,
+     76269.0,
+     76517.0
+    ],
+    "v025_ns": 76517.0,
+    "delta_vs_v025": -0.16384594273168052,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench (auto delivery)"
+   },
+   {
+    "id": "observe_dispatch/default/8",
+    "v025_id": "observe_dispatch/auto/8",
+    "v026_ns_runs": [
+     9467.3,
+     9278.9,
+     9209.5
+    ],
+    "v026_ns": 9278.9,
+    "v025_ns_runs": [
+     10594.0,
+     10517.0,
+     10533.0
+    ],
+    "v025_ns": 10533.0,
+    "delta_vs_v025": -0.11906389442703891,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench (auto delivery)"
+   },
+   {
+    "id": "observe_dispatch/filtered/1024",
+    "v025_id": "observe_dispatch/filtered/1024",
+    "v026_ns_runs": [
+     4604.5,
+     4508.3,
+     4485.2
+    ],
+    "v026_ns": 4508.3,
+    "v025_ns_runs": [
+     19920.0,
+     20095.0,
+     19778.0
+    ],
+    "v025_ns": 19920.0,
+    "delta_vs_v025": -0.773679718875502,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench, same row"
+   },
+   {
+    "id": "observe_dispatch/filtered/16",
+    "v025_id": "observe_dispatch/filtered/16",
+    "v026_ns_runs": [
+     4574.900000000001,
+     4504.2,
+     4493.0
+    ],
+    "v026_ns": 4504.2,
+    "v025_ns_runs": [
+     4764.5,
+     4750.0,
+     4719.1
+    ],
+    "v025_ns": 4750.0,
+    "delta_vs_v025": -0.05174736842105265,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench, same row"
+   },
+   {
+    "id": "observe_dispatch/filtered/256",
+    "v025_id": "observe_dispatch/filtered/256",
+    "v026_ns_runs": [
+     4523.3,
+     4518.2,
+     4469.9
+    ],
+    "v026_ns": 4518.2,
+    "v025_ns_runs": [
+     5039.1,
+     5022.9,
+     5013.099999999999
+    ],
+    "v025_ns": 5022.9,
+    "delta_vs_v025": -0.10047980250452926,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench, same row"
+   },
+   {
+    "id": "observe_dispatch/filtered/4000",
+    "v025_id": "observe_dispatch/filtered/4000",
+    "v026_ns_runs": [
+     4594.5,
+     4498.8,
+     4476.099999999999
+    ],
+    "v026_ns": 4498.8,
+    "compare": "0.25 has no such row"
+   },
+   {
+    "id": "observe_fanout/1",
+    "v025_id": "trigger_fanout/1",
+    "v026_ns_runs": [
+     10431.0,
+     10265.0,
+     10373.0
+    ],
+    "v026_ns": 10373.0,
+    "v025_ns_runs": [
+     11474.0,
+     11337.0,
+     11331.0
+    ],
+    "v025_ns": 11337.0,
+    "delta_vs_v025": -0.08503131339860637,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's trigger_fanout bench"
+   },
+   {
+    "id": "observe_fanout/128",
+    "v025_id": "trigger_fanout/128",
+    "v026_ns_runs": [
+     132100.0,
+     129240.00000000001,
+     129150.0
+    ],
+    "v026_ns": 129240.00000000001,
+    "v025_ns_runs": [
+     322100.0,
+     320680.0,
+     324380.0
+    ],
+    "v025_ns": 322100.0,
+    "delta_vs_v025": -0.5987581496429679,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's trigger_fanout bench"
+   },
+   {
+    "id": "observe_fanout/32",
+    "v025_id": "trigger_fanout/32",
+    "v026_ns_runs": [
+     50254.0,
+     49697.0,
+     50236.0
+    ],
+    "v026_ns": 50236.0,
+    "v025_ns_runs": [
+     85966.0,
+     84959.0,
+     85009.0
+    ],
+    "v025_ns": 85009.0,
+    "delta_vs_v025": -0.4090508063852063,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's trigger_fanout bench"
+   },
+   {
+    "id": "observe_fanout/8",
+    "v025_id": "trigger_fanout/8",
+    "v026_ns_runs": [
+     23134.0,
+     22830.0,
+     23070.0
+    ],
+    "v026_ns": 23070.0,
+    "v025_ns_runs": [
+     28825.0,
+     29207.0,
+     28820.0
+    ],
+    "v025_ns": 28825.0,
+    "delta_vs_v025": -0.19965307892454465,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's trigger_fanout bench"
+   },
+   {
+    "id": "observe_routed/observed/0",
+    "v025_id": "observe_routed/observed/0",
+    "v026_ns_runs": [
+     34150.0,
+     33679.0,
+     34139.0
+    ],
+    "v026_ns": 34139.0,
+    "v025_ns_runs": [
+     34079.0,
+     33683.0,
+     33966.0
+    ],
+    "v025_ns": 33966.0,
+    "delta_vs_v025": 0.005093328622740367,
+    "verdict_vs_v025": "same as 0.25 within noise",
+    "compare": "0.25's port of the bench, same row"
+   },
+   {
+    "id": "observe_routed/observed/1",
+    "v025_id": "observe_routed/observed/1",
+    "v026_ns_runs": [
+     35459.0,
+     35411.0,
+     35495.0
+    ],
+    "v026_ns": 35459.0,
+    "v025_ns_runs": [
+     35919.0,
+     35788.0,
+     35739.0
+    ],
+    "v025_ns": 35788.0,
+    "delta_vs_v025": -0.009193025595171544,
+    "verdict_vs_v025": "same as 0.25 within noise",
+    "compare": "0.25's port of the bench, same row"
+   },
+   {
+    "id": "observe_routed/observed/64",
+    "v025_id": "observe_routed/observed/64",
+    "v026_ns_runs": [
+     72844.0,
+     71438.0,
+     72410.0
+    ],
+    "v026_ns": 72410.0,
+    "v025_ns_runs": [
+     89719.0,
+     91382.0,
+     91232.0
+    ],
+    "v025_ns": 91232.0,
+    "delta_vs_v025": -0.20630918975797963,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench, same row"
+   },
+   {
+    "id": "observe_routed/observed/8",
+    "v025_id": "observe_routed/observed/8",
+    "v026_ns_runs": [
+     39357.0,
+     39629.0,
+     39809.0
+    ],
+    "v026_ns": 39629.0,
+    "v025_ns_runs": [
+     43539.0,
+     43448.0,
+     43196.0
+    ],
+    "v025_ns": 43448.0,
+    "delta_vs_v025": -0.08789817713128334,
+    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "compare": "0.25's port of the bench, same row"
+   }
+  ],
+  "loadtest_steps": [
+   {
+    "scenario": "fanout",
+    "step": "0 observers/function",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      183099.386464801,
+      185062.4649129114,
+      181438.50575700926,
+      181665.930548974,
+      189658.63884502268,
+      185511.66101483197,
+      182318.72745926928,
+      183904.84167440343
+     ],
+     "0.25": [
+      177026.27314291027,
+      179155.06856758567,
+      178997.09111410019,
+      178490.94753448083,
+      178719.39316006092,
+      177947.81509912104,
+      178864.90267219406,
+      177475.22665271792
+     ]
+    },
+    "v025": 178605.17034727088,
+    "v026": 183502.11406960222,
+    "delta_vs_v025": 0.027417704161699197,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "1 observers/function",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      97273.72156528004,
+      96126.4972233887,
+      96871.6651617775,
+      91173.62450148618,
+      96905.09838079002,
+      97372.31617322353,
+      96044.45890896727,
+      96227.3129767777
+     ],
+     "0.25": [
+      96592.69804524783,
+      97361.07752647427,
+      96684.11557282282,
+      98214.03906525233,
+      99265.92616350252,
+      98498.83687818736,
+      98214.62591130525,
+      97827.96173074897
+     ]
+    },
+    "v025": 98021.00039800064,
+    "v026": 96549.4890692776,
+    "delta_vs_v025": -0.015012204759675796,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "1 observers/function",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      68148.85657426,
+      68106.26555513505,
+      67803.18689087803,
+      62398.16090166499,
+      69222.97979747552,
+      69900.34174313988,
+      67946.69690369893,
+      67913.45917262981
+     ],
+     "0.25": [
+      69981.76665506884,
+      71674.18902102468,
+      69423.26049469832,
+      72647.23269969429,
+      74195.94741777996,
+      72976.96083755426,
+      71647.94861793435,
+      71792.74619312525
+     ]
+    },
+    "v025": 71733.46760707497,
+    "v026": 68026.481229417,
+    "delta_vs_v025": -0.05167722265934849,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "1 observers/function",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      0.7049549688451425,
+      0.7129208200895308,
+      0.7043164680553291,
+      0.6889150120953857,
+      0.7175214750238154,
+      0.7222015733738005,
+      0.7118597844054078,
+      0.7101014424695278
+     ],
+     "0.25": [
+      0.7288322603349411,
+      0.7403398880731119,
+      0.7224451218755558,
+      0.7438970017895206,
+      0.7517348766097338,
+      0.7441594875238093,
+      0.7332652164001694,
+      0.7381350458655591
+     ]
+    },
+    "v025": 0.7392374669693356,
+    "v026": 0.7109806134374678
+   },
+   {
+    "scenario": "fanout",
+    "step": "4 observers/function",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      63381.24919688594,
+      60982.05870271648,
+      55055.05657199551,
+      65886.7492212444,
+      66038.36070662506,
+      68400.1834656907,
+      62375.230173461314,
+      57431.46545261968
+     ],
+     "0.25": [
+      56499.798242394056,
+      66146.75959945333,
+      62768.948082805124,
+      55022.739558438756,
+      51319.48060928096,
+      50863.17353099404,
+      57438.78285697263,
+      67090.73398320525
+     ]
+    },
+    "v025": 56969.29054968334,
+    "v026": 62878.23968517363,
+    "delta_vs_v025": 0.10372165562316504,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "4 observers/function",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      193470.28942469758,
+      156427.7170880893,
+      167170.40690611332,
+      203626.3407120105,
+      191814.55584724454,
+      201035.91710614582,
+      199075.85528430517,
+      179739.21965609072
+     ],
+     "0.25": [
+      185626.0014478038,
+      206044.21410591382,
+      192809.70189698887,
+      198700.49035993667,
+      192680.6482623875,
+      186332.55386933798,
+      193540.4698987518,
+      204291.67888453256
+     ]
+    },
+    "v025": 193175.08589787033,
+    "v026": 192642.42263597104,
+    "delta_vs_v025": -0.0027574118029946026,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "4 observers/function",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      0.76947865534342,
+      0.6478424377944701,
+      0.7649502505628586,
+      0.7786439999028915,
+      0.7321974628356899,
+      0.740010843324195,
+      0.8014761968860771,
+      0.7893030088877594
+     ],
+     "0.25": [
+      0.8214400707651481,
+      0.784664687871213,
+      0.7681269267025044,
+      0.9083620388942182,
+      0.9462064155663006,
+      0.9162018365213016,
+      0.8424267313535166,
+      0.7672806630624617
+     ]
+    },
+    "v025": 0.8319334010593324,
+    "v026": 0.7672144529531393
+   },
+   {
+    "scenario": "fanout",
+    "step": "16 observers/function",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      75953.59858181562,
+      71602.74223312542,
+      67642.19562385531,
+      73066.52761467037,
+      70304.59847332608,
+      73962.39672056159,
+      76127.72551063534,
+      75801.22033239182
+     ],
+     "0.25": [
+      69251.2413419364,
+      71923.11412980857,
+      70467.53385782018,
+      69900.38636354271,
+      72271.30047295935,
+      72260.41111482542,
+      71145.75899145499,
+      71072.89219419801
+     ]
+    },
+    "v025": 71109.3255928265,
+    "v026": 73514.46216761597,
+    "delta_vs_v025": 0.03382308234170761,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "16 observers/function",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      230751.44423935408,
+      195670.19973478405,
+      175763.66249230926,
+      246573.31648863683,
+      187813.8358873556,
+      229144.47417802014,
+      227137.16402161133,
+      235059.2755630606
+     ],
+     "0.25": [
+      198079.8708617016,
+      204338.63533747423,
+      199301.30404845404,
+      199722.32984472098,
+      209092.88549240935,
+      207482.43508148313,
+      202904.718192533,
+      203582.04025550265
+     ]
+    },
+    "v025": 203243.37922401784,
+    "v026": 228140.81909981574,
+    "delta_vs_v025": 0.12250061955698732,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "16 observers/function",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      0.19523507277049063,
+      0.17648187113763358,
+      0.16842499238884012,
+      0.21641635862680345,
+      0.17276645166244337,
+      0.1991432500743384,
+      0.1918341291164706,
+      0.19913492630768256
+     ],
+     "0.25": [
+      0.18466312619811998,
+      0.18323700145123356,
+      0.18254260444686574,
+      0.18440926797737062,
+      0.1864602354471005,
+      0.18511182292041323,
+      0.18397309158052713,
+      0.18477429886428534
+     ]
+    },
+    "v025": 0.1845361970877453,
+    "v026": 0.19353460094348063
+   },
+   {
+    "scenario": "fanout",
+    "step": "64 observers/function",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      74937.61540798093,
+      63525.43309809537,
+      74241.59446587464,
+      66588.64442328922,
+      75461.53458616884,
+      66961.02216564468,
+      66060.87203486578,
+      74346.79902565817
+     ],
+     "0.25": [
+      66884.93328791323,
+      68980.29578168881,
+      67215.98041963187,
+      67331.47260067888,
+      70489.95562180365,
+      68088.1518094861,
+      68717.15606912071,
+      68687.79500265849
+     ]
+    },
+    "v025": 68387.9734060723,
+    "v026": 70601.30831575967,
+    "delta_vs_v025": 0.032364388056143945,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "64 observers/function",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      225764.65843900724,
+      158839.7734412032,
+      224817.5518164387,
+      170688.99917674126,
+      228194.1513708796,
+      175017.5834689685,
+      168510.00782612796,
+      273680.32737153425
+     ],
+     "0.25": [
+      189021.72472313556,
+      193328.40191240964,
+      185720.9162704785,
+      199827.21414496537,
+      201103.89686644118,
+      194213.00552015431,
+      193441.85066546634,
+      195006.33410244976
+     ]
+    },
+    "v025": 193827.42809281033,
+    "v026": 199917.5676427036,
+    "delta_vs_v025": 0.03142042181448712,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "fanout",
+    "step": "64 observers/function",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      0.052534633647488276,
+      0.04550959510920879,
+      0.05282227930087256,
+      0.04619220883341191,
+      0.052669674842740634,
+      0.046946288872963975,
+      0.04604518197639225,
+      0.06302242037291536
+     ],
+     "0.25": [
+      0.05027472660932787,
+      0.04971993958426321,
+      0.049259085115180505,
+      0.0524453414996288,
+      0.050380127699647705,
+      0.05057665880708596,
+      0.049940884694509996,
+      0.050312797451847364
+     ]
+    },
+    "v025": 0.05029376203058762,
+    "v026": 0.049740461260226125
+   },
+   {
+    "scenario": "fanout",
+    "step": "after the load (at rest)",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "0.25": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "v025": 0.0,
+    "v026": 0.0
+   },
+   {
+    "scenario": "filters",
+    "step": "16 filtered observers",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      98053.07094691043,
+      99540.25290973086,
+      98149.98183572496,
+      99743.70892494751,
+      99125.22623674336,
+      97747.44597808493,
+      97873.52912229816,
+      98844.78187123137
+     ],
+     "0.25": [
+      101807.9738071276,
+      101976.14448761198,
+      100580.25095765352,
+      100923.21734609871,
+      102995.46174030878,
+      101762.24825328808,
+      101726.01283638389,
+      102138.84707316327
+     ]
+    },
+    "v025": 101785.11103020783,
+    "v026": 98497.38185347817,
+    "delta_vs_v025": -0.03230068861204982,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "16 filtered observers",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      98051.8712078844,
+      99538.85319022373,
+      98149.98183572496,
+      99743.70892494751,
+      99125.22623674336,
+      97747.44597808493,
+      97871.72946928711,
+      98844.78187123137
+     ],
+     "0.25": [
+      101807.57387872486,
+      101975.1447450129,
+      100580.25095765352,
+      100921.61767551152,
+      102995.46174030878,
+      101760.64863607712,
+      101726.01283638389,
+      102138.84707316327
+     ]
+    },
+    "v025": 101784.11125740099,
+    "v026": 98497.38185347817,
+    "delta_vs_v025": -0.03229118340102255,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "16 filtered observers",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ],
+     "0.25": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "v025": 1.0,
+    "v026": 1.0
+   },
+   {
+    "scenario": "filters",
+    "step": "256 filtered observers",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      97318.47009858752,
+      98256.37274777521,
+      96954.37361352926,
+      97945.86217623627,
+      97693.97104959674,
+      98302.63119695008,
+      97963.07102401194,
+      97448.37093820375
+     ],
+     "0.25": [
+      95891.90679431519,
+      95421.752794236,
+      93247.38450121038,
+      95136.92712336515,
+      96843.82414576231,
+      95820.6449450936,
+      96133.89915153182,
+      95973.1709133822
+     ]
+    },
+    "v025": 95856.2758697044,
+    "v026": 97819.91661291651,
+    "delta_vs_v025": 0.020485260097953706,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "256 filtered observers",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      97318.47009858752,
+      98256.37274777521,
+      96952.17418125858,
+      97945.86217623627,
+      97693.97104959674,
+      98302.63119695008,
+      97963.07102401194,
+      97448.37093820375
+     ],
+     "0.25": [
+      95890.70698566524,
+      95421.752794236,
+      93243.98504132949,
+      95135.32742725463,
+      96842.6244378216,
+      95818.64535734261,
+      96131.49965324819,
+      95973.1709133822
+     ]
+    },
+    "v025": 95854.67617150393,
+    "v026": 97819.91661291651,
+    "delta_vs_v025": 0.020502290758317887,
+    "verdict_vs_v025": "same as 0.25 within noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "256 filtered observers",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ],
+     "0.25": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "v025": 1.0,
+    "v026": 1.0
+   },
+   {
+    "scenario": "filters",
+    "step": "1024 filtered observers",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      96934.8213874276,
+      97008.03969406452,
+      97760.04554145427,
+      97562.42732149405,
+      98855.59956651481,
+      97737.59578370619,
+      97009.85393369912,
+      99171.95308559875
+     ],
+     "0.25": [
+      82895.5690400855,
+      83521.72598859666,
+      81921.79611566976,
+      81848.5742472822,
+      82949.50037476429,
+      82288.17220175969,
+      82242.04597425027,
+      83426.35073544546
+     ]
+    },
+    "v025": 82591.8706209226,
+    "v026": 97650.01155260012,
+    "delta_vs_v025": 0.1823198919999145,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "1024 filtered observers",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      96934.8213874276,
+      97006.63992436246,
+      97757.64597233721,
+      97562.42732149405,
+      98855.59956651481,
+      97737.59578370619,
+      97009.45400768232,
+      99170.15336955003
+     ],
+     "0.25": [
+      34523.47560542497,
+      34854.50636323997,
+      34625.00094189212,
+      34781.080015637206,
+      34531.86600873217,
+      34154.39694375405,
+      34532.2215990152,
+      34811.11754397168
+     ]
+    },
+    "v025": 34578.611270453664,
+    "v026": 97650.01155260012,
+    "delta_vs_v025": 1.8240003853491649,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "1024 filtered observers",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ],
+     "0.25": [
+      0.5744786051436414,
+      0.5741618546927518,
+      0.5825905713978894,
+      0.5850061930623044,
+      0.5742653971314933,
+      0.5742217017233965,
+      0.5791884466703946,
+      0.5743125510808161
+     ]
+    },
+    "v025": 0.5743955781122287,
+    "v026": 1.0
+   },
+   {
+    "scenario": "filters",
+    "step": "4000 filtered observers",
+    "metric": "calls_per_sec",
+    "runs": {
+     "0.26": [
+      86884.62202137471,
+      85916.05566189684,
+      84054.28123486676,
+      88894.2068268581,
+      91919.83884382951,
+      87187.38868187665,
+      87105.74004800443,
+      86815.69936142306
+     ],
+     "0.25": [
+      33792.67113874403,
+      33378.28529649917,
+      33862.41834100855,
+      33491.039320817195,
+      34052.46136342459,
+      33638.1555032885,
+      34181.30309819414,
+      33152.04772694009
+     ]
+    },
+    "v025": 33715.41332101627,
+    "v026": 86995.18103468957,
+    "delta_vs_v025": 1.5802792392422407,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "4000 filtered observers",
+    "metric": "activations_per_sec",
+    "runs": {
+     "0.26": [
+      86884.62202137471,
+      85916.05566189684,
+      84054.28123486676,
+      88893.60697121864,
+      91919.43894024314,
+      87186.58884894224,
+      87105.74004800443,
+      86815.69936142306
+     ],
+     "0.25": [
+      4894.561894507841,
+      4906.026680424935,
+      4805.061817082313,
+      5024.974789143352,
+      5030.420473600614,
+      5099.608469048454,
+      5134.672949672574,
+      5073.938229373637
+     ]
+    },
+    "v025": 5027.697631371982,
+    "v026": 86995.18103468957,
+    "delta_vs_v025": 16.303184760327344,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "filters",
+    "step": "4000 filtered observers",
+    "metric": "delivered_fraction",
+    "runs": {
+     "0.26": [
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+     ],
+     "0.25": [
+      0.4761763887984948,
+      0.48589917807563143,
+      0.48315355929003023,
+      0.4961156590849424,
+      0.48946871130360275,
+      0.4959967213504235,
+      0.5041938653751667,
+      0.503291020216267
+     ]
+    },
+    "v025": 0.4927327163270131,
+    "v026": 1.0
+   },
+   {
+    "scenario": "observers",
+    "step": "create → 1000",
+    "metric": "ops_per_sec",
+    "runs": {
+     "0.26": [
+      44298.342604090474,
+      50363.24490386916,
+      63701.7047913938
+     ],
+     "0.25": [
+      27925.030341243593,
+      26275.91508107723,
+      27019.785724452875
+     ]
+    },
+    "v025": 27019.785724452875,
+    "v026": 50363.24490386916,
+    "delta_vs_v025": 0.8639394633796258,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "1000 observers (at rest)",
+    "metric": "rss_bytes_per_observer",
+    "runs": {
+     "0.26": [
+      4640.0,
+      4713.0,
+      6982.0
+     ],
+     "0.25": [
+      9859.0,
+      7327.0,
+      10021.0
+     ]
+    },
+    "v025": 9859.0,
+    "v026": 4713.0,
+    "delta_vs_v025": -0.5219596307941983,
+    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "create → 4000",
+    "metric": "ops_per_sec",
+    "runs": {
+     "0.26": [
+      69793.00557762435,
+      76316.13470377777,
+      74626.78770335614
+     ],
+     "0.25": [
+      41065.396260267444,
+      59041.36542367995,
+      39563.54812493509
+     ]
+    },
+    "v025": 41065.396260267444,
+    "v026": 74626.78770335614,
+    "delta_vs_v025": 0.8172669570842739,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "4000 observers (at rest)",
+    "metric": "rss_bytes_per_observer",
+    "runs": {
+     "0.26": [
+      5132.0,
+      5335.0,
+      6653.0
+     ],
+     "0.25": [
+      7816.0,
+      7423.0,
+      9596.0
+     ]
+    },
+    "v025": 7816.0,
+    "v026": 5335.0,
+    "delta_vs_v025": -0.3174257932446264,
+    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "create → 16000",
+    "metric": "ops_per_sec",
+    "runs": {
+     "0.26": [
+      5419.75452777336,
+      5409.786538091164,
+      5388.559276331038
+     ],
+     "0.25": [
+      4802.620868971179,
+      4794.602713807226,
+      4754.1058399293515
+     ]
+    },
+    "v025": 4794.602713807226,
+    "v026": 5409.786538091164,
+    "delta_vs_v025": 0.1283075702002101,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "16000 observers (at rest)",
+    "metric": "rss_bytes_per_observer",
+    "runs": {
+     "0.26": [
+      6319.0,
+      5667.0,
+      7091.0
+     ],
+     "0.25": [
+      8184.0,
+      7954.0,
+      8645.0
+     ]
+    },
+    "v025": 8184.0,
+    "v026": 6319.0,
+    "delta_vs_v025": -0.22788367546432065,
+    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "create → 64000",
+    "metric": "ops_per_sec",
+    "runs": {
+     "0.26": [
+      16266.222248804392,
+      15461.467625344872,
+      16252.973694434422
+     ],
+     "0.25": [
+      4794.109017057454,
+      4437.861597095836,
+      4944.988333752616
+     ]
+    },
+    "v025": 4794.109017057454,
+    "v026": 16252.973694434422,
+    "delta_vs_v025": 2.390196934739342,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "64000 observers (at rest)",
+    "metric": "rss_bytes_per_observer",
+    "runs": {
+     "0.26": [
+      5389.0,
+      6158.0,
+      5529.0
+     ],
+     "0.25": [
+      7932.0,
+      8819.0,
+      8090.0
+     ]
+    },
+    "v025": 8090.0,
+    "v026": 5529.0,
+    "delta_vs_v025": -0.3165636588380717,
+    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+   },
+   {
+    "scenario": "observers",
+    "step": "dispose 64000",
+    "metric": "ops_per_sec",
+    "runs": {
+     "0.26": [
+      10318.251203481886,
+      10519.76436225545,
+      10270.250951876185
+     ],
+     "0.25": [
+      4556.931626977336,
+      4529.616061202203,
+      4656.669542710663
+     ]
+    },
+    "v025": 4556.931626977336,
+    "v026": 10318.251203481886,
+    "delta_vs_v025": 1.264298007544629,
+    "verdict_vs_v025": "above 0.25 beyond noise"
+   }
+  ]
  }
 }
