@@ -1815,19 +1815,22 @@ impl ObserverRegistry {
         let invocation_id = call.invocation_id.unwrap_or_else(Uuid::new_v4);
         // The target runs as for the observer's activations: under the
         // observing worker's session (none for an engine-owned observer),
-        // with no `_caller_worker_id` in its payload. The host chose the
-        // payload and the observing worker chose the target, so the host's
-        // authority never reaches the target (decision 49).
-        let invocation = invocations.handle_invocation_with_handler(
-            Some(invocation_id),
-            Some(worker),
+        // with no `_caller_worker_id` in its payload, and a private target
+        // checks the observing connection. The host chose the payload and
+        // the observing worker chose the target, so the host's authority
+        // never reaches the target (decisions 49, 57).
+        let observing = observer.observing();
+        let invocation = invocations.handle_observer_call(
+            invocation_id,
+            worker,
+            (!observer.is_engine_owned()).then_some(observing.connection),
             target_function.clone(),
             target_namespace,
             unstamped(call.data),
             handler,
             call.traceparent,
             call.baggage,
-            observer.observing().session.clone(),
+            observing.session,
             observer.metadata.clone(),
             ctx,
         );
@@ -3586,6 +3589,92 @@ mod tests {
             "a fire-and-forget refusal counts under its code"
         );
         assert_eq!(observer.flow.write().running, 0);
+    }
+
+    /// A call through an observer is the observing worker's call (decision
+    /// 57): a target private to the observing worker takes it from the
+    /// host, and a direct call of the target from any other worker is
+    /// refused. The target turns private as a registration makes it, before
+    /// that registration reaches the observer.
+    #[tokio::test]
+    async fn a_call_through_an_observer_is_the_observing_workers_call_of_a_private_target() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let mut delivered = test_support::capture(&engine, "test::dst");
+        let (observing, _observing_socket) = test_support::worker(&engine);
+        let (host, _host_socket) = test_support::worker(&engine);
+        let (third, _third_socket) = test_support::worker(&engine);
+        test_support::observe_request(
+            &engine,
+            &observing,
+            test_support::request("obs", "test::src", "test::dst", None),
+        )
+        .await;
+        for (function_id, connection) in [("test::src", host.id), ("test::dst", observing.id)] {
+            engine.function_owners.insert(
+                (DEFAULT_NAMESPACE.to_string(), function_id.to_string()),
+                (connection, crate::engine::InvocationKind::Regular),
+            );
+        }
+        engine.observers.set_options(
+            DEFAULT_NAMESPACE,
+            "test::dst",
+            super::super::FunctionOptions::private(),
+        );
+        assert!(
+            engine
+                .observers
+                .hosts_privately(DEFAULT_NAMESPACE, "test::dst", observing.id)
+        );
+        assert!(engine.observers.get("obs").unwrap().is_active());
+
+        let answer = engine
+            .observers
+            .observer_call(
+                &host,
+                super::ObserverCall {
+                    invocation_id: Some(Uuid::new_v4()),
+                    data: json!({ "n": 1 }),
+                    caller: None,
+                    observe_depth: None,
+                    activation: crate::protocol::Activation {
+                        observer_id: "obs".to_string(),
+                        activation_id: None,
+                    },
+                    traceparent: None,
+                    baggage: None,
+                    fire_and_forget: false,
+                },
+            )
+            .await;
+        assert!(answer.is_ok(), "{answer:?}");
+        assert_eq!(test_support::next(&mut delivered).await, json!({ "n": 1 }));
+
+        let handler = engine
+            .functions
+            .get_handler(DEFAULT_NAMESPACE, "test::dst")
+            .unwrap();
+        for caller in [&third, &host] {
+            let direct = engine
+                .invocations
+                .handle_invocation_with_handler(
+                    Some(Uuid::new_v4()),
+                    Some(caller),
+                    "test::dst".to_string(),
+                    DEFAULT_NAMESPACE,
+                    json!({ "n": 2 }),
+                    handler.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    InvocationCtx::engine_internal(),
+                )
+                .await
+                .expect("answered");
+            assert_eq!(direct.unwrap_err().code, observe_codes::FORBIDDEN);
+        }
+        assert!(delivered.try_recv().is_err(), "no direct call ran");
     }
 
     /// An event larger than the whole of the queues' budget never queues:

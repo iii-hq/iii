@@ -928,36 +928,67 @@ async fn the_grace_period_ends_in_disposal() {
     );
 }
 
-/// A replay of an observer disposed meanwhile answers the disposal instead of
-/// re-creating it with fresh counters.
+/// An observer the engine disposes while its worker is connected (here
+/// `max_fires`) frees its id on that connection, which heard the `disposed`:
+/// an `observe` of the id from it is a new observer, with fresh counters
+/// (decision 56). A replay of the observer on a reattached connection is
+/// answered with the disposal and creates nothing, since the `disposed` may
+/// have been lost with the earlier connection.
 #[tokio::test]
 async fn a_disposed_observer_is_not_resurrected_by_a_replay() {
     let t = spawn_engine(ObserversConfig::default()).await;
-    let mut orders = host(&t, "orders", true, &["orders::create"]).await;
-    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut orders = host(&t, "orders", true, &["orders::create", "orders::idle"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once", "sink::idle"]).await;
     let mut checkout = connect(&t, "checkout", true).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    // Held across the reattach below, which re-parents it.
+    watcher
+        .observe_active(observer(
+            "obs-idle",
+            json!({ "function_id": "orders::idle" }),
+            "sink::idle",
+        ))
+        .await;
     let mut frame = observer(
         "obs-once",
         json!({ "function_id": "orders::create" }),
         "sink::once",
     );
     frame["max_fires"] = json!(1);
-    sink.observe_active(frame.clone()).await;
-    round_trip(
-        &t,
-        &mut checkout,
-        &mut orders,
-        "orders::create",
-        json!({}),
-        json!({}),
-    )
-    .await;
-    sink.state_becomes("obs-once", "disposed").await;
 
-    let replay = sink.observe(frame).await;
-    assert_eq!(replay["state"], "disposed");
+    for _ in 0..2 {
+        watcher.observe_active(frame.clone()).await;
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        let disposed = watcher.state_becomes("obs-once", "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "MAX_FIRES");
+        assert_eq!(disposed["fires"], 1, "a new observer counts from 0");
+    }
+
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "obs-idle") == Some(ObserverState::Suspended)).await,
+        "the observing worker left: suspended"
+    );
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    let replay = watcher.observe(frame).await;
+    assert_eq!(replay["state"], "disposed", "{replay}");
     assert_eq!(replay["error"]["code"], "MAX_FIRES");
     assert!(t.engine.observers.get("obs-once").is_none());
+    assert!(
+        eventually(|| state(&t, "obs-idle") == Some(ObserverState::Active)).await,
+        "the reattach re-parented the observer it held"
+    );
 }
 
 /// A worker that comes back after `observer_grace_ms` reattaches and replays
