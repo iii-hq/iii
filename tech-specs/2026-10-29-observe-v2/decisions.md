@@ -503,13 +503,14 @@ differ, this file wins, and the spec is updated to match.
       and the new handle hears its own answers only.
 
       An observer the engine disposes (`max_fires`, expiry, an admin) frees
-      its id on the connection the engine sent its `disposed` to: an
-      `observe` of the id from it creates a new observer. A replay of the
-      observer on a reattached connection is answered `disposed` for
-      `observers.observer_grace_ms` after the disposal, since its `disposed`
-      may have been lost with the earlier connection. The engine reads every
-      `observe` of the id on that connection in that time as such a replay,
-      so a new observer under the id waits for the grace period to end.
+      its id on a connection that heard its `disposed` (one that had the
+      observer's `observeresult` first): an `observe` of the id from it
+      creates a new observer. On a reattached connection the first
+      `observe` of the id within `observers.observer_grace_ms` of the
+      disposal is answered `disposed`, as the replay of an observer whose
+      `disposed` may have been lost with the earlier connection. That
+      answer, or an `unobserve` of the id from the connection, frees the id
+      there.
     - **A refusal is the handle's last answer.** An `observeresult` that
       refuses an `observe` (state `error`) answers the oldest listed handle
       of the id that has no answer yet (rule 2), and that handle leaves the
@@ -518,10 +519,10 @@ differ, this file wins, and the spec is updated to match.
       has sent its `unobserve` already, and resolves when the refusal
       arrives, with no wait for a `disposed`. The engine stores nothing for
       a refused `observe`, and ignores an `unobserve` of an id that none of
-      the connection's observers holds: that `unobserve` changes nothing,
-      and nothing answers it. A replayed `observe` of an observer the engine
-      holds in `error` is refused with that error, and the engine disposes
-      that observer as it answers, with no tombstone and nothing more sent.
+      the connection's observers holds: nothing answers it, and it changes
+      no observer. A replayed `observe` of an observer the engine holds in
+      `error` is refused with that error, and the engine disposes that
+      observer as it answers, with no tombstone and nothing more sent.
 
 ## CLI and crates
 
