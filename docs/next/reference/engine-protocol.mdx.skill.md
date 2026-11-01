@@ -947,11 +947,12 @@ sent.
 An observer the engine disposes (`max_fires`, expiry, an admin) frees its `id` on a connection that
 heard its `disposed`: one that had the observer's `ObserveResult` before the `ObserverStateChanged`
 that disposed it. That connection may observe under the `id` again at once. On a connection that
-reattached, the engine answers the first `Observe` of that `id` within
-`observers.observer_grace_ms` of the disposal with `disposed` and its reason: it reads the
-`Observe` as a replay whose `disposed` was lost with the earlier connection, and does not create
-the observer again with new counters. After that answer, or an `Unobserve` of the `id` from the
-connection, the `id` is free there.
+reattached, the engine answers the first `Observe` of that `id` with `disposed` and its reason when
+the disposal came at most `observers.observer_grace_ms` before the earlier connection closed, or
+while it was away: it reads the `Observe` as a replay whose `disposed` was lost with the earlier
+connection, and does not create the observer again with new counters. A `Reattach` later than the
+grace period gets the same answer, within `observers.disposed_retention_ms`. After that answer, or
+an `Unobserve` of the `id` from the connection, the `id` is free there.
 
 ### `FunctionRegistered`
 
