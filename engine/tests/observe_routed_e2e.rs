@@ -991,6 +991,108 @@ async fn a_disposed_observer_is_not_resurrected_by_a_replay() {
     );
 }
 
+/// An id the engine disposed (`max_fires`, `expires_in_ms`) is free at once
+/// for its observing worker, which heard the disposal on its connection: a
+/// new `observe` under it creates a new observer, with fresh counters
+/// (decision 56).
+#[tokio::test]
+async fn an_id_the_engine_disposed_is_free_at_once_for_the_worker_that_heard_it() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", true, &["orders::create"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut once = observer(
+        "obs-again",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    once["max_fires"] = json!(1);
+    for fired in 1..=2 {
+        watcher.observe_active(once.clone()).await;
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({ "n": fired }),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        assert_eq!(
+            activation["data"]["observer_id"], "obs-again",
+            "{fired}: {activation}"
+        );
+        sink.reply(&activation, Value::Null).await;
+        let disposed = watcher.state_becomes("obs-again", "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "MAX_FIRES", "{disposed}");
+    }
+
+    let mut lease = observer(
+        "obs-lease",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    lease["expires_in_ms"] = json!(150);
+    for _ in 0..2 {
+        watcher.observe_active(lease.clone()).await;
+        let disposed = watcher.state_becomes("obs-lease", "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "EXPIRED", "{disposed}");
+    }
+}
+
+/// An observer the engine disposed while its worker was away: the worker,
+/// reattached, has its replay answered with the disposal, and observes the
+/// id again as a new observer. An `unobserve` of such an id (a handle
+/// disposed while disconnected) frees it too.
+#[tokio::test]
+async fn after_its_replay_or_its_unobserve_an_id_disposed_while_away_is_free() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let _orders = host(&t, "orders", true, &["orders::create", "orders::cancel"]).await;
+    let _sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut lease = observer(
+        "obs-replayed",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    lease["expires_in_ms"] = json!(200);
+    let mut dropped = lease.clone();
+    dropped["id"] = json!("obs-unobserved");
+    watcher.observe_active(lease.clone()).await;
+    watcher.observe_active(dropped.clone()).await;
+    watcher
+        .observe_active(observer(
+            "obs-kept",
+            json!({ "function_id": "orders::cancel" }),
+            "sink::once",
+        ))
+        .await;
+
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "obs-replayed").is_none() && state(&t, "obs-unobserved").is_none())
+            .await,
+        "expired while the worker was away"
+    );
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    watcher
+        .send(json!({ "type": "unobserve", "id": "obs-unobserved" }))
+        .await;
+    let replay = watcher.observe(lease.clone()).await;
+    assert_eq!(replay["state"], "disposed", "{replay}");
+    assert_eq!(replay["error"]["code"], "EXPIRED", "{replay}");
+
+    for mut frame in [lease, dropped] {
+        frame["expires_in_ms"] = json!(60_000);
+        let id = frame["id"].as_str().unwrap().to_string();
+        watcher.observe_active(frame).await;
+        assert_eq!(state(&t, &id), Some(ObserverState::Active), "{id}");
+    }
+}
+
 /// A worker that comes back after `observer_grace_ms` reattaches and replays
 /// its observers, as the SDKs do. The grace period disposed them, so the
 /// replay is answered with that disposal: re-creating them with fresh

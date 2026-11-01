@@ -272,6 +272,11 @@ pub(crate) struct Observing {
     pub worker_name: Option<Arc<str>>,
     pub namespace: Arc<str>,
     pub session: Option<Arc<crate::workers::worker::rbac_session::Session>>,
+    /// `connection` has the observer's `observeresult` (its creation's, or
+    /// the answer to its replay there): it hears the observer's disposal
+    /// after that answer, in order. `false` from a `Reattach` until the
+    /// replay is answered.
+    pub answered: bool,
 }
 
 /// Disposed observers remembered at most (see `Tombstone`).
@@ -282,25 +287,27 @@ pub(crate) const MAX_TOMBSTONES: usize = 10_000;
 /// again with fresh counters.
 ///
 /// A worker replays its observers on a new connection, after a `Reattach`
-/// (which moves the tombstone to it). The connection the engine sent the
-/// `disposed` to replays nothing on itself: an `observe` of the id from it
-/// is a new observer (decision 56).
+/// (which moves the tombstone to it). A connection that heard the
+/// `disposed` replays nothing more of it: an `observe` of the id from it is
+/// a new observer (decision 56).
 pub(crate) struct Tombstone {
     pub connection: Uuid,
-    /// The connection the `disposed` was sent to, when the observing worker
-    /// was connected as the observer was disposed: an `observe` of the id
-    /// from it is a new observer.
-    pub told: Option<Uuid>,
     pub reason: Arc<ErrorBody>,
     pub until: Instant,
+    /// `connection` heard the disposal after the observer's `observeresult`
+    /// there, or had the disposal as the answer to its replay: it replays
+    /// nothing more of it, so its next `observe` of the id is a new
+    /// observer. A `Reattach` that moves the tombstone to a new connection
+    /// clears it: the disposal may have been lost with the earlier one.
+    pub heard: bool,
 }
 
 impl Tombstone {
     /// Whether this tombstone answers an `observe` of its id from
     /// `connection`: one from the observer's own worker, on a connection
-    /// other than the one told of the disposal, before it expires.
+    /// that has not heard the disposal, before it expires.
     pub(crate) fn answers(&self, connection: Uuid, now: Instant) -> bool {
-        self.connection == connection && self.told != Some(connection) && self.until > now
+        self.connection == connection && !self.heard && self.until > now
     }
 }
 
@@ -751,6 +758,15 @@ impl Observer {
     /// State and reason read together.
     pub fn snapshot_state(&self) -> (ObserverState, Option<ErrorBody>) {
         let status = self.status.read();
+        (status.state.clone(), status.reason(self))
+    }
+
+    /// [`Self::snapshot_state`], for the `observeresult` that answers its
+    /// observing connection's replay: from then on that connection hears
+    /// its disposal in order (see [`Observing::answered`]).
+    pub(crate) fn answer_replay(&self) -> (ObserverState, Option<ErrorBody>) {
+        let mut status = self.status.write();
+        status.observing.answered = true;
         (status.state.clone(), status.reason(self))
     }
 
@@ -1253,26 +1269,27 @@ impl ObserverRegistry {
     /// Drops every index entry of a disposed observer. Its observing worker
     /// replaying it later learns why it is gone from its tombstone, unless
     /// that worker disposed of it, or the engine owns it (the engine replays
-    /// nothing). A worker that was connected heard the disposal on that
-    /// connection, which may observe under the id again at once.
+    /// nothing). A connected worker that had the observer's answer hears the
+    /// disposal itself, so the tombstone answers no `observe` of its own on
+    /// that connection: the id is free for it at once (decision 56).
     pub(super) fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
         self.by_id
             .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
-        let connection = observer.observing_connection();
-        let (tombstone, connected, reason) = observer.with_flags(|flags| {
+        let (connection, heard, tombstone, reason) = {
+            let status = observer.status.read();
             (
-                flags.tombstone,
-                flags.observing_connected,
-                flags.disposed.clone(),
+                status.observing.connection,
+                status.observing.answered && status.flags.observing_connected,
+                status.flags.tombstone,
+                status.flags.disposed.clone(),
             )
-        });
+        };
         if tombstone && !observer.is_engine_owned() {
             self.remember_tombstone(
                 Arc::from(observer.id.as_str()),
                 Tombstone {
                     connection,
-                    told: connected.then_some(connection),
                     reason: reason.unwrap_or_else(|| {
                         Arc::new(ErrorBody::new(
                             observe_codes::UNOBSERVED,
@@ -1281,6 +1298,7 @@ impl ObserverRegistry {
                     }),
                     until: Instant::now()
                         + std::time::Duration::from_millis(self.config.load().observer_grace_ms),
+                    heard,
                 },
             );
         }

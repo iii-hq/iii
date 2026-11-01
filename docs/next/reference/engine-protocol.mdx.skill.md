@@ -944,12 +944,14 @@ holds: nothing answers it, and another connection's observer of that id stays as
 refuses an `observe` whose id one of its live handles holds, with `OBSERVER_ID_CONFLICT` and nothing
 sent.
 
-An observer the engine disposes (`max_fires`, expiry, an admin) frees its `id` on the connection
-the engine sent its `disposed` to, which may observe under the `id` again at once. On a connection
-that reattached, the engine answers an `Observe` of that `id` with `disposed` and its reason for
-`observers.observer_grace_ms` after the disposal: it reads the `Observe` as a replay whose
-`disposed` was lost with the earlier connection, and does not create the observer again with new
-counters.
+An observer the engine disposes (`max_fires`, expiry, an admin) frees its `id` on a connection that
+heard its `disposed`: one that had the observer's `ObserveResult` before the `ObserverStateChanged`
+that disposed it. That connection may observe under the `id` again at once. On a connection that
+reattached, the engine answers the first `Observe` of that `id` within
+`observers.observer_grace_ms` of the disposal with `disposed` and its reason: it reads the
+`Observe` as a replay whose `disposed` was lost with the earlier connection, and does not create
+the observer again with new counters. After that answer, or an `Unobserve` of the `id` from the
+connection, the `id` is free there.
 
 ### `FunctionRegistered`
 
