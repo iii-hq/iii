@@ -181,11 +181,12 @@ func TestObserveRefusedIsFinal(t *testing.T) {
 	waitFor(t, "the engine to dispose the new observer", 10*time.Second, func() bool { return !held() })
 }
 
-// The host rejects the observer, which the engine holds in error; the watcher
-// reattaches, and the engine answers the replay with the observer's state, error. That
-// answer is no refusal: the watcher's Dispose unobserves it, and the engine disposes
-// it.
-func TestObserveReattachedErroredObserverIsUnobserved(t *testing.T) {
+// The host rejects the observer, which the engine holds in error, and the watcher's
+// handle stays with it. The watcher reattaches: the engine refuses the replay with the
+// observer's error and disposes the observer as it answers (decision 56). The handle
+// takes the refusal as its final answer: a second reattach does not send it again, and
+// its Dispose sends nothing.
+func TestObserveReplayOfAnErroredObserverIsRefused(t *testing.T) {
 	proxy := newFrameProxy(t)
 	host := observeWorker(t, "errored-host", nil)
 	watcher := observeWorker(t, "errored-watcher", proxy)
@@ -226,21 +227,35 @@ func TestObserveReattachedErroredObserverIsUnobserved(t *testing.T) {
 		sent := proxy.since(mark)
 		return countOf(sent, "reattach") == 1 && countOf(sent, "observe") == 1
 	})
-	settle()
-	if s := state(); s != "error" {
-		t.Fatalf("engine state %s after the reattach, want error", s)
-	}
-	if h.State() != iii.ObserverError {
-		t.Fatalf("handle %s %+v after the reattach, want error", h.State(), h.Reason())
-	}
-
-	mark = proxy.mark()
-	if err := h.Dispose(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "the unobserve", 5*time.Second, func() bool { return countOf(proxy.since(mark), "unobserve") == 1 })
-	waitFor(t, "the engine to dispose the observer", 10*time.Second, func() bool {
+	waitFor(t, "the engine to dispose the observer as it refuses the replay", 10*time.Second, func() bool {
 		s := state()
 		return s == "none" || s == "disposed"
 	})
+	if h.State() != iii.ObserverError || h.Reason() == nil || h.Reason().Code != "UNKNOWN_DB" {
+		t.Fatalf("handle %s %+v after the replay's refusal, want error UNKNOWN_DB", h.State(), h.Reason())
+	}
+
+	mark = proxy.mark()
+	proxy.drop()
+	waitFor(t, "the second reattach", 10*time.Second, func() bool { return countOf(proxy.since(mark), "reattach") == 1 })
+	settle()
+	if n := countOf(proxy.since(mark), "observe"); n != 0 {
+		t.Fatalf("%d observes on the second reattached connection, want none for a refused handle", n)
+	}
+
+	mark = proxy.mark()
+	start := time.Now()
+	if err := h.Dispose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 250*time.Millisecond {
+		t.Errorf("Dispose took %s", d)
+	}
+	settle()
+	if n := countOf(proxy.since(mark), "unobserve"); n != 0 {
+		t.Fatalf("Dispose of a refused handle sent %d unobserves", n)
+	}
+	if s := state(); s != "none" && s != "disposed" {
+		t.Fatalf("engine state %s after Dispose, want none", s)
+	}
 }
