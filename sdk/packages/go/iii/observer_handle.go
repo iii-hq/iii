@@ -16,6 +16,14 @@ type ObserverHandle struct {
 	// frame is the observe frame, sent on every connection.
 	frame []byte
 	seq   uint64
+	// held and refused are guarded by client.mu and kept across connections (decision
+	// 56). held: the engine may hold an observer it created for h, because an
+	// observeresult for h said pending, active or suspended, or a connection closed
+	// before h's answer arrived. An observeresult in state error for a held handle can be
+	// that observer's state (the answer to its replay on a reattached connection), so it
+	// is not a refusal. refused: the engine refused h's observe and stores nothing for
+	// it; h is not sent again, and its Dispose sends nothing.
+	held, refused bool
 
 	mu        sync.Mutex
 	state     ObserverState
@@ -24,7 +32,7 @@ type ObserverHandle struct {
 	nextID    int
 	// changed is closed and replaced on every state change (Ready waits on it).
 	changed chan struct{}
-	// sent: the engine may hold it, so disposing it needs an unobserve.
+	// sent: its observe went out on some connection.
 	sent bool
 	// events are state changes waiting for their listeners, delivered in order on a
 	// goroutine of their own: the SDK's read loop never runs user code.
@@ -122,8 +130,9 @@ func (h *ObserverHandle) OnStateChange(listener func(state ObserverState, reason
 
 // Dispose removes the observer (unobserve). It is not replayed on reconnect. An
 // observer disposed while disconnected is unobserved on the next connection, before
-// any observe is replayed, so a Reattach does not keep it alive. Its id is free at
-// once: an Observe under it gets a new handle, which hears the engine's answers to
+// any observe is replayed, so a Reattach does not keep it alive. When the engine
+// refused its observe (see [Client.Observe]), Dispose sends nothing. Its id is free
+// at once: an Observe under it gets a new handle, which hears the engine's answers to
 // its own observe only. ctx is reserved; Dispose does not wait for the engine.
 func (h *ObserverHandle) Dispose(ctx context.Context) error {
 	_ = ctx
