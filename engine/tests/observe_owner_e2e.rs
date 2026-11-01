@@ -2123,10 +2123,17 @@ impl HookGate {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_suspended_observer_keeps_its_id_while_the_registration_hook_runs() {
     let rbac = json!({
+        "auth_function_id": "test::auth",
         "on_observer_registration_function_id": "test::hook",
         "expose_functions": ["match(\"api::*\")", "match(\"engine::*\")"]
     });
     let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    // One principal for every connection: the replacement needs the same one.
+    in_process(
+        &t.engine,
+        "test::auth",
+        |_| json!({ "context": { "tenant": "acme" } }),
+    );
     let gate = HookGate::install(&t, "test::hook");
     let (mut orders, _) = owner(&t, "orders", &["api::orders"]).await;
     let _sink = host(&t, "sink", &["api::sink"]).await;

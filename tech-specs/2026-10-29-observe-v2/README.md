@@ -312,9 +312,10 @@ iii.onObserverAdded('cron::on-tick', start)
   the browser), a restarted worker is another worker, and its `observe` of
   the id fails with `OBSERVER_ID_CONFLICT` until the grace period ends.
   A worker name is whatever a connection declares, so on an RBAC port the
-  two connections must also be the same principal: their sessions' auth
-  context is equal. A trusted connection and an RBAC session never replace
-  each other's observers.
+  two connections must also be the same principal: their auth function
+  gave both the same `context`, and one that is not empty. A session with
+  no context names no one and replaces nothing. A connection on a port
+  without `rbac` and an RBAC session never replace each other's observers.
 - **One at a time.** For each function, the SDK runs observer hooks one at a
   time, in the order the engine announced the observers. Hooks of different
   functions run concurrently.
