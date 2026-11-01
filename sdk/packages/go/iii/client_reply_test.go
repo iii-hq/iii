@@ -49,9 +49,11 @@ func TestEnqueueOutboundDirectDropsWhenDisconnected(t *testing.T) {
 // dropped rather than delivered on the next connection.
 func TestReplyChannelLifecycle(t *testing.T) {
 	m := newMockEngine(t)
+	// The reconnect delay is the disconnected window the poll below has to observe, so it
+	// is long enough not to be missed on a loaded machine.
 	c := New(m.url, WithReconnectConfig(ReconnectConfig{
-		InitialDelay:      10 * time.Millisecond,
-		MaxDelay:          50 * time.Millisecond,
+		InitialDelay:      500 * time.Millisecond,
+		MaxDelay:          500 * time.Millisecond,
 		BackoffMultiplier: 2,
 		JitterFactor:      0,
 		MaxRetries:        -1,
