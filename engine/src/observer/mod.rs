@@ -303,6 +303,11 @@ pub struct ObserverRegistry {
     tombstones: DashMap<Arc<str>, lifecycle::Tombstone>,
     /// Tombstones by expiry, oldest first.
     tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
+    /// Connections that may hold tombstones while connected: one whose
+    /// observer the engine disposed, or one that reattached (its `Reattach`
+    /// moves tombstones to it). Their close keeps a `departed` record even
+    /// with no observer left, so a `Reattach` moves those tombstones on.
+    tombstoned: ByConnection<()>,
     /// Observing connections whose grace period ended, by connection: a
     /// late `Reattach` learns their observers are disposed.
     expired: DashMap<Uuid, lifecycle::Expired>,
@@ -367,6 +372,7 @@ impl ObserverRegistry {
             evaluator_bytes: std::sync::atomic::AtomicUsize::new(dispatch::EVALUATOR_BYTES),
             tombstones: DashMap::new(),
             tombstone_order: Mutex::new(std::collections::VecDeque::new()),
+            tombstoned: ByConnection::default(),
             expired: DashMap::new(),
             expired_order: Mutex::new(lifecycle::ExpiredOrder::default()),
             standing: Mutex::new(Vec::new()),

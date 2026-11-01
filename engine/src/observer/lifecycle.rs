@@ -1286,11 +1286,12 @@ impl ObserverRegistry {
         observer.cancel_timers();
         self.by_id
             .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
-        let (connection, heard, tombstone, reason) = {
+        let (connection, connected, answered, tombstone, reason) = {
             let status = observer.status.read();
             (
                 status.observing.connection,
-                status.observing.answered && status.flags.observing_connected,
+                status.flags.observing_connected,
+                status.observing.answered,
                 status.flags.tombstone,
                 status.flags.disposed.clone(),
             )
@@ -1308,9 +1309,14 @@ impl ObserverRegistry {
                     }),
                     until: Instant::now()
                         + std::time::Duration::from_millis(self.config.load().observer_grace_ms),
-                    heard,
+                    heard: answered && connected,
                 },
             );
+            // Before the observer leaves the connection's index: a close
+            // that finds it gone from there finds the connection here.
+            if connected {
+                self.tombstoned.insert(connection, ());
+            }
         }
         self.unindex(observer, connection);
         self.detach_from_function(observer);

@@ -819,7 +819,11 @@ impl ObserverRegistry {
 
     /// The observing connection is gone: its observers are `suspended` for
     /// `observers.observer_grace_ms`, waiting for a `Reattach` that presents
-    /// `reattach_token`, and disposed after that.
+    /// `reattach_token`, and disposed after that. A connection the engine
+    /// left tombstones on while it was connected waits for its `Reattach`
+    /// even with no observer left: the `Reattach` moves the tombstones, so a
+    /// replay of an observer whose `disposed` was lost with this connection
+    /// is answered with the disposal.
     pub fn connection_closed(self: &Arc<Self>, connection: Uuid, reattach_token: Uuid) {
         // Nothing more is queued for this connection.
         self.notifiers.remove(&connection);
@@ -828,7 +832,10 @@ impl ObserverRegistry {
             .into_iter()
             .filter(|o| o.observing_connection() == connection)
             .collect();
-        if observers.is_empty() {
+        // After the index read: an observer `forget` took out of it marked
+        // the connection first.
+        let tombstoned = self.tombstoned.remove(&connection).is_some();
+        if observers.is_empty() && !tombstoned {
             return;
         }
         // Suspended one by one, and taken out of their functions' active
@@ -924,6 +931,9 @@ impl ObserverRegistry {
     }
 
     fn end_grace(&self, connection: Uuid, departed: Departed) {
+        // A disposal that raced the close may have marked it after the close
+        // read the mark.
+        self.tombstoned.remove(&connection);
         for observer in self.observing_for(connection) {
             if observer.observing_connection() == connection
                 && !observer.with_flags(|flags| flags.observing_connected)
@@ -1051,6 +1061,11 @@ impl ObserverRegistry {
                 tombstone.heard = false;
             }
         }
+        // The tombstones moved here, and those of the observers disposed
+        // here as they move (`FORBIDDEN`), go with this connection's own
+        // `Reattach` too.
+        self.tombstoned.remove(&previous);
+        self.tombstoned.insert(connection, ());
         let hook = new_connection.session.as_ref().and_then(|session| {
             let hook = session
                 .config
@@ -1106,6 +1121,7 @@ impl ObserverRegistry {
         };
         let count = expired.disposed.len();
         let until = now + Duration::from_millis(self.config().observer_grace_ms);
+        self.tombstoned.insert(connection, ());
         for (id, reason) in expired.disposed {
             self.remember_tombstone(
                 id,
@@ -1370,6 +1386,80 @@ mod tests {
             other => panic!("the disposal answers the replay, got {other:?}"),
         }
         assert!(registry.tombstones.get("obs").unwrap().heard);
+    }
+
+    /// A connection whose only observer the engine disposed holds no
+    /// observer when it closes, and waits for its `Reattach` all the same:
+    /// the `Reattach` moves the tombstone, which answers the replay, and a
+    /// `Reattach` after the grace period finds the disposal in the expired
+    /// record. A connection with neither observers nor tombstones leaves
+    /// nothing behind when it closes.
+    #[tokio::test]
+    async fn a_connection_left_only_tombstones_waits_for_its_reattach() {
+        use crate::protocol::Message;
+
+        fn answered_max_fires(messages: &[Message]) {
+            match messages {
+                [
+                    Message::ObserveResult {
+                        state: ObserverState::Disposed,
+                        error: Some(error),
+                        ..
+                    },
+                ] => assert_eq!(error.code, observe_codes::MAX_FIRES),
+                other => panic!("the disposal answers the replay, got {other:?}"),
+            }
+        }
+
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (idle, _idle_socket) = test_support::worker(&engine);
+        registry.connection_closed(idle.id, idle.reattach_token);
+        assert!(registry.departed.is_empty());
+
+        let (first, _first_socket) = test_support::worker(&engine);
+        let request = test_support::request("obs", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &first, request.clone()).await;
+        registry.dispose(
+            &registry.get("obs").unwrap(),
+            observe_codes::MAX_FIRES,
+            "the observer fired 1 times, its max_fires",
+        );
+        assert!(registry.observing_for(first.id).is_empty());
+        registry.connection_closed(first.id, first.reattach_token);
+        assert!(registry.departed.contains_key(&first.id));
+
+        let (second, mut socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(
+            registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await
+        );
+        received(&mut socket);
+        registry.observe(&engine, &second, request.clone()).await;
+        answered_max_fires(&received(&mut socket));
+        assert!(registry.get("obs").is_none(), "the replay created nothing");
+
+        registry.connection_closed(second.id, second.reattach_token);
+        registry.grace_elapsed(second.id);
+        let (third, mut socket) = test_support::worker(&engine);
+        let token = second.reattach_token.to_string();
+        assert!(
+            !registry
+                .reattach(&engine, second.id, Some(&token), &third)
+                .await
+        );
+        received(&mut socket);
+        registry.observe(&engine, &third, request).await;
+        answered_max_fires(&received(&mut socket));
+        assert!(registry.get("obs").is_none(), "the replay created nothing");
+
+        assert!(registry.departed.is_empty());
+        assert!(
+            registry.tombstoned.len() == 1 && registry.tombstoned.contains_key(&third.id),
+            "only the live connection given a tombstone is marked"
+        );
     }
 
     /// An `observe` handled while its connection is being torn down joins
