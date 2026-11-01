@@ -524,6 +524,11 @@ iii.observe(
 iii.observe({ function_id: "engine::on-functions-changed", deliver: "input" }, "catalog::refresh");
 ```
 
+A `durable:subscriber` target had 30 minutes per message. A `queue::on-message` target has
+`observers.activation_timeout_ms` (30 seconds by default), and a slower one fails the delivery with
+`TIMEOUT`, which retries the message and then dead-letters it. Raise it in the
+[engine config](../using-iii/configuration#observers) before you move a slow consumer.
+
 A `condition_function_id` that you can state over the call becomes a filter, evaluated without an
 extra function call. A condition that let only gold customers through becomes
 `filters: { "input.customer_tier": { $eq: "gold" } }`; see the
