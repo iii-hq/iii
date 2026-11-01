@@ -529,6 +529,11 @@ A `durable:subscriber` target had 30 minutes per message. A `queue::on-message` 
 `TIMEOUT`, which retries the message and then dead-letters it. Raise it in the
 [engine config](../using-iii/configuration#observers) before you move a slow consumer.
 
+A `cron` trigger skipped a tick while its previous run was still going. An observer of
+`cron::on-tick` receives every tick, so a slow target can run again before its previous run ends, up
+to the observer's `max_in_flight` (64 by default). With `max_in_flight: 1`, ticks run one at a time,
+and a tick that arrives during a run waits in the observer's queue instead of being skipped.
+
 A `condition_function_id` that you can state over the call becomes a filter, evaluated without an
 extra function call. A condition that let only gold customers through becomes
 `filters: { "input.customer_tier": { $eq: "gold" } }`; see the
