@@ -5,6 +5,7 @@ runs the function's match and deliver hooks only."""
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -357,3 +358,106 @@ def test_an_id_is_free_at_once_after_dispose_and_the_new_observer_hears_its_own_
         watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})
     watcher.call({"function_id": src, "payload": 2})
     exactly(got, 1, "no activation after the second dispose")
+
+
+@pytest.mark.parametrize("dispose_first", [False, True], ids=["refused-then-dispose", "dispose-then-refused"])
+def test_a_refused_observe_holds_nothing_and_its_id_observes_again(worker: Any, fid: Any, dispose_first: bool) -> None:
+    """The engine stores nothing for a refused observe and ignores an
+    unobserve for an id it does not hold: after the refusal, a dispose()
+    sends nothing, and a dispose() already on the wire reaches no observer."""
+    owner = worker("refused-owner")
+    watcher = worker("refused-watcher")
+    src, oid = fid("py-e2e::refused-src"), fid("py-e2e-refused-oid")
+    owner.register_function(src, lambda data: data)
+    got = collector(watcher, fid("py-e2e::refused-tgt"))
+    frames = FrameCounter(watcher)
+    source = {"function_id": src, "filters": {"input.op": "insert"}}
+    if dispose_first:
+
+        async def observe_and_dispose() -> float:
+            # on the SDK loop: the dispose() comes as soon as the observe is
+            # sent, so its unobserve follows the observe before any answer
+            handle = watcher.observe(source, fid("py-e2e::refused-tgt"), {"id": oid})
+            while not handle._sent:
+                await asyncio.sleep(0)
+            started = time.monotonic()
+            handle.dispose()
+            return time.monotonic() - started
+
+        assert watcher._run_on_loop(observe_and_dispose()) < 0.5
+        wait_for(lambda: oid not in watcher._observe_sent, "the refusal")
+    else:
+        refused = watcher.observe(source, fid("py-e2e::refused-tgt"), {"id": oid})
+        with pytest.raises(ObserveRejection) as raised:
+            refused.ready(timeout=10)
+        assert raised.value.code == "INVALID_FILTER"
+        assert oid not in watcher._observe_sent
+        started = time.monotonic()
+        refused.dispose()
+        assert time.monotonic() - started < 0.5
+    second = watcher.observe({"function_id": src}, fid("py-e2e::refused-tgt"), {"id": oid})
+    second.ready(timeout=10)
+    settle_engine()
+    sent = [(f["type"], f.get("id")) for f in frames.frames if f.get("type") in ("observe", "unobserve")]
+    expected_unobserves = [("unobserve", oid)] if dispose_first else []
+    assert sent == [("observe", oid), *expected_unobserves, ("observe", oid)]
+    assert second.state == "active"
+    assert watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})["state"] == "active"
+    watcher.call({"function_id": src, "payload": {"op": "update"}})
+    exactly(got, 1, "the second observer's activation")
+    second.dispose()
+    settle_engine()
+    with pytest.raises(Exception, match="OBSERVER_NOT_FOUND"):
+        watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})
+
+
+def test_an_error_answer_to_the_replay_of_an_observer_whose_answers_were_lost_unobserves_it(
+    worker: Any, fid: Any
+) -> None:
+    """The engine created the observer and its owner rejected it, but none of
+    that reached the SDK before the connection dropped. The reattached
+    connection's replay is answered with the held observer's ``error``; the
+    handle's dispose() unobserves it, so the id observes again."""
+    owner = worker("lost-owner")
+    watcher = worker("lost-watcher")
+    src, tgt, oid = fid("py-e2e::lost-src"), fid("py-e2e::lost-tgt"), fid("py-e2e-lost-oid")
+    added: list[str] = []
+
+    @owner.on_observer_added(src)
+    def reject_the_first(observer: Any) -> None:
+        added.append(observer.id)
+        if len(added) == 1:
+            raise ObserveRejection("OWNER_SAYS_NO", "rejected by the owner")
+
+    owner.register_function(src, lambda data: data)
+    got = collector(watcher, tgt)
+    settle_engine()
+
+    def engine_state() -> Any:
+        try:
+            return owner.call({"function_id": "engine::observers::get", "payload": {"id": oid}})["state"]
+        except Exception as error:  # noqa: BLE001
+            return "gone" if "OBSERVER_NOT_FOUND" in str(error) else repr(error)
+
+    # this connection's answers for oid never reach the SDK
+    on_result, on_changed = watcher._on_observe_result, watcher._on_observer_state_changed
+    watcher._on_observe_result = lambda i, s, e: None if i == oid else on_result(i, s, e)  # type: ignore[method-assign]
+    watcher._on_observer_state_changed = lambda i, s, r: None if i == oid else on_changed(i, s, r)  # type: ignore[method-assign]
+    handle = watcher.observe({"function_id": src}, tgt, {"id": oid})
+    wait_for(lambda: engine_state() == "error", "the owner's rejection on the engine")
+    del watcher._on_observe_result, watcher._on_observer_state_changed
+    drop_connection(watcher)
+    wait_for(lambda: watcher.get_connection_state() != "connected", "the disconnect")
+    wait_for(lambda: watcher._registered_on_connection, "the reconnect", timeout=10)
+    wait_for(lambda: handle.state == "error", "the replay's answer")
+    assert handle.reason is not None and handle.reason["code"] == "OWNER_SAYS_NO"
+    assert watcher._observe_sent[oid] == [handle]
+    assert engine_state() == "error"
+    handle.dispose()
+    wait_for(lambda: engine_state() == "gone", "the unobserve")
+    second = watcher.observe({"function_id": src}, tgt, {"id": oid})
+    second.ready(timeout=10)
+    assert added == [oid, oid]
+    watcher.call({"function_id": src, "payload": 1})
+    exactly(got, 1, "the second observer's activation")
+    second.dispose()
