@@ -964,7 +964,10 @@ route runs the observer's target. The target receives the request (`HttpRequest`
 
 Observe `cron::on-tick` with a cron `expression` to run a target on a schedule. The cron worker runs
 one schedule per distinct expression, and each tick is a call of `cron::on-tick` with
-`{ expression, scheduled_time, actual_time }`. A tick reaches the observers of its expression.
+`{ expression, scheduled_time, actual_time }`. A tick reaches the observers of its expression. A
+tick does not wait for the previous run: a target slower than its schedule runs again while the
+previous run continues, up to `max_in_flight`. Observe with `max_in_flight: 1` to run one tick at a
+time.
 
 | Arg          | Required | Meaning                                                                               |
 | ------------ | -------- | ------------------------------------------------------------------------------------- |
