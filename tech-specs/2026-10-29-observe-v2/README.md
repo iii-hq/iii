@@ -1302,3 +1302,19 @@ release, tag or crate, so it lands after the release.
     then). Needs the same worker to reconnect twice while a hook takes
     over 5 s. Option: check that the observer still belongs to the
     reattaching connection before the final update.
+- **A returning observer is announced before its target is registered
+  again.** The SDK sends `Reattach` before replaying its registrations
+  (`sdk/packages/rust/iii/src/iii.rs:3140`), and the engine's read loop
+  handles `Reattach` to the end, `announce_returned` included
+  (`registry.rs:1166`), before it reads the replayed `registerfunction`. If
+  the host acks and delivers in that window (a ready or initial-state event
+  sent from `onObserverAdded`), the target is missing and the delivery is
+  dropped as `TARGET_UNAVAILABLE` (`dispatch.rs:1794`). llm-router's two
+  reattach tests hit it on workers#1600 CI (the observing worker reaches the
+  engine through a proxy, so its replay is slower than the router's ack):
+  a provider that reattaches can miss the router's ready event and not
+  re-declare. Options: (a) announce a returning observer whose target the
+  reattaching connection held once that target is registered again; (b)
+  announce it when its replayed `observe` arrives (the Rust and Node SDKs
+  hold observe frames until `WorkerRegistered`), with a deadline for a
+  replay that never comes.
