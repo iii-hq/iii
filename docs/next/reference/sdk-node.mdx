@@ -268,7 +268,10 @@ const response = await worker.call({ observer: route.obs, payload: request })
 Observes a function: every call of `source` that passes its `filters`
 runs `target`, a registered function. Returns synchronously (also before
 the connection is up); the observer is replayed with the same id on
-reconnect. Errors show up as state `error` and reject `ready()`.
+reconnect. Errors show up as state `error` and reject `ready()`. An
+`error` answer to its `observe` is the engine's refusal, the handle's
+final answer: the engine holds no observer for it, it is not replayed,
+and its `dispose()` sends nothing.
 
 **Signature**
 
@@ -1007,7 +1010,7 @@ What `iii.observe` returns, synchronously.
 | `id` | `string` | Yes | - |
 | `reason` | [`ObserveReason`](#observereason) | No | Why the observer is in its state (`error`, `suspended`, `disposed`). |
 | `state` | [`ObserverState`](#observerstate) | Yes | - |
-| `dispose` | `() => Promise<void>` | Yes | Removes the observer (`unobserve`). It is not replayed on reconnect. |
+| `dispose` | `() => Promise<void>` | Yes | Removes the observer (`unobserve`). It is not replayed on reconnect.<br />After the engine refused the `observe`, it sends nothing. |
 | `onStateChange` | (listener: (state: [`ObserverState`](#observerstate), reason?: [`ObserveReason`](#observereason)) =&gt; void) =&gt; () =&gt; void | Yes | Calls `listener` on every state change, in order; returns the<br />unsubscribe function. Listeners are called asynchronously (never on the<br />connection's read path), so they may call the client. |
 | `ready` | `() => Promise<void>` | Yes | Resolves when the observer is `active`; rejects with an<br />ObserveRejection carrying the code when it turns `error` or<br />`disposed` first. |
 
