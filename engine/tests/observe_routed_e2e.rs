@@ -2134,51 +2134,65 @@ async fn a_reattach_with_a_narrower_session_disposes_the_observers_it_forbids() 
     assert_eq!(disposed["reason"]["code"], "FORBIDDEN", "{disposed}");
 }
 
-/// Under RBAC a worker name is only what a session declares, so taking over
-/// a suspended observer's id (decision 51) also needs the same auth context:
-/// another user declaring the same name gets `OBSERVER_ID_CONFLICT` and the
-/// observer stays suspended; the same user, back on a new connection, takes
-/// the id.
+/// A worker name is only what a connection declares, so taking over a
+/// suspended observer's id (decision 51) also needs the same principal: an
+/// RBAC session with the same auth context, or another connection on a port
+/// without `rbac`. Another user, a session whose context names no one, and
+/// any RBAC session against a trusted worker's observer get
+/// `OBSERVER_ID_CONFLICT`, and the observer stays suspended. The same user,
+/// back on a new connection, takes the id.
 #[tokio::test]
-async fn under_rbac_only_the_same_principal_takes_over_a_suspended_observer() {
+async fn only_the_same_principal_takes_over_a_suspended_observer() {
     let rbac = json!({
         "auth_function_id": "test::auth",
         "expose_functions": ["match(\"api::*\")"]
     });
     let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let trusted = unrestricted_listener(&t).await;
     in_process(
         &t.engine,
         "test::auth",
-        |input| json!({ "context": { "user": input["query_params"]["user"] } }),
+        |input| match input["query_params"]["user"].as_array() {
+            Some(user) => json!({ "context": { "user": user } }),
+            None => json!({}),
+        },
     );
     let _host = host(&t, "host", true, &["api::orders", "api::sink"]).await;
-    let spec = || {
-        observer(
-            "stable",
-            json!({ "function_id": "api::orders" }),
-            "api::sink",
-        )
-    };
-    let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
-    alice.observe_active(spec()).await;
-    let left = alice.worker_id;
-    alice.disconnect().await;
-    assert!(eventually(|| t.engine.worker_registry.get_worker(&left).is_none()).await);
-    assert_eq!(state(&t, "stable"), Some(ObserverState::Suspended));
-
-    let mut mallory = connect_query(&t, "watcher", true, "user=mallory").await;
-    let refused = mallory.observe(spec()).await;
-    assert_eq!(
-        refused["error"]["code"], "OBSERVER_ID_CONFLICT",
-        "{refused}"
-    );
-    assert_eq!(state(&t, "stable"), Some(ObserverState::Suspended));
-    let gone = mallory.worker_id;
-    mallory.disconnect().await;
-    assert!(eventually(|| t.engine.worker_registry.get_worker(&gone).is_none()).await);
+    let spec = |id: &str| observer(id, json!({ "function_id": "api::orders" }), "api::sink");
+    async fn leave(t: &TestEngine, client: Client) {
+        let id = client.worker_id;
+        client.disconnect().await;
+        assert!(eventually(|| t.engine.worker_registry.get_worker(&id).is_none()).await);
+    }
+    async fn refused(t: &TestEngine, mut client: Client, id: &str, spec: Value) {
+        let answer = client.observe(spec).await;
+        assert_eq!(answer["error"]["code"], "OBSERVER_ID_CONFLICT", "{answer}");
+        assert_eq!(state(t, id), Some(ObserverState::Suspended));
+        leave(t, client).await;
+    }
 
     let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
-    alice.observe_active(spec()).await;
+    alice.observe_active(spec("users")).await;
+    leave(&t, alice).await;
+    let mallory = connect_query(&t, "watcher", true, "user=mallory").await;
+    refused(&t, mallory, "users", spec("users")).await;
+
+    let mut anonymous = connect_query(&t, "anon", true, "").await;
+    anonymous.observe_active(spec("anon")).await;
+    leave(&t, anonymous).await;
+    let other = connect_query(&t, "anon", true, "").await;
+    refused(&t, other, "anon", spec("anon")).await;
+
+    let mut service = Client::connect(trusted, "svc", true).await;
+    let id = service.worker_id;
+    assert!(eventually(|| t.engine.worker_registry.get_worker_name(&id).is_some()).await);
+    service.observe_active(spec("svc")).await;
+    leave(&t, service).await;
+    let session = connect_query(&t, "svc", true, "").await;
+    refused(&t, session, "svc", spec("svc")).await;
+
+    let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
+    alice.observe_active(spec("users")).await;
 }
 
 /// A reattach runs `rbac.on_observer_registration_function_id` again for each

@@ -215,8 +215,9 @@ differ, this file wins, and the spec is updated to match.
     declared on `engine::workers::register`, the pair the engine admits one
     live worker for (`WORKER_NAMESPACE_CONFLICT`); a connection that declared
     no name replaces nothing. Any connection can declare any name, so on an
-    RBAC port the two must also be the same principal: sessions whose auth
-    context is equal. A connection with no RBAC session and one with a
+    RBAC port the two must also be the same principal: the auth function
+    gave both the same `context`, and one that is not empty (an empty one
+    names no one). A connection on a port without `rbac` and an RBAC
     session are never the same worker. The replaced observer is disposed with
     `OBSERVER_DISCONNECTED`, and the earlier connection, reattaching, has
     its replayed `observe` answered `disposed`, as for any observer disposed
