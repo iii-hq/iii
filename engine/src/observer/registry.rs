@@ -724,15 +724,25 @@ impl ObserverRegistry {
     /// its grace period (decision 51). Such an `observe` replaces `existing`
     /// when its observer is created ([`Self::publish`]). An observer
     /// disposed meanwhile frees the id anyway.
+    ///
+    /// A worker name is whatever a connection declares, so under RBAC the
+    /// two connections must also be the same principal: both on a port
+    /// without RBAC, or both with sessions whose auth context is equal.
     fn left_behind_by(&self, existing: &Arc<Observer>, worker: &WorkerConnection) -> bool {
         if existing.is_engine_owned() {
             return false;
         }
         let observing = existing.observing();
         let (worker_name, namespace) = self.worker_identity(worker.id);
+        let same_principal = match (&observing.session, &worker.session) {
+            (None, None) => true,
+            (Some(before), Some(now)) => before.context == now.context,
+            _ => false,
+        };
         if worker_name.is_none()
             || observing.worker_name != worker_name
             || observing.namespace != namespace
+            || !same_principal
         {
             return false;
         }

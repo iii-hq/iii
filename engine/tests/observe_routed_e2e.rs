@@ -2134,6 +2134,53 @@ async fn a_reattach_with_a_narrower_session_disposes_the_observers_it_forbids() 
     assert_eq!(disposed["reason"]["code"], "FORBIDDEN", "{disposed}");
 }
 
+/// Under RBAC a worker name is only what a session declares, so taking over
+/// a suspended observer's id (decision 51) also needs the same auth context:
+/// another user declaring the same name gets `OBSERVER_ID_CONFLICT` and the
+/// observer stays suspended; the same user, back on a new connection, takes
+/// the id.
+#[tokio::test]
+async fn under_rbac_only_the_same_principal_takes_over_a_suspended_observer() {
+    let rbac = json!({
+        "auth_function_id": "test::auth",
+        "expose_functions": ["match(\"api::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    in_process(
+        &t.engine,
+        "test::auth",
+        |input| json!({ "context": { "user": input["query_params"]["user"] } }),
+    );
+    let _host = host(&t, "host", true, &["api::orders", "api::sink"]).await;
+    let spec = || {
+        observer(
+            "stable",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        )
+    };
+    let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
+    alice.observe_active(spec()).await;
+    let left = alice.worker_id;
+    alice.disconnect().await;
+    assert!(eventually(|| t.engine.worker_registry.get_worker(&left).is_none()).await);
+    assert_eq!(state(&t, "stable"), Some(ObserverState::Suspended));
+
+    let mut mallory = connect_query(&t, "watcher", true, "user=mallory").await;
+    let refused = mallory.observe(spec()).await;
+    assert_eq!(
+        refused["error"]["code"], "OBSERVER_ID_CONFLICT",
+        "{refused}"
+    );
+    assert_eq!(state(&t, "stable"), Some(ObserverState::Suspended));
+    let gone = mallory.worker_id;
+    mallory.disconnect().await;
+    assert!(eventually(|| t.engine.worker_registry.get_worker(&gone).is_none()).await);
+
+    let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
+    alice.observe_active(spec()).await;
+}
+
 /// A reattach runs `rbac.on_observer_registration_function_id` again for each
 /// observer it re-parents, with the registration as the worker asked for it
 /// and the new session's context: an observer the hook now denies is
