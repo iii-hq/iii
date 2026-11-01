@@ -58,7 +58,7 @@ jobs:
       QUICK: ${{ inputs.quick && '--quick' || '' }}
       PUBLISH: ${{ github.event_name != 'workflow_dispatch' || (inputs.publish && !inputs.quick) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same rule as ci.yml's VM jobs: the runner user needs /dev/kvm.
       - name: Enable KVM
@@ -126,7 +126,7 @@ jobs:
 
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: loadtest-${{ steps.meta.outputs.version }}
           path: |
