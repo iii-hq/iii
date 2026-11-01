@@ -131,7 +131,9 @@ export interface ObserverHandle {
   onStateChange(listener: (state: ObserverState, reason?: ObserveReason) => void): () => void
   /**
    * Removes the observer (`unobserve`). It is not replayed on reconnect.
-   * After the engine refused the `observe`, it sends nothing.
+   * After the engine refused the `observe`, it sends nothing. It resolves at
+   * once in every case and awaits no answer from the engine, also when it is
+   * called before the answer to the `observe` arrives.
    */
   dispose(): Promise<void>
 }

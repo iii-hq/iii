@@ -1010,7 +1010,7 @@ What `iii.observe` returns, synchronously.
 | `id` | `string` | Yes | - |
 | `reason` | [`ObserveReason`](#observereason) | No | Why the observer is in its state (`error`, `suspended`, `disposed`). |
 | `state` | [`ObserverState`](#observerstate) | Yes | - |
-| `dispose` | `() => Promise<void>` | Yes | Removes the observer (`unobserve`). It is not replayed on reconnect.<br />After the engine refused the `observe`, it sends nothing. |
+| `dispose` | `() => Promise<void>` | Yes | Removes the observer (`unobserve`). It is not replayed on reconnect.<br />After the engine refused the `observe`, it sends nothing. It resolves at<br />once in every case and awaits no answer from the engine, also when it is<br />called before the answer to the `observe` arrives. |
 | `onStateChange` | (listener: (state: [`ObserverState`](#observerstate), reason?: [`ObserveReason`](#observereason)) =&gt; void) =&gt; () =&gt; void | Yes | Calls `listener` on every state change, in order; returns the<br />unsubscribe function. Listeners are called asynchronously (never on the<br />connection's read path), so they may call the client. |
 | `ready` | `() => Promise<void>` | Yes | Resolves when the observer is `active`; rejects with an<br />ObserveRejection carrying the code when it turns `error` or<br />`disposed` first. |
 
