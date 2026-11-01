@@ -224,8 +224,8 @@ impl Graces {
 }
 
 /// Clears [`ObserverRegistry::drop_export`] when the task ends, with its
-/// runtime too: disconnects then time their grace periods themselves, and
-/// the next `observe` starts the task again.
+/// runtime too, polled or not: disconnects then time their grace periods
+/// themselves, and the next `observe` starts the task again.
 struct ExportRunning(Weak<ObserverRegistry>);
 
 impl Drop for ExportRunning {
@@ -445,8 +445,11 @@ impl ObserverRegistry {
         }
         let registry = Arc::downgrade(self);
         let graces = self.graces.clone();
+        // Moved into the task, so a task its runtime drops before polling
+        // it clears the flag too.
+        let running = ExportRunning(registry.clone());
         runtime.spawn(async move {
-            let _running = ExportRunning(registry.clone());
+            let _running = running;
             // Exports as a `tokio::time::interval` with
             // `MissedTickBehavior::Delay` ticks: at once, then every
             // interval, the next one an interval after a late one.

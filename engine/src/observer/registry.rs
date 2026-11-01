@@ -1640,6 +1640,61 @@ mod tests {
         }
     }
 
+    /// A drop-export task whose runtime shuts down before polling it ends
+    /// all the same: the next `observe`, on another runtime, starts the task
+    /// again, and it ends the grace period of a disconnect there.
+    #[test]
+    fn a_drop_export_task_dropped_unpolled_leaves_the_next_observe_to_start_one() {
+        use std::time::Duration;
+        let first = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let engine = {
+            let _entered = first.enter();
+            crate::workers::observability::metrics::ensure_default_meter();
+            let engine = engine_with_functions();
+            engine.observers.remember_runtime();
+            assert!(engine.observers.drop_export.load(Ordering::Acquire));
+            engine
+        };
+        drop(first);
+        assert!(!engine.observers.drop_export.load(Ordering::Acquire));
+        engine.observers.set_config(ObserversConfig {
+            observer_grace_ms: 100,
+            ..(*engine.observers.config()).clone()
+        });
+        let second = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        second.block_on(async {
+            let (worker, _socket) = test_support::worker(&engine);
+            test_support::observe_request(
+                &engine,
+                &worker,
+                test_support::request("obs", "test::src", "test::dst", None),
+            )
+            .await;
+            assert!(engine.observers.drop_export.load(Ordering::Acquire));
+            engine
+                .observers
+                .connection_closed(worker.id, worker.reattach_token);
+            assert!(
+                engine
+                    .observers
+                    .departed
+                    .get(&worker.id)
+                    .is_some_and(|departed| departed.timer.is_none()),
+                "the task ends it"
+            );
+            tokio::time::sleep(Duration::from_millis(101)).await;
+            assert!(engine.observers.get("obs").is_none(), "disposed");
+            assert!(engine.observers.departed.is_empty());
+        });
+    }
+
     /// A function whose last active observer leaves stays in the routed
     /// view, found by nobody: the view is not copied, and the function's
     /// next active observer takes the same entry. A copy of the view, when
