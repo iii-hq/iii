@@ -328,6 +328,16 @@ impl Routed {
             callers,
         })
     }
+
+    /// Whether the routed hook finds it (see
+    /// [`ObserverRegistry::routed_live`]): it has active observers, or a
+    /// host only it may be called by. One that anyone may call stays in the
+    /// view when its last active observer leaves, found by nobody, so the
+    /// view is not copied for that, and the function's next active observer
+    /// takes the same entry.
+    fn is_live(&self) -> bool {
+        matches!(self.callers, Callers::Host(_)) || self.active.is_some()
+    }
 }
 
 /// A function's current active set in the routed view. A reader holds the
@@ -350,10 +360,11 @@ impl ActiveSlot {
         self.0.read().is_some()
     }
 
-    /// Replaces the current version. Called under `rebuild`.
-    fn store(&self, active: Option<Arc<ActiveSet>>) {
+    /// Replaces the current version, and says whether there was one.
+    /// Called under `rebuild`.
+    fn store(&self, active: Option<Arc<ActiveSet>>) -> bool {
         let previous = std::mem::replace(&mut *self.0.write(), active);
-        drop(previous);
+        previous.is_some()
     }
 }
 
@@ -794,13 +805,20 @@ impl ObserverRegistry {
             && kept
             && held.callers == callers
         {
-            held.active.store(active);
+            let host = matches!(callers, Callers::Host(_));
+            let had = held.active.store(active);
+            self.count_live(host || had, true);
             return;
         }
         if !kept && held.is_none() {
             return;
         }
+        let was_live = held.is_some_and(|held| held.is_live());
         let mut next: RoutedView = HashMap::clone(current);
+        // The functions nobody finds go with the copy.
+        if current.len() > self.routed_live.load(Ordering::Relaxed) {
+            next.retain(|_, routed| routed.is_live());
+        }
         if kept {
             let routed = Routed::new(active, callers);
             match next.get_mut(routed_key(key)) {
@@ -813,6 +831,31 @@ impl ObserverRegistry {
             next.remove(routed_key(key));
         }
         self.routed.store(Arc::new(next));
+        self.count_live(was_live, kept);
+    }
+
+    /// Counts a function of the routed view that the routed hook found
+    /// (`was`) and finds now (`is`). Called under `rebuild`.
+    fn count_live(&self, was: bool, is: bool) {
+        match (was, is) {
+            (false, true) => {
+                self.routed_live.fetch_add(1, Ordering::Release);
+            }
+            (true, false) => {
+                self.routed_live.fetch_sub(1, Ordering::Release);
+            }
+            _ => {}
+        }
+        #[cfg(debug_assertions)]
+        {
+            let view = self.routed.load();
+            let live = view.values().filter(|routed| routed.is_live()).count();
+            debug_assert_eq!(
+                live,
+                self.routed_live.load(Ordering::Relaxed),
+                "the routed view's live functions are counted"
+            );
+        }
     }
 
     /// The active set the routed view holds for `key` now. Called under
@@ -830,8 +873,9 @@ impl ObserverRegistry {
     /// calls are what its observers observe, so a call from anyone else, the
     /// engine included, would be one it never made. One atomic load while no
     /// function is observed or hosted privately by a connection; otherwise
-    /// one hash lookup more, whatever the function, and the function's set
-    /// cloned under its read lock when the view holds the function.
+    /// the view's load and one hash lookup more, whatever the function, and
+    /// the function's set cloned under its read lock when the view holds the
+    /// function.
     #[inline]
     pub fn route(
         &self,
@@ -839,10 +883,10 @@ impl ObserverRegistry {
         function_id: &str,
         caller: Option<Uuid>,
     ) -> Result<Option<Arc<ActiveSet>>, ErrorBody> {
-        let view = self.routed.load();
-        if view.is_empty() {
+        if self.routed_live.load(Ordering::Acquire) == 0 {
             return Ok(None);
         }
+        let view = self.routed.load();
         let Some(routed) = view.get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
         else {
             return Ok(None);
@@ -861,9 +905,10 @@ impl ObserverRegistry {
     /// otherwise one hash lookup more.
     #[inline]
     pub fn hosts_privately(&self, namespace: &str, function_id: &str, connection: Uuid) -> bool {
-        let view = self.routed.load();
-        !view.is_empty()
-            && view
+        self.routed_live.load(Ordering::Acquire) != 0
+            && self
+                .routed
+                .load()
                 .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
                 .is_some_and(|routed| routed.callers == Callers::Host(connection))
     }
@@ -1205,10 +1250,15 @@ impl ObserverRegistry {
     ) {
         let active = (!next.observers.is_empty()).then(|| Arc::new(next));
         match routed {
-            // It stays in the view: the set changes in place.
-            Some(routed) if active.is_some() || matches!(routed.callers, Callers::Host(_)) => {
+            // It stays in the view: the set changes in place. A function
+            // anyone may call stays when its last active observer leaves,
+            // found by nobody (see [`Routed::is_live`]).
+            Some(routed) if active.is_some() || !matches!(routed.callers, Callers::Nobody) => {
                 self.watching_observers_changed(key, active.is_some());
-                routed.active.store(active);
+                let host = matches!(routed.callers, Callers::Host(_));
+                let is_live = host || active.is_some();
+                let had = routed.active.store(active);
+                self.count_live(host || had, is_live);
             }
             Some(routed) => self.store_routed(current, key, None, routed.callers),
             None => {
