@@ -801,9 +801,10 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
   the same worker name and namespace, observes under that `id` again, and its observer replaces the
   `suspended` one. A queue subscriber keeps its queued messages this way. An observer with a random
   `id` stays `suspended` until the grace period ends.
-- Any connection can declare any worker name, so on an RBAC port the two connections must also be
-  the same principal: sessions whose auth context is equal. A connection without an RBAC session and
-  one with a session never replace each other's observers.
+- Any connection can declare any worker name, so the two connections must also be the same
+  principal: both on ports without `rbac`, or both on RBAC ports where the auth function gave them
+  the same `context`, one that is not empty. A session with no `context` replaces nothing, and a
+  connection on a port without `rbac` and an RBAC session never replace each other's observers.
 - The worker name has to stay the same across restarts for this. Set it with `III_WORKER_NAME` or
   the worker name option of the SDK; a worker that [iii compose](./compose) starts gets
   `III_WORKER_NAME` from it. The default name, `hostname:pid` (a random name in the browser),
