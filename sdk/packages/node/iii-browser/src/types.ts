@@ -208,7 +208,10 @@ export interface ISdk {
    * runs `target`, a registered function. Returns synchronously (also before
    * the connection is up); the observer is replayed with the same id on
    * reconnect. Errors show up as state `error` and reject `ready()`; against
-   * an engine without observe that is `UNSUPPORTED`.
+   * an engine without observe that is `UNSUPPORTED`. An `error` answer to its
+   * `observe` is the engine's refusal, the handle's final answer: the engine
+   * holds no observer for it, it is not replayed, and its `dispose()` sends
+   * nothing.
    *
    * @param source - What is observed: a function id, or `function_id`, `args` (read by the worker that hosts the function), `filters`, `on`, `capture`, `deliver`.
    * @param target - The function to invoke.

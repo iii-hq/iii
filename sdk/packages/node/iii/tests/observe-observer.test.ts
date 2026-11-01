@@ -600,17 +600,57 @@ describe('a refused observe', () => {
     expect(states).toEqual(['error', 'disposed'])
   })
 
-  it('an error answer to the replay of an observer the engine created is its state there: dispose() sends unobserve', async () => {
+  it('an error state change keeps an active handle held: it is replayed, and its dispose() sends unobserve', async () => {
     vi.useFakeTimers()
     const { sdk, socket } = worker()
     socket.open()
     const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
     socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    // Its host rejected it: the engine holds the observer in error.
+    socket.deliver({
+      type: 'observerstatechanged',
+      id: 'r',
+      state: 'error',
+      fires: 0,
+      reason: { code: 'REJECTED', message: 'rejected by its host' },
+    })
+    expect(handle.state).toBe('error')
     socket.drop()
     await vi.advanceTimersByTimeAsync(50)
     const next = fake.lastSocket()
     next.open()
-    // Reattached: the engine holds the observer, which its host rejected while the worker was away.
+    expect(observeFrames(next)).toEqual(['observe:r'])
+    next.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    expect(handle.state).toBe('active')
+    next.deliver({
+      type: 'observerstatechanged',
+      id: 'r',
+      state: 'error',
+      fires: 0,
+      reason: { code: 'REJECTED', message: 'rejected by its host' },
+    })
+    await handle.dispose()
+    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
+  })
+
+  it('an error answer to the replay of an observer held in error is a refusal: dispose() sends nothing and the id is free', async () => {
+    vi.useFakeTimers()
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
+    socket.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    socket.deliver({
+      type: 'observerstatechanged',
+      id: 'r',
+      state: 'error',
+      fires: 0,
+      reason: { code: 'REJECTED', message: 'rejected by its host' },
+    })
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    // The engine refuses the replay with the observer's error and disposes it as it answers.
     next.deliver({
       type: 'observeresult',
       id: 'r',
@@ -618,16 +658,27 @@ describe('a refused observe', () => {
       error: { code: 'REJECTED', message: 'rejected by its host' },
     })
     expect(handle.state).toBe('error')
-    await handle.dispose()
-    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
-    // The engine disposes it, then answers the id's next observe.
+    expect(handle.reason?.code).toBe('REJECTED')
+    // Out of the id's list, and not sent again on a later connection.
+    next.deliver({ type: 'observerstatechanged', id: 'r', state: 'active', fires: 0 })
+    expect(handle.state).toBe('error')
+    next.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const after = fake.lastSocket()
+    after.open()
+    expect(observeFrames(after)).toEqual([])
+    expect(await timedDispose(handle)).toBeLessThan(DISPOSE_WAIT_MS / 10)
+    expect(observeFrames(next)).toEqual(['observe:r'])
+    expect(observeFrames(after)).toEqual([])
+    // The id observed again is a new observer, which hears its own answer.
     const again = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'r' })
-    next.deliver({ type: 'observerstatechanged', id: 'r', state: 'disposed', fires: 0 })
-    next.deliver({ type: 'observeresult', id: 'r', state: 'active' })
+    after.deliver({ type: 'observeresult', id: 'r', state: 'active' })
     expect(again.state).toBe('active')
+    await again.dispose()
+    expect(observeFrames(after)).toEqual(['observe:r', 'unobserve:r'])
   })
 
-  it('an observe whose answer a dropped connection lost: an error answer to its replay leaves dispose() sending unobserve', async () => {
+  it('an error answer to the replay of an observe whose answer a dropped connection lost is a refusal: dispose() sends nothing', async () => {
     vi.useFakeTimers()
     const { sdk, socket } = worker()
     socket.open()
@@ -636,7 +687,6 @@ describe('a refused observe', () => {
     await vi.advanceTimersByTimeAsync(50)
     const next = fake.lastSocket()
     next.open()
-    // The engine may have created it before the drop and reattached it since.
     next.deliver({
       type: 'observeresult',
       id: 'r',
@@ -644,7 +694,8 @@ describe('a refused observe', () => {
       error: { code: 'REJECTED', message: 'rejected by its host' },
     })
     expect(handle.state).toBe('error')
-    await handle.dispose()
-    expect(observeFrames(next)).toEqual(['observe:r', 'unobserve:r'])
+    expect(await timedDispose(handle)).toBeLessThan(DISPOSE_WAIT_MS / 10)
+    expect(handle.state).toBe('disposed')
+    expect(observeFrames(next)).toEqual(['observe:r'])
   })
 })

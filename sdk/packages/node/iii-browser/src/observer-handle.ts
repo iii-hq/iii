@@ -37,15 +37,9 @@ export class ObserverHandleImpl implements ObserverHandle {
   /** @internal The engine's `observeresult` for its `observe` on this connection arrived (decision 56). */
   answered = false
   /**
-   * @internal The engine may hold an observer it created for it on some
-   * connection (it answered with the observer's state, or the connection
-   * closed before its answer): a replay's `error` answer can be that
-   * observer's state.
-   */
-  created = false
-  /**
-   * @internal The engine refused its `observe`, the handle's final answer:
-   * it is not sent again on a later connection, and keeps its id until
+   * @internal The engine refused its `observe` (an `error` observeresult),
+   * the handle's final answer: the engine holds no observer for it, it is
+   * not sent again on a later connection, and it keeps its id until
    * disposed.
    */
   refused = false
