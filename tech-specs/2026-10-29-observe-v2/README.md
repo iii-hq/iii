@@ -1280,3 +1280,25 @@ release, tag or crate, so it lands after the release.
   (b) persist a per-engine epoch in the announce and check it in the ack.
   Recommendation: (a), the contract is already in Go and needs no protocol
   change.
+- **Review of 01/11: three low findings, not fixed for 0.26.0-rc.1.**
+  - *Another connection's disposal replaces a tombstone.* Tombstones are
+    keyed by observer id alone (`engine/src/observer/mod.rs:311`), and
+    `remember_tombstone` (`lifecycle.rs:1359`) overwrites. If A's observer
+    `x` (`max_fires: 1`) is disposed and A drops, and B then creates and
+    loses its own `x` before A reattaches, A's replay finds no tombstone and
+    recreates `x` with its counters at zero, so it fires again. Needs B to
+    pick A's id. Option: key tombstones by connection and id.
+  - *Observer ids are visible across connections.* A call that names
+    another connection's observer in `activation.observer_id` is refused
+    with `NOT_FUNCTION_OWNER` naming the observed function
+    (`check_observer_call`, `dispatch.rs:1633`), and an `observe` of a held
+    id gets `OBSERVER_ID_CONFLICT`. Neither reveals state or target. Option:
+    answer both without naming the function to a connection that may not
+    see it.
+  - *Two reattaches with one token, inside a slow registration hook.* The
+    reattach that loses the race can still mark the observer connected
+    after its hook answers, so the host may activate it under the newer
+    session before that session's hook decides (a denial disposes it
+    then). Needs the same worker to reconnect twice while a hook takes
+    over 5 s. Option: check that the observer still belongs to the
+    reattaching connection before the final update.
