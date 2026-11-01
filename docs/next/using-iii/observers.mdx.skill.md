@@ -801,10 +801,13 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
   the same worker name and namespace, observes under that `id` again, and its observer replaces the
   `suspended` one. A queue subscriber keeps its queued messages this way. An observer with a random
   `id` stays `suspended` until the grace period ends.
+- Any connection can declare any worker name, so on an RBAC port the two connections must also be
+  the same principal: sessions whose auth context is equal. A connection without an RBAC session and
+  one with a session never replace each other's observers.
 - The worker name has to stay the same across restarts for this. Set it with `III_WORKER_NAME` or
   the worker name option of the SDK; a worker that [iii compose](./compose) starts gets
-  `III_WORKER_NAME` from it. The default name, `hostname:pid` (a random name in the browser), changes
-  when the process restarts: the restarted worker's observe of the `id` then fails with
+  `III_WORKER_NAME` from it. The default name, `hostname:pid` (a random name in the browser),
+  changes when the process restarts: the restarted worker's observe of the `id` then fails with
   `OBSERVER_ID_CONFLICT` until the grace period ends.
 - When a worker reconnects, its SDK sends each of its observers to the engine again, with the same
   id. The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
@@ -834,9 +837,9 @@ The standard workers represent their events as functions: an HTTP request is a c
 The other workers name their event functions `<worker>::on-<event>`, and each worker's page on
 [workers.iii.dev](https://workers.iii.dev) lists them with their `args` and events.
 
-Except `publish`, which publishers call, these functions are private: only the worker that
-hosts one can call it, and a call from any other worker fails with `FORBIDDEN`. Every worker can
-observe them. A private function cannot be an observer's target.
+Except `publish`, which publishers call, these functions are private: only the worker that hosts one
+can call it, and a call from any other worker fails with `FORBIDDEN`. Every worker can observe them.
+A private function cannot be an observer's target.
 
 One function can be the target of any number of observers, of any functions. The same report can run
 on a schedule and on an HTTP request, with one observer each.
@@ -1181,8 +1184,8 @@ and after `max_retries` the message moves to the topic's dead-letter queue.
 - The observer's filters read the message as `input`. A message that the filters reject is acked,
   and the target does not run.
 - While the observer is `suspended`, its messages stay queued. A restarted worker that observes
-  under the same `id`, with the same worker name (see [Observer states](#observer-states)), gets
-  them from its observer.
+  under the same `id`, with the same worker name and, under RBAC, the same principal (see
+  [Observer states](#observer-states)), gets them from its observer.
 - `dispose()` stops the observer's consumer.
 
 ### State changes
@@ -1618,7 +1621,8 @@ A call runs locally when all of these hold:
    engine. Local dispatch is on for the function.
 2. The engine confirmed local dispatch for the registration. This requires an engine at 0.25 or
    later with `observers.local_dispatch` on. If the worker connects through RBAC, its session must
-   have no `middleware_function_id`, and the session must be allowed to call the function.
+   have no `middleware_function_id` (unless the worker hosts the function privately), and the
+   session must be allowed to call the function.
 3. The call resolves to the namespace the function is registered in.
 4. The action is `Void` or a normal call. An `Enqueue` call always goes through the engine.
 5. The call does not ask for the remote path.

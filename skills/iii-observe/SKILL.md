@@ -222,9 +222,10 @@ client.Observe(iii.Source{
 is away, or while the observing worker is disconnected (30 s grace, then `disposed`). `disposed`
 after `dispose()`, `max_fires`, or expiry. `observe()` returns synchronously, works before the
 connection is up, and is replayed with the same id on reconnect. A worker back on a new connection
-(a restart), under the same worker name in the same namespace, takes over its own `suspended`
-observer's `id`: its `observe` of that `id` replaces the suspended observer, and the host gets the
-new one through `onObserverAdded`. So an observer under a stable `id` keeps its identity across a
+(a restart), under the same worker name in the same namespace (on an RBAC port, also under a
+session with the same auth context), takes over its own `suspended` observer's `id`: its
+`observe` of that `id` replaces the suspended observer, and the host gets the new one through
+`onObserverAdded`. So an observer under a stable `id` keeps its identity across a
 restart, and a queue consumer its backlog. Any other worker gets `OBSERVER_ID_CONFLICT` for that
 `id` until the grace period ends; under the default worker name, `hostname:pid`, a restarted worker
 is another worker, so set `III_WORKER_NAME`. `onStateChange(listener)` (Python
@@ -272,7 +273,8 @@ happens. iii does the rest by default. Four hooks override those defaults:
 `onObserverAdded` and `onObserverRemoved` exist for one function (by id, or on the `FunctionRef`
 that `registerFunction` returns) and for every function the worker hosts. `onObserverMatch` and
 `onObserverDeliver` are per function. A function can set both: its deliver hook receives the
-observers that matched. Each method returns its receiver for chaining.
+observers that matched. In Node, Rust and Go each method returns its receiver for chaining; in
+Python it returns the hook, so it works as a decorator.
 
 | Hook | TypeScript | Python | Rust | Go |
 | --- | --- | --- | --- | --- |
@@ -460,13 +462,16 @@ How hooks behave:
   rejects it: `ObserveRejection` sets the code, any other error is `OBSERVE_REJECTED`, and a hook
   past 30 s is `OWNER_TIMEOUT`. The `onObserverRemoved` of each level that already accepted it then
   runs.
-- **Removed.** `onObserverRemoved` runs exactly once for each accepted observer: on `dispose()`, on
-  disconnect expiry, and after a late rejection with `obs.reject(code, message)`. An error it throws
-  is logged.
+- **Removed.** `onObserverRemoved` runs exactly once for each accepted observer: on `dispose()`,
+  `max_fires` or expiry, when the observing worker disconnects (on reattach `onObserverAdded` runs
+  again), and after a late rejection with `obs.reject(code, message)`. No SDK runs it yet when the
+  hosting worker shuts down. An error it throws is logged.
 - **When hooks take effect.** No observer is acked before the `registerFunction` call returns, so
   a hook set by id before registering sees every observer. In Node and the browser, a hook chained
   on the returned ref does too. In Python, Rust and Go, set hooks by id before registering. A hook
   set once observers are active runs for each of them at once, and the SDK logs a warning.
+  Replacing a hook while observers are active behaves differently across SDKs, so set each hook
+  once.
 - **Matching.** iii delivers a call to the observers `onObserverMatch` matched, and applies each
   one's `on`, filters, policy, and `deliver`. A predicate runs once per active observer per call,
   before filters; one that throws counts as no match, logged once per function. Keys are computed
@@ -512,7 +517,9 @@ How hooks behave:
   private, or have the middleware forward the call's metadata. A call through an observer belongs
   in a deliver hook.
 - **`obs.accepted()`** resolves once the SDK has acknowledged the observer. A call made afterwards
-  reaches an active observer, so a source sends initial state as a call for that observer. The
+  reaches an active observer if its target is registered (one whose target is not registered yet
+  stays `pending`, and the call is dropped as `INACTIVE`), so a source sends initial state as a
+  call for that observer. The
   observer becomes active after `onObserverAdded` returns, so the hook starts a task that waits and
   then makes the call with `CallAction.Void()`. `accepted()` fails for an observer rejected first
   (a match key function that throws, `obs.reject`), and the task then sends nothing: in Node and
@@ -633,7 +640,7 @@ https://iii.dev/docs/upgrading/from-0-25-x.
 | Calling a private function from another worker | `FORBIDDEN` |
 | A call through an observer | `NOT_FUNCTION_OWNER`, `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`, `TIMEOUT`, or the target's error |
 | State reasons | `OWNER_UNAVAILABLE`, `TARGET_UNAVAILABLE`, `OBSERVER_DISCONNECTED`, `EXPIRED`, `MAX_FIRES`, `UNOBSERVED` |
-| Drop reasons (metrics) | `INACTIVE`, `LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`, `REPORTER_NOT_OWNER`, `CANCELLED`, `INVALID_REPORT`, `BUFFER_FULL`, `TOO_LARGE` |
+| Drop reasons (metrics) | `INACTIVE`, `LOOP_GUARD`, `MAX_FIRES`, `OVERFLOW`, `REPORTER_NOT_OWNER`, `NOT_FUNCTION_OWNER`, `OBSERVER_NOT_ACTIVE`, `CANCELLED`, `INVALID_REPORT`, `BUFFER_FULL`, `TOO_LARGE` |
 
 Inspect observers with `engine::observers::list({ function_id?, namespace?, worker? })` and
 `engine::observers::get({ id })`; `engine::observers::dispose({ id })` removes one. Docs:
