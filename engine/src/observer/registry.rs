@@ -252,24 +252,12 @@ impl ObserverRegistry {
                     ),
                 ));
             }
+            #[cfg(test)]
+            super::interleave::point();
             // An observer in `error` answers its replay with that error, a
             // refusal (decision 56): it is disposed as it answers, so the
             // engine holds nothing under the id either.
-            if let Some(error) = self.dispose_refused_replay(existing) {
-                return Err(error);
-            }
-            let (state, reason) = existing.answer_replay();
-            let error = (state == ObserverState::Error).then_some(reason).flatten();
-            self.notify(
-                worker.id,
-                Message::ObserveResult {
-                    id: request.id,
-                    state,
-                    error,
-                    warnings: existing.warnings.clone(),
-                },
-            );
-            return Ok(());
+            return self.answer_replay(existing, worker.id);
         }
         // A replay of an observer disposed meanwhile (max_fires, expiry, an
         // admin's dispose, a new connection of its worker replacing it) stays
@@ -819,11 +807,12 @@ impl ObserverRegistry {
 
     /// The observing connection is gone: its observers are `suspended` for
     /// `observers.observer_grace_ms`, waiting for a `Reattach` that presents
-    /// `reattach_token`, and disposed after that. A connection the engine
-    /// left tombstones on while it was connected waits for its `Reattach`
-    /// even with no observer left: the `Reattach` moves the tombstones, so a
-    /// replay of an observer whose `disposed` was lost with this connection
-    /// is answered with the disposal.
+    /// `reattach_token`, and disposed after that. The observers the engine
+    /// disposed within `observers.observer_grace_ms` before the close wait
+    /// with them, even with no observer left: their `disposed` may have been
+    /// lost with the connection, so the `Reattach` (or, after the grace
+    /// period, the connection's expired record) answers their replays with
+    /// the disposal.
     pub fn connection_closed(self: &Arc<Self>, connection: Uuid, reattach_token: Uuid) {
         // Nothing more is queued for this connection.
         self.notifiers.remove(&connection);
@@ -832,17 +821,17 @@ impl ObserverRegistry {
             .into_iter()
             .filter(|o| o.observing_connection() == connection)
             .collect();
-        // After the index read: an observer `forget` took out of it marked
-        // the connection first.
-        let tombstoned = self.tombstoned.remove(&connection).is_some();
-        if observers.is_empty() && !tombstoned {
+        // After the index read: an observer `forget` took out of it filed
+        // its tombstone first.
+        let disposed = self.tombstones_in_effect(connection);
+        if observers.is_empty() && disposed.is_empty() {
             return;
         }
         // Suspended one by one, and taken out of their functions' active
         // sets together: one change of each function's set. The connection
         // that would hear about it is gone.
         let mut left = Vec::with_capacity(observers.len());
-        let mut disposed = Vec::new();
+        let mut gone = Vec::new();
         for observer in &observers {
             if let Some(transition) =
                 self.transition_telling(observer, |flags| flags.observing_connected = false, false)
@@ -852,12 +841,12 @@ impl ObserverRegistry {
                     left.push(observer.clone());
                 }
                 if settled.disposed {
-                    disposed.push(observer);
+                    gone.push(observer);
                 }
             }
         }
         self.refresh_observers(&left);
-        for observer in disposed {
+        for observer in gone {
             self.forget(observer);
         }
         // Their functions' owners let them go until the worker reattaches.
@@ -884,10 +873,18 @@ impl ObserverRegistry {
                 token: reattach_token,
                 deadline,
                 timer: None,
+                disposed,
             },
-        ) && let Some(timer) = previous.timer
-        {
-            timer.abort();
+        ) {
+            if let Some(timer) = previous.timer {
+                timer.abort();
+            }
+            // A second close keeps what the first one kept.
+            if !previous.disposed.is_empty()
+                && let Some(mut current) = self.departed.get_mut(&connection)
+            {
+                current.disposed.extend(previous.disposed);
+            }
         }
         if self.queue_grace(deadline, connection) {
             return;
@@ -905,6 +902,35 @@ impl ObserverRegistry {
         {
             departed.timer = Some(timer.abort_handle());
         }
+    }
+
+    /// Takes the tombstones that `connection` held while it was there (see
+    /// `tombstoned`) and returns those still in effect, with why: each
+    /// one's observer the engine disposed (or a `Reattach` gave it) within
+    /// `observers.observer_grace_ms`, unless the connection observes its id
+    /// again. Its work is in proportion to those tombstones.
+    fn tombstones_in_effect(&self, connection: Uuid) -> Vec<(Arc<str>, Arc<ErrorBody>)> {
+        let Some((_, held)) = self.tombstoned.remove(&connection) else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        held.into_iter()
+            .filter(|(until, _)| *until > now)
+            .filter_map(|(until, id)| {
+                let reason = self
+                    .tombstones
+                    .get(&*id)
+                    .filter(|tombstone| {
+                        tombstone.connection == connection && tombstone.until == until
+                    })?
+                    .reason
+                    .clone();
+                let observed_again = self
+                    .get(&id)
+                    .is_some_and(|observer| observer.observing_connection() == connection);
+                (!observed_again).then_some((id, reason))
+            })
+            .collect()
     }
 
     /// The grace period that `connection`'s close started, ending at
@@ -931,8 +957,8 @@ impl ObserverRegistry {
     }
 
     fn end_grace(&self, connection: Uuid, departed: Departed) {
-        // A disposal that raced the close may have marked it after the close
-        // read the mark.
+        // A disposal that raced the close may have filed a tombstone after
+        // the close took them.
         self.tombstoned.remove(&connection);
         for observer in self.observing_for(connection) {
             if observer.observing_connection() == connection
@@ -947,15 +973,17 @@ impl ObserverRegistry {
         }
         // Every observer the connection owned is disposed now, each with a
         // tombstone: the ones just disposed and any disposed while it was
-        // away. A tombstone lasts one grace period; the record outlives it
-        // for a worker that comes back late.
+        // away. With the ones disposed shortly before it closed, they make
+        // the record, which outlives a tombstone for a worker that comes
+        // back late.
         let now = Instant::now();
-        let disposed: Vec<(Arc<str>, Arc<ErrorBody>)> = self
-            .tombstones
-            .iter()
-            .filter(|tombstone| tombstone.connection == connection && tombstone.until > now)
-            .map(|tombstone| (tombstone.key().clone(), tombstone.reason.clone()))
-            .collect();
+        let mut disposed = departed.disposed;
+        disposed.extend(
+            self.tombstones
+                .iter()
+                .filter(|tombstone| tombstone.connection == connection && tombstone.until > now)
+                .map(|tombstone| (tombstone.key().clone(), tombstone.reason.clone())),
+        );
         self.remember_expired(connection, departed.token, disposed);
     }
 
@@ -1050,22 +1078,40 @@ impl ObserverRegistry {
                              for the reconnected worker"
                         ),
                     );
+                    self.note_tombstone_of(connection, &observer.id);
                     continue;
                 }
             }
             admitted.push(observer);
         }
+        let mut given = Vec::new();
         for mut tombstone in self.tombstones.iter_mut() {
             if tombstone.connection == previous {
                 tombstone.connection = connection;
                 tombstone.heard = false;
+                given.push((tombstone.until, tombstone.key().clone()));
             }
         }
-        // The tombstones moved here, and those of the observers disposed
-        // here as they move (`FORBIDDEN`), go with this connection's own
-        // `Reattach` too.
+        // The observers disposed shortly before `previous` closed get their
+        // tombstones here, for the replay that follows.
+        let until = Instant::now() + Duration::from_millis(self.config().observer_grace_ms);
+        for (id, reason) in departed.disposed {
+            self.remember_tombstone(
+                id.clone(),
+                Tombstone {
+                    connection,
+                    reason,
+                    until,
+                    // `connection` heard nothing of these disposals.
+                    heard: false,
+                },
+            );
+            given.push((until, id));
+        }
+        // They go with this connection's own `Reattach` too.
+        given.sort_unstable_by_key(|(until, _)| *until);
         self.tombstoned.remove(&previous);
-        self.tombstoned.insert(connection, ());
+        self.note_tombstones(connection, given);
         let hook = new_connection.session.as_ref().and_then(|session| {
             let hook = session
                 .config
@@ -1089,6 +1135,7 @@ impl ObserverRegistry {
                         "observer registration denied by the registration hook for the \
                          reconnected worker",
                     );
+                    self.note_tombstone_of(connection, &observer.id);
                     continue;
                 }
             }
@@ -1121,10 +1168,10 @@ impl ObserverRegistry {
         };
         let count = expired.disposed.len();
         let until = now + Duration::from_millis(self.config().observer_grace_ms);
-        self.tombstoned.insert(connection, ());
+        let mut given = Vec::with_capacity(count);
         for (id, reason) in expired.disposed {
             self.remember_tombstone(
-                id,
+                id.clone(),
                 Tombstone {
                     connection,
                     reason,
@@ -1133,13 +1180,30 @@ impl ObserverRegistry {
                     heard: false,
                 },
             );
+            given.push((until, id));
         }
+        self.note_tombstones(connection, given);
         tracing::info!(
             previous = %previous,
             connection = %connection,
             observers = count,
             "Reattach after the grace period: the observers stay disposed"
         );
+    }
+
+    /// Files the tombstone that `connection` holds for `id`, if it holds
+    /// one (see [`Self::note_tombstones`]): that of an observer disposed as
+    /// its `Reattach` moved it, before the connection observes with it.
+    fn note_tombstone_of(&self, connection: Uuid, id: &str) {
+        let Some(tombstone) = self
+            .tombstones
+            .get(id)
+            .filter(|tombstone| tombstone.connection == connection)
+            .map(|tombstone| (tombstone.until, tombstone.key().clone()))
+        else {
+            return;
+        };
+        self.note_tombstones(connection, [tombstone]);
     }
 
     /// Live observers, in any state but `disposed`.
@@ -1460,6 +1524,183 @@ mod tests {
             registry.tombstoned.len() == 1 && registry.tombstoned.contains_key(&third.id),
             "only the live connection given a tombstone is marked"
         );
+    }
+
+    /// An observer the engine disposed shortly before its connection closed
+    /// is answered with its disposal after any `Reattach`: one within the
+    /// grace period that comes after the observer's tombstone expired, and
+    /// one after the grace period, from the expired record. The tombstone
+    /// is made with a short grace period and the close starts a long one,
+    /// so the order is the same whatever the timing.
+    #[tokio::test]
+    async fn an_observer_disposed_shortly_before_the_close_is_answered_after_any_reattach() {
+        use std::time::{Duration, Instant};
+
+        use crate::protocol::Message;
+
+        for late in [false, true] {
+            let engine = engine_with_functions();
+            let registry = engine.observers.clone();
+            let long = (*registry.config()).clone();
+            registry.set_config(ObserversConfig {
+                observer_grace_ms: 100,
+                ..long.clone()
+            });
+            let (first, _first_socket) = test_support::worker(&engine);
+            let request = test_support::request("obs", "test::src", "test::dst", None);
+            test_support::observe_request(&engine, &first, request.clone()).await;
+            registry.dispose(
+                &registry.get("obs").unwrap(),
+                observe_codes::MAX_FIRES,
+                "the observer fired 1 times, its max_fires",
+            );
+            registry.set_config(long.clone());
+            registry.connection_closed(first.id, first.reattach_token);
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            assert!(
+                registry
+                    .tombstones
+                    .get("obs")
+                    .is_some_and(|tombstone| tombstone.until <= Instant::now()),
+                "the tombstone expired"
+            );
+            if late {
+                registry.grace_elapsed(first.id);
+                assert!(registry.expired.contains_key(&first.id));
+            }
+
+            let (second, mut socket) = test_support::worker(&engine);
+            let token = first.reattach_token.to_string();
+            assert_eq!(
+                registry
+                    .reattach(&engine, first.id, Some(&token), &second)
+                    .await,
+                !late
+            );
+            received(&mut socket);
+            registry.observe(&engine, &second, request).await;
+            match received(&mut socket).as_slice() {
+                [
+                    Message::ObserveResult {
+                        state: ObserverState::Disposed,
+                        error: Some(error),
+                        ..
+                    },
+                ] => assert_eq!(error.code, observe_codes::MAX_FIRES, "late: {late}"),
+                other => panic!("late {late}: the disposal answers the replay, got {other:?}"),
+            }
+            assert!(registry.get("obs").is_none(), "the replay created nothing");
+        }
+    }
+
+    /// A connection that reattached and holds neither observers nor
+    /// tombstones leaves nothing behind when it closes.
+    #[tokio::test]
+    async fn a_reattached_connection_holding_nothing_leaves_no_record() {
+        let engine = engine_with_functions();
+        let registry = engine.observers.clone();
+        let (first, _first_socket) = test_support::worker(&engine);
+        let request = test_support::request("obs", "test::src", "test::dst", None);
+        test_support::observe_request(&engine, &first, request).await;
+        registry.connection_closed(first.id, first.reattach_token);
+        let (second, _second_socket) = test_support::worker(&engine);
+        let token = first.reattach_token.to_string();
+        assert!(
+            registry
+                .reattach(&engine, first.id, Some(&token), &second)
+                .await
+        );
+        assert!(registry.tombstoned.is_empty(), "no tombstone moved");
+        registry.unobserve(second.id, "obs");
+        assert!(registry.get("obs").is_none());
+        registry.connection_closed(second.id, second.reattach_token);
+        assert!(registry.departed.is_empty());
+        assert!(registry.tombstoned.is_empty());
+    }
+
+    /// A replayed `observe` racing a failure of its observer is answered in
+    /// the order of the two (decision 56): failed first, the replay is
+    /// refused with the error, after the `observerstatechanged` that told
+    /// it, and the engine holds no observer under the id; answered first,
+    /// the `observeresult` has the state before the failure, the failure
+    /// follows it, and the engine holds the observer in `error`. Threads
+    /// pause at random inside the replay.
+    #[test]
+    fn a_replay_racing_a_failure_is_answered_in_their_order() {
+        use std::sync::Barrier;
+
+        use super::super::interleave;
+        use crate::{
+            engine::Outbound,
+            protocol::{ErrorBody, Message},
+        };
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let engine = runtime.block_on(async { engine_with_functions() });
+        let registry = engine.observers.clone();
+        let (worker, mut socket) = test_support::worker(&engine);
+        for round in 0..300u64 {
+            let id = format!("obs-{round}");
+            let request = test_support::request(&id, "test::src", "test::dst", None);
+            runtime.block_on(test_support::observe_request(
+                &engine,
+                &worker,
+                request.clone(),
+            ));
+            while socket.try_recv().is_ok() {}
+            let observer = registry.get(&id).unwrap();
+            let barrier = Arc::new(Barrier::new(2));
+            let replaying = {
+                let (engine, worker, barrier) = (engine.clone(), worker.clone(), barrier.clone());
+                let handle = runtime.handle().clone();
+                std::thread::spawn(move || {
+                    interleave::enable(0x9e37_79b9_7f4a_7c15 ^ (round + 1));
+                    barrier.wait();
+                    handle.block_on(engine.observers.observe(&engine, &worker, request));
+                })
+            };
+            let failing = {
+                let (registry, barrier) = (registry.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..(round % 64) {
+                        std::hint::spin_loop();
+                    }
+                    registry.fail(
+                        &observer,
+                        ErrorBody::new(observe_codes::OBSERVE_REJECTED, "rejected by its host"),
+                    );
+                })
+            };
+            replaying.join().unwrap();
+            failing.join().unwrap();
+            let mut answers = Vec::new();
+            while let Ok(Outbound::Protocol(message)) = socket.try_recv() {
+                match message {
+                    Message::ObserveResult { state, .. } => answers.push(("result", state)),
+                    Message::ObserverStateChanged { state, .. } => answers.push(("changed", state)),
+                    _ => {}
+                }
+            }
+            match answers.as_slice() {
+                [
+                    ("changed", ObserverState::Error),
+                    ("result", ObserverState::Error),
+                ] => {
+                    assert!(registry.get(&id).is_none(), "{id}: refused, so not held");
+                }
+                [("result", answered), ("changed", ObserverState::Error)]
+                    if *answered != ObserverState::Error =>
+                {
+                    assert_eq!(state(&engine, &id), Some(ObserverState::Error), "{id}");
+                }
+                other => panic!("{id}: answered out of order: {other:?}"),
+            }
+        }
     }
 
     /// An `observe` handled while its connection is being torn down joins

@@ -160,6 +160,14 @@ struct Departed {
     /// The connection's own timer, when no task ends grace periods (see
     /// [`Graces`]).
     timer: Option<tokio::task::AbortHandle>,
+    /// Each observer whose tombstone the connection held when it closed,
+    /// with why: one the engine disposed while the connection was there, or
+    /// whose tombstone a `Reattach` gave it, within
+    /// `observers.observer_grace_ms`. Its `disposed` may have been lost with
+    /// the connection. A `Reattach` gives each a tombstone on the new
+    /// connection; at the end of the grace period they join the
+    /// connection's [`lifecycle::Expired`] record.
+    disposed: Vec<(Arc<str>, Arc<crate::protocol::ErrorBody>)>,
 }
 
 /// Grace periods in progress, by deadline. The task that exports drop counts
@@ -303,11 +311,12 @@ pub struct ObserverRegistry {
     tombstones: DashMap<Arc<str>, lifecycle::Tombstone>,
     /// Tombstones by expiry, oldest first.
     tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
-    /// Connections that may hold tombstones while connected: one whose
-    /// observer the engine disposed, or one that reattached (its `Reattach`
-    /// moves tombstones to it). Their close keeps a `departed` record even
-    /// with no observer left, so a `Reattach` moves those tombstones on.
-    tombstoned: ByConnection<()>,
+    /// Tombstones of each connected worker's connection, oldest first, by
+    /// expiry: the engine's disposals of its observers, and the tombstones
+    /// its `Reattach` gave it. Its close keeps those still in effect in its
+    /// `departed` record (see [`Departed::disposed`]), even with no observer
+    /// left.
+    tombstoned: ByConnection<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
     /// Observing connections whose grace period ended, by connection: a
     /// late `Reattach` learns their observers are disposed.
     expired: DashMap<Uuid, lifecycle::Expired>,

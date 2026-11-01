@@ -763,15 +763,6 @@ impl Observer {
         (status.state.clone(), status.reason(self))
     }
 
-    /// [`Self::snapshot_state`], for the `observeresult` that answers its
-    /// observing connection's replay: from then on that connection hears
-    /// its disposal in order (see [`Observing::answered`]).
-    pub(crate) fn answer_replay(&self) -> (ObserverState, Option<ErrorBody>) {
-        let mut status = self.status.write();
-        status.observing.answered = true;
-        (status.state.clone(), status.reason(self))
-    }
-
     pub(crate) fn observing(&self) -> Observing {
         self.status.read().observing.clone()
     }
@@ -1065,6 +1056,17 @@ impl ObserverRegistry {
         tell: bool,
     ) -> Option<Transition> {
         let mut status = observer.status.write();
+        self.transition_locked(observer, &mut status, change, tell)
+    }
+
+    /// [`Self::transition_telling`] under the status lock the caller holds.
+    fn transition_locked(
+        &self,
+        observer: &Arc<Observer>,
+        status: &mut Status,
+        change: impl FnOnce(&mut Flags),
+        tell: bool,
+    ) -> Option<Transition> {
         change(&mut status.flags);
         let (state, why) = status.flags.state();
         if state == status.state && why == status.why {
@@ -1192,21 +1194,30 @@ impl ObserverRegistry {
         });
     }
 
-    /// Disposes `observer`, in `error`, whose replayed `observe` is answered
-    /// with that error. The answer is a refusal, its handle's last (decision
-    /// 56): the worker holds nothing under the id any more, and neither does
-    /// the engine. Nothing is sent to the worker, and no tombstone is left.
-    /// Returns the error, or `None` when `observer` is not in `error`.
-    pub(crate) fn dispose_refused_replay(&self, observer: &Arc<Observer>) -> Option<ErrorBody> {
+    /// Answers the replayed `observe` of `observer` from `connection`, its
+    /// observing connection, deciding and answering under its status lock, so no
+    /// transition comes between the two. An observer in `error` is refused
+    /// with that error, its handle's last answer (decision 56): it is
+    /// disposed as it answers, so the worker holds nothing under the id any
+    /// more, and neither does the engine. Nothing more is sent about it, and
+    /// no tombstone is left; the caller sends the refusal, the `Err`. Any
+    /// other observer is answered with its current state (a `disposed` one
+    /// with why), and from then on that connection hears its disposal in
+    /// order (see [`Observing::answered`]).
+    pub(crate) fn answer_replay(
+        &self,
+        observer: &Arc<Observer>,
+        connection: Uuid,
+    ) -> Result<(), ErrorBody> {
         static REFUSED: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
-        let mut refused = None;
-        let transition = self.transition_telling(
-            observer,
-            |flags| {
-                if flags.disposed.is_none()
-                    && let Some(failed) = &flags.failed
-                {
-                    refused = Some(ErrorBody::clone(failed));
+        let mut status = observer.status.write();
+        if status.flags.disposed.is_none()
+            && let Some(failed) = status.flags.failed.clone()
+        {
+            let transition = self.transition_locked(
+                observer,
+                &mut status,
+                |flags| {
                     flags.disposed = Some(
                         REFUSED
                             .get_or_init(|| {
@@ -1218,14 +1229,30 @@ impl ObserverRegistry {
                             .clone(),
                     );
                     flags.tombstone = false;
-                }
-            },
-            false,
-        );
-        if let Some(transition) = transition {
-            self.settle(observer, transition);
+                },
+                false,
+            );
+            drop(status);
+            if let Some(transition) = transition {
+                self.settle(observer, transition);
+            }
+            return Err(ErrorBody::clone(&failed));
         }
-        refused
+        status.observing.answered = true;
+        let state = status.state.clone();
+        let error = (state == ObserverState::Disposed)
+            .then(|| status.reason(observer))
+            .flatten();
+        self.notify(
+            connection,
+            Message::ObserveResult {
+                id: observer.id.clone(),
+                state,
+                error,
+                warnings: observer.warnings.clone(),
+            },
+        );
+        Ok(())
     }
 
     /// Moves `observer` to `error`: a rejection that arrived after creation.
@@ -1297,8 +1324,11 @@ impl ObserverRegistry {
             )
         };
         if tombstone && !observer.is_engine_owned() {
+            let id: Arc<str> = Arc::from(observer.id.as_str());
+            let until = Instant::now()
+                + std::time::Duration::from_millis(self.config.load().observer_grace_ms);
             self.remember_tombstone(
-                Arc::from(observer.id.as_str()),
+                id.clone(),
                 Tombstone {
                     connection,
                     reason: reason.unwrap_or_else(|| {
@@ -1307,15 +1337,14 @@ impl ObserverRegistry {
                             "the observer was disposed",
                         ))
                     }),
-                    until: Instant::now()
-                        + std::time::Duration::from_millis(self.config.load().observer_grace_ms),
+                    until,
                     heard: answered && connected,
                 },
             );
             // Before the observer leaves the connection's index: a close
-            // that finds it gone from there finds the connection here.
+            // that finds it gone from there finds its tombstone here.
             if connected {
-                self.tombstoned.insert(connection, ());
+                self.note_tombstones(connection, [(until, id)]);
             }
         }
         self.unindex(observer, connection);
@@ -1343,6 +1372,28 @@ impl ObserverRegistry {
             // A newer tombstone for the same id stays.
             self.tombstones
                 .remove_if(&id, |_, current| current.until == oldest);
+        }
+    }
+
+    /// Files tombstones that `connection`, a connected worker's, holds (see
+    /// `tombstoned`), each with its expiry, so its close finds them without
+    /// a scan of every tombstone. Expired ones are dropped from the front,
+    /// and the oldest past [`MAX_TOMBSTONES`]: amortized constant work per
+    /// tombstone.
+    pub(super) fn note_tombstones(
+        &self,
+        connection: Uuid,
+        tombstones: impl IntoIterator<Item = (Instant, Arc<str>)>,
+    ) {
+        let mut tombstones = tombstones.into_iter().peekable();
+        if tombstones.peek().is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let mut held = self.tombstoned.entry(connection).or_default();
+        held.extend(tombstones);
+        while held.front().is_some_and(|(until, _)| *until <= now) || held.len() > MAX_TOMBSTONES {
+            held.pop_front();
         }
     }
 

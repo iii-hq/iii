@@ -1128,6 +1128,134 @@ async fn a_lone_observer_the_engine_disposed_is_not_resurrected_by_a_replay() {
     assert_eq!(state(&t, "obs-lone-lease"), Some(ObserverState::Active));
 }
 
+/// An observer the engine disposed shortly before its worker's connection
+/// dropped, its `disposed` lost with it, stays disposed for a worker that
+/// reattaches after the grace period: the connection's expired record has
+/// the disposal, whether the connection held other observers or none.
+#[tokio::test]
+async fn an_observer_disposed_just_before_the_drop_stays_disposed_after_a_late_reattach() {
+    let t = spawn_engine(ObserversConfig {
+        observer_grace_ms: 100,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let mut orders = host(&t, "orders", true, &["orders::create", "orders::cancel"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, neighbour) in [("obs-late-lone", None), ("obs-late", Some("obs-late-kept"))] {
+        let mut watcher = connect(&t, "watcher", true).await;
+        let mut frame = observer(id, json!({ "function_id": "orders::create" }), "sink::once");
+        frame["max_fires"] = json!(1);
+        watcher.observe_active(frame.clone()).await;
+        let kept = neighbour.map(|kept| {
+            observer(
+                kept,
+                json!({ "function_id": "orders::cancel" }),
+                "sink::once",
+            )
+        });
+        if let Some(kept) = &kept {
+            watcher.observe_active(kept.clone()).await;
+        }
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        assert!(eventually(|| state(&t, id).is_none()).await, "{id}");
+
+        let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+        watcher.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let mut watcher =
+            Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+        if let Some(kept) = kept {
+            let replay = watcher.observe(kept).await;
+            assert_eq!(
+                replay["state"], "disposed",
+                "after the grace period: {replay}"
+            );
+            assert_eq!(replay["error"]["code"], "OBSERVER_DISCONNECTED", "{replay}");
+        }
+        let replay = watcher.observe(frame).await;
+        assert_eq!(replay["state"], "disposed", "{id}: {replay}");
+        assert_eq!(replay["error"]["code"], "MAX_FIRES", "{id}: {replay}");
+        assert!(state(&t, id).is_none(), "{id}: the replay created nothing");
+    }
+}
+
+/// An observer the engine disposed within the grace period before its
+/// worker's connection dropped stays disposed for a `Reattach` within the
+/// grace period of the drop, also when that comes later than the grace
+/// period of the disposal (disposal 400 ms before the drop, `Reattach` 700
+/// ms after it, grace 1 s).
+#[tokio::test]
+async fn an_observer_disposed_well_before_the_drop_stays_disposed_after_a_reattach_in_time() {
+    let t = spawn_engine(ObserversConfig {
+        observer_grace_ms: 1_000,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let mut orders = host(&t, "orders", true, &["orders::create", "orders::cancel"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, neighbour) in [
+        ("obs-early-lone", None),
+        ("obs-early", Some("obs-early-kept")),
+    ] {
+        let mut watcher = connect(&t, "watcher", true).await;
+        let mut frame = observer(id, json!({ "function_id": "orders::create" }), "sink::once");
+        frame["max_fires"] = json!(1);
+        watcher.observe_active(frame.clone()).await;
+        let kept = neighbour.map(|kept| {
+            observer(
+                kept,
+                json!({ "function_id": "orders::cancel" }),
+                "sink::once",
+            )
+        });
+        if let Some(kept) = &kept {
+            watcher.observe_active(kept.clone()).await;
+        }
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        assert!(eventually(|| state(&t, id).is_none()).await, "{id}");
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+        watcher.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let mut watcher =
+            Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+        if let Some(kept) = kept {
+            let replay = watcher.observe(kept).await;
+            assert_ne!(
+                replay["state"], "disposed",
+                "within the grace period: {replay}"
+            );
+        }
+        let replay = watcher.observe(frame).await;
+        assert_eq!(replay["state"], "disposed", "{id}: {replay}");
+        assert_eq!(replay["error"]["code"], "MAX_FIRES", "{id}: {replay}");
+        assert!(state(&t, id).is_none(), "{id}: the replay created nothing");
+    }
+}
+
 /// An observer the engine disposed while its worker was away: the worker,
 /// reattached, has its replay answered with the disposal, and observes the
 /// id again as a new observer. An `unobserve` of such an id (a handle
