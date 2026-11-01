@@ -151,10 +151,91 @@ impl Hasher for ConnectionHasher {
 pub(crate) type ByConnection<V> = DashMap<Uuid, V, BuildHasherDefault<ConnectionHasher>>;
 
 /// An observing connection that went away, while its observers wait for a
-/// `Reattach`.
+/// `Reattach` until `deadline`. Another close of the same connection starts
+/// a grace period of its own: what ends an earlier one finds a later
+/// deadline here and leaves it.
 struct Departed {
     token: Uuid,
-    timer: tokio::task::AbortHandle,
+    deadline: tokio::time::Instant,
+    /// The connection's own timer, when no task ends grace periods (see
+    /// [`Graces`]).
+    timer: Option<tokio::task::AbortHandle>,
+}
+
+/// Grace periods in progress, by deadline. The task that exports drop counts
+/// ([`ObserverRegistry::start_drop_export`]) ends them: it sleeps until the
+/// earlier of its next export and the earliest deadline, so a disconnect
+/// queues its deadline and starts no task, and wakes the task only when that
+/// deadline comes before the task's next wake.
+#[derive(Default)]
+struct Graces {
+    queue: lifecycle::Lock<GraceQueue>,
+    wake: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct GraceQueue {
+    /// `(deadline, connection)`, earliest first.
+    due: std::collections::BinaryHeap<std::cmp::Reverse<(tokio::time::Instant, Uuid)>>,
+    /// When the task wakes next, once it waited.
+    wakes_at: Option<tokio::time::Instant>,
+}
+
+impl Graces {
+    /// Queues `connection`'s grace period, ending at `deadline`.
+    fn queue(&self, deadline: tokio::time::Instant, connection: Uuid) {
+        let wake = {
+            let mut queue = self.queue.write();
+            queue.due.push(std::cmp::Reverse((deadline, connection)));
+            queue.wakes_at.is_some_and(|at| deadline < at)
+        };
+        if wake {
+            self.wake.notify_one();
+        }
+    }
+
+    /// The grace periods that end by `now`, taken out of the queue.
+    fn take_due(&self, now: tokio::time::Instant) -> Vec<(tokio::time::Instant, Uuid)> {
+        let mut queue = self.queue.write();
+        let mut due = Vec::new();
+        while let Some(std::cmp::Reverse((deadline, _))) = queue.due.peek()
+            && *deadline <= now
+        {
+            if let Some(std::cmp::Reverse(ended)) = queue.due.pop() {
+                due.push(ended);
+            }
+        }
+        due
+    }
+
+    /// When the task wakes next: at `export`, or at the earliest deadline
+    /// when it comes first.
+    fn wake_at(&self, export: tokio::time::Instant) -> tokio::time::Instant {
+        let mut queue = self.queue.write();
+        let at = queue
+            .due
+            .peek()
+            .map_or(export, |std::cmp::Reverse((deadline, _))| {
+                (*deadline).min(export)
+            });
+        queue.wakes_at = Some(at);
+        at
+    }
+}
+
+/// Clears [`ObserverRegistry::drop_export`] when the task ends, with its
+/// runtime too, polled or not: disconnects then time their grace periods
+/// themselves, and the next `observe` starts the task again.
+struct ExportRunning(Weak<ObserverRegistry>);
+
+impl Drop for ExportRunning {
+    fn drop(&mut self) {
+        if let Some(registry) = self.0.upgrade() {
+            registry
+                .drop_export
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
 }
 
 /// Every observer, indexed for the routed hook (by function), for the
@@ -176,12 +257,19 @@ pub struct ObserverRegistry {
     by_target: DashMap<FnKey, HeldSet>,
     /// The routed hook's view (see [`ObserverRegistry::route`]): functions
     /// with active observers and private functions a connection hosts, each
-    /// with its active set. An invocation reads it with one atomic load, and
+    /// with its active set, and the functions anyone may call whose last
+    /// active observer left since the view was last copied (see
+    /// `routed_live`). An invocation reads it with one atomic load, and
     /// clones the set of a function it holds under that set's read lock. A
     /// function's set is replaced in place; the view is copied
     /// (copy-on-write) only when a function joins or leaves it, or who may
     /// call a function changes.
     routed: ArcSwap<owner::RoutedView>,
+    /// The functions of `routed` the routed hook finds: with active
+    /// observers, or with a host only it may call them. A function whose
+    /// last active observer left stays in the view, found by nobody, until
+    /// the view is next copied. Changed with `routed`, under `rebuild`.
+    routed_live: AtomicUsize,
     /// Serializes rebuilds of `routed`.
     rebuild: lifecycle::Lock<()>,
     /// `engine::on-observers-changed` has active observers: what an observer's
@@ -189,6 +277,8 @@ pub struct ObserverRegistry {
     observers_changed_watched: std::sync::atomic::AtomicBool,
     notifiers: ByConnection<Arc<lifecycle::Notifier>>,
     departed: ByConnection<Departed>,
+    /// The grace periods of `departed` that the drop-export task ends.
+    graces: Arc<Graces>,
     state_counts: lifecycle::StateCounts,
     payload_copies: AtomicU64,
     /// Times a reporting connection's reader waited for room in a queue its
@@ -259,10 +349,12 @@ impl ObserverRegistry {
             by_function: DashMap::new(),
             by_target: DashMap::new(),
             routed: ArcSwap::from_pointee(HashMap::new()),
+            routed_live: AtomicUsize::new(0),
             rebuild: lifecycle::Lock::new(()),
             observers_changed_watched: std::sync::atomic::AtomicBool::new(false),
             notifiers: ByConnection::default(),
             departed: ByConnection::default(),
+            graces: Arc::default(),
             state_counts: lifecycle::StateCounts::default(),
             payload_copies: AtomicU64::new(0),
             report_waits: AtomicU64::new(0),
@@ -338,7 +430,8 @@ impl ObserverRegistry {
 
     /// Starts the task that sends drop counts to `iii.observer.dropped.total`
     /// every [`dispatch::DROP_EXPORT_INTERVAL`], once there is a meter and a
-    /// runtime.
+    /// runtime. It ends grace periods too, each at its deadline (see
+    /// [`Graces`]).
     fn start_drop_export(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
         if metrics().is_none() || self.drop_export.load(Ordering::Acquire) {
@@ -351,17 +444,56 @@ impl ObserverRegistry {
             return;
         }
         let registry = Arc::downgrade(self);
+        let graces = self.graces.clone();
+        // Moved into the task, so a task its runtime drops before polling
+        // it clears the flag too.
+        let running = ExportRunning(registry.clone());
         runtime.spawn(async move {
-            let mut tick = tokio::time::interval(dispatch::DROP_EXPORT_INTERVAL);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let _running = running;
+            // Exports as a `tokio::time::interval` with
+            // `MissedTickBehavior::Delay` ticks: at once, then every
+            // interval, the next one an interval after a late one.
+            let interval = dispatch::DROP_EXPORT_INTERVAL;
+            let mut export = tokio::time::Instant::now();
             loop {
-                tick.tick().await;
-                let Some(registry) = registry.upgrade() else {
-                    return;
-                };
-                registry.export_drops();
+                let now = tokio::time::Instant::now();
+                if now >= export {
+                    let Some(registry) = registry.upgrade() else {
+                        return;
+                    };
+                    registry.export_drops();
+                    export = if now > export + std::time::Duration::from_millis(5) {
+                        now + interval
+                    } else {
+                        export + interval
+                    };
+                }
+                let ended = graces.take_due(now);
+                if !ended.is_empty() {
+                    let Some(registry) = registry.upgrade() else {
+                        return;
+                    };
+                    for (deadline, connection) in ended {
+                        registry.grace_due(connection, deadline);
+                    }
+                }
+                let wake = graces.wake_at(export);
+                tokio::select! {
+                    () = tokio::time::sleep_until(wake) => {}
+                    () = graces.wake.notified() => {}
+                }
             }
         });
+    }
+
+    /// Ends `connection`'s grace period at `deadline` (see [`Graces`]), or
+    /// returns `false` when no task ends grace periods.
+    fn queue_grace(&self, deadline: tokio::time::Instant, connection: Uuid) -> bool {
+        if !self.drop_export.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        self.graces.queue(deadline, connection);
+        true
     }
 
     /// Sends what each live observer dropped since the last export to
