@@ -135,9 +135,12 @@ iii.observe(
   `disposed` of the earlier observer never reaches the new one (decision 56).
   An observer the engine disposes frees its id on the connection that heard
   the `disposed`. On a reattached connection the engine answers the first
-  `observe` of the id within `observers.observer_grace_ms` of the disposal
-  `disposed`, as the replay of an observer whose `disposed` was lost; that
-  answer, or an `unobserve` of the id, frees it.
+  `observe` of the id `disposed` when the disposal came at most
+  `observers.observer_grace_ms` before the earlier connection closed, or
+  while it was away, as the replay of an observer whose `disposed` was lost
+  (after a `Reattach` within the grace period, or a later one within
+  `observers.disposed_retention_ms`); that answer, or an `unobserve` of the
+  id, frees it.
 - **A refused `observe`** (its `observeresult` is `error`) gets no other
   answer. Its handle's `dispose()` sends nothing and resolves at once; a
   `dispose()` called before the refusal arrived resolves when it arrives.

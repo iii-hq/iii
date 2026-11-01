@@ -506,11 +506,13 @@ differ, this file wins, and the spec is updated to match.
       its id on a connection that heard its `disposed` (one that had the
       observer's `observeresult` first): an `observe` of the id from it
       creates a new observer. On a reattached connection the first
-      `observe` of the id within `observers.observer_grace_ms` of the
-      disposal is answered `disposed`, as the replay of an observer whose
-      `disposed` may have been lost with the earlier connection. That
-      answer, or an `unobserve` of the id from the connection, frees the id
-      there.
+      `observe` of the id is answered `disposed` when the disposal came at
+      most `observers.observer_grace_ms` before the earlier connection
+      closed, or while it was away, as the replay of an observer whose
+      `disposed` may have been lost with the earlier connection. A
+      `Reattach` after the grace period gets the same answer, within
+      `observers.disposed_retention_ms`. That answer, or an `unobserve` of
+      the id from the connection, frees the id there.
     - **A refusal is the handle's last answer.** An `observeresult` that
       refuses an `observe` (state `error`) answers the oldest listed handle
       of the id that has no answer yet (rule 2), and that handle leaves the
