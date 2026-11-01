@@ -52,8 +52,25 @@ async fn client_at(url: &str, name: &str) -> IIIClient {
     iii
 }
 
+/// A client the engine knows by `name`. The engine stores a worker's name
+/// from its fire-and-forget `engine::workers::register` in a task of its own,
+/// so a call made right after connecting can arrive first and carry no
+/// `caller.worker_name`.
 async fn client(name: &str) -> IIIClient {
-    client_at(&engine_ws_url(), name).await
+    let iii = client_at(&engine_ws_url(), name).await;
+    let deadline = Instant::now() + WAIT;
+    while iii
+        .call(call_req("engine::workers::info", json!({ "name": name })))
+        .await
+        .is_err()
+    {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for the engine to know {name}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    iii
 }
 
 async fn settle() {
