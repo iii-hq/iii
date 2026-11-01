@@ -56,13 +56,13 @@ var unsupportedReason = &ObserveReason{
 // replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS,
 // INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and
 // UNSUPPORTED against an engine without observe) show up as state error and fail
-// [ObserverHandle.Ready]. The engine's refusal of an observe (an observeresult in
-// state error) is the handle's final answer: the engine stores nothing for it, the
-// handle is not sent again on a later connection, and its Dispose sends nothing. An
-// observeresult in state error for a handle whose observer the engine may hold (one of
-// its observes was answered pending, active or suspended, or lost its answer to a
-// closed connection) is that observer's state: the handle is replayed, and its Dispose
-// unobserves it.
+// [ObserverHandle.Ready]. An observeresult in state error is the engine's refusal of
+// that observe and the handle's final answer: the engine holds no observer for it (it
+// stores nothing for a refused observe, and disposes an observer it holds in error as
+// it answers that observer's replay), the handle is not sent again on a later
+// connection, and its Dispose sends nothing. An observer that turns error after its
+// observe was answered (the host's rejection, OWNER_TIMEOUT) is held by the engine: the
+// handle is replayed, and its Dispose unobserves it.
 // The returned error is for a request that cannot be sent at all: a missing function
 // or target, a blank namespace, args or filters that are not JSON, and an id a handle
 // of this client holds. A handle holds its id until it is disposed (by
@@ -355,7 +355,7 @@ func (c *Client) disposeObserver(h *ObserverHandle) {
 	c.mu.Unlock()
 	if h.wasSent() && !refused {
 		// sent on the registered connection, or parked for the next one (a Reattach
-		// would otherwise keep the observer alive); the engine stores nothing for a
+		// would otherwise keep the observer alive); the engine holds no observer for a
 		// refused observe
 		c.routeUnobserveLocked(h.id)
 	}
@@ -521,10 +521,10 @@ type sentObserve struct {
 // engine's disposed for it arrives, a newer handle of the id has its observeresult, or
 // the connection closes: the late disposed of an earlier observer reaches the earlier
 // handle, never the one that observes under its id again. An observeresult in state
-// error for a handle that is not held refuses the observe: the engine stores nothing
-// for it, so that answer is the handle's final answer, and the handle leaves the list
-// when it arrives. For a held handle it is the state of the observer the engine
-// holds, and the handle stays listed.
+// error refuses the observe: the engine holds no observer for it (it stores nothing
+// for a refused observe, and disposes an observer it holds in error as it answers that
+// observer's replay), so that answer is the handle's final answer, and the handle
+// leaves the list when it arrives.
 
 // onObserveResult applies an observeresult to the oldest listed handle of id still
 // unanswered; with none it is dropped. A refusal unlists the handle for good, and its
@@ -546,12 +546,10 @@ func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
 	switch {
 	case st == ObserverDisposed:
 		c.forgetLocked(h)
-	case st == ObserverError && !h.held:
+	case st == ObserverError:
 		// set before the state, so a Dispose that sees the error sends nothing
 		h.refused = true
 		c.unlistLocked(h)
-	case st != ObserverError:
-		h.held = true
 	}
 	c.mu.Unlock()
 	h.setState(st, observeReason(reason))
@@ -589,20 +587,6 @@ func (c *Client) forgetLocked(h *ObserverHandle) {
 	if c.observers[h.id] == h {
 		delete(c.observers, h.id)
 	}
-}
-
-// dropObserveSentLocked ends the current connection's answer lists. The engine may
-// have created the observer of an observe whose answer never arrived, and holds it
-// again on a Reattach: that handle is held from here on. The caller holds mu.
-func (c *Client) dropObserveSentLocked() {
-	for _, list := range c.observeSent {
-		for _, s := range list {
-			if !s.answered {
-				s.handle.held = true
-			}
-		}
-	}
-	c.observeSent = nil
 }
 
 // unlistLocked drops h from the answer list of its id. The caller holds mu.
