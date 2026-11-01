@@ -1,6 +1,9 @@
 # Generated files: GitHub collapses them in pull request diffs.
 # Docs skill artifacts (iii-skill-render; skill-check verifies them).
 *.skill.md linguist-generated
+# SDK API reference pages (docs/next/scripts/generate-api-docs.mts; check-api-docs.sh checks drift).
+docs/next/reference/sdk-*.mdx linguist-generated
+docs/next/reference/helpers-*.mdx linguist-generated
 # Browser SDK files derived from the Node SDK (scripts/sync-browser-observe.py; CI runs --check).
 sdk/packages/node/iii-browser/src/observer-handle.ts linguist-generated
 sdk/packages/node/iii-browser/src/observe-wire.ts linguist-generated
