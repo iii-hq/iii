@@ -16,14 +16,10 @@ type ObserverHandle struct {
 	// frame is the observe frame, sent on every connection.
 	frame []byte
 	seq   uint64
-	// held and refused are guarded by client.mu and kept across connections (decision
-	// 56). held: the engine may hold an observer it created for h, because an
-	// observeresult for h said pending, active or suspended, or a connection closed
-	// before h's answer arrived. An observeresult in state error for a held handle can be
-	// that observer's state (the answer to its replay on a reattached connection), so it
-	// is not a refusal. refused: the engine refused h's observe and stores nothing for
-	// it; h is not sent again, and its Dispose sends nothing.
-	held, refused bool
+	// refused: an observeresult in state error answered h's observe (decision 56), and
+	// the engine holds no observer for it; h is not sent again, and its Dispose sends
+	// nothing. Guarded by client.mu, kept across connections.
+	refused bool
 
 	mu        sync.Mutex
 	state     ObserverState
