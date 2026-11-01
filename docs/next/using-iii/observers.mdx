@@ -707,8 +707,10 @@ metric, by function and reason.
   each state change with its reason, and returns a way to unsubscribe. Listeners run outside the
   connection's read path, so a listener can call the worker.
 - `dispose()` (`Dispose(ctx)` in Go) removes the observer. A disposed observer is not replayed. When
-  the engine refused the `observe`, `dispose()` sends nothing and returns at once. Called before the
-  refusal arrives, it returns when the refusal arrives.
+  the engine refused the `observe`, `dispose()` sends nothing. In Node, Python and Go, `dispose()`
+  returns at once. In Rust, it returns when the engine confirms the dispose, or after 5 seconds
+  without an answer. A Rust `dispose()` of a refused `observe` returns at once, and one called
+  before the refusal arrives returns when the refusal arrives.
 
 <Tabs>
   <Tab title="Node / TypeScript">
