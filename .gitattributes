@@ -1,0 +1,22 @@
+# Generated files: GitHub collapses them in pull request diffs.
+# Docs skill artifacts (iii-skill-render; skill-check verifies them).
+*.skill.md linguist-generated
+# Browser SDK files derived from the Node SDK (scripts/sync-browser-observe.py; CI runs --check).
+sdk/packages/node/iii-browser/src/observer-handle.ts linguist-generated
+sdk/packages/node/iii-browser/src/observe-wire.ts linguist-generated
+sdk/packages/node/iii-browser/src/reporter.ts linguist-generated
+sdk/packages/node/iii-browser/src/observable.ts linguist-generated
+sdk/packages/node/iii-browser/src/observe-types.ts linguist-generated
+sdk/packages/node/iii-browser/tests/filter-conformance.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/filter-index.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/observe-observer.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/observe-hooks.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/observe-deliver.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/observe-local-dispatch.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/observe-reporter.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/observe-protocol-fixtures.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/integration/observe-routed.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/integration/observe-local.test.ts linguist-generated
+sdk/packages/node/iii-browser/tests/integration/observe-fault-tolerance.test.ts linguist-generated
+# Raw benchmark runs; bench-baseline.md is the readable summary.
+tech-specs/2026-10-29-observe-v2/bench-baseline.json linguist-generated
