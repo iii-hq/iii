@@ -1280,6 +1280,20 @@ impl ObserverBook {
         Some((entry, refused))
     }
 
+    /// Routes an `observerstatechanged` in `state` for `id` on connection
+    /// `epoch` ([`route`](Self::route)): the handle it is for. Only
+    /// `disposed` unlists that handle. A handle in `error` stays listed: the
+    /// engine holds its observer, and the handle's `dispose()` unobserves it.
+    fn state_changed(
+        &mut self,
+        id: &str,
+        epoch: u64,
+        state: &ObserverState,
+    ) -> Option<Arc<ObserverEntry>> {
+        let unlists = *state == ObserverState::Disposed;
+        self.route(id, epoch, ObserverAnswer::StateChanged, unlists)
+    }
+
     /// A connection opened or closed: the lists of the one before go.
     fn next_connection(&mut self) {
         self.routes.clear();
@@ -3704,10 +3718,7 @@ impl IIIClient {
                 reason,
                 fires,
             } => {
-                let disposed = state == ObserverState::Disposed;
-                if let Some(entry) =
-                    self.answered_observer(&id, ObserverAnswer::StateChanged, disposed)
-                {
+                if let Some(entry) = self.answered_state_change(&id, &state) {
                     self.apply_observer_state(&entry, state, reason, Some(fires));
                 }
             }
@@ -4341,19 +4352,14 @@ impl IIIClient {
             .observe_result(id, epoch, state)
     }
 
-    /// The handle an answer for observer `id` on this connection is for
-    /// (see [`ObserverBook::route`]).
-    fn answered_observer(
-        &self,
-        id: &str,
-        answer: ObserverAnswer,
-        unlists: bool,
-    ) -> Option<Arc<ObserverEntry>> {
+    /// The handle the `observerstatechanged` in `state` for observer `id`
+    /// on this connection is for (see [`ObserverBook::state_changed`]).
+    fn answered_state_change(&self, id: &str, state: &ObserverState) -> Option<Arc<ObserverEntry>> {
         let epoch = self.connection_epoch();
         self.inner
             .observers
             .lock_or_recover()
-            .route(id, epoch, answer, unlists)
+            .state_changed(id, epoch, state)
     }
 
     fn apply_observer_state(
@@ -6319,19 +6325,26 @@ mod observer_book_tests {
     }
 
     /// An active handle's `observerstatechanged` in `error` keeps it listed:
-    /// the engine holds that observer.
+    /// the engine holds that observer. Its `disposed` unlists it.
     #[test]
     fn an_error_state_change_keeps_the_handle_listed() {
-        use ObserverAnswer::StateChanged;
         let mut book = ObserverBook::default();
         let held = entry("x");
         listed(&mut book, &held, 1);
         let (_, refused) = result_in(&mut book, 1, ObserverState::Active).unwrap();
         assert!(!refused);
-        assert!(is(book.route("x", 1, StateChanged, false), &held));
-        assert_eq!(book.routes["x"].len(), 1);
-        assert!(is(book.route("x", 1, StateChanged, true), &held));
-        assert!(book.routes.is_empty());
+        assert!(is(book.state_changed("x", 1, &ObserverState::Error), &held));
+        assert_eq!(book.routes["x"].len(), 1, "error keeps it listed");
+        assert!(is(
+            book.state_changed("x", 1, &ObserverState::Active),
+            &held
+        ));
+        assert!(is(
+            book.state_changed("x", 1, &ObserverState::Disposed),
+            &held
+        ));
+        assert!(book.routes.is_empty(), "disposed unlists it");
+        assert!(book.state_changed("x", 1, &ObserverState::Error).is_none());
     }
 
     #[test]
