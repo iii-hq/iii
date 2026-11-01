@@ -882,9 +882,12 @@ class Sdk implements IIIClient {
    * replayed with the same id on every reconnect. Errors (`INVALID_ARGS`,
    * `INVALID_FILTER`, `FORBIDDEN`, `NOT_OBSERVABLE`, the host's rejection,
    * `UNSUPPORTED` against an engine without observe) show up as state `error`
-   * and reject `ready()`. The handle holds its id until it is disposed: an
-   * `observe` of an id a handle of this client holds throws an
-   * {@link ObserveRejection} (`OBSERVER_ID_CONFLICT`) and sends nothing.
+   * and reject `ready()`. An `error` answer to the `observe` is the engine's
+   * refusal, the handle's final answer: the engine holds no observer for it,
+   * it is not replayed, and its `dispose()` sends nothing. The handle holds
+   * its id until it is disposed: an `observe` of an id a handle of this
+   * client holds throws an {@link ObserveRejection} (`OBSERVER_ID_CONFLICT`)
+   * and sends nothing.
    *
    * @param source - What is observed: a function id, or `function_id`,
    *   `args`, `filters`, and `on` / `capture` / `deliver`.
@@ -1684,7 +1687,7 @@ class Sdk implements IIIClient {
     // Local dispatch and the compiled observer sets survive; what was sent on
     // this connection is replayed on the next one (standby functions too).
     this.registeredOnConnection = false
-    this.forgetObservesSent()
+    this.observesSent.clear()
     for (const functionId of [...this.standbyTimers.keys()]) this.stopStandby(functionId)
 
     this.setConnectionState('disconnected')
@@ -1698,7 +1701,7 @@ class Sdk implements IIIClient {
     this.setConnectionState('connected')
     this.connectionEpoch++
     this.registeredOnConnection = false
-    this.forgetObservesSent()
+    this.observesSent.clear()
 
     this.ws?.on('message', this.onMessage.bind(this))
 
@@ -2286,19 +2289,17 @@ class Sdk implements IIIClient {
     const handle = this.observesSent.get(id)?.find((h) => !h.answered)
     if (!handle) return
     handle.answered = true
-    const state = toObserverState(wireState)
-    if (state === 'error' && !handle.created) {
-      // A refusal, the handle's final answer: the engine stores nothing for
-      // it and ignores its `unobserve`, so dispose() sends none.
+    if (toObserverState(wireState) === 'error') {
+      // A refusal, the handle's final answer: the engine holds no observer
+      // for it (it stores nothing for a refused `observe`, and disposes an
+      // observer in `error` as it answers its replay), so dispose() sends
+      // no `unobserve`.
       handle.sent = false
       handle.refused = true
       this.unlistObserve(handle)
-      handle.setState(state, reason ? { code: reason.code, message: reason.message } : undefined)
+      handle.setState('error', reason ? { code: reason.code, message: reason.message } : undefined)
       return
     }
-    // A replay's `error` answer for an observer the engine created may be
-    // that observer's state (a reattached connection): it may hold it still.
-    if (state !== 'error' && state !== 'disposed') handle.created = true
     // Disposed before its answer: its `unobserve` follows, and nothing
     // the engine says about it later reaches another handle.
     if (handle.state === 'disposed') this.unlistObserve(handle)
@@ -2338,17 +2339,6 @@ class Sdk implements IIIClient {
     if (!sent || at < 0) return
     sent.splice(at, 1)
     if (sent.length === 0) this.observesSent.delete(handle.id)
-  }
-
-  /**
-   * The connection closed: its lists go. The engine may have created an
-   * observer whose answer never arrived, and may hold it on a reattach.
-   */
-  private forgetObservesSent(): void {
-    for (const sent of this.observesSent.values()) {
-      for (const handle of sent) if (!handle.answered) handle.created = true
-    }
-    this.observesSent.clear()
   }
 
   private onMessage(socketMessage: Data): void {

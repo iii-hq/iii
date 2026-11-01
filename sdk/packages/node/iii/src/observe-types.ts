@@ -128,7 +128,10 @@ export interface ObserverHandle {
    * connection's read path), so they may call the client.
    */
   onStateChange(listener: (state: ObserverState, reason?: ObserveReason) => void): () => void
-  /** Removes the observer (`unobserve`). It is not replayed on reconnect. */
+  /**
+   * Removes the observer (`unobserve`). It is not replayed on reconnect.
+   * After the engine refused the `observe`, it sends nothing.
+   */
   dispose(): Promise<void>
 }
 
