@@ -1067,9 +1067,10 @@ async fn hosts_get_validated_args_route_by_them_and_can_reject() {
 }
 
 /// An observer its host rejected stays on the engine in `error`. After a
-/// reconnect the engine answers its replay with that state, and the handle's
-/// `dispose()` removes the observer: the engine does not list it, and the
-/// id makes a new observer on the same connection.
+/// reconnect the engine answers its replay in `error` and disposes the
+/// observer as it answers: the handle's `dispose()` resolves at once, the
+/// engine does not list the observer, and the id makes a new observer on the
+/// same connection.
 #[tokio::test]
 async fn a_rejected_observer_replayed_after_a_reconnect_is_removed_by_dispose() {
     let id = uid();
