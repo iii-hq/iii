@@ -8,23 +8,23 @@ commits.
 ## Summary
 
 The final pass ("Final pass (`ac89e90f6`)") measured the head of the PR
-against 0.25:
+against 0.25. It counts a difference when every run of one version beats
+every run of the other, and calls the two the same when their runs overlap.
 
-- **Engine benches:** of 21 rows compared, 14 are faster than 0.25 beyond
-  noise and 7 are the same within noise. None is slower beyond noise.
-  - A worker's cleanup is 3.4x to 7.8x faster, with the same bench fix in both
-    versions.
-  - Fan-out is 9% to 60% faster.
-  - Dispatch to 1,024 filtered observers takes 4.51 µs, against 19.92 µs.
-  - Adding and removing an observer costs 1.3% to 3.3% more than a trigger
-    did, in every round.
-- **Load test:**
-  - `fanout` is the same as 0.25 within noise at every step.
-  - `filters` makes 18% more calls with 1,024 observers and 2.6x the calls with
-    4,000, and delivers every activation where 0.25 delivers about half. With
-    16 observers it makes 3.2% fewer calls per second, in every run.
-  - `observers` creates 64,000 observers 3.4x as fast and disposes of them
-    2.3x as fast, with 23% to 52% less engine memory per observer.
+- **Faster:** fan-out, by 9% to 60%; calls with observers, by 4% to 21%;
+  calls with filtered observers, by 5% to 4.4x; creating and disposing of
+  observers, by 13% to 3.4x.
+- **Filters under load:** with 1,024 and 4,000 filtered observers, 0.25 drops
+  about half the matching activations and 0.26 delivers all of them.
+- **Less memory:** 23% to 52% less engine memory per observer.
+- **About the same:** calls with no observers and routed calls with one
+  (within 1.5%), and the `fanout` load test, which overloads both versions.
+- **Slower, in every run:** adding and removing observers, by 1.3% to 3.3%
+  (0.02 to 0.05 µs per observer), and the `filters` load test with 16
+  observers, by 3.2%.
+- **Not compared:** worker cleanup. When a worker disconnects, 0.26 holds its
+  observers for a grace period and 0.25 deletes its triggers, so the two
+  benches do different work.
 
 The rest of this summary and the sections from "Setup" on describe the
 earlier passes, at the commits they name. "Final pass" has its own setup.
@@ -900,11 +900,18 @@ compared for `worker_cleanup`, `control_plane_churn`, `observe_dispatch`,
 - **Engine benches.** Rows run with `--warm-up-time 1 --measurement-time 3`,
   versions interleaved bench by bench: `worker_cleanup` and
   `control_plane_churn` in 5 rounds, the others in 3. Figures are criterion's
-  point estimate, as the median over the rounds. The verdict follows
-  "Method", with medians in place of means.
-- **`worker_cleanup`.** Both versions run with the same bench fix.
+  point estimate, as the median over the rounds.
+- **Verdict.** Faster or slower (more or fewer, less or more memory) when
+  every run of one version beats every run of the other, by any margin; the
+  same when their runs overlap. There is no 5% threshold: a small difference
+  that holds in every run counts. Chance alone puts every run of one version
+  ahead about one time in ten with 3 runs per version, one in 126 with 5 and
+  one in 6,435 with 8.
+- **`worker_cleanup`.** Not compared: the two benches do different work.
+  - When a worker disconnects, 0.26 holds its observers for the grace period
+    and 0.25 deletes its triggers.
   - 0.26's observers row returns the engine, which holds the worker's suspended
-    observers for the grace period. Criterion drops it after the measurement.
+    observers. Criterion drops it after the measurement.
   - 0.25's triggers row is changed the same way for this pass, which is not
     committed: it returns the registry that holds the worker's triggers.
   - The other registries are dropped inside the measurement in both versions.
@@ -917,37 +924,34 @@ compared for `worker_cleanup`, `control_plane_churn`, `observe_dispatch`,
 
 | Bench | 0.25 bench | 0.25 (µs) | 0.26 (µs) | Change | Verdict |
 |---|---|---:|---:|---:|---|
-| `worker_cleanup/observers/10` | `worker_cleanup/triggers/10` | 14.71 | 4.29 | -70.8% | faster than 0.25 beyond noise |
-| `worker_cleanup/observers/50` | `worker_cleanup/triggers/50` | 44.40 | 7.41 | -83.3% | faster than 0.25 beyond noise |
-| `worker_cleanup/observers/200` | `worker_cleanup/triggers/200` | 159.73 | 20.46 | -87.2% | faster than 0.25 beyond noise |
-| `control_plane_churn/observers_add_remove/100` | `control_plane_churn/triggers_register_unregister/100` | 138.99 | 140.85 | +1.3% | same as 0.25 within noise |
-| `control_plane_churn/observers_add_remove/1000` | `control_plane_churn/triggers_register_unregister/1000` | 1,420.30 | 1,446.60 | +1.9% | same as 0.25 within noise |
-| `control_plane_churn/observers_add_remove/5000` | `control_plane_churn/triggers_register_unregister/5000` | 7,555.50 | 7,803.10 | +3.3% | same as 0.25 within noise |
-| `observe_dispatch/default/0` | `observe_dispatch/auto/0` | 1.81 | 1.79 | -1.5% | same as 0.25 within noise |
-| `observe_dispatch/default/1` | `observe_dispatch/auto/1` | 4.69 | 4.50 | -4.1% | same as 0.25 within noise |
-| `observe_dispatch/default/8` | `observe_dispatch/auto/8` | 10.53 | 9.28 | -11.9% | faster than 0.25 beyond noise |
-| `observe_dispatch/default/64` | `observe_dispatch/auto/64` | 76.52 | 63.98 | -16.4% | faster than 0.25 beyond noise |
-| `observe_dispatch/filtered/16` | `observe_dispatch/filtered/16` | 4.75 | 4.50 | -5.2% | faster than 0.25 beyond noise |
-| `observe_dispatch/filtered/256` | `observe_dispatch/filtered/256` | 5.02 | 4.52 | -10.0% | faster than 0.25 beyond noise |
-| `observe_dispatch/filtered/1024` | `observe_dispatch/filtered/1024` | 19.92 | 4.51 | -77.4% | faster than 0.25 beyond noise |
+| `worker_cleanup/observers/10` | `worker_cleanup/triggers/10` | 14.71 | 4.29 | -70.8% | not compared (different work) |
+| `worker_cleanup/observers/50` | `worker_cleanup/triggers/50` | 44.40 | 7.41 | -83.3% | not compared (different work) |
+| `worker_cleanup/observers/200` | `worker_cleanup/triggers/200` | 159.73 | 20.46 | -87.2% | not compared (different work) |
+| `control_plane_churn/observers_add_remove/100` | `control_plane_churn/triggers_register_unregister/100` | 138.99 | 140.85 | +1.3% | slower than 0.25 |
+| `control_plane_churn/observers_add_remove/1000` | `control_plane_churn/triggers_register_unregister/1000` | 1,420.30 | 1,446.60 | +1.9% | slower than 0.25 |
+| `control_plane_churn/observers_add_remove/5000` | `control_plane_churn/triggers_register_unregister/5000` | 7,555.50 | 7,803.10 | +3.3% | slower than 0.25 |
+| `observe_dispatch/default/0` | `observe_dispatch/auto/0` | 1.81 | 1.79 | -1.5% | faster than 0.25 |
+| `observe_dispatch/default/1` | `observe_dispatch/auto/1` | 4.69 | 4.50 | -4.1% | faster than 0.25 |
+| `observe_dispatch/default/8` | `observe_dispatch/auto/8` | 10.53 | 9.28 | -11.9% | faster than 0.25 |
+| `observe_dispatch/default/64` | `observe_dispatch/auto/64` | 76.52 | 63.98 | -16.4% | faster than 0.25 |
+| `observe_dispatch/filtered/16` | `observe_dispatch/filtered/16` | 4.75 | 4.50 | -5.2% | faster than 0.25 |
+| `observe_dispatch/filtered/256` | `observe_dispatch/filtered/256` | 5.02 | 4.52 | -10.0% | faster than 0.25 |
+| `observe_dispatch/filtered/1024` | `observe_dispatch/filtered/1024` | 19.92 | 4.51 | -77.4% | faster than 0.25 |
 | `observe_dispatch/filtered/4000` | none | | 4.50 | | 0.25 has no such row |
-| `observe_fanout/1` | `trigger_fanout/1` | 11.34 | 10.37 | -8.5% | faster than 0.25 beyond noise |
-| `observe_fanout/8` | `trigger_fanout/8` | 28.82 | 23.07 | -20.0% | faster than 0.25 beyond noise |
-| `observe_fanout/32` | `trigger_fanout/32` | 85.01 | 50.24 | -40.9% | faster than 0.25 beyond noise |
-| `observe_fanout/128` | `trigger_fanout/128` | 322.10 | 129.24 | -59.9% | faster than 0.25 beyond noise |
-| `observe_routed/observed/0` | `observe_routed/observed/0` | 33.97 | 34.14 | +0.5% | same as 0.25 within noise |
-| `observe_routed/observed/1` | `observe_routed/observed/1` | 35.79 | 35.46 | -0.9% | same as 0.25 within noise |
-| `observe_routed/observed/8` | `observe_routed/observed/8` | 43.45 | 39.63 | -8.8% | faster than 0.25 beyond noise |
-| `observe_routed/observed/64` | `observe_routed/observed/64` | 91.23 | 72.41 | -20.6% | faster than 0.25 beyond noise |
+| `observe_fanout/1` | `trigger_fanout/1` | 11.34 | 10.37 | -8.5% | faster than 0.25 |
+| `observe_fanout/8` | `trigger_fanout/8` | 28.82 | 23.07 | -20.0% | faster than 0.25 |
+| `observe_fanout/32` | `trigger_fanout/32` | 85.01 | 50.24 | -40.9% | faster than 0.25 |
+| `observe_fanout/128` | `trigger_fanout/128` | 322.10 | 129.24 | -59.9% | faster than 0.25 |
+| `observe_routed/observed/0` | `observe_routed/observed/0` | 33.97 | 34.14 | +0.5% | the same as 0.25 |
+| `observe_routed/observed/1` | `observe_routed/observed/1` | 35.79 | 35.46 | -0.9% | faster than 0.25 |
+| `observe_routed/observed/8` | `observe_routed/observed/8` | 43.45 | 39.63 | -8.8% | faster than 0.25 |
+| `observe_routed/observed/64` | `observe_routed/observed/64` | 91.23 | 72.41 | -20.6% | faster than 0.25 |
 
-No row is slower than 0.25 beyond noise. Two are slower in every round, but
-by less than 5%:
-
-- **`control_plane_churn/observers_add_remove`:** 1.3%, 1.9% and 3.3% slower
-  with 100, 1,000 and 5,000 observers. That is 1.41, 1.45 and 1.56 µs per
-  add and remove, against 1.39, 1.42 and 1.51 µs per trigger.
-- **`filters` load test at 16 observers:** 3.2% fewer calls per second (see
-  below).
+Of the 18 rows compared, 14 are faster than 0.25, 3 are slower and 1 is the
+same. The slower ones are `control_plane_churn/observers_add_remove`: 1.3%,
+1.9% and 3.3% slower with 100, 1,000 and 5,000 observers, in all 5 runs. That
+is 1.41, 1.45 and 1.56 µs per add and remove, against 1.39, 1.42 and 1.51 µs
+per trigger.
 
 ### Load test
 
@@ -984,27 +988,37 @@ by less than 5%:
 | Engine memory per observer at rest, 16,000 (KiB) | 8.0 | 6.2 | -23% |
 | Engine memory per observer at rest, 64,000 (KiB) | 7.9 | 5.4 | -32% |
 
-- **`fanout`:** every step is the same as 0.25 within noise, in calls and in
-  activations delivered per second. With 1 observer a function, 0.26 delivers
-  5.2% fewer activations per second (68.0k against 71.7k), and its runs
-  overlap 0.25's.
-- **`filters`:**
-  - With 1,024 and 4,000 observers, 0.26 makes 18% more calls and 2.6x the
-    calls per second, and delivers every activation. 0.25 delivers 57% and 49%
+- **`fanout`:**
+  - Both versions are overloaded. At every step with observers they drop
+    activations as `OVERFLOW`: 17% to 29% of them with 1 and 4 observers, and
+    81% to 95% with 16 and 64. The test shows how much each version gets
+    through when overloaded.
+  - With 0 observers, 0.26 makes 2.7% more calls per second, in every run.
+  - At every step with observers, the two versions' runs overlap in calls and
+    in activations delivered per second, so the two are the same there. The
+    medians differ by −5.2% to +12.3%.
+  - With 1 observer, 0.26 delivers 71% of the activations against 74%, lower
+    in every run.
+- **`filters`:** each call matches one observer.
+  - 0.26 makes 18% more calls per second with 1,024 observers and 2.6x the
+    calls with 4,000, and delivers every activation. 0.25 delivers 57% and 49%
     of them and drops the rest as `OVERFLOW`.
-  - With 16 observers, every 0.26 run is below every 0.25 run, by 3.2% at the
-    medians.
+  - 0.26 makes 2.0% more calls per second with 256 observers and 3.2% fewer
+    with 16, each in every run.
 - **`observers`:**
-  - 0.26 creates 64,000 observers 3.4x as fast as 0.25 and disposes of them
-    2.3x as fast.
-  - It holds 23% to 52% less engine memory per observer at rest.
+  - 0.26 creates observers faster at every step: 1.9x up to 1,000, 1.8x up
+    to 4,000, 13% faster up to 16,000 and 3.4x up to 64,000. It disposes of
+    64,000 2.3x as fast.
+  - The step from 4,000 to 16,000 also opens twelve worker connections. It
+    takes about 2.5 s in 0.25 and 2.2 s in 0.26.
+  - 0.26 holds 23% to 52% less engine memory per observer at rest, in every
+    run.
 
 ## Slower than 0.25
 
-In the final pass ("Final pass (`ac89e90f6`)"), nothing is slower than 0.25
-beyond noise. Two rows are slower in every round, but by less than 5%:
-`control_plane_churn/observers_add_remove`, by 1.3% to 3.3%, and the `filters`
-load test with 16 observers, by 3.2%.
+In the final pass ("Final pass (`ac89e90f6`)"), two results are slower than
+0.25 in every run: `control_plane_churn/observers_add_remove`, by 1.3% to
+3.3%, and the `filters` load test with 16 observers, by 3.2%.
 
 The rows below come from the observer churn fix (`d37f78f42`), from its pass.
 Where that pass did not measure a row, the figures are from the first pass.
