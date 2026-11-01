@@ -329,12 +329,12 @@ The hook names in each SDK:
 | Deliver, one function   | `onObserverDeliver(id, hook)` | `on_observer_deliver(id, hook)` | `on_observer_deliver_for(id, hook)` | `OnObserverDeliverFor(id, hook)` |
 
 The `FunctionRef` has the same methods with the id filled in: `onObserverAdded(hook)` and its
-siblings in Node, Python and Rust (`on_observer_added(hook)`), and `OnObserverAdded(hook)` in Go.
-Each method returns its receiver, so calls chain. Python's methods also work as decorators, and
-`on_observer_added("id")` without a hook is a decorator factory. Added, removed and deliver hooks
-may be sync or async in Node and Python. A match predicate and key functions are sync, since they
-run on every call. In Rust a hook is an async closure or a type that implements `AddedHook`,
-`RemovedHook` or `DeliverHook`.
+siblings in Node, Python and Rust (`on_observer_added(hook)`), and `OnObserverAdded(hook)` in Go. In
+Node, Rust and Go each method returns its receiver, so calls chain. In Python each returns the hook,
+so it also works as a decorator, and `on_observer_added("id")` without a hook is a decorator
+factory. Added, removed and deliver hooks may be sync or async in Node and Python. A match predicate
+and key functions are sync, since they run on every call. In Rust a hook is an async closure or a
+type that implements `AddedHook`, `RemovedHook` or `DeliverHook`.
 
 A match hook is a predicate or a pair of key functions (see
 [Match observers to calls](#match-observers-to-calls)):
@@ -369,8 +369,9 @@ a mistyped id.
   resolved runs, so a worker-wide hook that retained a resource releases it.
 - **Removed.** `onObserverRemoved` runs exactly once for every accepted observer: when the consumer
   disposes it, when `max_fires` or expiry ends it, when the observing worker disconnects, and on a
-  late rejection with `obs.reject()`. It runs only for accepted observers. An error it throws is
-  logged, and the observer is removed either way.
+  late rejection with `obs.reject()`. For an observer that is never accepted, it runs only at the
+  levels whose `onObserverAdded` resolved. No SDK runs it yet when the worker that hosts the
+  function shuts down. An error it throws is logged, and the observer is removed either way.
 - **Away and back.** When the observing worker disconnects, its observers are `suspended` for
   `observers.observer_grace_ms` (30 s by default), and the worker that hosts the function runs
   `onObserverRemoved` for each. If the observing worker reconnects in that time, the host gets each
@@ -378,16 +379,19 @@ a mistyped id.
   `active` once it is accepted.
 - **Back on a new connection.** A restarted worker connects with no reattach token and observes
   under the ids it used before. An observe of a `suspended` observer's id, from a connection under
-  the same worker name in the same namespace, replaces that observer. The host already ran
+  the same worker name in the same namespace, replaces that observer. On an RBAC port the connection
+  must also be the same principal: a session whose auth context is equal. A connection without an
+  RBAC session and one with a session never replace each other's observers. The host already ran
   `onObserverRemoved` for it when the worker left, and hears nothing more about it. It gets the new
   observer like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a
   queue subscriber's backlog, serves the new observer. From any other worker the id stays taken
-  (`OBSERVER_ID_CONFLICT`) until the grace period ends. The observing worker needs a name that
-  stays the same across restarts (`III_WORKER_NAME`, or the worker name option of the SDK): under
-  the default name, `hostname:pid`, a restarted worker is another worker.
+  (`OBSERVER_ID_CONFLICT`) until the grace period ends. The observing worker needs a name that stays
+  the same across restarts (`III_WORKER_NAME`, or the worker name option of the SDK): under the
+  default name, `hostname:pid`, a restarted worker is another worker.
 - **One at a time.** For each function, the SDK runs observer hooks one at a time, in the order the
   engine announced the observers. Hooks of different functions run concurrently.
-- **Timeout.** A hook that runs past 30 seconds fails the observer with `OWNER_TIMEOUT`.
+- **Timeout.** An `onObserverAdded` that runs past 30 seconds (`observers.owner_ack_timeout_ms` in
+  the engine) fails the observer with `OWNER_TIMEOUT`. A removed hook that runs past it is logged.
 
 ### When hooks take effect
 
@@ -399,7 +403,8 @@ id before registering: a hook set on the returned function can come after observ
 
 A hook set once a function already has active observers is caught up: the SDK runs it for each of
 them at once, a throw late-rejects that observer, and the SDK logs one warning naming the function
-and the number of observers that were active without the hook.
+and the number of observers that were active without the hook. Replacing a hook while observers are
+active behaves differently across SDKs, so set each hook once.
 
 ### Reject an observer later
 
@@ -761,12 +766,13 @@ filters, `on` and policy, so the target receives the initial state in the shape 
 call of the function.
 
 `obs.accepted()` resolves once the SDK has acknowledged the observer. A call made after it resolves
-reaches an active observer, since the engine handles a connection's messages in order. The observer
-becomes active after its `onObserverAdded` returns, so the hook starts a task that waits for
-`accepted()` and then makes the call. `accepted()` fails for an observer rejected first, such as one
-whose match key function throws, and the task then sends nothing. Here each observer of
-`tmux::on-changed` names a session in its args, and gets that session's current state when it is
-added:
+reaches an active observer, since the engine handles a connection's messages in order, as long as
+the observer's target is registered: an observer whose target is not registered yet stays `pending`,
+and the engine drops a call for it as `INACTIVE`. The observer becomes active after its
+`onObserverAdded` returns, so the hook starts a task that waits for `accepted()` and then makes the
+call. `accepted()` fails for an observer rejected first, such as one whose match key function
+throws, and the task then sends nothing. Here each observer of `tmux::on-changed` names a session in
+its args, and gets that session's current state when it is added:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -916,9 +922,9 @@ worker.onObserverMatch("tmux::on-changed", {
 });
 ```
 
-iii gives `for_observer` no meaning of its own: a function without a match hook gives such a call
-to every observer. An observer that captures `metadata` sees `for_observer` in its envelope, as it
-sees the metadata of every call.
+iii gives `for_observer` no meaning of its own: a function without a match hook gives such a call to
+every observer. An observer that captures `metadata` sees `for_observer` in its envelope, as it sees
+the metadata of every call.
 
 A host that connects through a listener with a
 [`middleware_function_id`](./worker-manager#intercept-calls-with-middleware) makes its calls through
@@ -997,14 +1003,15 @@ succeeds or the function is unregistered.
 
 The engine admits one live worker per worker name and namespace, so the standby connects under a
 name of its own (`III_WORKER_NAME`, or the worker name option of the SDK). A second instance under
-the host's name is refused with `WORKER_NAMESPACE_CONFLICT`, and its SDK stops without
-reconnecting.
+the host's name is refused with `WORKER_NAMESPACE_CONFLICT`, and its SDK stops without reconnecting.
 
 ## The `Observer` object
 
 Hooks get an `Observer`: the record of what the consumer asked for. Who observes, the observer's
 metadata and its policy stay with the engine. The object stays the same for the full life of the
-observer, so the worker can keep it, for example in a map.
+observer, so the worker can keep it, for example in a map. In Go and Rust, when the engine announces
+the observer again with other filters, target, `capture` or `on`, the SDK serves a new value with
+that view (equal by id in Rust), and a value kept from before keeps the old view.
 
 | Member                  | Meaning                                                                                                                             |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -1018,8 +1025,9 @@ observer, so the worker can keep it, for example in a map.
 | `accepted()`            | Resolves once the SDK has acknowledged the observer. See [Send an observer its initial state](#send-an-observer-its-initial-state). |
 | `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                    |
 
-To reject an observer from `onObserverAdded`, throw `ObserveRejection(code, message)`
-(`ObserveRejection::new(code, message)` in Rust, `iii.ObserveRejection(code, message)` in Go).
+To reject an observer from `onObserverAdded`, throw `new ObserveRejection(code, message)`
+(`raise ObserveRejection(code, message)` in Python, `ObserveRejection::new(code, message)` in Rust,
+`iii.ObserveRejection(code, message)` in Go).
 
 Language specifics: Rust passes `Observer` by value as a cheap, cloneable handle, with `id()`,
 `args::<T>()`, `args_value()` and an async `accepted()`; Go has `ID`, `Args` (a map),
@@ -1947,4 +1955,5 @@ The SDK and the engine both advertise the `observe.v2` feature. Against an engin
 functions that declare `args_format`, `private: true` or `observable: false`, or that set
 `onObserverMatch` or `onObserverDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for
 each. The SDK registers them when the worker connects to an engine with `observe.v2`. Every other
-function, `call` and `observe` work, and the engine evaluates the filters of routed calls.
+function and `call` work, and so does `observe` against a 0.25 engine (an older engine fails it with
+`UNSUPPORTED`). The engine evaluates the filters of routed calls.
