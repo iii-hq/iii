@@ -173,10 +173,14 @@ func (m *mockEngine) receivedMessages() []map[string]json.RawMessage {
 // observe the SDK reconnect. The mock keeps listening and accepts the next handshake on
 // the same URL — mirroring close_active_connection in the Rust mock.
 func (m *mockEngine) closeActiveConnection() {
-	m.mu.Lock()
-	conn := m.active
-	m.active = nil
-	m.mu.Unlock()
+	// The handshake completes, so the client's Connect can return, before the handler
+	// records the connection: wait for it rather than close nothing.
+	var conn *websocket.Conn
+	for deadline := time.Now().Add(2 * time.Second); conn == nil && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		m.mu.Lock()
+		conn, m.active = m.active, nil
+		m.mu.Unlock()
+	}
 	if conn != nil {
 		// CloseNow drops the TCP connection immediately without a closing handshake,
 		// which is what the SDK sees when the engine goes away abruptly — and what its
