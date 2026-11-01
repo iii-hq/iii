@@ -280,10 +280,28 @@ pub(crate) const MAX_TOMBSTONES: usize = 10_000;
 /// A disposed observer, remembered for `observers.observer_grace_ms`: its
 /// observing worker replaying it learns why it is gone instead of creating it
 /// again with fresh counters.
+///
+/// A worker replays its observers on a new connection, after a `Reattach`
+/// (which moves the tombstone to it). The connection the engine sent the
+/// `disposed` to replays nothing on itself: an `observe` of the id from it
+/// is a new observer (decision 56).
 pub(crate) struct Tombstone {
     pub connection: Uuid,
+    /// The connection the `disposed` was sent to, when the observing worker
+    /// was connected as the observer was disposed: an `observe` of the id
+    /// from it is a new observer.
+    pub told: Option<Uuid>,
     pub reason: Arc<ErrorBody>,
     pub until: Instant,
+}
+
+impl Tombstone {
+    /// Whether this tombstone answers an `observe` of its id from
+    /// `connection`: one from the observer's own worker, on a connection
+    /// other than the one told of the disposal, before it expires.
+    pub(crate) fn answers(&self, connection: Uuid, now: Instant) -> bool {
+        self.connection == connection && self.told != Some(connection) && self.until > now
+    }
 }
 
 /// Observers held in `Expired` records at most, across all of them.
@@ -696,7 +714,12 @@ impl Observer {
     /// was disposed for reaching `max_fires`. That disposal keeps the queue,
     /// so every fire counted within `max_fires` runs, including one whose
     /// activation the last fire overtook. Any other state drops the fire.
+    /// `active` is stored with the state under the status lock, so an
+    /// active observer answers without the lock.
     pub(crate) fn runs_counted_fires(&self) -> bool {
+        if self.is_active() {
+            return true;
+        }
         let status = self.status.read();
         match status.state {
             ObserverState::Active => true,
@@ -1143,6 +1166,42 @@ impl ObserverRegistry {
         });
     }
 
+    /// Disposes `observer`, in `error`, whose replayed `observe` is answered
+    /// with that error. The answer is a refusal, its handle's last (decision
+    /// 56): the worker holds nothing under the id any more, and neither does
+    /// the engine. Nothing is sent to the worker, and no tombstone is left.
+    /// Returns the error, or `None` when `observer` is not in `error`.
+    pub(crate) fn dispose_refused_replay(&self, observer: &Arc<Observer>) -> Option<ErrorBody> {
+        static REFUSED: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        let mut refused = None;
+        let transition = self.transition_telling(
+            observer,
+            |flags| {
+                if flags.disposed.is_none()
+                    && let Some(failed) = &flags.failed
+                {
+                    refused = Some(ErrorBody::clone(failed));
+                    flags.disposed = Some(
+                        REFUSED
+                            .get_or_init(|| {
+                                Arc::new(ErrorBody::new(
+                                    observe_codes::UNOBSERVED,
+                                    "its replayed observe was refused with its error",
+                                ))
+                            })
+                            .clone(),
+                    );
+                    flags.tombstone = false;
+                }
+            },
+            false,
+        );
+        if let Some(transition) = transition {
+            self.settle(observer, transition);
+        }
+        refused
+    }
+
     /// Moves `observer` to `error`: a rejection that arrived after creation.
     pub(crate) fn fail(&self, observer: &Arc<Observer>, error: ErrorBody) {
         self.update(observer, |flags| {
@@ -1194,19 +1253,26 @@ impl ObserverRegistry {
     /// Drops every index entry of a disposed observer. Its observing worker
     /// replaying it later learns why it is gone from its tombstone, unless
     /// that worker disposed of it, or the engine owns it (the engine replays
-    /// nothing).
+    /// nothing). A worker that was connected heard the disposal on that
+    /// connection, which may observe under the id again at once.
     pub(super) fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
         self.by_id
             .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
         let connection = observer.observing_connection();
-        let (tombstone, reason) =
-            observer.with_flags(|flags| (flags.tombstone, flags.disposed.clone()));
+        let (tombstone, connected, reason) = observer.with_flags(|flags| {
+            (
+                flags.tombstone,
+                flags.observing_connected,
+                flags.disposed.clone(),
+            )
+        });
         if tombstone && !observer.is_engine_owned() {
             self.remember_tombstone(
                 Arc::from(observer.id.as_str()),
                 Tombstone {
                     connection,
+                    told: connected.then_some(connection),
                     reason: reason.unwrap_or_else(|| {
                         Arc::new(ErrorBody::new(
                             observe_codes::UNOBSERVED,

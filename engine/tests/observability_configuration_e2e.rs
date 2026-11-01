@@ -38,6 +38,9 @@ struct Harness {
     configuration: ConfigurationWorker,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    /// Set once a worker started on this harness: the first one is the
+    /// engine process's boot (see `start_observability_worker`).
+    booted: std::sync::atomic::AtomicBool,
 }
 
 async fn build_harness(dir: &std::path::Path) -> Harness {
@@ -62,12 +65,28 @@ async fn build_harness(dir: &std::path::Path) -> Harness {
         configuration,
         shutdown_tx,
         shutdown_rx,
+        booted: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
 /// Create, initialize, and start an `iii-observability` worker with the
 /// given seed.
+///
+/// The live configuration snapshot is process-global and outlives a test,
+/// and the worker keeps a snapshot that is already set. A harness boots as
+/// an engine process does: its first worker's seed is the snapshot that
+/// worker initializes from. A previous test's snapshot would decide this
+/// worker's boot (an `enabled: false` one skips the alert manager, so no
+/// rule can be hot-added). A later worker on the same harness keeps the
+/// snapshot, as a restart does.
 async fn start_observability_worker(harness: &Harness, seed: Value) -> ObservabilityWorker {
+    if !harness.booted.swap(true, Ordering::SeqCst) {
+        let config: iii::workers::observability::config::ObservabilityWorkerConfig =
+            serde_json::from_value(seed.clone()).expect("seed");
+        iii::workers::observability::otel::update_otel_config(
+            config.normalized().with_env_expanded(),
+        );
+    }
     let worker = ObservabilityWorker::for_test(harness.engine.clone(), Some(seed)).expect("worker");
     worker.initialize().await.expect("initialize");
     Worker::register_functions(&worker, harness.engine.clone());

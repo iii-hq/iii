@@ -966,7 +966,8 @@ worker would be a forged tick, request or row change carrying the source's ident
 expresses that:
 
 - The engine accepts a call of a private function only from the connection that hosts it. Any other
-  connection, and the engine itself, gets `FORBIDDEN`.
+  connection, and the engine itself, gets `FORBIDDEN`. A call through an observer is the observing
+  worker's call, and an activation is the engine's.
 - A private function is observable, and its observers receive every call its worker makes.
 - A private function cannot be an observer's target (`FORBIDDEN` at `observe`).
 - A worker's call to its own private function passes the input and the result by reference. Nobody
