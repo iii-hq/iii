@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { ObserveRejection } from '../src/index'
 import { closeWorkers, collector, dropConnection, frameCounter, sleep, waitFor, worker } from './observe-e2e-utils'
 
 /**
@@ -349,6 +350,64 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     expect(got).toHaveLength(0)
     await refused.dispose()
     expect(frames.frames.filter((f) => f.type === 'unobserve')).toHaveLength(0)
+  })
+
+  it('the replay of an observer its host rejected is refused: the engine disposes it, its dispose sends nothing, and the id observed again works', async () => {
+    const owner = worker('routed-owner')
+    const watcher = worker('routed-watcher')
+    const id = `guarded-${RUN}`
+    let rejecting = true
+    owner
+      .registerFunction(`e2e::guarded-${RUN}`, async (n: number) => ({ n }))
+      .onObserverAdded((obs) => {
+        if (rejecting && obs.id === id) throw new ObserveRejection('TOPIC_FORBIDDEN', 'not this observer')
+      })
+    const got = collector(watcher, `e2e::on-guarded-${RUN}`)
+    const source = { function_id: `e2e::guarded-${RUN}` }
+    const target = `e2e::on-guarded-${RUN}`
+    const engineState = async () => {
+      try {
+        const info = await owner.call<{ id: string }, { state: string }>({
+          function_id: 'engine::observers::get',
+          payload: { id },
+        })
+        return info.state
+      } catch (error) {
+        if ((error as { code?: string }).code === 'OBSERVER_NOT_FOUND') return 'gone'
+        throw error
+      }
+    }
+
+    // Its host rejects it: the engine holds the observer in error, and the handle stays held.
+    const handle = watcher.observe(source, target, { id })
+    await expect(handle.ready()).rejects.toMatchObject({ code: 'TOPIC_FORBIDDEN' })
+    expect(await engineState()).toBe('error')
+
+    // Replayed on the next connection: the engine refuses the replay with that error and disposes the observer.
+    const frames = frameCounter(watcher)
+    dropConnection(watcher)
+    await waitFor(() => frames.frames.some((f) => f.type === 'observe' && f.id === id), 'the replay')
+    const barrier = watcher.observe(source, target) // answered after the replay
+    await barrier.ready()
+    await barrier.dispose()
+    expect(handle.state).toBe('error')
+    expect(handle.reason?.code).toBe('TOPIC_FORBIDDEN')
+    expect(await engineState()).toBe('gone')
+
+    const started = performance.now()
+    await handle.dispose()
+    expect(performance.now() - started).toBeLessThan(500)
+    const unobserves = () => frames.frames.filter((f) => f.type === 'unobserve' && f.id === id)
+    expect(unobserves()).toHaveLength(0)
+
+    rejecting = false
+    const again = watcher.observe(source, target, { id })
+    await again.ready()
+    await watcher.call({ function_id: `e2e::guarded-${RUN}`, payload: 1 })
+    await waitFor(() => got.length === 1, 'an activation through the new observer')
+    expect(got[0].data.observer_id).toBe(id)
+    await again.dispose()
+    expect(unobserves()).toHaveLength(1)
   })
 
   it('an id the engine disposed (max_fires, expires_in_ms) is free at once: observed again, it delivers', async () => {
