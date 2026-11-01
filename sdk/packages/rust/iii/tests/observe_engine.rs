@@ -395,6 +395,56 @@ async fn an_observer_id_is_refused_while_held_and_free_at_dispose() {
     iii.shutdown_async().await;
 }
 
+/// An `observe` the engine refuses is the handle's final answer: its
+/// `dispose()` resolves at once, one called before the refusal resolves on
+/// it, and the id then makes a new observer that the `unobserve` the engine
+/// ignored leaves alone.
+#[tokio::test]
+async fn a_refused_observe_is_final_and_its_id_works_after_dispose() {
+    let id = uid();
+    let (source, target) = (format!("it{id}::src"), format!("it{id}::t"));
+    let iii = client(&format!("w-{id}")).await;
+    iii.register_function(&source, RegisterFunction::new(|v: Value| Ok::<_, Error>(v)));
+    let inbox = Inbox::default();
+    iii.register_function(&target, inbox.function());
+    let stable = format!("refused-{id}");
+    let options = || ObserverOptions::default().id(&stable);
+    let at_once = Duration::from_secs(1);
+
+    // a self-target is refused, and the engine keeps nothing
+    let own = iii.observe_with(Source::function(&source), &source, options());
+    let err = tokio::time::timeout(WAIT, own.ready())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.invocation_error().unwrap().code, "SELF_TARGET");
+    let started = Instant::now();
+    own.dispose().await.unwrap();
+    assert!(started.elapsed() < at_once, "{:?}", started.elapsed());
+
+    // disposed as soon as it is made: its unobserve follows its observe
+    let early = iii.observe_with(Source::function(&source), &source, options());
+    let started = Instant::now();
+    early.dispose().await.unwrap();
+    assert!(started.elapsed() < at_once, "{:?}", started.elapsed());
+    assert_eq!(early.state(), ObserverState::Disposed);
+
+    let next = iii.observe_with(Source::function(&source), &target, options());
+    tokio::time::timeout(WAIT, next.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    settle().await;
+    assert_eq!(next.state(), ObserverState::Active);
+    iii.call(call_req(&source, json!({ "n": 1 })).dispatch(Dispatch::Remote))
+        .await
+        .unwrap();
+    inbox.wait(1).await;
+    assert_eq!(inbox.inputs()[0]["observer_id"], json!(stable));
+    next.dispose().await.unwrap();
+    iii.shutdown_async().await;
+}
+
 /// A call made from a handler names it as `caller`, also from a task the
 /// handler spawned with `scope`; the engine stamps the worker.
 #[tokio::test]
@@ -1011,6 +1061,81 @@ async fn hosts_get_validated_args_route_by_them_and_can_reject() {
             .contains(&to_a.id().to_string())
     })
     .await;
+    for c in [host, observer] {
+        c.shutdown_async().await;
+    }
+}
+
+/// An observer its host rejected stays on the engine in `error`. After a
+/// reconnect the engine answers its replay with that state, and the handle's
+/// `dispose()` removes the observer: the engine does not list it, and the
+/// id makes a new observer on the same connection.
+#[tokio::test]
+async fn a_rejected_observer_replayed_after_a_reconnect_is_removed_by_dispose() {
+    let id = uid();
+    let source = format!("it{id}::topics");
+    let target = format!("it{id}::a");
+    let topics = Topics::default();
+    let host = topics_host(&format!("host-{id}"), &source, &topics, false).await;
+    let proxy = CountingProxy::start(&engine_ws_url()).await;
+    let observer = client_at(proxy.url(), &format!("observer-{id}")).await;
+    let inbox = Inbox::default();
+    observer.register_function(&target, inbox.function());
+    settle().await;
+    let stable = format!("rejected-{id}");
+    let topic = |topic: &str| Source::function(&source).args(json!({ "topic": topic }));
+    let rejected = observer.observe_with(
+        topic("forbidden"),
+        &target,
+        ObserverOptions::default().id(&stable),
+    );
+    let err = tokio::time::timeout(WAIT, rejected.ready())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.invocation_error().unwrap().code, "TOPIC_FORBIDDEN");
+
+    proxy.drop_connections();
+    until("disconnect", || {
+        observer.get_connection_state() != iii_sdk::runtime::IIIConnectionState::Connected
+    })
+    .await;
+    until("reconnect", || {
+        observer.get_connection_state() == iii_sdk::runtime::IIIConnectionState::Connected
+    })
+    .await;
+    // made after the replay: its answer follows the replay's
+    let barrier = observer.observe(topic("b"), &target);
+    tokio::time::timeout(WAIT, barrier.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rejected.state(), ObserverState::Error);
+
+    let started = Instant::now();
+    rejected.dispose().await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+    let listed = host
+        .call(call_req("engine::observers::get", json!({ "id": stable })))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        listed.invocation_error().unwrap().code,
+        "OBSERVER_NOT_FOUND"
+    );
+
+    let again = observer.observe_with(topic("a"), &target, ObserverOptions::default().id(&stable));
+    tokio::time::timeout(WAIT, again.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    for handle in [again, barrier] {
+        handle.dispose().await.unwrap();
+    }
     for c in [host, observer] {
         c.shutdown_async().await;
     }
