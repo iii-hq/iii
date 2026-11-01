@@ -411,13 +411,14 @@ def test_a_refused_observe_holds_nothing_and_its_id_observes_again(worker: Any, 
         watcher.call({"function_id": "engine::observers::get", "payload": {"id": oid}})
 
 
-def test_an_error_answer_to_the_replay_of_an_observer_whose_answers_were_lost_unobserves_it(
+def test_an_error_answer_to_the_replay_of_an_observer_whose_answers_were_lost_is_a_refusal(
     worker: Any, fid: Any
 ) -> None:
     """The engine created the observer and its owner rejected it, but none of
     that reached the SDK before the connection dropped. The reattached
-    connection's replay is answered with the held observer's ``error``; the
-    handle's dispose() unobserves it, so the id observes again."""
+    connection's replay is answered with the observer's ``error`` and the
+    engine disposes the observer as it answers: the handle is refused, its
+    dispose() sends nothing, and the id observes again."""
     owner = worker("lost-owner")
     watcher = worker("lost-watcher")
     src, tgt, oid = fid("py-e2e::lost-src"), fid("py-e2e::lost-tgt"), fid("py-e2e-lost-oid")
@@ -449,12 +450,17 @@ def test_an_error_answer_to_the_replay_of_an_observer_whose_answers_were_lost_un
     drop_connection(watcher)
     wait_for(lambda: watcher.get_connection_state() != "connected", "the disconnect")
     wait_for(lambda: watcher._registered_on_connection, "the reconnect", timeout=10)
+    frames = FrameCounter(watcher)
     wait_for(lambda: handle.state == "error", "the replay's answer")
     assert handle.reason is not None and handle.reason["code"] == "OWNER_SAYS_NO"
-    assert watcher._observe_sent[oid] == [handle]
-    assert engine_state() == "error"
+    assert handle._refused
+    assert oid not in watcher._observe_sent
+    assert engine_state() == "gone"
+    started = time.monotonic()
     handle.dispose()
-    wait_for(lambda: engine_state() == "gone", "the unobserve")
+    assert time.monotonic() - started < 0.5
+    settle_engine()
+    assert [f for f in frames.frames if f.get("type") == "unobserve"] == []
     second = watcher.observe({"function_id": src}, tgt, {"id": oid})
     second.ready(timeout=10)
     assert added == [oid, oid]

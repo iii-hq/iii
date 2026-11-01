@@ -688,43 +688,56 @@ def test_a_refused_observe_is_not_replayed(engine: FakeEngine, connect: Any) -> 
     assert engine.frames_of("unobserve") == []
 
 
-def test_an_error_answer_to_the_replay_of_an_accepted_observer_keeps_it_listed(
+def test_a_state_change_to_error_keeps_the_handle_held_and_its_dispose_unobserves_it(
     engine: FakeEngine, connect: Any
 ) -> None:
-    """The engine answers the replay of an observer it holds in ``error`` with
-    that state: only an ``unobserve`` removes it there."""
+    """An ``observerstatechanged`` to ``error`` (the owner rejected an observer
+    the engine created) is not a refusal: the engine holds the observer."""
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    _state(engine, "x", "error", {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"})
+    wait_until(lambda: handle.state == "error", what="the owner's rejection")
+    assert client._observe_sent["x"] == [handle]
+    assert not handle._refused
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    engine.wait_for(lambda: engine.frames_of("unobserve"), what="the unobserve")
+    assert _types_and_ids(engine) == [("observe", "x"), ("unobserve", "x")]
+
+
+def test_an_error_answer_to_the_replay_of_an_observer_in_error_is_a_refusal(engine: FakeEngine, connect: Any) -> None:
+    """The engine disposes an observer it holds in ``error`` as it answers its
+    replay with that error: the handle is refused there, final, and its
+    dispose() sends nothing."""
     client = connect(engine)
     handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
     engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
     _answer(engine, "x", "pending")
-    _state(engine, "x", "error", {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"})
+    rejected = {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"}
+    _state(engine, "x", "error", rejected)
     wait_until(lambda: handle.state == "error", what="the owner's rejection")
     engine.drop()
-    wait_until(lambda: len(engine.connections) == 2, what="the reconnect")
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
     engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
-    engine.deliver(
-        {
-            "type": "observeresult",
-            "id": "x",
-            "state": "error",
-            "error": {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"},
-        }
-    )
+    engine.deliver({"type": "observeresult", "id": "x", "state": "error", "error": rejected})
+    wait_until(lambda: "x" not in client._observe_sent, what="the refusal")
+    assert handle._refused and handle.state == "error" and handle.reason == rejected
+    assert client._observers["x"] is handle  # holds the id until its dispose()
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the second reconnect")
     settle(client, engine)
-    assert client._observe_sent["x"] == [handle]
+    assert engine.frames_of("observe", 2) == []  # not replayed
     assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
-    engine.wait_for(lambda: engine.frames_of("unobserve", 1), what="the unobserve")
-    _state(engine, "x", "disposed", {"code": "UNOBSERVED", "message": "unobserved"})
-    wait_until(lambda: "x" not in client._observe_sent, what="the engine's disposed")
+    settle(client, engine)
+    assert engine.frames_of("unobserve") == engine.frames_of("unobserve", 1) == engine.frames_of("unobserve", 2) == []
+    assert handle.state == "disposed" and "x" not in client._observers
 
 
-def test_an_error_answer_to_a_replay_whose_first_answer_was_lost_keeps_it_listed(
-    engine: FakeEngine, connect: Any
-) -> None:
-    """The engine created the observer and its owner rejected it, but the
-    connection dropped before either frame reached the SDK. The reattached
-    connection's replay is answered with the held observer's ``error``: the
-    handle stays listed, is replayed, and its dispose() unobserves it."""
+def test_an_error_answer_to_a_replay_whose_first_answer_was_lost_is_a_refusal(engine: FakeEngine, connect: Any) -> None:
+    """The connection dropped before any answer for the handle reached the
+    SDK. The reattached connection's replay is answered ``error``: a refusal,
+    so the handle is not replayed again and its dispose() sends nothing."""
     client = connect(engine)
     handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
     engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
@@ -735,13 +748,38 @@ def test_an_error_answer_to_a_replay_whose_first_answer_was_lost_keeps_it_listed
     engine.deliver({"type": "observeresult", "id": "x", "state": "error", "error": rejected})
     wait_until(lambda: handle.state == "error", what="the replay's answer")
     assert handle.reason == rejected
-    assert client._observe_sent["x"] == [handle]
+    assert "x" not in client._observe_sent
     engine.drop()
     wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the second reconnect")
-    engine.wait_for(lambda: engine.frames_of("observe", 2), what="the second replay")
+    settle(client, engine)
+    assert engine.frames_of("observe", 2) == []
     assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
-    engine.wait_for(lambda: engine.frames_of("unobserve", 2), what="the unobserve")
-    assert _types_and_ids(engine) == [("observe", "x"), ("observe", "x"), ("observe", "x"), ("unobserve", "x")]
+    settle(client, engine)
+    assert _types_and_ids(engine) == [("observe", "x"), ("observe", "x")]
+
+
+def test_a_dispose_sent_before_the_replays_refusal_returns_at_once_and_the_refusal_answers_it(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    wait_until(lambda: handle.state == "active", what="active")
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    engine.wait_for(lambda: engine.frames_of("unobserve", 1), what="the unobserve")
+    assert client._observe_sent["x"] == [handle]  # listed until the replay's answer
+    _refuse(engine, "x", "OBSERVE_REJECTED")  # the engine ignores the unobserve: it holds nothing for x
+    wait_until(lambda: "x" not in client._observe_sent, what="the refusal")
+    settle(client, engine)
+    assert handle.state == "disposed"
+    assert handle.reason == {"code": "UNOBSERVED", "message": "disposed by the observing worker"}
+    handle.dispose()  # again: nothing
+    settle(client, engine)
+    assert len(engine.frames_of("unobserve", 1)) == 1
 
 
 def test_a_refused_handle_keeps_its_refusal_against_an_engine_without_observe(engine: FakeEngine, connect: Any) -> None:
