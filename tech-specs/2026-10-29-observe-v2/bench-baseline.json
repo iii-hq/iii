@@ -24297,9 +24297,9 @@
   "machine_load": "load average 4.6 to 8.4 during the runs (its readings include each bench's own threads)",
   "method": {
    "engine": "criterion --warm-up-time 1 --measurement-time 3 --noplot, versions interleaved bench by bench; worker_cleanup and control_plane_churn 5 rounds, observe_dispatch, observe_fanout (0.25: trigger_fanout) and observe_routed (0.25: the first pass's port) 3 rounds",
-   "worker_cleanup": "both versions with the same bench fix: 0.26's observers row returns the engine and 0.25's triggers row returns its trigger registry (a change not committed to 0.25), so criterion drops them after the measurement; the other registries drop inside it in both; v025_without_the_fix_ns_runs is 0.25's bench as released",
+   "worker_cleanup": "not compared: when a worker disconnects, 0.26 holds its observers for the grace period and 0.25 deletes its triggers, so the two benches do different work. Both versions run with the same bench fix: 0.26's observers row returns the engine and 0.25's triggers row returns its trigger registry (a change not committed to 0.25), so criterion drops them after the measurement; the other registries drop inside it in both; v025_without_the_fix_ns_runs is 0.25's bench as released",
    "figure": "criterion's point estimate (the middle value of its time line), median over rounds",
-   "verdict": "worse when every run under test is worse than every reference run and the medians differ by more than 5%; better the other way; otherwise the same within noise",
+   "verdict": "faster or slower (more or fewer, less or more memory, higher or lower) when every 0.26 run beats every 0.25 run or the other way, by any margin; the same when their runs overlap; no 5% threshold",
    "loadtest": "iii-loadtest suite --profiles host --engine-cpus 4-7 --load-cpus 0-3 --step-secs 5 --port 59420, container limited to CPUs 0-7 and 6 GB; fanout and filters 8 runs per version (3 rounds of fanout,filters,observers then 5 of fanout,filters), observers 3; each round runs every version, order alternating by round; figures are medians"
   },
   "criterion": [
@@ -24324,7 +24324,7 @@
     ],
     "v026_ns": 4290.2,
     "delta_vs_v025": -0.7084075307551145,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "not compared (different work)",
     "v025_without_the_fix_ns_runs": [
      16796.0,
      16760.0,
@@ -24354,7 +24354,7 @@
     ],
     "v026_ns": 7406.0,
     "delta_vs_v025": -0.8332132240338708,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "not compared (different work)",
     "v025_without_the_fix_ns_runs": [
      46513.0,
      47095.0,
@@ -24384,7 +24384,7 @@
     ],
     "v026_ns": 20462.0,
     "delta_vs_v025": -0.8718963250485194,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "not compared (different work)",
     "v025_without_the_fix_ns_runs": [
      165870.0,
      165560.0,
@@ -24414,7 +24414,7 @@
     ],
     "v026_ns": 140850.0,
     "delta_vs_v025": 0.013382257716382462,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "slower than 0.25"
    },
    {
     "id": "control_plane_churn/observers_add_remove/1000",
@@ -24437,7 +24437,7 @@
     ],
     "v026_ns": 1446600.0,
     "delta_vs_v025": 0.018517214672956417,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "slower than 0.25"
    },
    {
     "id": "control_plane_churn/observers_add_remove/5000",
@@ -24460,7 +24460,7 @@
     ],
     "v026_ns": 7803100.0,
     "delta_vs_v025": 0.03277082919727348,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "slower than 0.25"
    },
    {
     "id": "observe_dispatch/default/0",
@@ -24478,7 +24478,7 @@
     ],
     "v025_ns": 1812.8999999999999,
     "delta_vs_v025": -0.014782944453637814,
-    "verdict_vs_v025": "same as 0.25 within noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench (auto delivery)"
    },
    {
@@ -24497,7 +24497,7 @@
     ],
     "v025_ns": 4691.7,
     "delta_vs_v025": -0.04100858963701848,
-    "verdict_vs_v025": "same as 0.25 within noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench (auto delivery)"
    },
    {
@@ -24516,7 +24516,7 @@
     ],
     "v025_ns": 76517.0,
     "delta_vs_v025": -0.16384594273168052,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench (auto delivery)"
    },
    {
@@ -24535,7 +24535,7 @@
     ],
     "v025_ns": 10533.0,
     "delta_vs_v025": -0.11906389442703891,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench (auto delivery)"
    },
    {
@@ -24554,7 +24554,7 @@
     ],
     "v025_ns": 19920.0,
     "delta_vs_v025": -0.773679718875502,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench, same row"
    },
    {
@@ -24573,7 +24573,7 @@
     ],
     "v025_ns": 4750.0,
     "delta_vs_v025": -0.05174736842105265,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench, same row"
    },
    {
@@ -24592,7 +24592,7 @@
     ],
     "v025_ns": 5022.9,
     "delta_vs_v025": -0.10047980250452926,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench, same row"
    },
    {
@@ -24622,7 +24622,7 @@
     ],
     "v025_ns": 11337.0,
     "delta_vs_v025": -0.08503131339860637,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's trigger_fanout bench"
    },
    {
@@ -24641,7 +24641,7 @@
     ],
     "v025_ns": 322100.0,
     "delta_vs_v025": -0.5987581496429679,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's trigger_fanout bench"
    },
    {
@@ -24660,7 +24660,7 @@
     ],
     "v025_ns": 85009.0,
     "delta_vs_v025": -0.4090508063852063,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's trigger_fanout bench"
    },
    {
@@ -24679,7 +24679,7 @@
     ],
     "v025_ns": 28825.0,
     "delta_vs_v025": -0.19965307892454465,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's trigger_fanout bench"
    },
    {
@@ -24698,7 +24698,7 @@
     ],
     "v025_ns": 33966.0,
     "delta_vs_v025": 0.005093328622740367,
-    "verdict_vs_v025": "same as 0.25 within noise",
+    "verdict_vs_v025": "the same as 0.25",
     "compare": "0.25's port of the bench, same row"
    },
    {
@@ -24717,7 +24717,7 @@
     ],
     "v025_ns": 35788.0,
     "delta_vs_v025": -0.009193025595171544,
-    "verdict_vs_v025": "same as 0.25 within noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench, same row"
    },
    {
@@ -24736,7 +24736,7 @@
     ],
     "v025_ns": 91232.0,
     "delta_vs_v025": -0.20630918975797963,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench, same row"
    },
    {
@@ -24755,7 +24755,7 @@
     ],
     "v025_ns": 43448.0,
     "delta_vs_v025": -0.08789817713128334,
-    "verdict_vs_v025": "faster than 0.25 beyond noise",
+    "verdict_vs_v025": "faster than 0.25",
     "compare": "0.25's port of the bench, same row"
    }
   ],
@@ -24789,7 +24789,7 @@
     "v025": 178605.17034727088,
     "v026": 183502.11406960222,
     "delta_vs_v025": 0.027417704161699197,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "fanout",
@@ -24820,7 +24820,7 @@
     "v025": 98021.00039800064,
     "v026": 96549.4890692776,
     "delta_vs_v025": -0.015012204759675796,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -24851,7 +24851,7 @@
     "v025": 71733.46760707497,
     "v026": 68026.481229417,
     "delta_vs_v025": -0.05167722265934849,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -24880,7 +24880,8 @@
      ]
     },
     "v025": 0.7392374669693356,
-    "v026": 0.7109806134374678
+    "v026": 0.7109806134374678,
+    "verdict_vs_v025": "lower than 0.25"
    },
    {
     "scenario": "fanout",
@@ -24911,7 +24912,7 @@
     "v025": 56969.29054968334,
     "v026": 62878.23968517363,
     "delta_vs_v025": 0.10372165562316504,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -24942,7 +24943,7 @@
     "v025": 193175.08589787033,
     "v026": 192642.42263597104,
     "delta_vs_v025": -0.0027574118029946026,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -24971,7 +24972,8 @@
      ]
     },
     "v025": 0.8319334010593324,
-    "v026": 0.7672144529531393
+    "v026": 0.7672144529531393,
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25002,7 +25004,7 @@
     "v025": 71109.3255928265,
     "v026": 73514.46216761597,
     "delta_vs_v025": 0.03382308234170761,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25033,7 +25035,7 @@
     "v025": 203243.37922401784,
     "v026": 228140.81909981574,
     "delta_vs_v025": 0.12250061955698732,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25062,7 +25064,8 @@
      ]
     },
     "v025": 0.1845361970877453,
-    "v026": 0.19353460094348063
+    "v026": 0.19353460094348063,
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25093,7 +25096,7 @@
     "v025": 68387.9734060723,
     "v026": 70601.30831575967,
     "delta_vs_v025": 0.032364388056143945,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25124,7 +25127,7 @@
     "v025": 193827.42809281033,
     "v026": 199917.5676427036,
     "delta_vs_v025": 0.03142042181448712,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25153,7 +25156,8 @@
      ]
     },
     "v025": 0.05029376203058762,
-    "v026": 0.049740461260226125
+    "v026": 0.049740461260226125,
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "fanout",
@@ -25213,7 +25217,7 @@
     "v025": 101785.11103020783,
     "v026": 98497.38185347817,
     "delta_vs_v025": -0.03230068861204982,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "fewer than 0.25"
    },
    {
     "scenario": "filters",
@@ -25244,7 +25248,7 @@
     "v025": 101784.11125740099,
     "v026": 98497.38185347817,
     "delta_vs_v025": -0.03229118340102255,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "fewer than 0.25"
    },
    {
     "scenario": "filters",
@@ -25273,7 +25277,8 @@
      ]
     },
     "v025": 1.0,
-    "v026": 1.0
+    "v026": 1.0,
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "filters",
@@ -25304,7 +25309,7 @@
     "v025": 95856.2758697044,
     "v026": 97819.91661291651,
     "delta_vs_v025": 0.020485260097953706,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "filters",
@@ -25335,7 +25340,7 @@
     "v025": 95854.67617150393,
     "v026": 97819.91661291651,
     "delta_vs_v025": 0.020502290758317887,
-    "verdict_vs_v025": "same as 0.25 within noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "filters",
@@ -25364,7 +25369,8 @@
      ]
     },
     "v025": 1.0,
-    "v026": 1.0
+    "v026": 1.0,
+    "verdict_vs_v025": "the same as 0.25"
    },
    {
     "scenario": "filters",
@@ -25395,7 +25401,7 @@
     "v025": 82591.8706209226,
     "v026": 97650.01155260012,
     "delta_vs_v025": 0.1823198919999145,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "filters",
@@ -25426,7 +25432,7 @@
     "v025": 34578.611270453664,
     "v026": 97650.01155260012,
     "delta_vs_v025": 1.8240003853491649,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "filters",
@@ -25455,7 +25461,8 @@
      ]
     },
     "v025": 0.5743955781122287,
-    "v026": 1.0
+    "v026": 1.0,
+    "verdict_vs_v025": "higher than 0.25"
    },
    {
     "scenario": "filters",
@@ -25486,7 +25493,7 @@
     "v025": 33715.41332101627,
     "v026": 86995.18103468957,
     "delta_vs_v025": 1.5802792392422407,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "filters",
@@ -25517,7 +25524,7 @@
     "v025": 5027.697631371982,
     "v026": 86995.18103468957,
     "delta_vs_v025": 16.303184760327344,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "filters",
@@ -25546,7 +25553,8 @@
      ]
     },
     "v025": 0.4927327163270131,
-    "v026": 1.0
+    "v026": 1.0,
+    "verdict_vs_v025": "higher than 0.25"
    },
    {
     "scenario": "observers",
@@ -25567,7 +25575,7 @@
     "v025": 27019.785724452875,
     "v026": 50363.24490386916,
     "delta_vs_v025": 0.8639394633796258,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "observers",
@@ -25588,7 +25596,7 @@
     "v025": 9859.0,
     "v026": 4713.0,
     "delta_vs_v025": -0.5219596307941983,
-    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+    "verdict_vs_v025": "less memory than 0.25"
    },
    {
     "scenario": "observers",
@@ -25609,7 +25617,7 @@
     "v025": 41065.396260267444,
     "v026": 74626.78770335614,
     "delta_vs_v025": 0.8172669570842739,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "observers",
@@ -25630,7 +25638,7 @@
     "v025": 7816.0,
     "v026": 5335.0,
     "delta_vs_v025": -0.3174257932446264,
-    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+    "verdict_vs_v025": "less memory than 0.25"
    },
    {
     "scenario": "observers",
@@ -25651,7 +25659,7 @@
     "v025": 4794.602713807226,
     "v026": 5409.786538091164,
     "delta_vs_v025": 0.1283075702002101,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "observers",
@@ -25672,7 +25680,7 @@
     "v025": 8184.0,
     "v026": 6319.0,
     "delta_vs_v025": -0.22788367546432065,
-    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+    "verdict_vs_v025": "less memory than 0.25"
    },
    {
     "scenario": "observers",
@@ -25693,7 +25701,7 @@
     "v025": 4794.109017057454,
     "v026": 16252.973694434422,
     "delta_vs_v025": 2.390196934739342,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    },
    {
     "scenario": "observers",
@@ -25714,7 +25722,7 @@
     "v025": 8090.0,
     "v026": 5529.0,
     "delta_vs_v025": -0.3165636588380717,
-    "verdict_vs_v025": "less memory than 0.25 beyond noise"
+    "verdict_vs_v025": "less memory than 0.25"
    },
    {
     "scenario": "observers",
@@ -25735,7 +25743,7 @@
     "v025": 4556.931626977336,
     "v026": 10318.251203481886,
     "delta_vs_v025": 1.264298007544629,
-    "verdict_vs_v025": "above 0.25 beyond noise"
+    "verdict_vs_v025": "more than 0.25"
    }
   ]
  }
