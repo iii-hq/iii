@@ -285,6 +285,11 @@ options.
 By default, a failed delivery is retried up to 3 times with exponential backoff (1 second, then 2,
 then 4), then the message moves to the dead-letter queue.
 
+The engine bounds each delivery to a target by `observers.activation_timeout_ms` (30 seconds by
+default). A target that runs longer fails the delivery with `TIMEOUT`, which is retried like any
+other failure. For longer jobs, raise it in the
+[engine config](../using-iii/configuration#observers).
+
 Each subscriber has its own durable queue, so two observers of the same topic each receive every
 published message. To spread one stream of messages across several consumers, give their observers
 the same `group`.
