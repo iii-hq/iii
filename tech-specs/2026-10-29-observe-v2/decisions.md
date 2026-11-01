@@ -518,13 +518,15 @@ differ, this file wins, and the spec is updated to match.
       of the id that has no answer yet (rule 2), and that handle leaves the
       id's list when the refusal arrives. Its `dispose()` then sends nothing
       and resolves at once. A `dispose()` called before the refusal arrived
-      has sent its `unobserve` already, and resolves when the refusal
-      arrives, with no wait for a `disposed`. The engine stores nothing for
-      a refused `observe`, and ignores an `unobserve` of an id that none of
-      the connection's observers holds: nothing answers it, and it changes
-      no observer. A replayed `observe` of an observer the engine holds in
-      `error` is refused with that error, and the engine disposes that
-      observer as it answers, with no tombstone and nothing more sent.
+      has sent its `unobserve` already. In Node, the browser, Python and Go
+      it resolves at once, as every `dispose()` there does; in Rust it
+      resolves when the refusal arrives, with no wait for a `disposed`.
+      The engine stores nothing for a refused `observe`, and ignores an
+      `unobserve` of an id that none of the connection's observers holds:
+      nothing answers it, and it changes no observer. A replayed `observe`
+      of an observer the engine holds in `error` is refused with that
+      error, and the engine disposes that observer as it answers, with no
+      tombstone and nothing more sent.
 
 ## CLI and crates
 

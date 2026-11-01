@@ -143,7 +143,8 @@ iii.observe(
   id, frees it.
 - **A refused `observe`** (its `observeresult` is `error`) gets no other
   answer. Its handle's `dispose()` sends nothing and resolves at once; a
-  `dispose()` called before the refusal arrived resolves when it arrives.
+  `dispose()` called before the refusal arrived resolves at once in Node,
+  the browser, Python and Go, and when the refusal arrives in Rust.
   The engine stores nothing for a refused `observe` and ignores an
   `unobserve` of an id none of the connection's observers holds. The replay
   of an observer the engine holds in `error` is refused with that error, and
