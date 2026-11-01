@@ -1234,27 +1234,8 @@ impl ObserverBook {
         answer: ObserverAnswer,
         unlists: bool,
     ) -> Option<Arc<ObserverEntry>> {
-        self.route_with(id, epoch, answer, |_| unlists)
-    }
-
-    /// [`route`](Self::route), with `unlists` asked of the handle the answer
-    /// is for.
-    fn route_with(
-        &mut self,
-        id: &str,
-        epoch: u64,
-        answer: ObserverAnswer,
-        unlists: impl FnOnce(&ObserverEntry) -> bool,
-    ) -> Option<Arc<ObserverEntry>> {
         let listed = self.routes.get_mut(id)?;
-        listed.retain(|route| {
-            let current = route.epoch == epoch;
-            if !current && !route.answered {
-                // its connection closed before the answer
-                route.entry.mark_created();
-            }
-            current
-        });
+        listed.retain(|route| route.epoch == epoch);
         let at = match answer {
             ObserverAnswer::Result => {
                 let at = listed.iter().position(|route| !route.answered);
@@ -1270,7 +1251,7 @@ impl ObserverBook {
         };
         let entry = at.map(|at| {
             let entry = listed[at].entry.clone();
-            if unlists(&entry) {
+            if unlists {
                 listed.remove(at);
             }
             entry
@@ -1283,36 +1264,25 @@ impl ObserverBook {
 
     /// Routes an `observeresult` in `state` for `id` on connection `epoch`
     /// ([`route`](Self::route)): the handle it answers, and whether it
-    /// refuses that handle's `observe`. `error` refuses the `observe` of a
-    /// handle the engine holds no observer for; for one it may hold
-    /// ([`ObserverEntry::is_created`]) it is that observer's state, and the
-    /// handle stays listed. A refused or disposed handle is unlisted.
+    /// refuses that handle's `observe`. Every answer in `error` is a
+    /// refusal: the engine holds no observer for the handle, whether it
+    /// refused a first `observe` or disposed the observer whose replay it
+    /// answered. A refused or disposed handle is unlisted.
     fn observe_result(
         &mut self,
         id: &str,
         epoch: u64,
         state: &ObserverState,
     ) -> Option<(Arc<ObserverEntry>, bool)> {
-        let mut refused = false;
-        let entry = self.route_with(id, epoch, ObserverAnswer::Result, |entry| {
-            refused = *state == ObserverState::Error && !entry.is_created();
-            refused || *state == ObserverState::Disposed
-        })?;
-        if !matches!(state, ObserverState::Error | ObserverState::Disposed) {
-            entry.mark_created();
-        }
+        let refused = *state == ObserverState::Error;
+        let unlists = refused || *state == ObserverState::Disposed;
+        let entry = self.route(id, epoch, ObserverAnswer::Result, unlists)?;
         Some((entry, refused))
     }
 
-    /// A connection opened or closed: the lists of the one before go. The
-    /// engine may have created the observer of an `observe` whose answer had
-    /// not come, and holds it again on a reattach.
+    /// A connection opened or closed: the lists of the one before go.
     fn next_connection(&mut self) {
-        for route in self.routes.drain().flat_map(|(_, listed)| listed) {
-            if !route.answered {
-                route.entry.mark_created();
-            }
-        }
+        self.routes.clear();
         self.open_epoch = None;
     }
 }
@@ -3716,9 +3686,8 @@ impl IIIClient {
                 error,
                 warnings,
             } => {
-                // A refusal (`error` for a handle the engine holds no
-                // observer for) is the handle's final answer: the engine
-                // keeps nothing for the `observe` and ignores its
+                // A refusal (`error`) is the handle's final answer: the
+                // engine holds no observer for it and ignores its
                 // `unobserve`, so nothing more comes for the handle.
                 if let Some((entry, refused)) = self.answered_observe(&id, &state) {
                     entry.set_warnings(warnings);
@@ -6306,16 +6275,15 @@ mod observer_book_tests {
         assert_eq!(book.routes["x"].len(), 1);
         assert!(book.route("x", 1, StateChanged, false).is_none());
         let (got, refused) = result_in(&mut book, 1, ObserverState::Active).unwrap();
-        assert!(Arc::ptr_eq(&got, &b) && !refused && b.is_created());
-        assert!(!a.is_created());
+        assert!(Arc::ptr_eq(&got, &b) && !refused);
         assert!(is(book.route("x", 1, StateChanged, false), &b));
     }
 
-    /// An `error` answer for a handle the engine may hold an observer for
-    /// is that observer's state: the handle stays listed, so its later
-    /// answers reach it and its `dispose()` sends `unobserve`.
+    /// Every `error` answer refuses the handle it answers: the engine holds
+    /// no observer for it (it disposes an observer whose replay it answers
+    /// in `error`), so the handle leaves its id's list.
     #[test]
-    fn an_error_answer_for_a_handle_the_engine_may_hold_is_its_state() {
+    fn every_error_answer_refuses_its_handle() {
         use ObserverAnswer::StateChanged;
         let mut book = ObserverBook::default();
         // answered `active` on connection 1, its replay answered `error` on 3
@@ -6324,21 +6292,21 @@ mod observer_book_tests {
         let (_, refused) = result_in(&mut book, 1, ObserverState::Active).unwrap();
         assert!(!refused);
         book.next_connection();
+        assert!(book.routes.is_empty());
         listed(&mut book, &held, 3);
         let (got, refused) = result_in(&mut book, 3, ObserverState::Error).unwrap();
-        assert!(Arc::ptr_eq(&got, &held) && !refused);
-        assert!(is(book.route("x", 3, StateChanged, true), &held));
+        assert!(Arc::ptr_eq(&got, &held) && refused);
         assert!(book.routes.is_empty());
+        assert!(book.route("x", 3, StateChanged, false).is_none());
 
-        // connection 3 closed before its answer: `error` on 5 is its state
+        // connection 3 closed before its answer: `error` on 5 refuses it
         let lost = entry("x");
         listed(&mut book, &lost, 3);
         book.next_connection();
-        assert!(lost.is_created());
         listed(&mut book, &lost, 5);
         let (got, refused) = result_in(&mut book, 5, ObserverState::Error).unwrap();
-        assert!(Arc::ptr_eq(&got, &lost) && !refused);
-        assert_eq!(book.routes["x"].len(), 1);
+        assert!(Arc::ptr_eq(&got, &lost) && refused);
+        assert!(book.routes.is_empty());
 
         // a handle left on an earlier connection's list without an answer
         let stale = entry("y");
@@ -6347,8 +6315,23 @@ mod observer_book_tests {
         listed(&mut book, &fresh, 7);
         let got = book.observe_result("y", 7, &ObserverState::Error).unwrap();
         assert!(Arc::ptr_eq(&got.0, &fresh) && got.1, "fresh is refused");
-        assert!(stale.is_created());
         assert!(!book.routes.contains_key("y"));
+    }
+
+    /// An active handle's `observerstatechanged` in `error` keeps it listed:
+    /// the engine holds that observer.
+    #[test]
+    fn an_error_state_change_keeps_the_handle_listed() {
+        use ObserverAnswer::StateChanged;
+        let mut book = ObserverBook::default();
+        let held = entry("x");
+        listed(&mut book, &held, 1);
+        let (_, refused) = result_in(&mut book, 1, ObserverState::Active).unwrap();
+        assert!(!refused);
+        assert!(is(book.route("x", 1, StateChanged, false), &held));
+        assert_eq!(book.routes["x"].len(), 1);
+        assert!(is(book.route("x", 1, StateChanged, true), &held));
+        assert!(book.routes.is_empty());
     }
 
     #[test]
