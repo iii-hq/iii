@@ -4,7 +4,7 @@ seoTitle: 'What Stops a Coding Agent From Irreversible Actions?'
 description: "Your coding agent's undo stops at local files. Learn how approval gates and scoped credentials help prevent irreversible actions in production."
 pubDate: 2026-11-03
 tags: ['agents', 'approvals', 'safety', 'claude-code', 'harness', 'observability']
-ogImage: ../../assets/blog/what-stops-your-coding-agent-doing-something-it-cant-undo/banner.png
+ogImage: ../../assets/blog/what-stops-your-coding-agent-doing-something-it-cant-undo/og.png
 faq:
   - q: 'Is auto mode safe enough to replace approvals?'
     a: 'For sensitive operations, no. Anthropic''s docs state explicitly that auto mode does not guarantee safety and is not a replacement for review on sensitive operations. Anthropic''s August 2026 figures show auto mode matching or beating manual review in their tests, but the March 2026 report recorded about 17% misses on 52 real overeager actions. Auto mode is a reasonable default for well-understood, lower-risk function classes. For production writes, deletions, or anything with external side effects, it shouldn''t be the only gate.'
