@@ -50,6 +50,18 @@ pub(crate) fn migration_message(function_id: &str) -> Option<String> {
         return Some(message);
     }
 
+    if matches!(
+        function_id,
+        "engine::register_trigger" | "engine::unregister_trigger"
+    ) || function_id.starts_with("engine::triggers::")
+        || function_id.starts_with("engine::registered-triggers::")
+    {
+        return Some(format!(
+            "`{function_id}` was removed in iii 0.26: use `observe` / \
+             `engine::observers::dispose`; update the worker"
+        ));
+    }
+
     let replacement = match function_id {
         "worker::add" => Some("compose::add"),
         "worker::remove" => Some("compose::remove"),
@@ -123,6 +135,28 @@ mod tests {
         );
         assert!(migration_message("worker::unknown").is_none());
         assert!(migration_message("orders::add").is_none());
+    }
+
+    #[test]
+    fn trigger_builtins_point_to_observe() {
+        for function_id in [
+            "engine::register_trigger",
+            "engine::unregister_trigger",
+            "engine::triggers::list",
+            "engine::registered-triggers::info",
+        ] {
+            assert_eq!(
+                migration_message(function_id).as_deref(),
+                Some(
+                    format!(
+                        "`{function_id}` was removed in iii 0.26: use `observe` / \
+                         `engine::observers::dispose`; update the worker"
+                    )
+                    .as_str()
+                )
+            );
+        }
+        assert!(migration_message("engine::observers::list").is_none());
     }
 
     #[test]

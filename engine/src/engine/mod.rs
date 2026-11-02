@@ -2619,10 +2619,13 @@ impl Engine {
             .get_handler(namespace, function_id)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
-                message: format!(
-                    "Function {} not found in namespace {}",
-                    function_id, namespace
-                ),
+                message: crate::legacy_worker_functions::migration_message(function_id)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "Function {} not found in namespace {}",
+                            function_id, namespace
+                        )
+                    }),
                 stacktrace: None,
             })
     }
@@ -6051,6 +6054,50 @@ mod tests {
             error
                 .message
                 .contains("https://iii.dev/docs/upgrading/workers-to-compose")
+        );
+    }
+
+    #[tokio::test]
+    async fn removed_trigger_builtin_over_ws_returns_migration_message() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+
+        engine
+            .router_msg(
+                &worker,
+                &Message::InvokeFunction {
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "engine::register_trigger".to_string(),
+                    data: json!({}),
+                    traceparent: None,
+                    baggage: None,
+                    action: None,
+                    metadata: None,
+                    namespace: None,
+                    caller: None,
+                    observe_depth: None,
+                    activation: None,
+                },
+            )
+            .await
+            .expect("invoke should produce a structured error");
+
+        let outbound = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for invocation result")
+            .expect("channel should produce invocation result");
+
+        let Outbound::Protocol(Message::InvocationResult { error, .. }) = outbound else {
+            panic!("expected InvocationResult");
+        };
+        let error = error.expect("removed function should return an error");
+        assert_eq!(error.code, "function_not_found");
+        assert_eq!(
+            error.message,
+            "`engine::register_trigger` was removed in iii 0.26: use `observe` / \
+             `engine::observers::dispose`; update the worker"
         );
     }
 
