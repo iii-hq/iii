@@ -4,7 +4,7 @@ use anyhow::Result;
 use semver::Version;
 
 /// Strip pre-release so "0.11.0-next.8" compares as "0.11.0".
-fn base_version(v: &Version) -> Version {
+pub fn base_version(v: &Version) -> Version {
     Version::new(v.major, v.minor, v.patch)
 }
 

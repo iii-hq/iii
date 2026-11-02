@@ -11,6 +11,7 @@ pub mod bundle_download;
 pub mod bundle_prepare;
 pub mod config_file;
 pub mod download;
+pub mod engine_compat;
 pub mod erofs;
 pub mod firmware;
 pub mod gen_docs;
