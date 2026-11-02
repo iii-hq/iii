@@ -126,8 +126,11 @@ build an event, and skip the event when nobody observes the function.
       { private: true },
     );
 
-    // in the price feed loop
-    if (prices.isObserved()) {
+    // called for every tick of the price feed
+    async function publishPrice(tick: Tick) {
+      if (!prices.isObserved()) return; // nobody observes: skip building the event
+
+      const change = toPriceChange(tick);
       await worker.call({ function_id: "prices::on-change", payload: change });
     }
     ```
@@ -137,8 +140,12 @@ build an event, and skip the event when nobody observes the function.
     ```python
     prices = worker.register_function("prices::on-change", lambda change: change, private=True)
 
-    # in the price feed loop
-    if prices.is_observed():
+    # called for every tick of the price feed
+    def publish_price(tick):
+        if not prices.is_observed():
+            return  # nobody observes: skip building the event
+
+        change = to_price_change(tick)
         worker.call({"function_id": "prices::on-change", "payload": change})
     ```
 
@@ -150,9 +157,15 @@ build an event, and skip the event when nobody observes the function.
         RegisterFunction::new(|change: PriceChange| Ok::<_, Error>(change)).private(),
     );
 
-    // in the price feed loop
-    if prices.is_observed() {
+    // called for every tick of the price feed
+    async fn publish_price(worker: &IIIClient, prices: &FunctionRef, tick: Tick) -> Result<(), Error> {
+        if !prices.is_observed() {
+            return Ok(()); // nobody observes: skip building the event
+        }
+
+        let change = to_price_change(&tick);
         worker.call(CallRequest::new("prices::on-change", json!(change))).await?;
+        Ok(())
     }
     ```
 
@@ -161,9 +174,15 @@ build an event, and skip the event when nobody observes the function.
     ```go
     prices, _ := worker.RegisterFunction("prices::on-change", iii.Identity, iii.FunctionOptions{Private: true})
 
-    // in the price feed loop
-    if prices.IsObserved() {
-        worker.Call(ctx, iii.CallRequest{FunctionID: "prices::on-change", Payload: change})
+    // called for every tick of the price feed
+    publishPrice := func(ctx context.Context, tick Tick) error {
+        if !prices.IsObserved() {
+            return nil // nobody observes: skip building the event
+        }
+
+        change := toPriceChange(tick)
+        _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "prices::on-change", Payload: change})
+        return err
     }
     ```
 
