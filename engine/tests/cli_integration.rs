@@ -45,7 +45,12 @@ fn help_flag_shows_public_subcommands() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Public subcommands should appear in help
-    assert!(stdout.contains("trigger"), "help should list trigger");
+    assert!(
+        stdout.lines().any(|line| {
+            line.split_whitespace().next() == Some("call") && line.contains("[aliases: trigger, t]")
+        }),
+        "help should list call with its aliases:\n{stdout}"
+    );
     for subcommand in ["compose", "cloud", "ps", "kill"] {
         assert!(
             stdout
@@ -132,17 +137,22 @@ fn worker_subcommand_is_rejected() {
     );
 }
 
-// ── Trigger subcommand ──────────────────────────────────────────────
+// ── Call subcommand ─────────────────────────────────────────────────
 
 #[test]
-fn trigger_without_fn_path_fails() {
+fn call_without_fn_path_fails() {
     let output = iii_bin()
-        .args(["trigger"])
+        .args(["call"])
         .output()
         .expect("failed to execute");
     assert!(
         !output.status.success(),
-        "trigger with no FUNCTION_PATH should fail"
+        "call with no FUNCTION_PATH should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("iii call: missing FUNCTION_PATH"),
+        "the error should name iii call:\n{stderr}"
     );
 }
 
@@ -297,36 +307,36 @@ fn old_info_command_is_not_valid() {
 }
 
 #[test]
-fn trigger_help_shows_function_path_positional() {
+fn call_help_shows_function_path_positional() {
     let output = iii_bin()
-        .args(["trigger", "--help"])
+        .args(["call", "--help"])
         .output()
         .expect("failed to execute");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("FUNCTION_PATH"),
-        "trigger --help should show positional FUNCTION_PATH:\n{}",
+        "call --help should show positional FUNCTION_PATH:\n{}",
         stdout
     );
     assert!(
         stdout.contains("--json"),
-        "trigger --help should show --json flag:\n{}",
+        "call --help should show --json flag:\n{}",
         stdout
     );
     assert!(
         !stdout.contains("--function-id"),
-        "trigger --help must NOT show removed --function-id:\n{}",
+        "call --help must NOT show removed --function-id:\n{}",
         stdout
     );
 }
 
 #[test]
-fn trigger_legacy_function_id_rejected_at_runtime() {
+fn call_legacy_function_id_rejected_at_runtime() {
     // Pass a valid FUNCTION_PATH positional so the failure is unambiguously
     // due to the legacy --function-id flag, not a missing positional arg.
     let output = iii_bin()
-        .args(["trigger", "test::fn", "--function-id", "legacy-id"])
+        .args(["call", "test::fn", "--function-id", "legacy-id"])
         .output()
         .expect("failed to execute");
     assert!(!output.status.success());
@@ -369,10 +379,10 @@ fn update_unknown_target_hints_list_targets() {
 }
 
 #[test]
-fn trigger_kv_with_json_merge_parses() {
+fn call_kv_with_json_merge_parses() {
     let output = iii_bin()
         .args([
-            "trigger",
+            "call",
             "test::fn",
             "--json",
             r#"{"a":1,"b":2}"#,
@@ -389,5 +399,135 @@ fn trigger_kv_with_json_merge_parses() {
         !stderr.contains("expected key=value") && !stderr.contains("must be an object"),
         "kv+json merge should parse cleanly:\n{}",
         stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CLI call and its aliases: argument parsing and connection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn trigger_alias_help_is_the_call_help() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args(["trigger", "--help"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(output.status.success(), "trigger --help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FUNCTION_PATH"),
+        "Help should mention FUNCTION_PATH, got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--json"),
+        "Help should mention --json, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn trigger_alias_missing_required_args_fails() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args(["trigger"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "trigger without FUNCTION_PATH should fail"
+    );
+}
+
+#[test]
+fn call_invalid_json_payload_fails() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args([
+            "call",
+            "test::fn",
+            "--json",
+            "not-valid-json",
+            "--port",
+            "19876",
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "call with invalid --json should fail"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid JSON") || stderr.contains("JSON"),
+        "Should mention JSON error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn t_alias_connection_refused_fails_gracefully() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args([
+            "t",
+            "iii::queue::redrive",
+            "queue=orders",
+            "--port",
+            "19877",
+            "--timeout-ms",
+            "2000",
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "t to unreachable port should fail"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to connect")
+            || stderr.contains("connect")
+            || stderr.contains("Timed out")
+            || stderr.contains("timeout"),
+        "Should mention connection failure or timeout, got: {}",
+        stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CLI: backward compatibility — no subcommand still works
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_no_subcommand_with_version_still_works() {
+    use std::process::Command;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_iii"))
+        .args(["--version"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        output.status.success(),
+        "iii --version should still work without subcommand"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.trim().is_empty(),
+        "Version output should not be empty"
     );
 }

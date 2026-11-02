@@ -19,8 +19,10 @@ import (
 // travels as the registration's "invocation" field. invocation.URL is required; an
 // empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid
 // JSON; build it with [HMACAuth], [BearerAuth] or [APIKeyAuth]. Pass at most one
-// [RegisterFunctionOptions] for the description, formats, metadata or observe hooks;
-// LocalDispatch does not apply, since there is nothing to run in-process.
+// [RegisterFunctionOptions] for the description, formats, metadata, args_format,
+// private, observable or standby; LocalDispatch does not apply, since there is nothing
+// to run in-process. The engine delivers the function's calls itself, so a deliver hook
+// does not run for it; the added and removed hooks do.
 //
 // Like every registration it is kept in memory and sent again on each reconnect. An
 // empty id, or one this client already registered, is refused as in

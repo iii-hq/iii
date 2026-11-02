@@ -5,6 +5,7 @@ package iii_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,9 +14,10 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// Client.Observe against the real engine, on the routed path (README §7 phase 1):
-// the observed function lives on another worker, every call goes through the engine,
-// and the engine evaluates the filters.
+// Client.Observe against the real engine, on the routed path: the observed function
+// lives on another worker and every call goes through the engine, which evaluates the
+// observers' on and filters with the input it forwarded and the host's answer
+// (decision 55).
 
 var allCaptures = []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureError, iii.CaptureCaller, iii.CaptureMetadata}
 
@@ -34,7 +36,7 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 	_, _ = watcher.RegisterFunction(checkout, func(ctx context.Context, data json.RawMessage) (any, error) {
 		var amount int
 		_ = json.Unmarshal(data, &amount)
-		return watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": amount})})
+		return watcher.Call(ctx, iii.CallRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": amount})})
 	})
 	h, err := watcher.Observe(iii.Source{
 		FunctionID: charge,
@@ -53,9 +55,9 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 		t.Fatalf("state %s", h.State())
 	}
 
-	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Payload: raw(750)})
-	call(t, watcher, iii.TriggerRequest{FunctionID: checkout, Payload: raw(10)})                          // filtered out by input
-	call(t, watcher, iii.TriggerRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": 900})}) // no caller.function_id
+	call(t, watcher, iii.CallRequest{FunctionID: checkout, Payload: raw(750)})
+	call(t, watcher, iii.CallRequest{FunctionID: checkout, Payload: raw(10)})                          // filtered out by input
+	call(t, watcher, iii.CallRequest{FunctionID: charge, Payload: raw(map[string]int{"amount": 900})}) // no caller.function_id
 	acts := exactly(t, got, 1, "one activation", 10*time.Second)
 	a := acts[0]
 	if a.Data["observer_id"] != h.ID() || a.Data["function_id"] != charge || a.Data["namespace"] != "default" || a.Data["status"] != "success" {
@@ -103,10 +105,10 @@ func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
 	ready(t, a)
 	ready(t, b)
 
-	call(t, watcher, iii.TriggerRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": false, "n": 1})})
+	call(t, watcher, iii.CallRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": false, "n": 1})})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": true, "n": 2})}); err == nil {
+	if _, err := watcher.Call(ctx, iii.CallRequest{FunctionID: flaky, Payload: raw(map[string]any{"fail": true, "n": 2})}); err == nil {
 		t.Fatal("the failing call succeeded")
 	}
 	e := exactly(t, errs, 1, "the error activation", 10*time.Second)[0]
@@ -142,7 +144,7 @@ func TestObserveRoutedPendingUntilTheTargetIsRegistered(t *testing.T) {
 	}
 	got := collector(t, watcher, target)
 	ready(t, h)
-	call(t, watcher, iii.TriggerRequest{FunctionID: tick})
+	call(t, watcher, iii.CallRequest{FunctionID: tick})
 	exactly(t, got, 1, "the activation", 10*time.Second)
 }
 
@@ -176,6 +178,131 @@ func TestObserveRoutedErrors(t *testing.T) {
 	}
 }
 
+// The engine's codes for function options and calls through an observer, as a Go
+// worker gets them: an observer of a function registered Observable: &false fails
+// Ready with NOT_OBSERVABLE; a call to a private function from a worker that does not
+// host it fails with FORBIDDEN, while the host's own call through the engine runs it;
+// a private function as a target fails Ready with FORBIDDEN; a call through an observer
+// from a worker that does not host the observed function fails with
+// NOT_FUNCTION_OWNER, while the host's call reaches the target.
+func TestObserveRoutedEngineCodes(t *testing.T) {
+	host := observeWorker(t, "codes-host", nil)
+	other := observeWorker(t, "codes-other", nil)
+	private, closed, target := fnID(t, "go-codes::private"), fnID(t, "go-codes::closed"), fnID(t, "go-codes::target")
+	held := make(chan *iii.Observer, 1)
+	host.OnObserverAddedFor(private, func(_ context.Context, obs *iii.Observer) error {
+		held <- obs
+		return nil
+	})
+	off := false
+	if _, err := host.RegisterFunction(private, iii.Identity, iii.FunctionOptions{Private: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RegisterFunction(closed, iii.Identity, iii.FunctionOptions{Observable: &off}); err != nil {
+		t.Fatal(err)
+	}
+	got := collector(t, other, target)
+	localDispatchReady(t, host, private)
+	localDispatchReady(t, host, closed)
+	codeOf := func(err error) string {
+		var ie *iii.InvocationError
+		if !errors.As(err, &ie) {
+			return ""
+		}
+		return ie.Code
+	}
+
+	t.Run("NOT_OBSERVABLE", func(t *testing.T) {
+		h, err := other.ObserveFunction(closed, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rej := readyFails(t, h); rej.Code != "NOT_OBSERVABLE" {
+			t.Errorf("code %s (%s), want NOT_OBSERVABLE", rej.Code, rej.Message)
+		}
+	})
+	t.Run("FORBIDDEN call to a private function", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := other.Call(ctx, iii.CallRequest{FunctionID: private, Payload: raw(map[string]int{"n": 1})}); codeOf(err) != "FORBIDDEN" {
+			t.Errorf("call from another worker: %v, want FORBIDDEN", err)
+		}
+		out, err := host.Call(ctx, iii.CallRequest{FunctionID: private, Payload: raw(map[string]int{"n": 2}), Dispatch: iii.DispatchRemote})
+		var echoed struct {
+			N int `json:"n"`
+		}
+		if err != nil || json.Unmarshal(out, &echoed) != nil || echoed.N != 2 {
+			t.Errorf("the host's call through the engine: %s %v", out, err)
+		}
+	})
+	t.Run("FORBIDDEN private target", func(t *testing.T) {
+		h, err := other.ObserveFunction(target, private)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rej := readyFails(t, h); rej.Code != "FORBIDDEN" {
+			t.Errorf("code %s (%s), want FORBIDDEN", rej.Code, rej.Message)
+		}
+	})
+	t.Run("NOT_FUNCTION_OWNER", func(t *testing.T) {
+		h, err := other.ObserveFunction(private, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready(t, h)
+		var obs *iii.Observer
+		select {
+		case obs = <-held:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the host's added hook did not run")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := other.Call(ctx, iii.CallRequest{Observer: obs, Payload: raw("from another worker")}); codeOf(err) != "NOT_FUNCTION_OWNER" {
+			t.Errorf("call through the observer from another worker: %v, want NOT_FUNCTION_OWNER", err)
+		}
+		if _, err := host.Call(ctx, iii.CallRequest{Observer: obs, Payload: raw("from the host")}); err != nil {
+			t.Fatalf("the host's call through the observer: %v", err)
+		}
+		a := exactly(t, got, 1, "the host's call through the observer", 10*time.Second)[0]
+		if string(a.Raw) != `"from the host"` {
+			t.Errorf("target got %s", a.Raw)
+		}
+	})
+}
+
+// deliver: output sends the target the handler's return value alone, for routed and
+// local calls of the observed function.
+func TestObserveRoutedDeliverOutput(t *testing.T) {
+	owner := observeWorker(t, "deliver-owner", nil)
+	watcher := observeWorker(t, "deliver-watcher", nil)
+	double, target := fnID(t, "go-deliver::double"), fnID(t, "go-deliver::on-output")
+	_, _ = owner.RegisterFunction(double, func(_ context.Context, data json.RawMessage) (any, error) {
+		var in struct {
+			N int `json:"n"`
+		}
+		_ = json.Unmarshal(data, &in)
+		return map[string]int{"doubled": in.N * 2}, nil
+	})
+	got := collector(t, watcher, target)
+	h, err := watcher.Observe(iii.Source{FunctionID: double, Deliver: iii.DeliverOutput}, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, h)
+	localDispatchReady(t, owner, double)
+	call(t, watcher, iii.CallRequest{FunctionID: double, Payload: raw(map[string]int{"n": 2})}) // routed
+	call(t, owner, iii.CallRequest{FunctionID: double, Payload: raw(map[string]int{"n": 3})})   // local, reported
+	outs := exactly(t, got, 2, "the output activations", 10*time.Second)
+	seen := map[string]bool{}
+	for _, a := range outs {
+		seen[string(a.Raw)] = true
+	}
+	if !seen[`{"doubled":4}`] || !seen[`{"doubled":6}`] {
+		t.Errorf("targets got %v, want the bare outputs {\"doubled\":4} and {\"doubled\":6}", outs)
+	}
+}
+
 func TestObserveRoutedDisposeAndMaxFires(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
@@ -190,8 +317,8 @@ func TestObserveRoutedDisposeAndMaxFires(t *testing.T) {
 	if err := a.Dispose(context.Background()); err != nil || a.State() != iii.ObserverDisposed {
 		t.Fatalf("dispose: %v %s", err, a.State())
 	}
-	call(t, watcher, iii.TriggerRequest{FunctionID: ping})
-	call(t, watcher, iii.TriggerRequest{FunctionID: ping})
+	call(t, watcher, iii.CallRequest{FunctionID: ping})
+	call(t, watcher, iii.CallRequest{FunctionID: ping})
 	waitFor(t, "max_fires to dispose the observer", 10*time.Second, func() bool { return b.State() == iii.ObserverDisposed })
 	time.Sleep(300 * time.Millisecond)
 	if disposed.len() != 0 || once.len() != 1 {
@@ -215,7 +342,7 @@ func TestObserveRoutedSurvivesAReconnectOfItsWorker(t *testing.T) {
 	proxy.drop()
 	waitFor(t, "the observe replay", 10*time.Second, func() bool { return countOf(proxy.since(mark), "observe") >= 1 })
 	time.Sleep(500 * time.Millisecond)
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
 	a := exactly(t, got, 1, "an activation after the reconnect", 10*time.Second)[0]
 	if a.Data["observer_id"] != h.ID() || h.State() != iii.ObserverActive {
 		t.Errorf("observer %v state %s", a.Data["observer_id"], h.State())
@@ -231,7 +358,7 @@ func TestObserveRoutedExpiresIn(t *testing.T) {
 	h, _ := watcher.Observe(iii.Source{FunctionID: lease}, target, iii.ObserverOptions{ExpiresIn: 300 * time.Millisecond})
 	ready(t, h)
 	time.Sleep(500 * time.Millisecond)
-	call(t, watcher, iii.TriggerRequest{FunctionID: lease})
+	call(t, watcher, iii.CallRequest{FunctionID: lease})
 	waitFor(t, "the expiry", 10*time.Second, func() bool { return h.State() == iii.ObserverDisposed })
 	time.Sleep(200 * time.Millisecond)
 	if got.len() != 0 || h.Reason() == nil || h.Reason().Code != "EXPIRED" {
@@ -257,12 +384,12 @@ func TestObserveRoutedLoopGuard(t *testing.T) {
 			Input int `json:"input"`
 		}
 		_ = json.Unmarshal(data, &env)
-		_, err := watcher.Trigger(ctx, iii.TriggerRequest{FunctionID: loop, Payload: raw(env.Input + 1)})
+		_, err := watcher.Call(ctx, iii.CallRequest{FunctionID: loop, Payload: raw(env.Input + 1)})
 		return nil, err
 	})
 	h, _ := watcher.Observe(iii.Source{FunctionID: loop, Capture: []iii.Capture{iii.CaptureInput}}, onLoop)
 	ready(t, h)
-	call(t, watcher, iii.TriggerRequest{FunctionID: loop, Payload: raw(0)})
+	call(t, watcher, iii.CallRequest{FunctionID: loop, Payload: raw(0)})
 	time.Sleep(2 * time.Second)
 	mu.Lock()
 	defer mu.Unlock()
@@ -288,7 +415,7 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{FunctionID: work}, target, iii.ObserverOptions{MaxFires: 3})
 	ready(t, h)
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
 	waitFor(t, "the first activation", 10*time.Second, func() bool { return got.len() == 1 })
 
 	mark := proxy.mark()
@@ -298,10 +425,44 @@ func TestObserveRoutedReattachKeepsFires(t *testing.T) {
 		return countOf(sent, "reattach") == 1 && countOf(sent, "observe") >= 1
 	})
 	time.Sleep(500 * time.Millisecond)
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
-	call(t, owner, iii.TriggerRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
+	call(t, owner, iii.CallRequest{FunctionID: work})
 	waitFor(t, "max_fires reached across the reattach", 10*time.Second, func() bool { return h.State() == iii.ObserverDisposed })
-	if got.len() != 3 || h.Reason() == nil || h.Reason().Code != "MAX_FIRES" {
-		t.Errorf("%d activations, reason %+v: fires must survive the reattach", got.len(), h.Reason())
+	if h.Reason() == nil || h.Reason().Code != "MAX_FIRES" {
+		t.Errorf("reason %+v: fires must survive the reattach", h.Reason())
+	}
+	// the disposal can reach the watcher before the last activations run its target
+	exactly(t, got, 3, "the activations across the reattach", 10*time.Second)
+}
+
+// A routed call is delivered by the engine, from the input it forwarded and the host's
+// invocationresult: an observed routed call costs no frame of its own.
+func TestObserveRoutedMatchesRideTheAnswer(t *testing.T) {
+	proxy := newFrameProxy(t)
+	host := observeWorker(t, "routed-host", proxy)
+	caller := observeWorker(t, "routed-caller", nil)
+	fn, target := fnID(t, "go-host::double"), fnID(t, "go-host::on-double")
+	_, _ = host.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) {
+		var n int
+		_ = json.Unmarshal(data, &n)
+		return n * 2, nil
+	})
+	got := collector(t, caller, target)
+	h, err := caller.Observe(iii.Source{FunctionID: fn, Filters: iii.Filters{"output": iii.Op{"$gte": 10}}}, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready(t, h)
+	mark := proxy.mark()
+	if out := call(t, caller, iii.CallRequest{FunctionID: fn, Payload: raw(21)}); string(out) != "42" {
+		t.Errorf("result %s", out)
+	}
+	call(t, caller, iii.CallRequest{FunctionID: fn, Payload: raw(1)}) // filtered out by output
+	a := exactly(t, got, 1, "the routed activation", 10*time.Second)[0]
+	if a.Data["input"] != float64(21) || a.Data["output"] != float64(42) {
+		t.Errorf("envelope %v", a.Data)
+	}
+	if sent := without(proxy.since(mark), "localinvocationstats"); countOf(sent, "invocationsobserved") != 0 || countOf(sent, "invocationresult") != 2 {
+		t.Errorf("host frames %v: the answer is the only frame", sent)
 	}
 }

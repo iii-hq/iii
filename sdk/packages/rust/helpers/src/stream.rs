@@ -374,110 +374,10 @@ pub struct StreamJoinResult {
 }
 
 // ============================================================================
-// Stream Trigger Configs
-// ============================================================================
-
-/// Trigger config for `stream:join` and `stream:leave` triggers.
-#[deprecated(
-    note = "StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
-)]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StreamJoinLeaveTriggerConfig {
-    /// Stream name to watch
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream_name: Option<String>,
-    /// Optional function ID to evaluate before invoking handler
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition_function_id: Option<String>,
-}
-
-impl StreamJoinLeaveTriggerConfig {
-    pub fn new() -> Self {
-        Self {
-            stream_name: None,
-            condition_function_id: None,
-        }
-    }
-
-    pub fn stream_name(mut self, name: impl Into<String>) -> Self {
-        self.stream_name = Some(name.into());
-        self
-    }
-
-    pub fn condition(mut self, function_id: impl Into<String>) -> Self {
-        self.condition_function_id = Some(function_id.into());
-        self
-    }
-}
-
-impl Default for StreamJoinLeaveTriggerConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Trigger config for `stream` triggers. Filters which item changes fire the handler.
-#[deprecated(
-    note = "StreamTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
-)]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StreamTriggerConfig {
-    /// Stream name to watch
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream_name: Option<String>,
-    /// Group ID filter
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<String>,
-    /// Item ID filter
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub item_id: Option<String>,
-    /// Optional function ID to evaluate before invoking handler
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub condition_function_id: Option<String>,
-}
-
-impl StreamTriggerConfig {
-    pub fn new() -> Self {
-        Self {
-            stream_name: None,
-            group_id: None,
-            item_id: None,
-            condition_function_id: None,
-        }
-    }
-
-    pub fn stream_name(mut self, name: impl Into<String>) -> Self {
-        self.stream_name = Some(name.into());
-        self
-    }
-
-    pub fn group_id(mut self, id: impl Into<String>) -> Self {
-        self.group_id = Some(id.into());
-        self
-    }
-
-    pub fn item_id(mut self, id: impl Into<String>) -> Self {
-        self.item_id = Some(id.into());
-        self
-    }
-
-    pub fn condition(mut self, function_id: impl Into<String>) -> Self {
-        self.condition_function_id = Some(function_id.into());
-        self
-    }
-}
-
-impl Default for StreamTriggerConfig {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ============================================================================
 // Stream Events
 // ============================================================================
 
-/// Event payload for stream join/leave triggers.
+/// Event payload of a client joining or leaving a stream.
 #[deprecated(
     note = "StreamJoinLeaveEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]
@@ -520,8 +420,8 @@ pub struct StreamChangeEventDetail {
     pub data: Value,
 }
 
-/// Handler input for `stream` triggers, fired when an item changes
-/// via `stream::set`, `stream::update`, or `stream::delete`.
+/// Event payload of a stream item change made with `stream::set`,
+/// `stream::update`, or `stream::delete`.
 #[deprecated(
     note = "StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams"
 )]

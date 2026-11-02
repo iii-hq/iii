@@ -1,35 +1,36 @@
 mod common;
 
-use std::{pin::Pin, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use futures::Future;
 use iii::{
-    engine::Outbound,
+    engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
     function::{Function, FunctionResult, FunctionsRegistry},
-    trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
+    observer::EngineObserver,
+    protocol::{DEFAULT_NAMESPACE, Deliver},
     worker_connections::{WorkerConnection, WorkerConnectionRegistry},
     workers::observability::metrics::ensure_default_meter,
 };
 use tokio::sync::mpsc;
 
-#[derive(Clone)]
-struct NoopRegistrator;
-
-impl TriggerRegistrator for NoopRegistrator {
-    fn register_trigger(
-        &self,
-        _trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
+/// An engine with the functions the observers churn between.
+fn observed_engine() -> Arc<Engine> {
+    let engine = Arc::new(Engine::new());
+    for function_id in ["bench.source", "bench.target"] {
+        engine.register_function_handler(
+            RegisterFunctionRequest {
+                function_id: function_id.to_string(),
+                description: None,
+                request_format: None,
+                response_format: None,
+                metadata: None,
+            },
+            Handler::new(
+                |input: serde_json::Value| async move { FunctionResult::Success(Some(input)) },
+            ),
+        );
     }
-
-    fn unregister_trigger(
-        &self,
-        _trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
-    }
+    engine
 }
 
 fn make_function(id: &str) -> Function {
@@ -105,48 +106,32 @@ fn control_plane_churn_benchmark(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("triggers_register_unregister", size),
+            BenchmarkId::new("observers_add_remove", size),
             &size,
             |b, &size| {
                 b.to_async(&rt).iter_batched(
-                    TriggerRegistry::new,
-                    |registry| async move {
-                        registry
-                            .register_trigger_type(TriggerType::new(
-                                "bench.trigger",
-                                "control plane benchmark",
-                                Box::new(NoopRegistrator),
-                                None,
-                            ))
-                            .await
-                            .expect("register trigger type");
-
+                    observed_engine,
+                    |engine| async move {
+                        let function = (DEFAULT_NAMESPACE.to_string(), "bench.source".to_string());
+                        let target = (DEFAULT_NAMESPACE.to_string(), "bench.target".to_string());
                         for idx in 0..size {
-                            registry
-                                .register_trigger(Trigger {
-                                    id: format!("bench-trigger-{idx}"),
-                                    trigger_type: "bench.trigger".to_string(),
-                                    function_id: format!("bench.function.{idx}"),
-                                    config: serde_json::json!({}),
-                                    worker_id: None,
+                            engine
+                                .observers
+                                .observe_as_engine(EngineObserver {
+                                    id: format!("bench-observer-{idx}"),
+                                    function: function.clone(),
+                                    args: serde_json::json!({}),
+                                    filters: None,
+                                    target: target.clone(),
+                                    deliver: Deliver::Input,
                                     metadata: None,
-                                    namespace: "default".to_string(),
-                                    trigger_namespace: None,
-                                    home_namespace: iii::protocol::default_namespace(),
-                                    provider_namespace: iii::protocol::default_namespace(),
                                 })
-                                .await
-                                .expect("register trigger");
+                                .expect("observe");
                         }
-
                         for idx in 0..size {
-                            registry
-                                .unregister_trigger(
-                                    format!("bench-trigger-{idx}"),
-                                    Some("bench.trigger".to_string()),
-                                )
-                                .await
-                                .expect("unregister trigger");
+                            engine
+                                .observers
+                                .unobserve_as_engine(&format!("bench-observer-{idx}"));
                         }
                     },
                     BatchSize::LargeInput,

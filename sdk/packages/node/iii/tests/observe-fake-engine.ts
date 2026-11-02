@@ -22,7 +22,9 @@ const registry: Registry = ((globalThis as Record<symbol, unknown>)[REGISTRY] as
 }
 ;(globalThis as Record<symbol, unknown>)[REGISTRY] = registry
 
-export const ENGINE_FEATURES = ['observe.v1', 'local-dispatch.v1']
+export const ENGINE_FEATURES = ['observe.v1', 'observe.v2', 'local-dispatch.v1']
+/** What a 0.25 engine advertises: observe without `observe.v2`. */
+export const ENGINE_FEATURES_V1 = ['observe.v1', 'local-dispatch.v1']
 
 export type Frame = Record<string, unknown>
 
@@ -157,7 +159,7 @@ export function functionRegistered(
   }
 }
 
-/** An observer as the engine pushes it to the owner. */
+/** An observer as the engine pushes it to its function's host. */
 export function observerInfo(
   id: string,
   target: string,
@@ -184,4 +186,25 @@ export function observerRemoved(functionId: string, revision: number, id: string
 /** The items of every `invocationsobserved` frame sent so far. */
 export function reportedItems(socket: FakeSocket): Frame[] {
   return socket.framesOf('invocationsobserved').flatMap((f) => f.items as Frame[])
+}
+
+/** A routed call of a function the worker hosts, as the engine forwards it. */
+export function invokeFunction(
+  functionId: string,
+  data: unknown,
+  opts: {
+    invocation_id?: string
+    traceparent?: string
+    caller?: Frame
+    metadata?: Frame
+    observe_depth?: number
+    activation?: Frame
+  } = {},
+): Frame {
+  return { type: 'invokefunction', function_id: functionId, data, ...opts }
+}
+
+/** The `invocationresult` the worker answered `invocationId` with. */
+export function resultOf(socket: FakeSocket, invocationId: string): Frame | undefined {
+  return socket.framesOf('invocationresult').find((f) => f.invocation_id === invocationId)
 }

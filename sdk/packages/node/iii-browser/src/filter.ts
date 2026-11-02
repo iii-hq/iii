@@ -11,8 +11,10 @@
 export {
   type CompiledFilter,
   compileFilter,
+  type FilterDoc,
   FilterError,
   type FilterErrorCode,
+  FilterIndex,
   type FilterSource,
   MATCH_ALL,
 } from '../../iii/src/filter'

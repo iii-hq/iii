@@ -1,15 +1,11 @@
 use iii_helpers::http::{HttpRequest, HttpResponse};
 use iii_helpers::observability::{Logger, execute_traced_request};
-use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
-use iii_sdk::trigger::IIITrigger;
-use iii_sdk::{Error, IIIClient, RegisterFunction};
+use iii_sdk::{Error, IIIClient, RegisterFunction, Source};
 use serde_json::json;
 
-/// `register_trigger` is deprecated since 0.25.0 in favour of `iii.observe`.
-/// HTTP routes are provided by the http worker; until it ships
-/// `http::on-request`, `register_trigger` keeps binding routes (and, after,
-/// reaches that function through the engine's legacy shim).
-#[allow(deprecated)]
+/// Two HTTP routes: observers of the http worker's `http::on-request` with the
+/// route as their args. Each target receives the request and returns the
+/// response.
 pub fn setup(iii: &IIIClient) {
     let client = reqwest::Client::new();
 
@@ -54,11 +50,11 @@ pub fn setup(iii: &IIIClient) {
         }),
     );
 
-    iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method(HttpMethod::Get))
-            .for_function("api::get::http::rust::fetch"),
-    )
-    .expect("failed to register GET http-fetch trigger");
+    iii.observe(
+        Source::function("http::on-request")
+            .args(json!({ "method": "GET", "path": "/http-fetch" })),
+        "api::get::http::rust::fetch",
+    );
 
     let post_client = client.clone();
     iii.register_function(
@@ -108,9 +104,9 @@ pub fn setup(iii: &IIIClient) {
         }),
     );
 
-    iii.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("http-fetch").method(HttpMethod::Post))
-            .for_function("api::post::http::rust::fetch"),
-    )
-    .expect("failed to register POST http-fetch trigger");
+    iii.observe(
+        Source::function("http::on-request")
+            .args(json!({ "method": "POST", "path": "/http-fetch" })),
+        "api::post::http::rust::fetch",
+    );
 }

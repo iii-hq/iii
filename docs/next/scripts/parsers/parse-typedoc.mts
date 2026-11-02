@@ -73,7 +73,9 @@ function typeToString(type: any): string {
   if (type.type === 'reflection') {
     const decl = type.declaration
     if (decl?.signatures) {
-      const sig = decl.signatures[0]
+      // An overloaded method shows its last overload, the most general one
+      // (`onObserverMatch(hook: MatchHook | null)`).
+      const sig = decl.signatures[decl.signatures.length - 1]
       const params =
         sig.parameters
           ?.map((p: any) => `${p.name}${p.flags?.isOptional ? '?' : ''}: ${typeToString(p.type)}`)
@@ -123,19 +125,49 @@ function extractParams(sig: TypeDocReflection): ParamDoc[] {
   }))
 }
 
-function reflectionToFunction(ref: TypeDocReflection): FunctionDoc | null {
-  const sig = ref.signatures?.[0] ?? ref
-  const comment = sig.comment ?? ref.comment
+function signatureToString(sig: TypeDocReflection, returnType: string): string {
   const params = sig.parameters ?? []
+  return `(${params.map(p => `${p.name}${p.flags?.isOptional ? '?' : ''}: ${typeToString(p.type)}`).join(', ')}) => ${returnType}`
+}
+
+/**
+ * The parameters of every overload, by name: in the order of the longest
+ * overload, typed as in the last overload that has them (the most general
+ * one), required only when every overload requires them.
+ */
+function mergeOverloadParams(sigs: TypeDocReflection[]): ParamDoc[] {
+  const perSig = sigs.map(extractParams)
+  const longest = perSig.reduce((a, b) => (b.length >= a.length ? b : a), [])
+  const names = [...longest.map(p => p.name)]
+  for (const ps of perSig) for (const p of ps) if (!names.includes(p.name)) names.push(p.name)
+  return names.map(name => {
+    const found = perSig.map(ps => ps.find(p => p.name === name))
+    const last = [...found].reverse().find(Boolean)!
+    return {
+      ...last,
+      description: found.find(p => p?.description)?.description ?? '',
+      required: found.every(p => p?.required),
+    }
+  })
+}
+
+function reflectionToFunction(ref: TypeDocReflection): FunctionDoc | null {
+  const sigs = ref.signatures?.length ? ref.signatures : [ref]
+  const sig = sigs[0]
+  const comment = sigs.find(s => s.comment)?.comment ?? ref.comment
   const returnType = typeToString(sig.type ?? ref.type)
   // A doc marker written after `@deprecated` lands in that block tag.
   const deprecated = deprecatedRaw(comment) ?? deprecatedRaw(ref.comment)
 
   return {
     name: ref.name,
-    signature: `(${params.map(p => `${p.name}${p.flags?.isOptional ? '?' : ''}: ${typeToString(p.type)}`).join(', ')}) => ${returnType}`,
+    // Overloads render one per line, each with the method name.
+    signature:
+      sigs.length === 1
+        ? signatureToString(sig, returnType)
+        : sigs.map(s => `${ref.name}${signatureToString(s, typeToString(s.type ?? ref.type))}`).join('\n'),
     description: extractText(comment?.summary),
-    params: extractParams(sig),
+    params: sigs.length === 1 ? extractParams(sig) : mergeOverloadParams(sigs),
     returns: { type: returnType, description: '' },
     examples: extractExamples(comment),
     ...parseExpandMarker(`${comment?.summary?.map(s => s.text).join('') ?? ''}${deprecated ?? ''}`),
@@ -157,7 +189,7 @@ function extractFieldsFromChildren(children: any[], indexSignatures?: any[]): Pa
     .map((f: any) => ({
       name: f.name,
       // A method has no `type`, only call signatures; render the full callable
-      // shape so parameters survive (e.g. `(functionId: string, config: TConfig) => Trigger`).
+      // shape so parameters survive (e.g. `(functionId: string, hook: AddedHook | null) => this`).
       type: f.type ? typeToString(f.type) : typeToString({ type: 'reflection', declaration: f }),
       description: extractText(f.comment?.summary ?? f.signatures?.[0]?.comment?.summary),
       required: !(f.flags?.isOptional),
@@ -261,7 +293,7 @@ function extractTypesFrom(
         fields,
       })
     } else if (child.kind === KIND_VARIABLE && child.type?.type === 'reflection' && child.type.declaration?.children?.length) {
-      // A const factory object (e.g. `TriggerAction`) documents like an
+      // A const factory object (e.g. `CallAction`) documents like an
       // interface: one row per member, function-typed members keep their
       // call signatures.
       types.push({
@@ -500,7 +532,7 @@ export function parseTypedoc(jsonPath: string, metadata: Metadata): SdkDoc {
 const HELPERS_MODULE_DESCRIPTIONS: Record<string, string> = {
   http: 'HTTP request/response types, auth config, and the `http` helper.',
   queue: 'Queue enqueue result types.',
-  stream: 'Stream trigger configs, change events, IO inputs, and update operations.',
+  stream: 'Stream change events, IO inputs, and update operations.',
   'worker-connection-manager': 'RBAC auth and registration callback types.',
   observability: 'Logger, OpenTelemetry config, and span helpers.',
 }

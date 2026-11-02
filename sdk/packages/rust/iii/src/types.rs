@@ -7,8 +7,7 @@ use crate::{
     channels::{ChannelReader, ChannelWriter, StreamChannelRef},
     error::Error,
     observable::FunctionEntry,
-    protocol::{RegisterFunctionMessage, RegisterTriggerTypeMessage},
-    triggers::TriggerHandler,
+    protocol::RegisterFunctionMessage,
 };
 
 /// A dispatchable function handler. Receives the invocation payload.
@@ -33,17 +32,11 @@ pub type RemoteFunctionHandlerWithMetadata =
 pub struct RemoteFunctionData {
     pub message: RegisterFunctionMessage,
     pub handler: Option<RemoteFunctionHandlerWithMetadata>,
-    /// Observe state: hooks, observers, local dispatch.
+    /// Observe state: observers, deliver hook, local dispatch.
     pub(crate) observe: Arc<FunctionEntry>,
 }
 
-#[derive(Clone)]
-pub struct RemoteTriggerTypeData {
-    pub message: RegisterTriggerTypeMessage,
-    pub handler: Arc<dyn TriggerHandler>,
-}
-
-/// Incoming streaming request received by a function registered with a stream trigger.
+/// Incoming streaming request received by a function that serves HTTP.
 ///
 /// Alias of [`iii_helpers::http::HttpRequest`].
 pub type StreamRequest<T = Value> = iii_helpers::http::HttpRequest<T>;

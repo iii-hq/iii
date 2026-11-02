@@ -104,7 +104,7 @@ list changes).
 ### Suggesting Features
 
 - Open an issue describing the feature, the use case it serves, and how it fits within
-  iii's design (Functions, Triggers, Workers).
+  iii's design (Workers, Functions, Observers).
 - For larger features, please discuss in an issue before starting work so we can align
   on approach.
 

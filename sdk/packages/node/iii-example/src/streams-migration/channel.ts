@@ -2,8 +2,8 @@
  * Recipe 3 of 3: continuous content for ONE operation.
  *
  * Replaces: writing progress / partial output into stream items (an iii-stream `set` per
- * chunk, one group per job) and having the caller watch them through the deprecated `stream`
- * trigger type or the dedicated Streams WebSocket.
+ * chunk, one group per job) and having the caller watch them by observing iii-stream changes
+ * or through the dedicated Streams WebSocket.
  *
  * With: a channel created for the operation (`createChannel`) whose writer ref travels in
  * the call. The lifetime is explicit: the channel exists for this operation only, the
@@ -20,7 +20,7 @@
  */
 import { once } from 'node:events'
 import { Writable } from 'node:stream'
-import { type IIIClient, registerWorker, TriggerAction } from 'iii-sdk'
+import { type IIIClient, registerWorker, CallAction } from 'iii-sdk'
 import type { StreamChannelRef } from 'iii-sdk/channel'
 import { createChannel } from 'iii-sdk/helpers'
 
@@ -198,10 +198,10 @@ export async function runExport(
     abortReason = reason
     // Tell the producer to stop, then close our end of the channel.
     void iii
-      .trigger({
+      .call({
         function_id: 'reports::cancel',
         payload: { operation_id },
-        action: TriggerAction.Void(),
+        action: CallAction.Void(),
       })
       .catch(() => undefined)
     channel.reader.close()
@@ -211,7 +211,7 @@ export async function runExport(
     reader.destroy()
   }, opts.deadline_ms)
 
-  const operation = iii.trigger<ExportRequest<StreamChannelRef>, ExportResult>({
+  const operation = iii.call<ExportRequest<StreamChannelRef>, ExportResult>({
     function_id: 'reports::export',
     payload: {
       operation_id,

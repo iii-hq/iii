@@ -9,6 +9,7 @@ import { compile } from './compile'
 import type { FilterDoc, Root } from './path'
 
 export { FilterError, type FilterErrorCode } from './errors'
+export { FilterIndex } from './filter-index'
 export type { FilterDoc, Root } from './path'
 
 /** A filter object (filters.md §2): paths with explicit operators, `$and`, `$or`, `$not`. */

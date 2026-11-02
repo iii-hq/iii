@@ -29,7 +29,7 @@ describe('Logger', () => {
     const { context, trace } = await import('@opentelemetry/api')
 
     // Ensure OTel context manager is registered so context.with propagates spans.
-    // vi.mock('@iii-dev/helpers/observability') prevents the setup.ts-triggered initOtel
+    // vi.mock('@iii-dev/helpers/observability') prevents the initOtel that setup.ts starts
     // from registering in the current test context, so we call it explicitly here.
     initOtel({ enabled: true, engineWsUrl: 'ws://localhost:49199', serviceName: 'test' })
 

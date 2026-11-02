@@ -24,10 +24,12 @@ pub enum Error {
     #[error("websocket error: {0}")]
     WebSocket(String),
     /// Fatal registration rejection: another live worker already holds this
-    /// worker name in the namespace, or the engine sent an unknown rejection
-    /// code. The SDK stops and does not reconnect. A
-    /// `FUNCTION_NAMESPACE_CONFLICT` is non-fatal, is logged, and does not
-    /// produce this error.
+    /// worker name in the namespace, or the engine sent a rejection that
+    /// names no function with a code this SDK does not know. The SDK stops
+    /// and does not reconnect. A rejection that names a function
+    /// (`FUNCTION_NAMESPACE_CONFLICT`, `INVALID_ARGS_FORMAT`, `UNSUPPORTED`)
+    /// refuses only that function, is logged, and does not produce this
+    /// error.
     #[error(
         "registration rejected ({code}) in namespace '{namespace}' by worker '{owner_worker_id}'"
     )]

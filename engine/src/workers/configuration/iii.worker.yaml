@@ -8,4 +8,3 @@ config:
     name: fs
     config:
       directory: ./config
-  ttl_seconds: 0

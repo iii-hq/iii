@@ -16,6 +16,10 @@ type ObserverHandle struct {
 	// frame is the observe frame, sent on every connection.
 	frame []byte
 	seq   uint64
+	// refused: an observeresult in state error answered h's observe (decision 56), and
+	// the engine holds no observer for it; h is not sent again, and its Dispose sends
+	// nothing. Guarded by client.mu, kept across connections.
+	refused bool
 
 	mu        sync.Mutex
 	state     ObserverState
@@ -24,7 +28,7 @@ type ObserverHandle struct {
 	nextID    int
 	// changed is closed and replaced on every state change (Ready waits on it).
 	changed chan struct{}
-	// sent: the engine may hold it, so disposing it needs an unobserve.
+	// sent: its observe went out on some connection.
 	sent bool
 	// events are state changes waiting for their listeners, delivered in order on a
 	// goroutine of their own: the SDK's read loop never runs user code.
@@ -100,7 +104,7 @@ func (h *ObserverHandle) Ready(ctx context.Context) error {
 
 // OnStateChange calls listener on every state change, in order of the changes and of
 // registration, on a goroutine of the handle's own (one change at a time; never on the
-// SDK's read loop, so a listener may call Trigger). It returns the function that
+// SDK's read loop, so a listener may call the client). It returns the function that
 // unsubscribes it; a change already queued is not delivered to it afterwards.
 func (h *ObserverHandle) OnStateChange(listener func(state ObserverState, reason *ObserveReason)) (unsubscribe func()) {
 	h.mu.Lock()
@@ -121,9 +125,11 @@ func (h *ObserverHandle) OnStateChange(listener func(state ObserverState, reason
 }
 
 // Dispose removes the observer (unobserve). It is not replayed on reconnect. An
-// observer disposed while disconnected is unobserved on the next connection, so a
-// Reattach does not keep it alive. ctx is reserved; Dispose does not wait for the
-// engine.
+// observer disposed while disconnected is unobserved on the next connection, before
+// any observe is replayed, so a Reattach does not keep it alive. When the engine
+// refused its observe (see [Client.Observe]), Dispose sends nothing. Its id is free
+// at once: an Observe under it gets a new handle, which hears the engine's answers to
+// its own observe only. ctx is reserved; Dispose does not wait for the engine.
 func (h *ObserverHandle) Dispose(ctx context.Context) error {
 	_ = ctx
 	if h.State() == ObserverDisposed {

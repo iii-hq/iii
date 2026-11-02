@@ -34,6 +34,14 @@ use uuid::Uuid;
 /// passing test never waits this long.
 pub const WAIT: Duration = Duration::from_secs(5);
 
+/// What a 0.25 SDK declares on `engine::workers::register`: the engine
+/// evaluates its routed calls.
+pub const OBSERVE_V1: &[&str] = &["observe.v1", "local-dispatch.v1"];
+
+/// What a v2 SDK declares: it delivers the calls of the functions it hosts,
+/// listing the observers it matched on each routed answer.
+pub const OBSERVE_V2: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
+
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 type Sink = Arc<tokio::sync::Mutex<SplitSink<Ws, WsMessage>>>;
@@ -92,10 +100,46 @@ pub async fn spawn(setup: Setup) -> TestEngine {
     }
 }
 
-async fn try_spawn(setup: &Setup) -> anyhow::Result<TestEngine> {
+/// A port nothing listens on now.
+async fn free_port() -> anyhow::Result<u16> {
     let probe = TcpListener::bind("127.0.0.1:0").await?;
     let port = probe.local_addr()?.port();
     drop(probe);
+    Ok(port)
+}
+
+/// A second worker manager on `t`'s engine, with no `rbac` section: the
+/// trusted port a deployment's own workers connect to, next to `t.port`.
+/// Returns its port.
+pub async fn unrestricted_listener(t: &TestEngine) -> u16 {
+    let mut attempt = 1;
+    loop {
+        let started = async {
+            let port = free_port().await?;
+            let manager = WorkerManager::create(
+                t.engine.clone(),
+                Some(json!({ "port": port, "host": "127.0.0.1" })),
+            )
+            .await?;
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            manager
+                .start_background_tasks(shutdown_rx, shutdown_tx)
+                .await?;
+            anyhow::Ok(port)
+        };
+        match started.await {
+            Ok(port) => return port,
+            Err(err) if attempt < 5 => {
+                eprintln!("second listener did not start (attempt {attempt}): {err:#}");
+                attempt += 1;
+            }
+            Err(err) => panic!("start the second WorkerManager: {err:#}"),
+        }
+    }
+}
+
+async fn try_spawn(setup: &Setup) -> anyhow::Result<TestEngine> {
+    let port = free_port().await?;
 
     let engine = Arc::new(Engine::new());
     engine.observers.set_config(setup.observers.clone());
@@ -280,9 +324,15 @@ impl Client {
     /// `engine::workers::register`, declaring `observe.v1` and
     /// `local-dispatch.v1` when `features` is set.
     pub async fn announce(&mut self, features: bool) {
+        self.announce_with(if features { OBSERVE_V1 } else { &[] })
+            .await;
+    }
+
+    /// `engine::workers::register`, declaring `features` (none when empty).
+    pub async fn announce_with(&mut self, features: &[&str]) {
         let mut data = json!({ "runtime": "test", "version": "0.25.0", "name": self.name });
-        if features {
-            data["features"] = json!(["observe.v1", "local-dispatch.v1"]);
+        if !features.is_empty() {
+            data["features"] = json!(features);
         }
         self.send(json!({
             "type": "invokefunction",
@@ -459,6 +509,35 @@ impl Client {
         .await;
     }
 
+    /// Answers a forwarded `invokefunction` with `result`, as a host that
+    /// declared `observe.v2` does for a function with a match hook: listing
+    /// the observers the hook matched (`matched`, decision 55). A plain
+    /// [`Self::reply`] is the answer for a function without one.
+    pub async fn reply_matched(&mut self, invoke: &Value, result: Value, matched: &[&str]) {
+        self.send(json!({
+            "type": "invocationresult",
+            "invocation_id": invoke["invocation_id"],
+            "function_id": invoke["function_id"],
+            "result": result,
+            "matched": matched,
+        }))
+        .await;
+    }
+
+    /// Answers a forwarded `invokefunction` with `result`, as a host that
+    /// declared `observe.v2` does for a function whose deliver hook
+    /// delivered the call (`delivered: true`, decision 55).
+    pub async fn reply_delivered(&mut self, invoke: &Value, result: Value) {
+        self.send(json!({
+            "type": "invocationresult",
+            "invocation_id": invoke["invocation_id"],
+            "function_id": invoke["function_id"],
+            "result": result,
+            "delivered": true,
+        }))
+        .await;
+    }
+
     /// Answers a forwarded `invokefunction` with an error.
     pub async fn reply_error(&mut self, invoke: &Value, code: &str, message: &str) {
         self.send(json!({
@@ -468,6 +547,21 @@ impl Client {
             "error": { "code": code, "message": message },
         }))
         .await;
+    }
+
+    /// Discards every frame received so far.
+    pub fn discard_received(&mut self) {
+        while self.frames.try_recv().is_ok() {}
+        self.buffered.clear();
+    }
+
+    /// The next frame, buffered or new, with no time limit; `None` once the
+    /// socket closed.
+    pub async fn recv(&mut self) -> Option<Value> {
+        match self.buffered.pop_front() {
+            Some(frame) => Some(frame),
+            None => self.frames.recv().await,
+        }
     }
 
     /// Hosts `function_id` for one call: waits for it and answers `result`.
@@ -488,6 +582,23 @@ pub async fn connect(t: &TestEngine, name: &str, features: bool) -> Client {
         "`{name}` never finished engine::workers::register"
     );
     client
+}
+
+/// As [`connect`], declaring `features`.
+pub async fn connect_with(t: &TestEngine, name: &str, features: &[&str]) -> Client {
+    let mut client = Client::open(t.port, name).await;
+    client.announce_with(features).await;
+    let id = client.worker_id;
+    assert!(
+        eventually(|| t.engine.worker_registry.get_worker_name(&id).as_deref() == Some(name)).await,
+        "`{name}` never finished engine::workers::register"
+    );
+    client
+}
+
+/// As [`connect`], for a worker that declared `observe.v2`.
+pub async fn connect_v2(t: &TestEngine, name: &str) -> Client {
+    connect_with(t, name, OBSERVE_V2).await
 }
 
 /// As [`connect`], with a query string the auth function sees.

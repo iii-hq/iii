@@ -29,7 +29,7 @@ when it and this file disagree, the registry is the truth.
 | a component/responsibility map, planes, "owns / never does" | A4 System Map |
 | a temporal protocol, a "turn", a handshake, numbered steps | A5 Sequence |
 | a lifecycle whose state evolves (boot, durability, readiness) | A6 Step Reveal |
-| one event → many handlers; reactive/triggers | A7 Fan-Out |
+| one event → many handlers; reactive/observers | A7 Fan-Out |
 | many cases collapse to one mechanism (or one forks) | A8 Funnel |
 | a mode/policy that changes what's allowed | A9 Toggle Explorer |
 | a human-in-the-loop / approval / branching outcome | A10 Decision Flow |
@@ -79,7 +79,7 @@ interface SeqStep { from; to; label; title; desc; event? }   // from===to => sel
 ```
 
 Maps from: any protocol / turn loop / handshake. One lane per participant; one
-step per message. Set `event` when a step emits a trigger.
+step per message. Set `event` when a step calls a function others observe.
 
 ### A6 — Step Reveal  ·  `diagrams/StepReveal.tsx`
 
@@ -117,11 +117,11 @@ edges. No stepper; it just breathes.
 
 ```ts
 interface FanHandler { id; label; desc? }
-<FanOut source={{ label, sub? }} trigger="store::written" handlers={HANDLERS} />
+<FanOut source={{ label, sub? }} fn="store::written" handlers={HANDLERS} />
 ```
 
-Maps from: a reactive/event model. The `trigger` keeps its casing; handlers are
-the functions bound to it.
+Maps from: a reactive/event model. The `fn` prop is the observed function's
+id and keeps its casing; handlers are the target functions of its observers.
 
 ### A8 — Funnel  ·  `diagrams/Funnel.tsx`
 
@@ -223,9 +223,9 @@ is the point; A6 when state simply accumulates.
 
 ### A17 — Event Fan-Out  (`diagrams/EventFanOut.tsx`)
 
-One **concrete, named write** → trigger type → N named subscribers, with
+One **concrete, named write** → observed function → N named observers, with
 ambient always-on motion (ripples + traveling dots). Denser and more literal
-than A7. `{ heading, source, sourceSub?, trigger, handlers, edges, footnote?,
+than A7. `{ heading, source, sourceSub?, fn, handlers, edges, footnote?,
 ariaLabel }`.
 **vs A7 Fan-Out:** A17 narrates one specific write with real handler names;
 A7 is the abstract reactive-surface shape.

@@ -24,33 +24,27 @@ and `--engine` connects it to the existing engine. These options are listed in t
 Run the remaining commands from a third terminal in that same project directory:
 
 ```bash
-iii trigger -n dev compose::add worker=http
+iii call -n dev compose::add worker=http
 ```
 
 <Note>
-  This page covers the basic endpoint flow. For path patterns, methods, headers, and response handling, see the
-  [http worker docs](https://workers.iii.dev/workers/http). The worker's server settings
-  (port, host, CORS, timeouts) are managed at runtime through the
-  [configuration worker](../using-iii/configuration).
+  This page covers the basic endpoint flow. For path patterns, methods, headers, and response
+  handling, see the [http worker docs](https://workers.iii.dev/workers/http). The worker's server
+  settings (port, host, CORS, timeouts) are managed at runtime through the [configuration
+  worker](../using-iii/configuration).
 </Note>
 
 ## Create endpoints
 
-The http worker exposes an `http` trigger type that binds a function to an HTTP method and path; the
-function then runs on every matching request. Here is the full path from a running engine to a live
-endpoint.
+`worker.observe({ function_id: "http::on-request", args: { method, path } }, target)` means: when a
+request arrives on that route, `target` runs, and its return value is the response. The http worker
+hosts `http::on-request` and adds the route when the observer is added. Here is the full path from a
+running engine to a live endpoint.
 
-<Note>
-  `registerTrigger` is deprecated in 0.25, but the http worker still publishes the `http` trigger
-  type, so it remains the way to create endpoints. It logs one warning per process. See [Providers
-  not migrated yet](../upgrading/from-0-24-x#providers-not-migrated-yet).
-</Note>
-
-1. In a worker, register the function you want to expose and bind an `http` trigger to it. If you do
-   not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
-   source. The
-   handler receives the request (`body`, `headers`, method) and its return value becomes the
-   response:
+1. In a worker, register the function you want to expose and observe `http::on-request` with its
+   route. If you do not have a worker yet, follow
+   [Create a new worker](./workers#create-a-new-worker), then edit its source. The handler receives
+   the request (`body`, `headers`, `method`, and more) and its return value becomes the response:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -64,18 +58,18 @@ endpoint.
       namespace: "orders",
     });
 
-    worker.registerFunction("http::add", async (payload: { body: { a: number; b: number } }) => ({
+    worker.registerFunction("math::add", async (req: { body: { a: number; b: number } }) => ({
       status_code: 200,
-      body: { c: payload.body.a + payload.body.b },
+      body: { c: req.body.a + req.body.b },
       headers: { "Content-Type": "application/json" },
     }));
 
-    worker.registerTrigger({
-      type: "http",
-      function_id: "http::add",
-      config: { api_path: "/math/add", http_method: "POST" },
-    });
+    worker.observe(
+      { function_id: "http::on-request", args: { method: "POST", path: "/math/add" } },
+      "math::add",
+    );
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
@@ -87,29 +81,27 @@ endpoint.
         InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
-    def add(payload: dict) -> dict:
-        body = payload["body"]
+    def add(req: dict) -> dict:
+        body = req["body"]
         return {
             "status_code": 200,
             "body": {"c": body["a"] + body["b"]},
             "headers": {"Content-Type": "application/json"},
         }
 
-    worker.register_function("http::add", add)
+    worker.register_function("math::add", add)
 
-    worker.register_trigger({
-        "type": "http",
-        "function_id": "http::add",
-        "config": {"api_path": "/math/add", "http_method": "POST"},
-    })
+    worker.observe(
+        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/math/add"}},
+        "math::add",
+    )
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::builtin_triggers::{HttpMethod, HttpTriggerConfig};
     use iii_sdk::runtime::WorkerMetadata;
-    use iii_sdk::trigger::IIITrigger;
-    use iii_sdk::{InitOptions, RegisterFunction, register_worker};
+    use iii_sdk::{InitOptions, RegisterFunction, Source, register_worker};
     use schemars::JsonSchema;
     use serde::Deserialize;
     use serde_json::json;
@@ -138,7 +130,7 @@ endpoint.
     );
 
     worker.register_function(
-        "http::add",
+        "math::add",
         RegisterFunction::new(|req: AddRequest| {
             Ok(json!({
                 "status_code": 200,
@@ -148,10 +140,10 @@ endpoint.
         }),
     );
 
-    worker.register_trigger(
-        IIITrigger::Http(HttpTriggerConfig::new("/math/add").method(HttpMethod::Post))
-            .for_function("http::add"),
-    )?;
+    worker.observe(
+        Source::function("http::on-request").args(json!({ "method": "POST", "path": "/math/add" })),
+        "math::add",
+    );
     ```
 
   </Tab>
@@ -162,7 +154,7 @@ endpoint.
         iii.WithNamespace("orders"),
     )
 
-    client.RegisterFunction("http::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+    client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
         var req struct {
             Body struct {
                 A float64 `json:"a"`
@@ -179,11 +171,10 @@ endpoint.
         }, nil
     })
 
-    if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-        Type:       "http",
-        FunctionID: "http::add",
-        Config:     json.RawMessage(`{"api_path":"/math/add","http_method":"POST"}`),
-    }); err != nil {
+    if _, err := client.Observe(iii.Source{
+        FunctionID: "http::on-request",
+        Args:       iii.Args{"method": "POST", "path": "/math/add"},
+    }, "math::add"); err != nil {
         log.Fatal(err)
     }
     ```
@@ -198,16 +189,44 @@ Python uses `worker_name`, and Go uses `iii.WithName`. All four examples registe
 2. Add the worker to Compose, pointing at its directory:
 
 ```bash
-iii trigger -n dev compose::add worker=./my-worker
+iii call -n dev compose::add worker=./my-worker
 ```
 
-For path patterns, request and response shapes, and the other configuration options, see the
+The route is set by the observer's `args`:
+
+| Arg                       | Required | Meaning                                                                       |
+| ------------------------- | -------- | ----------------------------------------------------------------------------- |
+| `method`                  | yes      | The HTTP method to match, for example `POST`.                                 |
+| `path`                    | yes      | The route path with a leading slash. `/users/:id` puts `id` in `path_params`. |
+| `middleware_function_ids` | no       | Functions that run before the target, in order.                               |
+| `public_webhook`          | no       | `true` also serves the route on the restricted webhook listener.              |
+
+The target receives the request as `{ method, path, path_params, query_params, headers, body }`, and
+returns `{ status_code, headers, body }`. A second observer of the same method and path shape is
+rejected with `HTTP_ROUTE_CONFLICT`; `await observer.ready()` reports it. Disposing the observer
+removes the route.
+
+Observer `filters` select requests by anything in them. A request on the route that the filters
+reject gets a `422` response, and the target does not run:
+
+```typescript
+worker.observe(
+  {
+    function_id: "http::on-request",
+    args: { method: "POST", path: "/webhooks/stripe", public_webhook: true },
+    filters: { "input.headers.stripe-signature": { $exists: true } },
+  },
+  "billing::handle-stripe-event",
+);
+```
+
+For streaming responses and the other configuration options, see the
 [http worker docs](https://workers.iii.dev/workers/http).
 
 ## Calling the endpoint
 
-Once the trigger is registered, set `HTTP_WORKER_URL` to the address configured for the http worker
-and call the endpoint:
+Once the observer is active, set `HTTP_WORKER_URL` to the address configured for the http worker and
+call the endpoint:
 
 ```bash
 # call the exposed function

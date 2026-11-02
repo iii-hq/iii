@@ -443,10 +443,12 @@ fn builtin_worker_description(worker_type: &str) -> Option<&'static str> {
 
 pub(crate) fn runtime_worker_info_from_registration(
     entry: &WorkerEntry,
+    worker: &dyn Worker,
     registrations: &super::reload::WorkerRegistrations,
 ) -> crate::worker_connections::RuntimeWorkerInfo {
     let worker_type = entry.worker_type().to_string();
     let mut function_ids = registrations.function_ids.clone();
+    function_ids.extend(worker.hosted_sources().into_iter().map(str::to_string));
     function_ids.sort();
     function_ids.dedup();
 
@@ -668,6 +670,7 @@ impl EngineBuilder {
             self.engine
                 .upsert_runtime_worker(runtime_worker_info_from_registration(
                     &entry,
+                    worker_arc.as_ref(),
                     &registrations,
                 ));
 

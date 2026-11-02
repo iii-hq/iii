@@ -1,0 +1,7 @@
+{
+  "type": "registrationrejected",
+  "code": "INVALID_ARGS_FORMAT",
+  "namespace": "default",
+  "function_id": "queue::on-message",
+  "owner_worker_id": ""
+}

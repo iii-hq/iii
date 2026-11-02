@@ -13,12 +13,12 @@ languages.
 
 ## The model
 
-| Concept | What it does                                                    |
-| ------- | --------------------------------------------------------------- |
-| Channel | A WebSocket-backed pipe managed by the engine.                  |
-| Writer  | Sends bytes or text messages into the pipe.                     |
-| Reader  | Receives bytes or text messages from the pipe.                  |
-| Ref     | A small serializable token passed through `trigger()` payloads. |
+| Concept | What it does                                                 |
+| ------- | ------------------------------------------------------------ |
+| Channel | A WebSocket-backed pipe managed by the engine.               |
+| Writer  | Sends bytes or text messages into the pipe.                  |
+| Reader  | Receives bytes or text messages from the pipe.               |
+| Ref     | A small serializable token passed through `call()` payloads. |
 
 The key idea is that refs travel through regular function calls, but the data itself travels over
 the channel.
@@ -45,7 +45,7 @@ sequenceDiagram
 
     A->>Engine: createChannel()
     Engine-->>A: writer, reader, writerRef, readerRef
-    A->>Engine: trigger B with readerRef
+    A->>Engine: call B with readerRef
     Engine->>B: invoke B with reader ref
     A->>Engine: writer sends chunks
     Engine->>B: reader receives chunks

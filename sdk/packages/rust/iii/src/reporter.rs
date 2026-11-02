@@ -1,6 +1,5 @@
-//! The report buffer: matched local invocations of auto functions and
-//! [`Observer::emit`](crate::Observer::emit) events of owner functions, on
-//! their way to the engine as `invocationsobserved` frames.
+//! The report buffer: what the host's delivery matched in local calls, on
+//! its way to the engine as `invocationsobserved` frames.
 //!
 //! - **Bounded.** 10 000 items or 8 MiB. When full it drops the newest item
 //!   and counts it (`BUFFER_FULL`); an item larger than a frame is dropped
@@ -13,9 +12,7 @@
 //!   connection. Frames already flushed but not written when the connection
 //!   dropped come back as items; one whose write failed is not resent (it may
 //!   have arrived: reports are at-most-once) and counts as `INACTIVE`.
-//! - **Coalesced.** The same event emitted to several observers back to back
-//!   is one item whose `matched` lists every observer.
-
+//!
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -35,7 +32,7 @@ use crate::protocol::{Caller, InvocationStatus, observe_codes};
 pub(crate) const MAX_ITEMS: usize = 10_000;
 /// Estimated bytes kept at most before dropping the newest.
 pub(crate) const MAX_BYTES: usize = 8 * 1024 * 1024;
-/// Items per `invocationsobserved` frame, and the count that triggers a flush.
+/// Items per `invocationsobserved` frame, and the count that starts a flush.
 pub(crate) const BATCH_ITEMS: usize = 256;
 /// How long the first item of a batch may wait for more.
 pub(crate) const LINGER: Duration = Duration::from_millis(5);
@@ -89,11 +86,10 @@ pub(crate) struct PendingItem {
     pub observe_depth: u32,
     pub traceparent: Option<String>,
     pub baggage: Option<String>,
-    /// What the item ships. For an emit the parts above are kept whole (to
-    /// compare the next emit against) and the mask picks what is sent.
+    /// What the item ships of the parts above.
     pub mask: CaptureMask,
-    /// An emitted event: the next emit of an equal event joins it.
-    pub emitted: bool,
+    /// The handler returned its input: `input` carries the value once.
+    pub output_is_input: bool,
     /// Push order, set by [`Reporter::push`] and kept wherever the item goes
     /// (parked, flushed, read back from a frame after the connection
     /// dropped); see [`merge_in`]. 0 for an item read back from a frame that
@@ -122,7 +118,7 @@ impl PendingItem {
             traceparent: None,
             baggage: None,
             mask: CaptureMask::default(),
-            emitted: false,
+            output_is_input: false,
             seq: 0,
         }
     }
@@ -165,8 +161,10 @@ impl PendingItem {
             + text(&self.baggage)
     }
 
-    /// The item as it goes on the wire.
-    pub(crate) fn to_json(&self) -> String {
+    /// The item as it goes on the wire. To an engine without `observe.v2`
+    /// (`v2: false`), an item whose output is its input carries it as
+    /// `output` too.
+    pub(crate) fn to_json(&self, v2: bool) -> String {
         #[derive(Serialize)]
         struct Wire<'a> {
             function_id: &'a str,
@@ -192,8 +190,15 @@ impl PendingItem {
             traceparent: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             baggage: Option<&'a str>,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            output_is_input: bool,
         }
         let mask = self.mask;
+        let output = if self.output_is_input && !v2 {
+            self.input.as_deref()
+        } else {
+            self.output.as_deref()
+        };
         let wire = Wire {
             function_id: &self.function_id,
             namespace: self.namespace.as_deref(),
@@ -201,7 +206,7 @@ impl PendingItem {
             matched: &self.matched,
             status: &self.status,
             input: self.input.as_deref().filter(|_| mask.input),
-            output: self.output.as_deref().filter(|_| mask.output),
+            output: output.filter(|_| mask.output),
             error: self.error.as_deref().filter(|_| mask.error),
             caller: self.caller.as_ref().filter(|_| mask.caller),
             metadata: self.metadata.as_deref().filter(|_| mask.metadata),
@@ -210,31 +215,10 @@ impl PendingItem {
             observe_depth: self.observe_depth,
             traceparent: self.traceparent.as_deref(),
             baggage: self.baggage.as_deref(),
+            output_is_input: self.output_is_input && v2 && mask.output,
         };
         // Every part is either a plain value or already valid JSON.
         serde_json::to_string(&wire).expect("report item serializes")
-    }
-
-    /// Whether `other`, an emit of the same event, joins this item.
-    fn same_event(&self, other: &PendingItem) -> bool {
-        fn raw_eq(a: &Option<Box<RawValue>>, b: &Option<Box<RawValue>>) -> bool {
-            match (a, b) {
-                (Some(a), Some(b)) => a.get() == b.get(),
-                (None, None) => true,
-                _ => false,
-            }
-        }
-        self.emitted
-            && other.emitted
-            && self.function_id == other.function_id
-            && self.namespace == other.namespace
-            && self.observe_depth == other.observe_depth
-            && raw_eq(&self.input, &other.input)
-            && raw_eq(&self.metadata, &other.metadata)
-            && self.caller == other.caller
-            // An observer already listed got an earlier, equal event: this
-            // one is a second event and needs an item of its own.
-            && !other.matched.iter().any(|id| self.matched.contains(id))
     }
 }
 
@@ -273,7 +257,7 @@ impl PendingItem {
                 caller: true,
                 metadata: true,
             },
-            emitted: false,
+            output_is_input: item.output_is_input,
             seq: 0,
         }
     }
@@ -450,6 +434,10 @@ pub(crate) struct Reporter {
     pub(crate) wake: Notify,
 }
 
+/// One packed `invocationsobserved` frame: its JSON, and the function and
+/// [`PendingItem::seq`] of each item.
+type Packed = (String, Vec<String>, Vec<u64>);
+
 /// One `invocationsobserved` frame, with its bytes held against the bound.
 #[derive(Debug)]
 pub(crate) struct ReportFrame {
@@ -524,8 +512,7 @@ impl Reporter {
             || state.bytes + self.in_flight() + size > self.limits.max_bytes
     }
 
-    /// Buffers `item`, or joins it to the last item when it is an emit of the
-    /// same event. Returns `false` when it was dropped (and counted).
+    /// Buffers `item`. Returns `false` when it was dropped (and counted).
     pub(crate) fn push(&self, item: PendingItem) -> bool {
         let size = item.estimated_size();
         if size > self.largest_item() {
@@ -536,17 +523,6 @@ impl Reporter {
         if state.closed {
             state.count(&item.function_id, observe_codes::INACTIVE, 1);
             return false;
-        }
-        if item.emitted {
-            if let Some(last) = state.items.back_mut() {
-                if last.same_event(&item) {
-                    let added: usize = item.matched.iter().map(|id| id.len() + 3).sum();
-                    last.matched.extend(item.matched);
-                    last.mask = last.mask.union(item.mask);
-                    state.bytes += added;
-                    return true;
-                }
-            }
         }
         if self.full(&state, size) {
             state.count(&item.function_id, observe_codes::BUFFER_FULL, 1);
@@ -784,11 +760,57 @@ impl Reporter {
         state.count(function_id, observe_codes::INACTIVE, items.len() as u64);
     }
 
+    /// Packs `items` into frames of at most `batch_items` items and
+    /// `frame_bytes` bytes, in order. An item larger than a frame is dropped,
+    /// and its function listed apart.
+    fn pack(&self, items: Vec<PendingItem>, v2: bool) -> (Vec<Packed>, Vec<String>) {
+        let largest = self.largest_item();
+        let mut frames: Vec<Packed> = Vec::new();
+        let mut too_large = Vec::new();
+        let mut frame = String::new();
+        let mut functions = Vec::new();
+        let mut seqs = Vec::new();
+        for item in items {
+            let json = item.to_json(v2);
+            if json.len() > largest {
+                too_large.push(item.function_id);
+                continue;
+            }
+            let count = functions.len();
+            let fits = frame.len() + 1 + json.len() + FRAME_SUFFIX.len() <= self.limits.frame_bytes;
+            if count > 0 && (count == self.limits.batch_items || !fits) {
+                frame.push_str(FRAME_SUFFIX);
+                frames.push((
+                    std::mem::take(&mut frame),
+                    std::mem::take(&mut functions),
+                    std::mem::take(&mut seqs),
+                ));
+            }
+            if functions.is_empty() {
+                frame.push_str(FRAME_PREFIX);
+            } else {
+                frame.push(',');
+            }
+            frame.push_str(&json);
+            functions.push(item.function_id);
+            seqs.push(item.seq);
+        }
+        if !functions.is_empty() {
+            frame.push_str(FRAME_SUFFIX);
+            frames.push((frame, functions, seqs));
+        }
+        (frames, too_large)
+    }
+
     /// Takes every waiting item and returns those `gate` lets through as
     /// frames of at most `batch_items` items and `frame_bytes` bytes, each
     /// holding its bytes against the bound until it is written. Held items
     /// are parked per function; dropped ones are counted as `INACTIVE`.
-    pub(crate) fn take_report_frames(&self, gate: impl Fn(&str) -> Gate) -> Vec<ReportFrame> {
+    pub(crate) fn take_report_frames(
+        &self,
+        gate: impl Fn(&str) -> Gate,
+        v2: bool,
+    ) -> Vec<ReportFrame> {
         let (taken, since): (Vec<PendingItem>, u64) = {
             let mut state = self.lock();
             state.oldest = None;
@@ -828,40 +850,12 @@ impl Reporter {
             }
         }
 
-        let largest = self.largest_item();
-        let mut frames: Vec<(String, Vec<String>, Vec<u64>)> = Vec::new();
-        let mut frame = String::new();
-        let mut functions = Vec::new();
-        let mut seqs = Vec::new();
-        for item in sendable {
-            let json = item.to_json();
-            if json.len() > largest {
-                dropped.push((item.function_id, observe_codes::TOO_LARGE));
-                continue;
-            }
-            let count = functions.len();
-            let fits = frame.len() + 1 + json.len() + FRAME_SUFFIX.len() <= self.limits.frame_bytes;
-            if count > 0 && (count == self.limits.batch_items || !fits) {
-                frame.push_str(FRAME_SUFFIX);
-                frames.push((
-                    std::mem::take(&mut frame),
-                    std::mem::take(&mut functions),
-                    std::mem::take(&mut seqs),
-                ));
-            }
-            if functions.is_empty() {
-                frame.push_str(FRAME_PREFIX);
-            } else {
-                frame.push(',');
-            }
-            frame.push_str(&json);
-            functions.push(item.function_id);
-            seqs.push(item.seq);
-        }
-        if !functions.is_empty() {
-            frame.push_str(FRAME_SUFFIX);
-            frames.push((frame, functions, seqs));
-        }
+        let (frames, too_large) = self.pack(sendable, v2);
+        dropped.extend(
+            too_large
+                .into_iter()
+                .map(|function_id| (function_id, observe_codes::TOO_LARGE)),
+        );
 
         // The items leave the buffer and their frames enter the in-flight
         // count under one lock: a `push` never sees the bytes in neither.
@@ -934,10 +928,11 @@ impl Reporter {
         frames
     }
 
-    /// [`take_report_frames`](Self::take_report_frames), the JSON only.
+    /// [`take_report_frames`](Self::take_report_frames) for an `observe.v2`
+    /// engine, the JSON only.
     #[cfg(test)]
     pub(crate) fn take_frames(&self, gate: impl Fn(&str) -> Gate) -> Vec<String> {
-        self.take_report_frames(gate)
+        self.take_report_frames(gate, true)
             .into_iter()
             .map(|frame| frame.json)
             .collect()
@@ -979,7 +974,7 @@ mod tests {
     /// their leases released, their seqs kept.
     fn sent(reporter: &Reporter) -> Vec<(String, Vec<u64>)> {
         reporter
-            .take_report_frames(|_| Gate::Send)
+            .take_report_frames(|_| Gate::Send, true)
             .into_iter()
             .map(|mut frame| {
                 (
@@ -996,18 +991,6 @@ mod tests {
                 .iter()
                 .map(|(json, seqs)| (json.as_str(), seqs.as_slice())),
         );
-    }
-
-    fn emitted(matched: &str, input: Value, mask: CaptureMask) -> PendingItem {
-        PendingItem {
-            emitted: true,
-            caller: Some(Caller {
-                worker_name: Some("db".into()),
-                ..Caller::default()
-            }),
-            mask,
-            ..item("db::on-row", &[matched], input)
-        }
     }
 
     fn items_of(frame: &str) -> Vec<Value> {
@@ -1131,34 +1114,41 @@ mod tests {
         assert_eq!(sizes, vec![256, 256, 88]);
     }
 
+    /// An item whose output is its input carries the value once to an
+    /// `observe.v2` engine, and as both `input` and `output` to an older one.
     #[test]
-    fn equal_emits_back_to_back_are_one_item() {
+    fn output_is_input_carries_the_value_once_to_a_v2_engine() {
+        let event = json!({ "table": "invoices", "op": "update" });
+        let source = || PendingItem {
+            output_is_input: true,
+            mask: CaptureMask {
+                input: true,
+                output: true,
+                ..CaptureMask::default()
+            },
+            ..item("db::on-row", &["o"], event.clone())
+        };
+        let once = source();
+        let size = once.estimated_size();
+        assert!(size < 2 * once.input.as_ref().unwrap().get().len() + ITEM_OVERHEAD);
+        let v2: Value = serde_json::from_str(&once.to_json(true)).unwrap();
+        assert_eq!(v2["input"], event);
+        assert_eq!(v2["output_is_input"], true);
+        assert!(v2.get("output").is_none());
+
+        let v1: Value = serde_json::from_str(&source().to_json(false)).unwrap();
+        assert_eq!(v1["input"], event);
+        assert_eq!(v1["output"], event);
+        assert!(v1.get("output_is_input").is_none());
+
+        // read back after a dropped connection, it keeps the flag
         let reporter = Reporter::default();
-        let input = CaptureMask {
-            input: true,
-            ..CaptureMask::default()
-        };
-        let caller = CaptureMask {
-            caller: true,
-            ..CaptureMask::default()
-        };
-        assert!(reporter.push(emitted("o1", json!({ "row": 1 }), input)));
-        assert!(reporter.push(emitted("o2", json!({ "row": 1 }), caller)));
-        // A second, equal event for o1 is an event of its own.
-        assert!(reporter.push(emitted("o1", json!({ "row": 1 }), input)));
-        assert!(reporter.push(emitted("o3", json!({ "row": 2 }), input)));
+        reporter.push(source());
+        let frames = sent(&reporter);
+        requeue(&reporter, &frames);
         let items = items_of(&reporter.take_frames(|_| Gate::Send)[0]);
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[0]["matched"], json!(["o1", "o2"]));
-        assert_eq!(items[0]["input"], json!({ "row": 1 }));
-        assert_eq!(
-            items[0]["caller"],
-            json!({ "worker_name": "db" }),
-            "captures are unioned"
-        );
-        assert_eq!(items[1]["matched"], json!(["o1"]));
-        assert!(items[1].get("caller").is_none());
-        assert_eq!(items[2]["matched"], json!(["o3"]));
+        assert_eq!(items[0]["output_is_input"], true);
+        assert!(items[0].get("output").is_none());
     }
 
     #[test]
@@ -1248,10 +1238,13 @@ mod tests {
         for i in 0..10 {
             reporter.push(item("f", &["o"], json!(i)));
         }
-        let frames = reporter.take_report_frames(|id| {
-            reporter.discard(id);
-            Gate::Hold
-        });
+        let frames = reporter.take_report_frames(
+            |id| {
+                reporter.discard(id);
+                Gate::Hold
+            },
+            true,
+        );
         assert!(frames.is_empty());
         assert_eq!(reporter.len(), 0, "nothing left counted");
         assert_eq!(
@@ -1266,10 +1259,13 @@ mod tests {
     fn an_unpark_during_a_flush_does_not_strand_the_items() {
         let reporter = Reporter::default();
         reporter.push(item("f", &["o"], json!(1)));
-        let frames = reporter.take_report_frames(|id| {
-            reporter.unpark(id);
-            Gate::Hold
-        });
+        let frames = reporter.take_report_frames(
+            |id| {
+                reporter.unpark(id);
+                Gate::Hold
+            },
+            true,
+        );
         assert!(frames.is_empty());
         assert!(reporter.deadline().is_some(), "back in line");
         let items = items_of(&reporter.take_frames(|_| Gate::Send)[0]);
@@ -1285,11 +1281,14 @@ mod tests {
         for i in 0..3 {
             reporter.push(item("f", &["o"], json!(i)));
         }
-        let frames = reporter.take_report_frames(|id| {
-            reporter.discard(id);
-            reporter.unpark(id);
-            Gate::Hold
-        });
+        let frames = reporter.take_report_frames(
+            |id| {
+                reporter.discard(id);
+                reporter.unpark(id);
+                Gate::Hold
+            },
+            true,
+        );
         assert!(frames.is_empty());
         assert_eq!(reporter.len(), 0);
         assert_eq!(
@@ -1328,10 +1327,13 @@ mod tests {
         reporter.push(item("f", &["o"], json!("old")));
         let flushed = sent(&reporter);
         reporter.push(item("f", &["o"], json!("new")));
-        let frames = reporter.take_report_frames(|_| {
-            requeue(&reporter, &flushed);
-            Gate::Hold
-        });
+        let frames = reporter.take_report_frames(
+            |_| {
+                requeue(&reporter, &flushed);
+                Gate::Hold
+            },
+            true,
+        );
         assert!(frames.is_empty());
         reporter.unpark("f");
         assert_eq!(inputs(&reporter), vec![json!("old"), json!("new")]);
@@ -1340,11 +1342,14 @@ mod tests {
         reporter.push(item("g", &["o"], json!("old")));
         let flushed = sent(&reporter);
         reporter.push(item("g", &["o"], json!("new")));
-        let frames = reporter.take_report_frames(|id| {
-            requeue(&reporter, &flushed);
-            reporter.unpark(id);
-            Gate::Hold
-        });
+        let frames = reporter.take_report_frames(
+            |id| {
+                requeue(&reporter, &flushed);
+                reporter.unpark(id);
+                Gate::Hold
+            },
+            true,
+        );
         assert!(frames.is_empty());
         assert_eq!(inputs(&reporter), vec![json!("old"), json!("new")]);
     }
@@ -1526,10 +1531,13 @@ mod tests {
         let reporter = Reporter::default();
         reporter.push(item("f", &["o"], json!(1)));
         reporter.push(item("g", &["o"], json!(1)));
-        let frames = reporter.take_report_frames(|id| {
-            reporter.close();
-            if id == "g" { Gate::Send } else { Gate::Hold }
-        });
+        let frames = reporter.take_report_frames(
+            |id| {
+                reporter.close();
+                if id == "g" { Gate::Send } else { Gate::Hold }
+            },
+            true,
+        );
         assert_eq!(frames.len(), 1, "the caller counts what it cannot send");
         assert_eq!(reporter.len(), 0);
         assert_eq!(
@@ -1553,11 +1561,22 @@ mod tests {
 
     #[test]
     fn the_item_encoding_matches_the_fixture_shape() {
-        let fixture: Value = serde_json::from_str(include_str!(
-            "../../../../fixtures/protocol/observe/invocationsobserved.json"
-        ))
-        .unwrap();
-        for expected in fixture["items"].as_array().unwrap() {
+        let fixtures = [
+            include_str!("../../../../fixtures/protocol/observe/invocationsobserved.json"),
+            include_str!(
+                "../../../../fixtures/protocol/observe/invocationsobserved-event-source.json"
+            ),
+        ];
+        let expected: Vec<Value> = fixtures
+            .iter()
+            .flat_map(|fixture| {
+                serde_json::from_str::<Value>(fixture).unwrap()["items"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        for expected in &expected {
             let typed: crate::protocol::ObservedItem =
                 serde_json::from_value(expected.clone()).unwrap();
             let pending = PendingItem {
@@ -1583,10 +1602,10 @@ mod tests {
                     caller: true,
                     metadata: true,
                 },
-                emitted: false,
+                output_is_input: typed.output_is_input,
                 seq: 0,
             };
-            let encoded: Value = serde_json::from_str(&pending.to_json()).unwrap();
+            let encoded: Value = serde_json::from_str(&pending.to_json(true)).unwrap();
             assert_eq!(&encoded, expected);
         }
     }

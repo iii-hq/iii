@@ -25,13 +25,41 @@ iii [OPTIONS] [COMMAND]
 
 | Command | Description |
 | ------- | ----------- |
+| [`call`](#iii-call) | Call a function on a running iii engine |
 | `cloud` | Manage iii Cloud deployments. Dispatches to the external `iii-cloud` binary, which is temporarily maintained outside this repository; run `iii cloud --help` for its current surface. |
 | [`compose`](#iii-compose) | Serve worker-compose projects or prepare their registry packages |
 | [`kill`](#iii-kill) | Stop iii processes by engine port, by compose project, or every orphaned worker |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`ps`](#iii-ps) | List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to |
-| [`trigger`](#iii-trigger) | Invoke a function on a running iii engine |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
+
+### `iii call`
+
+Call a function on a running iii engine
+
+Alias: `trigger`, `t`
+
+```text
+iii call [OPTIONS] [FUNCTION_PATH] [KV]...
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[FUNCTION_PATH]` | Function path (e.g. `my::fn`, `sandbox::create`). Positional |
+| `[KV]...` | Key=value payload tokens (`a=10 b="hello world"`). Combinable with `--json`: kv pairs override individual keys of the json object |
+
+| Option | Description |
+| ------ | ----------- |
+| `--json <JSON>` | JSON payload (`--json '{"a":1}'`). When combined with kv pairs the json must be an object; kv pairs override its keys (shallow merge) |
+| `--engine <URL>` | Engine WebSocket address (`ws://host:port`). Overrides `III_URL` and the working directory's compose file. The local default is used when none of them supplies a URL. Encrypted (`wss://`) connections are not supported |
+| `--address <ADDRESS>` | DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else `localhost` |
+| `--port <PORT>` | DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else 49134 |
+| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
+| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
+
+<Note>
+  `iii call <function> --help` also queries a running engine for the function's description, request schema and observer args, and says when the function is private (observed, not called). That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
+</Note>
 
 ### `iii compose`
 
@@ -142,7 +170,7 @@ iii project init [OPTIONS] [NAME]
 | ------ | ----------- |
 | `-d, --directory <DIRECTORY>` | Target directory. Takes precedence over NAME. If neither NAME nor `--directory` is provided, the directory defaults to the current directory |
 | `--docker` | Also generate Docker assets (Dockerfile, docker-compose.yml, .env). Equivalent to running `iii project generate-docker` separately |
-| `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Triggers the interactive scaffolder TUI |
+| `-t, --template <TEMPLATE>` | Scaffold from a named template (e.g. "quickstart"). Opens the interactive scaffolder TUI |
 | `--template-dir <TEMPLATE_DIR>` | Local directory to use for templates instead of fetching from remote (for template development and tests) |
 | `--skip-iii` | Skip the iii-engine version compatibility check |
 | `--allow-non-empty` | Allow initialization into a non-empty directory. Without this flag, init errors out if the target dir contains anything other than hidden dotfiles (e.g. `.git/`). Re-running init in a directory with `.iii/project.ini` is always allowed (idempotent re-init) |
@@ -159,34 +187,6 @@ iii ps [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `--json` | Print JSON instead of a table |
-
-### `iii trigger`
-
-Invoke a function on a running iii engine
-
-Alias: `t`
-
-```text
-iii trigger [OPTIONS] [FUNCTION_PATH] [KV]...
-```
-
-| Argument | Description |
-| -------- | ----------- |
-| `[FUNCTION_PATH]` | Function path (e.g. `my::fn`, `sandbox::create`). Positional |
-| `[KV]...` | Key=value payload tokens (`a=10 b="hello world"`). Combinable with `--json`: kv pairs override individual keys of the json object |
-
-| Option | Description |
-| ------ | ----------- |
-| `--json <JSON>` | JSON payload (`--json '{"a":1}'`). When combined with kv pairs the json must be an object; kv pairs override its keys (shallow merge) |
-| `--engine <URL>` | Engine WebSocket address (`ws://host:port`). Overrides `III_URL` and the working directory's compose file. The local default is used when none of them supplies a URL. Encrypted (`wss://`) connections are not supported |
-| `--address <ADDRESS>` | DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else `localhost` |
-| `--port <PORT>` | DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else 49134 |
-| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
-| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
-
-<Note>
-  `iii trigger <function> --help` additionally queries a running engine for the function's description and request schema. That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
-</Note>
 
 ### `iii update`
 

@@ -17,7 +17,7 @@ import { typed, useBeatClock } from './use-beat-clock'
 
 const ASK = 'Add storage, and give this system an agent harness.'
 const REPLY = 'Adding both. harness depends on ten other workers, so they join with it.'
-const COMMAND = 'iii trigger compose::add worker=storage worker=harness'
+const COMMAND = 'iii call compose::add worker=storage worker=harness'
 const ASK_CHAR_MS = 16
 /** Workers already in the graph from the chapters before (http, api, database, iii-directory). */
 const BASE_WORKERS = 4

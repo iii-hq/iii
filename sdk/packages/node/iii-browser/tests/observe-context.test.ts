@@ -1,6 +1,6 @@
 import { runInNewContext } from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { registerWorker, TriggerAction } from '../src/index'
+import { CallAction, registerWorker } from '../src/index'
 import { MAX_OFFLINE_LOCAL_DEPTH, MAX_RUNNING_INVOCATION_MS } from '../src/invocation-context'
 import type { InvocationContext, Observer } from '../src/observe-types'
 import type { ISdk } from '../src/types'
@@ -8,8 +8,9 @@ import * as fake from './observe-fake-engine'
 
 /**
  * Browser specifics: the invocation context is a synchronous scope (no
- * `AsyncLocalStorage`), `withInvocation` carries it across an `await`, and
- * `trigger` sends `metadata` / `traceparent` / `baggage` (README §7 phase 4).
+ * `AsyncLocalStorage`), `withInvocation` carries it across an `await`, a
+ * deliver hook keeps its invocation for the calls it makes after one, and
+ * `call` sends `metadata` / `traceparent` / `baggage`.
  */
 const { functionRegistered, observerInfo, settle, reportedItems, invokes } = fake
 
@@ -78,7 +79,7 @@ function worker() {
 
 const sent = (socket: fake.FakeSocket, functionId: string) => invokes(socket).find((f) => f.function_id === functionId)
 
-describe('trigger sends metadata and the trace context', () => {
+describe('call sends metadata and the trace context', () => {
   it('sends metadata, traceparent and baggage given on the request, on every action', () => {
     const { sdk, socket } = worker()
     const request = {
@@ -87,12 +88,12 @@ describe('trigger sends metadata and the trace context', () => {
       traceparent: TRACEPARENT,
       baggage: 'k=v',
     }
-    void sdk.trigger({ function_id: 'x::sync', timeoutMs: 20, ...request }).catch(() => undefined)
-    void sdk.trigger({ function_id: 'x::void', action: TriggerAction.Void(), ...request })
+    void sdk.call({ function_id: 'x::sync', timeoutMs: 20, ...request }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::void', action: CallAction.Void(), ...request })
     void sdk
-      .trigger({
+      .call({
         function_id: 'x::queued',
-        action: TriggerAction.Enqueue({ queue: 'q' }),
+        action: CallAction.Enqueue({ queue: 'q' }),
         timeoutMs: 20,
         ...request,
       })
@@ -108,7 +109,7 @@ describe('trigger sends metadata and the trace context', () => {
 
   it('a top-level call without them sends none (the engine starts the trace)', () => {
     const { sdk, socket } = worker()
-    void sdk.trigger({ function_id: 'x::plain', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::plain', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     const frame = sent(socket, 'x::plain')
     expect(frame).not.toHaveProperty('metadata')
     expect(frame).not.toHaveProperty('traceparent')
@@ -119,9 +120,9 @@ describe('trigger sends metadata and the trace context', () => {
   it('a call made inside a handler continues the trace the handler was invoked with; an explicit one wins', async () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('ui::on-event', async () => {
-      void sdk.trigger({ function_id: 'x::inherits', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::inherits', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       void sdk
-        .trigger({
+        .call({
           function_id: 'x::explicit',
           payload: {},
           timeoutMs: 20,
@@ -159,7 +160,7 @@ describe('trigger sends metadata and the trace context', () => {
     sdk.registerFunction('ui::inner', async () => {
       throw new Error('inner failed')
     })
-    sdk.registerFunction('ui::outer', async () => sdk.trigger({ function_id: 'ui::inner', payload: {} }))
+    sdk.registerFunction('ui::outer', async () => sdk.call({ function_id: 'ui::inner', payload: {} }))
     // remote: the engine invokes ui::outer; its call to ui::inner is not confirmed for local dispatch
     socket.deliver({ type: 'invokefunction', invocation_id: 'outer-1', function_id: 'ui::outer', data: {} })
     await settle()
@@ -178,7 +179,7 @@ describe('trigger sends metadata and the trace context', () => {
     // local: both confirmed, the same body comes back
     socket.deliver(functionRegistered('ui::inner'))
     socket.deliver(functionRegistered('ui::outer'))
-    await expect(sdk.trigger({ function_id: 'ui::outer', payload: {} })).rejects.toMatchObject({
+    await expect(sdk.call({ function_id: 'ui::outer', payload: {} })).rejects.toMatchObject({
       code: 'invocation_failed',
       message: 'inner failed',
     })
@@ -205,7 +206,7 @@ describe('trigger sends metadata and the trace context', () => {
       data: {},
     })
     socket.deliver(functionRegistered('ui::show'))
-    await sdk.trigger({ function_id: 'ui::show', payload: {}, metadata: { local: true } })
+    await sdk.call({ function_id: 'ui::show', payload: {}, metadata: { local: true } })
     await settle()
     expect(seen).toEqual([{ a: 1 }, undefined, { local: true }])
   })
@@ -221,7 +222,7 @@ describe('trigger sends metadata and the trace context', () => {
     socket.deliver(functionRegistered('ui::traced', [observerInfo('o-1', 't::a', { capture: ['input'] })]))
     await settle()
     socket.clear()
-    await sdk.trigger({
+    await sdk.call({
       function_id: 'ui::traced',
       payload: { n: 1 },
       traceparent: TRACEPARENT,
@@ -309,7 +310,7 @@ describe('after an await, outside any scope', () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('ui::late-call', async () => {
       await Promise.resolve()
-      void sdk.trigger({ function_id: 'x::after-await', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::after-await', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.deliver(inbound('ui::late-call', 'i-1', 3, { traceparent: TRACEPARENT }))
@@ -327,7 +328,7 @@ describe('after an await, outside any scope', () => {
     const gates = new Map<string, () => void>()
     sdk.registerFunction('ui::waits', async (data: { id: string }) => {
       await new Promise<void>((r) => gates.set(data.id, r))
-      void sdk.trigger({ function_id: `x::after-${data.id}`, payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: `x::after-${data.id}`, payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.deliver(inbound('ui::waits', 'i-2', 2, { data: { id: 'shallow' }, traceparent: TRACEPARENT }))
@@ -349,7 +350,7 @@ describe('after an await, outside any scope', () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('ui::plain', async () => {
       await Promise.resolve()
-      void sdk.trigger({ function_id: 'x::plain-after', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::plain-after', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.deliver(inbound('ui::plain', 'i-1', 0, { traceparent: TRACEPARENT }))
@@ -369,7 +370,7 @@ describe('after an await, outside any scope', () => {
     sdk.registerFunction('ui::on-loop', async () => {
       activations.push(sdk.currentInvocation()?.observe_depth ?? -1)
       await Promise.resolve() // the scope ends here
-      await sdk.trigger({ function_id: 'x::loop', payload: {} })
+      await sdk.call({ function_id: 'x::loop', payload: {} })
       return null
     })
     socket.deliver(inbound('ui::on-loop', 'act-1', 1))
@@ -393,7 +394,7 @@ describe('after an await, outside any scope', () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('ui::routed', async () => {
       await Promise.resolve()
-      void sdk.trigger({ function_id: 'x::after-routed', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::after-routed', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     // a routed call made from inside some activation elsewhere: deep, but not an activation itself
@@ -405,22 +406,13 @@ describe('after an await, outside any scope', () => {
     expect(frame).not.toHaveProperty('traceparent')
   })
 
-  it("lends no metadata: an emit outside any scope is not filtered on a running activation's metadata", async () => {
+  it("a call's metadata is its own: a local call after an await carries none of a running activation's", async () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
-    const index: Observer[] = []
-    sdk.registerFunction('ui::ticks', async () => null, {
-      observe: {
-        delivery: 'owner',
-        onObserverAdded: (obs) => {
-          index.push(obs)
-        },
-      },
-    })
-    const inScope: boolean[] = []
+    sdk.registerFunction('ui::ticks', (tick: { tick: number }) => tick, { private: true })
     let release!: () => void
     sdk.registerFunction('ui::busy', async () => {
-      inScope.push(index[0].emit({ tick: 0 })) // its own scope: its metadata applies
+      await sdk.call({ function_id: 'ui::ticks', payload: { tick: 0 }, metadata: { page: 'cart' } })
       await new Promise<void>((r) => {
         release = r
       })
@@ -429,7 +421,7 @@ describe('after an await, outside any scope', () => {
     socket.deliver(
       functionRegistered('ui::ticks', [
         observerInfo('o-1', 't::a', {
-          capture: ['input'],
+          capture: ['input', 'metadata'],
           filters: { $and: [{ 'metadata.page': { $eq: 'cart' } }] },
         }),
       ]),
@@ -439,12 +431,11 @@ describe('after an await, outside any scope', () => {
     socket.deliver(inbound('ui::busy', 'busy-1', 2, { metadata: { page: 'cart' } }))
     await settle()
     // a timer, outside any handler, while ui::busy awaits: not ui::busy's metadata
-    expect(index[0].emit({ tick: 1 })).toBe(false)
+    await sdk.call({ function_id: 'ui::ticks', payload: { tick: 1 } })
     release()
     await settle()
     await flushed()
-    expect(inScope).toEqual([true])
-    expect(reportedItems(socket).map((i) => i.input)).toEqual([{ tick: 0 }])
+    expect(reportedItems(socket).map((i) => [i.input, i.metadata])).toEqual([[{ tick: 0 }, { page: 'cart' }]])
   })
 
   it('a self-recursion that awaits before each call still reaches the engine at 64 local calls', async () => {
@@ -453,12 +444,12 @@ describe('after an await, outside any scope', () => {
     sdk.registerFunction('rec::await', async (n: number): Promise<number> => {
       local++
       await Promise.resolve() // the scope ends here: the depth comes from the running calls
-      return n === 0 ? 0 : sdk.trigger({ function_id: 'rec::await', payload: n - 1 })
+      return n === 0 ? 0 : sdk.call({ function_id: 'rec::await', payload: n - 1 })
     })
     socket.deliver(functionRegistered('rec::await'))
     await settle()
     socket.clear()
-    const result = sdk.trigger({ function_id: 'rec::await', payload: 100 })
+    const result = sdk.call({ function_id: 'rec::await', payload: 100 })
     await settle()
     expect(local).toBe(64)
     const [remote] = invokes(socket)
@@ -485,7 +476,7 @@ describe('after an await, outside any scope', () => {
       await new Promise<void>((r) => {
         release = r
       })
-      void iii.trigger({ function_id: 'x::call-back', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void iii.call({ function_id: 'x::call-back', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.deliver(inbound('ui::slow-hop', 'hop-1', 5))
@@ -502,13 +493,13 @@ describe('after an await, outside any scope', () => {
     sdk.registerFunction('ui::stuck', () => new Promise(() => undefined))
     socket.deliver(inbound('ui::stuck', 'stuck-1', 5))
     await settle()
-    void sdk.trigger({ function_id: 'x::while-stuck', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::while-stuck', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(sent(socket, 'x::while-stuck')).toMatchObject({ observe_depth: 5 })
     await fake.elapse(MAX_RUNNING_INVOCATION_MS - 1000)
-    void sdk.trigger({ function_id: 'x::still-stuck', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::still-stuck', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(sent(socket, 'x::still-stuck')).toMatchObject({ observe_depth: 5 })
     await fake.elapse(1001)
-    void sdk.trigger({ function_id: 'x::later', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::later', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(sent(socket, 'x::later')).not.toHaveProperty('observe_depth')
   })
 
@@ -534,7 +525,7 @@ describe('after an await, outside any scope', () => {
       if (!connected) socket.drop()
       closeGate()
       ran = 0
-      const calls = Array.from({ length: 70 }, (_, i) => sdk.trigger({ function_id: 'fan::out', payload: i }))
+      const calls = Array.from({ length: 70 }, (_, i) => sdk.call({ function_id: 'fan::out', payload: i }))
       expect(ran).toBe(70)
       open()
       await expect(Promise.all(calls)).resolves.toHaveLength(70)
@@ -569,7 +560,7 @@ describe('after an await, outside any scope', () => {
       ran = 0
       const calls: Promise<unknown>[] = []
       for (let i = 0; i < 70; i++) {
-        calls.push(sdk.trigger({ function_id: 'fan::ticks', payload: i, timeoutMs: 1000 }).catch(() => 'remote'))
+        calls.push(sdk.call({ function_id: 'fan::ticks', payload: i, timeoutMs: 1000 }).catch(() => 'remote'))
         await settle(1) // the next call starts in a later macrotask
       }
       const remote = connected ? invokes(socket).filter((f) => f.function_id === 'fan::ticks').length : 0
@@ -605,16 +596,16 @@ describe('after an await, outside any scope', () => {
     await settle()
     socket.clear()
     for (let i = 0; i < 70; i++) {
-      void sdk.trigger({ function_id: 'hang::fn', payload: i, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'hang::fn', payload: i, timeoutMs: 20 }).catch(() => undefined)
       await settle(1)
     }
     expect(ran).toBe(64) // the rest were counted as nested (connected: through the engine)
     await fake.elapse(21) // every one timed out: none counts as running any more
-    void sdk.trigger({ function_id: 'hang::fn', payload: 'again', timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'hang::fn', payload: 'again', timeoutMs: 20 }).catch(() => undefined)
     expect(ran).toBe(65)
     // Let that one expire too, and have a call prune it, so no lease outlives the fake clock.
     await fake.elapse(21)
-    void sdk.trigger({ function_id: 'x::prune', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::prune', payload: {}, timeoutMs: 20 }).catch(() => undefined)
   })
 
   it('a recursion through copied withInvocation views still reaches the engine at 64 local calls', async () => {
@@ -626,12 +617,12 @@ describe('after an await, outside any scope', () => {
       await Promise.resolve()
       return n === 0
         ? 0
-        : sdk.withInvocation(inv, () => sdk.trigger<number, number>({ function_id: 'rec::copied', payload: n - 1 }))
+        : sdk.withInvocation(inv, () => sdk.call<number, number>({ function_id: 'rec::copied', payload: n - 1 }))
     })
     socket.deliver(functionRegistered('rec::copied'))
     await settle()
     socket.clear()
-    const result = sdk.trigger({ function_id: 'rec::copied', payload: 300 })
+    const result = sdk.call({ function_id: 'rec::copied', payload: 300 })
     await settle()
     expect(local).toBe(64)
     const [remote] = invokes(socket)
@@ -655,12 +646,12 @@ describe('after an await, outside any scope', () => {
       await Promise.resolve()
       return n === 0
         ? 0
-        : sdk.withInvocation(root, () => sdk.trigger<number, number>({ function_id: 'rec::stored', payload: n - 1 }))
+        : sdk.withInvocation(root, () => sdk.call<number, number>({ function_id: 'rec::stored', payload: n - 1 }))
     })
     socket.deliver(functionRegistered('rec::stored'))
     await settle()
     socket.clear()
-    const result = sdk.trigger({ function_id: 'rec::stored', payload: 300 })
+    const result = sdk.call({ function_id: 'rec::stored', payload: 300 })
     await settle()
     expect(local).toBe(64)
     const [remote] = invokes(socket)
@@ -683,7 +674,7 @@ describe('after an await, outside any scope', () => {
     sdk.registerFunction('rec::offline', async (n: number): Promise<number> => {
       local++
       if (awaits) await Promise.resolve()
-      return n === 0 ? 0 : sdk.trigger<number, number>({ function_id: 'rec::offline', payload: n - 1 })
+      return n === 0 ? 0 : sdk.call<number, number>({ function_id: 'rec::offline', payload: n - 1 })
     })
     socket.deliver(functionRegistered('rec::offline'))
     await settle()
@@ -691,7 +682,7 @@ describe('after an await, outside any scope', () => {
     socket.clear()
     let failure: unknown
     const unhandled = await unhandledDuring(async () => {
-      failure = await sdk.trigger({ function_id: 'rec::offline', payload: 5000 }).then(
+      failure = await sdk.call({ function_id: 'rec::offline', payload: 5000 }).then(
         () => undefined,
         (error: unknown) => error,
       )
@@ -726,7 +717,7 @@ describe('after an await, outside any scope', () => {
         })
       }
       await Promise.resolve()
-      return sdk.trigger({ function_id: 'rec::bottom', payload: n - 1 })
+      return sdk.call({ function_id: 'rec::bottom', payload: n - 1 })
     })
     sdk.registerFunction('ui::plain', async () => 'plain')
     socket.deliver(inbound('ui::hold', 'hold-1', 0))
@@ -734,9 +725,9 @@ describe('after an await, outside any scope', () => {
     socket.deliver(functionRegistered('ui::plain'))
     await settle()
     socket.clear()
-    await expect(sdk.trigger({ function_id: 'rec::bottom', payload: 63 })).resolves.toBe('bottom')
+    await expect(sdk.call({ function_id: 'rec::bottom', payload: 63 })).resolves.toBe('bottom')
     // ui::hold still runs; a later unscoped local call is not counted 64 deep
-    await expect(sdk.trigger({ function_id: 'ui::plain', payload: {}, timeoutMs: 100 })).resolves.toBe('plain')
+    await expect(sdk.call({ function_id: 'ui::plain', payload: {}, timeoutMs: 100 })).resolves.toBe('plain')
     expect(socket.sent).toHaveLength(0)
     releaseHold()
   })
@@ -765,40 +756,169 @@ describe('after an await, outside any scope', () => {
     void sdk.withInvocation(inv, () => second.promise)
     first.open() // its late settle ends only its own lease
     await done
-    void sdk.trigger({ function_id: 'x::still-entered', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::still-entered', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(sent(socket, 'x::still-entered')).toMatchObject({ observe_depth: 4, caller: { invocation_id: 'entry-1' } })
     second.open()
   })
 
-  it("an emit after an await carries the running activation's observe_depth, and is that invocation", async () => {
+  it("a source called after an await carries the running activation's observe_depth, and is that invocation", async () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
-    const index: Observer[] = []
-    sdk.registerFunction(
-      'ui::source',
-      async (event: Record<string, unknown>) => {
-        await Promise.resolve()
-        for (const obs of index) obs.emit(event)
-        return null
-      },
-      {
-        observe: {
-          delivery: 'owner',
-          onObserverAdded: (obs) => {
-            index.push(obs)
-          },
-        },
-      },
+    sdk.registerFunction('ui::source', (event: Record<string, unknown>) => event, { private: true })
+    sdk.registerFunction('ui::on-change', async (event: Record<string, unknown>) => {
+      await Promise.resolve()
+      await sdk.call({ function_id: 'ui::source', payload: event })
+      return null
+    })
+    socket.deliver(
+      functionRegistered('ui::source', [observerInfo('o-1', 't::a', { capture: ['input', 'output', 'caller'] })]),
     )
-    socket.deliver(functionRegistered('ui::source', [observerInfo('o-1', 't::a', { capture: ['input'] })]))
     await settle()
     socket.clear()
-    socket.deliver(inbound('ui::source', 'src-1', 4, { data: { n: 1 } }))
+    socket.deliver(inbound('ui::on-change', 'act-1', 4, { data: { n: 1 } }))
     await settle()
     await flushed()
     expect(reportedItems(socket)).toEqual([
-      expect.objectContaining({ invocation_id: 'src-1', matched: ['o-1'], observe_depth: 4 }),
+      expect.objectContaining({
+        matched: ['o-1'],
+        input: { n: 1 },
+        output_is_input: true,
+        observe_depth: 4,
+        caller: expect.objectContaining({ function_id: 'ui::on-change', invocation_id: 'act-1' }),
+      }),
     ])
+  })
+})
+
+describe('a deliver hook after an await', () => {
+  /** `ui::on-command`: its deliver hook awaits `gate`, then calls through the observer its command names. */
+  async function commands(gate: () => Promise<void>) {
+    const { sdk, socket } = worker()
+    const routes = new Map<string, Observer>()
+    const seen: (InvocationContext | undefined)[] = []
+    sdk
+      .registerFunction('ui::on-command', (command: { name: string }) => command, { private: true })
+      .onObserverAdded((obs) => {
+        routes.set(obs.args.name as string, obs)
+      })
+      .onObserverDeliver(async (call) => {
+        seen.push(sdk.currentInvocation())
+        await gate()
+        const obs = routes.get(call.input.name)
+        if (!obs) return { handled: false }
+        void sdk.call({ function_id: 'x::audit', payload: call.input, timeoutMs: 20 }).catch(() => undefined)
+        return sdk.call({ observer: obs, payload: call.input })
+      })
+    socket.deliver(
+      functionRegistered('ui::on-command', [observerInfo('save', 'editor::save', { args: { name: 'save' } })]),
+    )
+    await settle()
+    socket.clear()
+    return { sdk, socket, seen }
+  }
+
+  it("the calls it makes after the await keep its invocation, while it is the only one running; a call through an observer goes to the observer's target", async () => {
+    const { socket, seen } = await commands(() => Promise.resolve())
+    socket.deliver(
+      inbound('ui::on-command', 'cmd-1', 0, {
+        data: { name: 'save' },
+        observe_depth: 2,
+        traceparent: TRACEPARENT,
+        caller: { worker_id: 'w-0', worker_name: 'shell', function_id: 'shell::key', invocation_id: 'k-1' },
+      }),
+    )
+    await settle()
+    expect(seen.map((inv) => inv?.invocation_id)).toEqual(['cmd-1'])
+    const caller = {
+      function_id: 'ui::on-command',
+      invocation_id: 'cmd-1',
+      parent: { worker_id: 'w-0', worker_name: 'shell', function_id: 'shell::key', invocation_id: 'k-1' },
+    }
+    expect(sent(socket, 'x::audit')).toMatchObject({ caller, observe_depth: 2, traceparent: TRACEPARENT })
+    const target = sent(socket, 'editor::save') as Record<string, unknown>
+    expect(target).toMatchObject({
+      function_id: 'editor::save',
+      data: { name: 'save' },
+      activation: { observer_id: 'save' },
+      caller,
+      observe_depth: 2,
+      traceparent: TRACEPARENT,
+    })
+    expect(target).not.toHaveProperty('namespace')
+    socket.deliver({
+      type: 'invocationresult',
+      invocation_id: target.invocation_id,
+      function_id: 'editor::save',
+      result: { saved: true },
+    })
+    await settle()
+    // the hook's answer is the target's, and says the hook delivered the call
+    expect(fake.resultOf(socket, 'cmd-1')).toEqual({
+      type: 'invocationresult',
+      invocation_id: 'cmd-1',
+      function_id: 'ui::on-command',
+      result: { saved: true },
+      traceparent: TRACEPARENT,
+      delivered: true,
+    })
+  })
+
+  it('with two deliveries running, a call after the await carries the deepest depth and no caller; the call through the observer is routed all the same', async () => {
+    const gates: (() => void)[] = []
+    const { socket } = await commands(() => new Promise<void>((r) => gates.push(r)))
+    socket.deliver(inbound('ui::on-command', 'cmd-1', 0, { data: { name: 'save' }, observe_depth: 1 }))
+    socket.deliver(inbound('ui::on-command', 'cmd-2', 0, { data: { name: 'save' }, observe_depth: 3 }))
+    await settle()
+    gates[0]()
+    await settle()
+    const audit = sent(socket, 'x::audit')
+    expect(audit).toMatchObject({ observe_depth: 3 })
+    expect(audit).not.toHaveProperty('caller')
+    expect(sent(socket, 'editor::save')).toMatchObject({
+      function_id: 'editor::save',
+      activation: { observer_id: 'save' },
+      observe_depth: 3,
+    })
+    gates[1]()
+    await settle()
+  })
+
+  it('once the hook settled, nothing falls back to its invocation', async () => {
+    const { sdk, socket } = await commands(() => Promise.resolve())
+    socket.deliver(inbound('ui::on-command', 'cmd-1', 0, { data: { name: 'none' }, observe_depth: 2 }))
+    await settle()
+    expect(fake.resultOf(socket, 'cmd-1')).toMatchObject({ result: { handled: false } })
+    void sdk.call({ function_id: 'x::later', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    const later = sent(socket, 'x::later')
+    expect(later).not.toHaveProperty('caller')
+    expect(later).not.toHaveProperty('observe_depth')
+  })
+
+  it('on the local path too: the hook of a local call keeps the local invocation after its await', async () => {
+    const { sdk, socket } = await commands(() => Promise.resolve())
+    socket.deliver(
+      functionRegistered('ui::on-command', [observerInfo('save', 'editor::save', { args: { name: 'save' } })]),
+    )
+    await settle()
+    socket.clear()
+    const response = sdk.call({ function_id: 'ui::on-command', payload: { name: 'save' } })
+    await settle()
+    const target = sent(socket, 'editor::save') as Record<string, unknown>
+    expect(target).toMatchObject({
+      activation: { observer_id: 'save' },
+      caller: {
+        function_id: 'ui::on-command',
+        invocation_id: expect.any(String),
+        parent: { worker_id: 'worker-1', worker_name: 'ui' },
+      },
+    })
+    socket.deliver({
+      type: 'invocationresult',
+      invocation_id: target.invocation_id,
+      function_id: 'editor::save',
+      result: { saved: true },
+    })
+    await expect(response).resolves.toEqual({ saved: true })
   })
 })
 
@@ -860,7 +980,7 @@ describe('what a handler failure reports (the same on the remote and the local p
     })
     // local: the caller's rejection carries the same body
     socket.deliver(functionRegistered('ui::fails'))
-    const local = await sdk.trigger({ function_id: 'ui::fails', payload: {} }).then(
+    const local = await sdk.call({ function_id: 'ui::fails', payload: {} }).then(
       () => undefined,
       (error: unknown) => error,
     )
@@ -879,7 +999,7 @@ describe('withInvocation', () => {
       await Promise.resolve()
       returned = sdk.withInvocation(inv, () => {
         inner = sdk.currentInvocation()
-        void sdk.trigger({ function_id: 'orders::create', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+        void sdk.call({ function_id: 'orders::create', payload: {}, timeoutMs: 20 }).catch(() => undefined)
         return 'value of fn'
       })
       return null
@@ -931,36 +1051,26 @@ describe('withInvocation', () => {
     expect(sdk.currentInvocation()).toBeUndefined()
   })
 
-  it('restores the metadata an emitted event is filtered on, and the event is the invocation itself', async () => {
+  it('a source called inside it is reported with that invocation as its caller; outside it, without one', async () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
-    const index: Observer[] = []
-    sdk.registerFunction(
-      'ui::on-click',
-      async (event: { button: string }) => {
-        const inv = sdk.currentInvocation()
-        await Promise.resolve()
-        sdk.withInvocation(inv, () => {
-          for (const obs of index) obs.emit(event)
-        })
-        for (const obs of index) obs.emit({ ...event, late: true }) // outside: filtered out by metadata
-        return null
-      },
-      {
-        observe: {
-          delivery: 'owner',
-          onObserverAdded: (obs) => {
-            index.push(obs)
-          },
-        },
-      },
-    )
+    sdk.registerFunction('ui::clicked', (event: Record<string, unknown>) => event, { private: true })
+    sdk.registerFunction('ui::on-click', async (event: { button: string }) => {
+      const inv = sdk.currentInvocation()
+      await Promise.resolve()
+      await sdk.withInvocation(inv, () =>
+        sdk.call({ function_id: 'ui::clicked', payload: event, metadata: { page: 'cart' } }),
+      )
+      await sdk.call({ function_id: 'ui::clicked', payload: { ...event, late: true } }) // outside: filtered out by metadata
+      return null
+    })
     socket.deliver(
-      functionRegistered('ui::on-click', [
+      functionRegistered('ui::clicked', [
         observerInfo('o-1', 't::a', {
           capture: ['input', 'caller', 'metadata'],
           filters: { $and: [{ 'metadata.page': { $eq: 'cart' } }] },
         }),
+        observerInfo('o-2', 't::b', { capture: ['input', 'caller'] }),
       ]),
     )
     await settle()
@@ -970,20 +1080,23 @@ describe('withInvocation', () => {
       invocation_id: 'click-1',
       function_id: 'ui::on-click',
       data: { button: 'buy' },
-      metadata: { page: 'cart' },
       caller: { worker_id: 'w-0', worker_name: 'shell' },
     })
     await settle()
     await flushed()
-    expect(reportedItems(socket)).toEqual([
-      expect.objectContaining({
+    const [inside, outside] = reportedItems(socket)
+    expect(inside).toMatchObject({
+      matched: ['o-1', 'o-2'],
+      input: { button: 'buy' },
+      metadata: { page: 'cart' },
+      caller: {
+        function_id: 'ui::on-click',
         invocation_id: 'click-1',
-        matched: ['o-1'],
-        input: { button: 'buy' },
-        metadata: { page: 'cart' },
-        caller: { worker_id: 'w-0', worker_name: 'shell' },
-      }),
-    ])
+        parent: { worker_id: 'w-0', worker_name: 'shell' },
+      },
+    })
+    expect(outside).toMatchObject({ matched: ['o-2'], input: { button: 'buy', late: true } })
+    expect(outside).not.toHaveProperty('caller')
   })
 
   it('accepts a context built by hand, and undefined runs outside any invocation', async () => {
@@ -995,10 +1108,10 @@ describe('withInvocation', () => {
     }
     sdk.withInvocation(built, () => {
       expect(sdk.currentInvocation()).toEqual(built)
-      void sdk.trigger({ function_id: 'x::from-built', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::from-built', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       sdk.withInvocation(undefined, () => {
         expect(sdk.currentInvocation()).toBeUndefined()
-        void sdk.trigger({ function_id: 'x::detached', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+        void sdk.call({ function_id: 'x::detached', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       })
       expect(sdk.currentInvocation()?.invocation_id).toBe('r-1')
     })
@@ -1020,11 +1133,11 @@ describe('withInvocation', () => {
     }
     let release!: () => void
     const result = sdk.withInvocation(built, async () => {
-      void sdk.trigger({ function_id: 'x::before-await', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::before-await', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       await new Promise<void>((r) => {
         release = r
       })
-      void sdk.trigger({ function_id: 'x::after-await', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::after-await', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return 'done'
     })
     expect(result).toBeInstanceOf(Promise)
@@ -1039,7 +1152,7 @@ describe('withInvocation', () => {
     }
     // settled: no longer running, so a later call is top-level again
     await Promise.resolve()
-    void sdk.trigger({ function_id: 'x::later', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::later', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(sent(socket, 'x::later')).not.toHaveProperty('observe_depth')
   })
 
@@ -1057,7 +1170,7 @@ describe('withInvocation', () => {
       }),
     ).rejects.toThrow('awaited')
     // once it rejected it is no longer running: an unscoped call is top-level again
-    void sdk.trigger({ function_id: 'x::after-rejection', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::after-rejection', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     expect(sent(socket, 'x::after-rejection')).not.toHaveProperty('observe_depth')
     expect(sent(socket, 'x::after-rejection')).not.toHaveProperty('caller')
 

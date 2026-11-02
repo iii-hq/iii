@@ -84,73 +84,70 @@ and returns the result.
 
 ### Every function is observable
 
-Any worker allowed to invoke a function can also observe it: `iii.observe` invokes another function
-for each invocation that passes declarative filters, with no code in the observed function's worker.
-A function can declare how it is observed, or refuse observers, with the `observe` option of
-`registerFunction`. See [Observers](./observers) and
+Any worker can observe any function, private ones included, unless the function is registered with
+`observable: false` or RBAC restricts it. `worker.observe("math::add", "audit::record")` means: when
+`math::add` runs, `audit::record` runs. See [Observers](./observers) and
+[Run a function when something happens](#run-a-function-when-something-happens).
+
+The worker that registers a function can make it private or unobservable, and can override what iii
+does by default when it is observed; see
 [Observable functions](../creating-workers/observable-functions).
 
-## Triggering (Invoking) functions
+## Call a function
 
-A function runs when a trigger fires. The same function can be invoked from many trigger types at
-once: direct CLI calls (`iii trigger`), in-process SDK calls (`worker.trigger`), or bindings to
-event-source workers like http, cron, queue, state, and iii-stream (deprecated). All paths leave
-the handler unchanged.
-
-The two most common ways to invoke a function directly are from worker code with `worker.trigger` or
-from the terminal with the command `iii trigger`. The engine routes the call to whatever worker
-registered the function; no trigger registration is involved. The `action` field controls delivery:
-by default the call waits for the function to return its result, or for the configured timeout to
-fire. Pass a different `TriggerAction` to change that.
+`call` runs a function and resolves to its result. The engine routes the call to the worker that
+registered the function, wherever it runs. Call a function from the terminal with `iii call`, or
+from worker code with `worker.call`. The `action` field sets how the call is delivered: by default
+the call waits for the function to return its result, or for the configured timeout to fire.
 
 <Tabs>
   <Tab title="CLI">
     ```bash
-    iii trigger math::add a=2 b=3
+    iii call math::add a=2 b=3
     ```
   </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { TriggerAction } from "iii-sdk";
+    import { CallAction } from "iii-sdk";
 
-    const result = await worker.trigger({
+    const result = await worker.call({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
       namespace: "default", // target a specific namespace
-      // action: TriggerAction.Void(), // fire-and-forget
-      // action: TriggerAction.Enqueue({ queue: "math" }), // route through queue
+      // action: CallAction.Void(), // fire-and-forget
+      // action: CallAction.Enqueue({ queue: "math" }), // route through queue
     });
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    from iii import TriggerAction
+    from iii import CallAction
 
-    result = worker.trigger({
+    result = worker.call({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
         "namespace": "default", # target a specific namespace
-        # "action": TriggerAction.Void(), # fire-and-forget
-        # "action": TriggerAction.Enqueue(queue="math"), # route through queue
+        # "action": CallAction.Void(), # fire-and-forget
+        # "action": CallAction.Enqueue(queue="math"), # route through queue
     })
-    # result = await worker.trigger_async({...}) # awaitable form for asyncio callers
+    # result = await worker.call_async({...}) # awaitable form for asyncio callers
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerAction;
-    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::CallAction;
+    use iii_sdk::protocol::CallRequest;
     use serde_json::json;
 
     let result = worker
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             function_id: "math::add".into(),
             payload: json!({ "a": 2, "b": 3 }),
             action: None,
-            // action: Some(TriggerAction::Void),                                  // fire-and-forget
-            // action: Some(TriggerAction::Enqueue { queue: "math".to_string() }), // route through queue
+            // action: Some(CallAction::Void),                                  // fire-and-forget
+            // action: Some(CallAction::Enqueue { queue: "math".to_string() }), // route through queue
             timeout_ms: None,
         }
         .namespace("default"), // target a specific namespace
@@ -161,7 +158,7 @@ fire. Pass a different `TriggerAction` to change that.
   </Tab>
   <Tab title="Go">
     ```go
-    result, err := client.Trigger(ctx, iii.TriggerRequest{
+    result, err := client.Call(ctx, iii.CallRequest{
         FunctionID: "math::add",
         Payload:    json.RawMessage(`{"a":2,"b":3}`),
         Namespace:  "default", // target a specific namespace
@@ -177,19 +174,21 @@ fire. Pass a different `TriggerAction` to change that.
   </Tab>
 </Tabs>
 
-Some common actions are:
+The actions are:
 
 - **Default (synchronous)**. No `action` set. The call waits for the function to return its result
   or for the configured timeout to fire.
-- **`TriggerAction.Void()`**. Fire-and-forget. The call returns immediately; the function still runs
-  but the caller doesn't see the result.
-- **`TriggerAction.Enqueue({ queue })`**. Provided by
-  [queue](https://workers.iii.dev/workers/queue). Routes the invocation through a named queue with
-  retries; the call returns once the message is enqueued.
+- **`CallAction.Void()`**. Fire-and-forget. The call returns at once; the function still runs, and
+  the caller does not see the result.
+- **`CallAction.Enqueue({ queue })`**. Provided by [queue](https://workers.iii.dev/workers/queue).
+  Routes the call through a named queue with retries; the call returns once the message is enqueued.
+
+Workers can provide their own `CallAction`s. Check each
+[worker's documentation](https://workers.iii.dev) for the actions it offers.
 
 <Info>
-  Refer to [Using iii/Namespaces](../using-iii/namespaces#trigger-a-function-in-a-namespace) for
-  more information on namespaces and triggering functions from a specific namespace.
+  Refer to [Using iii / Namespaces](./namespaces#call-a-function-in-a-namespace) for more
+  information on namespaces and calling functions in a specific namespace.
 </Info>
 
 <Note>
@@ -197,71 +196,125 @@ Some common actions are:
   confirmed the registration (local dispatch), with the same result, errors, and timeout as a call
   through the engine. Pass `dispatch: "remote"` (Python `"dispatch": "remote"`, Rust
   `.dispatch(Dispatch::Remote)`, Go `Dispatch: iii.DispatchRemote`) to send one call through the
-  engine anyway. See [Local dispatch](./observers#local-dispatch).
+  engine. See [Local dispatch](./observers#local-dispatch).
+</Note>
+
+<Note>
+  In Python, every blocking method has an awaitable twin (`call_async`, `shutdown_async`,
+  `create_channel_async`) for use inside `asyncio`. See the [Python SDK
+  reference](../reference/sdk-python).
 </Note>
 
 ### Routing to a namespace
 
 Workers and their associated functions can be namespaced. A function id is unique per namespace, not
 globally: `state::get` can be registered once in `default`, once in `orders`, and once in
-`analytics`. Set `namespace` on the trigger invocation to pick one.
+`analytics`. Set `namespace` on the call to pick one.
 
 Resolution is strict. A call that names `orders` resolves there and nowhere else, and a call that
 names none resolves in the namespace of the calling worker. A miss returns `function_not_found`
 naming the namespaces where the id does exist.
 
 <Note>
-  `iii trigger` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces
-  from worker code, see [Use namespaces](./namespaces#trigger-a-function-in-a-namespace).
+  `iii call` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces
+  from worker code, see [Use namespaces](./namespaces#call-a-function-in-a-namespace).
 </Note>
 
-<Note>
-  Functions can also be registered (or bound) to Triggers such as an `http` request, a `cron`
-  schedule, a `state` change, and so on. To bind a function to an event source, see [Triggers /
-  Register a trigger](./triggers#register-a-trigger). To run a function when another function is
-  invoked, or on an engine event, see [Observers](./observers).
-</Note>
+## Run a function when something happens
 
-<Note>
-  Workers can provide their own `TriggerAction`s. Check each [worker's
-  documentation](https://workers.iii.dev) for the action types it offers.
-</Note>
+A call runs a function once, when you make it. To run a function each time something happens
+(another function runs, an HTTP request arrives, a cron schedule fires, a row changes), observe the
+function that represents it:
 
-<Note>
-  In Python, every blocking method has an awaitable twin (`trigger_async`, `shutdown_async`,
-  `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](../reference/sdk-python).
-</Note>
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // When math::add runs, run audit::record.
+    worker.observe("math::add", "audit::record");
 
-## Trigger functions from the CLI
+    // Every day at 09:00, run reports::daily-summary.
+    worker.observe(
+      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" } },
+      "reports::daily-summary",
+    );
+    ```
 
-iii trigger is useful for running functions during development without needing to write temporary code
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # When math::add runs, run audit::record.
+    worker.observe("math::add", "audit::record")
 
-`iii trigger` is a useful development tool. Pass `--help` to any function to see its arguments and a
+    # Every day at 09:00, run reports::daily-summary.
+    worker.observe(
+        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}},
+        "reports::daily-summary",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Source;
+    use serde_json::json;
+
+    // When math::add runs, run audit::record.
+    worker.observe("math::add", "audit::record");
+
+    // Every day at 09:00, run reports::daily-summary.
+    worker.observe(
+        Source::function("cron::on-tick").args(json!({ "expression": "0 0 9 * * * *" })),
+        "reports::daily-summary",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // When math::add runs, run audit::record.
+    client.ObserveFunction("math::add", "audit::record")
+
+    // Every day at 09:00, run reports::daily-summary.
+    client.Observe(iii.Source{
+        FunctionID: "cron::on-tick",
+        Args:       iii.Args{"expression": "0 0 9 * * * *"},
+    }, "reports::daily-summary")
+    ```
+
+  </Tab>
+</Tabs>
+
+See [Observers](./observers) and [Built-in event sources](./observers#built-in-event-sources).
+
+## Call functions from the CLI
+
+iii call is useful for running functions during development without needing to write temporary code
+
+`iii call` is a useful development tool. Pass `--help` to any function to see its arguments and a
 description of what it does:
 
 ```bash
-iii trigger function::id --help
+iii call function::id --help
 ```
 
-Because `iii trigger` runs through the exact same code paths as the rest of the system, you can do
-real work straight from the terminal: figure out what a function does, apply database modifications,
-make state changes, or try any other manipulation or new code interactively. That makes it a useful
-tool for development and debugging.
+Because `iii call` runs through the exact same code paths as the rest of the system, you can do real
+work straight from the terminal: figure out what a function does, apply database modifications, make
+state changes, or try any other manipulation or new code interactively. That makes it a useful tool
+for development and debugging.
 
 <Note>
-  Request and response formats are what make `iii trigger <function> --help` work. Functions can carry JSON
-  Schemas for their request payload and response shape. For how to create these schemas when
-  registering a function, see [Creating Workers /
-  Functions](../creating-workers/functions#attach-request-and-response-schemas).
+  Request and response formats are what make `iii call <function> --help` work. Functions can carry
+  JSON Schemas for their request payload and response shape. For how to create these schemas when
+  registering a function, see
+  [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
 </Note>
 
 ## Common functions
 
 A handful of functions ship with the iii engine and the standard workers. You'll likely call them
-from almost every iii project. They look like any function you'd register yourself and are invoked
-the same way (via [`iii trigger`](./cli) or [`worker.trigger`](#triggering-invoking-functions)). The
-only thing special about them is that you didn't have to register them.
+from almost every iii project. They look like any function you'd register yourself and are called
+the same way (with [`iii call`](./cli) or [`worker.call`](#call-a-function)). The only thing special
+about them is that you didn't have to register them.
 
 ### Engine functions (`engine::*`)
 
@@ -269,29 +322,25 @@ The engine itself registers a small set of introspection and lifecycle functions
 response schemas are in the
 [engine protocol reference](../reference/engine-protocol#engine-discovery-functions).
 
-| Function                            | What it does                                                                                                                                                  |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::functions::list`           | List every registered function. Pass `{ include_internal: true }` to include engine internals.                                                                |
-| `engine::workers::list`             | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                                  |
-| `engine::triggers::list`            | List every advertised trigger type with its config and call schemas.                                                                                          |
-| `engine::registered-triggers::list` | List every registered trigger instance (binding).                                                                                                             |
-| `engine::channels::create`          | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly.             |
-| `engine::workers::register`         | Publish the calling worker's metadata (runtime, version, OS, PID, optional `namespace`, optional `description`). The SDK calls this automatically on connect. |
-| `engine::observers::list`           | List observers. Pass `{ function_id, namespace, worker }` to narrow the list. See [Inspect observers](./observers#inspect-observers).                       |
-| `engine::observers::get`            | Read one observer by `{ id }`.                                                                                                                                |
-| `engine::observers::dispose`        | Remove an observer by `{ id }`. Only its observing worker, or a caller without RBAC restrictions, may do it.                                                |
+| Function                     | What it does                                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `engine::functions::list`    | List every registered function with its `args_format`, `private`, `observable`, and observer count. Pass `{ include_internal: true }` to include engine internals. |
+| `engine::workers::list`      | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                                       |
+| `engine::channels::create`   | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly.                  |
+| `engine::workers::register`  | Publish the calling worker's metadata (runtime, version, OS, PID, optional `namespace`, optional `description`). The SDK calls this automatically on connect.      |
+| `engine::observers::list`    | List observers. Pass `{ function_id, namespace, worker }` to narrow the list. See [Inspect observers](./observers#inspect-observers).                              |
+| `engine::observers::get`     | Read one observer by `{ id }`.                                                                                                                                     |
+| `engine::observers::dispose` | Remove an observer by `{ id }`. Only its observing worker, or a caller without RBAC restrictions, may do it.                                                       |
 
-The engine also publishes two subscription triggers in the same family. Bind a function to one of
-these to react to the registry changing:
+The engine also hosts event sources for its registry. Observe them to react when it changes:
 
-| Trigger                       | Fires when                                |
-| ----------------------------- | ----------------------------------------- |
-| `engine::functions-available` | A function is registered or unregistered. |
-| `engine::workers-available`   | A worker connects or disconnects.         |
+| Function                       | Runs when                                                |
+| ------------------------------ | -------------------------------------------------------- |
+| `engine::on-functions-changed` | A function is registered or unregistered.                |
+| `engine::on-workers-changed`   | A worker connects, disconnects, or updates its metadata. |
+| `engine::on-observers-changed` | An observer changes state.                               |
 
-From 0.25, observe the equivalent event sources instead: `engine::on-functions-changed` and
-`engine::on-workers-changed`, with `deliver: "input"` so the target receives the same payload. See
-[Engine-hosted event sources](./observers#engine-hosted-event-sources).
+See [Engine-hosted event sources](./observers#engine-hosted-event-sources) for their events.
 
 ### Common workers
 
@@ -299,22 +348,27 @@ Each of these is published by a separate worker. Function ids, payload shapes, a
 behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.dev):
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
-  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is
-  unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. `pubsub` is
+  deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged for now. See
+  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>
 
+- **HTTP**: Serves HTTP routes. Observe `http::on-request` with a method and a path to add a route.
+  See [HTTP routes](./observers#http-routes) and [http](https://workers.iii.dev/workers/http).
+- **Cron**: Runs functions on a schedule. Observe `cron::on-tick` with an expression. See
+  [Schedules](./observers#schedules) and [cron](https://workers.iii.dev/workers/cron).
 - **State**: KV-style state with scoped key namespaces (distinct from
-  [routing namespaces](../understanding-iii/namespaces)) and reactive triggers on
-  create/update/delete. See [state](https://workers.iii.dev/workers/state).
+  [routing namespaces](../understanding-iii/namespaces)). Each create, update, and delete runs
+  `state::on-changed`, which you observe. See [state](https://workers.iii.dev/workers/state).
 - **Stream** (deprecated): Real-time push to connected clients over WebSocket. See
   [iii-stream](https://workers.iii.dev/workers/iii-stream). Use
-  [worker-owned trigger types](../creating-workers/triggers#declaring-a-trigger-type) or
+  [observable functions](../creating-workers/observable-functions) or
   [channels](../creating-workers/channels) for new work.
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter
-  queue. See [queue](https://workers.iii.dev/workers/queue).
+  queue. Observe `queue::on-message` to consume a topic. See
+  [queue](https://workers.iii.dev/workers/queue).
 - **Pub/Sub** (deprecated): Lightweight in-engine topic subscription for fan-out without durability
-  guarantees. See [pubsub](https://workers.iii.dev/workers/pubsub). Use worker-owned trigger types
-  or durable queue topics for new work.
+  guarantees. See [pubsub](https://workers.iii.dev/workers/pubsub). Use observable functions or
+  durable queue topics for new work.
 - **Observability**: Traces, logs, metrics, alerts, sampling rules, and rollups. See
   [iii-observability](https://workers.iii.dev/workers/iii-observability).

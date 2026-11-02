@@ -13,8 +13,7 @@ TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
 
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
-"""HTTP method accepted by :data:`HttpInvocationConfig`. Distinct from the core
-``builtin_triggers`` HTTP method enum, which also covers HEAD/OPTIONS."""
+"""HTTP method accepted by :data:`HttpInvocationConfig`."""
 
 
 class HttpAuthHmac(BaseModel):

@@ -149,57 +149,6 @@ async fn connect_worker_with_metadata(
     ws
 }
 
-/// Registers a trigger type and one trigger instance over an already-open,
-/// namespace-resolved worker socket. The trigger's target namespace is taken
-/// from the `RegisterTrigger` message (`namespace`), so the caller names it
-/// explicitly — absent, the engine would resolve the target in `default`.
-/// Returns the trigger instance id.
-///
-/// The caller must have driven `engine::workers::register` and waited until the
-/// worker's function landed so the `RegisterTrigger` applies immediately rather
-/// than buffering.
-async fn register_trigger_over_ws(
-    ws: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-    namespace: &str,
-    trigger_type: &str,
-    function_id: &str,
-    config: Value,
-) -> String {
-    ws.send(WsMessage::Text(
-        json!({
-            "type": "registertriggertype",
-            "id": trigger_type,
-            "description": "test trigger type",
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .expect("send RegisterTriggerType");
-
-    let trigger_id = uuid::Uuid::new_v4().to_string();
-    // The trigger's target namespace comes from the message; name it explicitly
-    // so the trigger resolves in `namespace` rather than the engine's `default`.
-    ws.send(WsMessage::Text(
-        json!({
-            "type": "registertrigger",
-            "id": trigger_id,
-            "trigger_type": trigger_type,
-            "function_id": function_id,
-            "config": config,
-            "namespace": namespace,
-        })
-        .to_string()
-        .into(),
-    ))
-    .await
-    .expect("send RegisterTrigger");
-
-    trigger_id
-}
-
 /// Calls an engine introspection function in-process. The listing's *content*
 /// still comes from the registries the real WebSocket path populated.
 async fn call_engine_fn(engine: &Arc<Engine>, function_id: &str, input: Value) -> Value {
@@ -245,8 +194,6 @@ fn session_exposing_metadata(
         rbac: Some(RbacConfig {
             auth_function_id: None,
             expose_functions: vec![FunctionFilter::metadata(expected).in_namespace(namespace)],
-            on_trigger_registration_function_id: None,
-            on_trigger_type_registration_function_id: None,
             on_function_registration_function_id: None,
             on_observer_registration_function_id: None,
         }),
@@ -261,9 +208,7 @@ fn session_exposing_metadata(
         namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: vec![],
-        allowed_trigger_types: None,
         allow_function_registration: true,
-        allow_trigger_type_registration: true,
         context: json!({}),
         function_registration_prefix: None,
     })
@@ -818,24 +763,18 @@ async fn workers_info_bare_ambiguous_name_reports_candidate_namespaces() {
     }
 }
 
-// ── BUG: trigger association ignored namespace ──────────────────────────────
-//
-// A function detail listed its triggers by bare `function_id`, so the same id in
-// two namespaces spliced each namespace's triggers onto the other's detail.
+// ── A function detail is scoped to its namespace ────────────────────────────
 
-/// `svc::f` exists in both `orders` and `analytics`, each with its own trigger.
-/// The `orders` function detail must list ONLY the orders trigger.
+/// `svc::f` exists in both `orders` and `analytics`, and only the `orders`
+/// one is observed. The `orders` function detail counts that observer; the
+/// `analytics` one counts none.
 #[tokio::test]
-async fn functions_info_lists_only_the_triggers_in_its_own_namespace() {
+async fn functions_info_counts_only_the_observers_in_its_own_namespace() {
     let (port, engine) = spawn_engine().await;
 
-    let mut orders = connect_worker(port, "orders-worker", Some("orders"), "svc::f", 4401).await;
-    let mut analytics =
+    let _orders = connect_worker(port, "orders-worker", Some("orders"), "svc::f", 4401).await;
+    let _analytics =
         connect_worker(port, "analytics-worker", Some("analytics"), "svc::f", 4402).await;
-
-    // Wait for both `svc::f` registrations to land in their namespaces, which
-    // also proves each connection's namespace is resolved before we bind
-    // triggers (so the RegisterTrigger applies with the right namespace).
     let landed = eventually(|| {
         engine.functions.get("orders", "svc::f").is_some()
             && engine.functions.get("analytics", "svc::f").is_some()
@@ -843,249 +782,43 @@ async fn functions_info_lists_only_the_triggers_in_its_own_namespace() {
     .await;
     assert!(landed, "both svc::f registrations must land");
 
-    let _orders_trig = register_trigger_over_ws(
-        &mut orders,
-        "orders",
-        "orders-tt",
-        "svc::f",
-        json!({ "tag": "orders" }),
-    )
-    .await;
-    let _analytics_trig = register_trigger_over_ws(
-        &mut analytics,
-        "analytics",
-        "analytics-tt",
-        "svc::f",
-        json!({ "tag": "analytics" }),
-    )
-    .await;
-
-    // Both triggers must land, each stamped with its connection's namespace.
-    let bound = eventually(|| {
-        let triggers = &engine.trigger_registry.triggers;
-        triggers
-            .iter()
-            .any(|e| e.value().namespace == "orders" && e.value().function_id == "svc::f")
-            && triggers
-                .iter()
-                .any(|e| e.value().namespace == "analytics" && e.value().function_id == "svc::f")
-    })
-    .await;
-    assert!(bound, "both triggers must register in their own namespace");
-
-    let result = call_engine_fn(
-        &engine,
-        "engine::functions::info",
-        json!({ "function_id": "svc::f", "namespace": "orders" }),
-    )
-    .await;
-
-    assert_eq!(result["namespace"], json!("orders"));
-    let trigger_types: Vec<&str> = result["registered_triggers"]
-        .as_array()
-        .expect("registered_triggers array")
-        .iter()
-        .map(|t| t["trigger_type"].as_str().expect("trigger_type"))
-        .collect();
-    assert_eq!(
-        trigger_types,
-        vec!["orders-tt"],
-        "the orders detail must list ONLY the orders trigger, not the analytics \
-         one bound to the same id in another namespace; got: {result}"
-    );
-}
-
-// ── BUG: `engine::workers::info` mixes trigger TYPES across namespaces ───────
-//
-// Two workers named `state` in `orders` and `analytics`, each *providing* a
-// distinct trigger type. Trigger-type attribution resolved the provider by
-// worker NAME only, so both same-named workers were attributed each other's
-// types. The worker detail must scope to the resolved connection, and must
-// report which namespace it describes.
-
-/// `workers::info(name=state, namespace=orders)` lists ONLY the trigger type
-/// the orders `state` worker provides, and its `namespace` field is `orders`.
-#[tokio::test]
-async fn workers_info_scopes_trigger_types_and_reports_namespace_by_namespace() {
-    let (port, engine) = spawn_engine().await;
-
-    // Same worker NAME, different namespaces, different owned functions, each
-    // providing a DIFFERENT trigger type.
-    let mut orders = connect_worker(port, "state", Some("orders"), "orders::f", 4501).await;
-    let mut analytics =
-        connect_worker(port, "state", Some("analytics"), "analytics::f", 4502).await;
-
-    let landed = eventually(|| {
-        engine.functions.get("orders", "orders::f").is_some()
-            && engine.functions.get("analytics", "analytics::f").is_some()
-    })
-    .await;
-    assert!(landed, "both same-named workers must finish registering");
-
-    // Each worker provides its own trigger type over its own connection, so the
-    // type's `worker_id` is that connection's id — the disambiguator.
-    let _o =
-        register_trigger_over_ws(&mut orders, "orders", "tt-orders", "orders::f", json!({})).await;
-    let _a = register_trigger_over_ws(
-        &mut analytics,
-        "analytics",
-        "tt-analytics",
-        "analytics::f",
-        json!({}),
-    )
-    .await;
-
-    let both = eventually(|| {
-        engine
-            .trigger_registry
-            .trigger_types
-            // A trigger type is filed under the namespace of the connection
-            // that registered it, so each worker's provider is its own.
-            .get(&iii::trigger::type_key("orders", "tt-orders"))
-            .is_some()
-            && engine
-                .trigger_registry
-                .trigger_types
-                .get(&iii::trigger::type_key("analytics", "tt-analytics"))
-                .is_some()
-    })
-    .await;
-    assert!(both, "both trigger types must register");
-
-    let result = call_engine_fn(
-        &engine,
-        "engine::workers::info",
-        json!({ "name": "state", "namespace": "orders" }),
-    )
-    .await;
-
-    // The detail must say which namespace it describes.
-    assert_eq!(
-        result["worker"]["namespace"],
-        json!("orders"),
-        "the worker detail must report its resolved namespace; got: {result}"
-    );
-
-    let tt_ids: Vec<&str> = result["trigger_types"]
-        .as_array()
-        .expect("trigger_types array")
-        .iter()
-        .map(|t| t["id"].as_str().expect("trigger type id"))
-        .collect();
-    assert!(
-        tt_ids.contains(&"tt-orders"),
-        "the orders `state` worker must list its own trigger type; got: {result}"
-    );
-    assert!(
-        !tt_ids.contains(&"tt-analytics"),
-        "the orders `state` worker must NOT list the analytics worker's trigger \
-         type just because they share a name; got: {result}"
-    );
-}
-
-/// A no-op registrator so the test can seed a connectionless (`worker_id ==
-/// None`) trigger type — the shape internal/known providers register at startup.
-struct NoopRegistrator;
-
-impl iii::trigger::TriggerRegistrator for NoopRegistrator {
-    fn register_trigger(
-        &self,
-        _trigger: iii::trigger::Trigger,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>>
-    {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn unregister_trigger(
-        &self,
-        _trigger: iii::trigger::Trigger,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), anyhow::Error>> + Send + '_>>
-    {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-/// A connectionless trigger type (`worker_id == None`, the shape internal /
-/// known-provider types have) must NOT be spliced into a WebSocket worker's
-/// detail just because the worker's name matches the type's owner name — the
-/// exact leak when that worker lives in a non-default namespace. Only the
-/// in-process runtime worker (which resolves to no connection id, and only ever
-/// in `default`) may claim connectionless types by name.
-#[tokio::test]
-async fn workers_info_excludes_connectionless_trigger_types_from_a_namespaced_ws_worker() {
-    let (port, engine) = spawn_engine().await;
-
-    // Seed a connectionless trigger type whose owner name resolves (via
-    // `first_segment`) to `internalonly` — no `::`, no known provider.
     engine
-        .trigger_registry
-        .register_trigger_type(iii::trigger::TriggerType::new(
-            "internalonly",
-            "connectionless type owned by no WebSocket connection",
-            Box::new(NoopRegistrator),
-            None,
-        ))
-        .await
-        .expect("register connectionless trigger type");
+        .observers
+        .observe_as_engine(iii::observer::EngineObserver {
+            id: "orders-observer".to_string(),
+            function: ("orders".to_string(), "svc::f".to_string()),
+            args: json!({}),
+            filters: None,
+            target: (
+                DEFAULT_NAMESPACE.to_string(),
+                "engine::functions::list".to_string(),
+            ),
+            deliver: iii::protocol::Deliver::Input,
+            metadata: None,
+        })
+        .expect("observe the orders svc::f");
 
-    // A WebSocket worker that happens to share that name, in a NON-default
-    // namespace. It registers its own trigger type over its own connection.
-    let mut worker = connect_worker(port, "internalonly", Some("orders"), "orders::f", 4601).await;
-    let landed = eventually(|| engine.functions.get("orders", "orders::f").is_some()).await;
-    assert!(landed, "the namespaced worker must finish registering");
-    let _own =
-        register_trigger_over_ws(&mut worker, "orders", "tt-own", "orders::f", json!({})).await;
-    let both = eventually(|| {
-        engine
-            .trigger_registry
-            .trigger_types
-            // The WS worker's own type lands in its connection's namespace;
-            // the connectionless one stays in `default`, where every
-            // in-process provider registers.
-            .get(&iii::trigger::type_key("orders", "tt-own"))
-            .is_some()
-            && engine
-                .trigger_registry
-                .trigger_types
-                .get(&iii::trigger::type_key("default", "internalonly"))
-                .is_some()
-    })
-    .await;
-    assert!(both, "both trigger types must be registered");
-
-    let result = call_engine_fn(
-        &engine,
-        "engine::workers::info",
-        json!({ "name": "internalonly", "namespace": "orders" }),
-    )
-    .await;
-
-    let tt_ids: Vec<&str> = result["trigger_types"]
-        .as_array()
-        .expect("trigger_types array")
-        .iter()
-        .map(|t| t["id"].as_str().expect("trigger type id"))
-        .collect();
-
-    // Its own connection-pinned type is still listed...
-    assert!(
-        tt_ids.contains(&"tt-own"),
-        "the worker must still list the trigger type it registered over its own \
-         connection; got: {result}"
-    );
-    // ...but the connectionless type must NOT leak in by name coincidence.
-    assert!(
-        !tt_ids.contains(&"internalonly"),
-        "a connectionless (worker_id=None) trigger type must not attach to a \
-         namespaced WS worker by name; got: {result}"
-    );
+    for (namespace, observers) in [("orders", 1), ("analytics", 0)] {
+        let result = call_engine_fn(
+            &engine,
+            "engine::functions::info",
+            json!({ "function_id": "svc::f", "namespace": namespace }),
+        )
+        .await;
+        assert_eq!(result["namespace"], json!(namespace));
+        assert_eq!(
+            result["observer_count"],
+            json!(observers),
+            "{namespace}: {result}"
+        );
+    }
 }
 
 /// A namespace named and left blank is refused, not read as absent.
 ///
 /// The two ask for opposite things: absent asks for `default`, blank names a
 /// namespace and gives nothing to name it with. Read as absent, the worker
-/// lands in `default` and every call and trigger it makes follows it there --
+/// lands in `default` and every call and observer it makes follows it there --
 /// a whole project quietly serving from the wrong namespace, and the one thing
 /// an operator cannot see by reading the declaration. Filed under the empty
 /// string instead, it lands in a namespace nobody can address or type.

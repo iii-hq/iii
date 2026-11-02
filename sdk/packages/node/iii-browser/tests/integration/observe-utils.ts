@@ -64,14 +64,16 @@ export function collector(sdk: ISdk, functionId: string): Activation[] {
   return got
 }
 
-/** Counts every frame the worker sends (all of them go through `sendMessageRaw`). */
-export function frameCounter(sdk: ISdk): { count: number; types: string[] } {
-  const counter = { count: 0, types: [] as string[] }
+/** Records every frame the worker sends (all of them go through `sendMessageRaw`). */
+export function frameCounter(sdk: ISdk): { count: number; types: string[]; frames: Record<string, unknown>[] } {
+  const counter = { count: 0, types: [] as string[], frames: [] as Record<string, unknown>[] }
   const internal = sdk as unknown as { sendMessageRaw(data: string): void }
   const send = internal.sendMessageRaw.bind(internal)
   internal.sendMessageRaw = (data: string) => {
+    const frame = JSON.parse(data) as Record<string, unknown>
     counter.count++
-    counter.types.push(String(JSON.parse(data).type))
+    counter.types.push(String(frame.type))
+    counter.frames.push(frame)
     send(data)
   }
   return counter
@@ -81,9 +83,9 @@ type FunctionState = { confirmed: boolean; localDispatch: boolean }
 
 /** The engine confirmed the function for local dispatch (`functionregistered`, M3). */
 export async function localDispatchReady(sdk: ISdk, functionId: string, timeoutMs = 5000): Promise<void> {
-  const functions = (sdk as unknown as { functions: Map<string, { observe?: FunctionState }> }).functions
+  const functions = (sdk as unknown as { functions: Map<string, { observe: FunctionState }> }).functions
   await waitFor(
-    () => functions.get(functionId)?.observe?.localDispatch === true,
+    () => functions.get(functionId)?.observe.localDispatch === true,
     `functionregistered { local_dispatch: true } for ${functionId}`,
     timeoutMs,
   )

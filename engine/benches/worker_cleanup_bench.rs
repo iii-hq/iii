@@ -1,38 +1,19 @@
 mod common;
 
-use std::{pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
-use futures::Future;
 use iii::{
-    engine::Outbound,
+    engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
     function::{Function, FunctionResult, FunctionsRegistry},
     invocation::InvocationHandler,
+    observer::{ObserveRequest, ObserverRegistry},
+    protocol::{ObserveSource, ObserveTarget},
     services::ServicesRegistry,
-    trigger::{Trigger, TriggerRegistrator, TriggerRegistry, TriggerType},
     worker_connections::{WorkerConnection, WorkerConnectionRegistry},
     workers::observability::metrics::ensure_default_meter,
 };
 use tokio::{runtime::Runtime, sync::mpsc};
-
-#[derive(Clone)]
-struct NoopRegistrator;
-
-impl TriggerRegistrator for NoopRegistrator {
-    fn register_trigger(
-        &self,
-        _trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn unregister_trigger(
-        &self,
-        _trigger: Trigger,
-    ) -> Pin<Box<dyn Future<Output = Result<(), anyhow::Error>> + Send + '_>> {
-        Box::pin(async { Ok(()) })
-    }
-}
 
 fn make_function(id: &str) -> Function {
     Function {
@@ -49,13 +30,13 @@ fn make_function(id: &str) -> Function {
 
 /// Simulates a subset of Engine::cleanup_worker operations for registry teardown.
 /// NOTE: This does not include external-function module cleanup, channel cleanup,
-/// or worker_disconnected trigger dispatch.
+/// or the `engine::on-workers-changed` event.
 async fn simulate_cleanup(
     worker: &WorkerConnection,
     functions: &FunctionsRegistry,
     service_registry: &ServicesRegistry,
     invocations: &InvocationHandler,
-    trigger_registry: &TriggerRegistry,
+    observers: &Arc<ObserverRegistry>,
     worker_registry: &WorkerConnectionRegistry,
 ) {
     // Step 1: Read function_ids, remove each function and service
@@ -74,11 +55,49 @@ async fn simulate_cleanup(
         invocations.halt_invocation(invocation_id);
     }
 
-    // Step 3: Unregister triggers belonging to this worker
-    trigger_registry.unregister_worker(&worker.id).await;
+    // Step 3: Suspend the observers this worker created
+    observers.connection_closed(worker.id, worker.reattach_token);
 
     // Step 4: Unregister the worker itself
     worker_registry.unregister_worker(&worker.id);
+}
+
+fn register_passthrough(engine: &Engine, function_id: &str) {
+    engine.register_function_handler(
+        RegisterFunctionRequest {
+            function_id: function_id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        },
+        Handler::new(
+            |input: serde_json::Value| async move { FunctionResult::Success(Some(input)) },
+        ),
+    );
+}
+
+fn observe_request(idx: usize) -> ObserveRequest {
+    ObserveRequest {
+        id: format!("bench-observer-{idx}"),
+        source: ObserveSource {
+            function_id: "bench.source".to_string(),
+            namespace: None,
+            args: None,
+            filters: None,
+            capture: None,
+            on: None,
+            deliver: None,
+        },
+        target: ObserveTarget {
+            function_id: "bench.target".to_string(),
+            namespace: None,
+        },
+        metadata: None,
+        max_fires: None,
+        expires_in_ms: None,
+        max_in_flight: None,
+    }
 }
 
 fn worker_cleanup_benchmark(c: &mut Criterion) {
@@ -99,7 +118,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         let functions = FunctionsRegistry::new();
                         let service_registry = ServicesRegistry::new();
                         let invocations = InvocationHandler::new();
-                        let trigger_registry = TriggerRegistry::new();
+                        let observers = Arc::new(ObserverRegistry::new());
                         let worker_registry = WorkerConnectionRegistry::new();
 
                         let (tx, _rx) = mpsc::channel::<Outbound>(1);
@@ -130,7 +149,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             functions,
                             service_registry,
                             invocations,
-                            trigger_registry,
+                            observers,
                             worker_registry,
                         )
                     },
@@ -139,7 +158,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         functions,
                         service_registry,
                         invocations,
-                        trigger_registry,
+                        observers,
                         worker_registry,
                     )| async move {
                         simulate_cleanup(
@@ -147,7 +166,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &functions,
                             &service_registry,
                             &invocations,
-                            &trigger_registry,
+                            &observers,
                             &worker_registry,
                         )
                         .await;
@@ -169,7 +188,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         let functions = FunctionsRegistry::new();
                         let service_registry = ServicesRegistry::new();
                         let invocations = InvocationHandler::new();
-                        let trigger_registry = TriggerRegistry::new();
+                        let observers = Arc::new(ObserverRegistry::new());
                         let worker_registry = WorkerConnectionRegistry::new();
 
                         let (tx, _rx) = mpsc::channel::<Outbound>(1);
@@ -191,7 +210,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             functions,
                             service_registry,
                             invocations,
-                            trigger_registry,
+                            observers,
                             worker_registry,
                         )
                     },
@@ -200,7 +219,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         functions,
                         service_registry,
                         invocations,
-                        trigger_registry,
+                        observers,
                         worker_registry,
                     )| async move {
                         simulate_cleanup(
@@ -208,7 +227,7 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &functions,
                             &service_registry,
                             &invocations,
-                            &trigger_registry,
+                            &observers,
                             &worker_registry,
                         )
                         .await;
@@ -219,52 +238,35 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
         );
     }
 
-    // Test with triggers belonging to the worker
-    for trigger_count in [10, 50, 200] {
+    // Test with observers the worker created
+    for observer_count in [10, 50, 200] {
         group.bench_with_input(
-            BenchmarkId::new("triggers", trigger_count),
-            &trigger_count,
-            |b, &trigger_count| {
+            BenchmarkId::new("observers", observer_count),
+            &observer_count,
+            |b, &observer_count| {
                 b.to_async(&rt).iter_batched(
                     || {
                         let functions = FunctionsRegistry::new();
                         let service_registry = ServicesRegistry::new();
                         let invocations = InvocationHandler::new();
-                        let trigger_registry = TriggerRegistry::new();
                         let worker_registry = WorkerConnectionRegistry::new();
+                        let engine = Arc::new(Engine::new());
+                        for function_id in ["bench.source", "bench.target"] {
+                            register_passthrough(&engine, function_id);
+                        }
 
-                        let (tx, _rx) = mpsc::channel::<Outbound>(1);
+                        let (tx, rx) = mpsc::channel::<Outbound>(1024);
                         let worker = WorkerConnection::new(tx);
+                        engine.worker_registry.register_worker(worker.clone());
 
-                        // Register trigger type and triggers owned by this worker
+                        // Observers created by this worker
                         tokio::task::block_in_place(|| {
                             tokio::runtime::Handle::current().block_on(async {
-                                trigger_registry
-                                    .register_trigger_type(TriggerType::new(
-                                        "bench.cleanup",
-                                        "cleanup benchmark trigger",
-                                        Box::new(NoopRegistrator),
-                                        Some(worker.id),
-                                    ))
-                                    .await
-                                    .expect("register trigger type");
-
-                                for idx in 0..trigger_count {
-                                    trigger_registry
-                                        .register_trigger(Trigger {
-                                            id: format!("bench-cleanup-{idx}"),
-                                            trigger_type: "bench.cleanup".to_string(),
-                                            function_id: format!("bench.cleanup.{idx}"),
-                                            config: serde_json::json!({}),
-                                            worker_id: Some(worker.id),
-                                            metadata: None,
-                                            namespace: "default".to_string(),
-                                            trigger_namespace: None,
-                                            home_namespace: iii::protocol::default_namespace(),
-                                            provider_namespace: iii::protocol::default_namespace(),
-                                        })
-                                        .await
-                                        .expect("register trigger");
+                                for idx in 0..observer_count {
+                                    engine
+                                        .observers
+                                        .observe(&engine, &worker, observe_request(idx))
+                                        .await;
                                 }
                             });
                         });
@@ -276,8 +278,9 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             functions,
                             service_registry,
                             invocations,
-                            trigger_registry,
+                            engine,
                             worker_registry,
+                            rx,
                         )
                     },
                     |(
@@ -285,18 +288,23 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                         functions,
                         service_registry,
                         invocations,
-                        trigger_registry,
+                        engine,
                         worker_registry,
+                        rx,
                     )| async move {
                         simulate_cleanup(
                             &worker,
                             &functions,
                             &service_registry,
                             &invocations,
-                            &trigger_registry,
+                            &engine.observers,
                             &worker_registry,
                         )
                         .await;
+                        // The engine outlives a worker's cleanup, holding its
+                        // suspended observers for the grace period: returned,
+                        // it is dropped after the measurement.
+                        (engine, rx)
                     },
                     BatchSize::SmallInput,
                 );

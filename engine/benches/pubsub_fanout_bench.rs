@@ -13,7 +13,7 @@ use tokio::runtime::Runtime;
 /// Simulates PubSub LocalAdapter.publish: spawn one engine.call per subscriber,
 /// wait for all to complete. Errors are surfaced via JoinHandle assertions.
 async fn simulate_publish(engine: &Engine, subscriber_count: usize) {
-    let payload = common::trigger_payload();
+    let payload = common::event_payload();
     let mut handles = Vec::with_capacity(subscriber_count);
 
     for idx in 0..subscriber_count {

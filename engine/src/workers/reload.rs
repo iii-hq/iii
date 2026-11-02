@@ -8,7 +8,7 @@
 //!
 //! The types here track per-worker registrations so that when a worker is
 //! destroyed (on shutdown or during reload) the engine can roll back the
-//! functions / triggers it wrote into global registries.
+//! functions it wrote into global registries.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -248,7 +248,11 @@ impl ReloadManager {
         worker_arc.register_functions(engine.clone());
         let registrations = engine.end_worker_scope();
 
-        engine.upsert_runtime_worker(runtime_worker_info_from_registration(entry, &registrations));
+        engine.upsert_runtime_worker(runtime_worker_info_from_registration(
+            entry,
+            worker_arc.as_ref(),
+            &registrations,
+        ));
 
         Ok(RunningWorker {
             entry: entry.clone(),

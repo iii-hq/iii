@@ -1,6 +1,6 @@
 /**
- * HTTP method accepted by {@link HttpInvocationConfig}. Distinct from the core
- * `builtin_triggers` HTTP method enum, which also covers HEAD/OPTIONS.
+ * HTTP method accepted by {@link HttpInvocationConfig}. Distinct from the
+ * methods an `http::on-request` route takes, which also cover HEAD/OPTIONS.
  */
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 
@@ -67,10 +67,7 @@ export type HttpRequest<TBody = unknown> = {
  * }
  * ```
  */
-export type HttpResponse<
-  TStatus extends number = number,
-  TBody = string | Buffer | Record<string, unknown>,
-> = {
+export type HttpResponse<TStatus extends number = number, TBody = string | Buffer | Record<string, unknown>> = {
   /** HTTP status code. */
   status_code: TStatus
   /** Response headers. */
@@ -148,8 +145,7 @@ export const http = (
     const { response, ...request } = req
 
     const httpResponse: HttpStreamingResponse = {
-      status: (status_code: number) =>
-        response.sendMessage(JSON.stringify({ type: 'set_status', status_code })),
+      status: (status_code: number) => response.sendMessage(JSON.stringify({ type: 'set_status', status_code })),
       headers: (headers: Record<string, string>) =>
         response.sendMessage(JSON.stringify({ type: 'set_headers', headers })),
       stream: response.stream,

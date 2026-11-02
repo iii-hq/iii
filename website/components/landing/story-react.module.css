@@ -137,7 +137,7 @@
   right: 37.5%;
   background: var(--line);
 }
-/* The rail out to the empty fourth slot is dashed until a handler subscribes there. */
+/* The rail out to the empty fourth slot is dashed until a handler observes there. */
 .railNext {
   left: 62.5%;
   right: 12.5%;

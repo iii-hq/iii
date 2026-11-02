@@ -6,9 +6,9 @@
   project still has it, see [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
 </Note>
 
-In Chapter 3 every redirect triggers `link::record_click` directly, so the database write runs on
-the redirect's hot path and a slow write slows the redirect. In this chapter you move that work onto
-a **queue** so redirects return immediately, then publish link events on **durable topics** that
+In Chapter 3 every redirect calls `link::record_click` directly, so the database write runs on the
+redirect's hot path and a slow write slows the redirect. In this chapter you move that work onto a
+**queue** so redirects return immediately, then publish link events on **durable topics** that
 independent subscribers receive: a Python analytics worker and a cache refresher, both decoupled
 from the `link` worker.
 
@@ -69,14 +69,14 @@ the one `link::record_click` uses.
   a given queue.
 </Note>
 
-You already wrote `link::record_click` in Chapter 3, where `http::redirect` triggers it directly.
-Nothing about that function needs to change to make it queuable. You only change how it's triggered
-with a `TriggerAction`.
+You already wrote `link::record_click` in Chapter 3, where `http::redirect` calls it directly. Any
+function can run from a queue, so `link::record_click` stays as it is. What changes is the call: a
+`CallAction` on the call tells iii how to run it.
 
-**First import `TriggerAction`** into `link/src/index.ts`:
+**First import `CallAction`** into `link/src/index.ts`:
 
 ```typescript {1} src/index.ts
-import { InvocationError, registerWorker, TriggerAction } from "iii-sdk";
+import { CallAction, InvocationError, registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 ```
 
@@ -86,10 +86,10 @@ worker enqueues it instead of running it inline:
 ```typescript src/index.ts {6}
 worker.registerFunction("http::redirect", async (req) => {
   // ...unchanged from the Chapter 3 http::redirect: the code, link::resolve and the 404...
-  await worker.trigger({
+  await worker.call({
     function_id: "link::record_click",
     payload: { code, clicked_at: new Date().toISOString() },
-    action: TriggerAction.Enqueue({ queue: "clicks" }),
+    action: CallAction.Enqueue({ queue: "clicks" }),
   });
   return { status_code: 302, headers: { Location: url } };
 });
@@ -102,16 +102,17 @@ drains the queue in the background, with retries and a dead-letter queue if a wr
 
 A queue delivers each message to one consumer. When several unrelated parts of the system need to
 react to the same event, publish it on a **topic** instead. The `queue` worker serves topics too:
-`iii::durable::publish` sends a message to a topic, and every function bound to that topic with a
-`durable:subscriber` trigger receives its own copy.
+`iii::durable::publish` sends a message to a topic, and each message on a topic is a call of
+`queue::on-message`. A function subscribes by observing `queue::on-message` with the topic in its
+`args`, and every subscriber receives its own copy of each message.
 
 <Info>
   Topic messages are durable: each subscriber's copy is kept until it is handled, retried when the
   handler fails, and moved to a dead-letter queue when it keeps failing. Delivery is at least once,
   so make subscribers safe to run twice for the same message.
 
-For notifications that nobody needs to replay, such as a live click counter, a worker can declare
-its own trigger type instead. You'll build one in Chapter 5.
+For notifications that nobody needs to replay, such as a live click counter, observing a plain
+function is enough: each call of it runs its observers once. You'll build one in Chapter 5.
 
 </Info>
 
@@ -136,7 +137,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
   const created_at = new Date().toISOString();
   // ON CONFLICT DO NOTHING turns a taken code into zero inserted rows instead
   // of a database error, so link::create can say so in its own words.
-  const { affected_rows } = await worker.trigger<
+  const { affected_rows } = await worker.call<
     { db: string; sql: string; params: string[] },
     { affected_rows: number }
   >({
@@ -148,11 +149,11 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
     },
   });
   if (affected_rows === 0) throw new Error(`code \`${code}\` is already taken`);
-  await worker.trigger({
+  await worker.call({
     function_id: "state::set",
     payload: { scope: "links", key: code, value: { url } },
   });
-  await worker.trigger({
+  await worker.call({
     function_id: "iii::durable::publish",
     payload: { topic: "link.created", data: { code, url, created_at } },
   });
@@ -171,7 +172,7 @@ own topic, the same way. Place it at the end of `link/src/index.ts`:
 ```typescript src/index.ts
 worker.registerFunction("link::update", async (payload: { code: string; url: string }) => {
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
-  await worker.trigger({
+  await worker.call({
     function_id: "database::execute",
     payload: {
       db: DB,
@@ -179,7 +180,7 @@ worker.registerFunction("link::update", async (payload: { code: string; url: str
       params: [url, payload.code],
     },
   });
-  await worker.trigger({
+  await worker.call({
     function_id: "iii::durable::publish",
     payload: { topic: "link.updated", data: { code: payload.code, url } },
   });
@@ -202,7 +203,7 @@ worker.registerFunction("http::update", async (req) => {
       headers: { "Content-Type": "application/json" },
     };
   }
-  const link = await worker.trigger<{ code: string; url: string }, { code: string; url: string }>({
+  const link = await worker.call<{ code: string; url: string }, { code: string; url: string }>({
     function_id: "link::update",
     payload: { code, url },
   });
@@ -210,14 +211,13 @@ worker.registerFunction("http::update", async (req) => {
 });
 ```
 
-And finally the trigger that binds `http::update` to `PUT /links/:code`:
+And finally the observer that routes `PUT /links/:code` to `http::update`:
 
 ```typescript src/index.ts
-worker.registerTrigger({
-  type: "http",
-  function_id: "http::update",
-  config: { api_path: "/links/:code", http_method: "PUT" },
-});
+worker.observe(
+  { function_id: "http::on-request", args: { method: "PUT", path: "/links/:code" } },
+  "http::update",
+);
 ```
 
 This last bit of code isn't about topics, but you'll need it for trying out your new feature at the
@@ -227,7 +227,7 @@ end of the chapter.
 
 `link::update` changes the database but not the state cache, so a query could serve stale data.
 Rather than handle refreshing the state cache inside `link::update`, subscribe to the `link.updated`
-topic with a `durable:subscriber` trigger:
+topic: observe `queue::on-message` with `topic: "link.updated"` in its `args`.
 
 <Info>
   **Why durable matters here.** This cache refresher must receive every update: a dropped event
@@ -238,17 +238,16 @@ topic with a `durable:subscriber` trigger:
 
 ```typescript src/index.ts
 worker.registerFunction("link::on_link_updated", async (data: { code: string; url: string }) => {
-  await worker.trigger({
+  await worker.call({
     function_id: "state::set",
     payload: { scope: "links", key: data.code, value: { url: data.url } },
   });
 });
 
-worker.registerTrigger({
-  type: "durable:subscriber",
-  function_id: "link::on_link_updated",
-  config: { topic: "link.updated" },
-});
+worker.observe(
+  { function_id: "queue::on-message", args: { topic: "link.updated" } },
+  "link::on_link_updated",
+);
 ```
 
 ## Create an analytics worker in Python
@@ -284,9 +283,8 @@ scripts:
 ### Subscribe to link.created events
 
 The scaffold ships `analytics/src/main.py` with this code commented out: uncomment its Ch. 4 block
-(or replace the file with the code below). It binds a `durable:subscriber` trigger to the
-`link.created` topic and records every new short link under the UTC day of the event's
-`created_at`.
+(or replace the file with the code below). It observes `queue::on-message` for the `link.created`
+topic and records every new short link under the UTC day of the event's `created_at`.
 
 Delivery is at least once, so the same event can arrive twice. Instead of adding 1 to a counter,
 the worker keeps one row per link in `link_events`, keyed by `code`, and writes it with a single
@@ -329,7 +327,7 @@ def ensure_schema() -> None:
     for attempt in range(1, 31):
         try:
             for sql in SCHEMA:
-                worker.trigger(
+                worker.call(
                     {"function_id": "database::execute", "payload": {"db": DB, "sql": sql}}
                 )
             return
@@ -343,7 +341,7 @@ def on_link_created(data: dict) -> dict:
     # The day the link was created (UTC), not the day this copy arrived.
     created_at = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
     day = created_at.astimezone(timezone.utc).strftime("%Y-%m-%d")
-    worker.trigger(
+    worker.call(
         {
             "function_id": "database::execute",
             "payload": {
@@ -360,12 +358,9 @@ def on_link_created(data: dict) -> dict:
 ensure_schema()
 
 worker.register_function("analytics::on_link_created", on_link_created)
-worker.register_trigger(
-    {
-        "type": "durable:subscriber",
-        "function_id": "analytics::on_link_created",
-        "config": {"topic": "link.created"},
-    }
+worker.observe(
+    {"function_id": "queue::on-message", "args": {"topic": "link.created"}},
+    "analytics::on_link_created",
 )
 
 print("Analytics worker started")
@@ -380,7 +375,7 @@ one from Chapter 3.
 Restart Compose so it picks up the change:
 
 ```bash
-iii trigger compose::restart
+iii call compose::restart
 ```
 
 ### See it work
@@ -398,7 +393,7 @@ done
 The view counts each new link once, under the day it was created:
 
 ```bash
-iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_counts"
+iii call database::query db=analytics sql="SELECT day, count FROM daily_link_counts"
 ```
 
 ```json
@@ -413,7 +408,7 @@ the cache, so `link::resolve` returns the new URL right away:
 for _ in 1 2 3; do curl -s -o /dev/null http://127.0.0.1:3111/s/analyticslink1; done
 curl -s -X PUT http://127.0.0.1:3111/links/analyticslink1 \
   -H 'Content-Type: application/json' -d '{"url":"https://iii.dev/updated"}'
-iii trigger link::resolve code=analyticslink1
+iii call link::resolve code=analyticslink1
 ```
 
 ```json
@@ -422,8 +417,8 @@ iii trigger link::resolve code=analyticslink1
 
 ## Conclusion
 
-Redirects no longer wait on a database write: click rows ride a queue, drained in the background.
-Link events fan out over durable topics to a Python analytics counter and a cache refresher, and the
-`link` worker does not know either of them exists. Next, in
+Redirects return without waiting on a database write: click rows ride a queue, drained in the
+background. Link events fan out over durable topics to a Python analytics counter and a cache
+refresher, and the `link` worker does not know either of them exists. Next, in
 [Ch. 5: Stream live clicks](/tutorials/linkly/streaming), you broadcast every click in real time
 from a dedicated `click-streamer` worker.

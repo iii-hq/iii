@@ -1,21 +1,72 @@
 import { describe, expect, it } from 'vitest'
-import { ChannelReader, ChannelWriter, registerWorker, TriggerAction } from '../src/index'
+import { CallAction, ChannelReader, ChannelWriter, registerWorker, TriggerAction } from '../src/index'
 import type { UpdateAppend, UpdateOp } from '../src/stream'
+import { MockEngine } from './mock-websocket'
 
 describe('Package Exports', () => {
   it('should export main SDK symbols', () => {
     expect(registerWorker).toBeDefined()
     expect(typeof registerWorker).toBe('function')
 
-    expect(TriggerAction).toBeDefined()
-    expect(typeof TriggerAction.Enqueue).toBe('function')
-    expect(typeof TriggerAction.Void).toBe('function')
+    expect(CallAction).toBeDefined()
+    expect(CallAction.Enqueue({ queue: 'orders' })).toEqual({ type: 'enqueue', queue: 'orders' })
+    expect(CallAction.Void()).toEqual({ type: 'void' })
+    expect(TriggerAction).toBe(CallAction)
 
     expect(ChannelReader).toBeDefined()
     expect(typeof ChannelReader).toBe('function')
 
     expect(ChannelWriter).toBeDefined()
     expect(typeof ChannelWriter).toBe('function')
+  })
+
+  it('registerWorker returns an ISdk with call, its trigger alias and the observer hooks', async () => {
+    const engine = new MockEngine({ autoOpen: false })
+    engine.install()
+    const sdk = registerWorker('ws://exports.test')
+    try {
+      expect(typeof sdk.call).toBe('function')
+      expect(sdk.trigger).toBe(sdk.call)
+      for (const method of [
+        'onObserverAdded',
+        'onObserverRemoved',
+        'onObserverMatch',
+        'onObserverDeliver',
+        'observers',
+        'isObserved',
+        'observe',
+        'withInvocation',
+      ]) {
+        expect(typeof (sdk as unknown as Record<string, unknown>)[method]).toBe('function')
+      }
+      for (const removed of ['registerTrigger', 'registerTriggerType', 'unregisterTriggerType']) {
+        expect((sdk as unknown as Record<string, unknown>)[removed]).toBeUndefined()
+      }
+    } finally {
+      await sdk.shutdown()
+      engine.uninstall()
+    }
+  })
+
+  it('exports CallAction, ObserveRejection and EngineSources from the root, and no trigger API', async () => {
+    const root = (await import('../src/index')) as Record<string, unknown>
+    expect(root.TriggerAction).toBe(root.CallAction)
+    expect(typeof root.ObserveRejection).toBe('function')
+    expect(root.EngineSources).toMatchObject({
+      FUNCTIONS_CHANGED: 'engine::on-functions-changed',
+      WORKERS_CHANGED: 'engine::on-workers-changed',
+      OBSERVERS_CHANGED: 'engine::on-observers-changed',
+      LOG: 'observability::on-log',
+      SPAN: 'observability::on-span',
+      CONFIGURATION_UPDATED: 'configuration::on-updated',
+      STREAM_CHANGED: 'stream::on-changed',
+      STREAM_JOIN: 'stream::on-join',
+      STREAM_LEAVE: 'stream::on-leave',
+    })
+    expect(root.EngineTriggers).toBeUndefined()
+    expect(Object.values(root.EngineFunctions as Record<string, string>)).not.toContainEqual(
+      expect.stringContaining('trigger'),
+    )
   })
 
   it('should import stream module', async () => {

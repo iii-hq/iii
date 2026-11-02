@@ -1,9 +1,10 @@
 // Derived from sdk/packages/node/iii/tests/observe-protocol-fixtures.test.ts by scripts/sync-browser-observe.py; edit those, not this file.
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ObserveRejection } from '../src/errors'
-import { registerWorker } from '../src/index'
+import { CallAction, registerWorker } from '../src/index'
+import type { Observer } from '../src/observe-types'
 import * as wire from '../src/observe-wire'
 import { buildLocalInvocationStats, encodeReportItem } from '../src/reporter'
 import type { ISdk } from '../src/types'
@@ -13,7 +14,7 @@ import * as fake from './observe-fake-engine'
  * The observe wire contract (`sdk/fixtures/protocol/observe`, CONTRACT D5):
  * every worker → engine message the SDK builds equals its fixture as a JSON
  * value given the same inputs, and every engine → worker message decodes
- * without loss.
+ * without loss and encodes back to the same value.
  */
 const DIR = resolve(__dirname, '../../../../fixtures/protocol/observe')
 type Json = Record<string, unknown>
@@ -34,6 +35,7 @@ function body(frame: Json): Json {
 
 let sdk: ISdk | undefined
 afterEach(async () => {
+  vi.restoreAllMocks()
   await sdk?.shutdown()
   sdk = undefined
 })
@@ -49,6 +51,11 @@ function connect(opts: { workerName?: string; namespace?: string } = {}) {
   return { sdk, socket }
 }
 
+/** What an item carries that depends on the clock: replaced by the fixture's values. */
+function timed(item: Json, like: Json): Json {
+  return { ...item, started_at_ms: like.started_at_ms, duration_ms: like.duration_ms }
+}
+
 /**
  * Every fixture this file tests; the coverage test below fails when a new
  * fixture file is not listed (and handled) here.
@@ -57,24 +64,35 @@ const HANDLED = {
   workerToEngine: [
     'observe.json',
     'observe-minimal.json',
-    'observe-auto.json',
+    'observe-on-error.json',
     'unobserve.json',
     'observerack.json',
     'observerack-error.json',
     'invocationsobserved.json',
+    'invocationsobserved-event-source.json',
     'localinvocationstats.json',
     'registerfunction.json',
-    'registerfunction-owner.json',
+    'registerfunction-private.json',
     'registerfunction-not-observable.json',
-    'invokefunction-owner-call.json',
-    'invokefunction-owner-call-namespace.json',
+    'invokefunction-observer-call.json',
+    'invokefunction-observer-call-namespace.json',
+    'invokefunction-observer-call-void.json',
     'invokefunction-legacy.json',
     'invokefunction-workers-register.json',
-    'unregistertriggertype.json',
+    'invocationresult-routed.json',
+    'invocationresult-matched.json',
+    'invocationresult-matched-error.json',
+    'invocationresult-matched-none.json',
+    'invocationresult-delivered.json',
   ],
   engineToWorker: [
     'workerregistered.json',
+    'workerregistered-v1.json',
     'workerregistered-legacy.json',
+    'registrationrejected-unsupported.json',
+    'registrationrejected-invalid-args-format.json',
+    'invocationresult.json',
+    'invocationresult-not-function-owner.json',
     'observeresult.json',
     'observeresult-error.json',
     'observerstatechanged.json',
@@ -82,11 +100,14 @@ const HANDLED = {
     'functionregistered.json',
     'functionregistered-empty.json',
     'observeradded.json',
-    'observeradded-legacy.json',
     'observerremoved.json',
     'invokefunction-activation.json',
+    'invokefunction-activation-engine-source.json',
     'invokefunction-caller.json',
+    'invokefunction-observer-call-forwarded.json',
   ],
+  /** The 0.25 `observe` object: no v2 SDK builds or decodes it (README, engine-only). */
+  engineOnly: ['registerfunction-v1-owner.json', 'registerfunction-v1-not-observable.json'],
 }
 
 describe('worker → engine: what the SDK builds equals the fixture', () => {
@@ -116,13 +137,14 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     [
       'observe-minimal.json',
       {
-        source: { function_id: 'orders::archive' },
+        // the string shorthand: observe('fn::id', target)
+        source: 'orders::archive',
         target: 'search::reindex-order',
         options: { id: 'd94f3a5b-6c7d-4e8f-a01b-2c3d4e5f6a7b' },
       },
     ],
     [
-      'observe-auto.json',
+      'observe-on-error.json',
       {
         source: {
           function_id: 'payments::charge',
@@ -131,7 +153,11 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
           on: 'error',
         },
         target: 'alerts::payment-failed',
-        options: { id: 'c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60', max_in_flight: 4 },
+        options: {
+          id: 'c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60',
+          metadata: { team: 'payments-oncall' },
+          max_in_flight: 4,
+        },
       },
     ],
   ] as const)('%s (iii.observe)', (name, input) => {
@@ -142,38 +168,42 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
 
   it('unobserve.json (ObserverHandle.dispose)', async () => {
     const { sdk, socket } = connect()
-    const handle = sdk.observe({ function_id: 'orders::archive' }, 'search::reindex-order', {
+    const handle = sdk.observe('orders::archive', 'search::reindex-order', {
       id: '5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d',
     })
     await handle.dispose()
     expect(socket.framesOf('unobserve')).toEqual([fixture('unobserve.json')])
   })
 
-  it('observerack.json and observerack-error.json (the owner acks observeradded.json)', async () => {
-    for (const [name, onObserverAdded] of [
-      ['observerack.json', () => undefined],
+  it('observerack.json and observerack-error.json (the host acks observeradded.json)', async () => {
+    for (const [name, revision, hook] of [
+      ['observerack.json', 13, () => undefined],
       [
         'observerack-error.json',
+        15,
         () => {
-          throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'invalid day-of-week field')
+          throw new ObserveRejection(
+            'INVALID_CRON_EXPRESSION',
+            "invalid day-of-week field 'Mon-Fry' in '0 0 9 * * Mon-Fry'",
+          )
         },
       ],
     ] as const) {
       const { sdk, socket } = connect()
-      sdk.registerFunction('cron::on-tick', async () => null, {
-        observe: { delivery: 'owner', onObserverAdded },
-      })
+      const expected = fixture(name)
+      sdk.registerFunction('cron::on-tick', (tick: unknown) => tick).onObserverAdded(hook)
       socket.deliver(fake.functionRegistered('cron::on-tick', [], { revision: 12 }))
-      socket.deliver(fixture('observeradded.json'))
+      const added = fixture('observeradded.json')
+      socket.deliver({ ...added, revision, observer: { ...(added.observer as Json), id: expected.id } })
       await fake.settle()
-      expect(socket.framesOf('observerack')).toEqual([fixture(name)])
+      expect(socket.framesOf('observerack')).toEqual([expected])
       await sdk.shutdown()
     }
   })
 
-  it('invocationsobserved.json (report items)', () => {
+  it('invocationsobserved.json (report items of local calls)', () => {
     const expected = fixture('invocationsobserved.json')
-    const [failed, nullOutput, emitted] = expected.items as Json[]
+    const [failed, nullOutput, created] = expected.items as Json[]
     const items = [
       encodeReportItem({
         function_id: 'payments::charge',
@@ -200,77 +230,222 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
         matched: nullOutput.matched as string[],
         status: 'success',
         // a function that returned null: `output: null` is a value, not absent
-        values: { input: nullOutput.input, output: null, caller: nullOutput.caller as never, metadata: undefined },
+        values: { input: nullOutput.input, output: null },
         captures: ['input', 'output', 'caller', 'metadata'],
         started_at_ms: 1760350000180,
         duration_ms: 0.42,
-        observe_depth: 1,
+        observe_depth: 0,
       }),
       encodeReportItem({
-        function_id: 'database::on-row-changed',
+        function_id: 'orders::create',
         namespace: 'default',
-        invocation_id: emitted.invocation_id as string,
-        matched: emitted.matched as string[],
+        invocation_id: created.invocation_id as string,
+        matched: created.matched as string[],
         status: 'success',
-        values: { input: emitted.input, caller: emitted.caller as never },
-        captures: ['input', 'caller'],
-        started_at_ms: 1760350000201,
-        duration_ms: 0.004,
+        values: {
+          input: created.input,
+          output: created.output,
+          caller: created.caller as never,
+          metadata: created.metadata,
+        },
+        captures: ['input', 'output', 'caller', 'metadata'],
+        output_is_input: false,
+        started_at_ms: 1760350000150,
+        duration_ms: 3.25,
         observe_depth: 0,
-        traceparent: emitted.traceparent as string,
-        baggage: emitted.baggage as string,
+        traceparent: created.traceparent as string,
       }),
     ]
     const frame = JSON.parse(`{"type":"invocationsobserved","items":[${items.join(',')}]}`)
     expect(frame).toEqual(expected)
   })
 
+  it('invocationsobserved-event-source.json (a private source called inside a routed handler returns its input)', async () => {
+    fake.fakeClock()
+    const expected = fixture('invocationsobserved-event-source.json')
+    const [want] = expected.items as Json[]
+    const { sdk, socket } = connect({ workerName: 'database' })
+    sdk.registerFunction('database::on-row-changed', (change: unknown) => change, { private: true })
+    sdk.registerFunction('database::execute', async () => {
+      await sdk.call({ function_id: 'database::on-row-changed', payload: want.input })
+      return { rows: 1 }
+    })
+    socket.deliver(
+      fake.functionRegistered(
+        'database::on-row-changed',
+        (want.matched as string[]).map((id) => fake.observerInfo(id, 'billing::on-invoice-paid')),
+      ),
+    )
+    socket.deliver(fake.functionRegistered('database::execute'))
+    await fake.settle()
+    socket.deliver(fixture('invokefunction-caller.json'))
+    await fake.settle()
+    await fake.elapse(10)
+    const [frame] = socket.framesOf('invocationsobserved')
+    const [item] = frame.items as Json[]
+    // The id and the trace context are the local call's own.
+    expect({ ...frame, items: [timed(item, want)] }).toEqual({
+      ...expected,
+      items: [{ ...want, invocation_id: item.invocation_id, traceparent: item.traceparent, baggage: item.baggage }],
+    })
+    expect(item).not.toHaveProperty('output')
+  })
+
+  /** The answer the SDK sends to a routed call of `functionId`, invoked with the fixture's id and trace context. */
+  async function routedAnswer(
+    expected: Json,
+    functionId: string,
+    observers: Json[],
+    register: (sdk: ISdk) => void,
+  ): Promise<Json[]> {
+    const { sdk, socket } = connect({ workerName: functionId.split('::')[0] })
+    register(sdk)
+    socket.deliver(fake.functionRegistered(functionId, observers))
+    await fake.settle()
+    socket.clear()
+    socket.deliver(
+      fake.invokeFunction(
+        functionId,
+        { sku: 'A-1', qty: 2 },
+        {
+          invocation_id: expected.invocation_id as string,
+          ...(typeof expected.traceparent === 'string' ? { traceparent: expected.traceparent } : {}),
+        },
+      ),
+    )
+    await fake.settle()
+    return socket.frames()
+  }
+
+  it('invocationresult-routed.json (a function with no match hook and no deliver hook: neither field)', async () => {
+    const expected = fixture('invocationresult-routed.json')
+    const frames = await routedAnswer(
+      expected,
+      'orders::create',
+      [
+        // the engine evaluates both: the host lists neither
+        fake.observerInfo('8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70', 'alerts::big-order', {
+          filters: { 'input.qty': { $gte: 1 } },
+        }),
+        fake.observerInfo('9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81', 'alerts::failed-order', { on: 'error' }),
+      ],
+      (sdk) => sdk.registerFunction('orders::create', () => expected.result),
+    )
+    expect(frames).toEqual([expected])
+  })
+
+  it('invocationresult-matched.json (the match hook ran: the observers it matched, before on and filters)', async () => {
+    const expected = fixture('invocationresult-matched.json')
+    const [first, second] = expected.matched as string[]
+    const frames = await routedAnswer(
+      expected,
+      'orders::create',
+      [
+        fake.observerInfo(first, 'alerts::big-order', { args: { team: 'sales' } }),
+        fake.observerInfo('d0e1f2a3-b4c5-4d6e-8f70-81a2b3c4d5e6', 'audit::order', { args: { team: 'audit' } }),
+        // matched by the hook; its `on` and filters are the engine's to evaluate
+        fake.observerInfo(second, 'alerts::failed-order', {
+          args: { team: 'sales' },
+          on: 'error',
+          filters: { 'input.qty': { $gte: 100 } },
+        }),
+      ],
+      (sdk) =>
+        sdk
+          .registerFunction('orders::create', () => expected.result)
+          .onObserverMatch((obs) => obs.args.team === 'sales'),
+    )
+    expect(frames).toEqual([expected])
+  })
+
+  it('invocationresult-matched-error.json (builds; matched kept on an error answer)', () => {
+    const expected = fixture('invocationresult-matched-error.json')
+    const decoded = wire.decodeInvocationResult(body(expected))
+    expect(decoded.matched).toEqual(['c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60'])
+    expect(decoded).not.toHaveProperty('result')
+    expect({ type: 'invocationresult', ...wire.buildInvocationResult(decoded as never) }).toEqual(expected)
+  })
+
+  it('invocationresult-matched-none.json (the match hook matched no observer: matched is sent empty)', async () => {
+    const expected = fixture('invocationresult-matched-none.json')
+    const frames = await routedAnswer(
+      expected,
+      'orders::create',
+      [fake.observerInfo('8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70', 'alerts::big-order')],
+      (sdk) => sdk.registerFunction('orders::create', () => expected.result).onObserverMatch(() => false),
+    )
+    expect(frames).toEqual([expected])
+  })
+
+  it('invocationresult-delivered.json (the deliver hook delivered the call: its answer, and delivered)', async () => {
+    const expected = fixture('invocationresult-delivered.json')
+    const frames = await routedAnswer(
+      expected,
+      'approvals::request',
+      [fake.observerInfo('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d', 'approvals::risk-review')],
+      (sdk) =>
+        sdk
+          .registerFunction('approvals::request', () => ({ approved: false }))
+          // the approver's answer, as a call through the observer would return it
+          .onObserverDeliver(() => expected.result),
+    )
+    expect(frames).toEqual([expected])
+  })
+
   it('localinvocationstats.json', () => {
+    const expected = fixture('localinvocationstats.json')
     const stats = new Map([
       ['database::on-row-changed', { count: 48211, errors: 0, duration_ms_sum: 190.2 }],
-      ['orders::archive', { count: 37, errors: 2, duration_ms_sum: 15.5 }],
+      ['database::query', { count: 37, errors: 2, duration_ms_sum: 15.5 }],
     ])
-    const drops = new Map([['database::on-row-changed', new Map([['BUFFER_FULL', 12]])]])
-    expect({ type: 'localinvocationstats', ...buildLocalInvocationStats(10000, stats, drops) }).toEqual(
-      fixture('localinvocationstats.json'),
-    )
+    // The drops the fixture lists, by function and reason, as the reporter counts them.
+    const drops = new Map<string, Map<string, number>>()
+    for (const { function_id, reason, count } of expected.dropped_reports as {
+      function_id: string
+      reason: string
+      count: number
+    }[]) {
+      const counts = drops.get(function_id) ?? new Map<string, number>()
+      counts.set(reason, count)
+      drops.set(function_id, counts)
+    }
+    expect({ type: 'localinvocationstats', ...buildLocalInvocationStats(10000, stats, drops) }).toEqual(expected)
   })
 
   it.each([
-    ['registerfunction.json', undefined, undefined],
-    [
-      'registerfunction-owner.json',
-      {
-        delivery: 'owner',
-        args_format: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['expression'],
-          properties: { expression: { type: 'string' } },
-        },
-        legacy_trigger_type: 'cron',
-        allow: true,
-        onObserverAdded: () => undefined,
-        onObserverRemoved: () => undefined,
-      },
-      false,
-    ],
-    ['registerfunction-not-observable.json', { delivery: 'auto', allow: false }, undefined],
-  ] as const)('%s (registerFunction; hooks and localDispatch never travel)', (name, observe, localDispatch) => {
+    ['registerfunction.json', {}],
+    ['registerfunction-private.json', { private: true, standby: true, localDispatch: false }],
+    ['registerfunction-not-observable.json', { observable: false, private: false }],
+  ] as const)('%s (registerFunction; hooks, standby and localDispatch never travel)', async (name, extra) => {
     const expected = fixture(name)
     const { sdk, socket } = connect()
-    sdk.registerFunction(expected.id as string, async () => null, {
-      description: expected.description as string,
-      request_format: expected.request_format as never,
-      response_format: expected.response_format as never,
-      observe: observe as never,
-      localDispatch,
-    })
+    sdk
+      .registerFunction(expected.id as string, async () => null, {
+        description: expected.description as string,
+        request_format: expected.request_format as never,
+        response_format: expected.response_format as never,
+        args_format: expected.args_format as never,
+        ...extra,
+      })
+      .onObserverAdded(() => undefined)
+      .onObserverRemoved(() => undefined)
     expect(socket.framesOf('registerfunction')).toEqual([expected])
   })
 
-  it('invokefunction-owner-call.json (obs.call: activation, caller, no namespace, depth 0 omitted)', () => {
-    const expected = fixture('invokefunction-owner-call.json')
+  it('no registerfunction carries the 0.25 observe object (registerfunction-v1-*.json are engine-only)', () => {
+    const { sdk, socket } = connect()
+    sdk.registerFunction('a::plain', async () => null)
+    sdk.registerFunction('b::source', (e: unknown) => e, { private: true, args_format: { type: 'object' } })
+    sdk.registerFunction('c::secret', async () => null, { observable: false })
+    sdk.registerFunction('d::routed', async () => null).onObserverDeliver((call) => call.output)
+    for (const name of HANDLED.engineOnly) expect(fixture(name)).toHaveProperty('observe')
+    const frames = socket.framesOf('registerfunction')
+    expect(frames.map((f) => f.id)).toEqual(['a::plain', 'b::source', 'c::secret', 'd::routed'])
+    for (const frame of frames) expect(frame).not.toHaveProperty('observe')
+  })
+
+  it('invokefunction-observer-call.json (a call through an observer: target, activation, caller, no namespace)', () => {
+    const expected = fixture('invokefunction-observer-call.json')
     const built = wire.buildInvokeFunction({
       invocation_id: expected.invocation_id as string,
       function_id: 'users::get',
@@ -281,16 +456,38 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
         invocation_id: '9b1d3f5a-7c9e-4b1d-8f3a-5c7e9b1d3f5a',
       }),
       observe_depth: 0,
-      activation: { observer_id: '4f2a9b1c-7d3e-4f6a-8b5c-2e1d0f9a8b7c' },
+      activation: { observer_id: 'b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c' },
     })
     expect({ type: 'invokefunction', ...built }).toEqual(expected)
   })
 
-  it('invokefunction-owner-call-namespace.json (decodes; this SDK sends no namespace on obs.call, CONTRACT D13)', () => {
-    const expected = fixture('invokefunction-owner-call-namespace.json')
+  it('invokefunction-observer-call-namespace.json (decodes and re-encodes; this SDK sends no namespace on it)', () => {
+    const expected = fixture('invokefunction-observer-call-namespace.json')
     expect({ type: 'invokefunction', ...wire.buildInvokeFunction(wire.decodeInvokeFunction(body(expected))) }).toEqual(
       expected,
     )
+  })
+
+  it('invokefunction-observer-call-void.json (iii.call({ observer, payload, action: CallAction.Void() }))', async () => {
+    const expected = fixture('invokefunction-observer-call-void.json')
+    const activation = expected.activation as Json
+    const { sdk, socket } = connect()
+    let observer: Observer | undefined
+    sdk
+      .registerFunction('inventory::on-stock-changed', (e: unknown) => e)
+      .onObserverAdded((obs) => {
+        observer = obs
+      })
+    socket.deliver(
+      fake.functionRegistered('inventory::on-stock-changed', [
+        fake.observerInfo(activation.observer_id as string, expected.function_id as string),
+      ]),
+    )
+    await fake.settle()
+    await observer?.accepted()
+    socket.clear()
+    await sdk.call({ observer: observer as Observer, payload: expected.data, action: CallAction.Void() })
+    expect(socket.framesOf('invokefunction')).toEqual([expected])
   })
 
   it('invokefunction-legacy.json (a pre-0.25 call keeps decoding, and re-encodes unchanged)', () => {
@@ -324,22 +521,22 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(data).toMatchObject({ runtime: 'browser', name: 'billing', namespace: 'default' })
     // The fixture is a native SDK's. A browser receives one 16 MiB frame at
     // most, so it declares every feature but `large-messages.v1`.
-    expect(want.features).toEqual(['observe.v1', 'local-dispatch.v1', 'large-messages.v1'])
-    expect(data.features).toEqual(['observe.v1', 'local-dispatch.v1'])
+    expect(want.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1'])
     expect(typeof data.os).toBe('string')
-  })
-
-  it('unregistertriggertype.json', () => {
-    const { sdk, socket } = connect()
-    sdk.unregisterTriggerType({ id: 'webhook', description: 'Webhooks' })
-    expect(socket.framesOf('unregistertriggertype')).toEqual([fixture('unregistertriggertype.json')])
   })
 })
 
 describe('engine → worker: the SDK decodes without loss', () => {
   const decoders: Record<string, (v: Json) => unknown> = {
     'workerregistered.json': wire.decodeWorkerRegistered,
+    'workerregistered-v1.json': wire.decodeWorkerRegistered,
     'workerregistered-legacy.json': wire.decodeWorkerRegistered,
+    'registrationrejected-unsupported.json': wire.decodeRegistrationRejected,
+    'registrationrejected-invalid-args-format.json': wire.decodeRegistrationRejected,
+    'invocationresult.json': (v) => wire.buildInvocationResult(wire.decodeInvocationResult(v) as never),
+    'invocationresult-not-function-owner.json': (v) =>
+      wire.buildInvocationResult(wire.decodeInvocationResult(v) as never),
     'observeresult.json': wire.decodeObserveResult,
     'observeresult-error.json': wire.decodeObserveResult,
     'observerstatechanged.json': wire.decodeObserverStateChanged,
@@ -347,10 +544,11 @@ describe('engine → worker: the SDK decodes without loss', () => {
     'functionregistered.json': wire.decodeFunctionRegistered,
     'functionregistered-empty.json': wire.decodeFunctionRegistered,
     'observeradded.json': wire.decodeObserverAdded,
-    'observeradded-legacy.json': wire.decodeObserverAdded,
     'observerremoved.json': wire.decodeObserverRemoved,
     'invokefunction-activation.json': (v) => wire.buildInvokeFunction(wire.decodeInvokeFunction(v)),
+    'invokefunction-activation-engine-source.json': (v) => wire.buildInvokeFunction(wire.decodeInvokeFunction(v)),
     'invokefunction-caller.json': (v) => wire.buildInvokeFunction(wire.decodeInvokeFunction(v)),
+    'invokefunction-observer-call-forwarded.json': (v) => wire.buildInvokeFunction(wire.decodeInvokeFunction(v)),
   }
 
   it('decodes exactly the engine → worker fixtures listed above', () => {
@@ -375,6 +573,51 @@ describe('engine → worker: the SDK decodes without loss', () => {
     expect(wire.decodeWorkerRegistered({ worker_id: 'w', reattach_token: null, features: null })).toEqual({
       worker_id: 'w',
     })
+    expect(
+      wire.decodeRegistrationRejected({
+        code: 'UNSUPPORTED',
+        namespace: 'default',
+        owner_worker_id: '',
+        worker_name: null,
+        function_id: null,
+      }),
+    ).toEqual({ code: 'UNSUPPORTED', namespace: 'default', owner_worker_id: '' })
+    // `result: null` is a value; `matched: null` is absent, `[]` is kept, a malformed one is `[]`
+    // (a non-string id is skipped); only `delivered: true` is kept
+    expect(
+      wire.decodeInvocationResult({
+        invocation_id: 'i',
+        function_id: 'f',
+        result: null,
+        error: null,
+        matched: null,
+        delivered: null,
+      }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', result: null })
+    expect(wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', matched: [] })).toEqual({
+      invocation_id: 'i',
+      function_id: 'f',
+      matched: [],
+    })
+    expect(
+      wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', matched: ['o-1', 7, null, 'o-2'] }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', matched: ['o-1', 'o-2'] })
+    expect(
+      wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', matched: 'o-1', delivered: 'yes' }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', matched: [] })
+    expect(wire.decodeInvocationResult({ invocation_id: 'i', function_id: 'f', delivered: true })).toEqual({
+      invocation_id: 'i',
+      function_id: 'f',
+      delivered: true,
+    })
+    // `delivered` outweighs `matched`: only one is sent; `delivered: false` and an absent `matched` are left out
+    expect(
+      wire.buildInvocationResult({ invocation_id: 'i', function_id: 'f', matched: ['o-1'], delivered: true }),
+    ).toEqual({ invocation_id: 'i', function_id: 'f', delivered: true })
+    expect(wire.buildInvocationResult({ invocation_id: 'i', function_id: 'f', delivered: false })).toEqual({
+      invocation_id: 'i',
+      function_id: 'f',
+    })
     const info = wire.decodeObserverInfo({
       id: 'o',
       args: null,
@@ -382,7 +625,6 @@ describe('engine → worker: the SDK decodes without loss', () => {
       target: 't',
       capture: ['input', 'telemetry'],
       on: 'start',
-      legacy: null,
     })
     // `filters: null` is kept as sent: compiling it fails (INVALID_FILTER), it is never read as match-all
     expect(info).toEqual({
@@ -412,7 +654,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
 describe('fixture coverage', () => {
   it('every fixture file is exercised above', () => {
     const files = readdirSync(DIR).filter((f) => f.endsWith('.json'))
-    const handled = new Set([...HANDLED.workerToEngine, ...HANDLED.engineToWorker])
+    const handled = new Set([...HANDLED.workerToEngine, ...HANDLED.engineToWorker, ...HANDLED.engineOnly])
     expect(files.filter((f) => !handled.has(f))).toEqual([])
     expect([...handled].filter((f) => !files.includes(f))).toEqual([])
   })

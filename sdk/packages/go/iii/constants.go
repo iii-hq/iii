@@ -33,53 +33,77 @@ func EngineURLFromEnv() string {
 // the Go SDK adds "go".
 const runtimeTag = "go"
 
-// EngineFunctions are the engine's built-in function paths a worker can invoke via
-// Trigger. Mirrors EngineFunctions in the Node SDK.
-//
-// Naming note (kept verbatim from the Node SDK so the two read the same): ListTriggers
-// / InfoTriggers cover trigger TYPES (templates); ListRegisteredTriggers /
-// InfoRegisteredTriggers cover trigger INSTANCES (subscriber rows).
+// EngineFunctions are the engine's built-in function paths a worker can invoke with
+// [Client.Call]. Mirrors EngineFunctions in the Node SDK. A function row of
+// engine::functions::list and engine::functions::info carries observer_count, and
+// args_format, private and observable when set.
 const (
-	FnListFunctions          = "engine::functions::list"
-	FnInfoFunctions          = "engine::functions::info"
-	FnListWorkers            = "engine::workers::list"
-	FnInfoWorkers            = "engine::workers::info"
-	FnListTriggers           = "engine::triggers::list"
-	FnInfoTriggers           = "engine::triggers::info"
-	FnListRegisteredTriggers = "engine::registered-triggers::list"
-	FnInfoRegisteredTriggers = "engine::registered-triggers::info"
-	FnRegisterWorker         = "engine::workers::register"
-	FnCreateChannel          = "engine::channels::create"
+	FnListFunctions  = "engine::functions::list"
+	FnInfoFunctions  = "engine::functions::info"
+	FnListWorkers    = "engine::workers::list"
+	FnInfoWorkers    = "engine::workers::info"
+	FnRegisterWorker = "engine::workers::register"
+	FnCreateChannel  = "engine::channels::create"
 )
 
-// Engine trigger types. Mirrors EngineTriggers in the Node SDK.
+// Engine-hosted sources: private functions of the engine whose handler returns the
+// event, so input and output are both the event. Observe them with [Client.Observe]
+// and filters on input; only the engine calls them. [EngineSources] names them as the
+// other SDKs do.
 const (
-	// TriggerFunctionsAvailable is the trigger type fired when the function set
-	// changes.
-	//
-	// Deprecated: observe the engine-hosted function [FnOnFunctionsChanged] with
-	// [Client.Observe] instead. Migration guide:
-	// https://iii.dev/docs/upgrading/from-0-24-x
-	TriggerFunctionsAvailable = "engine::functions-available"
-	// TriggerLog is the trigger type fired for each engine log record.
-	//
-	// Deprecated: observe [FnOnLog] with [Client.Observe] (filter on input.level)
-	// instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
-	TriggerLog = "log"
-)
-
-// Engine-hosted source functions (auto delivery): observe them with [Client.Observe]
-// and filters, in place of the engine trigger types.
-const (
-	FnOnFunctionsChanged    = "engine::on-functions-changed"
-	FnOnWorkersChanged      = "engine::on-workers-changed"
-	FnOnLog                 = "observability::on-log"
-	FnOnSpan                = "observability::on-span"
+	// FnOnFunctionsChanged is called when the function set changes:
+	// { event: "functions_changed", functions: [...] }.
+	FnOnFunctionsChanged = "engine::on-functions-changed"
+	// FnOnWorkersChanged is called when a worker connects, disconnects or updates its
+	// metadata: { event, worker_id }.
+	FnOnWorkersChanged = "engine::on-workers-changed"
+	// FnOnObserversChanged is called once per observer state change:
+	// { observer_id, function_id, target, state, reason? }.
+	FnOnObserversChanged = "engine::on-observers-changed"
+	// FnOnLog is called once per log record.
+	FnOnLog = "observability::on-log"
+	// FnOnSpan is called once per window of recorded spans: { trace_ids }.
+	FnOnSpan = "observability::on-span"
+	// FnOnConfigurationUpdate is called when a configuration entry is registered,
+	// updated or deleted.
 	FnOnConfigurationUpdate = "configuration::on-updated"
+	// FnOnStreamChanged is called on every change of a stream item (iii-stream).
+	FnOnStreamChanged = "stream::on-changed"
+	// FnOnStreamJoin is called when a client joins a stream group (iii-stream).
+	FnOnStreamJoin = "stream::on-join"
+	// FnOnStreamLeave is called when a client leaves a stream group (iii-stream).
+	FnOnStreamLeave = "stream::on-leave"
 )
 
-// Log function paths. Mirrors LogFunctions in the Node SDK. Invoke these with
-// Trigger (fire-and-forget) to write to the engine log.
+// EngineSources are the ids of the engine-hosted sources under the names every SDK
+// gives them (EngineSources in the Node, browser, Python and Rust SDKs):
+// EngineSources.FunctionsChanged is [FnOnFunctionsChanged], and so on.
+//
+//	client.ObserveFunction(iii.EngineSources.FunctionsChanged, "catalog::refresh")
+var EngineSources = struct {
+	FunctionsChanged     string
+	WorkersChanged       string
+	ObserversChanged     string
+	Log                  string
+	Span                 string
+	ConfigurationUpdated string
+	StreamChanged        string
+	StreamJoin           string
+	StreamLeave          string
+}{
+	FunctionsChanged:     FnOnFunctionsChanged,
+	WorkersChanged:       FnOnWorkersChanged,
+	ObserversChanged:     FnOnObserversChanged,
+	Log:                  FnOnLog,
+	Span:                 FnOnSpan,
+	ConfigurationUpdated: FnOnConfigurationUpdate,
+	StreamChanged:        FnOnStreamChanged,
+	StreamJoin:           FnOnStreamJoin,
+	StreamLeave:          FnOnStreamLeave,
+}
+
+// Log function paths. Mirrors LogFunctions in the Node SDK. Call these with
+// [VoidAction] (fire-and-forget) to write to the engine log.
 const (
 	LogInfo  = "engine::log::info"
 	LogWarn  = "engine::log::warn"
@@ -87,9 +111,9 @@ const (
 	LogDebug = "engine::log::debug"
 )
 
-// DefaultInvocationTimeout bounds how long Trigger waits for an InvocationResult
-// before failing with ErrTimeout, unless [WithInvocationTimeout] or
-// [TriggerRequest].Timeout says otherwise. Same default (30000 ms) as
+// DefaultInvocationTimeout bounds how long Call waits for an InvocationResult before
+// failing with ErrTimeout, unless [WithInvocationTimeout] or [CallRequest].Timeout says
+// otherwise. Same default (30000 ms) as
 // DEFAULT_INVOCATION_TIMEOUT_MS in the Node SDK.
 const DefaultInvocationTimeout = 30 * time.Second
 

@@ -1,9 +1,8 @@
 // Derived from sdk/packages/node/iii/src/reporter.ts by scripts/sync-browser-observe.py; edit those, not this file.
 /**
- * The reporter (sdk.md §4.4, CONTRACT D12): one bounded buffer for matched
- * local invocations of auto functions and `obs.emit` events of owner
- * functions, flushed as `invocationsobserved` batches; plus the periodic
- * `localinvocationstats`.
+ * The reporter (sdk.md §4.4, CONTRACT D12): one bounded buffer for the local
+ * calls of hosted functions that observers matched, flushed as
+ * `invocationsobserved` batches; plus the periodic `localinvocationstats`.
  *
  * It never blocks a call: when the buffer is full the newest item is dropped
  * and counted (`BUFFER_FULL`), and an item too large on its own is dropped and
@@ -37,6 +36,11 @@ export type ReportInit = {
   status: 'success' | 'error'
   values: ReportValues
   captures: Iterable<string>
+  /**
+   * The handler returned its input (`values.output === values.input`): an
+   * item that captures both carries `input` once and `"output_is_input": true`.
+   */
+  output_is_input?: boolean
   started_at_ms: number
   duration_ms: number
   observe_depth: number
@@ -83,54 +87,28 @@ export interface ReporterHost {
   logError(message: string, error?: unknown): void
 }
 
-type ItemState = { matched: number; captured: string[]; parts: [ReportPart, string][]; json: string; bytes: number }
-
 class ReportItem {
   readonly parts = new Map<ReportPart, string>()
-  readonly captured = new Set<string>()
+  /** `output` is left out and the engine fills it from `input`. */
+  outputIsInput = false
   json = ''
   bytes = 0
 
-  constructor(
-    readonly init: Omit<ReportInit, 'captures'>,
-    /** An `obs.emit` item: later emits of the same event value (`coalesceKey`) from the same `context` merge into it. */
-    readonly emit: boolean,
-    readonly coalesceKey: unknown,
-    readonly context: unknown,
-  ) {}
+  constructor(readonly init: Omit<ReportInit, 'captures'>) {}
 
-  /** Adds the parts `captures` asks for that are not in the item yet. */
+  /** Encodes the parts `captures` asks for. */
   capture(captures: Iterable<string>): void {
-    for (const c of captures) {
-      if (this.captured.has(c)) continue
-      this.captured.add(c)
-      if (!PART_ORDER.includes(c as ReportPart)) continue
-      const part = c as ReportPart
-      if (!(part in this.init.values)) continue
-      const encoded = encodeJson(this.init.values[part])
+    const wanted = new Set(captures)
+    const values = this.init.values
+    for (const part of PART_ORDER) {
+      if (!wanted.has(part) || !(part in values)) continue
+      if (part === 'output' && this.init.output_is_input && this.parts.has('input')) {
+        this.outputIsInput = true
+        continue
+      }
+      const encoded = encodeJson(values[part])
       if (encoded !== undefined) this.parts.set(part, encoded)
     }
-  }
-
-  /** What a merge can change, to undo it. */
-  save(): ItemState {
-    return {
-      matched: this.init.matched.length,
-      captured: [...this.captured],
-      parts: [...this.parts],
-      json: this.json,
-      bytes: this.bytes,
-    }
-  }
-
-  restore(state: ItemState): void {
-    this.init.matched.length = state.matched
-    this.captured.clear()
-    for (const c of state.captured) this.captured.add(c)
-    this.parts.clear()
-    for (const [part, encoded] of state.parts) this.parts.set(part, encoded)
-    this.json = state.json
-    this.bytes = state.bytes
   }
 
   /** Assembles the wire JSON from the pre-encoded parts. */
@@ -143,6 +121,7 @@ class ReportItem {
     for (const part of PART_ORDER) {
       const encoded = this.parts.get(part)
       if (encoded !== undefined) s += `,"${part}":${encoded}`
+      if (part === 'input' && this.outputIsInput) s += ',"output_is_input":true'
     }
     s += `,"started_at_ms":${finite(i.started_at_ms)},"duration_ms":${finite(i.duration_ms)}`
     s += `,"observe_depth":${finite(i.observe_depth)}`
@@ -199,8 +178,6 @@ export class Reporter {
   private perFunction = new Map<string, number>()
   private lingerTimer?: ReturnType<typeof setTimeout>
   private statsTimer?: ReturnType<typeof setInterval>
-  /** Emitted events still in the buffer, by event value: one event to N observers is one item. */
-  private openEmits = new Map<unknown, ReportItem[]>()
   private stats = new Map<string, FunctionStats>()
   private drops = new Map<string, Map<string, number>>()
   private windowStart = Date.now()
@@ -234,66 +211,12 @@ export class Reporter {
     return this.items.length
   }
 
-  /** A matched local invocation of an auto function. */
+  /** A local call that observers matched. */
   push(init: ReportInit): boolean {
     const { captures, ...rest } = init
-    const item = new ReportItem(rest, false, undefined, undefined)
+    const item = new ReportItem(rest)
     if (!this.build(item, captures)) return false
     return this.enqueue(item)
-  }
-
-  /**
-   * An `obs.emit` event. The same event value emitted to several observers
-   * from the same invocation context, before the buffer is flushed, becomes
-   * one item whose `matched` lists them all.
-   */
-  pushEmit(init: Omit<ReportInit, 'matched'> & { observer_id: string; event: unknown; context: unknown }): boolean {
-    const { observer_id, event, context, captures, ...rest } = init
-    const open = this.openEmits.get(event)
-    const merge = open?.find(
-      (it) =>
-        it.init.function_id === rest.function_id && it.context === context && !it.init.matched.includes(observer_id),
-    )
-    if (merge) return this.merge(merge, observer_id, captures)
-    const item = new ReportItem({ ...rest, matched: [observer_id] }, true, event, context)
-    if (!this.build(item, captures)) return false
-    return this.enqueue(item)
-  }
-
-  /** Makes a buffered emit item a merge target. Only items in the buffer are: a flush re-indexes. */
-  private index(item: ReportItem): void {
-    if (!item.emit) return
-    const list = this.openEmits.get(item.coalesceKey)
-    if (list) list.push(item)
-    else this.openEmits.set(item.coalesceKey, [item])
-  }
-
-  /** Adds an observer (and its captures) to a buffered emit item, within the same bounds as a new item. */
-  private merge(item: ReportItem, observerId: string, captures: Iterable<string>): boolean {
-    const fn = item.init.function_id
-    const before = item.save()
-    try {
-      item.init.matched.push(observerId)
-      item.capture(captures)
-      item.render()
-    } catch (error) {
-      item.restore(before)
-      this.logUnencodable(fn, error)
-      return false
-    }
-    const growth = item.bytes - before.bytes
-    const reason = this.tooLarge(item)
-      ? 'TOO_LARGE'
-      : growth > 0 && this.bytes + this.host.pendingBytes() + growth > this.limits.maxBytes
-        ? 'BUFFER_FULL'
-        : undefined
-    if (reason) {
-      item.restore(before)
-      this.drop(fn, reason)
-      return false
-    }
-    this.bytes += growth
-    return true
   }
 
   private build(item: ReportItem, captures: Iterable<string>): boolean {
@@ -337,8 +260,6 @@ export class Reporter {
     this.items.push(item)
     this.bytes += item.bytes
     this.perFunction.set(fn, (this.perFunction.get(fn) ?? 0) + 1)
-    // Indexed before a flush can send it: the flush then drops it from the index.
-    this.index(item)
     if (this.items.length >= this.limits.batchItems) this.flush()
     else this.arm(this.limits.lingerMs)
     return true
@@ -452,17 +373,15 @@ export class Reporter {
     }
   }
 
-  /** Replaces the buffer, keeping the per-function counts and the emit coalescing index in step. */
+  /** Replaces the buffer, keeping the per-function counts in step. */
   private setItems(items: ReportItem[]): void {
     this.items = items
     this.bytes = 0
     this.perFunction.clear()
-    this.openEmits.clear()
     for (const item of items) {
       this.bytes += item.bytes
       const fn = item.init.function_id
       this.perFunction.set(fn, (this.perFunction.get(fn) ?? 0) + 1)
-      this.index(item)
     }
   }
 
@@ -527,7 +446,7 @@ export function buildLocalInvocationStats(
 /** One item's wire JSON (exported for the fixture tests). */
 export function encodeReportItem(init: ReportInit): string {
   const { captures, ...rest } = init
-  const item = new ReportItem(rest, false, undefined, undefined)
+  const item = new ReportItem(rest)
   item.capture(captures)
   item.render()
   return item.json

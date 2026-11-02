@@ -19,8 +19,8 @@ import (
 // (sdk/packages/rust/iii/tests/common/mock_engine.rs), extended with an outbound
 // scripting hook (OnReceive) because the Go client tests drive both directions of the
 // protocol: the engine sends workerregistered on connect, invokefunction to exercise a
-// worker's handler, and invocationresult / triggerregistrationresult acks for outbound
-// Trigger calls.
+// worker's handler, and invocationresult acks for outbound
+// Call invocations.
 //
 // Every received text frame is decoded as JSON and appended to a buffer observable via
 // the WaitFor* helpers. Concurrency: the buffer and the active-connection handle are
@@ -68,7 +68,7 @@ func (m *mockEngine) handshakeAt(i int) handshake {
 
 // newMockEngine starts a mock engine on an ephemeral loopback port and returns it with
 // the buffer empty. Call Close (via t.Cleanup) to shut it down.
-func newMockEngine(t *testing.T) *mockEngine {
+func newMockEngine(t testing.TB) *mockEngine {
 	t.Helper()
 	m := &mockEngine{}
 	m.gotMessage = sync.NewCond(&m.mu)
@@ -173,10 +173,14 @@ func (m *mockEngine) receivedMessages() []map[string]json.RawMessage {
 // observe the SDK reconnect. The mock keeps listening and accepts the next handshake on
 // the same URL — mirroring close_active_connection in the Rust mock.
 func (m *mockEngine) closeActiveConnection() {
-	m.mu.Lock()
-	conn := m.active
-	m.active = nil
-	m.mu.Unlock()
+	// The handshake completes, so the client's Connect can return, before the handler
+	// records the connection: wait for it rather than close nothing.
+	var conn *websocket.Conn
+	for deadline := time.Now().Add(2 * time.Second); conn == nil && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		m.mu.Lock()
+		conn, m.active = m.active, nil
+		m.mu.Unlock()
+	}
 	if conn != nil {
 		// CloseNow drops the TCP connection immediately without a closing handshake,
 		// which is what the SDK sees when the engine goes away abruptly — and what its
@@ -187,7 +191,7 @@ func (m *mockEngine) closeActiveConnection() {
 }
 
 // clear empties the recorded-frames buffer, e.g. between asserting the initial
-// registration set and triggering a reconnect. Mirrors clear() in the Rust mock.
+// registration set and causing a reconnect. Mirrors clear() in the Rust mock.
 func (m *mockEngine) clear() {
 	m.mu.Lock()
 	m.received = nil

@@ -3,7 +3,7 @@ for ``default``.
 
 Absent and blank mean opposite things. Read as the same, they produce the
 failure nobody can see: the worker registers in ``default``, and since a
-worker's calls and triggers follow its namespace, the whole project serves from
+worker's calls and observers follow its namespace, the whole project serves from
 a place the declaration never named.
 
 Checked before any connection, so it fails at startup the way ``iii compose``
@@ -71,21 +71,21 @@ class TestBlankCallNamespace:
     def test_a_blank_one_is_refused(self, blank: str) -> None:
         client = _client("orders")
         with pytest.raises(ValueError, match="namespace is empty"):
-            client._call_namespace(blank, "TriggerRequest.namespace")
+            client._call_namespace(blank, "CallRequest.namespace")
 
     def test_the_message_names_the_field(self) -> None:
         client = _client("orders")
-        with pytest.raises(ValueError, match="TriggerRequest.namespace"):
-            client._call_namespace("", "TriggerRequest.namespace")
+        with pytest.raises(ValueError, match="CallRequest.namespace"):
+            client._call_namespace("", "CallRequest.namespace")
 
     def test_an_absent_one_inherits_the_workers(self) -> None:
         # The control: absent is not blank, and still means this worker's.
         client = _client("orders")
-        assert client._call_namespace(None, "TriggerRequest.namespace") == "orders"
+        assert client._call_namespace(None, "CallRequest.namespace") == "orders"
 
     def test_an_explicit_one_still_wins(self) -> None:
         client = _client("orders")
-        assert client._call_namespace("billing", "TriggerRequest.namespace") == "billing"
+        assert client._call_namespace("billing", "CallRequest.namespace") == "billing"
 
 
 class TestInvocationNamespace:

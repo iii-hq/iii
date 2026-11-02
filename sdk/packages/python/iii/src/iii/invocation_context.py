@@ -1,10 +1,11 @@
-"""The current-invocation context (sdk.md §4.3).
+"""The current-invocation context.
 
-Set around every handler, remote (``InvokeFunction``) and local (in-process
-dispatch), and read by outgoing calls (``caller``, ``observe_depth``) and by
-``obs.emit`` / ``obs.call``. It lives in a :class:`contextvars.ContextVar`, so
-it follows asyncio tasks, and sync handlers start their thread with
-:func:`contextvars.copy_context` to carry it (with the OpenTelemetry context).
+Set around every handler and the function's ``on_observer_deliver``, remote
+(``InvokeFunction``) and local (in-process dispatch), and read by outgoing
+calls (``caller``, ``observe_depth``). It lives in a
+:class:`contextvars.ContextVar`, so it follows asyncio tasks, and sync
+handlers and hooks start their thread with :func:`contextvars.copy_context`
+to carry it (with the OpenTelemetry context).
 """
 
 from __future__ import annotations
@@ -30,11 +31,8 @@ class ActiveInvocation:
     caller: dict[str, Any] | None = None
     #: ``{observer_id, activation_id?}`` when this invocation is an activation.
     activation: dict[str, Any] | None = None
-    #: The invocation's metadata sidecar: what an emitted event's filters see as ``metadata``.
+    #: The invocation's metadata sidecar.
     metadata: Any = None
-    #: The trace context the invocation was started with (reported with ``obs.emit``).
-    traceparent: str | None = None
-    baggage: str | None = None
     #: Local calls this one is nested in (the re-entrancy guard); 0 for a remote invocation.
     local_depth: int = 0
 

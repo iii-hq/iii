@@ -1,10 +1,12 @@
-"""Public types of observe (sdk.md §1, §2): the observer's source, options and
-envelope, and the hooks a function registers to learn who observes it."""
+"""Public types of observe: the observer's source, options and envelope, the
+:class:`Call` a function's observers observe, and the hooks the worker that
+hosts a function sets to decide what observing it means."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, Union
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypedDict, TypeVar, Union
 
 if TYPE_CHECKING:
     from .observable import Observer
@@ -12,7 +14,7 @@ if TYPE_CHECKING:
 #: What an observer ships to its target. Default ``["input", "output", "caller"]``.
 Capture = Literal["input", "output", "error", "caller", "metadata"]
 
-#: An observer's lifecycle: ``pending`` (no owner yet, waiting for the owner's
+#: An observer's lifecycle: ``pending`` (no host yet, waiting for the host's
 #: ack, or no target yet) → ``active`` or ``error``; ``suspended`` while its
 #: worker or target is away; ``disposed`` at the end.
 ObserverState = Literal["pending", "active", "suspended", "error", "disposed"]
@@ -20,8 +22,6 @@ ObserverState = Literal["pending", "active", "suspended", "error", "disposed"]
 #: A declarative filter over ``input``, ``output``, ``error``, ``caller`` and
 #: ``metadata``, with explicit operators only: ``{"input.amount": {"$gte": 500}}``.
 Filter = dict[str, Any]
-
-Delivery = Literal["auto", "owner"]
 
 
 class TargetRef(TypedDict, total=False):
@@ -57,9 +57,8 @@ class Caller(CallerParent, total=False):
 
 
 class Observed(TypedDict, total=False):
-    """What the target of an auto observer (or of ``obs.emit``) receives with
-    ``deliver: "envelope"`` (the default). Fields not in the observer's
-    ``capture`` are absent."""
+    """What an observer's target receives with ``deliver: "envelope"`` (the
+    default). Fields not in the observer's ``capture`` are absent."""
 
     observer_id: str
     activation_id: str
@@ -86,12 +85,14 @@ class ObserveSource(_ObserveSourceRequired, total=False):
     Attributes:
         function_id: The observed function.
         namespace: Defaults to this worker's (``engine::*`` resolves to ``default``).
-        args: Owner-delivered functions only: for the owner; validated
-            against its ``args_format``.
-        filters: Which events reach the target; ``{}`` (or absent) = every event.
-        on: Auto only; default ``"success"``.
-        capture: Auto and ``obs.emit``; default ``["input", "output", "caller"]``.
-        deliver: Auto and ``obs.emit``; default ``"envelope"``.
+        args: For the worker that hosts the function, which reads them in its
+            hooks; validated against the function's ``args_format``. A function
+            without ``args_format`` takes none.
+        filters: Which calls reach the target; ``{}`` (or absent) = every call.
+        on: ``"success"`` (default), ``"error"`` or ``"complete"``.
+        capture: Default ``["input", "output", "caller"]``.
+        deliver: What the target receives when iii delivers: ``"envelope"``
+            (default), ``"input"`` or ``"output"``.
     """
 
     namespace: str
@@ -120,100 +121,75 @@ class ObserverOptions(TypedDict, total=False):
     metadata: dict[str, Any]
 
 
-#: ``on_observer_added`` / ``on_observer_removed``: sync or async callables.
-ObserveHook = Callable[["Observer"], Union[None, Awaitable[None]]]
-
-_UNSET: Any = object()
+InputT = TypeVar("InputT")
+OutputT = TypeVar("OutputT")
 
 
-class ObserveHooks:
-    """The ``observe`` option of ``register_function``: how the function's
-    observers are delivered, and the callbacks that run when one is added or
-    removed.
-
-    Pass an instance, built with keyword arguments or from a subclass that
-    sets the attributes and defines the callbacks as (sync or async) methods.
-    Only ``delivery``, ``args_format``, ``legacy_trigger_type`` and ``allow``
-    travel to the engine; the callbacks stay in this process.
+@dataclass
+class Call(Generic[InputT, OutputT]):
+    """One call of a function, as its observers observe it and its
+    ``on_observer_match`` and ``on_observer_deliver`` hooks receive it.
 
     Attributes:
-        delivery: ``"auto"`` (default): every invocation is offered to every
-            observer. ``"owner"``: the handler hands each event to the
-            observers it belongs to, with ``obs.emit`` / ``obs.call``.
-        args_format: Owner only: JSON Schema (or a Pydantic model) of the
-            observers' ``args``; the engine answers ``INVALID_ARGS``.
-        legacy_trigger_type: Accept old ``register_trigger({"type": ...})``
-            calls for this trigger type (the engine's legacy shim).
-        allow: Default ``True``; ``False`` refuses every observer (``NOT_OBSERVABLE``).
-        on_observer_added: Runs once per added observer, before the SDK acks
-            it. Raise to reject it (an :class:`~iii.ObserveRejection` sets the
-            code, anything else is ``OBSERVE_REJECTED``); after 30 s it is
-            rejected with ``OWNER_TIMEOUT``.
-        on_observer_removed: Runs once per removed observer. Cannot fail:
-            errors are logged.
-
-    The callbacks of one function run one at a time, in revision order, on
-    the SDK's event loop (a sync one on a thread of its own, so it may call
-    the sync API). A callback still running after the 30 s timeout no longer
-    holds the others back: from then on it may overlap with the next ones.
-
-    Examples:
-        >>> class CronHooks(ObserveHooks):
-        ...     delivery = "owner"
-        ...     args_format = {"type": "object", "required": ["expression"],
-        ...                    "properties": {"expression": {"type": "string"}}}
-        ...
-        ...     async def on_observer_added(self, obs):
-        ...         scheduler.retain(obs.args["expression"], obs)
-        ...
-        ...     async def on_observer_removed(self, obs):
-        ...         scheduler.release(obs.id)
-        >>> iii.register_function("scheduler::on-tick", on_tick, observe=CronHooks())
-        >>> iii.register_function("orders::create", create, observe=ObserveHooks(
-        ...     on_observer_added=lambda obs: print("observed by", obs.target)))
+        function_id: The called function.
+        invocation_id: This call's id.
+        status: ``"success"`` or ``"error"``.
+        input: What the function was called with, as the caller passed it
+            (channel refs as refs, not readers and writers).
+        output: The handler's return value: what observers observe (``None``
+            when it raised).
+        error: What the handler raised, ``{code, message, stacktrace?}``
+            (``None`` when it returned).
+        caller: Who made the call: ``{worker_id?, worker_name?, function_id?,
+            invocation_id?, parent?}``; ``None`` outside any handler.
+        metadata: The call's metadata sidecar.
     """
 
-    delivery: Delivery | None = None
-    args_format: Any = None
-    legacy_trigger_type: str | None = None
-    allow: bool | None = None
-    on_observer_added: ObserveHook | None = None
-    on_observer_removed: ObserveHook | None = None
+    function_id: str
+    invocation_id: str
+    status: Literal["success", "error"]
+    input: InputT
+    output: OutputT | None = None
+    error: dict[str, Any] | None = None
+    caller: dict[str, Any] | None = None
+    metadata: Any = None
 
-    def __init__(
-        self,
-        *,
-        delivery: Delivery | None = _UNSET,
-        args_format: Any = _UNSET,
-        legacy_trigger_type: str | None = _UNSET,
-        allow: bool | None = _UNSET,
-        on_observer_added: ObserveHook | None = _UNSET,
-        on_observer_removed: ObserveHook | None = _UNSET,
-    ) -> None:
-        # Keyword arguments override the (sub)class attributes; unset ones keep them.
-        values = {
-            "delivery": delivery,
-            "args_format": args_format,
-            "legacy_trigger_type": legacy_trigger_type,
-            "allow": allow,
-            "on_observer_added": on_observer_added,
-            "on_observer_removed": on_observer_removed,
-        }
-        for name, value in values.items():
-            if value is not _UNSET:
-                setattr(self, name, value)
 
-    @classmethod
-    def from_value(cls, value: ObserveHooks | dict[str, Any] | None) -> ObserveHooks | None:
-        """An ``ObserveHooks`` from what ``register_function(observe=...)`` was given."""
-        if value is None or isinstance(value, ObserveHooks):
-            return value
-        if isinstance(value, dict):
-            return cls(**value)
-        raise TypeError(f"observe must be an ObserveHooks or a dict, got {type(value).__name__}")
+#: ``on_observer_added``: runs before the observer is accepted; raise to reject it.
+AddedHook = Callable[["Observer"], Union[None, Awaitable[None]]]
 
-    def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}(delivery={self.delivery!r}, legacy_trigger_type={self.legacy_trigger_type!r}, "
-            f"allow={self.allow!r})"
-        )
+#: ``on_observer_removed``: runs once for every accepted observer when it goes.
+RemovedHook = Callable[["Observer"], Union[None, Awaitable[None]]]
+
+#: A match key, or several: an observer wants a call when they share one.
+Key = Union[str, Iterable[str]]
+
+#: ``on_observer_match`` as a predicate: whether this observer wants this
+#: call. Asked once per active observer per call; a raise counts as no match.
+MatchPredicate = Callable[["Observer", Call[Any, Any]], bool]
+
+
+@dataclass(frozen=True)
+class MatchKeys:
+    """``on_observer_match`` as keys: an observer wants a call when they share
+    a key, and the SDK keeps an index instead of asking every observer.
+
+    Attributes:
+        observer: What an observer listens for, computed once when it is
+            accepted; an observer whose keys raise is rejected
+            (``OBSERVE_REJECTED``).
+        call: What a call is, computed once per call; a raise matches no
+            observer.
+    """
+
+    observer: Callable[[Observer], Key]
+    call: Callable[[Call[Any, Any]], Key]
+
+
+#: ``on_observer_match``: which observers want each call of a function.
+MatchHook = Union[MatchPredicate, MatchKeys]
+
+#: ``on_observer_deliver(call, observers)``: delivers the call itself and
+#: returns what the caller gets back. ``observers`` are the observers that
+#: matched it, from the active set when the call started.
+DeliverHook = Callable[[Call[Any, Any], Sequence["Observer"]], Any]

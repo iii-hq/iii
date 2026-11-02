@@ -316,16 +316,16 @@ func tracedContext(t *testing.T) context.Context {
 	return baggage.ContextWithBaggage(ctx, b)
 }
 
-// B2: Trigger injects the traceparent and baggage of ctx into the outbound invoke frame,
+// B2: Call injects the traceparent and baggage of ctx into the outbound invoke frame,
 // with telemetry export disabled (TestMain's OTEL_ENABLED=false), and omits them when
 // ctx carries none.
-func TestOtelTriggerInjectsTraceContext(t *testing.T) {
+func TestOtelCallInjectsTraceContext(t *testing.T) {
 	e := newOtelEngine(t, nil)
 	c := e.connect(t)
-	if _, err := c.Trigger(tracedContext(t), TriggerRequest{FunctionID: "remote::traced", Action: VoidAction()}); err != nil {
+	if _, err := c.Call(tracedContext(t), CallRequest{FunctionID: "remote::traced", Action: VoidAction()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "remote::plain", Action: VoidAction()}); err != nil {
+	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "remote::plain", Action: VoidAction()}); err != nil {
 		t.Fatal(err)
 	}
 	traced := e.waitInvoke(t, "remote::traced")
@@ -358,7 +358,7 @@ func TestOtelHandlerReceivesCallerTraceContext(t *testing.T) {
 	got := make(chan seen, 1)
 	_, _ = c.RegisterFunction("traced::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		got <- seen{trace.SpanContextFromContext(ctx), baggage.FromContext(ctx).Member("tenant").Value()}
-		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "downstream::fn", Action: VoidAction()})
+		_, err := c.Call(ctx, CallRequest{FunctionID: "downstream::fn", Action: VoidAction()})
 		return "ok", err
 	})
 	var s seen
@@ -390,7 +390,7 @@ func TestOtelInvocationSpanExported(t *testing.T) {
 		WithHeaders(http.Header{"X-Test": {"1"}}),
 	)
 	_, _ = c.RegisterFunction("orders::create", func(ctx context.Context, _ json.RawMessage) (any, error) {
-		_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "inventory::reserve", Action: VoidAction()})
+		_, err := c.Call(ctx, CallRequest{FunctionID: "inventory::reserve", Action: VoidAction()})
 		return map[string]any{"ok": true, "token": "t-1"}, err
 	})
 
@@ -673,7 +673,7 @@ func TestOtelLocalDispatchSpanParent(t *testing.T) {
 	registerLocal(t, c, "local::child", func(ctx context.Context, _ json.RawMessage) (any, error) { return 2, nil })
 
 	parentCtx, parent := otel.Tracer("user").Start(context.Background(), "caller")
-	if _, err := c.Trigger(parentCtx, TriggerRequest{FunctionID: "local::child"}); err != nil {
+	if _, err := c.Call(parentCtx, CallRequest{FunctionID: "local::child"}); err != nil {
 		t.Fatal(err)
 	}
 	parent.End()
@@ -683,5 +683,32 @@ func TestOtelLocalDispatchSpanParent(t *testing.T) {
 	child, _, _ := waitSpan(t, e.oc, "execute local::child")
 	if child.TraceID != parent.SpanContext().TraceID().String() || child.ParentSpanID != parent.SpanContext().SpanID().String() {
 		t.Errorf("local span trace %s parent %s, want %s / %s", child.TraceID, child.ParentSpanID, parent.SpanContext().TraceID(), parent.SpanContext().SpanID())
+	}
+}
+
+// The deliver hook runs in the function's invocation span: a span it starts and a call
+// it makes are children of "execute <function id>".
+func TestOtelDeliverHookRunsInTheInvocationSpan(t *testing.T) {
+	fe := newFakeEngine(t)
+	e := newOtelEngine(t, fe.m.handle)
+	c := e.connect(t, WithName("observe-test"), otelOn(OtelConfig{}))
+	waitUntil(t, "WorkerRegistered applied", c.registeredNow)
+	c.OnObserverDeliverFor("traced::fn", func(ctx context.Context, call *Call, _ []*Observer) (any, error) {
+		_, span := otel.Tracer("user").Start(ctx, "deliver-child")
+		span.End()
+		_, err := c.Call(ctx, CallRequest{FunctionID: "audit::log", Action: VoidAction()})
+		return call.Output, err
+	})
+	registerHost(t, c, "traced::fn", echoHandler)
+	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "traced::fn", Data: json.RawMessage(`{}`)}))
+
+	execute, _, _ := waitSpan(t, e.oc, "execute traced::fn")
+	child, _, _ := waitSpan(t, e.oc, "deliver-child")
+	if child.TraceID != execute.TraceID || child.ParentSpanID != execute.SpanID {
+		t.Errorf("deliver-child trace %s parent %s, want %s / %s", child.TraceID, child.ParentSpanID, execute.TraceID, execute.SpanID)
+	}
+	sent := fe.waitFrames(MsgInvokeFunction, 1, func(d *DecodedMessage) bool { return d.InvokeFunction.FunctionID == "audit::log" })[0].InvokeFunction
+	if want := "00-" + execute.TraceID + "-" + execute.SpanID + "-01"; sent.Traceparent == nil || *sent.Traceparent != want {
+		t.Errorf("the hook's call carries traceparent %v, want %s", sent.Traceparent, want)
 	}
 }

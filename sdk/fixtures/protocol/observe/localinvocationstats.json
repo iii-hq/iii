@@ -9,7 +9,7 @@
       "duration_ms_sum": 190.2
     },
     {
-      "function_id": "orders::archive",
+      "function_id": "database::query",
       "count": 37,
       "errors": 2,
       "duration_ms_sum": 15.5

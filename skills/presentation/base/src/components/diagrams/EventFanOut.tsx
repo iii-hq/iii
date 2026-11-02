@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 
 /**
  * A17 - one write fans out to every bound handler: an ambient, always-on
- * visual for a reactive surface (source → trigger type → N subscribers).
+ * visual for a reactive surface (source → observed function → N observers).
  * Denser and more literal than FanOut (A7), which animates ripples on demand;
  * this one narrates a concrete write with named handlers. All content arrives
  * via props — handler/edge data lives in the deck's content/.
@@ -17,7 +17,7 @@ export interface FanOutHandler {
 }
 
 export interface FanOutEdge {
-  /** svg path from the trigger's ripple point to a handler box */
+  /** svg path from the observed function's ripple point to a handler box */
   d: string
   /** seconds for the traveling-dot animation */
   dur: number
@@ -28,7 +28,7 @@ export function EventFanOut({
   headingNote,
   source,
   sourceSub,
-  trigger,
+  fn,
   handlers,
   edges,
   footnote,
@@ -43,8 +43,8 @@ export function EventFanOut({
   source: string
   /** line under the write, e.g. "revision 7 — one write, no publish step" */
   sourceSub?: string
-  /** the trigger type the write emits, e.g. "session::message-updated" */
-  trigger: string
+  /** the observed function the write calls, e.g. "session::on-message-updated" */
+  fn: string
   handlers: readonly FanOutHandler[]
   edges: readonly FanOutEdge[]
   /** caption under the handler column */
@@ -97,7 +97,7 @@ export function EventFanOut({
             </text>
           ) : null}
 
-          {/* write → trigger type */}
+          {/* write → observed function */}
           <path
             d="M 254 132 L 364 132"
             fill="none"
@@ -114,13 +114,13 @@ export function EventFanOut({
             className="fill-ink-ghost"
             style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 3.5 }}
           >
-            emits
+            calls
           </text>
 
-          {/* the trigger type */}
+          {/* the observed function */}
           <rect x={368} y={106} width={244} height={52} strokeWidth={1.4} className="fill-panel stroke-accent" />
           <text x={490} y={129} textAnchor="middle" fontSize="12" fontWeight={600} className="fill-ink">
-            {trigger}
+            {fn}
           </text>
           <text
             x={490}
@@ -130,7 +130,7 @@ export function EventFanOut({
             letterSpacing="0.06em"
             className="fill-ink-faint uppercase"
           >
-            trigger type
+            observed function
           </text>
           {!reducedMotion ? (
             <>

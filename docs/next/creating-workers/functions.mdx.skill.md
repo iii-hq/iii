@@ -7,21 +7,24 @@ A worker contributes capabilities to a iii system by registering functions. Each
 `id` of the form `service::name`, a handler that receives the payload and returns a result, and
 optional JSON Schemas that describe the request and response shape.
 
-For how callers invoke functions (`worker.trigger` / `iii trigger` / event-bound triggers), see
-[Using iii / Triggers](../using-iii/triggers). This page is about the authoring new functions.
+Every function can be called and observed. For how callers invoke a function (`worker.call` or
+`iii call`), see [Using iii / Functions](../using-iii/functions#call-a-function). For how observers
+run a function each time another one runs, see [Using iii / Observers](../using-iii/observers). This
+page is about authoring new functions.
 
 {/* TODO: Review against real SDK/CLI surface (now, and post-sdk rework, separately) */}
 
 ## Register a function
 
-Inside the worker, register the function with the SDK. The `id` is what triggers will use as a
-`function_id`.
+Inside the worker, register the function with the SDK. The `id` is what callers and observers use as
+a `function_id`.
 
 <Note>
-  Each type of trigger has its own expected argument structure for a given function. For example
-  `cron` will call functions without arguments, while `http` will provide a standard http-style
-  payload that includes `body`, `headers`, and other properties. For each worker visit their
-  respective page at [workers.iii.dev](https://workers.iii.dev/) for their expected payload.
+  A function that is an observer's target receives what the observed function's documentation
+  describes. For example, a target of `cron::on-tick` with `deliver: "input"` receives the tick, and
+  a target of `http::on-request` receives an HTTP request with `body`, `headers`, and other
+  properties. Each worker's page at [workers.iii.dev](https://workers.iii.dev/) lists its functions,
+  their input, and their `args`.
 </Note>
 
 <Tabs>
@@ -98,7 +101,7 @@ Inside the worker, register the function with the SDK. The `id` is what triggers
 
 Attach JSON Schemas to the registration so the request and response shape are documented alongside
 the function. The schemas are stored with the function and surface in the iii console,
-`iii trigger --help`, and elsewhere.
+`iii call <function_id> --help`, and elsewhere.
 
 <Note>
   Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
@@ -275,7 +278,7 @@ you gate access on the fields you define.
   </Tab>
   <Tab title="Go">
     ```go
-    client.RegisterFunction("math::add", handler, iii.RegisterFunctionOptions{
+    client.RegisterFunction("math::add", handler, iii.FunctionOptions{
         Metadata: json.RawMessage(`{"owner":"math-team","public":true}`),
     })
     ```
@@ -285,10 +288,15 @@ you gate access on the fields you define.
 
 ## Receive per-invocation metadata
 
-Distinct from the registration metadata above, each function can also receive an optional
-`metadata` object that is sent as arbitrary JSON. When a trigger invokes a function it can
-use this `metadata` object to provide trigger or execution context to the receiving function (see
-[trigger metadata](../using-iii/triggers#trigger-metadata)) for more information.
+Distinct from the registration metadata above, each function can also receive optional
+per-invocation `metadata`: any JSON value. A caller sets it on the call, and an observer sets it once
+for every activation of its target, to give the receiving function execution context (see
+[Policy and metadata](../using-iii/observers#policy-and-metadata)). A call through an observer takes
+no metadata of its own: its target receives the observer's.
+
+`null` is the same as no metadata. A call with `metadata: null` (Python `None`, Rust `Value::Null`,
+Go `json.RawMessage("null")`) reaches the handler with none, whether it runs in the same worker or
+goes through the engine.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -339,8 +347,8 @@ use this `metadata` object to provide trigger or execution context to the receiv
 ## HTTP-invokable functions
 
 The `iii-http-functions` worker provides this feature. See its
-[Worker Docs](https://workers.iii.dev/workers/iii-http-functions) for its configuration and
-security controls.
+[Worker Docs](https://workers.iii.dev/workers/iii-http-functions) for its configuration and security
+controls.
 
 You can register an external HTTP endpoint as a function. The engine makes the HTTP call whenever
 the function is invoked; your worker only declares the endpoint.
@@ -349,8 +357,8 @@ This is useful for delegating work to your existing API Gateways, webhooks, serv
 (Lambda, Azure Functions, Google Cloud Functions), or any third-party API you want to surface as a
 regular iii function.
 
-The function is then triggerable like any other: `worker.trigger`, `iii trigger`, and any bound
-trigger type (queue, cron, state, http) all work without any other changes.
+The function is then callable like any other, with `worker.call` or `iii call`, and it can be an
+observer's target or an observed function.
 
 <Accordion title="Example: register an external webhook as `notifications::send`">
   <Tabs>
@@ -445,7 +453,7 @@ trigger type (queue, cron, state, http) all work without any other changes.
           TimeoutMs: &timeoutMs,
           Headers:   map[string]string{"X-Service": "iii-worker"},
           Auth:      iii.BearerAuth("PROVIDER_API_TOKEN"),
-      }, iii.RegisterFunctionOptions{
+      }, iii.FunctionOptions{
           Description: "POST a notification to the provider webhook",
       })
       if err != nil {
@@ -496,6 +504,14 @@ underlying error's stack trace, and Go forwards the `Stacktrace` of a returned
 `invocation_failed`). The engine doesn't swallow them. Use this distinction to express expected
 failures (return a structured error value) versus unexpected ones (throw / raise / return `Err` /
 return an `error`).
+
+## Observers of a function
+
+When a function runs, iii runs the target of each observer whose filters match the call, and the
+function's return value is the `output` its observers see. The worker that hosts a function changes
+that default with four hooks (`onObserverAdded`, `onObserverRemoved`, `onObserverMatch` and
+`onObserverDeliver`) and describes the function to the engine with the `args_format`, `private` and
+`observable` options. See [Observable functions](./observable-functions).
 
 ## Unregister a function
 

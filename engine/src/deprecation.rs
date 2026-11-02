@@ -46,8 +46,8 @@ pub(crate) const ENGINE_CALLER_KEY: &str = "engine";
 /// Placeholder logged for caller fields that do not apply or are unknown.
 const ABSENT: &str = "-";
 
-/// The standard iii-stream deprecation sentence for `entry` (a function id,
-/// trigger type, or entry-point name).
+/// The standard iii-stream deprecation sentence for `entry` (a function id
+/// or entry-point name).
 pub(crate) fn stream_deprecation_message(entry: &str) -> String {
     format!(
         "{entry} is deprecated (iii-stream) and will be removed in an upcoming release. \
@@ -74,11 +74,6 @@ impl Caller {
     pub(crate) fn from_worker_id(id: Option<&str>) -> Self {
         id.and_then(|id| Uuid::parse_str(id).ok())
             .map_or(Self::Engine, Self::Worker)
-    }
-
-    /// Resolve an optional worker UUID (e.g. `Trigger::worker_id`).
-    pub(crate) fn from_worker_uuid(id: Option<Uuid>) -> Self {
-        id.map_or(Self::Engine, Self::Worker)
     }
 
     /// The rate-limit key for this caller.
@@ -422,8 +417,6 @@ mod tests {
         );
         assert_eq!(Caller::from_worker_id(Some("not-a-uuid")), Caller::Engine);
         assert_eq!(Caller::from_worker_id(None), Caller::Engine);
-        assert_eq!(Caller::from_worker_uuid(Some(id)), Caller::Worker(id));
-        assert_eq!(Caller::from_worker_uuid(None), Caller::Engine);
         assert_eq!(Caller::Worker(id).key(), id.to_string());
         assert_eq!(Caller::Engine.key(), ENGINE_CALLER_KEY);
         let ip: IpAddr = "10.1.2.3".parse().unwrap();

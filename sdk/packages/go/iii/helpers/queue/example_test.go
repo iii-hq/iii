@@ -22,13 +22,13 @@ func ExampleEnqueueResult() {
 	// Output: 7d0c1f9e-receipt
 }
 
-// ExampleEnqueueResult_trigger enqueues a call on the "emails" queue and reads the
-// receipt from the trigger result.
-func ExampleEnqueueResult_trigger() {
+// ExampleEnqueueResult_call enqueues a call on the "emails" queue and reads the
+// receipt from the call's result.
+func ExampleEnqueueResult_call() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	res, err := client.Trigger(context.Background(), iii.TriggerRequest{
+	res, err := client.Call(context.Background(), iii.CallRequest{
 		FunctionID: "emails::send",
 		Payload:    json.RawMessage(`{"to":"ada@example.com"}`),
 		Action:     iii.EnqueueAction("emails"),

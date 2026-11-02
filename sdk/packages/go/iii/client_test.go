@@ -62,8 +62,9 @@ func TestConnectRegistersWorkerMetadata(t *testing.T) {
 	}
 }
 
-// TestRegistrationsSentInOrderOnConnect verifies the connect order: trigger types,
-// functions, triggers, then worker metadata last.
+// TestRegistrationsSentInOrderOnConnect verifies the connect order: functions, then
+// worker metadata last. A function that needs observe.v2 waits for WorkerRegistered,
+// which this engine never sends.
 func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	m := newMockEngine(t)
 	c := New(m.url)
@@ -71,7 +72,7 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 	_, _ = c.RegisterFunction("hello::greet", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return map[string]string{"msg": "hi"}, nil
 	})
-	_, _ = c.RegisterTrigger(RegisterTriggerInput{ID: "t1", Type: "http", FunctionID: "hello::greet", Config: json.RawMessage(`{"path":"/x"}`)})
+	_, _ = c.RegisterFunction("hello::tick", Identity, RegisterFunctionOptions{Private: true})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -82,23 +83,19 @@ func TestRegistrationsSentInOrderOnConnect(t *testing.T) {
 
 	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
 		return countType(msgs, string(MsgInvokeFunction)) >= 1 && // worker metadata
-			countType(msgs, string(MsgRegisterFunction)) >= 1 &&
-			countType(msgs, string(MsgRegisterTrigger)) >= 1
+			countType(msgs, string(MsgRegisterFunction)) >= 1
 	}, 2*time.Second)
 
 	idxFn := indexOfType(got, string(MsgRegisterFunction))
-	idxTrig := indexOfType(got, string(MsgRegisterTrigger))
 	idxMeta := indexOfFunctionID(got, FnRegisterWorker)
-
-	if idxFn < 0 || idxTrig < 0 || idxMeta < 0 {
-		t.Fatalf("missing frames: fn=%d trig=%d meta=%d", idxFn, idxTrig, idxMeta)
+	if idxFn < 0 || idxMeta < 0 {
+		t.Fatalf("missing frames: fn=%d meta=%d", idxFn, idxMeta)
 	}
-	// Function registration precedes trigger registration; worker metadata is last.
-	if !(idxFn < idxTrig) {
-		t.Errorf("registerfunction (%d) should precede registertrigger (%d)", idxFn, idxTrig)
+	if !(idxMeta > idxFn) {
+		t.Errorf("worker metadata (%d) should come after registrations (fn=%d)", idxMeta, idxFn)
 	}
-	if !(idxMeta > idxFn && idxMeta > idxTrig) {
-		t.Errorf("worker metadata (%d) should come after registrations (fn=%d trig=%d)", idxMeta, idxFn, idxTrig)
+	if n := countRegister(m.receivedMessages(), string(MsgRegisterFunction), "hello::tick"); n != 0 {
+		t.Errorf("a private function was registered before WorkerRegistered (%d frames)", n)
 	}
 }
 
@@ -381,10 +378,10 @@ func TestInboundInvokeUnknownFunction(t *testing.T) {
 	}
 }
 
-// TestTriggerAwaitResult covers the default outbound path: the worker triggers a
+// TestCallAwaitResult covers the default outbound path: the worker calls a
 // function, the engine replies with an invocationresult keyed by the invocation_id, and
-// Trigger returns the result.
-func TestTriggerAwaitResult(t *testing.T) {
+// Call returns the result.
+func TestCallAwaitResult(t *testing.T) {
 	m := newMockEngine(t)
 	// Echo back an invocationresult for any invokefunction carrying an invocation_id.
 	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
@@ -411,17 +408,17 @@ func TestTriggerAwaitResult(t *testing.T) {
 	c := connectClient(t, m)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	res, err := c.Trigger(ctx, TriggerRequest{FunctionID: "svc::ping", Payload: json.RawMessage(`{}`)})
+	res, err := c.Call(ctx, CallRequest{FunctionID: "svc::ping", Payload: json.RawMessage(`{}`)})
 	if err != nil {
-		t.Fatalf("Trigger: %v", err)
+		t.Fatalf("Call: %v", err)
 	}
 	if string(res) != `{"pong":true}` {
 		t.Errorf("result = %s, want {\"pong\":true}", res)
 	}
 }
 
-// TestTriggerAwaitRemoteError maps an engine error result to *InvocationError.
-func TestTriggerAwaitRemoteError(t *testing.T) {
+// TestCallAwaitRemoteError maps an engine error result to *InvocationError.
+func TestCallAwaitRemoteError(t *testing.T) {
 	m := newMockEngine(t)
 	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
 		if messageType(msg) != string(MsgInvokeFunction) {
@@ -447,7 +444,7 @@ func TestTriggerAwaitRemoteError(t *testing.T) {
 	c := connectClient(t, m)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "svc::secret"})
+	_, err := c.Call(ctx, CallRequest{FunctionID: "svc::secret"})
 	if err == nil {
 		t.Fatal("expected an error from a remote-error result")
 	}
@@ -460,24 +457,24 @@ func TestTriggerAwaitRemoteError(t *testing.T) {
 	}
 }
 
-// TestTriggerVoidFireAndForget sends a void invocation with no invocation_id and
+// TestCallVoidFireAndForget sends a void invocation with no invocation_id and
 // returns immediately without waiting for a reply.
-func TestTriggerVoidFireAndForget(t *testing.T) {
+func TestCallVoidFireAndForget(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	res, err := c.Trigger(ctx, TriggerRequest{
+	res, err := c.Call(ctx, CallRequest{
 		FunctionID: LogInfo,
 		Payload:    json.RawMessage(`{"msg":"hello"}`),
 		Action:     VoidAction(),
 	})
 	if err != nil {
-		t.Fatalf("void Trigger: %v", err)
+		t.Fatalf("void Call: %v", err)
 	}
 	if res != nil {
-		t.Errorf("void Trigger result = %s, want nil", res)
+		t.Errorf("void Call result = %s, want nil", res)
 	}
 
 	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
@@ -499,22 +496,22 @@ func TestTriggerVoidFireAndForget(t *testing.T) {
 	}
 }
 
-// TestTriggerCarriesMetadata verifies TriggerRequest.Metadata is serialized into the
+// TestCallCarriesMetadata verifies CallRequest.Metadata is serialized into the
 // outbound InvokeFunction's metadata field. Uses the void path so the assertion is
 // deterministic (no reply needed): the recorded frame must carry the metadata sidecar.
-func TestTriggerCarriesMetadata(t *testing.T) {
+func TestCallCarriesMetadata(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := c.Trigger(ctx, TriggerRequest{
+	if _, err := c.Call(ctx, CallRequest{
 		FunctionID: "svc::work",
 		Payload:    json.RawMessage(`{"x":1}`),
 		Metadata:   json.RawMessage(`{"tenant":"acme"}`),
 		Action:     VoidAction(),
 	}); err != nil {
-		t.Fatalf("Trigger: %v", err)
+		t.Fatalf("Call: %v", err)
 	}
 
 	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
@@ -526,17 +523,17 @@ func TestTriggerCarriesMetadata(t *testing.T) {
 		return stringField(mm, "function_id") == "svc::work"
 	})
 	if frame == nil {
-		t.Fatal("trigger frame not sent")
+		t.Fatal("call frame not sent")
 	}
 	if string(frame["metadata"]) != `{"tenant":"acme"}` {
 		t.Errorf("metadata = %s, want {\"tenant\":\"acme\"}", frame["metadata"])
 	}
 }
 
-// TestTriggerEnqueueAwaitsReceipt covers the enqueue path: the worker triggers through
+// TestCallEnqueueAwaitsReceipt covers the enqueue path: the worker calls through
 // a named queue (action:enqueue) and awaits the engine's receipt, which arrives as an
 // ordinary invocationresult keyed by the invocation_id.
-func TestTriggerEnqueueAwaitsReceipt(t *testing.T) {
+func TestCallEnqueueAwaitsReceipt(t *testing.T) {
 	m := newMockEngine(t)
 	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
 		if messageType(msg) != string(MsgInvokeFunction) {
@@ -566,25 +563,25 @@ func TestTriggerEnqueueAwaitsReceipt(t *testing.T) {
 	c := connectClient(t, m)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	res, err := c.Trigger(ctx, TriggerRequest{
+	res, err := c.Call(ctx, CallRequest{
 		FunctionID: "svc::work",
 		Action:     EnqueueAction("jobs"),
 	})
 	if err != nil {
-		t.Fatalf("enqueue Trigger: %v", err)
+		t.Fatalf("enqueue Call: %v", err)
 	}
 	if string(res) != `{"messageReceiptId":"r-1"}` {
 		t.Errorf("receipt = %s, want the enqueue receipt", res)
 	}
 }
 
-// TestTriggerTimeout returns ErrTimeout when no result arrives in time.
-func TestTriggerTimeout(t *testing.T) {
+// TestCallTimeout returns ErrTimeout when no result arrives in time.
+func TestCallTimeout(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m) // engine never replies to invocations
 
 	ctx := context.Background()
-	_, err := c.Trigger(ctx, TriggerRequest{FunctionID: "svc::silent", Timeout: 150 * time.Millisecond})
+	_, err := c.Call(ctx, CallRequest{FunctionID: "svc::silent", Timeout: 150 * time.Millisecond})
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("error = %v, want ErrTimeout", err)
 	}
@@ -653,7 +650,7 @@ func TestPingPong(t *testing.T) {
 	}
 }
 
-// TestCloseCancelsPending verifies Close unblocks an in-flight Trigger with
+// TestCloseCancelsPending verifies Close unblocks an in-flight Call with
 // ErrNotConnected.
 func TestCloseCancelsPending(t *testing.T) {
 	m := newMockEngine(t)
@@ -661,11 +658,11 @@ func TestCloseCancelsPending(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::hang", Timeout: 5 * time.Second})
+		_, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::hang", Timeout: 5 * time.Second})
 		errCh <- err
 	}()
 
-	// Give the trigger a moment to register its pending entry, then close.
+	// Give the call a moment to register its pending entry, then close.
 	m.waitFor(func(msgs []map[string]json.RawMessage) bool {
 		return firstWhere(msgs, func(mm map[string]json.RawMessage) bool {
 			return stringField(mm, "function_id") == "svc::hang"
@@ -676,141 +673,10 @@ func TestCloseCancelsPending(t *testing.T) {
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, ErrNotConnected) {
-			t.Errorf("Trigger after Close = %v, want ErrNotConnected", err)
+			t.Errorf("Call after Close = %v, want ErrNotConnected", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Error("Trigger did not unblock after Close")
-	}
-}
-
-// stubTriggerHandler records register/unregister calls for assertions.
-type stubTriggerHandler struct {
-	registered   chan TriggerConfig
-	unregistered chan TriggerConfig
-	failWith     error
-}
-
-func (s *stubTriggerHandler) RegisterTrigger(ctx context.Context, cfg TriggerConfig) error {
-	if s.registered != nil {
-		s.registered <- cfg
-	}
-	return s.failWith
-}
-func (s *stubTriggerHandler) UnregisterTrigger(ctx context.Context, cfg TriggerConfig) error {
-	if s.unregistered != nil {
-		s.unregistered <- cfg
-	}
-	return nil
-}
-
-// TestInboundRegisterTrigger routes an engine RegisterTrigger to the trigger-type
-// handler and replies with a successful TriggerRegistrationResult.
-func TestInboundRegisterTrigger(t *testing.T) {
-	m := newMockEngine(t)
-	handler := &stubTriggerHandler{registered: make(chan TriggerConfig, 1)}
-
-	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
-		if messageType(msg) == string(MsgRegisterTriggerType) && messageID(msg) == "cron" {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = m.send(ctx, conn, &RegisterTriggerMessage{
-				ID:          "inst-1",
-				TriggerType: "cron",
-				FunctionID:  "job::run",
-				Config:      json.RawMessage(`{"every":"5m"}`),
-			})
-		}
-	}
-
-	c := connectClient(t, m)
-	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "cron", Description: "periodic"}, handler); err != nil {
-		t.Fatalf("RegisterTriggerType: %v", err)
-	}
-
-	select {
-	case cfg := <-handler.registered:
-		if cfg.ID != "inst-1" || cfg.FunctionID != "job::run" {
-			t.Errorf("handler got cfg %+v", cfg)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("trigger handler was not called")
-	}
-
-	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
-		return firstOfType(msgs, string(MsgTriggerRegistrationResult)) != nil
-	}, 2*time.Second)
-	res := firstOfType(got, string(MsgTriggerRegistrationResult))
-	if res == nil {
-		t.Fatal("no triggerregistrationresult sent")
-	}
-	if stringField(res, "trigger_type") != "cron" {
-		t.Errorf("trigger_type = %q, want cron", stringField(res, "trigger_type"))
-	}
-	if _, hasErr := res["error"]; hasErr {
-		t.Error("successful registration must omit error")
-	}
-}
-
-// TestInboundUnregisterTrigger routes an engine UnregisterTrigger to the trigger-type
-// handler's UnregisterTrigger hook, so per-instance work can be torn down (the engine
-// sends this when an instance is removed). Mirrors the Rust/Node SDKs. Regression test
-// for the teardown leak (iii-hq/iii#1765).
-func TestInboundUnregisterTrigger(t *testing.T) {
-	m := newMockEngine(t)
-	handler := &stubTriggerHandler{unregistered: make(chan TriggerConfig, 1)}
-
-	tt := "cron"
-	m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
-		if messageType(msg) == string(MsgRegisterTriggerType) && messageID(msg) == "cron" {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			_ = m.send(ctx, conn, &UnregisterTriggerMessage{ID: "inst-1", TriggerType: &tt})
-		}
-	}
-
-	c := connectClient(t, m)
-	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "cron", Description: "periodic"}, handler); err != nil {
-		t.Fatalf("RegisterTriggerType: %v", err)
-	}
-
-	select {
-	case cfg := <-handler.unregistered:
-		if cfg.ID != "inst-1" {
-			t.Errorf("UnregisterTrigger got id %q, want inst-1", cfg.ID)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("UnregisterTrigger hook was not called (teardown leak)")
-	}
-}
-
-// TestInboundRegisterTriggerUnknownType replies trigger_type_not_found when no handler
-// is registered for the type.
-func TestInboundRegisterTriggerUnknownType(t *testing.T) {
-	m := newMockEngine(t)
-	c := connectClient(t, m)
-	_ = c
-
-	m.waitFor(func(msgs []map[string]json.RawMessage) bool {
-		return firstOfType(msgs, string(MsgInvokeFunction)) != nil
-	}, 2*time.Second)
-	m.mu.Lock()
-	conn := m.active
-	m.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = m.send(ctx, conn, &RegisterTriggerMessage{ID: "x", TriggerType: "ghost", FunctionID: "f", Config: json.RawMessage(`{}`)})
-
-	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool {
-		return firstOfType(msgs, string(MsgTriggerRegistrationResult)) != nil
-	}, 2*time.Second)
-	res := firstOfType(got, string(MsgTriggerRegistrationResult))
-	if res == nil {
-		t.Fatal("no triggerregistrationresult sent")
-	}
-	var body ErrorBody
-	_ = json.Unmarshal(res["error"], &body)
-	if body.Code != "trigger_type_not_found" {
-		t.Errorf("code = %q, want trigger_type_not_found", body.Code)
+		t.Error("Call did not unblock after Close")
 	}
 }
 
@@ -882,6 +748,34 @@ func TestWorkerNameUsesExplicitNameWhenEnvIsEmpty(t *testing.T) {
 
 	if c.name != "explicit-worker" {
 		t.Errorf("worker name = %q, want explicit-worker", c.name)
+	}
+}
+
+// Trigger, TriggerRequest and TriggerAction are Call, CallRequest and CallAction under
+// their 0.25 names: the same frame goes out.
+func TestTriggerIsCall(t *testing.T) {
+	m := newMockEngine(t)
+	c := connectClient(t, m)
+	var action *TriggerAction = VoidAction()
+	req := TriggerRequest{FunctionID: "audit::log", Payload: json.RawMessage(`{"via":"trigger"}`), Action: action}
+	if _, err := c.Trigger(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var call CallRequest = req
+	call.Payload = json.RawMessage(`{"via":"call"}`)
+	if _, err := c.Call(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	got := m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, string(MsgInvokeFunction)) >= 3 }, 2*time.Second)
+	var frames []map[string]json.RawMessage
+	for _, msg := range got {
+		if stringField(msg, "function_id") == "audit::log" {
+			frames = append(frames, msg)
+		}
+	}
+	if len(frames) != 2 || string(frames[0]["action"]) != `{"type":"void"}` || string(frames[1]["action"]) != `{"type":"void"}` ||
+		sortedJSON(t, frames[0]["data"]) != `{"via":"trigger"}` || sortedJSON(t, frames[1]["data"]) != `{"via":"call"}` {
+		t.Errorf("frames %v", frames)
 	}
 }
 

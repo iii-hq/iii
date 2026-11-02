@@ -1,6 +1,6 @@
 # iii-sandbox
 
-Spawn ephemeral microVMs from worker code. The router serves 16 `sandbox::*` triggers — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called via `iii.trigger()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
+Spawn ephemeral microVMs from worker code. The router serves 16 `sandbox::*` functions — 4 lifecycle ops, 10 filesystem ops, the one-shot `sandbox::run`, and `sandbox::catalog::list` — every one called with `iii.call()`. Each sandbox boots in a few hundred milliseconds, runs commands isolated from the host, and is reaped when idle. The overlay filesystem is discarded on stop.
 
 > **Implementation:** `engine/src/workers/sandbox/`. The engine's built-in sandbox router. It
 > registers every `sandbox::*` function in the `default` namespace and forwards each call,
@@ -23,7 +23,7 @@ stdout/stderr, and stops the VM. One call, one response.
 
 ```json
 {
-  "trigger": "sandbox::run",
+  "function_id": "sandbox::run",
   "payload": {
     "image": "node",
     "code": "console.log('hello from sandbox')",
@@ -41,18 +41,18 @@ Use this when you need fine-grained control over multiple operations on one sand
 
 ```json
 // 1. boot
-{ "trigger": "sandbox::create", "payload": { "image": "node" } }
+{ "function_id": "sandbox::create", "payload": { "image": "node" } }
 // 2. write a file (content accepts a UTF-8 string directly)
-{ "trigger": "sandbox::fs::write", "payload": {
+{ "function_id": "sandbox::fs::write", "payload": {
     "sandbox_id": "<uuid>", "path": "/home/app/main.js",
     "content": "console.log('hi')\n"
 } }
 // 3. run it (3 valid cmd shapes — pick whichever you like)
-{ "trigger": "sandbox::exec", "payload": {
+{ "function_id": "sandbox::exec", "payload": {
     "sandbox_id": "<uuid>", "cmd": "node", "args": ["/home/app/main.js"]
 } }
 // 4. tear down
-{ "trigger": "sandbox::stop", "payload": { "sandbox_id": "<uuid>" } }
+{ "function_id": "sandbox::stop", "payload": { "sandbox_id": "<uuid>" } }
 ```
 
 ### Three accepted `cmd` shapes for `sandbox::exec`
@@ -119,9 +119,9 @@ engine:
 
 Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-libkrun`.
 
-## Triggers
+## Functions
 
-All 16 triggers are dispatched via `iii.trigger({ function_id, payload, timeoutMs })`. Recommended `timeoutMs` is in each table; lifecycle ops have meaningful timeout pressure, filesystem ops generally don't (the daemon is local).
+All 16 functions are called with `iii.call({ function_id, payload, timeoutMs })`. Recommended `timeoutMs` is in each table; lifecycle ops have meaningful timeout pressure, filesystem ops generally don't (the daemon is local).
 
 ### Lifecycle (4)
 
@@ -201,7 +201,7 @@ Returns: `{ images: [ { name, oci_ref, kind } ] }` where `name` is the value you
 
 ### Filesystem (10)
 
-All filesystem triggers take `sandbox_id` (UUID) plus operation-specific fields. Bumping the sandbox's idle clock is automatic — fs activity counts as liveness. Errors return `S2xx`.
+All filesystem functions take `sandbox_id` (UUID) plus operation-specific fields. Bumping the sandbox's idle clock is automatic — fs activity counts as liveness. Errors return `S2xx`.
 
 #### `sandbox::fs::ls`
 
@@ -344,20 +344,20 @@ import { registerWorker } from 'iii-sdk'
 
 const iii = registerWorker('ws://127.0.0.1:49134')
 
-const { sandbox_id } = await iii.trigger({
+const { sandbox_id } = await iii.call({
   function_id: 'sandbox::create',
   payload: { image: 'python', cpus: 1, memory_mb: 512 },
   timeoutMs: 300_000,
 })
 
-const out = await iii.trigger({
+const out = await iii.call({
   function_id: 'sandbox::exec',
   payload: { sandbox_id, cmd: 'python3', args: ['-c', 'print(2 + 2)'] },
   timeoutMs: 35_000,
 })
 console.log(out.stdout) // "4\n"
 
-await iii.trigger({
+await iii.call({
   function_id: 'sandbox::stop',
   payload: { sandbox_id, wait: true },
 })
@@ -368,21 +368,21 @@ from iii import register_worker
 
 iii = register_worker("ws://127.0.0.1:49134")
 
-result = await iii.trigger({
+result = await iii.call_async({
     "function_id": "sandbox::create",
     "payload": {"image": "python", "cpus": 1, "memory_mb": 512},
     "timeout_ms": 300_000,
 })
 sandbox_id = result["sandbox_id"]
 
-out = await iii.trigger({
+out = await iii.call_async({
     "function_id": "sandbox::exec",
     "payload": {"sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(2 + 2)"]},
     "timeout_ms": 35_000,
 })
 print(out["stdout"])  # "4\n"
 
-await iii.trigger({
+await iii.call_async({
     "function_id": "sandbox::stop",
     "payload": {"sandbox_id": sandbox_id, "wait": True},
 })

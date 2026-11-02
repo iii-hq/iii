@@ -4,6 +4,12 @@ import os
 import time
 
 import pytest
+from iii_helpers.worker_connection_manager import (
+    AuthInput,
+    AuthResult,
+    OnFunctionRegistrationInput,
+    OnFunctionRegistrationResult,
+)
 
 from iii import (
     InitOptions,
@@ -11,24 +17,12 @@ from iii import (
     MiddlewareFunctionInput,
     register_worker,
 )
-from iii.trigger import TriggerConfig, TriggerHandler
-from iii_helpers.worker_connection_manager import (
-    AuthInput,
-    AuthResult,
-    OnFunctionRegistrationInput,
-    OnFunctionRegistrationResult,
-    OnTriggerRegistrationInput,
-    OnTriggerRegistrationResult,
-    OnTriggerTypeRegistrationInput,
-    OnTriggerTypeRegistrationResult,
-)
 
 ENGINE_WS_URL = os.environ.get("III_URL", "ws://localhost:49199")
 EW_URL = os.environ.get("III_RBAC_WORKER_URL", "ws://localhost:49135")
 
 auth_calls: list[AuthInput] = []
-trigger_type_reg_calls: list[OnTriggerTypeRegistrationInput] = []
-trigger_reg_calls: list[OnTriggerRegistrationInput] = []
+function_reg_calls: list[OnFunctionRegistrationInput] = []
 
 
 @pytest.fixture(scope="module")
@@ -48,7 +42,6 @@ def iii_server():
             return AuthResult(
                 allowed_functions=[],
                 forbidden_functions=[],
-                allow_trigger_type_registration=False,
                 context={"role": "anonymous", "user_id": "anonymous"},
             ).model_dump()
 
@@ -56,7 +49,6 @@ def iii_server():
             return AuthResult(
                 allowed_functions=["test::ew::valid-token-echo"],
                 forbidden_functions=[],
-                allow_trigger_type_registration=True,
                 context={"role": "admin", "user_id": "user-1"},
             ).model_dump()
 
@@ -64,7 +56,6 @@ def iii_server():
             return AuthResult(
                 allowed_functions=[],
                 forbidden_functions=["test::ew::echo"],
-                allow_trigger_type_registration=False,
                 context={"role": "restricted", "user_id": "user-2"},
             ).model_dump()
 
@@ -72,7 +63,6 @@ def iii_server():
             return AuthResult(
                 allowed_functions=[],
                 forbidden_functions=[],
-                allow_trigger_type_registration=True,
                 context={"role": "prefixed", "user_id": "user-prefix"},
                 function_registration_prefix="test-prefix",
             ).model_dump()
@@ -82,7 +72,7 @@ def iii_server():
     def middlware_handler(data: dict) -> dict:
         mid = MiddlewareFunctionInput(**data)
         enriched = {**mid.payload, "_intercepted": True, "_caller": mid.context.get("user_id")}
-        return client.trigger({"function_id": mid.function_id, "payload": enriched})
+        return client.call({"function_id": mid.function_id, "payload": enriched})
 
     def echo_handler(data):
         return {"echoed": data}
@@ -98,42 +88,16 @@ def iii_server():
 
     def on_function_reg_handler(data: dict) -> dict:
         reg_input = OnFunctionRegistrationInput(**data)
+        function_reg_calls.append(reg_input)
         if reg_input.function_id.startswith("denied::"):
             raise Exception("denied function registration")
         return OnFunctionRegistrationResult(
             function_id=reg_input.function_id,
-        ).model_dump()
-
-    def on_trigger_type_reg_handler(data: dict) -> dict:
-        reg_input = OnTriggerTypeRegistrationInput(**data)
-        trigger_type_reg_calls.append(reg_input)
-        if reg_input.trigger_type_id.startswith("denied-tt::"):
-            raise Exception("denied trigger type registration")
-        return OnTriggerTypeRegistrationResult().model_dump()
-
-    def on_trigger_reg_handler(data: dict) -> dict:
-        reg_input = OnTriggerRegistrationInput(**data)
-        trigger_reg_calls.append(reg_input)
-        if reg_input.function_id.startswith("denied-trig::"):
-            raise Exception("denied trigger registration")
-        return OnTriggerRegistrationResult().model_dump()
+        ).model_dump(exclude_none=True)
 
     client.register_function("test::rbac-worker::auth", auth_handler)
     client.register_function("test::rbac-worker::middleware", middlware_handler)
     client.register_function("test::rbac-worker::on-function-reg", on_function_reg_handler)
-    client.register_function("test::rbac-worker::on-trigger-type-reg", on_trigger_type_reg_handler)
-    client.register_function("test::rbac-worker::on-trigger-reg", on_trigger_reg_handler)
-    class NoopTriggerHandler(TriggerHandler):
-        async def register_trigger(self, config: TriggerConfig) -> None:
-            pass
-
-        async def unregister_trigger(self, config: TriggerConfig) -> None:
-            pass
-
-    client.register_trigger_type(
-        {"id": "test-rbac-trigger", "description": "Trigger type for RBAC tests"},
-        NoopTriggerHandler(),
-    )
     client.register_function("test::ew::public::echo", echo_handler)
     client.register_function("test::ew::valid-token-echo", valid_token_echo_handler)
     client.register_function(
@@ -151,8 +115,7 @@ def iii_server():
 @pytest.fixture(autouse=True)
 def _reset_calls():
     auth_calls.clear()
-    trigger_type_reg_calls.clear()
-    trigger_reg_calls.clear()
+    function_reg_calls.clear()
 
 
 class TestRbacWorkers:
@@ -169,7 +132,7 @@ class TestRbacWorkers:
         )
 
         try:
-            result = iii_client.trigger({
+            result = iii_client.call({
                 "function_id": "test::ew::valid-token-echo",
                 "payload": {"msg": "hello"},
             })
@@ -195,7 +158,7 @@ class TestRbacWorkers:
 
         try:
             with pytest.raises(Exception):
-                iii_client.trigger({
+                iii_client.call({
                     "function_id": "test::ew::private",
                     "payload": {"msg": "hello"},
                 })
@@ -214,68 +177,39 @@ class TestRbacWorkers:
 
         try:
             with pytest.raises(Exception):
-                iii_client.trigger({
+                iii_client.call({
                     "function_id": "test::ew::echo",
                     "payload": {"msg": "hello"},
                 })
         finally:
             iii_client.shutdown()
 
-    def test_should_deny_trigger_type_registration_via_hook(self, iii_server):
+    def test_the_function_registration_hook_sees_private_observable_and_args_format(self, iii_server):
         iii_client = register_worker(
             EW_URL,
             InitOptions(
                 otel={"enabled": False},
                 headers={"x-test-token": "valid-token"},
-                worker_name="rbac-should-deny-trigger-type-registration-via-hook",
+                worker_name="rbac-registration-hook-sees-observe-options",
             ),
         )
 
         try:
-            class DeniedHandler(TriggerHandler):
-                async def register_trigger(self, config: TriggerConfig) -> None:
-                    pass
-
-                async def unregister_trigger(self, config: TriggerConfig) -> None:
-                    pass
-
-            iii_client.register_trigger_type(
-                {"id": "denied-tt::test", "description": "Should be denied"},
-                DeniedHandler(),
+            args_format = {"type": "object", "properties": {"expression": {"type": "string"}}}
+            iii_client.register_function(
+                "rbac-hook::source", lambda tick: tick, private=True, args_format=args_format
             )
+            iii_client.register_function("rbac-hook::sealed", lambda data: data, observable=False)
 
-            time.sleep(1.0)
+            deadline = time.time() + 5
+            while len(function_reg_calls) < 2 and time.time() < deadline:
+                time.sleep(0.05)
 
-            assert len(trigger_type_reg_calls) == 1
-            assert trigger_type_reg_calls[0].trigger_type_id == "denied-tt::test"
-            assert trigger_type_reg_calls[0].description == "Should be denied"
-            assert trigger_type_reg_calls[0].context["user_id"] == "user-1"
-        finally:
-            iii_client.shutdown()
-
-    def test_should_deny_trigger_registration_via_hook(self, iii_server):
-        iii_client = register_worker(
-            EW_URL,
-            InitOptions(
-                otel={"enabled": False},
-                headers={"x-test-token": "valid-token"},
-                worker_name="rbac-should-deny-trigger-registration-via-hook",
-            ),
-        )
-
-        try:
-            iii_client.register_trigger({
-                "type": "test-rbac-trigger",
-                "function_id": "denied-trig::my-fn",
-                "config": {"key": "value"},
-            })
-
-            time.sleep(1.0)
-
-            assert len(trigger_reg_calls) == 1
-            assert trigger_reg_calls[0].trigger_type == "test-rbac-trigger"
-            assert trigger_reg_calls[0].function_id == "denied-trig::my-fn"
-            assert trigger_reg_calls[0].context["user_id"] == "user-1"
+            by_id = {c.function_id: c for c in function_reg_calls}
+            source, sealed = by_id["rbac-hook::source"], by_id["rbac-hook::sealed"]
+            assert (source.private, source.observable, source.args_format) == (True, True, args_format)
+            assert (sealed.private, sealed.observable, sealed.args_format) == (False, False, None)
+            assert source.context["user_id"] == "user-1"
         finally:
             iii_client.shutdown()
 
@@ -298,7 +232,7 @@ class TestRbacWorkers:
             time.sleep(1.0)
 
             with pytest.raises(Exception):
-                iii_client.trigger({
+                iii_client.call({
                     "function_id": "denied::blocked-fn",
                     "payload": {},
                 })
@@ -318,7 +252,7 @@ class TestRbacWorkers:
         try:
             time.sleep(1.0)
 
-            result = iii_client.trigger(
+            result = iii_client.call(
                 {"function_id": "engine::functions::list", "payload": {}}
             )
             functions = result.get("functions", [])
@@ -346,7 +280,7 @@ class TestRbacWorkers:
         try:
             time.sleep(1.0)
 
-            result = iii_client.trigger(
+            result = iii_client.call(
                 {"function_id": "engine::functions::list", "payload": {}}
             )
             functions = result.get("functions", [])
@@ -379,7 +313,7 @@ class TestRbacWorkers:
 
             time.sleep(1.0)
 
-            result = iii_server.trigger({
+            result = iii_server.call({
                 "function_id": "test-prefix::prefixed-echo",
                 "payload": {"msg": "prefix-test"},
             })
@@ -402,7 +336,7 @@ class TestRbacWorkers:
 
         try:
             with pytest.raises(InvocationError) as excinfo:
-                iii_client.trigger({
+                iii_client.call({
                     "function_id": "test::ew::private",
                     "payload": {},
                 })
@@ -440,8 +374,8 @@ class TestRbacWorkers:
         try:
             # Successful invocation proves handshake completed without tripping
             # FORBIDDEN on engine::workers::register (the transparent startup
-            # trigger) — otherwise the worker would not be reachable.
-            result = iii_client.trigger({
+            # call) — otherwise the worker would not be reachable.
+            result = iii_client.call({
                 "function_id": "test::ew::valid-token-echo",
                 "payload": {"msg": "carveout-regression"},
             })
@@ -481,9 +415,9 @@ class TestRbacWorkers:
 
         try:
             def handler(data: dict) -> dict:
-                # If the carve-out regresses, this nested trigger surfaces
+                # If the carve-out regresses, this nested call surfaces
                 # InvocationError (code='FORBIDDEN') and the handler propagates it as a failure.
-                iii_client.trigger({
+                iii_client.call({
                     "function_id": "engine::log::info",
                     "payload": {
                         "message": "carve-out regression guard: handler reached logger",
@@ -500,7 +434,7 @@ class TestRbacWorkers:
             iii_client.register_function("test::ew::carveout-logger-handler", handler)
             time.sleep(0.5)
 
-            result = iii_server.trigger({
+            result = iii_server.call({
                 "function_id": "test::ew::carveout-logger-handler",
                 "payload": {"msg": "real-usage-case"},
             })
@@ -513,8 +447,8 @@ class TestRbacWorkers:
         straight from its client — mirrors a bootstrap script / CLI.
 
         ``engine::log::info`` is NOT in valid-token's allowed_functions, so
-        a successful trigger here proves the carve-out path is reachable from
-        the worker client's own ``trigger()`` method.
+        a successful call here proves the carve-out path is reachable from
+        the worker client's own ``call()`` method.
         """
         iii_client = register_worker(
             EW_URL,
@@ -528,7 +462,7 @@ class TestRbacWorkers:
         try:
             # No exception == carve-out is working. If this raises
             # InvocationError (code='FORBIDDEN'), the carve-out regressed.
-            iii_client.trigger({
+            iii_client.call({
                 "function_id": "engine::log::info",
                 "payload": {"message": "carve-out direct invocation"},
             })
