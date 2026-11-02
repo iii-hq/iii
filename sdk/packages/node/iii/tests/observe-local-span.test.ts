@@ -67,7 +67,7 @@ describe('local dispatch and tracing', () => {
         events.push('handler')
         return order
       })
-      .onObserverDeliver(async (call) => {
+      .onObservationDeliver(async (call) => {
         await Promise.resolve()
         events.push('deliver')
         return call.output

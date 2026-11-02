@@ -48,7 +48,7 @@
 //!     Ok(()) // start the expression's job here
 //! });
 //! // an observer of expression X wants the ticks of expression X
-//! iii.on_observer_match_for(
+//! iii.on_observation_match_for(
 //!     "cron::on-tick",
 //!     Match::keys(
 //!         |obs| obs.args_value()["expression"].as_str().into(),
@@ -326,7 +326,7 @@ type ObserverKeys = dyn for<'a> Fn(&'a Observer) -> Keys<'a> + Send + Sync;
 type CallKeys = dyn for<'a> Fn(&'a Call) -> Keys<'a> + Send + Sync;
 
 /// Which calls of a function each observer wants: the function's match hook
-/// ([`IIIClient::on_observer_match_for`]). A worker sets it when its
+/// ([`IIIClient::on_observation_match_for`]). A worker sets it when its
 /// observers' args say which calls they want; iii does everything else as
 /// usual: the observers' filters, `on`, policy and `deliver` still apply.
 ///
@@ -361,7 +361,7 @@ impl Match {
     /// ```rust,no_run
     /// # use iii_sdk::{IIIClient, Match};
     /// # fn demo(iii: &IIIClient) {
-    /// iii.on_observer_match_for(
+    /// iii.on_observation_match_for(
     ///     "cron::on-tick",
     ///     Match::predicate(|obs, call| obs.args_value()["expression"] == call.input["expression"]),
     /// );
@@ -379,7 +379,7 @@ impl Match {
     /// # use iii_sdk::{IIIClient, Keys, Match};
     /// # fn demo(iii: &IIIClient) {
     /// let key = |db: &str, table: &str, op: &str| format!("{db}|{table}|{op}");
-    /// iii.on_observer_match_for(
+    /// iii.on_observation_match_for(
     ///     "database::on-row-changed",
     ///     Match::keys(
     ///         move |obs| {
@@ -477,7 +477,7 @@ impl Matcher {
         if !self.warned.swap(true, Ordering::Relaxed) {
             tracing::warn!(
                 function_id = %function_id,
-                "on_observer_match {what} panicked; it matches nothing: {}",
+                "on_observation_match {what} panicked; it matches nothing: {}",
                 crate::observable::panic_message(&panic)
             );
         }
@@ -856,7 +856,7 @@ impl IIIClient {
         for (obs, panic) in panicked {
             obs.reject(
                 observe_codes::OBSERVE_REJECTED,
-                format!("on_observer_match key function panicked: {panic}"),
+                format!("on_observation_match key function panicked: {panic}"),
             );
         }
         self.reconcile_registration(&entry);
@@ -969,14 +969,14 @@ impl IIIClient {
     /// A function with a match hook needs an engine that advertised
     /// `observe.v2`: against an older one it stays unregistered, and the SDK
     /// logs `UNSUPPORTED` once.
-    pub fn on_observer_match_for(&self, function_id: &str, rule: Match) -> &Self {
+    pub fn on_observation_match_for(&self, function_id: &str, rule: Match) -> &Self {
         self.set_match_hook(function_id, Some(rule));
         self
     }
 
     /// Removes the match hook of `function_id`: every observer wants every
     /// call.
-    pub fn clear_observer_match_for(&self, function_id: &str) -> &Self {
+    pub fn clear_observation_match_for(&self, function_id: &str) -> &Self {
         self.set_match_hook(function_id, None);
         self
     }
@@ -994,7 +994,7 @@ impl IIIClient {
     /// # use serde_json::json;
     /// # fn demo(iii: &IIIClient) {
     /// // each request goes to its route; the route's result is the response
-    /// iii.on_observer_deliver_for("http::on-request", {
+    /// iii.on_observation_deliver_for("http::on-request", {
     ///     let iii = iii.clone();
     ///     move |call: Call, observers: Vec<Observer>| {
     ///         let iii = iii.clone();
@@ -1013,13 +1013,13 @@ impl IIIClient {
     /// });
     /// # }
     /// ```
-    pub fn on_observer_deliver_for(&self, function_id: &str, hook: impl DeliverHook) -> &Self {
+    pub fn on_observation_deliver_for(&self, function_id: &str, hook: impl DeliverHook) -> &Self {
         self.set_deliver_hook(function_id, Some(Arc::new(hook)));
         self
     }
 
     /// Removes the deliver hook of `function_id`: iii delivers its calls.
-    pub fn clear_observer_deliver_for(&self, function_id: &str) -> &Self {
+    pub fn clear_observation_deliver_for(&self, function_id: &str) -> &Self {
         self.set_deliver_hook(function_id, None);
         self
     }

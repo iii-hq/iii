@@ -49,8 +49,6 @@ class RemoteFunctionData(BaseModel):
     call_sync: Callable[[Any, Any], Any] | None = None
     #: Holds back ``registerfunction`` until the engine advertised ``observe.v2``.
     needs_v2: bool = False
-    #: Retries a ``FUNCTION_NAMESPACE_CONFLICT`` until the id is free.
-    standby: bool = False
 
 
 class Invocation(Generic[TOutput]):
@@ -111,11 +109,11 @@ class IIIClient(Protocol):
 
     def on_observer_removed(self, function_id_or_hook: Any, hook: Any = ...) -> Any: ...
 
-    def on_observer_match(
+    def on_observation_match(
         self, function_id: str, hook: Any = ..., *, observer: Any = None, call: Any = None
     ) -> Any: ...
 
-    def on_observer_deliver(self, function_id: str, hook: Any = ...) -> Any: ...
+    def on_observation_deliver(self, function_id: str, hook: Any = ...) -> Any: ...
 
     def observers(self, function_id: str) -> list[Any]: ...
 

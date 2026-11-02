@@ -44,7 +44,7 @@ type MatchHook struct {
 // the SDK logs it once per function. A nil predicate gives a nil MatchHook.
 //
 //	// an observer of expression X gets the ticks of expression X
-//	client.OnObserverMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+//	client.OnObservationMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 //		var tick struct{ Expression string `json:"expression"` }
 //		_ = json.Unmarshal(call.Input, &tick)
 //		return obs.Args["expression"] == tick.Expression
@@ -235,7 +235,7 @@ func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Clie
 	return c
 }
 
-// OnObserverMatchFor sets which observers want each call of functionID: [MatchFunc] or
+// OnObservationMatchFor sets which observers want each call of functionID: [MatchFunc] or
 // [MatchKeys]; nil restores the default, where every observer wants every call. It is
 // stored by id, as [Client.OnObserverAddedFor] is. A match hook set on a registered
 // function takes effect on the function's hook queue, after the hooks queued before it,
@@ -244,7 +244,7 @@ func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Clie
 // late-rejected with OBSERVE_REJECTED. A function with a match hook needs an engine with
 // observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED
 // once. It returns the client, for chaining.
-func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client {
+func (c *Client) OnObservationMatchFor(functionID string, m *MatchHook) *Client {
 	if !m.set() {
 		m = nil
 	}
@@ -258,7 +258,7 @@ func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client {
 	return c
 }
 
-// OnObserverDeliverFor sets the hook that delivers each call of functionID itself; nil
+// OnObservationDeliverFor sets the hook that delivers each call of functionID itself; nil
 // restores iii's delivery, which delivers each call to every matched observer whose on
 // and filters accept it, and gives the caller the handler's result. It is stored by id,
 // as [Client.OnObserverAddedFor] is. A function with a deliver hook needs an engine with
@@ -266,7 +266,7 @@ func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client {
 // once. A deliver hook does not run for a function registered with
 // [Client.RegisterHTTPFunction]: the engine delivers its calls. It returns the client,
 // for chaining.
-func (c *Client) OnObserverDeliverFor(functionID string, hook DeliverHook) *Client {
+func (c *Client) OnObservationDeliverFor(functionID string, hook DeliverHook) *Client {
 	c.setFunctionHook(functionID, func(h *observerHooks, f *functionObservers) {
 		h.deliver = hook
 		if f != nil {
@@ -344,20 +344,20 @@ func (r *FunctionRef) OnObserverRemoved(hook RemovedHook) *FunctionRef {
 	return r
 }
 
-// OnObserverMatch sets the function's match hook, as [Client.OnObserverMatchFor] does
+// OnObservationMatch sets the function's match hook, as [Client.OnObservationMatchFor] does
 // for its id, and returns the handle, for chaining.
-func (r *FunctionRef) OnObserverMatch(m *MatchHook) *FunctionRef {
+func (r *FunctionRef) OnObservationMatch(m *MatchHook) *FunctionRef {
 	if r != nil && r.client != nil {
-		r.client.OnObserverMatchFor(r.ID, m)
+		r.client.OnObservationMatchFor(r.ID, m)
 	}
 	return r
 }
 
-// OnObserverDeliver sets the function's deliver hook, as [Client.OnObserverDeliverFor]
+// OnObservationDeliver sets the function's deliver hook, as [Client.OnObservationDeliverFor]
 // does for its id, and returns the handle, for chaining.
-func (r *FunctionRef) OnObserverDeliver(hook DeliverHook) *FunctionRef {
+func (r *FunctionRef) OnObservationDeliver(hook DeliverHook) *FunctionRef {
 	if r != nil && r.client != nil {
-		r.client.OnObserverDeliverFor(r.ID, hook)
+		r.client.OnObservationDeliverFor(r.ID, hook)
 	}
 	return r
 }

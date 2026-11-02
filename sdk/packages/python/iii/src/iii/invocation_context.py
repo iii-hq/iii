@@ -1,6 +1,6 @@
 """The current-invocation context.
 
-Set around every handler and the function's ``on_observer_deliver``, remote
+Set around every handler and the function's ``on_observation_deliver``, remote
 (``InvokeFunction``) and local (in-process dispatch), and read by outgoing
 calls (``caller``, ``observe_depth``). It lives in a
 :class:`contextvars.ContextVar`, so it follows asyncio tasks, and sync

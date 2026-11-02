@@ -661,7 +661,7 @@ def test_a_match_hooks_choice_is_checked_for_on_through_the_index(engine: FakeEn
     choice one by one (its first call) or through its index (once built)."""
     client = connect(engine)
     fid = "rows::on"
-    client.register_function(fid, lambda change: change, private=True).on_observer_match(
+    client.register_function(fid, lambda change: change, private=True).on_observation_match(
         lambda obs, call: obs.id != "t5"
     )
     _confirm(client, engine, fid, _tenant_observers(30))
@@ -687,7 +687,7 @@ def test_a_match_hooks_few_picks_build_the_index_once_the_set_has_served_enough_
     client = connect(engine)
     fid = "rows::few"
     picked = {f"t{i}" for i in range(10, 20)}
-    client.register_function(fid, lambda change: change, private=True).on_observer_match(
+    client.register_function(fid, lambda change: change, private=True).on_observation_match(
         lambda obs, call: obs.id in picked
     )
     _confirm(client, engine, fid, _tenant_observers(30))
@@ -721,7 +721,7 @@ def test_a_match_hooks_choice_is_filtered_through_the_index(engine: FakeEngine, 
         asked.append(obs.id)
         return obs.id != "t5"
 
-    client.register_function(fid, lambda change: change, private=True).on_observer_match(wants)
+    client.register_function(fid, lambda change: change, private=True).on_observation_match(wants)
     _confirm(client, engine, fid, _tenant_observers(30))
     for payload in ({"tenant": "tenant-5", "total": 200}, {"tenant": "tenant-6"}):
         client.call({"function_id": fid, "payload": payload})

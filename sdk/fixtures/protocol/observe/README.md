@@ -127,8 +127,8 @@ and **0.25 §n** (a section of the 0.25 `protocol.md`).
   | The answer carries | When | The engine |
   |---|---|---|
   | neither `matched` nor `delivered` (`invocationresult-routed.json`) | the function has no match hook and no deliver hook | evaluates `on` and filters of every active observer of the function |
-  | `matched`: observer ids, each once, `[]` when none (`invocationresult-matched.json`, `invocationresult-matched-error.json`, `invocationresult-matched-none.json`) | the function's `onObserverMatch` ran: these are the observers it matched, before `on` and filters | evaluates `on` and filters of those of them that are active observers of the invoked function, and counts any other id as `INACTIVE` |
-  | `delivered: true` (`invocationresult-delivered.json`) | the function's `onObserverDeliver` delivered the call: the answer is what the hook returned or threw | activates nothing |
+  | `matched`: observer ids, each once, `[]` when none (`invocationresult-matched.json`, `invocationresult-matched-error.json`, `invocationresult-matched-none.json`) | the function's `onObservationMatch` ran: these are the observers it matched, before `on` and filters | evaluates `on` and filters of those of them that are active observers of the invoked function, and counts any other id as `INACTIVE` |
+  | `delivered: true` (`invocationresult-delivered.json`) | the function's `onObservationDeliver` delivered the call: the answer is what the hook returned or threw | activates nothing |
 
   A host sends at most one of the two; with both, `delivered` wins. The host
   evaluates no filter for a routed call: the engine already holds what the
@@ -153,8 +153,8 @@ and **0.25 §n** (a section of the 0.25 `protocol.md`).
   in the current connection's `workerregistered`: features learned on an
   earlier connection do not count. An SDK sends a `registerfunction` that
   needs `observe.v2` (one with `args_format`, `private: true` or
-  `observable: false`, or for a function with `onObserverMatch` or
-  `onObserverDeliver`) only after this connection's `workerregistered` listed
+  `observable: false`, or for a function with `onObservationMatch` or
+  `onObservationDeliver`) only after this connection's `workerregistered` listed
   `observe.v2`, also when it replays registrations after a reconnect. Other
   registrations need not wait.
 
@@ -185,7 +185,7 @@ function with `observable: false` unregistered (dec. 18).
 | `invocationsobserved-event-source.json` | `invocationsobserved` | One batch from the `database` worker: an event source's local call (`database::on-row-changed` returns the row change it is called with), matched by two observers and sent with `"output_is_input": true` and no `output`. It is made inside the `database::execute` call of `invokefunction-caller.json`, so its `caller` is that invocation, with that call's `caller` as `parent`, and its `observe_depth` is that call's, 0. | v2 §8.2, §10.1; dec. 4 | as above |
 | `localinvocationstats.json` | `localinvocationstats` | The periodic counts of the `database` worker's local calls and SDK-side report drops; sent only when non-zero. Every field is sent, `errors: 0` included. `dropped_reports` holds a `BUFFER_FULL` drop of `database::on-row-changed` reports. `DISCONNECTED` counts items lost to a closed connection. | 0.25 §2.2 | none (a decoder reads an absent `errors` or `duration_ms_sum` as 0, and an absent array as empty) |
 | `registerfunction.json` | `registerfunction` | A function with no v2 field set: no `args_format`, and `private: false` / `observable: true` left out as defaults. | v2 §4.1, §8.3 | `description`, `request_format`, `response_format`, `metadata`, `invocation`, `args_format`, `private`, `observable`, `observe` |
-| `registerfunction-private.json` | `registerfunction` | An event source with every v2 field it sets: `cron::on-tick` with top-level `args_format` and `private: true`, its `response_format` equal to its `request_format` (the handler returns the tick); `observable` left out (`true`). Hooks and `standby` never travel. | v2 §4.1, §8.3, §10.2; dec. 24 | as above |
+| `registerfunction-private.json` | `registerfunction` | An event source with every v2 field it sets: `cron::on-tick` with top-level `args_format` and `private: true`, its `response_format` equal to its `request_format` (the handler returns the tick); `observable` left out (`true`). Hooks never travel. | v2 §4.1, §8.3, §10.2; dec. 24 | as above |
 | `registerfunction-not-observable.json` | `registerfunction` | `observable: false`: every `observe` of the function fails with `NOT_OBSERVABLE`. | v2 §4.1, §8.3 | as above |
 | `registerfunction-v1-owner.json` | `registerfunction` | *Engine-only.* A 0.25 SDK's owner-delivered `cron::on-tick`: the 0.25 `observe` object with `delivery: owner` and `args_format`. The engine answers with `registrationrejected-unsupported.json`. | dec. 1, 37; v2 §11 | `observe.delivery`, `observe.args_format`, `observe.legacy_trigger_type`, `observe.allow` |
 | `registerfunction-v1-not-observable.json` | `registerfunction` | *Engine-only.* A 0.25 SDK's `observe: { delivery: auto, allow: false }`, as 0.25 SDKs send it. `delivery: auto` is accepted and ignored, and the engine registers the function as `observable: false`. | dec. 37; v2 §11 | as above |
@@ -195,17 +195,17 @@ function with `observable: false` unregistered (dec. 18).
 | `invokefunction-legacy.json` | `invokefunction` | A call from a pre-0.25 SDK, without `caller`, `observe_depth` or `activation`. It must keep decoding. | 0.25 §2.4 | as above |
 | `invokefunction-workers-register.json` | `invokefunction` | A native v2 SDK's (here Node) fire-and-forget `engine::workers::register` call (no `invocation_id` on a `void` call), declaring `observe.v1`, `observe.v2`, `local-dispatch.v1` and `large-messages.v1` in `data.features`. The browser SDK sends the same list without `large-messages.v1`. Only `data.features` is normative: the other `data` keys show what the Node SDK sends and are not part of the observe contract. An unset `isolation` is left out, never sent as `null`. | dec. 2; v2 §8.1 | `data.features` (absent: a pre-0.25 SDK, no features) |
 | `invocationresult-routed.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `orders::create`, a function with no match hook and no deliver hook: the `result`, which is the handler's output, and neither `matched` nor `delivered`. The engine evaluates `on` and filters of every active observer of `orders::create` against the input it kept and this `result`. | v2 §8.2; dec. 3, 36, 55 | `result` (absent: the function returned nothing), `matched` (absent: not narrowed), `delivered` (absent: `false`), `error`, `traceparent`, `baggage` |
-| `invocationresult-matched.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `orders::create`, whose `onObserverMatch` matched two observers: the `result`, and in `matched` their ids. The engine evaluates `on` and filters of those two only. | v2 §4.5, §8.2; dec. 3, 36, 55 | as above |
+| `invocationresult-matched.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `orders::create`, whose `onObservationMatch` matched two observers: the `result`, and in `matched` their ids. The engine evaluates `on` and filters of those two only. | v2 §4.5, §8.2; dec. 3, 36, 55 | as above |
 | `invocationresult-matched-error.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `payments::charge` that threw: `error` is the error the handler threw and there is no `result`, and in `matched` the `on: error` observer of `observe-on-error.json`, which the function's match hook matched. The engine evaluates that observer's `on` and its filter on the input it kept, and builds its envelope with `status: error` and this `error`. A decoder keeps `matched` on an error answer. | v2 §4.4, §8.2; dec. 3, 36, 39, 55 | as above |
 | `invocationresult-matched-none.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `orders::create` whose match hook matched no observer: `"matched": []`, sent, not left out (an absent `matched` would leave every observer to the engine). The engine activates nothing. | v2 §4.5, §8.2; dec. 55 | as above |
-| `invocationresult-delivered.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `approvals::request`, whose `onObserverDeliver` delivered the call (it called its approver's target through the observer and returned the answer): `result` is what the hook returned, and `"delivered": true`. The engine activates nothing for the call. | v2 §4.6, §8.2; dec. 20, 55 | as above |
+| `invocationresult-delivered.json` | `invocationresult` | An `observe.v2` host's answer to a routed call of `approvals::request`, whose `onObservationDeliver` delivered the call (it called its approver's target through the observer and returned the answer): `result` is what the hook returned, and `"delivered": true`. The engine activates nothing for the call. | v2 §4.6, §8.2; dec. 20, 55 | as above |
 
 ## Engine → worker
 
 | File | Message | What it pins | From | Optional fields |
 |---|---|---|---|---|
 | `workerregistered.json` | `workerregistered` | This engine's `features`: `observe.v1`, `observe.v2`, `local-dispatch.v1`, in that order. | dec. 2; v2 §8.1 | `reattach_token`, `features` |
-| `workerregistered-v1.json` | `workerregistered` | What a 0.25 engine sends: `observe.v1` and `local-dispatch.v1`, no `observe.v2`. A v2 SDK holds each `registerfunction` that needs `observe.v2` until the current connection's `workerregistered` arrives, whatever an earlier connection advertised. On this one it leaves each function that declares `args_format`, `private` or `observable: false`, or sets `onObserverMatch` or `onObserverDeliver`, unregistered, logs `UNSUPPORTED` once for it, and runs everything else. It delivers local calls only, sends no `matched` and no `delivered`, and sends `output` where it would set `output_is_input`. | dec. 4, 18, 41; v2 §11 | as above |
+| `workerregistered-v1.json` | `workerregistered` | What a 0.25 engine sends: `observe.v1` and `local-dispatch.v1`, no `observe.v2`. A v2 SDK holds each `registerfunction` that needs `observe.v2` until the current connection's `workerregistered` arrives, whatever an earlier connection advertised. On this one it leaves each function that declares `args_format`, `private` or `observable: false`, or sets `onObservationMatch` or `onObservationDeliver`, unregistered, logs `UNSUPPORTED` once for it, and runs everything else. It delivers local calls only, sends no `matched` and no `delivered`, and sends `output` where it would set `output_is_input`. | dec. 4, 18, 41; v2 §11 | as above |
 | `workerregistered-legacy.json` | `workerregistered` | What a pre-0.25 engine sends: no `features`, so `observe()` fails with `UNSUPPORTED` and nothing runs locally. | 0.25 §1 | as above |
 | `registrationrejected-unsupported.json` | `registrationrejected` | The engine's answer to `registerfunction-v1-owner.json`: `code: UNSUPPORTED`, the function and its namespace, and `owner_worker_id: ""`, as on every rejection that is not a conflict. Only that registration is refused; the connection stays open. | dec. 1, 37; v2 §11 | `worker_name`, `function_id` |
 | `registrationrejected-invalid-args-format.json` | `registrationrejected` | The answer to a `registerfunction` whose `args_format` is not a valid JSON Schema: `code: INVALID_ARGS_FORMAT`. | dec. 11 | as above |
@@ -215,7 +215,7 @@ function with `observable: false` unregistered (dec. 18).
 | `observeresult-error.json` | `observeresult` | A rejected observer: `state: error`, the `error`, and `warnings` from filter paths that could not be verified. | 0.25 §2.3 | as above |
 | `observerstatechanged.json` | `observerstatechanged` | A lifecycle transition (here to `active`). `fires` is always sent. | 0.25 §2.3, §3.3 | `reason` |
 | `observerstatechanged-reason.json` | `observerstatechanged` | A transition with its `reason`: the `HTTP_ROUTE_CONFLICT` that `http::on-request`'s `onObserverAdded` threw for a route `GET /users/:uid` next to `GET /users/:id`. | v2 §10.3; 0.25 §2.3 | as above |
-| `functionregistered.json` | `functionregistered` | The `registerfunction` ack with the current observer set, less the observers whose observing worker is away (each is announced with its own `observeradded` when that worker reattaches, dec. 47); `local_dispatch: true`. `revision` is per `(namespace, function)` and goes up by one with every announcement: this message, each `observeradded` and each `observerremoved` (so an ack for an earlier announcement is stale). Always accepted; it replaces the set the SDK holds, also for a standby that takes over the function. Each entry has the observer shape of `observeradded.json`: never `deliver`, metadata, policy, the observing worker or the 0.25 `legacy` key. | v2 §7, §8.4; 0.25 §2.3 | none |
+| `functionregistered.json` | `functionregistered` | The `registerfunction` ack with the current observer set, less the observers whose observing worker is away (each is announced with its own `observeradded` when that worker reattaches, dec. 47); `local_dispatch: true`. `revision` is per `(namespace, function)` and goes up by one with every announcement: this message, each `observeradded` and each `observerremoved` (so an ack for an earlier announcement is stale). Always accepted; it replaces the set the SDK holds, also for a new host that takes over the function. Each entry has the observer shape of `observeradded.json`: never `deliver`, metadata, policy, the observing worker or the 0.25 `legacy` key. | v2 §7, §8.4; 0.25 §2.3 | none |
 | `functionregistered-empty.json` | `functionregistered` | No observers yet, and `local_dispatch: false` (e.g. the session has RBAC middleware). `observers` is sent even when empty. `revision` is 1: the first announcement of the function. | v2 §8.4; 0.25 §2.3 | none |
 | `observeradded.json` | `observeradded` | One observer attached to a function this connection hosts, as the host sees it: `id`, `args` (`{}` when none), the normalized `filters`, the `target` function id (its namespace is not disclosed), `capture` and `on`, always sent resolved (`capture` also names the part `deliver` hands the target, dec. 48); never `deliver`, metadata, policy, the observing worker or the 0.25 `legacy` key (gone with the legacy shim). | v2 §4.7, §8.4; 0.25 §2.3 | none |
 | `observerremoved.json` | `observerremoved` | One observer detached: unobserved, disposed, rejected late, or its observing worker disconnected (dec. 47). An SDK ignores an added/removed message whose `revision` is not greater than the one it holds. | v2 §8.4; 0.25 §2.3 | none |
@@ -247,7 +247,7 @@ function with `observable: false` unregistered (dec. 18).
   running any hook. A new entry runs `onObserverAdded` and is acked once it
   resolves. A held observer the message does not list is removed:
   `onObserverRemoved` runs if it was accepted. An entry whose `args` changed
-  counts as removed, then added. A standby taking over a function holds none
+  counts as removed, then added. A new host taking over a function holds none
   of its observers, so it runs `onObserverAdded` for every entry.
 - `invocationsobserved` items are checked one by one. An item that does not
   decode, or whose `status` is neither `success` nor `error`, is dropped alone
@@ -271,7 +271,7 @@ function with `observable: false` unregistered (dec. 18).
   through an observer runs as an activation of the observer, and the engine
   removes a top-level `_caller_worker_id` from its payload
   (`invokefunction-observer-call-forwarded.json`).
-  SDKs pass `data` to the handler, to `onObserverDeliver` and to filters as it
+  SDKs pass `data` to the handler, to `onObservationDeliver` and to filters as it
   arrived, stamp included, so a handler that returns its input returns the
   stamp too. No observed value an observer receives contains it: the engine
   removes a top-level `_caller_worker_id` from every observed `input` and
@@ -290,7 +290,7 @@ function with `observable: false` unregistered (dec. 18).
   activation's own `caller` is the engine with the source's `function_id` and
   `invocation_id`, as for every activation.
 - **`matched` (v2 §4.5, §8.2, dec. 4, 36, 55).** iii's delivery of a call
-  delivers each observer that `onObserverMatch` selects (every observer by
+  delivers each observer that `onObservationMatch` selects (every observer by
   default) whose `on` and filters match the call, once. For a local call the
   host evaluates `on` and filters and lists the observers delivered in its
   item's `matched`; the engine activates each. For a routed call the host

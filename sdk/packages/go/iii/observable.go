@@ -53,8 +53,6 @@ type functionObservers struct {
 	// observers and the hooks that deliver to them. Swapped under mu, loaded once per
 	// call.
 	state atomic.Pointer[callState]
-	// standingBy: a standby registration is waiting for the function's host to leave.
-	standingBy atomic.Bool
 	// matchPanicLogged: a panic of the match hook was logged.
 	matchPanicLogged atomic.Bool
 
@@ -209,7 +207,6 @@ func (f *functionObservers) onFunctionRegistered(msg *FunctionRegisteredMessage,
 	})
 	releases := f.releases
 	f.mu.Unlock()
-	f.standingBy.Store(false)
 	list := slices.Clone(msg.Observers)
 	f.enqueue(func() { f.applySet(list, msg.Revision, msg.Namespace, epoch, releases) })
 }
@@ -985,7 +982,7 @@ func (o *Observer) Matches(call *Call) bool {
 //		}()
 //		return nil
 //	})
-//	client.OnObserverMatchFor("prices::on-change", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+//	client.OnObservationMatchFor("prices::on-change", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 //		var meta struct{ ForObserver string `json:"for_observer"` }
 //		_ = json.Unmarshal(call.Metadata, &meta)
 //		return meta.ForObserver == "" || meta.ForObserver == obs.ID

@@ -226,7 +226,7 @@ class Cron:
             if obs in self.index.get(obs.args["expression"], []):
                 self.index[obs.args["expression"]].remove(obs)
 
-        client.on_observer_match(
+        client.on_observation_match(
             self.fn, observer=lambda obs: obs.args["expression"], call=lambda call: call.input["expression"]
         )
         self.ref = client.register_function(
@@ -359,7 +359,7 @@ def test_a_deliver_hook_calls_through_the_observer_its_filters_apply_and_a_dispo
     owner.on_observer_added(on_request_id, lambda obs: routes.__setitem__(obs.args["path"], obs))
     owner.on_observer_removed(on_request_id, lambda obs: routes.pop(obs.args["path"], None))
 
-    @owner.on_observer_deliver(on_request_id)
+    @owner.on_observation_deliver(on_request_id)
     def route(call: Call[Any, Any], observers: Any) -> Any:
         obs = routes.get(call.input["path"])
         if obs is None:
@@ -484,14 +484,14 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
         asyncio.get_running_loop().create_task(send_state(obs))
 
     if form == "predicate":
-        owner.on_observer_match(
+        owner.on_observation_match(
             source,
             lambda obs, call: (
                 for_observer(call) == obs.id if for_observer(call) else obs.args["session"] == call.input["session"]
             ),
         )
     else:
-        owner.on_observer_match(
+        owner.on_observation_match(
             source,
             observer=lambda obs: [obs.args["session"], f"for_observer:{obs.id}"],
             call=lambda call: f"for_observer:{for_observer(call)}" if for_observer(call) else call.input["session"],

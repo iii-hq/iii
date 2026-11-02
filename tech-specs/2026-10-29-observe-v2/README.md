@@ -1,6 +1,6 @@
 ---
 title: observe v2 — functions, observers, and defaults you override
-tagline: "Every function is observable and there is one delivery path: a function runs, its observers fire. The worker that hosts a function changes what that means with four hooks: onObserverAdded and onObserverRemoved, for one function or the whole worker, and onObserverMatch and onObserverDeliver, for one function."
+tagline: "Every function is observable and there is one delivery path: a function runs, its observers fire. The worker that hosts a function changes what that means with four hooks: onObserverAdded and onObserverRemoved, for one function or the whole worker, and onObservationMatch and onObservationDeliver, for one function."
 date: 2026-10-29
 tags: [engine, sdk, protocol, observe, dx]
 status: draft
@@ -36,15 +36,15 @@ hooks. Each one overrides something iii does by default:
 |---|---|---|
 | `onObserverAdded(obs)` | What do I set up for this observer? Install a database trigger, start a cron job, add an HTTP route, open a queue consumer. Throw to reject it. | accepts the observer: it becomes active and receives the function's calls |
 | `onObserverRemoved(obs)` | What do I tear down? | stops delivering to the observer and forgets it |
-| `onObserverMatch(obs, call)` | Does this observer want this call? A cron observer of `0 9 * * *` wants that expression's ticks. | every observer wants every call |
-| `onObserverDeliver(call, observers)` | I deliver this call myself: which observers, and what does the caller get back? Route an HTTP request to one route and return its response; ack a queue message with its subscriber's result. | runs the target of every matching observer whose filters match the call, and gives the caller the handler's return value |
+| `onObservationMatch(obs, call)` | Does this observer want this call? A cron observer of `0 9 * * *` wants that expression's ticks. | every observer wants every call |
+| `onObservationDeliver(call, observers)` | I deliver this call myself: which observers, and what does the caller get back? Route an HTTP request to one route and return its response; ack a queue message with its subscriber's result. | runs the target of every matching observer whose filters match the call, and gives the caller the handler's return value |
 
 **Scope.** `onObserverAdded` and `onObserverRemoved` can be set for one
 function and for every function the worker hosts, and both levels run: when an
 observer is added, the worker's hook and then the function's; when it is
-removed, the function's and then the worker's. `onObserverMatch` and
-`onObserverDeliver` are set per function. A function can set both: its
-`onObserverDeliver` receives the observers that matched.
+removed, the function's and then the worker's. `onObservationMatch` and
+`onObservationDeliver` are set per function. A function can set both: its
+`onObservationDeliver` receives the observers that matched.
 
 ```ts
 // every function this worker hosts: keep the event stream open while anything is observed
@@ -74,10 +74,10 @@ functions, which the engine never sees (§8.2).
 
 | 0.25 | v2 |
 |---|---|
-| `registerFunction(id, handler, { observe: { delivery, args_format, onObserverAdded, onObserverRemoved, allow, legacy_trigger_type } })` | `registerFunction(id, handler, { args_format?, private?, observable?, standby? })`; hooks are methods on the client or on the returned `FunctionRef` (§4.2) |
-| `delivery: 'auto' \| 'owner'` | one delivery path; a function can set `onObserverMatch` and `onObserverDeliver` |
+| `registerFunction(id, handler, { observe: { delivery, args_format, onObserverAdded, onObserverRemoved, allow, legacy_trigger_type } })` | `registerFunction(id, handler, { args_format?, private?, observable? })`; hooks are methods on the client or on the returned `FunctionRef` (§4.2) |
+| `delivery: 'auto' \| 'owner'` | one delivery path; a function can set `onObservationMatch` and `onObservationDeliver` |
 | `args_format` with `delivery: 'owner'` | `args_format` on any function |
-| `obs.emit(event)` | call the function; its `onObserverMatch` says which observers want it |
+| `obs.emit(event)` | call the function; its `onObservationMatch` says which observers want it |
 | `obs.call(payload)` | in a deliver hook, `iii.call({ observer: obs, payload })`; anywhere else, a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
 | an owner-delivered function refuses calls from other workers | `private: true` (§6) |
 | `observe.allow: false` | `observable: false` |
@@ -85,7 +85,7 @@ functions, which the engine never sees (§8.2).
 | `registerTriggerType(…)` + `TriggerHandler` | a function with `args_format` and hooks |
 | `iii.trigger(request)` | `iii.call(request)`; `trigger` is an alias |
 | CLI `iii trigger <fn>` | `iii call <fn>`; `iii trigger` and `iii t` are aliases |
-| `Observe::owner()`, `Observe::auto()`, `ObserveHandler` (Rust) | `on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` methods taking closures or types that implement the hook traits (§5.2) |
+| `Observe::owner()`, `Observe::auto()`, `ObserveHandler` (Rust) | `on_observer_added`, `on_observer_removed`, `on_observation_match`, `on_observation_deliver` methods taking closures or types that implement the hook traits (§5.2) |
 | `observe({ function_id }, target)` | also `observe('fn::id', target)` |
 | the engine evaluates routed calls, the host evaluates local calls and emits | the engine evaluates routed calls, among the observers the host's match hook names, or none when its deliver hook delivered the call; the host evaluates its local calls (§8.2) |
 | error codes `NOT_OWNER_DELIVERED`, `FILTERS_NOT_MATCHED`, `TARGET_MISMATCH`, `INVALID_OBSERVE_DESCRIPTOR` | retired |
@@ -122,7 +122,7 @@ iii.observe(
   the payloads.
 - **`deliver`** is what the target receives when iii delivers: the `Observed`
   envelope (default), the call's `input`, or its `output`. A function whose
-  `onObserverDeliver` calls targets itself documents what they receive
+  `onObservationDeliver` calls targets itself documents what they receive
   (`http::on-request` targets receive the `HttpRequest`).
 - The handle (`ready()`, `state`, `onStateChange`, `dispose()`) and the
   options (`id`, `metadata`, `max_fires`, `expires_in_ms`, `max_in_flight`)
@@ -206,12 +206,6 @@ These options describe the function to the engine:
 | `private` | `false` | only this worker may call the function; others may observe it (§6) |
 | `observable` | `true` | `false`: nobody may observe it (`NOT_OBSERVABLE`); for functions whose payloads carry credentials |
 
-This one is handled by the SDK:
-
-| Option | Default | Meaning |
-|---|---|---|
-| `standby` | `false` | when another connection already hosts the id, wait and take over when it leaves (§7) |
-
 What the worker does when its function is observed is set with hooks (§4.2).
 
 ### 4.2 Hooks
@@ -231,8 +225,8 @@ interface IIIClient {
   onObserverAdded(functionId: string, hook: AddedHook | null): IIIClient  // one function
   onObserverRemoved(hook: RemovedHook | null): IIIClient
   onObserverRemoved(functionId: string, hook: RemovedHook | null): IIIClient
-  onObserverMatch<I, O>(functionId: string, hook: MatchHook<I, O> | null): IIIClient
-  onObserverDeliver<I, O, R>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient
+  onObservationMatch<I, O>(functionId: string, hook: MatchHook<I, O> | null): IIIClient
+  onObservationDeliver<I, O, R>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient
 
   observers(functionId: string): readonly Observer[]
   isObserved(functionId: string, call?: Partial<Call>): boolean
@@ -245,8 +239,8 @@ interface FunctionRef<I = unknown, O = unknown> {
   readonly id: string
   onObserverAdded(hook: AddedHook | null): FunctionRef<I, O>
   onObserverRemoved(hook: RemovedHook | null): FunctionRef<I, O>
-  onObserverMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
-  onObserverDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
+  onObservationMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
+  onObservationDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
   observers(): readonly Observer[]
   isObserved(call?: Partial<Call<I>>): boolean
   unregister(): void
@@ -357,9 +351,9 @@ in three steps, with iii's part of the third in the engine for a routed call:
 
 1. **The handler runs.** Its return value is what observers observe.
 2. **Observers are matched.** By default every observer of the function wants
-   every call. `onObserverMatch` narrows that (§4.5).
+   every call. `onObservationMatch` narrows that (§4.5).
 3. **The call is delivered.** By default iii delivers it (below).
-   `onObserverDeliver` takes delivery over (§4.6).
+   `onObservationDeliver` takes delivery over (§4.6).
 
 iii's delivery:
 
@@ -381,7 +375,7 @@ The caller and the observers see the same value.
 
 ### 4.5 Matching observers
 
-`onObserverMatch` answers one question: does this observer want this call? A
+`onObservationMatch` answers one question: does this observer want this call? A
 worker sets it when its args say which calls an observer wants. iii does
 everything else as usual: the observer's filters, `on`, policy and `deliver`
 still apply.
@@ -390,7 +384,7 @@ As a predicate:
 
 ```ts
 // an observer of expression X gets the ticks of expression X
-iii.onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+iii.onObservationMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
 ```
 
 As keys, when a function has many observers. An observer wants a call when
@@ -398,7 +392,7 @@ they share a key, and iii looks the call's keys up in an index of the observers:
 
 ```ts
 // an observer of orders/insert gets inserts into orders
-iii.onObserverMatch('database::on-row-changed', {
+iii.onObservationMatch('database::on-row-changed', {
   observer: (obs) => `${obs.args.table}|${obs.args.op}`,     // what this observer listens for
   call: (call) => `${call.input.table}|${call.input.op}`,     // what this call is
 })
@@ -421,7 +415,7 @@ two ids; key functions also file each observer under `"for_observer:<id>"` and
 give such a call that one key:
 
 ```ts
-iii.onObserverMatch('tmux::on-changed', {
+iii.onObservationMatch('tmux::on-changed', {
   observer: (obs) => [obs.args.session, `for_observer:${obs.id}`],
   call: (call) => call.metadata?.for_observer ? `for_observer:${call.metadata.for_observer}` : call.input.session,
 })
@@ -438,7 +432,7 @@ keys: one hash lookup per key. On any other function the call is ignored.
 
 ### 4.6 Delivering yourself
 
-`onObserverDeliver` is for a function whose observers' answers matter, or
+`onObservationDeliver` is for a function whose observers' answers matter, or
 whose calls each go to one observer. The hook receives the call and the
 observers that matched it (a snapshot taken when the call started), delivers
 the call itself, and returns what the caller gets back. iii delivers nothing
@@ -454,7 +448,7 @@ deliver hook receives every active observer.
 
 ```ts
 // http::on-request: each request goes to one route; its target's result is the response
-iii.onObserverDeliver('http::on-request', async (call) => {
+iii.onObservationDeliver('http::on-request', async (call) => {
   const route = routes.match(call.input)
   if (!route) return { status_code: 404 }
   if (!route.obs.matches(call)) return { status_code: 422 }
@@ -532,7 +526,7 @@ iii.onObserverAdded('tmux::on-changed', (obs) => {
     .then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
     .catch(() => {})   // a rejected observer gets nothing
 })
-iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+iii.onObservationMatch('tmux::on-changed', (obs, call) =>
   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
 ```
 
@@ -571,9 +565,9 @@ no overloading, so the client's per-function form takes a `_for` suffix:
 | `iii.onObserverAdded(id, hook)` | `iii.on_observer_added_for(id, hook)` |
 | `iii.onObserverRemoved(hook)` | `iii.on_observer_removed(hook)` |
 | `iii.onObserverRemoved(id, hook)` | `iii.on_observer_removed_for(id, hook)` |
-| `iii.onObserverMatch(id, hook)` | `iii.on_observer_match_for(id, hook)` |
-| `iii.onObserverDeliver(id, hook)` | `iii.on_observer_deliver_for(id, hook)` |
-| `fn.onObserverAdded(hook)`, `fn.onObserverRemoved(hook)`, `fn.onObserverMatch(hook)`, `fn.onObserverDeliver(hook)` | `function.on_observer_added(hook)`, `function.on_observer_removed(hook)`, `function.on_observer_match(hook)`, `function.on_observer_deliver(hook)` |
+| `iii.onObservationMatch(id, hook)` | `iii.on_observation_match_for(id, hook)` |
+| `iii.onObservationDeliver(id, hook)` | `iii.on_observation_deliver_for(id, hook)` |
+| `fn.onObserverAdded(hook)`, `fn.onObserverRemoved(hook)`, `fn.onObservationMatch(hook)`, `fn.onObservationDeliver(hook)` | `function.on_observer_added(hook)`, `function.on_observer_removed(hook)`, `function.on_observation_match(hook)`, `function.on_observation_deliver(hook)` |
 
 A hook is any value that implements the hook's trait. `Observer` is a cheap,
 cloneable handle passed by value, so async closures implement the traits, and
@@ -593,7 +587,7 @@ pub trait DeliverHook: Send + Sync + 'static {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error>;
 }
 
-// onObserverMatch: a predicate, or keys that iii indexes. Key functions borrow
+// onObservationMatch: a predicate, or keys that iii indexes. Key functions borrow
 // from their argument, so looking a call up allocates nothing.
 impl Match {
     pub fn predicate(f: impl Fn(&Observer, &Call) -> bool + Send + Sync + 'static) -> Self;
@@ -607,7 +601,7 @@ impl Match {
 // one function, by id: set before registering, so it sees every observer (§4.3)
 iii.on_observer_added_for("database::on-row-changed", change_feed.clone());   // ChangeFeed: AddedHook
 iii.on_observer_removed_for("database::on-row-changed", change_feed.clone()); // ChangeFeed: RemovedHook
-iii.on_observer_match_for("database::on-row-changed", Match::keys(observer_keys, call_keys));
+iii.on_observation_match_for("database::on-row-changed", Match::keys(observer_keys, call_keys));
 
 iii.register_function(
     "database::on-row-changed",
@@ -645,8 +639,8 @@ async def retain(obs): ...
 
 row_changed = iii.register_function("database::on-row-changed", lambda change: change,
                                     args_format=RowChangedArgs, private=True)
-row_changed.on_observer_match(observer=observer_keys, call=call_keys)      # keys
-# or: row_changed.on_observer_match(lambda obs, call: obs.args["table"] == call.input["table"])
+row_changed.on_observation_match(observer=observer_keys, call=call_keys)      # keys
+# or: row_changed.on_observation_match(lambda obs, call: obs.args["table"] == call.input["table"])
 
 # for one observer, under a match hook that honors for_observer (§4.7)
 await iii.call_async({"function_id": "tmux::on-changed", "payload": state, "metadata": {"for_observer": obs.id}})
@@ -672,7 +666,7 @@ rowChanged, err := client.RegisterFunction("database::on-row-changed", iii.Ident
 if err != nil {
     return err
 }
-rowChanged.OnObserverMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
+rowChanged.OnObservationMatch(iii.MatchKeys(observerKeys, callKeys))   // or iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool { … })
 
 // for one observer, under a match hook that honors for_observer (§4.7)
 _, err = client.Call(ctx, iii.CallRequest{FunctionID: "tmux::on-changed", Payload: state,
@@ -716,17 +710,17 @@ registration of the same id with `FUNCTION_NAMESPACE_CONFLICT`. Observer hooks
 therefore run once per observer, in that host, and a cron expression or a
 database trigger is set up once however many instances of the worker run.
 
-A second instance serves as a standby. When the host disconnects, the
-function's observers go `pending`; the standby registers the function,
+A second instance refused with `FUNCTION_NAMESPACE_CONFLICT` keeps serving
+its other functions and does not register the function again (decision 21).
+When the host disconnects, the function's observers go `pending`; the next
+worker that registers the function (the host restarted, or another instance)
 receives the current observers in `functionregistered`, runs its hooks for
 each, and they become active again. An observer whose observing worker is
 away is not among them; the function's host gets it when that worker
 reattaches, or gets its replacement when the worker, back on a new
 connection under the same worker name, observes under its id again (§4.3).
-With `standby: true`, the SDK does this:
-on `FUNCTION_NAMESPACE_CONFLICT` it retries the registration every second
-(±20 % jitter) until the engine accepts it or the function is unregistered
-(decision 21).
+Keeping a host running (restarts, one instance at a time across a deploy) is
+the platform's job.
 
 ## 8. Wire protocol
 
@@ -797,7 +791,7 @@ The engine evaluates every active observer of a call to a host without
 ```
 
 `private: false` and `observable: true` are the defaults and are omitted.
-Hooks and `standby` stay in the SDK. The 0.25 `observe` object is decoded from
+Hooks stay in the SDK. The 0.25 `observe` object is decoded from
 any connection (decisions 1, 37).
 
 ### 8.4 Observer messages
@@ -850,7 +844,7 @@ examples are TypeScript for brevity, and §5.2 is the Rust shape.
 ### 10.1 database: `database::on-row-changed`
 
 `onObserverAdded` installs native capture, plain code calls the function, and
-`onObserverMatch` gives each change to the observers of its database, table and
+`onObservationMatch` gives each change to the observers of its database, table and
 operation, by keys. `onObserverRemoved` releases the worker's hold on the
 table; the capture triggers stay, because every process and connection that
 captures the table shares them.
@@ -870,7 +864,7 @@ const rowChanged = iii.registerFunction('database::on-row-changed', (change: Row
   .onObserverRemoved(async (obs) => {
     await changeFeed.release(obs.args.db, obs.args.table)        // the capture triggers stay: other processes share them
   })
-  .onObserverMatch({
+  .onObservationMatch({
     observer: ({ args }) => (args.ops ?? ['*']).map((op) => rowKey(args.db, args.table ?? '*', op)),
     call: ({ input }) => [input.table, '*'].flatMap((t) => [input.op, '*'].map((op) => rowKey(input.db, t, op))),
   })
@@ -891,7 +885,7 @@ index and the handler returns the change it is called with.
 
 ### 10.2 cron: `cron::on-tick`
 
-`onObserverAdded` starts the expression's job; `onObserverMatch` gives each
+`onObserverAdded` starts the expression's job; `onObservationMatch` gives each
 tick to that expression's observers.
 
 ```ts
@@ -906,7 +900,7 @@ iii.registerFunction('cron::on-tick', (tick: CronTick) => tick, {
         payload: { expression, scheduled_time, actual_time: now() } }))
   })
   .onObserverRemoved((obs) => scheduler.release(obs.args.expression))
-  .onObserverMatch((obs, call) => obs.args.expression === call.input.expression)
+  .onObservationMatch((obs, call) => obs.args.expression === call.input.expression)
 ```
 
 `scheduler.retain` runs one job per distinct expression, as `scheduler.rs`
@@ -914,7 +908,7 @@ does, and `release` stops it with its last observer.
 
 ### 10.3 http: `http::on-request`
 
-`onObserverDeliver` routes each request to one observer, and that target's
+`onObservationDeliver` routes each request to one observer, and that target's
 result is the response.
 
 ```ts
@@ -926,7 +920,7 @@ iii.registerFunction('http::on-request', (request: HttpRequest) => request, {
 })
   .onObserverAdded((obs) => routes.add(obs))                 // throws HTTP_ROUTE_CONFLICT
   .onObserverRemoved((obs) => routes.remove(obs.id))
-  .onObserverDeliver<HttpResponse>(async (call) => {
+  .onObservationDeliver<HttpResponse>(async (call) => {
     const match = routes.match(call.input.method, call.input.path)   // /users/:id → params
     if (!match) return { status_code: 404 }
     if (!match.obs.matches(call)) return { status_code: 422 }
@@ -954,8 +948,8 @@ iii.registerFunction('queue::on-message', (message: QueueMessage) => message, {
 })
   .onObserverAdded((obs) => consumers.start(obs.id, obs.args))     // INVALID_ARGS, OBSERVER_ID_CONFLICT
   .onObserverRemoved((obs) => consumers.stop(obs.id))
-  .onObserverMatch({ observer: (obs) => obs.id, call: (call) => call.metadata?.subscriber ?? '' })
-  .onObserverDeliver<unknown>(async (call, [obs]) => {
+  .onObservationMatch({ observer: (obs) => obs.id, call: (call) => call.metadata?.subscriber ?? '' })
+  .onObservationDeliver<unknown>(async (call, [obs]) => {
     if (!obs) throw new ObserveRejection('OBSERVER_NOT_ACTIVE', 'subscriber removed')   // retried, then dead-lettered
     if (!obs.matches(call)) return null                      // a filter miss acks
     return iii.call({ observer: obs, payload: call.input })
@@ -1004,7 +998,7 @@ connection and message type, naming the replacement, and drops the frame.
 | | 0.25 engine | v2 engine |
 |---|---|---|
 | **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. |
-| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObserverMatch` or `onObserverDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
+| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObservationMatch` or `onObservationDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
 
 Migrating:
 
@@ -1013,8 +1007,8 @@ Migrating:
 | `registerTrigger({ type, function_id, config, metadata })` | `iii.observe({ function_id: <the type's function>, args: config }, function_id, { metadata })` |
 | `registerTriggerType(…)` + `TriggerHandler` | a function with `args_format`, `private: true` and hooks (§10) |
 | `observe: { delivery: 'owner', args_format, onObserverAdded, onObserverRemoved }` | `{ args_format, private: true }`, then `.onObserverAdded(…)` / `.onObserverRemoved(…)` |
-| an index from args to observers, and `obs.emit(event)` | call the function with the event; `.onObserverMatch(…)` (§10.1, §10.2) |
-| `obs.call(payload)` | `.onObserverDeliver(…)` with `iii.call({ observer: obs, payload })` (§10.3, §10.4); initial state and other sends to one observer: a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
+| an index from args to observers, and `obs.emit(event)` | call the function with the event; `.onObservationMatch(…)` (§10.1, §10.2) |
+| `obs.call(payload)` | `.onObservationDeliver(…)` with `iii.call({ observer: obs, payload })` (§10.3, §10.4); initial state and other sends to one observer: a call of the function with `metadata: { for_observer: obs.id }` (§4.7) |
 | a handler that refuses calls | a handler that returns the event, and `private: true` |
 | `observe: { allow: false }` | `{ observable: false }` |
 | `iii.trigger(request)` | `iii.call(request)` |
@@ -1050,10 +1044,10 @@ The 0.25 guarantees (§6 there) hold, with these:
   by exactly one `onObserverRemoved` at the same level (§4.3).
 - **Delivery.** iii's delivery is at-most-once, with drops counted per
   function and reason. A function that calls targets itself delivers as its
-  `onObserverDeliver` does: one call per HTTP request; retries and dead letters
+  `onObservationDeliver` does: one call per HTTP request; retries and dead letters
   per queue subscriber.
 - **Filters.** iii's delivery applies the observers' `on` and filters. An
-  `onObserverDeliver` hook applies them with `obs.matches(call)`.
+  `onObservationDeliver` hook applies them with `obs.matches(call)`.
 - **Hooks once.** A function has one host per namespace, so each observer's
   hooks run once per host registration (§7).
 
@@ -1081,12 +1075,12 @@ phase 2 baseline.
    *Done when* the engine suite passes with the host delivering routed and
    local calls, 1M unobserved calls send zero frames, an event source sends
    each event once, a private function refuses calls from another connection,
-   a standby takes over a function's observers when its host leaves, and no
+   a new host takes over a function's observers once its host left, and no
    trigger code remains.
 2. **SDKs: Rust, Node, browser, Python, Go.** The three hooks at both levels,
-   `onObserverMatch` (predicate and keys), `onObserverDeliver`,
+   `onObservationMatch` (predicate and keys), `onObservationDeliver`,
    `isObserved(call)`, calls through an observer, `call` with
-   `trigger` as its alias, `private`, `standby`, the string shorthand, the
+   `trigger` as its alias, `private`, the string shorthand, the
    unregistered-id warning, refusal on engines without `observe.v2`, and no
    trigger API. *Done when* each SDK's suite passes, including tests for hook
    order at both levels, rejection unwinding, one removal per accepted
@@ -1163,28 +1157,28 @@ release, tag or crate, so it lands after the release.
 1. **Observer hooks run at both levels.** The worker's and the function's
    `onObserverAdded` both run, worker first; removal runs in reverse. Setup
    and teardown pair up per level.
-2. **Matching and delivering are separate hooks.** `onObserverMatch` answers
+2. **Matching and delivering are separate hooks.** `onObservationMatch` answers
    "does this observer want this call?" and leaves delivery to iii.
-   `onObserverDeliver` takes delivery over and decides what the caller gets
+   `onObservationDeliver` takes delivery over and decides what the caller gets
    back. Both are per function.
 3. **Hooks are methods, descriptions are options.** What the engine needs
    (`args_format`, `private`, `observable`, formats) is an option of
    `registerFunction`. What the worker does is a hook on the client, by
    function id or for all its functions, or on the `FunctionRef`.
 4. **Args belong to the worker, filters to iii.** Args set things up and
-   choose observers in `onObserverMatch`. Filters select calls; iii's delivery and
+   choose observers in `onObservationMatch`. Filters select calls; iii's delivery and
    `obs.matches` apply them.
 5. **Filters run where the call is.** One evaluation per call: in the engine
    for a call it routes, which holds its input, output, caller and metadata;
    in the worker for a call it makes to its own function. A match hook's
    choice for a routed call rides the result frame (decision 55).
 6. **Observers observe the handler's return value,** and `response_format`
-   describes it. `onObserverDeliver` decides what the caller gets back; iii's
+   describes it. `onObservationDeliver` decides what the caller gets back; iii's
    delivery gives it the same value.
 7. **Calling through an observer is a call.** The engine checks the
    host and applies the observer's policy; the payload goes as given.
-8. **One host per function.** Hooks run once per observer; extra instances
-   are standbys.
+8. **One host per function.** Hooks run once per observer; another
+   instance is refused the function.
 9. **`private` is general,** and a worker's own calls to a private function
    pass values by reference.
 10. **`call` is the verb.** Every SDK and the CLI invoke functions with
@@ -1196,9 +1190,10 @@ release, tag or crate, so it lands after the release.
 - **Key functions in the engine.** Matching by keys runs in the host. If the engine
   should prune activations for hosts without `observe.v2`, the keys would
   need a declarative form. No current worker needs it.
-- **Standby election.** Several standbys race to register when the host
-  leaves; the engine accepts the first. Whether the engine should order them
-  is left until a worker runs more than one standby.
+- **High availability for a function's host.** A second instance is refused
+  the function and does not retry, so failover is a restart of the host
+  (decision 21). A design that keeps a function hosted across a host's
+  failure or a rolling deploy is left for later.
 - **R2: replacing an `added` hook while observers are active.** Setting an
   `added` hook again re-runs the new hook on every active observer in Rust
   (`sdk/packages/rust/iii/src/hooks.rs:775-779`, `set_added` bumps a

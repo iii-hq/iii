@@ -98,7 +98,7 @@ func keyIndexOf(c *Client, fn string) *keyIndex {
 func TestMatchFuncNarrowsTheDelivery(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	c.OnObserverMatchFor("cron::on-tick", cronMatch())
+	c.OnObservationMatchFor("cron::on-tick", cronMatch())
 	registerHost(t, c, "cron::on-tick", Identity, RegisterFunctionOptions{Private: true})
 	addObserver(t, fe, "cron::on-tick", observerInfo("daily", "x::y", `{"expression":"0 0 * * *"}`, ""))
 	addObserver(t, fe, "cron::on-tick", observerInfo("hourly", "x::y", `{"expression":"0 * * * *"}`, ""))
@@ -181,7 +181,7 @@ func TestACallForOneObserverCarriesItsMetadata(t *testing.T) {
 			c := fe.client()
 			var mu sync.Mutex
 			var asked, handled []string
-			c.OnObserverMatchFor("tmux::on-changed", sessionMatch(form == "keys", func(call *Call) {
+			c.OnObservationMatchFor("tmux::on-changed", sessionMatch(form == "keys", func(call *Call) {
 				mu.Lock()
 				asked = append(asked, string(call.Metadata))
 				mu.Unlock()
@@ -237,7 +237,7 @@ func TestMatchPredicatePanicIsNoMatch(t *testing.T) {
 	logs := captureLog(t)
 	fe := newFakeEngine(t)
 	c := fe.client()
-	c.OnObserverMatchFor("pick::fn", MatchFunc(func(obs *Observer, _ *Call) bool {
+	c.OnObservationMatchFor("pick::fn", MatchFunc(func(obs *Observer, _ *Call) bool {
 		if obs.Args["boom"] == true {
 			panic("bad args")
 		}
@@ -256,7 +256,7 @@ func TestMatchPredicatePanicIsNoMatch(t *testing.T) {
 			t.Errorf("matched %v, want [fine]", item.Matched)
 		}
 	}
-	if n := logs.count(`OnObserverMatch of "pick::fn" panicked`); n != 1 {
+	if n := logs.count(`OnObservationMatch of "pick::fn" panicked`); n != 1 {
 		t.Errorf("the panic logged %d times, want once:\n%s", n, logs.String())
 	}
 }
@@ -267,7 +267,7 @@ func TestMatchPredicatePanicIsNoMatch(t *testing.T) {
 func TestKeyIndexUnderAddAndRemove(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	c.OnObserverMatchFor("database::on-row-changed", rowKeys())
+	c.OnObservationMatchFor("database::on-row-changed", rowKeys())
 	ref := registerHost(t, c, "database::on-row-changed", Identity, RegisterFunctionOptions{Private: true})
 	addObserver(t, fe, "database::on-row-changed", observerInfo("orders-insert", "x::y", `{"db":"primary","table":"orders","ops":["insert"]}`, ""))
 	addObserver(t, fe, "database::on-row-changed", observerInfo("all", "x::y", `{"db":"primary"}`, ""))
@@ -339,8 +339,8 @@ func TestMatchHookSetWithActiveObserversRebuildsTheIndex(t *testing.T) {
 		}
 	}
 
-	if ref.OnObserverMatch(rowKeys()) != ref {
-		t.Fatal("OnObserverMatch returns the handle")
+	if ref.OnObservationMatch(rowKeys()) != ref {
+		t.Fatal("OnObservationMatch returns the handle")
 	}
 	waitUntil(t, "the index built", func() bool { idx := keyIndexOf(c, "db::late"); return idx != nil && idx.filed == 2 })
 	matched(rowChange("orders", "update"), "orders")
@@ -348,11 +348,11 @@ func TestMatchHookSetWithActiveObserversRebuildsTheIndex(t *testing.T) {
 		t.Error("IsObservedFor true for a table nobody observes")
 	}
 
-	ref.OnObserverMatch(MatchFunc(func(obs *Observer, _ *Call) bool { return obs.ID == "users" }))
+	ref.OnObservationMatch(MatchFunc(func(obs *Observer, _ *Call) bool { return obs.ID == "users" }))
 	waitUntil(t, "the predicate installed", func() bool { return keyIndexOf(c, "db::late") == nil })
 	matched(rowChange("orders", "update"), "users")
 
-	ref.OnObserverMatch(nil)
+	ref.OnObservationMatch(nil)
 	waitUntil(t, "the hook removed", func() bool { return c.functionObservers("db::late").state.Load().match == nil })
 	matched(rowChange("orders", "update"), "users", "orders")
 	if !ref.IsObservedFor(&Call{Input: rowChange("products", "update")}) {
@@ -361,7 +361,7 @@ func TestMatchHookSetWithActiveObserversRebuildsTheIndex(t *testing.T) {
 	c.mu.Lock()
 	_, kept := c.functionHooks["db::late"]
 	c.mu.Unlock()
-	if kept || c.OnObserverMatchFor("db::late", &MatchHook{}) != c {
+	if kept || c.OnObservationMatchFor("db::late", &MatchHook{}) != c {
 		t.Error("nil and the zero MatchHook remove the hook")
 	}
 }
@@ -386,7 +386,7 @@ func TestKeysThatPanic(t *testing.T) {
 	)
 	var l hookLog
 	recordHooks(c, "db::keys", &l)
-	c.OnObserverMatchFor("db::keys", tableKeys)
+	c.OnObservationMatchFor("db::keys", tableKeys)
 	registerHost(t, c, "db::keys", Identity)
 	rev := fe.add("db::keys", observerInfo("no-table", "x::y", "", ""))
 	if a := fe.waitAck("db::keys", "no-table", rev); a.Error == nil || a.Error.Code != "OBSERVE_REJECTED" {
@@ -412,14 +412,14 @@ func TestKeysThatPanic(t *testing.T) {
 	if items := fe.waitItems(1); len(items) != 1 || !slices.Equal(items[0].Matched, []string{"orders"}) {
 		t.Errorf("items %+v, want the orders call only", items)
 	}
-	if n := logs.count(`OnObserverMatch of "db::keys" panicked`); n != 1 {
+	if n := logs.count(`OnObservationMatch of "db::keys" panicked`); n != 1 {
 		t.Errorf("the panic logged %d times, want once", n)
 	}
 
 	registerHost(t, c, "db::rebuild", Identity)
 	addObserver(t, fe, "db::rebuild", observerInfo("keyed", "x::y", `{"table":"users"}`, ""))
 	addObserver(t, fe, "db::rebuild", observerInfo("bare", "x::y", "", ""))
-	c.OnObserverMatchFor("db::rebuild", tableKeys)
+	c.OnObservationMatchFor("db::rebuild", tableKeys)
 	late := fe.waitFrames(MsgObserverAck, 1, func(d *DecodedMessage) bool {
 		return d.ObserverAck.FunctionID == "db::rebuild" && d.ObserverAck.Error != nil
 	})[0].ObserverAck
@@ -444,8 +444,8 @@ func TestDeliverHookReceivesTheMatchedObservers(t *testing.T) {
 		return req.Path
 	}
 	got := make(chan []string, 2)
-	c.OnObserverMatchFor("route::fn", MatchFunc(func(obs *Observer, call *Call) bool { return obs.Args["path"] == pathOf(call.Input) }))
-	c.OnObserverDeliverFor("route::fn", func(_ context.Context, _ *Call, observers []*Observer) (any, error) {
+	c.OnObservationMatchFor("route::fn", MatchFunc(func(obs *Observer, call *Call) bool { return obs.Args["path"] == pathOf(call.Input) }))
+	c.OnObservationDeliverFor("route::fn", func(_ context.Context, _ *Call, observers []*Observer) (any, error) {
 		var ids []string
 		for _, obs := range observers {
 			ids = append(ids, obs.ID)
@@ -484,8 +484,8 @@ func TestDeliverHookGetsTheObserversOfTheCallStart(t *testing.T) {
 	c := fe.client()
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	got := make(chan []string, 1)
-	c.OnObserverMatchFor("db::snap", rowKeys())
-	c.OnObserverDeliverFor("db::snap", func(_ context.Context, call *Call, observers []*Observer) (any, error) {
+	c.OnObservationMatchFor("db::snap", rowKeys())
+	c.OnObservationDeliverFor("db::snap", func(_ context.Context, call *Call, observers []*Observer) (any, error) {
 		var ids []string
 		for _, obs := range observers {
 			ids = append(ids, obs.ID)
@@ -525,7 +525,7 @@ func TestKeyMatchingUsesTheObserversOfTheCallStart(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	entered, release := make(chan struct{}, 1), make(chan struct{})
-	c.OnObserverMatchFor("db::start", rowKeys())
+	c.OnObservationMatchFor("db::start", rowKeys())
 	registerHost(t, c, "db::start", func(_ context.Context, data json.RawMessage) (any, error) {
 		entered <- struct{}{}
 		<-release
@@ -589,7 +589,7 @@ func TestKeyIndexIsCopyOnWrite(t *testing.T) {
 func TestDeliverHookAnswersTheCaller(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	c.OnObserverDeliverFor("route::fn", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
+	c.OnObservationDeliverFor("route::fn", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
 		var req struct{ Path string }
 		_ = json.Unmarshal(call.Input, &req)
 		switch req.Path {
@@ -655,7 +655,7 @@ func TestRoutedCallAnswers(t *testing.T) {
 	addObserver(t, fe, "orders::create", observerInfo(first, "x::y", "", ""))
 	// a filter these calls do not meet: the engine evaluates it, not this worker
 	addObserver(t, fe, "orders::create", observerInfo(second, "x::y", "", `{"$and":[{"input.region":{"$eq":"eu"}}]}`))
-	c.OnObserverDeliverFor("approvals::request", func(context.Context, *Call, []*Observer) (any, error) {
+	c.OnObservationDeliverFor("approvals::request", func(context.Context, *Call, []*Observer) (any, error) {
 		return map[string]any{"approved": true, "by": "risk-review"}, nil
 	})
 	registerHost(t, c, "approvals::request", echoHandler)
@@ -684,7 +684,7 @@ func TestRoutedCallAnswers(t *testing.T) {
 	answer("invocationresult-routed.json", "orders::create", json.RawMessage(`{"out":{"order_id":"ord_1003","total":980}}`))
 
 	// the match hook picks the observers the input names
-	c.OnObserverMatchFor("orders::create", MatchFunc(func(obs *Observer, call *Call) bool {
+	c.OnObservationMatchFor("orders::create", MatchFunc(func(obs *Observer, call *Call) bool {
 		var in struct{ Match []string }
 		_ = json.Unmarshal(call.Input, &in)
 		return slices.Contains(in.Match, obs.ID)
@@ -702,7 +702,7 @@ func TestRoutedCallWithAMatchHookAndNoObservers(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	var ran atomic.Bool
-	c.OnObserverMatchFor("lonely::fn", MatchKeys(
+	c.OnObservationMatchFor("lonely::fn", MatchKeys(
 		func(*Observer) []string { return []string{"k"} },
 		func(*Call) []string { ran.Store(true); return []string{"k"} },
 	))
@@ -731,13 +731,13 @@ func TestRoutedErrorAnswerCarriesMatched(t *testing.T) {
 	failing := func(context.Context, json.RawMessage) (any, error) {
 		return nil, &InvocationError{Code: "CARD_DECLINED", Message: "card declined by issuer"}
 	}
-	c.OnObserverMatchFor("payments::charge", MatchFunc(func(*Observer, *Call) bool { return true }))
+	c.OnObservationMatchFor("payments::charge", MatchFunc(func(*Observer, *Call) bool { return true }))
 	registerHost(t, c, "payments::charge", failing)
-	c.OnObserverDeliverFor("payments::refund", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
+	c.OnObservationDeliverFor("payments::refund", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
 		return nil, newInvocationError(call.Error, call.FunctionID)
 	})
 	registerHost(t, c, "payments::refund", failing)
-	c.OnObserverDeliverFor("payments::soft", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
+	c.OnObservationDeliverFor("payments::soft", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
 		return map[string]string{"declined": call.Error.Message}, nil
 	})
 	registerHost(t, c, "payments::soft", failing)
@@ -769,7 +769,7 @@ func TestRoutedErrorAnswerCarriesMatched(t *testing.T) {
 func TestRoutedDeliverHookAnswer(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	c.OnObserverDeliverFor("orders::submit", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
+	c.OnObservationDeliverFor("orders::submit", func(_ context.Context, call *Call, _ []*Observer) (any, error) {
 		var placed struct {
 			OrderID string `json:"order_id"`
 		}
@@ -824,7 +824,7 @@ func TestDeliverHookRunsInTheFunctionsInvocation(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	seen := make(chan Invocation, 1)
-	c.OnObserverDeliverFor("ctx::fn", func(ctx context.Context, call *Call, _ []*Observer) (any, error) {
+	c.OnObservationDeliverFor("ctx::fn", func(ctx context.Context, call *Call, _ []*Observer) (any, error) {
 		inv, _ := InvocationFromContext(ctx)
 		seen <- inv
 		_, _ = c.Call(ctx, CallRequest{FunctionID: "audit::log", Action: VoidAction()})
@@ -849,7 +849,7 @@ func TestDeliverHookRunsInTheFunctionsInvocation(t *testing.T) {
 func TestCallThroughAnObserver(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client(WithNamespace("acme"))
-	c.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *Call, observers []*Observer) (any, error) {
+	c.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *Call, observers []*Observer) (any, error) {
 		for _, obs := range observers {
 			if obs.Matches(call) {
 				return c.Call(ctx, CallRequest{Observer: obs, Payload: call.Input})

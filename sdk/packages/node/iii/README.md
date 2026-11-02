@@ -36,7 +36,7 @@ const result = await iii.call({ function_id: 'hello::greet', payload: { name: 'w
 | Call (fire-and-forget)   | `iii.call({ function_id, payload, action: CallAction.Void() })`               | Call without waiting                                            |
 | Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`   | Route the call through a named queue                            |
 | Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)` | Call `target` on every matching call of a function              |
-| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | Change what observing a function this worker hosts means       |
+| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObservationMatch`, `onObservationDeliver` | Change what observing a function this worker hosts means       |
 | Call through an observer | `await iii.call({ observer, payload })`                                       | Run an observer's target from a deliver hook                    |
 | Current invocation       | `iii.currentInvocation()`                                                     | The invocation the running handler serves (caller, activation)  |
 
@@ -109,12 +109,12 @@ hooks, each overriding a default:
 | ------------------------------------ | ----------------------------------------------------------------------------- |
 | `onObserverAdded(obs)`               | accept the observer                                                           |
 | `onObserverRemoved(obs)`             | stop delivering to it and forget it                                           |
-| `onObserverMatch(obs, call)`         | every observer wants every call                                               |
-| `onObserverDeliver(call, observers)` | run every matching observer whose filters match the call; return the handler's value |
+| `onObservationMatch(obs, call)`         | every observer wants every call                                               |
+| `onObservationDeliver(call, observers)` | run every matching observer whose filters match the call; return the handler's value |
 
 `onObserverAdded` and `onObserverRemoved` can be set for every function the
 worker hosts, or for one function by id or on its `FunctionRef`.
-`onObserverMatch` and `onObserverDeliver` are set per function. Each method
+`onObservationMatch` and `onObservationDeliver` are set per function. Each method
 returns its receiver, and `null` removes a hook.
 
 An event source returns the event it is called with. `args_format` describes
@@ -136,7 +136,7 @@ iii
   })
   .onObserverRemoved((obs) => scheduler.release(obs.args.expression))
   // each tick reaches the observers of its expression
-  .onObserverMatch((obs, call) => obs.args.expression === call.input.expression)
+  .onObservationMatch((obs, call) => obs.args.expression === call.input.expression)
 
 // a consumer
 iii.observe({ function_id: 'cron::on-tick', args: { expression: '0 0 9 * * * *' } }, 'reports::daily')
@@ -146,7 +146,7 @@ With many observers, match by keys instead: the SDK keeps an index, one
 lookup per key whatever the number of observers.
 
 ```javascript
-iii.onObserverMatch('database::on-row-changed', {
+iii.onObservationMatch('database::on-row-changed', {
   observer: (obs) => `${obs.args.table}|${obs.args.op}`, // what this observer listens for
   call: (call) => `${call.input.table}|${call.input.op}`, // what this call is
 })
@@ -157,7 +157,7 @@ observers that matched it, and what it returns is what the function's caller
 gets back:
 
 ```javascript
-iii.onObserverDeliver('http::on-request', async (call) => {
+iii.onObservationDeliver('http::on-request', async (call) => {
   const route = routes.match(call.input)
   if (!route) return { status_code: 404 }
   if (!route.obs.matches(call)) return { status_code: 422 }
@@ -187,7 +187,7 @@ iii.onObserverAdded('tmux::on-changed', (obs) => {
       // a rejected observer gets nothing
     })
 })
-iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+iii.onObservationMatch('tmux::on-changed', (obs, call) =>
   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session,
 )
 ```
@@ -200,7 +200,7 @@ by reference: the handler and the hooks treat both as read-only, and with
 `NODE_ENV=development` the SDK freezes them, so a write throws.
 
 A function that sets `args_format`, `private: true`, `observable: false`, an
-`onObserverMatch` hook or an `onObserverDeliver` hook needs an engine that
+`onObservationMatch` hook or an `onObservationDeliver` hook needs an engine that
 advertises `observe.v2`; against an older engine it stays unregistered, and the
 SDK logs `UNSUPPORTED` once for it.
 

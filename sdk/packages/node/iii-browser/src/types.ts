@@ -59,12 +59,8 @@ export type RemoteFunctionData = {
   handler?: InternalFunctionHandler
   /** Observers of this function as the engine pushed them, and local dispatch state. */
   observe: FunctionObservers
-  /** When another connection hosts the id, retry the registration until it is free. */
-  standby: boolean
   /** The connection (`epoch`) the registration was sent on; registrations that need `observe.v2` wait for it. */
   sentEpoch?: number
-  /** Waiting, as a `standby`, for another connection to release the id. */
-  standingBy?: boolean
 }
 
 export type RemoteServiceFunctionData = {
@@ -76,18 +72,10 @@ export type RegisterFunctionInput = Omit<RegisterFunctionMessage, 'message_type'
 /**
  * Options of {@link ISdk.registerFunction}: what describes the function to
  * the engine (description, formats, metadata, `args_format`, `private`,
- * `observable`), and what the SDK does with it (`standby`, `localDispatch`).
+ * `observable`), and what the SDK does with it (`localDispatch`).
  * What the worker does when the function is observed is set with hooks.
  */
 export type RegisterFunctionOptions = Omit<RegisterFunctionMessage, 'message_type' | 'id'> & {
-  /**
-   * When another connection already hosts the id
-   * (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the
-   * registration is retried every second (±20 %) until the engine accepts it
-   * or the function is unregistered, and the hooks run for every observer
-   * once the engine confirms it (default `false`).
-   */
-  standby?: boolean
   /**
    * Calls this worker makes to its own function run in-process once the
    * engine confirmed it (default `true`). Set `false` for a handler that must
@@ -104,27 +92,27 @@ export interface ISdk {
    * handler returns the event it is called with.
    *
    * Every call of the function, local or routed, runs the handler and then
-   * goes to the observers that want it (`onObserverMatch`; by default all of
-   * them): the function's `onObserverDeliver` hook delivers it, or iii does,
+   * goes to the observers that want it (`onObservationMatch`; by default all of
+   * them): the function's `onObservationDeliver` hook delivers it, or iii does,
    * to those whose `on` and filters match. iii evaluates `on` and filters
    * where the call is: the engine for a call it routes to this worker, and
    * the SDK for a call this worker makes to its own function in-process,
    * through an index of the filters' equality conditions. What the worker
    * does when the function is observed is set with the hooks (`onObserverAdded`,
-   * `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
+   * `onObserverRemoved`, `onObservationMatch`, `onObservationDeliver`), by id or on
    * the returned {@link FunctionRef}. The SDK acks no observer before this
    * call returns, so a hook set by id before it, chained on its result, or
    * set later in the same synchronous block runs for every observer.
    *
    * A function that sets `args_format`, `private: true`, `observable: false`,
-   * an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+   * an `onObservationMatch` hook or an `onObservationDeliver` hook needs an engine
    * with `observe.v2`: it is registered once the connection's engine
    * advertised it, and against an older engine it stays unregistered (logged
    * once, `UNSUPPORTED`).
    *
    * @param functionId - Unique function identifier
    * @param handler - Handler executed when the function is invoked
-   * @param options - Optional {@link RegisterFunctionOptions}: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`, `localDispatch`
+   * @param options - Optional {@link RegisterFunctionOptions}: description, request/response formats, metadata, `args_format`, `private`, `observable`, `localDispatch`
    * @returns A {@link FunctionRef}: the hook methods with the id filled in, and `unregister()`
    *
    * @example
@@ -281,21 +269,21 @@ export interface ISdk {
    * @example
    * ```typescript
    * // an observer of selector X gets the clicks on X
-   * worker.onObserverMatch('ui::on-click', (obs, call) => obs.args.selector === call.input.selector)
+   * worker.onObservationMatch('ui::on-click', (obs, call) => obs.args.selector === call.input.selector)
    *
    * // many observers: keys, one lookup per key
-   * worker.onObserverMatch('ui::on-click', {
+   * worker.onObservationMatch('ui::on-click', {
    *   observer: (obs) => obs.args.selector as string,
    *   call: (call) => call.input.selector,
    * })
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
-  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchPredicate<I, O> | null): ISdk
+  onObservationMatch<I = any, O = any>(functionId: string, hook: MatchPredicate<I, O> | null): ISdk
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped key functions read their input
-  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchKeys<I, O>): ISdk
+  onObservationMatch<I = any, O = any>(functionId: string, hook: MatchKeys<I, O>): ISdk
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
-  onObserverMatch<I = any, O = any>(functionId: string, hook: MatchHook<I, O> | null): ISdk
+  onObservationMatch<I = any, O = any>(functionId: string, hook: MatchHook<I, O> | null): ISdk
 
   /**
    * Delivers each call of a function itself: `hook` receives the call and the
@@ -315,7 +303,7 @@ export interface ISdk {
    *
    * @example
    * ```typescript
-   * worker.onObserverDeliver('ui::on-command', async (call) => {
+   * worker.onObservationDeliver('ui::on-command', async (call) => {
    *   const handler = commands.match(call.input)
    *   if (!handler) return { handled: false }
    *   if (!handler.obs.matches(call)) return { handled: false }
@@ -324,7 +312,7 @@ export interface ISdk {
    * ```
    */
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
-  onObserverDeliver<I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): ISdk
+  onObservationDeliver<I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): ISdk
 
   /** The active observers of a function this worker hosts (empty for any other). */
   observers(functionId: string): readonly Observer[]
@@ -464,12 +452,12 @@ export interface FunctionRef<I = any, O = any> {
   onObserverAdded(hook: AddedHook | null): FunctionRef<I, O>
   /** {@link ISdk.onObserverRemoved} for this function. */
   onObserverRemoved(hook: RemovedHook | null): FunctionRef<I, O>
-  /** {@link ISdk.onObserverMatch} for this function. */
-  onObserverMatch(hook: MatchPredicate<I, O> | null): FunctionRef<I, O>
-  onObserverMatch(hook: MatchKeys<I, O>): FunctionRef<I, O>
-  onObserverMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
-  /** {@link ISdk.onObserverDeliver} for this function. */
-  onObserverDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
+  /** {@link ISdk.onObservationMatch} for this function. */
+  onObservationMatch(hook: MatchPredicate<I, O> | null): FunctionRef<I, O>
+  onObservationMatch(hook: MatchKeys<I, O>): FunctionRef<I, O>
+  onObservationMatch(hook: MatchHook<I, O> | null): FunctionRef<I, O>
+  /** {@link ISdk.onObservationDeliver} for this function. */
+  onObservationDeliver<R = O>(hook: DeliverHook<I, O, R> | null): FunctionRef<I, O>
   /**
    * The active observers of this registration, as this host sees them (none
    * once the function is unregistered, also after the id is registered again).

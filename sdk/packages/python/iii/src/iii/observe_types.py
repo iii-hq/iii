@@ -128,7 +128,7 @@ OutputT = TypeVar("OutputT")
 @dataclass
 class Call(Generic[InputT, OutputT]):
     """One call of a function, as its observers observe it and its
-    ``on_observer_match`` and ``on_observer_deliver`` hooks receive it.
+    ``on_observation_match`` and ``on_observation_deliver`` hooks receive it.
 
     Attributes:
         function_id: The called function.
@@ -164,14 +164,14 @@ RemovedHook = Callable[["Observer"], Union[None, Awaitable[None]]]
 #: A match key, or several: an observer wants a call when they share one.
 Key = Union[str, Iterable[str]]
 
-#: ``on_observer_match`` as a predicate: whether this observer wants this
+#: ``on_observation_match`` as a predicate: whether this observer wants this
 #: call. Asked once per active observer per call; a raise counts as no match.
 MatchPredicate = Callable[["Observer", Call[Any, Any]], bool]
 
 
 @dataclass(frozen=True)
 class MatchKeys:
-    """``on_observer_match`` as keys: an observer wants a call when they share
+    """``on_observation_match`` as keys: an observer wants a call when they share
     a key, and the SDK keeps an index instead of asking every observer.
 
     Attributes:
@@ -186,10 +186,10 @@ class MatchKeys:
     call: Callable[[Call[Any, Any]], Key]
 
 
-#: ``on_observer_match``: which observers want each call of a function.
+#: ``on_observation_match``: which observers want each call of a function.
 MatchHook = Union[MatchPredicate, MatchKeys]
 
-#: ``on_observer_deliver(call, observers)``: delivers the call itself and
+#: ``on_observation_deliver(call, observers)``: delivers the call itself and
 #: returns what the caller gets back. ``observers`` are the observers that
 #: matched it, from the active set when the call started.
 DeliverHook = Callable[[Call[Any, Any], Sequence["Observer"]], Any]

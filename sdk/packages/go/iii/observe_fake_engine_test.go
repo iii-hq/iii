@@ -31,9 +31,6 @@ type fakeEngine struct {
 	revisions     map[string]uint64
 	connects      int
 	onFrame       func(msg map[string]json.RawMessage)
-	// conflicts is how many registrations of a function id to refuse with
-	// FUNCTION_NAMESPACE_CONFLICT before confirming one.
-	conflicts map[string]int
 	// gate, when set, holds workerregistered on the next connections until closed.
 	gate chan struct{}
 }
@@ -48,7 +45,6 @@ func newFakeEngine(t testing.TB) *fakeEngine {
 		localDispatch: true,
 		sets:          map[string][]ObserverInfo{},
 		revisions:     map[string]uint64{},
-		conflicts:     map[string]int{},
 	}
 	fe.m.mu.Lock()
 	fe.m.onConnect = fe.greet
@@ -132,20 +128,7 @@ func (fe *fakeEngine) receive(conn *websocket.Conn, msg map[string]json.RawMessa
 	confirm, localDispatch, hook := fe.confirm, fe.localDispatch, fe.onFrame
 	fe.mu.Unlock()
 	if confirm && messageType(msg) == string(MsgRegisterFunction) {
-		id := messageID(msg)
-		fe.mu.Lock()
-		conflict := fe.conflicts[id] > 0
-		if conflict {
-			fe.conflicts[id]--
-		}
-		fe.mu.Unlock()
-		if conflict {
-			_ = fe.m.send(context.Background(), conn, &RegistrationRejectedMessage{
-				Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: id, OwnerWorkerID: "other-host",
-			})
-		} else {
-			fe.confirmFunction(conn, id, localDispatch)
-		}
+		fe.confirmFunction(conn, messageID(msg), localDispatch)
 	}
 	if hook != nil {
 		hook(msg)

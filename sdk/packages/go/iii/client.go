@@ -190,8 +190,6 @@ type Client struct {
 	reporter *reporter
 	// hookTimeout overrides observeHookTimeout (tests).
 	hookTimeout time.Duration
-	// standbyInterval overrides standbyRetryInterval (tests).
-	standbyInterval time.Duration
 	// beforeRegisterReturn runs in storeFunction once the registration is sent, before
 	// the registering call returns (tests).
 	beforeRegisterReturn func(id string)
@@ -271,11 +269,6 @@ type RegisterFunctionOptions struct {
 	// Observable false refuses every observer of the function (NOT_OBSERVABLE), for a
 	// function whose payloads carry credentials. nil means true.
 	Observable *bool
-	// Standby makes this worker wait for the function when another connection already
-	// hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once
-	// a second until the engine accepts it or it is unregistered, and its hooks run for
-	// the current observers then. It stays in the SDK.
-	Standby bool
 }
 
 func resolveRegisterFunctionOptions(name, id string, opts []RegisterFunctionOptions) (RegisterFunctionOptions, error) {
@@ -292,7 +285,6 @@ type registeredFunction struct {
 	message *RegisterFunctionMessage
 	handler Handler
 	observe *functionObservers
-	standby bool
 }
 
 // invocationOutcome is delivered to a waiting Call when its InvocationResult arrives
@@ -517,13 +509,12 @@ func (c *Client) setState(s ConnectionState) {
 // empty id is refused ("id is required") and so is an id this client already registered
 // ("function id already registered"): to replace a function, unregister it first. Pass a
 // single [RegisterFunctionOptions] value for a description, request and response
-// formats, metadata, args_format, private, observable, standby or the local dispatch
-// setting.
+// formats, metadata, args_format, private, observable or the local dispatch setting.
 //
 // The handler's return value is what observers observe. Every call of the function,
 // local or routed, runs the handler and is then delivered to the observers that want it
-// ([Client.OnObserverMatchFor]; by default all of them): by the function's deliver hook
-// ([Client.OnObserverDeliverFor]), or by iii, to those whose on and filters match. Set
+// ([Client.OnObservationMatchFor]; by default all of them): by the function's deliver hook
+// ([Client.OnObservationDeliverFor]), or by iii, to those whose on and filters match. Set
 // hooks by id before registering: the SDK acks no observer before RegisterFunction
 // returns, but a hook set on the returned handle can miss observers already accepted,
 // and is caught up for them.
@@ -552,7 +543,7 @@ func (c *Client) registerFunction(name, id string, handler Handler, opts []Regis
 // registerFunctionMessage builds the registerfunction frame for id from cfg: the
 // description, the request, response and args formats (each checked for valid JSON and
 // copied), the metadata, and private and observable, as the Node SDK spreads its
-// RegisterFunctionOptions into the message. Standby and the hooks stay in the SDK.
+// RegisterFunctionOptions into the message. The hooks stay in the SDK.
 func registerFunctionMessage(name, id string, cfg RegisterFunctionOptions) (*RegisterFunctionMessage, error) {
 	for _, format := range []struct {
 		field string
@@ -610,7 +601,7 @@ func (c *Client) storeFunction(name, id string, msg *RegisterFunctionMessage, ha
 		c.mu.Unlock()
 		return nil, fmt.Errorf("iii: %s(%q): function id already registered", name, id)
 	}
-	fn := registeredFunction{message: msg, handler: handler, observe: observe, standby: cfg.Standby}
+	fn := registeredFunction{message: msg, handler: handler, observe: observe}
 	c.functions[id] = fn
 	c.observeByID.Store(id, observe)
 	if h := c.functionHooks[id]; h != nil {
@@ -677,7 +668,7 @@ func (c *Client) markUnsupportedLocked(fn registeredFunction) bool {
 }
 
 func logUnsupported(functionID string) {
-	log.Printf("iii: UNSUPPORTED: function %q declares args_format, private or observable: false, or sets OnObserverMatch or OnObserverDeliver, "+
+	log.Printf("iii: UNSUPPORTED: function %q declares args_format, private or observable: false, or sets OnObservationMatch or OnObservationDeliver, "+
 		"which need an engine with observe.v2; it stays unregistered until the worker connects to one", functionID)
 }
 
@@ -1569,7 +1560,7 @@ func (c *Client) dispatch(ctx context.Context, dec *DecodedMessage) {
 // handleRegistrationRejected processes an engine registration rejection. A rejection
 // of one function (FUNCTION_NAMESPACE_CONFLICT, INVALID_ARGS_FORMAT, UNSUPPORTED)
 // costs that function and leaves the connection open, so it is logged and the worker
-// keeps serving; a Standby function waits for its id instead. Any other code (notably
+// keeps serving. Any other code (notably
 // WORKER_NAMESPACE_CONFLICT) is terminal: record the typed error, fail pending
 // invocations, and stop the supervisor so it does not reconnect into the same
 // rejection forever (the default MaxRetries of -1 would otherwise loop).
@@ -1612,25 +1603,9 @@ func (c *Client) handleRegistrationRejected(msg *RegistrationRejectedMessage) {
 	}
 }
 
-// standbyRetryInterval is how often a Standby function is registered again while
-// another connection hosts its id.
-const standbyRetryInterval = time.Second
-
-// standbyDelay is the wait before a Standby function refused with
-// FUNCTION_NAMESPACE_CONFLICT is registered again: the retry interval ±20 %.
-func (c *Client) standbyDelay() time.Duration {
-	interval := c.standbyInterval
-	if interval <= 0 {
-		interval = standbyRetryInterval
-	}
-	return time.Duration(float64(interval) * (0.8 + 0.4*rand.Float64()))
-}
-
 // rejectFunction handles the rejection of one function's registration: the engine
 // refused it, so no local dispatch, no observers for it here, and its held reports can
-// never be confirmed. A Standby function refused with FUNCTION_NAMESPACE_CONFLICT is
-// registered again about once a second (±20 %) on this connection until the engine
-// accepts it or it is unregistered; a reconnect replays it anyway.
+// never be confirmed.
 func (c *Client) rejectFunction(msg *RegistrationRejectedMessage) {
 	c.mu.Lock()
 	fn, ok := c.functions[msg.FunctionID]
@@ -1639,22 +1614,6 @@ func (c *Client) rejectFunction(msg *RegistrationRejectedMessage) {
 	if ok {
 		fn.observe.onRegistrationRejected(epoch)
 		c.reporter.discardFunction(msg.FunctionID)
-	}
-	if ok && fn.standby && msg.Code == "FUNCTION_NAMESPACE_CONFLICT" {
-		if !fn.observe.standingBy.Swap(true) {
-			log.Printf("iii: function %q in namespace %q is hosted by worker %s; standing by to take it over when it leaves",
-				msg.FunctionID, msg.Namespace, msg.OwnerWorkerID)
-		}
-		time.AfterFunc(c.standbyDelay(), func() {
-			c.mu.Lock()
-			current, ok := c.functions[msg.FunctionID]
-			live := ok && current.observe == fn.observe && c.epoch == epoch && c.state == StateConnected
-			c.mu.Unlock()
-			if live {
-				c.sendFunction(current)
-			}
-		})
-		return
 	}
 	if msg.Code == "FUNCTION_NAMESPACE_CONFLICT" {
 		log.Printf("iii: function registration rejected (%s): %q in namespace %q already owned by worker %s; staying connected and serving the rest",

@@ -71,7 +71,7 @@ async fn a_deliver_hook_calls_from_the_functions_invocation_and_span() {
 
     // the handler records the invocation it runs as
     let invocations: Arc<Mutex<Vec<Invocation>>> = Arc::default();
-    iii.on_observer_deliver_for("dc::on-request", {
+    iii.on_observation_deliver_for("dc::on-request", {
         let iii = iii.clone();
         move |call: Call, observers: Vec<Observer>| {
             let iii = iii.clone();
