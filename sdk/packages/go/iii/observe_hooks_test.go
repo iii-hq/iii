@@ -1435,3 +1435,40 @@ func TestAReplayedViewIsFiledUnderItsKeys(t *testing.T) {
 		t.Errorf("hooks ran: added %v removed %v", added, removed)
 	}
 }
+
+// An observer whose function is released while its added hook runs never becomes
+// active: Accepted reports OBSERVER_NOT_ACTIVE, as the Node, Python and Rust SDKs do.
+func TestAcceptedIsNotActiveWhenTheFunctionIsReleasedDuringTheAddedHook(t *testing.T) {
+	fe := newFakeEngine(t)
+	fe.setObservers("feed::fn", 1, observerInfo("o1", "x::y", "", ""))
+	c := fe.client()
+	entered := make(chan *Observer, 1)
+	release := make(chan struct{})
+	c.OnObserverAddedFor("feed::fn", func(_ context.Context, obs *Observer) error {
+		entered <- obs
+		<-release
+		return nil
+	})
+	if _, err := c.RegisterFunction("feed::fn", echoHandler); err != nil {
+		t.Fatal(err)
+	}
+	var obs *Observer
+	select {
+	case obs = <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the added hook never ran")
+	}
+	if !c.LocalDispatchActive("feed::fn") {
+		t.Fatal("local dispatch is not active while the added hook runs")
+	}
+	// Released while the hook runs: the engine refuses the registration.
+	fe.send(&RegistrationRejectedMessage{Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: "feed::fn", OwnerWorkerID: "other"})
+	waitUntil(t, "released", func() bool { return !c.LocalDispatchActive("feed::fn") })
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var rejection *ObserveRejectionError
+	if err := obs.Accepted(ctx); !errors.As(err, &rejection) || rejection.Code != "OBSERVER_NOT_ACTIVE" {
+		t.Fatalf("Accepted = %v, want an *ObserveRejectionError with code OBSERVER_NOT_ACTIVE", err)
+	}
+}
