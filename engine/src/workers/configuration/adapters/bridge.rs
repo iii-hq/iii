@@ -103,7 +103,6 @@ impl ConfigurationAdapter for BridgeAdapter {
         Ok(RegisterOutcome {
             kind: RegisterKind::Replaced,
             entry: returned,
-            old_value: None,
         })
     }
 
@@ -353,10 +352,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                         };
                         let change = match event.event_type {
                             ConfigurationEventType::Registered => ExternalChange::Registered(entry),
-                            ConfigurationEventType::Updated => ExternalChange::Updated {
-                                entry,
-                                old_value: event.old_value.clone(),
-                            },
+                            ConfigurationEventType::Updated => ExternalChange::Updated { entry },
                             ConfigurationEventType::Deleted => ExternalChange::Deleted { entry },
                         };
                         let _ = tx.send(change);
