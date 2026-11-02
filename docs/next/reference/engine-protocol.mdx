@@ -230,7 +230,7 @@ Every frame is a JSON object discriminated by `type` (the lowercased variant nam
 
 A field that is not set is left out, and so are `private: false` and `observable: true`. The engine
 leaves out `request_format` and `response_format` when it sends a registration that has none. The
-SDK's observer hooks and its `standby` option stay in the worker and never travel. See
+SDK's observer hooks stay in the worker and never travel. See
 [Observable functions](../creating-workers/observable-functions) for the provider side.
 
 An event source sets the v2 fields. This `cron::on-tick` validates its observers' `args`, may be
@@ -667,11 +667,9 @@ For a function ownership conflict, the engine:
 invocation of the same function id in the same namespace goes to the current host. It does not go to
 the worker whose registration was rejected.
 
-A function registered with the SDK's `standby` option waits: on `FUNCTION_NAMESPACE_CONFLICT` the
-SDK retries the registration every second (with 20 % jitter) until it succeeds or the function is
-unregistered. When the host disconnects, the function's observers go `pending`; the standby that
-registers next receives them in `FunctionRegistered`, runs its hooks for each, and they become
-active again.
+The SDK does not register a refused function again. When the host disconnects, the function's
+observers go `pending`; the worker that registers the function next receives them in
+`FunctionRegistered`, runs its hooks for each, and they become active again.
 
 <Warning>
   A connected worker does not confirm that all its functions are registered. The SDK reports a
@@ -914,7 +912,7 @@ States:
 
 | State       | Meaning                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                                                                                                                          |
+| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by another.                                                                                                                                            |
 | `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                                                               |
 | `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                                                           |
 | `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                                                      |
@@ -997,7 +995,7 @@ function's full current observer set and whether the SDK may run the function in
   message replaces the set of observers the host holds for the function. An entry already held with
   the same `args` is re-acked without running hooks; a new entry runs `onObserverAdded` and is acked
   once it resolves; an entry whose `args` changed counts as removed, then added; a held observer the
-  message does not list is removed. A standby that takes over the function holds none of its
+  message does not list is removed. A new host that takes over the function holds none of its
   observers, so it runs `onObserverAdded` for each entry and acks it the same way. Until it is acked
   an observer stays `pending`. When it is not acked within `observers.owner_ack_timeout_ms` (30 s by
   default) of the host moving on to it (the host runs a function's hooks one at a time, in

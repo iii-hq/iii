@@ -30,8 +30,8 @@ describe('Package Exports', () => {
       for (const method of [
         'onObserverAdded',
         'onObserverRemoved',
-        'onObserverMatch',
-        'onObserverDeliver',
+        'onObservationMatch',
+        'onObservationDeliver',
         'observers',
         'isObserved',
         'observe',
@@ -39,9 +39,14 @@ describe('Package Exports', () => {
       ]) {
         expect(typeof (sdk as unknown as Record<string, unknown>)[method]).toBe('function')
       }
-      for (const removed of ['registerTrigger', 'registerTriggerType', 'unregisterTriggerType']) {
-        expect((sdk as unknown as Record<string, unknown>)[removed]).toBeUndefined()
-      }
+      const legacy = sdk as unknown as Record<string, (arg: unknown) => void>
+      expect(() => legacy.registerTrigger({ type: 'cron' })).toThrow(
+        'registerTrigger was removed in iii 0.26.0: bind functions with iii.observe(source, target)',
+      )
+      expect(() => legacy.registerTriggerType({ id: 'timer' })).toThrow(
+        'registerTriggerType was removed in iii 0.26.0: a trigger type is now a function',
+      )
+      expect(() => legacy.unregisterTriggerType({ id: 'timer' })).toThrow('functionRef.unregister()')
     } finally {
       await sdk.shutdown()
       engine.uninstall()

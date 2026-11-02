@@ -1003,13 +1003,13 @@ describe('private functions: input and result by reference (v2 §6, decision 22)
     }
     sdk
       .registerFunction('cron::on-tick', (tick: { n: number }) => ({ m: tick.n }), { private: true })
-      .onObserverMatch((_obs, call) => {
+      .onObservationMatch((_obs, call) => {
         write('match', call)
         return true
       })
     sdk
       .registerFunction('http::on-request', (request: { n: number }) => ({ m: request.n }), { private: true })
-      .onObserverDeliver((call) => {
+      .onObservationDeliver((call) => {
         write('deliver', call)
         return call.output
       })
@@ -1056,7 +1056,7 @@ describe('a deliver hook on the local path', () => {
         order.qty = 0
         return { id: 'o-1' }
       })
-      .onObserverDeliver((call) => {
+      .onObservationDeliver((call) => {
         seenInput = call.input
         return answer
       })

@@ -63,27 +63,27 @@ async function callTypingAssertions() {
   type RowChange = { db: string; table: string; op: string }
   const rowChanged: FunctionRef<RowChange, RowChange> = worker
     .registerFunction('database::on-row-changed', (change: RowChange) => change, { private: true })
-    .onObserverMatch({
+    .onObservationMatch({
       observer: (obs) => obs.args.db as string,
       call: (call) => [call.input.db, `${call.input.db}|${call.input.table}`],
     })
-    .onObserverMatch((obs, call) => obs.args.table === call.input.table)
+    .onObservationMatch((obs, call) => obs.args.table === call.input.table)
   rowChanged.isObserved({ input: { db: 'primary', table: 'orders', op: 'insert' } })
   const keys: MatchHook<RowChange, RowChange> = { observer: () => 'k', call: () => ['k'] }
-  rowChanged.onObserverMatch(keys).onObserverMatch(null)
+  rowChanged.onObservationMatch(keys).onObservationMatch(null)
 
   // An async handler's resolved type is the output observers observe; the deliver hook's
   // return type is what the caller gets back.
   worker
     .registerFunction('orders::create', async (order: { qty: number }) => ({ id: 'o-1', qty: order.qty }))
-    .onObserverDeliver((call: Call<{ qty: number }, { id: string; qty: number }>, observers) =>
+    .onObservationDeliver((call: Call<{ qty: number }, { id: string; qty: number }>, observers) =>
       observers.length > 0 ? (call.output?.id ?? 'none') : 'unobserved',
     )
 
   // Untyped hooks by id read their call's input.
   worker
-    .onObserverMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
-    .onObserverMatch('database::on-row-changed', { observer: (obs) => obs.id, call: (call) => call.input.table })
-    .onObserverDeliver('http::on-request', async (call, [route]) => (route ? route.matches(call) : false))
+    .onObservationMatch('cron::on-tick', (obs, call) => obs.args.expression === call.input.expression)
+    .onObservationMatch('database::on-row-changed', { observer: (obs) => obs.id, call: (call) => call.input.table })
+    .onObservationDeliver('http::on-request', async (call, [route]) => (route ? route.matches(call) : false))
   worker.onObserverAdded(() => undefined).onObserverRemoved('cron::on-tick', null)
 }

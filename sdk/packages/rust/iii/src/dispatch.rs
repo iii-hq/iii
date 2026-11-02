@@ -357,7 +357,7 @@ async fn run_deliver_hook(
         .await
         .unwrap_or_else(|panic| {
             Err(Error::Handler(format!(
-                "on_observer_deliver panicked: {}",
+                "on_observation_deliver panicked: {}",
                 panic_message(&panic)
             )))
         })

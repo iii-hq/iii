@@ -251,7 +251,7 @@ fn host() -> Host {
             ..InitOptions::default()
         },
     );
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "bench::match-keys",
         Match::keys(
             |obs| obs.args_value()["expression"].as_str().into(),
@@ -271,7 +271,7 @@ fn host() -> Host {
     let error_caller = iii.register_function("bench::error-caller", echo());
     let source = iii.register_function("bench::source", echo().private());
     let event = iii.register_function("bench::private-event", echo().private());
-    iii.on_observer_deliver_for(
+    iii.on_observation_deliver_for(
         "bench::private-deliver",
         |call: Call, _observers: Vec<Observer>| async move { Ok(call.output.unwrap_or_default()) },
     );

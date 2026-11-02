@@ -357,7 +357,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
       (sdk) =>
         sdk
           .registerFunction('orders::create', () => expected.result)
-          .onObserverMatch((obs) => obs.args.team === 'sales'),
+          .onObservationMatch((obs) => obs.args.team === 'sales'),
     )
     expect(frames).toEqual([expected])
   })
@@ -376,7 +376,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
       expected,
       'orders::create',
       [fake.observerInfo('8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70', 'alerts::big-order')],
-      (sdk) => sdk.registerFunction('orders::create', () => expected.result).onObserverMatch(() => false),
+      (sdk) => sdk.registerFunction('orders::create', () => expected.result).onObservationMatch(() => false),
     )
     expect(frames).toEqual([expected])
   })
@@ -391,7 +391,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
         sdk
           .registerFunction('approvals::request', () => ({ approved: false }))
           // the approver's answer, as a call through the observer would return it
-          .onObserverDeliver(() => expected.result),
+          .onObservationDeliver(() => expected.result),
     )
     expect(frames).toEqual([expected])
   })
@@ -418,9 +418,9 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
 
   it.each([
     ['registerfunction.json', {}],
-    ['registerfunction-private.json', { private: true, standby: true, localDispatch: false }],
+    ['registerfunction-private.json', { private: true, localDispatch: false }],
     ['registerfunction-not-observable.json', { observable: false, private: false }],
-  ] as const)('%s (registerFunction; hooks, standby and localDispatch never travel)', async (name, extra) => {
+  ] as const)('%s (registerFunction; hooks and localDispatch never travel)', async (name, extra) => {
     const expected = fixture(name)
     const { sdk, socket } = connect()
     sdk
@@ -441,7 +441,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     sdk.registerFunction('a::plain', async () => null)
     sdk.registerFunction('b::source', (e: unknown) => e, { private: true, args_format: { type: 'object' } })
     sdk.registerFunction('c::secret', async () => null, { observable: false })
-    sdk.registerFunction('d::routed', async () => null).onObserverDeliver((call) => call.output)
+    sdk.registerFunction('d::routed', async () => null).onObservationDeliver((call) => call.output)
     for (const name of HANDLED.engineOnly) expect(fixture(name)).toHaveProperty('observe')
     const frames = socket.framesOf('registerfunction')
     expect(frames.map((f) => f.id)).toEqual(['a::plain', 'b::source', 'c::secret', 'd::routed'])

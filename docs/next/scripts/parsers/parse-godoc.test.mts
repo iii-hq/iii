@@ -191,7 +191,7 @@ test('Client method headings carry the receiver and keep the canonical order', (
 
 test('anchors use the slug Mintlify gives a heading, and every link has exactly one target', () => {
   // Ids observed on the Mintlify preview: the dot of a qualified heading becomes a hyphen.
-  assert.equal(slugify('Client.OnObserverDeliverFor'), 'client-onobserverdeliverfor')
+  assert.equal(slugify('Client.OnObservationDeliverFor'), 'client-onobservationdeliverfor')
   assert.equal(slugify('filter.Compile'), 'filter-compile')
   assert.equal(slugify('iii/filter'), 'iii-filter')
   const types = [

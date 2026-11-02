@@ -125,7 +125,7 @@ export function startTasksWorker(engineUrl = ENGINE_URL) {
     .onObserverRemoved(obs => {
       console.log(`[tasks] observer ${obs.id} removed`)
     })
-    .onObserverMatch({
+    .onObservationMatch({
       observer: obs => (obs.args as TaskChangedArgs).id ?? '*',
       call: call => [call.input.id, '*'],
     })

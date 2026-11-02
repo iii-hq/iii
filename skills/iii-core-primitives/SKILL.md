@@ -232,7 +232,7 @@ iii.observe(
 - **Event sources**: a worker turns events from outside iii into calls of a function it hosts,
   registered with a handler that returns the event and `{ args_format, private: true }`. It
   overrides iii's defaults with `onObserverAdded` (set up from `obs.args`), `onObserverRemoved`
-  (tear down), `onObserverMatch` (which observers want each call), and `onObserverDeliver`
+  (tear down), `onObservationMatch` (which observers want each call), and `onObservationDeliver`
   (deliver each call itself and return what the caller gets). See `iii-observe`.
 - **Channels**: use `createChannel()` for binary or streaming data that should not be serialized into
   JSON payloads. Pass `readerRef` or `writerRef` through a function payload.

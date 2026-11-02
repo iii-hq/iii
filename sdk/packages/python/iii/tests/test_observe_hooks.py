@@ -1,5 +1,5 @@
 """Observer hooks (``on_observer_added`` / ``on_observer_removed``, worker-wide
-and per function; how ``on_observer_match`` and ``on_observer_deliver`` are
+and per function; how ``on_observation_match`` and ``on_observation_deliver`` are
 set) and the observer lifecycle in the worker that hosts the function, against
 a fake engine."""
 
@@ -50,7 +50,7 @@ def test_hook_methods_work_as_decorators_and_plain_calls_and_return_the_hook(eng
     def deliver(call: Any, observers: Any) -> Any:
         return call.output
 
-    @client.on_observer_match("fn::a")
+    @client.on_observation_match("fn::a")
     def wants(obs: Observer, call: Any) -> bool:
         return True
 
@@ -62,11 +62,11 @@ def test_hook_methods_work_as_decorators_and_plain_calls_and_return_the_hook(eng
 
     assert client.on_observer_removed("fn::a", fn_removed) is fn_removed
     assert client.on_observer_removed(fn_removed) is fn_removed
-    assert client.on_observer_deliver("fn::a", deliver) is deliver
-    assert client.on_observer_deliver("fn::b")(deliver) is deliver
-    keys = client.on_observer_match("fn::b", observer=by_key, call=call_key)
+    assert client.on_observation_deliver("fn::a", deliver) is deliver
+    assert client.on_observation_deliver("fn::b")(deliver) is deliver
+    keys = client.on_observation_match("fn::b", observer=by_key, call=call_key)
     assert keys == MatchKeys(observer=by_key, call=call_key)
-    assert client.on_observer_match("fn::c", keys) is keys
+    assert client.on_observation_match("fn::c", keys) is keys
     # the decorated names are the hooks, not anything else
     assert callable(worker_added) and asyncio.iscoroutinefunction(fn_added) and callable(wants)
     assert client._worker_added is worker_added and client._added_hooks == {"fn::a": fn_added}
@@ -78,8 +78,8 @@ def test_hook_methods_work_as_decorators_and_plain_calls_and_return_the_hook(eng
     assert client.on_observer_added(None) is None
     assert client.on_observer_added("fn::a", None) is None
     assert client.on_observer_removed("fn::a", None) is None
-    assert client.on_observer_deliver("fn::b", None) is None
-    assert client.on_observer_match("fn::b", None) is None
+    assert client.on_observation_deliver("fn::b", None) is None
+    assert client.on_observation_match("fn::b", None) is None
     assert (client._worker_added, client._added_hooks, client._removed_hooks) == (None, {}, {})
     assert client._deliver_hooks == {"fn::a": deliver}
     assert client._match_hooks == {"fn::a": wants, "fn::c": keys}
@@ -90,20 +90,20 @@ def test_hook_methods_work_as_decorators_and_plain_calls_and_return_the_hook(eng
         client.on_observer_added(worker_added, worker_added)
 
 
-def test_on_observer_match_takes_a_sync_predicate_or_both_key_functions(engine: FakeEngine, connect: Any) -> None:
+def test_on_observation_match_takes_a_sync_predicate_or_both_key_functions(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
 
     async def async_predicate(obs: Observer, call: Any) -> bool:
         return True
 
     for bad in (
-        lambda: client.on_observer_match("fn::a", async_predicate),
-        lambda: client.on_observer_match("fn::a", "not callable"),
-        lambda: client.on_observer_match("fn::a", observer=lambda obs: "k"),
-        lambda: client.on_observer_match("fn::a", call=lambda call: "k"),
-        lambda: client.on_observer_match("fn::a", lambda obs, call: True, observer=lambda obs: "k", call=str),
-        lambda: client.on_observer_match("fn::a", observer=lambda obs: "k", call=async_predicate),
-        lambda: client.on_observer_match("fn::a", MatchKeys(observer="k", call=str)),  # type: ignore[arg-type]
+        lambda: client.on_observation_match("fn::a", async_predicate),
+        lambda: client.on_observation_match("fn::a", "not callable"),
+        lambda: client.on_observation_match("fn::a", observer=lambda obs: "k"),
+        lambda: client.on_observation_match("fn::a", call=lambda call: "k"),
+        lambda: client.on_observation_match("fn::a", lambda obs, call: True, observer=lambda obs: "k", call=str),
+        lambda: client.on_observation_match("fn::a", observer=lambda obs: "k", call=async_predicate),
+        lambda: client.on_observation_match("fn::a", MatchKeys(observer="k", call=str)),  # type: ignore[arg-type]
     ):
         with pytest.raises(TypeError):
             bad()
@@ -121,22 +121,22 @@ def test_a_function_ref_sets_the_hooks_of_its_id(engine: FakeEngine, connect: An
     @ref.on_observer_removed
     def removed(obs: Observer) -> None: ...
 
-    @ref.on_observer_match
+    @ref.on_observation_match
     def wants(obs: Observer, call: Any) -> bool:
         return True
 
     def deliver(call: Any, observers: Any) -> Any:
         return call.output
 
-    assert ref.on_observer_deliver(deliver) is deliver
+    assert ref.on_observation_deliver(deliver) is deliver
     assert (client._added_hooks["ref::fn"], client._removed_hooks["ref::fn"]) == (added, removed)
     assert client._deliver_hooks["ref::fn"] is deliver
     assert client._match_hooks["ref::fn"] is wants
-    keys = ref.on_observer_match(observer=lambda obs: obs.id, call=lambda call: "k")
+    keys = ref.on_observation_match(observer=lambda obs: obs.id, call=lambda call: "k")
     assert isinstance(keys, MatchKeys) and client._match_hooks["ref::fn"] is keys
     with pytest.raises(TypeError):
-        ref.on_observer_match(wants, observer=lambda obs: obs.id, call=lambda call: "k")
-    assert ref.on_observer_match(None) is None and "ref::fn" not in client._match_hooks
+        ref.on_observation_match(wants, observer=lambda obs: obs.id, call=lambda call: "k")
+    assert ref.on_observation_match(None) is None and "ref::fn" not in client._match_hooks
     assert ref.on_observer_added(None) is None and "ref::fn" not in client._added_hooks
     assert ref.observers() == [] and ref.is_observed() is False
 
@@ -582,8 +582,8 @@ def test_hook_ids_still_unregistered_after_the_grace_period_are_warned_once(
     with caplog.at_level(logging.WARNING, logger="iii.iii"):
         # set after the connection is registered: checked once the grace period passes
         client.on_observer_added("typo::fn", lambda obs: None)
-        client.on_observer_match("typo::match", lambda obs, call: True)
-        client.on_observer_deliver("orders::create", lambda call, observers: call.output)
+        client.on_observation_match("typo::match", lambda obs, call: True)
+        client.on_observation_deliver("orders::create", lambda call, observers: call.output)
         client.register_function("orders::create", lambda d: d)
         wait_until(lambda: len(_unregistered_warnings(caplog)) == 2, what="the warnings")
         engine.drop()
@@ -761,7 +761,7 @@ def test_a_held_observer_served_a_changed_view_is_filed_under_its_new_keys(engin
     client = connect(engine)
     added: list[str] = []
     client.on_observer_added("rk::fn", lambda obs: added.append(obs.id))
-    client.on_observer_match("rk::fn", observer=lambda obs: obs.target, call=lambda call: call.input["to"])
+    client.on_observation_match("rk::fn", observer=lambda obs: obs.target, call=lambda call: call.input["to"])
     ref = client.register_function("rk::fn", lambda d: d)
     engine.deliver(function_registered("rk::fn", [observer_info("a", "t::one")], revision=1))
     engine.wait_for(lambda: acks(engine), what="the ack")

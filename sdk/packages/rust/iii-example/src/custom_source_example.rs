@@ -111,7 +111,7 @@ pub fn setup(iii: &IIIClient) {
         println!("[file-watch] Observer {} stopped watching", obs.id());
     })
     // each change goes to the observers of its pattern, whatever their number
-    .on_observer_match_for(
+    .on_observation_match_for(
         "example::on-file-change",
         Match::keys(
             |obs| obs.args_value()["pattern"].as_str().into(),

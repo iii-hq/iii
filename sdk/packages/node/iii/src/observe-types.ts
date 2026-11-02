@@ -203,7 +203,7 @@ export interface Observer {
    *       // a rejected observer gets nothing
    *     })
    * })
-   * iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+   * iii.onObservationMatch('tmux::on-changed', (obs, call) =>
    *   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session,
    * )
    * ```
@@ -231,11 +231,11 @@ export type RemovedHook = (obs: Observer) => void | Promise<void>
 /** A match key, or several: an observer wants a call when they share one. */
 export type Key = string | readonly string[]
 
-/** `onObserverMatch` as a predicate: whether this observer wants this call. */
+/** `onObservationMatch` as a predicate: whether this observer wants this call. */
 export type MatchPredicate<I = unknown, O = unknown> = (obs: Observer, call: Call<I, O>) => boolean
 
 /**
- * `onObserverMatch` as keys: an observer wants a call when they share a key,
+ * `onObservationMatch` as keys: an observer wants a call when they share a key,
  * and the SDK keeps an index instead of asking every observer.
  */
 export interface MatchKeys<I = unknown, O = unknown> {
@@ -246,7 +246,7 @@ export interface MatchKeys<I = unknown, O = unknown> {
 }
 
 /**
- * Which observers want each call of a function (`onObserverMatch`). By
+ * Which observers want each call of a function (`onObservationMatch`). By
  * default every observer wants every call. A predicate is asked once per
  * active observer per call (a throw counts as no match). Keys are computed
  * once per observer, when it is accepted, and once per call. The observers'
@@ -259,7 +259,7 @@ export interface MatchKeys<I = unknown, O = unknown> {
 export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKeys<I, O>
 
 /**
- * Delivers each call of a function itself (`onObserverDeliver`): it receives
+ * Delivers each call of a function itself (`onObservationDeliver`): it receives
  * the call and the observers that matched it (a snapshot taken when the call
  * started), and what it returns (or throws) is what the caller gets back. A
  * thrown {@link ObserveRejection}, or the error of a call it made, reaches the

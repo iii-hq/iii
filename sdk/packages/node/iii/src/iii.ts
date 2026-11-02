@@ -143,9 +143,6 @@ const FUNCTION_NAMESPACE_CONFLICT = 'FUNCTION_NAMESPACE_CONFLICT'
  */
 const FUNCTION_REJECTIONS: ReadonlySet<string> = new Set(['INVALID_ARGS_FORMAT', 'UNSUPPORTED'])
 
-/** A standby function retries its registration this often (decision 21), ±20 %. */
-const STANDBY_RETRY_MS = 1000
-
 /** Why `call` refuses a call through an observer that names metadata (v2 §4.6, decision 53); the same in every SDK. */
 const OBSERVER_CALL_METADATA =
   "a call through an observer takes no metadata; its target receives the observer's metadata"
@@ -354,6 +351,9 @@ export type InitOptions = {
   observe?: { hookTimeoutMs?: number; reporter?: Partial<ReporterLimits> }
 }
 
+/** The upgrade guide the removed 0.25 trigger APIs point to. */
+const UPGRADE_GUIDE = 'https://iii.dev/docs/upgrading/from-0-25-x'
+
 class Sdk implements IIIClient {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
@@ -404,8 +404,6 @@ class Sdk implements IIIClient {
   private hooksInactiveWarned = new Set<string>()
   private unsupportedWarned = new Set<string>()
   private unregisteredHooksWarned = new Set<string>()
-  // Standby functions waiting for their id to be free, by function id.
-  private standbyTimers = new Map<string, NodeJS.Timeout>()
   // Decision 22: a call to a private function this worker hosts freezes its input and result.
   private readonly freezePrivate = process.env.NODE_ENV === 'development'
   private readonly reporter: Reporter
@@ -477,7 +475,7 @@ class Sdk implements IIIClient {
    * for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
    *
    * A function that sets `args_format`, `private: true`, `observable: false`,
-   * an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+   * an `onObservationMatch` hook or an `onObservationDeliver` hook needs an engine
    * with `observe.v2`: it is registered once the connection's engine
    * advertised it, and against an older engine it stays unregistered (logged
    * once, `UNSUPPORTED`).
@@ -511,9 +509,9 @@ class Sdk implements IIIClient {
       throw new Error(`function id already registered: ${functionId}`)
     }
 
-    // `standby` and `localDispatch` are this SDK's alone; `private: false` and
+    // `localDispatch` is this SDK's alone; `private: false` and
     // `observable: true` are the defaults and are not sent.
-    const { standby, localDispatch, private: isPrivate, observable, ...wireOptions } = options ?? {}
+    const { localDispatch, private: isPrivate, observable, ...wireOptions } = options ?? {}
     const registration = {
       ...wireOptions,
       ...(isPrivate === true ? { private: true } : {}),
@@ -542,7 +540,7 @@ class Sdk implements IIIClient {
     const frame = this.prepareJson(this.toWireFormat(MessageType.RegisterFunction, fullMessage))
 
     const observe = new FunctionObservers(functionId, localDispatch !== false, isHandler, this.observeHost)
-    const fn: RemoteFunctionData = { message: fullMessage, observe, standby: standby === true }
+    const fn: RemoteFunctionData = { message: fullMessage, observe }
     if (isHandler) {
       fn.handler = this.wrapHandler(functionId, handlerOrInvocation as RemoteFunctionHandler)
     }
@@ -569,12 +567,12 @@ class Sdk implements IIIClient {
         this.onObserverRemoved(functionId, hook)
         return ref
       },
-      onObserverMatch: (hook: MatchHook<I, O> | null) => {
-        this.onObserverMatch(functionId, hook)
+      onObservationMatch: (hook: MatchHook<I, O> | null) => {
+        this.onObservationMatch(functionId, hook)
         return ref
       },
-      onObserverDeliver: (hook) => {
-        this.onObserverDeliver(functionId, hook)
+      onObservationDeliver: (hook) => {
+        this.onObservationDeliver(functionId, hook)
         return ref
       },
       // This registration's observers: one load, no lookup by id.
@@ -586,7 +584,6 @@ class Sdk implements IIIClient {
         if (this.functions.get(functionId) !== fn) return
         this.sendMessage(MessageType.UnregisterFunction, { id: functionId }, true)
         this.functions.delete(functionId)
-        this.stopStandby(functionId)
         observe.dispose()
       },
     }
@@ -743,7 +740,7 @@ class Sdk implements IIIClient {
     if (this.unsupportedWarned.has(functionId)) return
     this.unsupportedWarned.add(functionId)
     this.logWarn(
-      `UNSUPPORTED: function "${functionId}" needs observe.v2 (args_format, private, observable: false, onObserverMatch or onObserverDeliver), which this engine does not advertise; it stays unregistered until the worker connects to an engine with observe.v2.`,
+      `UNSUPPORTED: function "${functionId}" needs observe.v2 (args_format, private, observable: false, onObservationMatch or onObservationDeliver), which this engine does not advertise; it stays unregistered until the worker connects to an engine with observe.v2.`,
     )
   }
 
@@ -846,7 +843,7 @@ class Sdk implements IIIClient {
    * indexes. iii's delivery (or the function's deliver hook) gets only the
    * observers that want the call. `null` removes the hook.
    */
-  onObserverMatch: IIIClient['onObserverMatch'] = (functionId: string, hook: MatchHook | null): IIIClient => {
+  onObservationMatch: IIIClient['onObservationMatch'] = (functionId: string, hook: MatchHook | null): IIIClient => {
     this.setFunctionHook(functionId, 'match', hook)
     return this
   }
@@ -858,7 +855,7 @@ class Sdk implements IIIClient {
    * the hook.
    */
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
-  onObserverDeliver = <I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient => {
+  onObservationDeliver = <I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient => {
     this.setFunctionHook(functionId, 'deliver', hook as DeliverHook | null)
     return this
   }
@@ -1108,7 +1105,7 @@ class Sdk implements IIIClient {
    * })
    *
    * // Through an observer, from the function's deliver hook
-   * worker.onObserverDeliver('http::on-request', async (call) => {
+   * worker.onObservationDeliver('http::on-request', async (call) => {
    *   const route = routes.match(call.input)
    *   return route ? worker.call({ observer: route.obs, payload: call.input }) : { status_code: 404 }
    * })
@@ -1159,6 +1156,27 @@ class Sdk implements IIIClient {
    * @deprecated Use {@link Sdk.call}, the same function.
    */
   trigger = this.call
+
+  /** Removed in 0.26.0: throws an error that points to {@link Sdk.observe}. */
+  registerTrigger = (): never => {
+    throw new Error(
+      `registerTrigger was removed in iii 0.26.0: bind functions with iii.observe(source, target). registerTrigger({ type: 'cron', function_id, config }) becomes iii.observe({ function_id: 'cron::on-tick', args: config }, function_id). Every trigger type's function is in the migration guide: ${UPGRADE_GUIDE}`,
+    )
+  }
+
+  /** Removed in 0.26.0: throws an error that points to {@link Sdk.registerFunction} and the observer hooks. */
+  registerTriggerType = (): never => {
+    throw new Error(
+      `registerTriggerType was removed in iii 0.26.0: a trigger type is now a function that consumers observe. Register it with registerFunction('<worker>::on-<event>', (event) => event, { args_format, private: true }), move the TriggerHandler to onObserverAdded and onObserverRemoved, and call the function once per event. Migration guide: ${UPGRADE_GUIDE}#move-a-trigger-type-to-an-observable-function`,
+    )
+  }
+
+  /** Removed in 0.26.0: throws an error that points to `FunctionRef.unregister`. */
+  unregisterTriggerType = (): never => {
+    throw new Error(
+      `unregisterTriggerType was removed in iii 0.26.0: a trigger type is now a function. Unregister it with the FunctionRef that registerFunction returns: functionRef.unregister(). Migration guide: ${UPGRADE_GUIDE}#move-a-trigger-type-to-an-observable-function`,
+    )
+  }
 
   /** `caller` and `observe_depth` an outgoing call carries from the current handler (engines with `observe.v1`). */
   private outgoingObserveFields(): { caller?: CallerWire; observe_depth?: number } {
@@ -1685,10 +1703,9 @@ class Sdk implements IIIClient {
     this.ws?.terminate()
     this.ws = undefined
     // Local dispatch and the compiled observer sets survive; what was sent on
-    // this connection is replayed on the next one (standby functions too).
+    // this connection is replayed on the next one.
     this.registeredOnConnection = false
     this.observesSent.clear()
-    for (const functionId of [...this.standbyTimers.keys()]) this.stopStandby(functionId)
 
     this.setConnectionState('disconnected')
     this.stopMetricsReporting()
@@ -1923,8 +1940,7 @@ class Sdk implements IIIClient {
    * - {@link FUNCTION_NAMESPACE_CONFLICT}: another live worker in this namespace
    *   already exports this one function id. Only that registration is refused;
    *   the engine keeps the connection open and the worker keeps serving its
-   *   other functions. Non-fatal -- log a warning and continue. A `standby`
-   *   function retries its registration until the id is free.
+   *   other functions. Non-fatal -- log a warning and continue.
    * - {@link FUNCTION_REJECTIONS} on one function: only that function is
    *   refused. Non-fatal -- log an error and continue.
    * - Any other code: treated as fatal (safe default).
@@ -1940,10 +1956,6 @@ class Sdk implements IIIClient {
       const fn = init.function_id !== undefined ? this.functions.get(init.function_id) : undefined
       // The engine refused it: no local dispatch, no observers for it here.
       fn?.observe.onRegistrationRejected(this.connectionEpoch)
-      if (fn?.standby && init.function_id !== undefined) {
-        this.standBy(init.function_id, fn, init.owner_worker_id)
-        return
-      }
       this.logWarn(
         `Function registration rejected: function "${init.function_id ?? '<unknown>'}" in namespace "${init.namespace}" is already exported by worker ${init.owner_worker_id}. The worker stays connected and keeps serving its other functions.`,
       )
@@ -1996,36 +2008,6 @@ class Sdk implements IIIClient {
 
     this.stopMetricsReporting()
     this.setConnectionState('failed')
-  }
-
-  /**
-   * A `standby` function whose id another connection hosts (decision 21): its
-   * registration is retried every second (±20 %) until the engine accepts it
-   * (`functionregistered`, whose observers then run their hooks here) or the
-   * function is unregistered.
-   */
-  private standBy(functionId: string, fn: RemoteFunctionData, owner: string): void {
-    if (this.standbyTimers.has(functionId)) return
-    if (!fn.standingBy) {
-      this.logInfo(`Function "${functionId}" is hosted by worker ${owner}; standing by to take it over when it leaves.`)
-    }
-    fn.standingBy = true
-    const delay = Math.floor(STANDBY_RETRY_MS * (0.8 + 0.4 * Math.random()))
-    const timer = setTimeout(() => {
-      this.standbyTimers.delete(functionId)
-      if (this.functions.get(functionId) !== fn || !this.mayRegister(functionId, fn)) return
-      this.replayRegistration(MessageType.RegisterFunction, fn.message)
-      fn.sentEpoch = this.connectionEpoch
-    }, delay)
-    timer.unref?.()
-    this.standbyTimers.set(functionId, timer)
-  }
-
-  private stopStandby(functionId: string): void {
-    const timer = this.standbyTimers.get(functionId)
-    if (!timer) return
-    clearTimeout(timer)
-    this.standbyTimers.delete(functionId)
   }
 
   private onInvocationResult(invocation_id: string, result: unknown, error: unknown): void {
@@ -2372,9 +2354,6 @@ class Sdk implements IIIClient {
       // Only a registration sent on this connection is confirmed: not one
       // unregistered since (a match or deliver hook against an engine without observe.v2).
       if (fn && fn.sentEpoch === this.connectionEpoch) {
-        // A standby function took over the id: its hooks run for every observer in the set.
-        this.stopStandby(msg.id)
-        fn.standingBy = false
         // Its reports held across a reconnect are flushed once the set is acked.
         fn.observe.onFunctionRegistered(msg, this.connectionEpoch)
       }

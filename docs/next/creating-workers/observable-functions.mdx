@@ -987,20 +987,14 @@ These options of `registerFunction` describe the function to the engine:
 | `private`                 | `false` | Only this worker may call the function. Other workers may observe it. See [Private functions](#private-functions).                  |
 | `observable`              | `true`  | `false`: nobody may observe the function (`NOT_OBSERVABLE`).                                                                        |
 
-This one is handled by the SDK:
-
-| Option    | Default | Meaning                                                                                                                                            |
-| --------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `standby` | `false` | When another connection already hosts the id, wait and take the function over when it leaves. See [One host per function](#one-host-per-function). |
-
 Each SDK spells them its own way:
 
-| SDK            | Options                                                                                         |
-| -------------- | ----------------------------------------------------------------------------------------------- |
-| Node / Browser | `registerFunction(id, handler, { args_format, private, observable, standby })`                  |
-| Python         | `register_function(id, handler, args_format=..., private=True, observable=False, standby=True)` |
-| Rust           | `RegisterFunction::new(handler).args_format::<T>().private().observable(false).standby()`       |
-| Go             | the `ArgsFormat`, `Private`, `Observable` and `Standby` fields of `iii.FunctionOptions`         |
+| SDK            | Options                                                                           |
+| -------------- | --------------------------------------------------------------------------------- |
+| Node / Browser | `registerFunction(id, handler, { args_format, private, observable })`             |
+| Python         | `register_function(id, handler, args_format=..., private=True, observable=False)` |
+| Rust           | `RegisterFunction::new(handler).args_format::<T>().private().observable(false)`   |
+| Go             | the `ArgsFormat`, `Private` and `Observable` fields of `iii.FunctionOptions`      |
 
 An `args_format` that is not a valid JSON Schema fails the registration with `INVALID_ARGS_FORMAT`.
 
@@ -1034,14 +1028,16 @@ A function id has one host per namespace: the engine rejects a second registrati
 with `FUNCTION_NAMESPACE_CONFLICT`. Observer hooks therefore run once per observer, in that host,
 and a cron job or a database trigger is set up once however many instances of the worker run.
 
-A second instance serves as a standby. When the host disconnects, the function's observers go
-`pending`. The standby registers the function, receives the current observers, runs its hooks for
-each, and they become active again. With `standby: true`, the SDK does this for you: on
-`FUNCTION_NAMESPACE_CONFLICT` it retries the registration every second (±20 % jitter) until it
-succeeds or the function is unregistered.
+A second instance refused with `FUNCTION_NAMESPACE_CONFLICT` logs it and keeps serving its other
+functions. It does not register the function again. When the host disconnects, the function's
+observers go `pending`, and the next worker that registers the function (the host restarted, or
+another instance) receives the current observers, runs its hooks for each, and they become active
+again.
 
-The engine admits one live worker per worker name and namespace, so the standby connects under a
-name of its own (`III_WORKER_NAME`, or the worker name option of the SDK). A second instance under
+Run one instance of a worker that hosts an event source, and let the platform that runs it restart
+it. Stop the old instance before the new one starts (`strategy: Recreate` in Kubernetes): an
+instance started while the old one runs is refused the function, and nothing hosts it once the old
+one stops. The engine also admits one live worker per worker name and namespace: an instance under
 the host's name is refused with `WORKER_NAMESPACE_CONFLICT`, and its SDK stops without reconnecting.
 
 ## The `Observer` object

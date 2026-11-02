@@ -15,7 +15,7 @@ RemovedT = TypeVar("RemovedT", bound="RemovedHook")
 MatchT = TypeVar("MatchT", bound="MatchPredicate")
 DeliverT = TypeVar("DeliverT", bound="DeliverHook")
 
-#: The hook of ``on_observer_match`` that was not passed (the keys form).
+#: The hook of ``on_observation_match`` that was not passed (the keys form).
 _MISSING: Any = object()
 
 
@@ -42,7 +42,7 @@ class FunctionRef:
         ... def start(obs):
         ...     scheduler.retain(obs.args["expression"])
         >>> on_tick = iii.register_function("cron::on-tick", lambda tick: tick, private=True)
-        >>> on_tick.on_observer_match(lambda obs, call: obs.args["expression"] == call.input["expression"])
+        >>> on_tick.on_observation_match(lambda obs, call: obs.args["expression"] == call.input["expression"])
     """
 
     def __init__(self, client: III, function_id: str, unregister: Callable[[], None]) -> None:
@@ -67,32 +67,32 @@ class FunctionRef:
         return self._client.on_observer_removed(self.id, hook)
 
     @overload
-    def on_observer_match(self, hook: MatchT) -> MatchT: ...
+    def on_observation_match(self, hook: MatchT) -> MatchT: ...
     @overload
-    def on_observer_match(self, hook: MatchKeys) -> MatchKeys: ...
+    def on_observation_match(self, hook: MatchKeys) -> MatchKeys: ...
     @overload
-    def on_observer_match(self, hook: None) -> None: ...
+    def on_observation_match(self, hook: None) -> None: ...
     @overload
-    def on_observer_match(
+    def on_observation_match(
         self, *, observer: Callable[[Observer], Key], call: Callable[[Call[Any, Any]], Key]
     ) -> MatchKeys: ...
-    def on_observer_match(self, hook: Any = _MISSING, *, observer: Any = None, call: Any = None) -> Any:
-        """This function's ``on_observer_match``: a predicate ``(obs, call) ->
+    def on_observation_match(self, hook: Any = _MISSING, *, observer: Any = None, call: Any = None) -> Any:
+        """This function's ``on_observation_match``: a predicate ``(obs, call) ->
         bool``, or ``observer=`` and ``call=`` key functions (see
-        ``III.on_observer_match``)."""
+        ``III.on_observation_match``)."""
         if hook is _MISSING:
-            return self._client.on_observer_match(self.id, observer=observer, call=call)
+            return self._client.on_observation_match(self.id, observer=observer, call=call)
         if observer is not None or call is not None:
-            raise TypeError("on_observer_match takes a predicate or observer= and call= key functions, not both")
-        return self._client.on_observer_match(self.id, hook)
+            raise TypeError("on_observation_match takes a predicate or observer= and call= key functions, not both")
+        return self._client.on_observation_match(self.id, hook)
 
     @overload
-    def on_observer_deliver(self, hook: DeliverT) -> DeliverT: ...
+    def on_observation_deliver(self, hook: DeliverT) -> DeliverT: ...
     @overload
-    def on_observer_deliver(self, hook: None) -> None: ...
-    def on_observer_deliver(self, hook: DeliverHook | None) -> DeliverHook | None:
-        """This function's ``on_observer_deliver`` (see ``III.on_observer_deliver``)."""
-        return self._client.on_observer_deliver(self.id, hook)
+    def on_observation_deliver(self, hook: None) -> None: ...
+    def on_observation_deliver(self, hook: DeliverHook | None) -> DeliverHook | None:
+        """This function's ``on_observation_deliver`` (see ``III.on_observation_deliver``)."""
+        return self._client.on_observation_deliver(self.id, hook)
 
     def observers(self) -> list[Observer]:
         """The function's active observers, as this worker sees them."""

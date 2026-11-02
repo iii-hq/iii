@@ -218,7 +218,7 @@ export class ObserverImpl implements Observer {
   adding = false
   /** @internal Where it stands at each hook level. */
   readonly levels: Record<Level, LevelState> = { worker: 'none', fn: 'none' }
-  /** @internal The keys it is filed under (`onObserverMatch` by keys), computed once. */
+  /** @internal The keys it is filed under (`onObservationMatch` by keys), computed once. */
   keys?: readonly string[]
   private acceptance: 'pending' | 'accepted' | ObserveReason = 'pending'
   private waiters?: { resolve: () => void; reject: (error: ObserveRejection) => void }[]
@@ -379,7 +379,7 @@ export class FunctionObservers {
   }
 
   /**
-   * The observers of the call's snapshot that want `call` (`onObserverMatch`):
+   * The observers of the call's snapshot that want `call` (`onObservationMatch`):
    * all of `snapshot` without a match hook, those of it the predicate accepts,
    * or those filed under one of the call's keys that joined the active set no
    * later than `activations` (the count when the call started), each once. A
@@ -409,7 +409,7 @@ export class FunctionObservers {
     return [...found]
   }
 
-  /** The function has a match hook (`onObserverMatch`) now. */
+  /** The function has a match hook (`onObservationMatch`) now. */
   hasMatchHook(): boolean {
     return this.host.hooks(this.functionId).match !== undefined
   }
@@ -566,7 +566,7 @@ export class FunctionObservers {
   private matchFailed(error: unknown): void {
     if (this.matchFailureLogged) return
     this.matchFailureLogged = true
-    this.host.logError(`onObserverMatch of ${this.functionId} threw; the call matches no observer`, error)
+    this.host.logError(`onObservationMatch of ${this.functionId} threw; the call matches no observer`, error)
   }
 
   /**
@@ -935,8 +935,8 @@ export type DeliveryInit = {
 
 /**
  * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45, 55): the
- * observers are matched (`onObserverMatch`), then the function's
- * `onObserverDeliver` delivers the call itself, or iii delivers it to the
+ * observers are matched (`onObservationMatch`), then the function's
+ * `onObservationDeliver` delivers the call itself, or iii delivers it to the
  * matched observers whose `on` and filters accept it. For a local call the
  * host evaluates `on` and filters and reports the observers delivered in
  * one report item. For a routed call the engine evaluates them: the answer

@@ -634,7 +634,7 @@ def test_the_reported_input_and_metadata_are_the_callers_at_call_start(
 
     if hook:
 
-        @client.on_observer_deliver("local::mutate")
+        @client.on_observation_deliver("local::mutate")
         def keep(call: Call[Any, Any], observers: Any) -> Any:
             delivered.append((call.input, call.metadata))
             return call.output

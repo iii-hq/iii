@@ -39,7 +39,7 @@ print(result)  # {"message": "Hello, world!"}
 | Call (enqueue)           | `iii.call({"function_id": id, ..., "action": CallAction.Enqueue(queue="name")})`           | Route the call through a named queue                     |
 | Call through an observer | `iii.call({"observer": obs, "payload": data})`                                             | Run an observer's target from a deliver hook             |
 | Observe                  | `iii.observe("fn::id", target, options?)`                                                  | Run `target` when the function runs                      |
-| Observer hooks           | `iii.on_observer_added`, `on_observer_removed`, `on_observer_match`, `on_observer_deliver` | Decide what observing a function this worker hosts means |
+| Observer hooks           | `iii.on_observer_added`, `on_observer_removed`, `on_observation_match`, `on_observation_deliver` | Decide what observing a function this worker hosts means |
 | Current invocation       | `iii.current_invocation()`                                                                 | The invocation the running handler serves                |
 | Shutdown                 | `iii.shutdown()`                                                                           | Disconnect and stop background thread                    |
 
@@ -61,8 +61,7 @@ The handler's return value is what the function's observers observe. Options:
 type hints when omitted), `args_format` (a JSON Schema or Pydantic model of
 the observers' `args`), `private=True` (only this worker may call it; its own
 calls pass the input and result by reference), `observable=False` (nobody may
-observe it), `standby=True` (take the function over when the worker that hosts
-it leaves) and `local_dispatch`.
+observe it) and `local_dispatch`.
 
 ### Calling Functions
 
@@ -115,13 +114,13 @@ hooks. Each one overrides something iii does by default:
 |---|---|
 | `on_observer_added(obs)` | accepts the observer: it becomes active and receives the function's calls. Raise `ObserveRejection` to reject it. |
 | `on_observer_removed(obs)` | stops delivering to the observer and forgets it |
-| `on_observer_match` | every observer wants every call |
-| `on_observer_deliver(call, observers)` | runs the target of every matching observer whose `on` and filters match the call, and gives the caller the handler's return value |
+| `on_observation_match` | every observer wants every call |
+| `on_observation_deliver(call, observers)` | runs the target of every matching observer whose `on` and filters match the call, and gives the caller the handler's return value |
 
 `on_observer_added` and `on_observer_removed` can be set for one function or
 for every function the worker hosts; both levels run, the worker's first when
-an observer is added and last when it is removed. `on_observer_match` and
-`on_observer_deliver` are set per function.
+an observer is added and last when it is removed. `on_observation_match` and
+`on_observation_deliver` are set per function.
 
 The methods work as decorators and as plain calls, on the client by function
 id or on the `FunctionRef` that `register_function` returns. Set hooks by id
@@ -141,7 +140,7 @@ def stop(obs: Observer) -> None:
     scheduler.release(obs.args["expression"])
 
 # an observer of expression X gets the ticks of expression X
-@iii.on_observer_match("cron::on-tick")
+@iii.on_observation_match("cron::on-tick")
 def same_expression(obs: Observer, call: Call) -> bool:
     return obs.args["expression"] == call.input["expression"]
 
@@ -157,14 +156,14 @@ iii.register_function(
 iii.call({"function_id": "cron::on-tick", "payload": {"expression": "*/5 * * * * *", "scheduled_time": now}})
 ```
 
-`on_observer_match` takes a predicate `(obs, call) -> bool`, asked once per
+`on_observation_match` takes a predicate `(obs, call) -> bool`, asked once per
 active observer per call, or `observer=` and `call=` key functions for a
 function with many observers. An observer wants a call when they share a key;
 the SDK computes an observer's keys once, when it is accepted, and keeps an
 index, so a call costs one lookup per key:
 
 ```python
-iii.on_observer_match(
+iii.on_observation_match(
     "database::on-row-changed",
     observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",  # what this observer listens for
     call=lambda call: f"{call.input['table']}|{call.input['op']}",  # what this call is
@@ -187,12 +186,12 @@ anyone (on a function matched by keys, by looking up the call's keys), and
 `iii.observers(function_id)` lists the active observers.
 
 A function whose observers' answers matter, or whose calls each go to one
-observer, delivers its calls itself. Its `on_observer_deliver` receives the
+observer, delivers its calls itself. Its `on_observation_deliver` receives the
 `Call` and the observers that matched it, calls through an observer, and
 returns what the caller gets back. iii delivers nothing for that function:
 
 ```python
-@iii.on_observer_deliver("http::on-request")
+@iii.on_observation_deliver("http::on-request")
 async def route(call, observers):
     obs = routes.match(call.input)
     if obs is None:
@@ -232,7 +231,7 @@ async def on_added(obs):
     asyncio.get_running_loop().create_task(send_state(obs))
 
 
-@iii.on_observer_match("tmux::on-changed")
+@iii.on_observation_match("tmux::on-changed")
 def wants(obs, call):
     for_observer = (call.metadata or {}).get("for_observer")
     if for_observer:
@@ -250,7 +249,7 @@ caller's context, so the current invocation and the OpenTelemetry context
 follow them.
 
 A function that sets `args_format`, `private=True`, `observable=False`, an
-`on_observer_match` hook or an `on_observer_deliver` hook needs an engine that
+`on_observation_match` hook or an `on_observation_deliver` hook needs an engine that
 advertises `observe.v2`; against an older engine it stays unregistered, and the
 SDK logs `UNSUPPORTED` once for it.
 

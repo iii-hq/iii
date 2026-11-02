@@ -1006,7 +1006,7 @@ describe('a deliver hook on the local path', () => {
         order.qty = 0
         return { id: 'o-1' }
       })
-      .onObserverDeliver((call) => {
+      .onObservationDeliver((call) => {
         seenInput = call.input
         return answer
       })

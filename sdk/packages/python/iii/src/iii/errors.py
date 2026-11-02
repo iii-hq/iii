@@ -104,7 +104,7 @@ class ObserveRejection(Exception):
     Raise it from an ``on_observer_added`` hook, at either level
     (``HTTP_ROUTE_CONFLICT``, ``INVALID_CRON_EXPRESSION``, ...); any other
     exception rejects the observer with ``OBSERVE_REJECTED``. Raised from an
-    ``on_observer_deliver`` hook, its code is the error the caller gets. Also
+    ``on_observation_deliver`` hook, its code is the error the caller gets. Also
     what ``ObserverHandle.ready()`` and ``Observer.accepted()`` raise when the
     observer turns ``error`` or ``disposed``, with the engine's or the hook's
     code (``INVALID_ARGS``, ``FORBIDDEN``, ``UNSUPPORTED``, ...).

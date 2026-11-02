@@ -107,7 +107,7 @@ The handler's return value is what the function's observers observe.
 An event source's handler returns the event it is called with. What
 this worker does when the function is observed is set with the hook
 methods (``on_observer_added``, ``on_observer_removed``,
-``on_observer_match``, ``on_observer_deliver``) on the client by id or
+``on_observation_match``, ``on_observation_deliver``) on the client by id or
 on the returned ``FunctionRef``. Set ``on_observer_added`` and
 ``on_observer_removed`` by id before registering so they run for every
 observer: the engine may announce an observer before a hook set on the
@@ -123,7 +123,7 @@ TypeScript types are erased at runtime.
 **Signature**
 
 ```python
-register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, *, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None, args_format: Any = None, private: bool = False, observable: bool = True, standby: bool = False, local_dispatch: bool = True) -> FunctionRef
+register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler | HttpInvocationConfig, *, description: str | None = None, metadata: dict[str, Any] | None = None, request_format: RegisterFunctionFormat | dict[str, Any] | None = None, response_format: RegisterFunctionFormat | dict[str, Any] | None = None, args_format: Any = None, private: bool = False, observable: bool = True, local_dispatch: bool = True) -> FunctionRef
 ```
 
 <Tabs>
@@ -184,10 +184,6 @@ register_function(function_id: str, handler_or_invocation: RemoteFunctionHandler
 
 <ParamField body="observable" type="bool">
   ``False``: nobody may observe the function (``NOT_OBSERVABLE``), for functions whose payloads carry credentials.
-</ParamField>
-
-<ParamField body="standby" type="bool">
-  When another worker already hosts the id (``FUNCTION_NAMESPACE_CONFLICT``), retry every second (±20 %) and take the function over when that worker leaves.
 </ParamField>
 
 <ParamField body="local_dispatch" type="bool">
@@ -259,7 +255,7 @@ observer's registration metadata, and a request that names metadata
 raises ``ValueError`` before anything is sent.
 The payload goes as given: filters are applied where the worker
 chooses observers: iii's delivery, or ``obs.matches(call)`` in an
-``on_observer_deliver``. A call through an observer belongs in that
+``on_observation_deliver``. A call through an observer belongs in that
 deliver hook; to send one observer something outside delivery (its
 initial state), call the function with ``"metadata": {"for_observer":
 obs.id}`` (see `Observer.accepted`).
@@ -328,7 +324,7 @@ call of the source function that passes ``source["filters"]`` invokes
 (``input``, ``output`` or ``error``, ``caller``, ...);
 ``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
 value instead. The worker that hosts the source can decide otherwise
-in its ``on_observer_deliver``.
+in its ``on_observation_deliver``.
 
 Returns synchronously, also before the connection is up; the observer
 is replayed with the same id on every reconnect. The handle holds its
@@ -680,7 +676,7 @@ so a source can skip building an event nobody wants.
 Without ``call``: whether the function has any active observer (one
 load). With ``call`` (a `Call` or a partial one,
 ``{"input": ...}``) on a function matched by keys
-(``on_observer_match``): whether an observer is filed under one of
+(``on_observation_match``): whether an observer is filed under one of
 the call's keys. On any other function the call is ignored.
 
 **Signature**
@@ -736,6 +732,137 @@ observers(function_id: str) -> list[Observer]
 ```python
 for obs in iii.observers("cron::on-tick"):
     print(obs.id, obs.args)
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### on_observation_deliver
+
+Delivers each call of one function itself: ``hook(call,
+observers)`` receives the `Call` and the observers that matched
+it (``on_observation_match``, or all of them), as a snapshot taken when
+the call started, and what it returns (or raises) is what the caller
+gets back. iii delivers nothing for that function: the hook calls
+through observers (``iii.call({"observer": obs, ...})``) and applies
+their ``on`` and filters with ``obs.matches(call)``. Works as a
+decorator (``@iii.on_observation_deliver("fn::id")``) and returns the
+hook; ``None`` restores iii's delivery.
+
+The hook runs inside the function's invocation, so the calls it makes
+have that invocation as their caller. A sync hook runs on a thread of
+its own. A function with a deliver hook needs an engine with
+``observe.v2``.
+
+**Signature**
+
+```python
+on_observation_deliver(function_id: str, hook: Any = ...) -> Any
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="function_id" type="str" required>
+</ParamField>
+
+<ParamField body="hook" type="Any">
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```python
+@iii.on_observation_deliver("http::on-request")
+async def route(call, observers):
+    obs = routes.match(call.input)
+    if obs is None:
+        return {"status_code": 404}
+    if not obs.matches(call):
+        return {"status_code": 422}
+    return await iii.call_async({"observer": obs, "payload": call.input})
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### on_observation_match
+
+Sets which observers want each call of one function. By default
+every observer wants every call; iii's delivery then applies their
+``on`` and filters, and an ``on_observation_deliver`` receives only the
+observers that matched.
+
+As a predicate, ``hook(obs, call) -> bool`` is asked once per active
+observer per call, before filters; a predicate that raises counts as
+no match. As keys, ``observer=`` and ``call=`` key functions each
+return a string or strings, and an observer wants a call when they
+share a key: the SDK computes an observer's keys once, when it is
+accepted, and files it under each, so a call costs one lookup per key
+whatever the number of observers. An observer whose key function
+raises is rejected (``OBSERVE_REJECTED``); a call whose key function
+raises matches no observer. A match hook that raises is logged once
+per function. Wildcards are keys too: file an observer of every table
+under ``"primary|*|insert"`` and give a change the keys
+``"primary|orders|insert"``, ``"primary|orders|*"``,
+``"primary|*|insert"`` and ``"primary|*|*"``.
+
+A host that sends one observer something of its own (its initial
+state) calls the function with ``"metadata": {"for_observer":
+obs.id}``, and the hook gives such a call to that observer alone: a
+predicate compares the ids, and key functions also file each observer
+under ``f"for_observer:{obs.id}"`` and give such a call that one key.
+
+Works as a decorator for a predicate
+(``@iii.on_observation_match("fn::id")``) and returns the hook (a
+`MatchKeys` for the keys form); ``None`` removes it. A match
+hook set while the function has active observers is applied to them
+on the SDK loop, which rebuilds the index from them. Predicates and
+key functions are sync: they run on every call. A function with a
+match hook needs an engine with ``observe.v2``: against an older one
+it stays unregistered, and ``UNSUPPORTED`` is logged once.
+
+**Signature**
+
+```python
+on_observation_match(function_id: str, hook: Any = ..., *, observer: Any = None, call: Any = None) -> Any
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="function_id" type="str" required>
+</ParamField>
+
+<ParamField body="hook" type="Any">
+</ParamField>
+
+<ParamField body="observer" type="Any">
+</ParamField>
+
+<ParamField body="call" type="Any">
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```python
+iii.on_observation_match(
+    "cron::on-tick", lambda obs, call: obs.args["expression"] == call.input["expression"]
+)
+iii.on_observation_match(
+    "database::on-row-changed",
+    observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",
+    call=lambda call: f"{call.input['table']}|{call.input['op']}",
+)
 ```
 
 
@@ -802,137 +929,6 @@ def start(obs):
 
 ---
 
-### on_observer_deliver
-
-Delivers each call of one function itself: ``hook(call,
-observers)`` receives the `Call` and the observers that matched
-it (``on_observer_match``, or all of them), as a snapshot taken when
-the call started, and what it returns (or raises) is what the caller
-gets back. iii delivers nothing for that function: the hook calls
-through observers (``iii.call({"observer": obs, ...})``) and applies
-their ``on`` and filters with ``obs.matches(call)``. Works as a
-decorator (``@iii.on_observer_deliver("fn::id")``) and returns the
-hook; ``None`` restores iii's delivery.
-
-The hook runs inside the function's invocation, so the calls it makes
-have that invocation as their caller. A sync hook runs on a thread of
-its own. A function with a deliver hook needs an engine with
-``observe.v2``.
-
-**Signature**
-
-```python
-on_observer_deliver(function_id: str, hook: Any = ...) -> Any
-```
-
-<Tabs>
-  <Tab title="Parameters">
-
-<ParamField body="function_id" type="str" required>
-</ParamField>
-
-<ParamField body="hook" type="Any">
-</ParamField>
-
-
-  </Tab>
-  <Tab title="Example">
-
-```python
-@iii.on_observer_deliver("http::on-request")
-async def route(call, observers):
-    obs = routes.match(call.input)
-    if obs is None:
-        return {"status_code": 404}
-    if not obs.matches(call):
-        return {"status_code": 422}
-    return await iii.call_async({"observer": obs, "payload": call.input})
-```
-
-
-  </Tab>
-</Tabs>
-
----
-
-### on_observer_match
-
-Sets which observers want each call of one function. By default
-every observer wants every call; iii's delivery then applies their
-``on`` and filters, and an ``on_observer_deliver`` receives only the
-observers that matched.
-
-As a predicate, ``hook(obs, call) -> bool`` is asked once per active
-observer per call, before filters; a predicate that raises counts as
-no match. As keys, ``observer=`` and ``call=`` key functions each
-return a string or strings, and an observer wants a call when they
-share a key: the SDK computes an observer's keys once, when it is
-accepted, and files it under each, so a call costs one lookup per key
-whatever the number of observers. An observer whose key function
-raises is rejected (``OBSERVE_REJECTED``); a call whose key function
-raises matches no observer. A match hook that raises is logged once
-per function. Wildcards are keys too: file an observer of every table
-under ``"primary|*|insert"`` and give a change the keys
-``"primary|orders|insert"``, ``"primary|orders|*"``,
-``"primary|*|insert"`` and ``"primary|*|*"``.
-
-A host that sends one observer something of its own (its initial
-state) calls the function with ``"metadata": {"for_observer":
-obs.id}``, and the hook gives such a call to that observer alone: a
-predicate compares the ids, and key functions also file each observer
-under ``f"for_observer:{obs.id}"`` and give such a call that one key.
-
-Works as a decorator for a predicate
-(``@iii.on_observer_match("fn::id")``) and returns the hook (a
-`MatchKeys` for the keys form); ``None`` removes it. A match
-hook set while the function has active observers is applied to them
-on the SDK loop, which rebuilds the index from them. Predicates and
-key functions are sync: they run on every call. A function with a
-match hook needs an engine with ``observe.v2``: against an older one
-it stays unregistered, and ``UNSUPPORTED`` is logged once.
-
-**Signature**
-
-```python
-on_observer_match(function_id: str, hook: Any = ..., *, observer: Any = None, call: Any = None) -> Any
-```
-
-<Tabs>
-  <Tab title="Parameters">
-
-<ParamField body="function_id" type="str" required>
-</ParamField>
-
-<ParamField body="hook" type="Any">
-</ParamField>
-
-<ParamField body="observer" type="Any">
-</ParamField>
-
-<ParamField body="call" type="Any">
-</ParamField>
-
-
-  </Tab>
-  <Tab title="Example">
-
-```python
-iii.on_observer_match(
-    "cron::on-tick", lambda obs, call: obs.args["expression"] == call.input["expression"]
-)
-iii.on_observer_match(
-    "database::on-row-changed",
-    observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",
-    call=lambda call: f"{call.input['table']}|{call.input['op']}",
-)
-```
-
-
-  </Tab>
-</Tabs>
-
----
-
 ### on_observer_removed
 
 Sets what runs when an accepted observer goes (on ``unobserve``, on
@@ -973,6 +969,48 @@ def stop(obs):
 
   </Tab>
 </Tabs>
+
+---
+
+### register_trigger
+
+Removed in 0.26.0: raises an error that points to `observe`.
+
+**Signature**
+
+```python
+register_trigger(_args: Any = (), _kwargs: Any = {}) -> NoReturn
+```
+
+#### Parameters
+
+<ParamField body="_args" type="Any">
+</ParamField>
+
+<ParamField body="_kwargs" type="Any">
+</ParamField>
+
+
+---
+
+### register_trigger_type
+
+Removed in 0.26.0: raises an error that points to `register_function` and the observer hooks.
+
+**Signature**
+
+```python
+register_trigger_type(_args: Any = (), _kwargs: Any = {}) -> NoReturn
+```
+
+#### Parameters
+
+<ParamField body="_args" type="Any">
+</ParamField>
+
+<ParamField body="_kwargs" type="Any">
+</ParamField>
+
 
 ---
 
@@ -1075,6 +1113,27 @@ async (request: dict[str, Any] | CallRequest) -> Any
 </ParamField>
 
 
+---
+
+### unregister_trigger_type
+
+Removed in 0.26.0: raises an error that points to ``FunctionRef.unregister``.
+
+**Signature**
+
+```python
+unregister_trigger_type(_args: Any = (), _kwargs: Any = {}) -> NoReturn
+```
+
+#### Parameters
+
+<ParamField body="_args" type="Any">
+</ParamField>
+
+<ParamField body="_kwargs" type="Any">
+</ParamField>
+
+
 ## Types
 
 ### iii
@@ -1084,7 +1143,7 @@ async (request: dict[str, Any] | CallRequest) -> Any
 #### Call
 
 One call of a function, as its observers observe it and its
-``on_observer_match`` and ``on_observer_deliver`` hooks receive it.
+``on_observation_match`` and ``on_observation_deliver`` hooks receive it.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1198,7 +1257,7 @@ Returned by ``iii.current_invocation()``.
 
 #### MatchKeys
 
-``on_observer_match`` as keys: an observer wants a call when they share
+``on_observation_match`` as keys: an observer wants a call when they share
 a key, and the SDK keeps an index instead of asking every observer.
 
 | Name | Type | Required | Description |
@@ -1492,7 +1551,7 @@ Rejects an observer with a code of its own.
 Raise it from an ``on_observer_added`` hook, at either level
 (``HTTP_ROUTE_CONFLICT``, ``INVALID_CRON_EXPRESSION``, ...); any other
 exception rejects the observer with ``OBSERVE_REJECTED``. Raised from an
-``on_observer_deliver`` hook, its code is the error the caller gets. Also
+``on_observation_deliver`` hook, its code is the error the caller gets. Also
 what ``ObserverHandle.ready()`` and ``Observer.accepted()`` raise when the
 observer turns ``error`` or ``disposed``, with the engine's or the hook's
 code (``INVALID_ARGS``, ``FORBIDDEN``, ``UNSUPPORTED``, ...).
@@ -1650,9 +1709,9 @@ observer, set them on the client by id before ``register_function``.
 | `id` | `Any` | No | The function's id. |
 | `is_observed` | `(call: CallLike \| None = None) -> bool` | Yes | Whether a call would reach anyone (see ``III.is_observed``). |
 | `observers` | () -&gt; list[[`Observer`](#observer)] | Yes | The function's active observers, as this worker sees them. |
+| `on_observation_deliver` | `(hook: DeliverHook \| None) -> DeliverHook \| None` | Yes | This function's ``on_observation_deliver`` (see ``III.on_observation_deliver``). |
+| `on_observation_match` | `(hook: Any = ..., *, observer: Any = None, call: Any = None) -> Any` | Yes | This function's ``on_observation_match``: a predicate ``(obs, call) -> bool``, or ``observer=`` and ``call=`` key functions (see ``III.on_observation_match``). |
 | `on_observer_added` | `(hook: AddedHook \| None) -> AddedHook \| None` | Yes | This function's ``on_observer_added`` (see ``III.on_observer_added``). |
-| `on_observer_deliver` | `(hook: DeliverHook \| None) -> DeliverHook \| None` | Yes | This function's ``on_observer_deliver`` (see ``III.on_observer_deliver``). |
-| `on_observer_match` | `(hook: Any = ..., *, observer: Any = None, call: Any = None) -> Any` | Yes | This function's ``on_observer_match``: a predicate ``(obs, call) -> bool``, or ``observer=`` and ``call=`` key functions (see ``III.on_observer_match``). |
 | `on_observer_removed` | `(hook: RemovedHook \| None) -> RemovedHook \| None` | Yes | This function's ``on_observer_removed`` (see ``III.on_observer_removed``). |
 | `unregister` | `() -> None` | Yes | Removes the function from the engine; ``on_observer_removed`` runs for each of its accepted observers. |
 

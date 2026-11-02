@@ -96,7 +96,7 @@ const tenNone = iii.registerFunction('bench::ten-none', echo)
 const oneMatch = iii.registerFunction('bench::one-match', (input: Input) => ({ seen: input.n }))
 const keyed = iii
   .registerFunction('bench::keyed', (input: { expression: string; n: number }) => input, { private: true })
-  .onObserverMatch({
+  .onObservationMatch({
     observer: (obs) => obs.args.expression as string,
     call: (call) => call.input.expression,
   })

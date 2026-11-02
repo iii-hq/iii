@@ -119,7 +119,7 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Call (enqueue) | `client.Call(ctx, iii.CallRequest{Action: iii.EnqueueAction("queue")})` | Route the call through a named queue. |
 | Observe | `client.Observe(iii.Source{FunctionID, Args, Filters, ...}, target, opts...) (*ObserverHandle, error)`, `client.ObserveFunction(id, target, opts...)` | Run `target` on every matching call of a function. |
 | Current invocation | `iii.InvocationFromContext(ctx) (iii.Invocation, bool)` | The invocation a handler runs in (id, caller, activation, observe depth). |
-| Observer hooks | `client.OnObserverAdded(hook)`, `client.OnObserverAddedFor(id, hook)`, `client.OnObserverRemoved(hook)`, `client.OnObserverRemovedFor(id, hook)`, `client.OnObserverMatchFor(id, match)`, `client.OnObserverDeliverFor(id, hook)`; `ref.OnObserverAdded`, `ref.OnObserverRemoved`, `ref.OnObserverMatch`, `ref.OnObserverDeliver` | Set up and tear down per observer, for every function or one; say which observers want each call; deliver calls yourself. |
+| Observer hooks | `client.OnObserverAdded(hook)`, `client.OnObserverAddedFor(id, hook)`, `client.OnObserverRemoved(hook)`, `client.OnObserverRemovedFor(id, hook)`, `client.OnObservationMatchFor(id, match)`, `client.OnObservationDeliverFor(id, hook)`; `ref.OnObserverAdded`, `ref.OnObserverRemoved`, `ref.OnObservationMatch`, `ref.OnObservationDeliver` | Set up and tear down per observer, for every function or one; say which observers want each call; deliver calls yourself. |
 | Match observers | `iii.MatchFunc(func(obs, call) bool)`, `iii.MatchKeys(observerKeys, callKeys)` | A predicate, or keys the SDK indexes. |
 | Call through an observer | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` | Run an observer's target from a deliver hook. |
 | Observed? | `ref.IsObserved()`, `ref.IsObservedFor(call)`, `ref.Observers()` (or `client.IsObserved(id)`, `client.IsObservedFor(id, call)`, `client.Observers(id)`) | The active observers of a function this worker hosts. |
@@ -200,14 +200,12 @@ client.RegisterFunction("orders::create", ordersHandler, iii.RegisterFunctionOpt
 })
 ```
 
-Four more options describe the function to its observers. `ArgsFormat` is the JSON
+Three more options describe the function to its observers. `ArgsFormat` is the JSON
 Schema of the observers' args (the engine validates them, `INVALID_ARGS`); `Private`
-lets only this worker call the function, while other workers may observe it;
-`Observable: &off` refuses every observer (`NOT_OBSERVABLE`); and `Standby` makes the
-worker wait for the function when another connection already hosts its id, registering
-it again about once a second until the engine accepts it. These three travel as
+lets only this worker call the function, while other workers may observe it; and
+`Observable: &off` refuses every observer (`NOT_OBSERVABLE`). They travel as
 `args_format`, `private` and `observable`; they need an engine with `observe.v2`, as an
-`OnObserverMatch` or `OnObserverDeliver` hook does, and against an older one the function
+`OnObservationMatch` or `OnObservationDeliver` hook does, and against an older one the function
 stays unregistered and the SDK logs `UNSUPPORTED` once.
 
 ```go
@@ -215,7 +213,6 @@ stays unregistered and the SDK logs `UNSUPPORTED` once.
 ticks, err := client.RegisterFunction("cron::on-tick", iii.Identity, iii.FunctionOptions{
 	ArgsFormat: json.RawMessage(`{"type":"object","required":["expression"],"properties":{"expression":{"type":"string"}}}`),
 	Private:    true,
-	Standby:    true,
 })
 ```
 
@@ -409,8 +406,8 @@ overrides something iii does by default:
 the client, and for one function by id (`OnObserverAddedFor`, `OnObserverRemovedFor`) or
 on its `FunctionRef`. Both levels run: when an observer is added, the worker's hook and
 then the function's; when it is removed, the function's and then the worker's. The match
-and deliver hooks are set per function (`OnObserverMatchFor`, `OnObserverDeliverFor`,
-`ref.OnObserverMatch`, `ref.OnObserverDeliver`). Each method returns its receiver, and
+and deliver hooks are set per function (`OnObservationMatchFor`, `OnObservationDeliverFor`,
+`ref.OnObservationMatch`, `ref.OnObservationDeliver`). Each method returns its receiver, and
 `nil` removes the hook.
 
 ```go
@@ -428,7 +425,7 @@ client.OnObserverRemovedFor("cron::on-tick", func(ctx context.Context, obs *iii.
 	scheduler.Release(expression)
 })
 // an observer of expression X gets the ticks of expression X
-client.OnObserverMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+client.OnObservationMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 	var tick struct{ Expression string `json:"expression"` }
 	_ = json.Unmarshal(call.Input, &tick)
 	return obs.Args["expression"] == tick.Expression
@@ -485,7 +482,7 @@ Keys express wildcards by listing them:
 
 ```go
 rowKey := func(db, table, op string) string { return db + "|" + table + "|" + op }
-client.OnObserverMatchFor("database::on-row-changed", iii.MatchKeys(
+client.OnObservationMatchFor("database::on-row-changed", iii.MatchKeys(
 	func(obs *iii.Observer) []string { // what this observer listens for
 		var args struct {
 			DB, Table string
@@ -536,7 +533,7 @@ observer's `on` and filters) and call through the observer; the target's result 
 the caller's:
 
 ```go
-client.OnObserverDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+client.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
 	route := routes.Match(call.Input)
 	if route == nil {
 		return map[string]int{"status_code": 404}, nil
@@ -593,7 +590,7 @@ client.OnObserverAddedFor("tmux::on-changed", func(_ context.Context, obs *iii.O
 	}()
 	return nil
 })
-client.OnObserverMatchFor("tmux::on-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+client.OnObservationMatchFor("tmux::on-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 	if id := forObserver(call); id != "" {
 		return id == obs.ID
 	}
@@ -611,7 +608,7 @@ give such a call that one key.
 Every call of a function, local or routed, is delivered by the worker that hosts it.
 iii's delivery reports a local call's matches in one batched report item and lists a
 routed call's matches on its answer, and an unobserved call sends nothing. A function
-with an `OnObserverMatch` or `OnObserverDeliver` hook needs an engine with `observe.v2`, as
+with an `OnObservationMatch` or `OnObservationDeliver` hook needs an engine with `observe.v2`, as
 the options above do. Against an engine without it, the engine delivers the routed calls
 of every other function itself.
 
@@ -874,13 +871,13 @@ client.RegisterFunction("chat::on-command", handler, iii.RegisterFunctionOptions
 // 0.26
 client.OnObserverAddedFor("chat::on-command", add)
 client.OnObserverRemovedFor("chat::on-command", remove)
-client.OnObserverMatchFor("chat::on-command", iii.MatchKeys(observerKeys, callKeys))
+client.OnObservationMatchFor("chat::on-command", iii.MatchKeys(observerKeys, callKeys))
 client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{ArgsFormat: commandArgs, Private: true})
 ```
 
 | 0.25 | 0.26 |
 | --- | --- |
-| an index from args to observers, and `obs.Emit(ctx, event)` | call the function with the event; `OnObserverMatchFor(id, iii.MatchKeys(observerKeys, callKeys))` or `iii.MatchFunc(predicate)` |
+| an index from args to observers, and `obs.Emit(ctx, event)` | call the function with the event; `OnObservationMatchFor(id, iii.MatchKeys(observerKeys, callKeys))` or `iii.MatchFunc(predicate)` |
 | `obs.Call(ctx, payload)` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` in the deliver hook, after `obs.Matches(call)`; for initial state, a call of the function with metadata `{"for_observer": <obs.ID>}` |
 | `obs.Matches(iii.ObserveDoc{...})` | `obs.Matches(&iii.Call{...})`, which also applies `on` |
 | `obs.Legacy`, `LegacyTriggerType` | consumers observe the function |

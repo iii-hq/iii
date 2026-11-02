@@ -113,7 +113,7 @@ differ, this file wins, and the spec is updated to match.
 
 36. **What routed observers observe.** The engine takes a routed call's
     `output` from `invocationresult.result`, which is the handler's return
-    value whenever iii delivers (a function with `onObserverDeliver` answers
+    value whenever iii delivers (a function with `onObservationDeliver` answers
     `delivered: true`). The engine strips `matched` and `delivered` before
     forwarding a result, and reads them on every routed answer from an
     `observe.v2` host, including a target's answer to an activation
@@ -153,12 +153,12 @@ differ, this file wins, and the spec is updated to match.
     runs `onObserverAdded` only for observers it does not already hold, and
     treats an observer whose `args` changed as removed and then added.
 
-45. **`onObserverMatch`.** Per function. A predicate runs once per active
+45. **`onObservationMatch`.** Per function. A predicate runs once per active
     observer per call, before filters; a predicate that throws counts as no
     match and is logged once per function. Keys are computed once per observer
     when it is accepted and once per call; an observer whose key function
     throws is rejected (`OBSERVE_REJECTED`). A match hook set while observers
-    are active rebuilds the index from them. With `onObserverDeliver` also set,
+    are active rebuilds the index from them. With `onObservationDeliver` also set,
     the deliver hook receives the matched observers.
 46. **A host's call of its own private function.** It skips RBAC middleware:
     the middleware's forward comes from another connection, which a private
@@ -351,7 +351,7 @@ differ, this file wins, and the spec is updated to match.
     `STREAM_LEAVE`).
 18. **Older engines.** Against an engine without `observe.v2`, functions that
     declare `args_format`, `private` or `observable: false`, or set
-    `onObserverMatch` or `onObserverDeliver`, stay unregistered and the SDK logs `UNSUPPORTED` once
+    `onObservationMatch` or `onObservationDeliver`, stay unregistered and the SDK logs `UNSUPPORTED` once
     per function. Everything else works, with the engine evaluating every
     observer of a routed call: the SDK delivers local calls only, sends no
     `matched`, no `delivered` and no `output_is_input`.
@@ -360,14 +360,18 @@ differ, this file wins, and the spec is updated to match.
     (frames are processed in order), and so does a call of its function for
     that observer alone. Providers send initial state with such a call
     (decision 52: ADE asset sync, ring-on-bind).
-20. **`onObserverDeliver` context.** The hook runs inside the function's
+20. **`onObservationDeliver` context.** The hook runs inside the function's
     invocation context and span, so calls it makes have the function's
     invocation as caller. It receives the observers that matched
-    (`onObserverMatch`, or all of them), as a snapshot taken when the call
+    (`onObservationMatch`, or all of them), as a snapshot taken when the call
     started. iii delivers nothing for a function that sets it.
-21. **`standby`.** On `FUNCTION_NAMESPACE_CONFLICT` the SDK retries the
-    registration every second (±20 % jitter) until it succeeds or the function
-    is unregistered; hooks run when `functionregistered` arrives.
+21. **No `standby`.** A registration refused with
+    `FUNCTION_NAMESPACE_CONFLICT` is not retried. Hosting is left to the
+    platform that runs the worker: one instance, restarted when it stops. The
+    `standby` option of rc.1 and rc.2 (retry every second until the id is
+    free) is removed: one instance waiting on another is not high
+    availability, and it would conflict with a real design for it later
+    (§17).
 22. **Freezing private values.** Node freezes the input and result of a call
     to its own private function when `NODE_ENV === 'development'`. No other
     SDK freezes.
@@ -380,12 +384,11 @@ differ, this file wins, and the spec is updated to match.
       `DeliverHook::on_deliver(call, observers) -> Result<Value, Error>`,
       implemented for async closures. `FunctionRef` methods take `&self` and
       return `&Self`; `clear_observer_added()`, `clear_observer_removed()`,
-      `clear_observer_match()`, `clear_observer_deliver()` remove. Client:
+      `clear_observation_match()`, `clear_observation_deliver()` remove. Client:
       `on_observer_added(h)`, `on_observer_added_for(id, h)`, `…_removed…`,
-      `on_observer_match_for(id, m)`, `on_observer_deliver_for(id, h)`.
-      `is_observed()` and `is_observed_for(&call)`. `Match::predicate(f)` and `Match::keys(observer_fn, call_fn)` are the `onObserverMatch` forms; the SDK files observers in the key index in hook-task order.
-      `RegisterFunction::new(h).args_format::<T>().private().observable(false)
-      .standby()`.
+      `on_observation_match_for(id, m)`, `on_observation_deliver_for(id, h)`.
+      `is_observed()` and `is_observed_for(&call)`. `Match::predicate(f)` and `Match::keys(observer_fn, call_fn)` are the `onObservationMatch` forms; the SDK files observers in the key index in hook-task order.
+      `RegisterFunction::new(h).args_format::<T>().private().observable(false)`.
     - **Every SDK.** Observers go to the engine in the order the worker
       created them, on the first connection and on every reconnect, so the
       engine announces them to each function's host in that order.
@@ -400,17 +403,17 @@ differ, this file wins, and the spec is updated to match.
       `ObserveRejection`, `EngineSources` exported from the package
       root.
     - **Python.** `register_function(id, handler, *, args_format=None,
-      private=False, observable=True, standby=False, ...)` keyword options
+      private=False, observable=True, ...)` keyword options
       (existing keywords stay). Hook methods work as decorators and plain
       calls and return the hook; `iii.on_observer_added('id')` with no hook is
-      a decorator factory; passing `None` as the hook removes it. Hooks may be sync or async. `on_observer_match` takes a predicate `(obs, call) -> bool`, or `observer=` and `call=` key functions. `Call` is a dataclass.
+      a decorator factory; passing `None` as the hook removes it. Hooks may be sync or async. `on_observation_match` takes a predicate `(obs, call) -> bool`, or `observer=` and `call=` key functions. `Call` is a dataclass.
     - **Go.** `RegisterFunction` keeps its current return shape. Hooks are
       func types (`AddedHook func(ctx, *Observer) error`, …). `Call` struct
       with `Input`, `Output json.RawMessage`. `CallRequest` with `type
       TriggerRequest = CallRequest`; `CallAction`. `Observer.Matches(*Call)`.
       `client.OnObserverAdded(h)`, `client.OnObserverAddedFor(id, h)`,
-      `client.OnObserverDeliverFor(id, h)`, `ref.OnObserverDeliver(h)`,
-      `client.OnObserverMatchFor(id, m)` and `ref.OnObserverMatch(m)` with `iii.MatchFunc(func(*Observer, *Call) bool)` or `iii.MatchKeys(observerKeys, callKeys)`.
+      `client.OnObservationDeliverFor(id, h)`, `ref.OnObservationDeliver(h)`,
+      `client.OnObservationMatchFor(id, m)` and `ref.OnObservationMatch(m)` with `iii.MatchFunc(func(*Observer, *Call) bool)` or `iii.MatchKeys(observerKeys, callKeys)`.
 
 52. **Calls for one observer.** A host sends one observer something of its
     own (its current state when the observer is added, or an event it
@@ -431,7 +434,7 @@ differ, this file wins, and the spec is updated to match.
       obs.accepted().then(() => iii.call({ function_id: 'tmux::on-changed', payload: stateFor(obs.args), metadata: { for_observer: obs.id }, action: CallAction.Void() }))
         .catch(() => undefined)   // a rejected observer gets nothing
     })
-    iii.onObserverMatch('tmux::on-changed', (obs, call) =>
+    iii.onObservationMatch('tmux::on-changed', (obs, call) =>
       call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session)
     ```
 
@@ -531,6 +534,13 @@ differ, this file wins, and the spec is updated to match.
       of an observer the engine holds in `error` is refused with that
       error, and the engine disposes that observer as it answers, with no
       tombstone and nothing more sent.
+58. **Hook names say what they run for.** `onObserverAdded` and
+    `onObserverRemoved` run once per observer; the hooks that run once per
+    observed call are `onObservationMatch` and `onObservationDeliver`
+    (`on_observation_match` and `on_observation_deliver` in Python and Rust,
+    with `_for` forms in Rust; `OnObservationMatch`, `OnObservationDeliver`
+    and their `For` forms in Go). rc.1 and rc.2 named them `onObserverMatch` and
+    `onObserverDeliver`.
 
 ## CLI and crates
 

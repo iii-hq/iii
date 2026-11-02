@@ -78,20 +78,20 @@ return value is what the function's observers observe; an event source's
 handler returns the event it is called with.
 
 Every call of the function, local or routed, runs the handler and then
-goes to the observers that want it (`onObserverMatch`; by default all of
-them): the function's `onObserverDeliver` hook delivers it, or iii does,
+goes to the observers that want it (`onObservationMatch`; by default all of
+them): the function's `onObservationDeliver` hook delivers it, or iii does,
 to those whose `on` and filters match. iii evaluates `on` and filters
 where the call is: the engine for a call it routes to this worker, and
 the SDK for a call this worker makes to its own function in-process,
 through an index of the filters' equality conditions. What the worker
 does when the function is observed is set with the hooks (`onObserverAdded`,
-`onObserverRemoved`, `onObserverMatch`, `onObserverDeliver`), by id or on
+`onObserverRemoved`, `onObservationMatch`, `onObservationDeliver`), by id or on
 the returned FunctionRef. The SDK acks no observer before this
 call returns, so a hook set by id before it, chained on its result, or
 set later in the same synchronous block runs for every observer.
 
 A function that sets `args_format`, `private: true`, `observable: false`,
-an `onObserverMatch` hook or an `onObserverDeliver` hook needs an engine
+an `onObservationMatch` hook or an `onObservationDeliver` hook needs an engine
 with `observe.v2`: it is registered once the connection's engine
 advertised it, and against an older engine it stays unregistered (logged
 once, `UNSUPPORTED`).
@@ -114,7 +114,7 @@ registerFunction(functionId: string, handler: RemoteFunctionHandler<I, O>, optio
 </ParamField>
 
 <ParamField body="options" type="RegisterFunctionOptions">
-  Optional RegisterFunctionOptions: description, request/response formats, metadata, `args_format`, `private`, `observable`, `standby`, `localDispatch`
+  Optional RegisterFunctionOptions: description, request/response formats, metadata, `args_format`, `private`, `observable`, `localDispatch`
 
   <Expandable title="`RegisterFunctionOptions` fields">
     <ParamField body="args_format" type="RegisterFunctionFormat">
@@ -140,9 +140,6 @@ registerFunction(functionId: string, handler: RemoteFunctionHandler<I, O>, optio
     </ParamField>
     <ParamField body="response_format" type="RegisterFunctionFormat">
       JSON Schema of the handler's return value: what the function's observers observe.
-    </ParamField>
-    <ParamField body="standby" type="boolean">
-      When another connection already hosts the id (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the registration is retried every second (±20 %) until the engine accepts it or the function is unregistered, and the hooks run for every observer once the engine confirms it (default `false`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -517,6 +514,109 @@ observers(functionId: string) => readonly Observer[]
 
 ---
 
+### onObservationDeliver
+
+Delivers each call of a function itself: `hook` receives the call and the
+observers that matched it (a snapshot taken when the call started), and
+what it returns (or throws) is what the caller gets back. iii delivers
+nothing for that function: the hook calls through observers and applies
+their filters with `obs.matches(call)`. Without it, iii delivers every
+call to the matching observers whose `on` and filters accept it, and the
+caller gets the handler's result. `null` removes the hook.
+
+A function with a deliver hook needs an engine with `observe.v2`: against
+an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+
+The hook runs in the function's invocation: up to its first `await` in
+its scope, and after it as the invocation the page falls back to while it
+is the only one running (see ISdk.withInvocation).
+
+**Signature**
+
+```typescript
+onObservationDeliver(functionId: string, hook: DeliverHook<I, O, R> | null) => ISdk
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="functionId" type="string" required>
+</ParamField>
+
+<ParamField body="hook" type="DeliverHook<I, O, R> | null" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```typescript
+worker.onObservationDeliver('ui::on-command', async (call) => {
+  const handler = commands.match(call.input)
+  if (!handler) return { handled: false }
+  if (!handler.obs.matches(call)) return { handled: false }
+  return worker.call({ observer: handler.obs, payload: call.input })
+})
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### onObservationMatch
+
+Says which observers want each call of a function. By default every
+observer wants every call. A predicate `(obs, call) => boolean` is asked
+once per active observer per call; `{ observer, call }` key functions are
+computed once per observer, when it is accepted, and once per call, and an
+observer wants a call when they share a key (the SDK keeps an index). The
+observers' `on`, filters, policy and `deliver` still apply. A hook set
+while observers are active rebuilds the index from them. `null` removes
+the hook.
+
+A function with a match hook needs an engine with `observe.v2`: against
+an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
+
+**Signature**
+
+```typescript
+onObservationMatch(functionId: string, hook: MatchPredicate<I, O> | null) => ISdk
+onObservationMatch(functionId: string, hook: MatchKeys<I, O>) => ISdk
+onObservationMatch(functionId: string, hook: MatchHook<I, O> | null) => ISdk
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="functionId" type="string" required>
+</ParamField>
+
+<ParamField body="hook" type="MatchHook<I, O> | null" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```typescript
+// an observer of selector X gets the clicks on X
+worker.onObservationMatch('ui::on-click', (obs, call) => obs.args.selector === call.input.selector)
+
+// many observers: keys, one lookup per key
+worker.onObservationMatch('ui::on-click', {
+  observer: (obs) => obs.args.selector as string,
+  call: (call) => call.input.selector,
+})
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
 ### onObserverAdded
 
 Runs `hook` when an observer of any function this worker hosts is added,
@@ -554,109 +654,6 @@ onObserverAdded(functionId: string, hook: AddedHook | null) => ISdk
 worker.onObserverAdded(async () => { await events.retain() })
 // one function, by id
 worker.onObserverAdded('ui::on-click', (obs) => targets.retain(obs.args.selector as string))
-```
-
-
-  </Tab>
-</Tabs>
-
----
-
-### onObserverDeliver
-
-Delivers each call of a function itself: `hook` receives the call and the
-observers that matched it (a snapshot taken when the call started), and
-what it returns (or throws) is what the caller gets back. iii delivers
-nothing for that function: the hook calls through observers and applies
-their filters with `obs.matches(call)`. Without it, iii delivers every
-call to the matching observers whose `on` and filters accept it, and the
-caller gets the handler's result. `null` removes the hook.
-
-A function with a deliver hook needs an engine with `observe.v2`: against
-an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
-
-The hook runs in the function's invocation: up to its first `await` in
-its scope, and after it as the invocation the page falls back to while it
-is the only one running (see ISdk.withInvocation).
-
-**Signature**
-
-```typescript
-onObserverDeliver(functionId: string, hook: DeliverHook<I, O, R> | null) => ISdk
-```
-
-<Tabs>
-  <Tab title="Parameters">
-
-<ParamField body="functionId" type="string" required>
-</ParamField>
-
-<ParamField body="hook" type="DeliverHook<I, O, R> | null" required>
-</ParamField>
-
-
-  </Tab>
-  <Tab title="Example">
-
-```typescript
-worker.onObserverDeliver('ui::on-command', async (call) => {
-  const handler = commands.match(call.input)
-  if (!handler) return { handled: false }
-  if (!handler.obs.matches(call)) return { handled: false }
-  return worker.call({ observer: handler.obs, payload: call.input })
-})
-```
-
-
-  </Tab>
-</Tabs>
-
----
-
-### onObserverMatch
-
-Says which observers want each call of a function. By default every
-observer wants every call. A predicate `(obs, call) => boolean` is asked
-once per active observer per call; `{ observer, call }` key functions are
-computed once per observer, when it is accepted, and once per call, and an
-observer wants a call when they share a key (the SDK keeps an index). The
-observers' `on`, filters, policy and `deliver` still apply. A hook set
-while observers are active rebuilds the index from them. `null` removes
-the hook.
-
-A function with a match hook needs an engine with `observe.v2`: against
-an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
-
-**Signature**
-
-```typescript
-onObserverMatch(functionId: string, hook: MatchPredicate<I, O> | null) => ISdk
-onObserverMatch(functionId: string, hook: MatchKeys<I, O>) => ISdk
-onObserverMatch(functionId: string, hook: MatchHook<I, O> | null) => ISdk
-```
-
-<Tabs>
-  <Tab title="Parameters">
-
-<ParamField body="functionId" type="string" required>
-</ParamField>
-
-<ParamField body="hook" type="MatchHook<I, O> | null" required>
-</ParamField>
-
-
-  </Tab>
-  <Tab title="Example">
-
-```typescript
-// an observer of selector X gets the clicks on X
-worker.onObserverMatch('ui::on-click', (obs, call) => obs.args.selector === call.input.selector)
-
-// many observers: keys, one lookup per key
-worker.onObserverMatch('ui::on-click', {
-  observer: (obs) => obs.args.selector as string,
-  call: (call) => call.input.selector,
-})
 ```
 
 
@@ -964,7 +961,7 @@ Write end of a streaming channel. Uses native browser WebSocket.
 
 #### DeliverHook
 
-Delivers each call of a function itself (`onObserverDeliver`): it receives
+Delivers each call of a function itself (`onObservationDeliver`): it receives
 the call and the observers that matched it (a snapshot taken when the call
 started), and what it returns (or throws) is what the caller gets back. A
 thrown ObserveRejection, or the error of a call it made, reaches the
@@ -1054,9 +1051,9 @@ calls chain.
 | `id` | `string` | Yes | The unique function identifier. |
 | `isObserved` | (call?: Partial&lt;[`Call`](#call)&lt;I, unknown&gt;&gt;) =&gt; boolean | Yes | ISdk.isObserved for this registration: skip building an event<br />nobody receives. Without a call it is one load of this registration's<br />active set. |
 | `observers` | () =&gt; readonly [`Observer`](#observer)[] | Yes | The active observers of this registration, as this host sees them (none<br />once the function is unregistered, also after the id is registered again). |
+| `onObservationDeliver` | (hook: [`DeliverHook`](#deliverhook)&lt;I, O, R&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObservationDeliver for this function. |
+| `onObservationMatch` | (hook: [`MatchHook`](#matchhook)&lt;I, O&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObservationMatch for this function. |
 | `onObserverAdded` | (hook: [`AddedHook`](#addedhook) \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverAdded for this function. |
-| `onObserverDeliver` | (hook: [`DeliverHook`](#deliverhook)&lt;I, O, R&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverDeliver for this function. |
-| `onObserverMatch` | (hook: [`MatchHook`](#matchhook)&lt;I, O&gt; \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverMatch for this function. |
 | `onObserverRemoved` | (hook: [`RemovedHook`](#removedhook) \| null) =&gt; [`FunctionRef`](#functionref)&lt;I, O&gt; | Yes | ISdk.onObserverRemoved for this function. |
 | `unregister` | `() => void` | Yes | Removes this function from the engine. Its hooks stay in place for a later registration of the id. |
 
@@ -1165,7 +1162,7 @@ type Key = string | readonly string[]
 
 #### MatchHook
 
-Which observers want each call of a function (`onObserverMatch`). By
+Which observers want each call of a function (`onObservationMatch`). By
 default every observer wants every call. A predicate is asked once per
 active observer per call (a throw counts as no match). Keys are computed
 once per observer, when it is accepted, and once per call. The observers'
@@ -1183,7 +1180,7 @@ type MatchHook = MatchPredicate<I, O> | MatchKeys<I, O>
 
 #### MatchKeys
 
-`onObserverMatch` as keys: an observer wants a call when they share a key,
+`onObservationMatch` as keys: an observer wants a call when they share a key,
 and the SDK keeps an index instead of asking every observer.
 
 | Name | Type | Required | Description |
@@ -1195,7 +1192,7 @@ and the SDK keeps an index instead of asking every observer.
 
 #### MatchPredicate
 
-`onObserverMatch` as a predicate: whether this observer wants this call.
+`onObservationMatch` as a predicate: whether this observer wants this call.
 
 ```typescript
 type MatchPredicate = (obs: Observer, call: Call<I, O>) => boolean
@@ -1470,11 +1467,11 @@ type RegisterFunctionInput = Omit<RegisterFunctionMessage, "message_type">
 
 Options of ISdk.registerFunction: what describes the function to
 the engine (description, formats, metadata, `args_format`, `private`,
-`observable`), and what the SDK does with it (`standby`, `localDispatch`).
+`observable`), and what the SDK does with it (`localDispatch`).
 What the worker does when the function is observed is set with hooks.
 
 ```typescript
-type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id"> & { localDispatch?: boolean; standby?: boolean }
+type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "id"> & { localDispatch?: boolean }
 ```
 
 | Name | Type | Required | Description |
@@ -1487,7 +1484,6 @@ type RegisterFunctionOptions = Omit<RegisterFunctionMessage, "message_type" | "i
 | `private` | `boolean` | No | Only this worker may call the function: the engine answers a call from<br />any other connection with `FORBIDDEN`, and refuses the function as an<br />observer's target. Any worker may observe it, and its observers receive<br />every call this worker makes. For event sources, whose calls from<br />anywhere else would be forged events. This worker's own calls pass the<br />input and the result by reference: the handler and hooks treat both as<br />read-only. Default `false`; sent only when `true`. |
 | `request_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the call's input. |
 | `response_format` | [`RegisterFunctionFormat`](#registerfunctionformat) | No | JSON Schema of the handler's return value: what the function's observers<br />observe. |
-| `standby` | `boolean` | No | When another connection already hosts the id<br />(`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the<br />registration is retried every second (±20 %) until the engine accepts it<br />or the function is unregistered, and the hooks run for every observer<br />once the engine confirms it (default `false`). |
 
 ---
 
