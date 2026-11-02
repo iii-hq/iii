@@ -103,7 +103,7 @@ sandbox:
 ```
 
 `namespace` is where the adapter runs, `default` when omitted. Until the adapter runs there, calls
-fail with S301, which names the namespace and both ways to install it.
+fail with S301, which names the namespace and how to start or install it.
 
 If a Compose project already runs in that namespace, add the adapter to it with
 `iii call compose::add worker=iii-sandbox`. If none runs, `compose::add` has nothing to edit: it
