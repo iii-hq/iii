@@ -412,9 +412,9 @@ session may observe a function only when its grants (`expose_functions`, `namesp
 the observed function and the target.
 
 A worker that reconnects and reattaches keeps its observers only as far as its new session allows:
-the engine checks the grants again and calls the hook again for each observer, with the
-registration as the worker asked for it and the new session's `context`. An observer either check
-refuses is disposed with `FORBIDDEN`; an object answer keeps the observer as it is.
+the engine checks the grants again and calls the hook again for each observer, with the registration
+as the worker asked for it and the new session's `context`. An observer either check refuses is
+disposed with `FORBIDDEN`; an object answer keeps the observer as it is.
 
 A [private function](./observable-functions#private-functions) accepts calls only from the
 connection that hosts it. A call to it from any other session fails with `FORBIDDEN`, whatever the
@@ -424,4 +424,6 @@ whose grants cover a private function may observe it.
 Calls a worker makes to its own functions normally run in-process
 ([local dispatch](../using-iii/observers#local-dispatch)). For a session with a
 `middleware_function_id`, the engine turns local dispatch off, so every call still passes through
-the middleware.
+the middleware, except calls of a function the session hosts privately: those skip the middleware
+and still run in-process, because the middleware's forward would come from another connection, which
+a [private function](./observable-functions#private-functions) refuses.
