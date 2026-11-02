@@ -66,7 +66,7 @@
 // # Connection lifecycle
 //
 // [Client.ConnectionState] is the current [ConnectionState], and
-// [Client.OnConnectionStateChange] reports every change, in order.
+// [Client.AddConnectionStateListener] reports every change, in order.
 // [Client.WaitUntilRegistered] blocks until the engine has acknowledged the worker on the
 // current connection, or reports the terminal [Client.FatalError]; [Client.WorkerID] is
 // the id the engine assigned. On each connection the worker announces itself with
