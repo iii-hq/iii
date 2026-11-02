@@ -912,7 +912,13 @@ async fn add_starts_a_managed_project_declared_with_null_containers() {
     )
     .await
     .expect("managed project should stop");
-    assert_eq!(stop["stopping"], json!([file.to_str().unwrap()]), "{stop}");
+    // Projects are named by their canonical path, the registry key: on macOS
+    // the tempdir is reached through the /var -> /private/var symlink.
+    assert_eq!(
+        stop["stopping"],
+        json!([file.canonicalize().unwrap()]),
+        "{stop}"
+    );
 
     worker.shutdown_async().await;
     daemon.shutdown().await;
