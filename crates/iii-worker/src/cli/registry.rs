@@ -316,11 +316,7 @@ pub async fn fetch_resolved_worker_graph(
         if !resp.status().is_success() {
             let status = resp.status();
             let raw = resp.text().await.unwrap_or_default();
-            // Resolver errors are `{"error":{"message":..}}`; show just the message.
-            let text = serde_json::from_str::<serde_json::Value>(&raw)
-                .ok()
-                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-                .unwrap_or(raw);
+            let text = resolver_error_text(&raw);
             return Err(format!(
                 "Failed to resolve worker graph: HTTP {} {}",
                 status, text
@@ -331,6 +327,32 @@ pub async fn fetch_resolved_worker_graph(
     };
 
     serde_json::from_str(&body).map_err(|e| format!("Failed to parse worker graph: {}", e))
+}
+
+/// Resolver errors are `{"error":{"message":..,"fix":..}}`; show the message plus the
+/// fix, unless the message already carries the fix text.
+fn resolver_error_text(raw: &str) -> String {
+    let error = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("error").cloned());
+    let text = |key: &str| {
+        error
+            .as_ref()
+            .and_then(|e| e.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let Some(mut message) = text("message") else {
+        return raw.to_string();
+    };
+    if let Some(fix) = text("fix") {
+        let needle = fix.trim().trim_end_matches(['.', '!']).to_lowercase();
+        if !needle.is_empty() && !message.to_lowercase().contains(&needle) {
+            message.push(' ');
+            message.push_str(&fix);
+        }
+    }
+    message
 }
 
 /// A graph larger than this is valid, but requires explicit operator consent.
@@ -566,6 +588,27 @@ pub(crate) fn clear_ci_env_vars_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolver_error_text_appends_fix() {
+        let raw = r#"{"error":{"code":"version_not_found","message":"No version 9.9.9 of 'http'.","fix":"Request one of: 1.0.0, 1.1.0"}}"#;
+        assert_eq!(
+            resolver_error_text(raw),
+            "No version 9.9.9 of 'http'. Request one of: 1.0.0, 1.1.0"
+        );
+    }
+
+    #[test]
+    fn resolver_error_text_does_not_repeat_fix_already_in_message() {
+        let raw = r#"{"error":{"code":"incompatible_engine","message":"state requires iii >= 0.26.0, running 0.25.0; run: iii update","fix":"Run: iii update"}}"#;
+        let text = resolver_error_text(raw);
+        assert_eq!(text.to_lowercase().matches("iii update").count(), 1);
+    }
+
+    #[test]
+    fn resolver_error_text_falls_back_to_raw_body() {
+        assert_eq!(resolver_error_text("bad gateway"), "bad gateway");
+    }
 
     #[test]
     fn is_ci_environment_false_when_no_ci_vars() {

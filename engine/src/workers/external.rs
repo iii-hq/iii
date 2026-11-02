@@ -179,6 +179,10 @@ impl ExternalWorker {
         // daemon_exit module prefers this handshake when present.
         cmd.env("III_ENGINE_PID", std::process::id().to_string());
 
+        // Lets iii-worker's min_iii_version check use the engine that spawned it,
+        // not whichever `iii` is first on PATH.
+        cmd.env("III_ENGINE_VERSION", env!("CARGO_PKG_VERSION"));
+
         // Engine WS URL for the child. Builtin daemons' --engine args fall
         // back to this env (clap `env =`), so they connect to THIS engine's
         // actual worker-listener port rather than their hardcoded default —

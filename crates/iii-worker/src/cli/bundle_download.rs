@@ -1143,17 +1143,15 @@ pub fn validate_bundle_manifest(
     manifest_dir: &std::path::Path,
     expected_name: &str,
 ) -> Result<String, WorkerOpError> {
-    validate_bundle_manifest_with(
-        manifest_dir,
-        expected_name,
-        super::engine_compat::running_iii_version(),
-    )
+    validate_bundle_manifest_with(manifest_dir, expected_name, || {
+        super::engine_compat::running_iii_version().clone()
+    })
 }
 
 pub(crate) fn validate_bundle_manifest_with(
     manifest_dir: &std::path::Path,
     expected_name: &str,
-    running: &semver::Version,
+    running: impl FnOnce() -> semver::Version,
 ) -> Result<String, WorkerOpError> {
     let manifest_path = manifest_dir.join("iii.worker.yaml");
     // Cap manifest size BEFORE the read so a publisher-controlled
@@ -1703,7 +1701,7 @@ mod tests {
             "name: foo\nmin_iii_version: 0.26.0\nscripts:\n  start: \"node bundle.js\"\n",
         );
         let running = semver::Version::parse("0.25.9").unwrap();
-        match validate_bundle_manifest_with(tmp.path(), "foo", &running) {
+        match validate_bundle_manifest_with(tmp.path(), "foo", || running.clone()) {
             Err(WorkerOpError::EngineTooOld { message }) => {
                 assert_eq!(
                     message,
@@ -1722,7 +1720,7 @@ mod tests {
             "name: foo\nmin_iii_version: 0.26.0\nscripts:\n  start: \"node bundle.js\"\n",
         );
         let running = semver::Version::parse("0.26.0-rc.2").unwrap();
-        let cmd = validate_bundle_manifest_with(tmp.path(), "foo", &running).unwrap();
+        let cmd = validate_bundle_manifest_with(tmp.path(), "foo", || running.clone()).unwrap();
         assert_eq!(cmd, "node bundle.js");
     }
 

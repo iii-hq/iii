@@ -522,7 +522,7 @@ pub async fn handle_local_add(
                 .unwrap_or_default()
                 .trim(),
             doc,
-            super::engine_compat::running_iii_version(),
+            || super::engine_compat::running_iii_version().clone(),
         ) {
             eprintln!("{} {}", "error:".red(), msg);
             return 1;
@@ -1135,7 +1135,7 @@ async fn start_worker_impl(
                 if let Err(msg) = super::engine_compat::enforce_manifest_min_iii_version(
                     worker_name,
                     &doc,
-                    super::engine_compat::running_iii_version(),
+                    || super::engine_compat::running_iii_version().clone(),
                 ) {
                     eprintln!("{} {}", "error:".red(), msg);
                     return VmStart::Exit(1);

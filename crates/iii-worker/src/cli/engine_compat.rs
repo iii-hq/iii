@@ -8,14 +8,23 @@ use semver::Version;
 
 use super::builtin_defaults::ENGINE_BUILTIN_VERSION;
 
-/// Version of the `iii` engine on PATH; falls back to the version this binary shipped with.
+/// Version of the engine running this worker: the spawning engine's `III_ENGINE_VERSION`,
+/// else the `iii` on PATH, else the version this binary shipped with.
 pub fn running_iii_version() -> &'static Version {
     static RUNNING: OnceLock<Version> = OnceLock::new();
-    RUNNING.get_or_init(|| resolve_running(iii_tool().get_version()))
+    RUNNING.get_or_init(|| {
+        resolve_running_from(
+            std::env::var("III_ENGINE_VERSION").ok(),
+            iii_tool().get_version(),
+        )
+    })
 }
 
-fn resolve_running(raw: Option<String>) -> Version {
-    raw.and_then(|r| parse_version(&r).ok())
+fn resolve_running_from(env: Option<String>, cli: Option<String>) -> Version {
+    [env, cli]
+        .into_iter()
+        .flatten()
+        .find_map(|r| parse_version(&r).ok())
         .unwrap_or_else(|| Version::parse(ENGINE_BUILTIN_VERSION).expect("crate version is semver"))
 }
 
@@ -41,15 +50,16 @@ pub fn check_min_iii_version(worker: &str, min: &str, running: &Version) -> Resu
     }
 }
 
-/// Checks the manifest's `min_iii_version`, if it declares one.
+/// Checks the manifest's `min_iii_version`, if it declares one; `running` is only
+/// evaluated then, so manifests without the key never probe the engine.
 pub fn enforce_manifest_min_iii_version(
     worker: &str,
     doc: &serde_yaml::Value,
-    running: &Version,
+    running: impl FnOnce() -> Version,
 ) -> Result<(), String> {
     match doc.get("min_iii_version") {
         None | Some(serde_yaml::Value::Null) => Ok(()),
-        Some(serde_yaml::Value::String(min)) => check_min_iii_version(worker, min, running),
+        Some(serde_yaml::Value::String(min)) => check_min_iii_version(worker, min, &running()),
         Some(other) => Err(format!(
             "{worker}: min_iii_version {other:?} must be a MAJOR.MINOR.PATCH string (e.g. 0.26.0)"
         )),
@@ -94,22 +104,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_garbage_iii_falls_back_to_build_version() {
+    fn running_version_prefers_env_then_cli_then_build_version() {
         let builtin = v(ENGINE_BUILTIN_VERSION);
-        assert_eq!(resolve_running(None), builtin);
-        assert_eq!(resolve_running(Some("garbage".into())), builtin);
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(resolve_running_from(s("0.26.1"), s("0.25.0")), v("0.26.1"));
+        assert_eq!(resolve_running_from(s("garbage"), s("0.25.0")), v("0.25.0"));
+        assert_eq!(resolve_running_from(None, s("0.25.0")), v("0.25.0"));
+        assert_eq!(resolve_running_from(None, None), builtin);
+        assert_eq!(resolve_running_from(s("garbage"), s("junk")), builtin);
+    }
+
+    #[test]
+    fn absent_key_never_resolves_running_version() {
+        let doc: serde_yaml::Value = serde_yaml::from_str("name: http\n").unwrap();
+        assert!(enforce_manifest_min_iii_version("http", &doc, || panic!("probed")).is_ok());
     }
 
     #[test]
     fn absent_key_is_ok() {
         let doc: serde_yaml::Value = serde_yaml::from_str("name: http\n").unwrap();
-        assert!(enforce_manifest_min_iii_version("http", &doc, &v("0.1.0")).is_ok());
+        assert!(enforce_manifest_min_iii_version("http", &doc, || v("0.1.0")).is_ok());
     }
 
     #[test]
     fn declared_key_is_enforced() {
         let doc: serde_yaml::Value = serde_yaml::from_str("min_iii_version: 0.26.0\n").unwrap();
-        assert!(enforce_manifest_min_iii_version("http", &doc, &v("0.25.0")).is_err());
-        assert!(enforce_manifest_min_iii_version("http", &doc, &v("0.26.0")).is_ok());
+        assert!(enforce_manifest_min_iii_version("http", &doc, || v("0.25.0")).is_err());
+        assert!(enforce_manifest_min_iii_version("http", &doc, || v("0.26.0")).is_ok());
     }
 }

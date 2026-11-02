@@ -1075,8 +1075,12 @@ fn registry_message(status: u16, body: &str) -> String {
 
     let mut sentence = message;
     if let Some(fix) = text("fix") {
-        sentence.push(' ');
-        sentence.push_str(&fix);
+        // The registry sometimes already ends the message with the fix ("; run: iii update").
+        let needle = fix.trim().trim_end_matches(['.', '!']).to_lowercase();
+        if !needle.is_empty() && !sentence.to_lowercase().contains(&needle) {
+            sentence.push(' ');
+            sentence.push_str(&fix);
+        }
     }
 
     // `fix` usually recites the versions already ("request one of: ..."), so the
@@ -2199,6 +2203,18 @@ mod tests {
     }
 
     // The bodies below are what api.workers.iii.dev actually answers.
+
+    #[test]
+    fn a_fix_already_in_the_message_is_not_repeated() {
+        let body = r#"{"error":{"code":"incompatible_engine","message":"state requires iii >= 0.26.0, running 0.25.0; run: iii update","fix":"Run: iii update"}}"#;
+        assert_eq!(
+            registry_message(409, body)
+                .to_lowercase()
+                .matches("iii update")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn an_unknown_worker_reads_as_a_sentence() {

@@ -205,17 +205,6 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 
-## `min_iii_version`
-
-Optional string, exactly `MAJOR.MINOR.PATCH` (for example `0.26.0`): no `v` prefix, prerelease, or
-range. The oldest iii engine the worker runs on. `iii worker add` and `iii worker start` refuse the
-worker when the installed iii is older. A prerelease of the minimum counts as that version, so
-`0.26.0-rc.2` satisfies `0.26.0`.
-
-```yaml
-min_iii_version: 0.26.0
-```
-
 ## Publish metadata: `iii`, `deploy`, `manifest`, `tags`, `license`
 
 Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
