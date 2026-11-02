@@ -8,15 +8,44 @@ type: "how-to"
 ---
 
 0.25 makes every function observable with `worker.observe(source, target, options?)`, and runs the
-calls a worker makes to its own functions in-process. This page lists the behavior changes 0.25
-brings to existing workers. Triggers and trigger types move to observers and observable functions in
-[Upgrading from 0.25.x to 0.26.x](./from-0-25-x), which covers every trigger API.
+calls a worker makes to its own functions in-process. The trigger APIs keep working in 0.25, so most
+projects upgrade without code changes. This page lists the behavior changes 0.25 brings to existing
+workers.
+
+<Note>
+  0.26 removes triggers and trigger types. To move them to observers and observable functions with
+  0.26 SDKs, see [Upgrading from 0.25.x to 0.26.x](./from-0-25-x). To move them while you stay on
+  0.25, follow the [0.25 version of this guide](/upgrading/from-0-24-x), which uses the 0.25 APIs.
+</Note>
 
 ## What changes for existing workers
 
-0.24 SDKs run against a 0.25 engine, and their functions are observable. 0.25 SDKs run against a
-0.24 engine too: `observe` fails with `UNSUPPORTED`, observe hooks never run, and calls are not
-dispatched locally.
+- **The old APIs keep working.** 0.24 SDKs run against a 0.25 engine unchanged, except that an
+  `unregisterTriggerType` now [takes effect](#unregistertriggertype-now-takes-effect), and their
+  functions are observable. 0.25 SDKs run against a 0.24 engine too: `observe` fails with
+  `UNSUPPORTED`, observe hooks never run, and calls are not dispatched locally.
+- **`registerTrigger` and `registerTriggerType` are deprecated** in every 0.25 SDK. They keep
+  working in 0.25; 0.26 removes them.
+- **One runtime warning per process per API.** The first call logs, through the SDK's logger (each
+  SDK names its own API):
+
+  ```text
+  registerTrigger is deprecated and will be removed in a future release. Use iii.observe(source,
+  target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x
+  ```
+
+  `registerTriggerType` logs the equivalent message pointing to `registerFunction` with an `observe`
+  descriptor.
+
+- **Language markers.** TypeScript marks the APIs `@deprecated`, Python emits a `DeprecationWarning`
+  at the call site, Go marks them `Deprecated:` (reported by linters such as staticcheck), and Rust
+  marks the methods `#[deprecated(since = "0.25.0")]`.
+
+<Warning>
+  Rust crates built with `#![deny(warnings)]` or `-D warnings` fail to compile on calls to
+  `register_trigger`, `register_trigger_type`, or `unregister_trigger_type`. Put
+  `#[allow(deprecated)]` on the calls you keep, or migrate them.
+</Warning>
 
 ## Behavior changes
 
@@ -62,6 +91,14 @@ the engine. To keep the old behavior for a function, a call, or the whole engine
 
 0.26 renames `TriggerRequest` to `CallRequest`; see [Upgrading from 0.25.x](./from-0-25-x).
 
+### `unregisterTriggerType` now takes effect
+
+Every SDK has always sent `unregistertriggertype`, but engines before 0.25 ignored it. The 0.25
+engine removes the trigger type when the sending worker is its provider, and ignores the message
+otherwise. The type's triggers then move to another provider of the type, or wait until a provider
+registers again. If your worker calls `unregisterTriggerType` and expected the type to stay, remove
+the call.
+
 ### Smaller changes
 
 - **`RegisterFunction` frames** omit `request_format` and `response_format` when they are absent.
@@ -89,9 +126,14 @@ the engine. To keep the old behavior for a function, a call, or the whole engine
 ## Migration checklist
 
 - [ ] Upgrade the engine and the SDKs
+- [ ] Remove `unregisterTriggerType` calls that expected the trigger type to stay
+- [ ] In Rust crates built with `-D warnings`, put `#[allow(deprecated)]` on the trigger calls you
+      keep
 - [ ] Check functions that call themselves for [local dispatch](#local-dispatch) differences (large
       payloads, blocking Rust sync handlers, tests that expect engine spans)
-- [ ] Move triggers, trigger types, and calls with [Upgrading from 0.25.x to 0.26.x](./from-0-25-x)
+- [ ] Move triggers and trigger types to observers before you upgrade to 0.26: with 0.26 SDKs in
+      [Upgrading from 0.25.x to 0.26.x](./from-0-25-x), or on 0.25 with the
+      [0.25 version of this guide](/upgrading/from-0-24-x)
 
 ## Result
 
