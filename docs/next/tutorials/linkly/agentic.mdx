@@ -617,8 +617,9 @@ Turn a browser tab into a worker.
   in the default namespace, and register user::confirm_destructive_op. For a live click counter,
   observe click-streamer::on-click (namespace "default", deliver "output") with ui::on_click as the
   target, wait for the observer's ready(), then read the starting count with link::click_summary
-  (default namespace); skip clicks whose id is at or below the last_id already counted, and read the
-  count again after a reconnect.
+  (default namespace); skip clicks whose id is at or below the last_id that read returned, count every
+  later click id once (clicks can arrive out of order, so remember the ids counted rather than only
+  the highest), and read the count again after a reconnect.
 - In App.tsx, call link::request_delete with { code, session: SESSION_ID }, the raw session id; the
   server adds the `browser-` prefix.
 - Have redirect links point at the http worker serving the redirects, not the frontend.

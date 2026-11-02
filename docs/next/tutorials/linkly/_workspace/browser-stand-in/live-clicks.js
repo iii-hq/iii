@@ -19,15 +19,17 @@ const worker = registerWorker(
   { namespace: `browser-${SESSION}` },
 );
 
-let lastId = 0;
+let lastId = 0; // clicks up to this id are already in the total that was read
+const counted = new Set(); // clicks above lastId already counted
 let count = 0;
 let received = 0;
 let ready = false;
 const early = [];
 
 function apply(click) {
-  if (click.id <= lastId) return;
-  lastId = click.id;
+  // Already in the total, or counted before: clicks can arrive out of order.
+  if (click.id <= lastId || counted.has(click.id)) return;
+  counted.add(click.id);
   count += 1;
 }
 
