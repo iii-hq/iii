@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from importlib.metadata import version
-from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, overload
+from typing import Any, Awaitable, Callable, Coroutine, NoReturn, TypeVar, cast, overload
 
 import websockets
 from iii_helpers.http import HttpInvocationConfig
@@ -504,6 +504,11 @@ class _ObserveHost:
 
     def delivers_v2(self) -> bool:
         return self._client._delivers_v2()
+
+
+# The upgrade guide the removed 0.25 trigger APIs point to.
+_UPGRADE_GUIDE = "https://iii.dev/docs/upgrading/from-0-25-x"
+_TRIGGER_TYPE_SECTION = "#move-a-trigger-type-to-an-observable-function"
 
 
 class III:
@@ -2864,6 +2869,32 @@ class III:
             Use :meth:`call_async`.
         """
         return await self.call_async(request)
+
+    def register_trigger(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        """Removed in 0.26.0: raises an error that points to :meth:`observe`."""
+        raise RuntimeError(
+            "register_trigger was removed in iii 0.26.0: bind functions with iii.observe(source, target). "
+            'register_trigger({"type": "cron", "function_id": fn, "config": config}) becomes '
+            'iii.observe({"function_id": "cron::on-tick", "args": config}, fn). '
+            f"Every trigger type's function is in the migration guide: {_UPGRADE_GUIDE}"
+        )
+
+    def register_trigger_type(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        """Removed in 0.26.0: raises an error that points to :meth:`register_function` and the observer hooks."""
+        raise RuntimeError(
+            "register_trigger_type was removed in iii 0.26.0: a trigger type is now a function that consumers observe. "
+            'Register it with register_function("<worker>::on-<event>", lambda event: event, '
+            "args_format=..., private=True), move the TriggerHandler to on_observer_added and on_observer_removed, "
+            f"and call the function once per event. Migration guide: {_UPGRADE_GUIDE}{_TRIGGER_TYPE_SECTION}"
+        )
+
+    def unregister_trigger_type(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        """Removed in 0.26.0: raises an error that points to ``FunctionRef.unregister``."""
+        raise RuntimeError(
+            "unregister_trigger_type was removed in iii 0.26.0: a trigger type is now a function. "
+            "Unregister it with the FunctionRef that register_function returns: function_ref.unregister(). "
+            f"Migration guide: {_UPGRADE_GUIDE}{_TRIGGER_TYPE_SECTION}"
+        )
 
     def _prepare_call(self, request: "dict[str, Any] | CallRequest") -> _Request:
         """Normalizes a call request and picks the path (local or routed)."""
