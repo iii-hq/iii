@@ -516,6 +516,17 @@ pub async fn handle_local_add(
             );
             return 1;
         }
+        if let Err(msg) = super::engine_compat::enforce_manifest_min_iii_version(
+            doc.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim(),
+            doc,
+            super::engine_compat::running_iii_version(),
+        ) {
+            eprintln!("{} {}", "error:".red(), msg);
+            return 1;
+        }
         super::project::warn_deprecated_manifest_keys(doc, &manifest_path);
     }
 
@@ -1119,6 +1130,14 @@ async fn start_worker_impl(
                         "error:".red(),
                         e
                     );
+                    return VmStart::Exit(1);
+                }
+                if let Err(msg) = super::engine_compat::enforce_manifest_min_iii_version(
+                    worker_name,
+                    &doc,
+                    super::engine_compat::running_iii_version(),
+                ) {
+                    eprintln!("{} {}", "error:".red(), msg);
                     return VmStart::Exit(1);
                 }
             }

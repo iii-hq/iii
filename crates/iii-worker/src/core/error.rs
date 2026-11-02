@@ -38,6 +38,7 @@ pub enum WorkerOpErrorKind {
     BundleResourceClamped,      // W182  (carried by warn events, not Err returns)
     BundleDepGraphExceeded,     // W183
     DependencyGraphInvalid,     // W184
+    EngineTooOld,               // W185
     Internal,                   // W900
 }
 
@@ -72,6 +73,7 @@ impl WorkerOpErrorKind {
             Self::BundleResourceClamped => "W182",
             Self::BundleDepGraphExceeded => "W183",
             Self::DependencyGraphInvalid => "W184",
+            Self::EngineTooOld => "W185",
             Self::Internal => "W900",
         }
     }
@@ -186,6 +188,9 @@ pub enum WorkerOpError {
     )]
     BundleManifestRejected { field: String, reason: String },
 
+    #[error("{message}")]
+    EngineTooOld { message: String },
+
     #[error("bundle archive contains unsafe entry{}: {reason}", match entry { Some(e) => format!(" {:?}", e), None => String::new() })]
     BundleArchiveUnsafe {
         reason: String,
@@ -261,6 +266,7 @@ impl WorkerOpError {
             Self::BundleArchiveUnsafe { .. } => K::BundleArchiveUnsafe,
             Self::BundleDepGraphExceeded { .. } => K::BundleDepGraphExceeded,
             Self::DependencyGraphInvalid { .. } => K::DependencyGraphInvalid,
+            Self::EngineTooOld { .. } => K::EngineTooOld,
             Self::Internal { .. } => K::Internal,
         }
     }
@@ -330,6 +336,7 @@ impl WorkerOpError {
                 json!({ "worker": worker, "waited_secs": waited_secs })
             }
             Self::Cancelled => json!({}),
+            Self::EngineTooOld { message } => json!({ "message": message }),
             Self::BundleManifestRejected { field, reason } => {
                 json!({ "field": field, "reason": reason })
             }

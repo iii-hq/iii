@@ -1143,6 +1143,18 @@ pub fn validate_bundle_manifest(
     manifest_dir: &std::path::Path,
     expected_name: &str,
 ) -> Result<String, WorkerOpError> {
+    validate_bundle_manifest_with(
+        manifest_dir,
+        expected_name,
+        super::engine_compat::running_iii_version(),
+    )
+}
+
+pub(crate) fn validate_bundle_manifest_with(
+    manifest_dir: &std::path::Path,
+    expected_name: &str,
+    running: &semver::Version,
+) -> Result<String, WorkerOpError> {
     let manifest_path = manifest_dir.join("iii.worker.yaml");
     // Cap manifest size BEFORE the read so a publisher-controlled
     // billion-laughs YAML (chained `&anchor` / `*alias` expansion) can
@@ -1222,6 +1234,9 @@ pub fn validate_bundle_manifest(
             });
         }
     }
+
+    super::engine_compat::enforce_manifest_min_iii_version(expected_name, &doc, running)
+        .map_err(|message| WorkerOpError::EngineTooOld { message })?;
 
     // runtime.base_image may name any OCI image ref — the rootfs is
     // publisher-chosen, same trust context as scripts.start (which we
@@ -1678,6 +1693,37 @@ mod tests {
 
     fn write_manifest(dir: &std::path::Path, body: &str) {
         std::fs::write(dir.join("iii.worker.yaml"), body).unwrap();
+    }
+
+    #[test]
+    fn bundle_manifest_with_higher_min_iii_version_is_engine_too_old() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            tmp.path(),
+            "name: foo\nmin_iii_version: 0.26.0\nscripts:\n  start: \"node bundle.js\"\n",
+        );
+        let running = semver::Version::parse("0.25.9").unwrap();
+        match validate_bundle_manifest_with(tmp.path(), "foo", &running) {
+            Err(WorkerOpError::EngineTooOld { message }) => {
+                assert_eq!(
+                    message,
+                    "foo requires iii >= 0.26.0, running 0.25.9; run: iii update"
+                );
+            }
+            other => panic!("expected EngineTooOld, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bundle_manifest_with_satisfied_min_iii_version_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            tmp.path(),
+            "name: foo\nmin_iii_version: 0.26.0\nscripts:\n  start: \"node bundle.js\"\n",
+        );
+        let running = semver::Version::parse("0.26.0-rc.2").unwrap();
+        let cmd = validate_bundle_manifest_with(tmp.path(), "foo", &running).unwrap();
+        assert_eq!(cmd, "node bundle.js");
     }
 
     #[test]
