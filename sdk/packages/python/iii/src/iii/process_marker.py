@@ -24,12 +24,13 @@ def announce_process(url: str, name: str, directory: Path | None = None) -> Call
     """Write this process's marker and return a function that removes it."""
     try:
         directory = directory or Path.home() / ".iii" / "run"
-        marker = directory / f"worker-{os.getpid()}-{next(_announced)}.json"
+        pid = os.getpid()
+        marker = directory / f"worker-{pid}-{next(_announced)}.json"
         directory.mkdir(parents=True, exist_ok=True)
         marker.write_text(
             json.dumps(
                 {
-                    "pid": os.getpid(),
+                    "pid": pid,
                     "url": url,
                     "name": name,
                     "sdk": "python",
@@ -42,7 +43,9 @@ def announce_process(url: str, name: str, directory: Path | None = None) -> Call
 
     def remove() -> None:
         atexit.unregister(remove)
-        marker.unlink(missing_ok=True)
+        # A forked child inherits this handler; the marker belongs to its live parent.
+        if os.getpid() == pid:
+            marker.unlink(missing_ok=True)
 
     atexit.register(remove)
     return remove

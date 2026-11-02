@@ -396,9 +396,10 @@ prefix. Every code, its meaning and its fix is documented at
 https://iii.dev/docs/creating-workers/sandboxes. The router adds four:
 
 - `S301`: the bound adapter is not connected (retryable). The message names the fix: in the namespace's
-  Compose project, `compose::up container=<adapter>` starts an adapter it declares but is not running (after
-  `compose::down`, say), and `compose::add worker=iii-sandbox` installs one it does not declare; if none
-  runs, a container with `worker: package://<adapter>` in a `worker-compose.yaml` for that namespace.
+  Compose project, `compose::up container=<key>` starts an adapter it declares but is not running (after
+  `compose::down`, say; `<key>` is the key of the container that runs the adapter, which need not be its
+  name), and `compose::add worker=iii-sandbox` installs one it does not declare; if none runs, a container
+  with `worker: package://<adapter>` in a `worker-compose.yaml` for that namespace.
 - `S302`: the adapter speaks another contract major than the router.
 - `S303`: no adapter is configured; the engine is not managed by a Compose file and has no `sandbox:` binding.
 - `S304`: the connected adapter does not register the called op (not retryable). The router

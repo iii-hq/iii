@@ -15,7 +15,7 @@ There are two ways in. `sandbox::run` is the fast path: it boots a VM, runs a co
 Prerequisites: a bound sandbox adapter that is running. The router is always on; it does nothing
 without the adapter.
 
-- `S301` means the bound adapter is not connected. Its message names the fix: in the namespace's Compose project, `compose::up container=<adapter>` starts an adapter it declares but is not running, and `compose::add worker=iii-sandbox` installs one it does not declare; with no project there, declare a container with `worker: package://<adapter>` (`package://sandbox-libkrun` by default) in a `worker-compose.yaml` for that namespace.
+- `S301` means the bound adapter is not connected. Its message names the fix: in the namespace's Compose project, `compose::up container=<key>` starts an adapter it declares but is not running (`<key>` is the key of the container that runs the adapter, which need not be its name), and `compose::add worker=iii-sandbox` installs one it does not declare; with no project there, declare a container with `worker: package://<adapter>` (`package://sandbox-libkrun` by default) in a `worker-compose.yaml` for that namespace.
 - `S303` means the engine is not managed by a Compose file and has no `sandbox:` binding in its engine config. Ask the operator to set one.
 - Hardware virtualization (Apple Silicon, or `/dev/kvm` on Linux) is a requirement of `sandbox-libkrun`, not of the router. Intel Macs and Windows cannot boot its sandboxes.
 

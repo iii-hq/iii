@@ -93,3 +93,19 @@ func TestCloseRemovesTheWorkerMarker(t *testing.T) {
 		t.Fatalf("marker outlived Close: %v", markers)
 	}
 }
+
+// A Connect that starts the supervisor after Close (or racing it) writes its
+// marker after Close took the nil one, so it must remove that marker itself.
+func TestStartAfterCloseLeavesNoWorkerMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	dir := filepath.Join(home, ".iii", "run")
+
+	c := New("ws://127.0.0.1:1")
+	_ = c.Close()
+	c.startSupervisor()
+	if markers := readMarkers(t, dir); len(markers) != 0 {
+		t.Fatalf("marker written after Close: %v", markers)
+	}
+}
