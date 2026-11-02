@@ -111,7 +111,7 @@ export function startOrdersWorker(engineUrl = ENGINE_URL) {
       // Runs on dispose, and when the observing worker's observers are removed.
       console.log(`[orders] observer ${obs.id} removed`)
     })
-    .onObserverMatch({
+    .onObservationMatch({
       observer: ({ args }) => {
         const { tenant_id, order_id, events } = args as OrderChangedArgs
         return (events ?? ['*']).map(event => key(tenant_id, order_id ?? '*', event))

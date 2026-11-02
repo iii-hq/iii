@@ -282,7 +282,7 @@ def test_observerack_error_json_is_the_rejection_on_observer_added_raised(engine
         ("registerfunction-not-observable.json", {"observable": False}),
     ],
 )
-def test_registerfunction_frames_equal_the_fixture_and_hooks_and_standby_never_travel(
+def test_registerfunction_frames_equal_the_fixture_and_hooks_never_travel(
     engine: FakeEngine, connect: Any, name: str, options: dict[str, Any]
 ) -> None:
     expected = fixture(name)
@@ -300,7 +300,6 @@ def test_registerfunction_frames_equal_the_fixture_and_hooks_and_standby_never_t
         request_format=expected.get("request_format"),
         response_format=expected.get("response_format"),
         args_format=expected.get("args_format"),
-        standby=True,
         local_dispatch=False,
         **options,
     )
@@ -467,7 +466,7 @@ def test_invocationresult_matched_json_a_match_hook_names_its_observers_on_the_a
     expected = fixture("invocationresult-matched.json")
     client = connect(engine)
     ids = expected["matched"]
-    client.register_function("orders::create", lambda order: expected["result"]).on_observer_match(
+    client.register_function("orders::create", lambda order: expected["result"]).on_observation_match(
         lambda obs, call: obs.args["region"] == call.input["region"]
     )
     # the hook's choice, before `on` and filters: the second observer's filter fails, and still it is named
@@ -495,7 +494,7 @@ def test_invocationresult_matched_error_json_an_error_answer_keeps_matched(engin
         raise RuntimeError(expected["error"]["message"])
 
     ref = client.register_function("payments::charge", charge)
-    ref.on_observer_match(observer=lambda obs: obs.args["currency"], call=lambda call: call.input["currency"])
+    ref.on_observation_match(observer=lambda obs: obs.args["currency"], call=lambda call: call.input["currency"])
     _confirm(
         client,
         engine,
@@ -515,7 +514,7 @@ def test_invocationresult_matched_none_json_a_match_hook_that_matched_none_sends
     expected = fixture("invocationresult-matched-none.json")
     client = connect(engine)
     ref = client.register_function("orders::create", lambda order: expected["result"])
-    ref.on_observer_match(observer=lambda obs: obs.args["region"], call=lambda call: call.input["region"])
+    ref.on_observation_match(observer=lambda obs: obs.args["region"], call=lambda call: call.input["region"])
     _confirm(client, engine, "orders::create", [observer_info("eu", "t", args={"region": "eu"})])
 
     def untraced(answer: dict[str, Any]) -> dict[str, Any]:
@@ -535,9 +534,9 @@ def test_invocationresult_delivered_json_a_deliver_hook_answers_delivered(engine
     client = connect(engine)
     ref = client.register_function("approvals::request", lambda request: request)
     # a match hook too: `delivered` outweighs `matched`, so only `delivered` is sent
-    ref.on_observer_match(lambda obs, call: True)
+    ref.on_observation_match(lambda obs, call: True)
 
-    @ref.on_observer_deliver
+    @ref.on_observation_deliver
     def approve(call: Any, observers: Any) -> Any:
         return expected["result"]
 
@@ -547,7 +546,7 @@ def test_invocationresult_delivered_json_a_deliver_hook_answers_delivered(engine
     # a deliver hook that raises: its error, still delivered
     failing = {**expected, "invocation_id": "0b2d4f6a-8c0e-4a2c-9e4a-6c8e0a2c4e6a"}
 
-    @ref.on_observer_deliver
+    @ref.on_observation_deliver
     def refuse(call: Any, observers: Any) -> Any:
         raise ObserveRejection("NO_APPROVER", "nobody can approve")
 
@@ -575,7 +574,7 @@ def _http_host(client: III, engine: FakeEngine, target_result: dict[str, Any]) -
     engine.on_frame = answer
     client.register_function("http::on-request", lambda request: request, private=True)
 
-    @client.on_observer_deliver("http::on-request")
+    @client.on_observation_deliver("http::on-request")
     async def route(call: Any, observers: Any) -> Any:
         [obs] = [o for o in observers if o.args["path"] == "/users/:id"]
         return await client.call_async({"observer": obs, "payload": forwarded["data"]})

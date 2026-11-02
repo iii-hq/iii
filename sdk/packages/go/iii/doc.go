@@ -57,7 +57,7 @@
 // [Client.RegisterFunction] registers a handler and returns its [FunctionRef] (an id is
 // registered once per client, as in the other SDKs); [RegisterFunctionOptions] adds a
 // description, request and response JSON Schemas, metadata, and what describes the
-// function to observers: ArgsFormat, Private, Observable and Standby.
+// function to observers: ArgsFormat, Private and Observable.
 // [Client.RegisterHTTPFunction] registers a function hosted elsewhere that the engine
 // invokes over HTTP ([HTTPInvocationRef], with [HMACAuth], [BearerAuth] or
 // [APIKeyAuth]). Registrations are replayed on every reconnect until
@@ -119,7 +119,7 @@
 // to the matched observers and decide what the caller gets back).
 // [Client.OnObserverAdded] and [Client.OnObserverRemoved] set the first two for every
 // function the worker hosts; [Client.OnObserverAddedFor], [Client.OnObserverRemovedFor],
-// [Client.OnObserverMatchFor] and [Client.OnObserverDeliverFor] set them for one
+// [Client.OnObservationMatchFor] and [Client.OnObservationDeliverFor] set them for one
 // function by id, and the [FunctionRef] methods for the function they were returned
 // for. Set hooks by id before RegisterFunction. [MatchFunc] matches with a predicate,
 // [MatchKeys] with keys the SDK indexes, and [FunctionRef.IsObservedFor] answers

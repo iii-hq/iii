@@ -109,11 +109,11 @@ func TestNoRegisterFunctionCarriesTheObserveObject(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
 	closed := false
-	c.OnObserverDeliverFor("hooked::fn", handlerAnswer)
+	c.OnObservationDeliverFor("hooked::fn", handlerAnswer)
 	for id, opts := range map[string]RegisterFunctionOptions{
 		"plain::fn":   {},
 		"args::fn":    {ArgsFormat: json.RawMessage(`{"type":"object"}`)},
-		"private::fn": {Private: true, Standby: true},
+		"private::fn": {Private: true},
 		"closed::fn":  {Observable: &closed},
 		"hooked::fn":  {},
 	} {
@@ -123,7 +123,7 @@ func TestNoRegisterFunctionCarriesTheObserveObject(t *testing.T) {
 	}
 	for _, d := range fe.waitFrames(MsgRegisterFunction, 5, nil) {
 		out, _ := MarshalMessage(d.RegisterFunction)
-		if strings.Contains(string(out), `"observe"`) || strings.Contains(string(out), "standby") {
+		if strings.Contains(string(out), `"observe"`) {
 			t.Errorf("registerfunction %s", out)
 		}
 	}
@@ -320,7 +320,7 @@ func TestObserveFixturesBuiltBySDK(t *testing.T) {
 		}},
 		{"registerfunction-private.json", "cron::on-tick", func(t *testing.T, name string) RegisterFunctionOptions {
 			return RegisterFunctionOptions{Description: description(t, name), RequestFormat: formatOf(t, name, "request_format"),
-				ResponseFormat: formatOf(t, name, "response_format"), ArgsFormat: formatOf(t, name, "args_format"), Private: true, Standby: true}
+				ResponseFormat: formatOf(t, name, "response_format"), ArgsFormat: formatOf(t, name, "args_format"), Private: true}
 		}},
 		{"registerfunction-not-observable.json", "vault::read-secret", func(t *testing.T, name string) RegisterFunctionOptions {
 			closed := false

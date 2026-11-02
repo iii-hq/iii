@@ -693,7 +693,7 @@ func TestOtelDeliverHookRunsInTheInvocationSpan(t *testing.T) {
 	e := newOtelEngine(t, fe.m.handle)
 	c := e.connect(t, WithName("observe-test"), otelOn(OtelConfig{}))
 	waitUntil(t, "WorkerRegistered applied", c.registeredNow)
-	c.OnObserverDeliverFor("traced::fn", func(ctx context.Context, call *Call, _ []*Observer) (any, error) {
+	c.OnObservationDeliverFor("traced::fn", func(ctx context.Context, call *Call, _ []*Observer) (any, error) {
 		_, span := otel.Tracer("user").Start(ctx, "deliver-child")
 		span.End()
 		_, err := c.Call(ctx, CallRequest{FunctionID: "audit::log", Action: VoidAction()})

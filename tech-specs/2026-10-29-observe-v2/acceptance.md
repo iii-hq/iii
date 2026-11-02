@@ -35,10 +35,10 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | B7 | A hook set by id before registration (every SDK), or chained on `registerFunction` (Node and browser), sees every observer; in Node and the browser the SDK acks no observer before the registration call returned. A hook set later is caught up and logs one warning. | test |
 | B8 | Hooks stored by id survive `unregister()` and re-registration; a hook id never registered logs a warning after the connection registers. | test |
 | B9 | `null` / `None` / `clear_*` removes a hook. | test |
-| B10 | `onObserverMatch` exists per function, as a predicate `(obs, call) => boolean` or keys `{ observer, call }`. iii delivers to matched observers with filters, `on`, policy and `deliver` applied. Default: every observer matches. | test |
+| B10 | `onObservationMatch` exists per function, as a predicate `(obs, call) => boolean` or keys `{ observer, call }`. iii delivers to matched observers with filters, `on`, policy and `deliver` applied. Default: every observer matches. | test |
 | B11 | Keys: computed once per accepted observer and once per call; a call matches observers under any of its keys, each once; wildcards by listing; the index rebuilds when the hook is set while observers are active; a throwing predicate is no match (logged once); a throwing observer key function rejects the observer. | test |
 | B12 | `isObserved()` is one atomic load; `isObserved(call)` on a key-matched function looks up the call's keys. | test, bench |
-| B13 | `onObserverDeliver` exists per function, takes `(call, observers)` (the matched observers, a snapshot from call start), has no `next`, runs in the function's invocation context and span, and its return/throw is what the caller gets. iii delivers nothing for that function. | test |
+| B13 | `onObservationDeliver` exists per function, takes `(call, observers)` (the matched observers, a snapshot from call start), has no `next`, runs in the function's invocation context and span, and its return/throw is what the caller gets. iii delivers nothing for that function. | test |
 | B14 | No hook takes a `next` parameter or calls `next`, and no `keyed(`, `Keyed`, `as_keyed` or `defaultDeliver` identifier exists anywhere. The grep matches identifiers and hook signatures (`\bkeyed\(\|\bKeyed\b\|\bas_keyed\b\|\bdefaultDeliver\b`, `(onObserver\|on_observer_\|OnObserver)\w*\(.*\bnext\b`), not the English words "next" and "keyed" in prose. | grep |
 | B15 | Calls for one observer (decision 52): a call of a function with metadata `{ for_observer: <observer id> }` reaches that observer alone under a match hook that honors it (a predicate comparing `call.metadata.for_observer` with `obs.id`, or keys filing each observer under `"for_observer:<id>"`), local or routed, and its target receives what it receives for every call of the function (its `deliver`, `capture`, filters, `on`, policy); an ordinary call reaches every matching observer. A local call's metadata reaches the handler, the match hook and the report. Hosts send initial state this way once `obs.accepted()` resolves; docs, examples, skills and READMEs call through an observer only in a deliver hook. | test, read |
 
@@ -61,7 +61,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | D1 | `private: true`: only the hosting connection may invoke (others and the engine get `FORBIDDEN`); observable; cannot be a target. | test |
 | D2 | A worker's own local call to its private function passes input and result by reference (no copy); Node freezes them when `NODE_ENV === 'development'`. | test, bench |
 | D3 | `observable: false` → `NOT_OBSERVABLE`. | test |
-| D4 | `standby`: on `FUNCTION_NAMESPACE_CONFLICT` retry every 1 s ±20 %; takes over observers when the host leaves. | test |
+| D4 | A registration refused with `FUNCTION_NAMESPACE_CONFLICT` is not retried; the next host to register the function takes over its observers. | test |
 | D5 | Invalid `args_format` → `INVALID_ARGS_FORMAT`. | test |
 
 ## E. Wire and engine
@@ -74,7 +74,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | E4 | `output_is_input` on report items when the handler returned its input, only to `observe.v2` engines; an event source's event is serialized once. | test, bench |
 | E5 | No host-reported items for routed calls (`INVALID_REPORT`). | test |
 | E6 | `_caller_worker_id` stripped from every observed input and output and from the payload of a call through an observer, which runs under the observing worker's session (decision 49). | test |
-| E7 | v2-only functions (`args_format`, `private`, `observable: false`, `onObserverMatch`/`onObserverDeliver`) are held on engines without `observe.v2` with one `UNSUPPORTED` log, re-decided per connection. | test |
+| E7 | v2-only functions (`args_format`, `private`, `observable: false`, `onObservationMatch`/`onObservationDeliver`) are held on engines without `observe.v2` with one `UNSUPPORTED` log, re-decided per connection. | test |
 | E8 | 0.25 `observe` object decoded per decision 37 (`delivery: owner` → `UNSUPPORTED`). | test |
 | E9 | Builtins: trigger builtins removed; function rows carry `observer_count`, `args_format`, `private`, `observable`; `engine::workers::info` carries `functions`, `observers`, and a builtin worker's `functions` include the engine-hosted sources it hosts; `engine::on-observers-changed` exists. | test |
 | E10 | Engine-hosted sources are private, return the event, caller `{ worker_name: "iii-engine" }`; stream sources `stream::on-changed/on-join/on-leave`. | test |
@@ -113,7 +113,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | # | Requirement | Verify |
 |---|---|---|
 | H1 | Consumer pages lead with `iii.observe('a', 'b')` and `call`; provider hooks read as overriding iii defaults and stay off the consumer path. | read |
-| H2 | Docs show the four hooks (`onObserverMatch`, no `next`, no `keyed`), `capture`, and every API name exactly as shipped, in every language tab. | read, grep |
+| H2 | Docs show the four hooks (`onObservationMatch`, no `next`, no `keyed`), `capture`, and every API name exactly as shipped, in every language tab. | read, grep |
 | H3 | No corrective phrasing; Vale clean; `.skill.md` artifacts rendered; generated SDK and CLI references regenerated from the final code. | test |
 | H4 | Upgrade guide `from-0-25-x` covers every row of spec §2 and §11. | read |
 

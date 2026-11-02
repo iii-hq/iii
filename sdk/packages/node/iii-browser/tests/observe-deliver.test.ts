@@ -8,8 +8,8 @@ import * as fake from './observe-fake-engine'
 
 /**
  * Matching and delivery in the host (v2 §4.4–§4.6, §8.2; decisions 13, 20,
- * 36, 38, 39, 45, 55): onObserverMatch (predicate and keys),
- * onObserverDeliver, isObserved(call), the answers to routed calls and calls
+ * 36, 38, 39, 45, 55): onObservationMatch (predicate and keys),
+ * onObservationDeliver, isObserved(call), the answers to routed calls and calls
  * through an observer, against a fake engine.
  */
 const { functionRegistered, observerInfo, observerAdded, observerRemoved, settle, reportedItems, invokeFunction } = fake
@@ -56,7 +56,7 @@ async function cron(observers: Json[], hooks: (iii: ISdk) => void) {
 
 const byExpression: MatchPredicate<Tick, Tick> = (obs, call) => obs.args.expression === call.input.expression
 
-describe('onObserverMatch: a predicate', () => {
+describe('onObservationMatch: a predicate', () => {
   it('only the observers that want the call are delivered; their filters still apply', async () => {
     const { sdk, socket } = await cron(
       [
@@ -64,7 +64,7 @@ describe('onObserverMatch: a predicate', () => {
         every('ten', '*/10'),
         every('ten-late', '*/10', { filters: { $and: [{ 'input.n': { $gte: 10 } }] } }),
       ],
-      (iii) => iii.onObserverMatch<Tick, Tick>('cron::on-tick', byExpression),
+      (iii) => iii.onObservationMatch<Tick, Tick>('cron::on-tick', byExpression),
     )
     await expect(sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/10', n: 1 } })).resolves.toEqual({
       expression: '*/10',
@@ -77,7 +77,7 @@ describe('onObserverMatch: a predicate', () => {
   it('a predicate that throws matches nothing, and is logged once per function', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { sdk, socket } = await cron([every('five', '*/5'), every('ten', '*/10')], (iii) =>
-      iii.onObserverMatch<Tick, Tick>('cron::on-tick', (obs, call) => {
+      iii.onObservationMatch<Tick, Tick>('cron::on-tick', (obs, call) => {
         if (obs.id === 'ten') throw new Error('bad observer')
         return byExpression(obs, call)
       }),
@@ -87,15 +87,15 @@ describe('onObserverMatch: a predicate', () => {
     }
     await flushed()
     expect(reportedItems(socket).map((i) => i.matched)).toEqual([['five']])
-    expect(errors.mock.calls.filter((c) => String(c[0]).includes('onObserverMatch of cron::on-tick'))).toHaveLength(1)
+    expect(errors.mock.calls.filter((c) => String(c[0]).includes('onObservationMatch of cron::on-tick'))).toHaveLength(1)
   })
 
   it('isObserved(call) does not read the call; without a match hook every observer wants every call', async () => {
     const { sdk, socket } = await cron([every('five', '*/5')], (iii) =>
-      iii.onObserverMatch<Tick, Tick>('cron::on-tick', byExpression),
+      iii.onObservationMatch<Tick, Tick>('cron::on-tick', byExpression),
     )
     expect(sdk.isObserved('cron::on-tick', { input: { expression: '*/9', n: 0 } })).toBe(true)
-    sdk.onObserverMatch('cron::on-tick', null)
+    sdk.onObservationMatch('cron::on-tick', null)
     await sdk.call({ function_id: 'cron::on-tick', payload: { expression: '*/9', n: 0 } })
     await flushed()
     expect(reportedItems(socket).map((i) => i.matched)).toEqual([['five']])
@@ -103,12 +103,12 @@ describe('onObserverMatch: a predicate', () => {
 
   it('refuses a match hook that is neither a predicate, key functions nor null', () => {
     const { sdk } = worker()
-    expect(() => sdk.onObserverMatch('cron::on-tick', { observer: () => 'k' } as never)).toThrow(TypeError)
-    expect(() => sdk.onObserverMatch('cron::on-tick', 'expression' as never)).toThrow(TypeError)
+    expect(() => sdk.onObservationMatch('cron::on-tick', { observer: () => 'k' } as never)).toThrow(TypeError)
+    expect(() => sdk.onObservationMatch('cron::on-tick', 'expression' as never)).toThrow(TypeError)
   })
 })
 
-describe('onObserverMatch: keys (v2 §4.5)', () => {
+describe('onObservationMatch: keys (v2 §4.5)', () => {
   const rowKey = (db: string, table: string, op: string) => `${db}|${table}|${op}`
   type Change = { db: string; table: string; op: string; big?: boolean }
   const byRow: MatchKeys<Change, Change> = {
@@ -123,7 +123,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     const { sdk, socket } = worker()
     const ref = sdk
       .registerFunction('database::on-row-changed', (change: Change) => change, { private: true })
-      .onObserverMatch(byRow)
+      .onObservationMatch(byRow)
     socket.deliver(functionRegistered('database::on-row-changed', observers, { revision: 1 }))
     await settle()
     socket.clear()
@@ -159,7 +159,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     const callKeys = vi.fn(byRow.call)
     sdk
       .registerFunction('database::on-row-changed', (change: Change) => change, { private: true })
-      .onObserverMatch({ observer: observerKeys, call: callKeys })
+      .onObservationMatch({ observer: observerKeys, call: callKeys })
     socket.deliver(
       functionRegistered(
         'database::on-row-changed',
@@ -229,7 +229,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
       }),
     )
     await settle()
-    ref.onObserverMatch({
+    ref.onObservationMatch({
       observer: (obs) => {
         if (typeof obs.args.expression !== 'string') throw new Error('no expression')
         return obs.args.expression
@@ -243,7 +243,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     expect(ref.isObserved({ input: { expression: '*/5', n: 0 } })).toBe(true)
     expect(ref.isObserved({ input: { expression: '*/9', n: 0 } })).toBe(false)
     // a predicate in its place: isObserved(call) no longer reads the call
-    ref.onObserverMatch(byExpression)
+    ref.onObservationMatch(byExpression)
     expect(ref.isObserved({ input: { expression: '*/9', n: 0 } })).toBe(true)
   })
 
@@ -257,7 +257,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
         })
         return change
       })
-      .onObserverMatch(byRow)
+      .onObservationMatch(byRow)
     socket.deliver(
       functionRegistered('database::on-row-changed', [row('before', { db: 'primary', table: 'orders' })], {
         revision: 1,
@@ -281,7 +281,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     expect(reportedItems(socket).map((i) => i.matched)).toEqual([['before']])
 
     const delivered: string[][] = []
-    ref.onObserverDeliver((call, observers) => {
+    ref.onObservationDeliver((call, observers) => {
       delivered.push(observers.map((o) => o.id).sort())
       return call.output
     })
@@ -293,7 +293,7 @@ describe('onObserverMatch: keys (v2 §4.5)', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { sdk, socket } = await database([row('any', { db: 'primary' })])
     await sdk.call({ function_id: 'database::on-row-changed', payload: { db: 'primary', table: 'x', op: 'insert' } })
-    sdk.onObserverMatch('database::on-row-changed', {
+    sdk.onObservationMatch('database::on-row-changed', {
       observer: () => 'k',
       call: () => {
         throw new Error('no key')
@@ -347,7 +347,7 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
           },
           { private: true },
         )
-        .onObserverMatch(recording)
+        .onObservationMatch(recording)
       socket.deliver(functionRegistered('tmux::on-changed', [watch('a'), watch('b')], { revision: 1 }))
       await settle()
       socket.clear()
@@ -431,7 +431,7 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
               // a rejected observer gets nothing
             })
         })
-        .onObserverMatch({
+        .onObservationMatch({
           // throws for an observer without a session: rejected after its added hook returned
           observer: (obs) => {
             if (typeof obs.args.session !== 'string') throw new Error('no session')
@@ -458,13 +458,13 @@ describe('calls for one observer: metadata.for_observer (decision 52)', () => {
   })
 })
 
-describe('onObserverDeliver', () => {
+describe('onObservationDeliver', () => {
   it('what the hook returns or throws is what the caller gets back; iii delivers nothing for the function', async () => {
     const { sdk, socket } = worker()
     let seen: readonly Observer[] = []
     sdk
       .registerFunction('http::on-request', (req: { path: string }) => req)
-      .onObserverDeliver(async (call, observers) => {
+      .onObservationDeliver(async (call, observers) => {
         seen = observers
         if (call.input.path === '/boom') throw new Error('no route')
         return { status_code: 404, path: call.input.path }
@@ -491,8 +491,8 @@ describe('onObserverDeliver', () => {
     const { sdk, socket } = worker()
     sdk
       .registerFunction('queue::on-message', (message: { n: number }) => message)
-      .onObserverMatch({ observer: (obs) => obs.id, call: (call) => (call.metadata?.subscriber as string) ?? '' })
-      .onObserverDeliver(async (call, [obs]) => {
+      .onObservationMatch({ observer: (obs) => obs.id, call: (call) => (call.metadata?.subscriber as string) ?? '' })
+      .onObservationDeliver(async (call, [obs]) => {
         if (!obs) throw new ObserveRejection('OBSERVER_NOT_ACTIVE', 'subscriber removed')
         return call.output
       })
@@ -521,7 +521,7 @@ describe('onObserverDeliver', () => {
   it('null removes the hook: iii delivers the calls again, local and routed', async () => {
     const { sdk, socket } = worker()
     const hook = vi.fn((call: Call) => call.output)
-    sdk.registerFunction('orders::on-placed', (order: { n: number }) => order).onObserverDeliver(hook)
+    sdk.registerFunction('orders::on-placed', (order: { n: number }) => order).onObservationDeliver(hook)
     socket.deliver(functionRegistered('orders::on-placed', [observerInfo('o', 'audit::order', { capture: ['input'] })]))
     await settle()
     socket.clear()
@@ -531,7 +531,7 @@ describe('onObserverDeliver', () => {
     expect(hook).toHaveBeenCalledTimes(2)
     expect(fake.resultOf(socket, 'hooked')).toMatchObject({ result: { n: 2 }, delivered: true })
 
-    sdk.onObserverDeliver('orders::on-placed', null)
+    sdk.onObservationDeliver('orders::on-placed', null)
     await sdk.call({ function_id: 'orders::on-placed', payload: { n: 3 } })
     socket.deliver(invokeFunction('orders::on-placed', { n: 4 }, { invocation_id: 'delivered' }))
     await settle()
@@ -551,8 +551,8 @@ describe('onObserverDeliver', () => {
     const seen: string[][] = []
     const { sdk } = await cron([every('five', '*/5'), every('ten', '*/10')], (iii) =>
       iii
-        .onObserverMatch<Tick, Tick>('cron::on-tick', byExpression)
-        .onObserverDeliver<Tick, Tick, string>('cron::on-tick', (call, observers) => {
+        .onObservationMatch<Tick, Tick>('cron::on-tick', byExpression)
+        .onObservationDeliver<Tick, Tick, string>('cron::on-tick', (call, observers) => {
           seen.push(observers.map((o) => o.id))
           return `delivered ${call.input.expression}`
         }),
@@ -573,7 +573,7 @@ describe('onObserverDeliver', () => {
         inHandler = sdk.currentInvocation()
         return order
       })
-      .onObserverDeliver(async (call) => {
+      .onObservationDeliver(async (call) => {
         // Browser SDK: the scope ends at the hook's first `await`. A call made
         // after it still has the invocation as its caller: the only one running,
         // and delivering.
@@ -833,7 +833,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
         observerInfo('errors', 'alerts::errors', { args: { max: 50 }, on: 'error' }),
       ],
       (ref) =>
-        ref.onObserverMatch((obs, call) => {
+        ref.onObservationMatch((obs, call) => {
           asked.push(`${obs.id}:${call.status}`)
           return call.input.qty <= (obs.args.max as number)
         }),
@@ -871,7 +871,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
         observerInfo('eu-2', 'audit::eu-2', { args: { region: 'eu' } }),
       ],
       (ref) =>
-        ref.onObserverMatch({
+        ref.onObservationMatch({
           observer: (obs) => obs.args.region as string,
           call: (call) => (call.input.qty > 5 ? 'eu' : 'us'),
         }),
@@ -884,7 +884,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   })
 
   it('a match hook that matches nothing, or that runs with no observer, sends matched: []', async () => {
-    const { sdk, socket } = await routed([observerInfo('all', 'audit::all')], (ref) => ref.onObserverMatch(() => false))
+    const { sdk, socket } = await routed([observerInfo('all', 'audit::all')], (ref) => ref.onObservationMatch(() => false))
     socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'none' }))
     await settle()
     expect(answer(socket, 'none')).toEqual({
@@ -894,7 +894,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
       result: { order_id: 'o-1', qty: 1 },
       matched: [],
     })
-    sdk.registerFunction('orders::archive', async () => 'archived').onObserverMatch(() => true)
+    sdk.registerFunction('orders::archive', async () => 'archived').onObservationMatch(() => true)
     socket.deliver(functionRegistered('orders::archive'))
     await settle()
     socket.deliver(invokeFunction('orders::archive', {}, { invocation_id: 'empty' }))
@@ -906,7 +906,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
     const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     let keyed = 0
     const { sdk, socket } = await routed([], (ref) =>
-      ref.onObserverMatch({
+      ref.onObservationMatch({
         observer: () => 'k',
         call: () => {
           keyed++
@@ -944,7 +944,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   it('a match hook that throws matches nothing: matched: []', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const { socket } = await routed([observerInfo('all', 'audit::all')], (ref) =>
-      ref.onObserverMatch(() => {
+      ref.onObservationMatch(() => {
         throw new Error('no match')
       }),
     )
@@ -956,11 +956,11 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   it('removing the match hook leaves the routed call to the engine: no matched', async () => {
     let ref: FunctionRef<Order, Created> | undefined
     const { socket } = await routed([observerInfo('all', 'audit::all')], (r) => {
-      ref = r.onObserverMatch(() => true)
+      ref = r.onObservationMatch(() => true)
     })
     socket.deliver(invokeFunction('orders::create', { qty: 1 }, { invocation_id: 'hooked' }))
     await settle()
-    ref?.onObserverMatch(null)
+    ref?.onObservationMatch(null)
     socket.deliver(invokeFunction('orders::create', { qty: 2 }, { invocation_id: 'plain' }))
     await settle()
     expect(answer(socket, 'hooked')).toMatchObject({ matched: ['all'] })
@@ -971,8 +971,8 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   it('a deliver hook: delivered: true and what the hook returns or throws, never matched', async () => {
     const { socket } = await routed([observerInfo('all', 'audit::all', { on: 'complete' })], (ref) =>
       ref
-        .onObserverMatch(() => true)
-        .onObserverDeliver(async (call) => {
+        .onObservationMatch(() => true)
+        .onObservationDeliver(async (call) => {
           if (call.status === 'error') return { recovered: true }
           throw new Error('rejected by the hook')
         }),
@@ -999,7 +999,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   })
 
   it('a deliver hook that runs with no observer still answers delivered: true', async () => {
-    const { socket } = await routed([], (ref) => ref.onObserverDeliver((call) => call.output))
+    const { socket } = await routed([], (ref) => ref.onObservationDeliver((call) => call.output))
     socket.deliver(invokeFunction('orders::create', { qty: 3 }, { invocation_id: 'i-1' }))
     await settle()
     expect(answer(socket, 'i-1')).toEqual({
@@ -1012,7 +1012,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   })
 
   it('an activation of a hosted target is answered the same way', async () => {
-    const { socket } = await routed([observerInfo('all', 'audit::all')], (ref) => ref.onObserverMatch(() => true))
+    const { socket } = await routed([observerInfo('all', 'audit::all')], (ref) => ref.onObservationMatch(() => true))
     socket.deliver(
       invokeFunction(
         'orders::create',
@@ -1051,7 +1051,7 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
       .onObserverRemoved((obs) => {
         routes.delete(obs.args.path as string)
       })
-      .onObserverDeliver(async (call) => {
+      .onObservationDeliver(async (call) => {
         const obs = routes.get(call.input.path)
         if (!obs) return { status_code: 404 }
         if (!obs.matches(call)) return { status_code: 422 }
@@ -1154,7 +1154,7 @@ describe('calling through an observer (v2 §4.6, decision 13)', () => {
 
   it('a call through the observer that times out, rethrown by the hook, reaches the caller as TIMEOUT', async () => {
     const { sdk } = await http()
-    sdk.onObserverDeliver('http::on-request', async (call, [obs]) =>
+    sdk.onObservationDeliver('http::on-request', async (call, [obs]) =>
       sdk.call({ observer: obs, payload: call.input, timeoutMs: 20 }),
     )
     const response = sdk.call({ function_id: 'http::on-request', payload: { path: '/users' } })

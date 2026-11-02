@@ -606,12 +606,12 @@ async fn an_owner_coming_back_gets_the_set_again_and_acks_it() {
     sink.reply(&activation, Value::Null).await;
 }
 
-/// A standby (v2 §7): a second instance whose registration conflicts while
-/// the host is connected registers once the host leaves, gets the
-/// function's current observers in `functionregistered`, acks them, and
-/// they are active again.
+/// A second instance (v2 §7): its registration conflicts while the host is
+/// connected; registered again once the host left, it gets the function's
+/// current observers in `functionregistered`, acks them, and they are
+/// active again.
 #[tokio::test]
-async fn a_standby_takes_over_the_functions_observers_when_its_host_leaves() {
+async fn a_second_instance_takes_over_the_functions_observers_once_its_host_left() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut cron = observe_support::connect_v2(&t, "cron").await;
     cron.register_function_with(json!({
@@ -634,10 +634,10 @@ async fn a_standby_takes_over_the_functions_observers_when_its_host_leaves() {
     ))
     .await;
 
-    let mut standby = observe_support::connect_v2(&t, "cron-standby").await;
-    standby.manual_acks();
-    standby.register_function("cron::on-tick").await;
-    let conflict = standby
+    let mut second = observe_support::connect_v2(&t, "cron-2").await;
+    second.manual_acks();
+    second.register_function("cron::on-tick").await;
+    let conflict = second
         .expect("registrationrejected", |f| {
             f["type"] == "registrationrejected"
         })
@@ -648,7 +648,7 @@ async fn a_standby_takes_over_the_functions_observers_when_its_host_leaves() {
     let pending = sink.state_becomes("nightly", "pending").await;
     assert_eq!(pending["reason"]["code"], "OWNER_UNAVAILABLE");
 
-    standby
+    second
         .register_function_with(json!({
             "type": "registerfunction",
             "id": "cron::on-tick",
@@ -656,18 +656,18 @@ async fn a_standby_takes_over_the_functions_observers_when_its_host_leaves() {
             "private": true
         }))
         .await;
-    let set = function_registered(&mut standby, "cron::on-tick").await;
+    let set = function_registered(&mut second, "cron::on-tick").await;
     assert_eq!(set["observers"].as_array().unwrap().len(), 1, "{set}");
     assert_eq!(set["observers"][0]["id"], "nightly");
     assert_eq!(
         set["observers"][0]["args"],
         json!({ "expression": "0 0 * * *" })
     );
-    ack(&mut standby, "cron::on-tick", "nightly", &set["revision"]).await;
+    ack(&mut second, "cron::on-tick", "nightly", &set["revision"]).await;
     sink.state_becomes("nightly", "active").await;
 
-    // The standby hosts the function now: its calls reach the observer.
-    standby
+    // The second instance hosts the function now: its calls reach the observer.
+    second
         .send(report(vec![item("cron::on-tick", &["nightly"], "success")]))
         .await;
     let activation = sink.invoked("sink::ticks").await;

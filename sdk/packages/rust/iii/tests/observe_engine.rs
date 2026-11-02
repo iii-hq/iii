@@ -957,7 +957,7 @@ async fn topics_host(name: &str, source: &str, topics: &Topics, answer: bool) ->
     let host = client(name).await;
     host.on_observer_added_for(source, topics.clone())
         .on_observer_removed_for(source, topics.clone())
-        .on_observer_match_for(
+        .on_observation_match_for(
             source,
             Match::keys(
                 |obs| obs.args_value()["topic"].as_str().into(),
@@ -965,7 +965,7 @@ async fn topics_host(name: &str, source: &str, topics: &Topics, answer: bool) ->
             ),
         );
     if answer {
-        host.on_observer_deliver_for(source, {
+        host.on_observation_deliver_for(source, {
             let host = host.clone();
             move |call: Call, observers: Vec<Observer>| {
                 let host = host.clone();
@@ -1167,7 +1167,7 @@ async fn routed_calls_reach_the_matched_observers_whose_filters_match() {
     let id = uid();
     let source = format!("it{id}::topics");
     let host = client(&format!("host-{id}")).await;
-    host.on_observer_match_for(
+    host.on_observation_match_for(
         &source,
         Match::keys(
             |obs| obs.args_value()["topic"].as_str().into(),
@@ -1485,7 +1485,7 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         let source = format!("it{id}::on-changed");
         let (to_a, to_b) = (format!("it{id}::envelope"), format!("it{id}::output"));
         let owner = client(&format!("tmux-{id}")).await;
-        owner.on_observer_match_for(&source, session_match(keys));
+        owner.on_observation_match_for(&source, session_match(keys));
         owner.on_observer_added_for(&source, {
             let (iii, source) = (owner.clone(), source.clone());
             move |obs: Observer| {

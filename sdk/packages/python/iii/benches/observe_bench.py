@@ -64,7 +64,7 @@ class Case:
     observers: Callable[[], list[dict[str, Any]]]
     payload: Callable[[int], Any]
     calls: int
-    #: The function's ``on_observer_match``.
+    #: The function's ``on_observation_match``.
     match: Callable[[Any, Any], bool] | None = None
     #: A new active set before every call.
     churn: bool = False
@@ -171,7 +171,7 @@ def run_case(case: Case) -> dict[str, Any]:
 
         ref = client.register_function(FN, echo)
         if case.match is not None:
-            ref.on_observer_match(case.match)
+            ref.on_observation_match(case.match)
         engine.wait_for(
             lambda: any(f.get("id") == FN for f in engine.frames_of("registerfunction")), what="the registration"
         )
