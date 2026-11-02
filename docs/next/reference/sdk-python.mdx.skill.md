@@ -1511,9 +1511,6 @@ observe them with ``iii.observe(EngineSources.FUNCTIONS_CHANGED, target)``
 | `LOG` | `Final[str]` | No | - |
 | `OBSERVERS_CHANGED` | `Final[str]` | No | - |
 | `SPAN` | `Final[str]` | No | - |
-| `STREAM_CHANGED` | `Final[str]` | No | - |
-| `STREAM_JOIN` | `Final[str]` | No | - |
-| `STREAM_LEAVE` | `Final[str]` | No | - |
 | `WORKERS_CHANGED` | `Final[str]` | No | - |
 
 ### iii.errors

@@ -1293,19 +1293,17 @@ filter on `caller.parent.worker_name` can skip a worker's own writes. See
 
 The engine hosts event sources as functions in the `default` namespace, and you observe them with
 filters on the event. A worker in any namespace observes `engine::*` and `configuration::*` sources
-without naming a namespace. For `observability::*` and `stream::*` sources, a worker in another
-namespace names `namespace: "default"`.
+without naming a namespace. For `observability::*` sources, a worker in another namespace names
+`namespace: "default"`.
 
-| Function                              | Event                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::on-functions-changed`        | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`. `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
-| `engine::on-workers-changed`          | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                                                                                                                                                 |
-| `engine::on-observers-changed`        | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                                                                                                                                     |
-| `configuration::on-updated`           | `{ type: "configuration", event_type, id, name, description, schema, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. The event carries no value: read it with `configuration::get`.                                                                          |
-| `observability::on-log`               | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                                                                                                                                        |
-| `observability::on-span`              | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
-| `stream::on-changed`                  | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id?, event }`, `event_type` one of `create`, `update`, `delete`, `sync`.                                                                                                                                                                          |
-| `stream::on-join`, `stream::on-leave` | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id? }`.                                                                                                                                                                                                                                           |
+| Function                       | Event                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::on-functions-changed` | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`. `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
+| `engine::on-workers-changed`   | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                                                                                                                                                 |
+| `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                                                                                                                                     |
+| `configuration::on-updated`    | `{ type: "configuration", event_type, id, name, description, schema, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. The event carries no value: read it with `configuration::get`.                                                                          |
+| `observability::on-log`        | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                                                                                                                                        |
+| `observability::on-span`       | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
 
 Each of them is a private function whose handler returns the event. So `input` and `output` are both
 the event, and `deliver: "input"` and `deliver: "output"` both give the target the event. Their
@@ -1318,17 +1316,17 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    // Reload the stream worker's settings when its configuration entry changes.
+    // Reload the billing worker's settings when its configuration entry changes.
     worker.observe(
       {
         function_id: "configuration::on-updated",
         deliver: "input",
         filters: {
-          "input.id": { $eq: "iii-stream" },
+          "input.id": { $eq: "billing" },
           "input.event_type": { $eq: "configuration:updated" },
         },
       },
-      "stream::reload",
+      "billing::reload",
     );
 
     // Alert on error logs.
@@ -1354,11 +1352,11 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
             "function_id": "configuration::on-updated",
             "deliver": "input",
             "filters": {
-                "input.id": {"$eq": "iii-stream"},
+                "input.id": {"$eq": "billing"},
                 "input.event_type": {"$eq": "configuration:updated"},
             },
         },
-        "stream::reload",
+        "billing::reload",
     )
 
     # Alert on error logs.
@@ -1383,10 +1381,10 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
         Source::function("configuration::on-updated")
             .deliver(Deliver::Input)
             .filters(json!({
-                "input.id": { "$eq": "iii-stream" },
+                "input.id": { "$eq": "billing" },
                 "input.event_type": { "$eq": "configuration:updated" },
             })),
-        "stream::reload",
+        "billing::reload",
     );
 
     // Alert on error logs.
@@ -1406,10 +1404,10 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
         FunctionID: "configuration::on-updated",
         Deliver:    iii.DeliverInput,
         Filters: iii.Filters{
-            "input.id":         iii.Op{"$eq": "iii-stream"},
+            "input.id":         iii.Op{"$eq": "billing"},
             "input.event_type": iii.Op{"$eq": "configuration:updated"},
         },
-    }, "stream::reload")
+    }, "billing::reload")
 
     // Alert on error logs.
     worker.Observe(iii.Source{

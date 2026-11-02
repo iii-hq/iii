@@ -95,6 +95,3 @@ class EngineSources:
     LOG: Final[str] = "observability::on-log"
     SPAN: Final[str] = "observability::on-span"
     CONFIGURATION_UPDATED: Final[str] = "configuration::on-updated"
-    STREAM_CHANGED: Final[str] = "stream::on-changed"
-    STREAM_JOIN: Final[str] = "stream::on-join"
-    STREAM_LEAVE: Final[str] = "stream::on-leave"

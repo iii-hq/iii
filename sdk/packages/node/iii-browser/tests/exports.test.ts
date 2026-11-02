@@ -64,9 +64,6 @@ describe('Package Exports', () => {
       LOG: 'observability::on-log',
       SPAN: 'observability::on-span',
       CONFIGURATION_UPDATED: 'configuration::on-updated',
-      STREAM_CHANGED: 'stream::on-changed',
-      STREAM_JOIN: 'stream::on-join',
-      STREAM_LEAVE: 'stream::on-leave',
     })
     expect(root.EngineTriggers).toBeUndefined()
     expect(Object.values(root.EngineFunctions as Record<string, string>)).not.toContainEqual(
