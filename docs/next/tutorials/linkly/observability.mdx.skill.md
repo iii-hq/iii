@@ -125,18 +125,20 @@ iii call engine::traces::tree trace_id="$trace_id" | jq -r '
 </Info>
 
 ```text
-GET /s/:code (http) 6.686 ms
-  call engine::channels::create (iii) 0.062 ms
-  execute http::redirect (iii-node) 3.569 ms
-    execute link::resolve (iii-node) 1.233 ms
-      call state::get (iii) 0.309 ms
-        execute state::get (state) 0.06 ms
-  call engine::channels::create (iii) 0.031 ms
+GET /s/:code (http) 3.959 ms
+  execute http::on-request (http) 3.422 ms
+    execute http::redirect (iii-node) 1.815 ms
+      execute link::resolve (iii-node) 1.446 ms
+        call state::get (iii) 0.739 ms
+          execute state::get (state) 0.375 ms
+    call engine::channels::create (iii) 0.022 ms
+    call engine::channels::create (iii) 0.033 ms
 ```
 
-This shows the redirect arriving at the `http` worker on `/s/:code`, running `http::redirect` in
-`link`, which then calls `link::resolve` in the `link` worker via the engine. The per-span timing
-shows where the request spends its time.
+This shows the redirect arriving at the `http` worker on `/s/:code`. The worker handles each request
+as a call of `http::on-request`, which hands it to the route's observer: `http::redirect` in `link`,
+which then calls `link::resolve` in the `link` worker via the engine. The per-span timing shows
+where the request spends its time.
 
 <Note>
   Worker spans export on a short delay, so a brand-new request's trace can be missing or look
