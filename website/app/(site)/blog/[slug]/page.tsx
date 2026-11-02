@@ -146,7 +146,7 @@ export default async function BlogPost({ params }: { params: Promise<Params> }) 
                   </>
                 ) : null}
               </p>
-              <AskAi markdownUrl={`${site.url}/blog/${slug}.md`} />
+              <AskAi slug={slug} position="top" />
             </PageHead>
 
             {banner ? (
@@ -160,6 +160,8 @@ export default async function BlogPost({ params }: { params: Promise<Params> }) 
             ) : null}
 
             <Prose className="mt-14">{content}</Prose>
+
+            <AskAi slug={slug} position="end" />
 
             <PostNav older={older} newer={newer} />
           </article>
