@@ -927,11 +927,11 @@ iii.registerFunction('http::on-request', (request: HttpRequest) => request, {
   .onObserverAdded((obs) => routes.add(obs))                 // throws HTTP_ROUTE_CONFLICT
   .onObserverRemoved((obs) => routes.remove(obs.id))
   .onObserverDeliver<HttpResponse>(async (call) => {
-    const match = routes.match(call.input.method, call.input.path)   // /users/:id → params
+    const match = routes.match(call.input.method, call.input.path)   // /users/:id → path_params
     if (!match) return { status_code: 404 }
     if (!match.obs.matches(call)) return { status_code: 422 }
     await runMiddleware(match, call.input)
-    return iii.call({ observer: match.obs, payload: { ...call.input, params: match.params } })
+    return iii.call({ observer: match.obs, payload: { ...call.input, path_params: match.params } })
   })
 
 server.on('request', async (req, res) =>
