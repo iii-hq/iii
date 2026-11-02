@@ -172,6 +172,8 @@ def build_payload(
     return {
         "worker_name": worker_name,
         "version": engine_version,
+        # shortcut: strips only a prerelease/build suffix, not a range or `v` prefix; the engine Cargo.toml version is always plain semver.
+        "min_iii_version": engine_version.split("-", 1)[0].split("+", 1)[0],
         "tag": registry_tag or "latest",
         "type": "engine",
         "readme": readme,

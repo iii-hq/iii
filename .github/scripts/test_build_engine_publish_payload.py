@@ -98,3 +98,27 @@ def test_args_format_must_be_an_object() -> None:
             worker_info={"worker": {"name": "w"}},
             function_details=[{"function_id": "w::on-x", "args_format": "string"}],
         )
+
+
+@pytest.mark.parametrize(
+    ("engine_version", "min_iii_version"),
+    [("0.26.0", "0.26.0"), ("0.26.0-rc.2", "0.26.0")],
+)
+def test_payload_declares_min_iii_version(
+    tmp_path: pathlib.Path, engine_version: str, min_iii_version: str
+) -> None:
+    repo = _repo(tmp_path)
+    (repo / "engine/Cargo.toml").write_text(
+        f'[package]\nname = "iii"\nversion = "{engine_version}"\n', encoding="utf-8"
+    )
+    payload = build.build_payload(
+        repo_root=repo,
+        worker="iii-stream",
+        worker_dir=pathlib.Path("engine/src/workers/stream"),
+        expected_version=engine_version,
+        registry_tag="latest",
+        repo_url="https://github.com/iii-hq/iii",
+        interface=INTERFACE,
+    )
+
+    assert payload["min_iii_version"] == min_iii_version
