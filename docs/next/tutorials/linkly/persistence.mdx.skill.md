@@ -26,7 +26,7 @@ link:
 
 database:
   worker: package://database
-  version: "0.5.13"
+  version: "latest"
   config_name: database
   working_dir: .
   config_override:

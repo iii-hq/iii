@@ -21,7 +21,7 @@ This chapter uses `queue` and a new Python `analytics` worker. Uncomment the Ch.
 ```yaml worker-compose.yaml
 queue:
   worker: package://queue
-  version: "0.21.11"
+  version: "latest"
   config_name: queue
   working_dir: .
   config_override:
@@ -42,7 +42,7 @@ or its `pool:`. The whole block then reads:
 ```yaml worker-compose.yaml
 database:
   worker: package://database
-  version: "0.5.13"
+  version: "latest"
   config_name: database
   working_dir: .
   config_override:

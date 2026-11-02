@@ -38,12 +38,12 @@ engine:
 containers:
   http:
     worker: package://http
-    version: "0.21.9"
+    version: "latest"
     config_name: http
 
   state:
     worker: package://state
-    version: "0.22.8"
+    version: "latest"
     config_name: state
     config_override:
       adapter:
