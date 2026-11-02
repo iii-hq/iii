@@ -374,7 +374,7 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
       Which calls reach the target; ``{}`` (or absent) = every call.
     </ParamField>
     <ParamField body="namespace" type="str">
-      Defaults to this worker's (``engine::*`` resolves to ``default``).
+      Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``).
     </ParamField>
     <ParamField body="on" type="Literal['success', 'error', 'complete']">
       ``"success"`` (default), ``"error"`` or ``"complete"``.
@@ -1322,7 +1322,7 @@ The left side of ``iii.observe``: what is observed.
 | `capture` | `list[Capture]` | No | Default ``["input", "output", "caller"]``. |
 | `deliver` | `Literal['envelope', 'input', 'output']` | No | What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``. |
 | `filters` | `Filter` | No | Which calls reach the target; ``\{\}`` (or absent) = every call. |
-| `namespace` | `str` | No | Defaults to this worker's (``engine::*`` resolves to ``default``). |
+| `namespace` | `str` | No | Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``). |
 | `on` | `Literal['success', 'error', 'complete']` | No | ``"success"`` (default), ``"error"`` or ``"complete"``. |
 
 ---

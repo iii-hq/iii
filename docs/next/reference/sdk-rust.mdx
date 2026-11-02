@@ -326,7 +326,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
       The observed function id.
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
-      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*`).
+      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`).
     </ParamField>
     <ParamField body="on" type="fn(on: On) -> Self" required>
       Which outcomes reach the target. Default `On::Success`.
@@ -674,7 +674,7 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
       The observed function id.
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
-      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*`).
+      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`).
     </ParamField>
     <ParamField body="on" type="fn(on: On) -> Self" required>
       Which outcomes reach the target. Default `On::Success`.
@@ -1658,7 +1658,7 @@ The left side of an observer: what is observed.
 | `filters` | `fn(filters: Value) -> Self` | Yes | Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call. |
 | `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |
 | `function_id` | `fn() -> &str` | Yes | The observed function id. |
-| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*`). |
+| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`). |
 | `on` | fn(on: [`On`](#on)) -&gt; Self | Yes | Which outcomes reach the target. Default `On::Success`. |
 
 ---

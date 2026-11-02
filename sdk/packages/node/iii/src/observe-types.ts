@@ -67,7 +67,7 @@ export interface Observed<I = unknown, O = unknown> {
 export interface ObserveSource {
   /** The observed function. */
   function_id: string
-  /** Defaults to this worker's namespace (`engine::*` resolves to `default`). */
+  /** Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`). */
   namespace?: string
   /**
    * For the worker that hosts the function: what to set up and which calls

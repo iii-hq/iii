@@ -302,7 +302,7 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
       The observed function.
     </ParamField>
     <ParamField body="namespace" type="string">
-      Defaults to this worker's namespace (`engine::*` resolves to `default`).
+      Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`).
     </ParamField>
     <ParamField body="on" type="'success' | 'error' | 'complete'">
       Which outcomes reach the target; default `'success'`.
@@ -1053,7 +1053,7 @@ The left side of `iii.observe`: what is observed.
 | `deliver` | `"input" \| "output" \| "envelope"` | No | What the target receives when iii delivers: the Observed envelope<br />(default), the call's `input`, or its `output`. |
 | `filters` | [`Filter`](#filter) | No | Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. |
 | `function_id` | `string` | Yes | The observed function. |
-| `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` resolves to `default`). |
+| `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`). |
 | `on` | `"success" \| "error" \| "complete"` | No | Which outcomes reach the target; default `'success'`. |
 
 ---
