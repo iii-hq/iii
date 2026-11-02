@@ -354,6 +354,9 @@ export type InitOptions = {
   observe?: { hookTimeoutMs?: number; reporter?: Partial<ReporterLimits> }
 }
 
+/** The upgrade guide the removed 0.25 trigger APIs point to. */
+const UPGRADE_GUIDE = 'https://iii.dev/docs/upgrading/from-0-25-x'
+
 class Sdk implements IIIClient {
   private ws?: WebSocket
   private functions = new Map<string, RemoteFunctionData>()
@@ -1159,6 +1162,27 @@ class Sdk implements IIIClient {
    * @deprecated Use {@link Sdk.call}, the same function.
    */
   trigger = this.call
+
+  /** Removed in 0.26.0: throws an error that points to {@link Sdk.observe}. */
+  registerTrigger = (): never => {
+    throw new Error(
+      `registerTrigger was removed in iii 0.26.0: bind functions with iii.observe(source, target). registerTrigger({ type: 'cron', function_id, config }) becomes iii.observe({ function_id: 'cron::on-tick', args: config }, function_id). Every trigger type's function is in the migration guide: ${UPGRADE_GUIDE}`,
+    )
+  }
+
+  /** Removed in 0.26.0: throws an error that points to {@link Sdk.registerFunction} and the observer hooks. */
+  registerTriggerType = (): never => {
+    throw new Error(
+      `registerTriggerType was removed in iii 0.26.0: a trigger type is now a function that consumers observe. Register it with registerFunction('<worker>::on-<event>', (event) => event, { args_format, private: true }), move the TriggerHandler to onObserverAdded and onObserverRemoved, and call the function once per event. Migration guide: ${UPGRADE_GUIDE}#move-a-trigger-type-to-an-observable-function`,
+    )
+  }
+
+  /** Removed in 0.26.0: throws an error that points to `FunctionRef.unregister`. */
+  unregisterTriggerType = (): never => {
+    throw new Error(
+      `unregisterTriggerType was removed in iii 0.26.0: a trigger type is now a function. Unregister it with the FunctionRef that registerFunction returns: functionRef.unregister(). Migration guide: ${UPGRADE_GUIDE}#move-a-trigger-type-to-an-observable-function`,
+    )
+  }
 
   /** `caller` and `observe_depth` an outgoing call carries from the current handler (engines with `observe.v1`). */
   private outgoingObserveFields(): { caller?: CallerWire; observe_depth?: number } {

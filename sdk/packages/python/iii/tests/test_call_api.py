@@ -41,8 +41,12 @@ def test_the_trigger_aliases_are_documented_as_deprecated() -> None:
 
 
 def test_the_trigger_apis_are_gone() -> None:
-    for name in ("register_trigger", "register_trigger_type", "unregister_trigger_type"):
-        assert not hasattr(III, name)
+    with pytest.raises(RuntimeError, match=r"register_trigger was removed in iii 0\.26\.0: bind functions"):
+        III.register_trigger(object(), {"type": "cron"})
+    with pytest.raises(RuntimeError, match=r"register_trigger_type was removed in iii 0\.26\.0: a trigger type"):
+        III.register_trigger_type(object(), {"id": "timer"}, object())
+    with pytest.raises(RuntimeError, match=r"function_ref\.unregister\(\)"):
+        III.unregister_trigger_type(object(), {"id": "timer"})
     for name in ("ObserveHooks", "Trigger", "TriggerConfig", "TriggerHandler", "TriggerTypeRef"):
         assert not hasattr(iii, name)
     for module in ("iii.trigger", "iii.triggers"):
