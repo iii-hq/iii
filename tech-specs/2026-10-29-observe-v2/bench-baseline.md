@@ -2,7 +2,8 @@
 
 What observe v2 (0.26.0) costs, measured against the performance budget of the
 spec (§13) and against 0.25.0 on the same machine. Every number here is in
-`bench-baseline.json`, run by run, with the machine, the toolchain and the
+[`bench-baseline.json`](https://github.com/iii-hq/iii/blob/6cc82920f747acaebc1fa3ffdea3f87856054217/tech-specs/2026-10-29-observe-v2/bench-baseline.json)
+(tag `iii/v0.26.0-rc.2`), run by run, with the machine, the toolchain and the
 commits.
 
 ## Summary
