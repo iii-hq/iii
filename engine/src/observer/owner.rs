@@ -153,14 +153,6 @@ mod members {
             }
         }
 
-        pub(super) fn holds(&self, observer: &Arc<Observer>) -> bool {
-            observer.seq().is_some_and(|seq| {
-                self.by_seq
-                    .get(&seq)
-                    .is_some_and(|held| Arc::ptr_eq(held, observer))
-            })
-        }
-
         pub(super) fn len(&self) -> usize {
             self.by_seq.len()
         }
@@ -241,11 +233,6 @@ impl FunctionEntry {
     /// ones the engine owns.
     pub fn limited_observer_count(&self) -> usize {
         self.observers.write().limited()
-    }
-
-    /// Whether `observer` is one of the function's live observers.
-    fn holds(&self, observer: &Arc<Observer>) -> bool {
-        self.observers.write().holds(observer)
     }
 
     /// A new entry; `revision` continues the function's revisions from an
@@ -1320,7 +1307,12 @@ impl ObserverRegistry {
     /// speaks observe) gets `functionregistered` and acks, its observers stay
     /// `pending`. The engine's standing observers of the function are made in
     /// its namespace.
-    pub fn on_function_change(&self, change: FunctionChange, namespace: &str, function_id: &str) {
+    pub fn on_function_change(
+        self: &Arc<Self>,
+        change: FunctionChange,
+        namespace: &str,
+        function_id: &str,
+    ) {
         let key = (namespace.to_string(), function_id.to_string());
         let registered = change == FunctionChange::Registered;
 
@@ -1403,6 +1395,9 @@ impl ObserverRegistry {
         }
         // Their functions' sets change once each.
         self.refresh_observers(&changed);
+        if registered {
+            self.announce_returned(&targeting);
+        }
         for observer in disposed {
             self.forget(observer);
         }
@@ -1521,14 +1516,21 @@ impl ObserverRegistry {
             let revision = sync.revision;
             // An observer whose observing worker is away (suspended, waiting
             // for a `Reattach`) is announced when it returns.
+            let mut blocked_return = false;
             let observers: Vec<Arc<Observer>> = entry
                 .observers()
                 .into_iter()
                 .filter(|o| {
                     o.with_flags(|flags| {
-                        flags.failed.is_none()
+                        let live = flags.failed.is_none()
                             && flags.disposed.is_none()
-                            && flags.observing_connected
+                            && flags.observing_connected;
+                        if live && flags.returning {
+                            blocked_return |= !flags.target_available;
+                            live && !blocked_return
+                        } else {
+                            live
+                        }
                     })
                 })
                 .collect();
@@ -1572,6 +1574,7 @@ impl ObserverRegistry {
         // Nothing to dispose here: clearing the ack only gates `active`.
         self.update(observer, |flags| {
             flags.owner_acked = false;
+            flags.returning = false;
             flags.rejected_by_owner = false;
             flags.announced = Some(Announcement {
                 owner,
@@ -1710,20 +1713,43 @@ impl ObserverRegistry {
     /// that got its `functionregistered` hears about them again
     /// (`observeradded`), in the order they were created, as that
     /// `functionregistered` would have listed them, and each waits for its
-    /// ack. `O(k log k)` for `k` returning observers, however many others
-    /// their functions have.
+    /// ack. `O(k log k + n)` for `k` changed observers and the `n` observers
+    /// of the functions of those still returning; none returning, no scan.
     pub(crate) fn announce_returned(self: &Arc<Self>, observers: &[Arc<Observer>]) {
-        let mut returned: Vec<(u64, &Arc<Observer>)> = observers
+        let mut functions: Vec<FnKey> = observers
             .iter()
-            .filter_map(|observer| Some((observer.seq()?, observer)))
+            .filter(|observer| observer.with_flags(|flags| flags.returning))
+            .map(|observer| observer.function.clone())
             .collect();
-        returned.sort_unstable_by_key(|(seq, _)| *seq);
-        for (_, observer) in returned {
-            if self
-                .function_entry(&observer.function)
-                .is_some_and(|entry| entry.holds(observer))
-            {
-                self.announce_on_return(observer);
+        functions.sort_unstable();
+        functions.dedup();
+        for function in functions {
+            let Some(entry) = self.function_entry(&function) else {
+                continue;
+            };
+            for observer in entry.observers() {
+                let (returning, ready) = observer.with_flags(|flags| {
+                    let returning = flags.returning
+                        && flags.observing_connected
+                        && flags.failed.is_none()
+                        && flags.disposed.is_none();
+                    (returning, flags.target_available)
+                });
+                if !returning {
+                    continue;
+                }
+                if !ready {
+                    break;
+                }
+                self.announce_on_return(&observer);
+                if observer.with_flags(|flags| {
+                    flags.returning
+                        && flags.observing_connected
+                        && flags.failed.is_none()
+                        && flags.disposed.is_none()
+                }) {
+                    break;
+                }
             }
         }
     }
@@ -1731,7 +1757,9 @@ impl ObserverRegistry {
     fn announce_on_return(self: &Arc<Self>, observer: &Arc<Observer>) {
         self.with_owner_sync(&observer.function, |_entry, sync, _owner| {
             let returning = observer.with_flags(|flags| {
-                flags.observing_connected
+                flags.returning
+                    && flags.observing_connected
+                    && flags.target_available
                     && flags.failed.is_none()
                     && flags.disposed.is_none()
                     && flags.announced.is_none()

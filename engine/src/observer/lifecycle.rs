@@ -137,6 +137,10 @@ pub(crate) struct Flags {
     /// not speak observe (an older SDK, engine-hosted, HTTP-invoked), so there
     /// is nothing to wait for. `active` needs it (protocol.md §3.3).
     pub owner_acked: bool,
+    /// Reattached and waiting for its target before its owner hears about it
+    /// again. Returning observers of one function are announced in creation
+    /// order, so a later one waits behind an earlier unavailable target.
+    pub returning: bool,
     /// How the current owner was told about the observer
     /// (`functionregistered` or `observeradded`); `None` while it was not.
     /// An ack or an ack timeout counts only for the announcement it answers,
@@ -1110,12 +1114,19 @@ impl ObserverRegistry {
     /// active set when activeness changed, and a disposed observer is
     /// forgotten.
     pub(super) fn settle(&self, observer: &Arc<Observer>, transition: Transition) {
+        let releases_returning = matches!(
+            &transition.became,
+            ObserverState::Disposed | ObserverState::Error
+        ) && observer.with_flags(|flags| flags.returning);
         let settled = self.settle_deferring_refresh(observer, transition);
         if settled.refresh {
             self.refresh_observer(observer);
         }
         if settled.disposed {
             self.forget(observer);
+        }
+        if releases_returning && let Some(registry) = self.this() {
+            registry.announce_returned(std::slice::from_ref(observer));
         }
     }
 

@@ -1673,6 +1673,205 @@ async fn an_observer_whose_worker_is_away_is_announced_when_it_reattaches() {
     assert_eq!(orders.result(call).await["result"], json!({ "ok": true }));
 }
 
+/// A returning observer is not announced until the target its worker is
+/// replaying exists again. Observers of one function keep their creation
+/// order even when a later target returns first.
+#[tokio::test]
+async fn returning_observers_wait_for_their_targets_before_owner_hooks_run() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut watcher = host(&t, "watcher", &["sink::first", "sink::second"]).await;
+    for (id, target) in [("obs-first", "sink::first"), ("obs-second", "sink::second")] {
+        acked_observer(
+            &mut orders,
+            &mut watcher,
+            observer(id, json!({ "function_id": "orders::create" }), target),
+            "orders::create",
+        )
+        .await;
+    }
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-first").await;
+    removed(&mut orders, "obs-second").await;
+    orders.disconnect().await;
+    assert!(
+        eventually(|| {
+            t.engine
+                .functions
+                .get("default", "orders::create")
+                .is_none()
+                && t.engine.functions.get("default", "sink::first").is_none()
+                && t.engine.functions.get("default", "sink::second").is_none()
+        })
+        .await
+    );
+
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    watcher.register_function("sink::second").await;
+    registered(&t.engine, "default", "sink::second").await;
+
+    let (mut orders, registrations) = owner(&t, "orders-2", &["orders::create"]).await;
+    assert_eq!(
+        registrations[0]["observers"],
+        json!([]),
+        "the later returning observer waits behind the first target"
+    );
+    get(&mut orders, "obs-first").await;
+    assert!(
+        !orders.has_seen(|frame| frame["type"] == "observeradded"),
+        "owner hooks must not run before the first target is replayed"
+    );
+
+    watcher.register_function("sink::first").await;
+    let first = added(&mut orders, "obs-first").await;
+    let call = orders.call("sink::first", json!({ "ready": true })).await;
+    let invoked = watcher.invoked("sink::first").await;
+    watcher.reply(&invoked, json!({ "accepted": true })).await;
+    assert_eq!(
+        orders.result(call).await["result"],
+        json!({ "accepted": true }),
+        "the target exists before its owner's callback can call it"
+    );
+    let second = added(&mut orders, "obs-second").await;
+    ack(
+        &mut orders,
+        "orders::create",
+        "obs-first",
+        &first["revision"],
+    )
+    .await;
+    ack(
+        &mut orders,
+        "orders::create",
+        "obs-second",
+        &second["revision"],
+    )
+    .await;
+    watcher.state_becomes("obs-first", "active").await;
+    watcher.state_becomes("obs-second", "active").await;
+}
+
+/// A returning observer whose target is absent holds later announcements in
+/// creation order. Disposing it releases the ready observer behind it.
+#[tokio::test]
+async fn disposing_a_blocked_returning_observer_releases_the_next_one() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut watcher = host(&t, "watcher", &["sink::first", "sink::second"]).await;
+    for (id, target) in [
+        ("obs-blocking", "sink::first"),
+        ("obs-ready", "sink::second"),
+    ] {
+        acked_observer(
+            &mut orders,
+            &mut watcher,
+            observer(id, json!({ "function_id": "orders::create" }), target),
+            "orders::create",
+        )
+        .await;
+    }
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    removed(&mut orders, "obs-blocking").await;
+    removed(&mut orders, "obs-ready").await;
+    assert!(
+        eventually(|| {
+            t.engine.functions.get("default", "sink::first").is_none()
+                && t.engine.functions.get("default", "sink::second").is_none()
+        })
+        .await
+    );
+
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    watcher.register_function("sink::second").await;
+    registered(&t.engine, "default", "sink::second").await;
+    get(&mut orders, "obs-blocking").await;
+    assert!(
+        !orders.has_seen(|frame| frame["type"] == "observeradded"),
+        "the ready observer stays behind its earlier blocked peer"
+    );
+
+    watcher
+        .send(json!({ "type": "unobserve", "id": "obs-blocking" }))
+        .await;
+    let ready = added(&mut orders, "obs-ready").await;
+    ack(
+        &mut orders,
+        "orders::create",
+        "obs-ready",
+        &ready["revision"],
+    )
+    .await;
+    watcher.state_becomes("obs-ready", "active").await;
+}
+
+/// A returning observer from another worker also stops blocking later
+/// announcements when that worker disconnects again.
+#[tokio::test]
+async fn disconnecting_a_blocked_returning_worker_releases_the_next_one() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
+    let mut first = host(&t, "first", &["sink::first"]).await;
+    let mut second = host(&t, "second", &["sink::second"]).await;
+    acked_observer(
+        &mut orders,
+        &mut first,
+        observer(
+            "obs-blocking-worker",
+            json!({ "function_id": "orders::create" }),
+            "sink::first",
+        ),
+        "orders::create",
+    )
+    .await;
+    acked_observer(
+        &mut orders,
+        &mut second,
+        observer(
+            "obs-ready-worker",
+            json!({ "function_id": "orders::create" }),
+            "sink::second",
+        ),
+        "orders::create",
+    )
+    .await;
+    let first_identity = (first.worker_id, first.reattach_token.clone());
+    let second_identity = (second.worker_id, second.reattach_token.clone());
+    first.disconnect().await;
+    second.disconnect().await;
+    removed(&mut orders, "obs-blocking-worker").await;
+    removed(&mut orders, "obs-ready-worker").await;
+    assert!(
+        eventually(|| {
+            t.engine.functions.get("default", "sink::first").is_none()
+                && t.engine.functions.get("default", "sink::second").is_none()
+        })
+        .await
+    );
+
+    let first = Client::connect_with(t.port, "first", true, Some(first_identity)).await;
+    let mut second = Client::connect_with(t.port, "second", true, Some(second_identity)).await;
+    second.register_function("sink::second").await;
+    registered(&t.engine, "default", "sink::second").await;
+    get(&mut orders, "obs-blocking-worker").await;
+    assert!(
+        !orders.has_seen(|frame| frame["type"] == "observeradded"),
+        "the later worker waits behind the earlier returning observer"
+    );
+
+    first.disconnect().await;
+    let ready = added(&mut orders, "obs-ready-worker").await;
+    ack(
+        &mut orders,
+        "orders::create",
+        "obs-ready-worker",
+        &ready["revision"],
+    )
+    .await;
+    second.state_becomes("obs-ready-worker", "active").await;
+}
+
 /// A reattaching worker's observers reach each function's owner in the
 /// order they were created, as `functionregistered` lists them, so the
 /// owner's hooks run in that order.

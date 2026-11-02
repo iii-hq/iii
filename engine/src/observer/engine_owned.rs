@@ -204,6 +204,7 @@ impl ObserverRegistry {
                 function_available: function_registered,
                 target_available,
                 owner_acked: self.acked_by_default(&function),
+                returning: false,
                 announced: None,
                 rejected_by_owner: false,
                 activated_once: false,

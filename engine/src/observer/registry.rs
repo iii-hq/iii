@@ -559,6 +559,7 @@ impl ObserverRegistry {
                 function_available: formats.is_some(),
                 target_available,
                 owner_acked: self.acked_by_default(&function),
+                returning: false,
                 announced: None,
                 rejected_by_owner: false,
                 activated_once: false,
@@ -870,6 +871,9 @@ impl ObserverRegistry {
         }
         // Their functions' owners let them go until the worker reattaches.
         self.withdraw_all_while_away(&observers);
+        // A returning observer may have held later returning observers of
+        // the same function behind it. Once it leaves again, they can proceed.
+        self.announce_returned(&observers);
         let Some(runtime) = self.runtime() else {
             for observer in &observers {
                 self.dispose(
@@ -1158,7 +1162,10 @@ impl ObserverRegistry {
                     continue;
                 }
             }
-            self.update(&observer, |flags| flags.observing_connected = true);
+            self.update(&observer, |flags| {
+                flags.observing_connected = true;
+                flags.returning = true;
+            });
             moved.push(observer);
         }
         // Each function's owner let them go when the worker left; it hears
