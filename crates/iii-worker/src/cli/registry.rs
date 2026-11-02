@@ -26,6 +26,10 @@ pub const MAX_REGISTRY_RESPONSE_BYTES: u64 = 1024 * 1024;
 pub(crate) static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
+        .user_agent(format!(
+            "iii/{}",
+            super::engine_compat::running_iii_version()
+        ))
         .build()
         .expect("Failed to create HTTP client")
 });
@@ -51,12 +55,19 @@ pub(crate) fn is_ci_environment() -> bool {
     CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
 }
 
+fn with_iii_version_query(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    request.query(&[(
+        "iii_version",
+        super::engine_compat::running_iii_version().to_string(),
+    )])
+}
+
 /// Append `version` and, when in CI, `ci=true` to a `GET /download/{slug}` request.
 pub(crate) fn with_download_query(
     request: reqwest::RequestBuilder,
     version: &str,
 ) -> reqwest::RequestBuilder {
-    let mut request = request.query(&[("version", version)]);
+    let mut request = with_iii_version_query(request).query(&[("version", version)]);
     if is_ci_environment() {
         request = request.query(&[("ci", "true")]);
     }
@@ -213,8 +224,11 @@ pub async fn fetch_worker_info(
         let mut request = HTTP_CLIENT.get(&url);
         if let Some(v) = version {
             request = with_download_query(request, v);
-        } else if is_ci_environment() {
-            request = request.query(&[("ci", "true")]);
+        } else {
+            request = with_iii_version_query(request);
+            if is_ci_environment() {
+                request = request.query(&[("ci", "true")]);
+            }
         }
 
         let resp = request
@@ -233,7 +247,22 @@ pub async fn fetch_worker_info(
             }));
         }
         if !resp.status().is_success() {
-            return Err(format!("Failed to resolve worker: HTTP {}", resp.status()));
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            // The registry explains refusals (e.g. incompatible_engine) in `error`.
+            return Err(
+                match serde_json::from_str::<serde_json::Value>(&text)
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(str::to_string))
+                {
+                    Some(msg) => format!(
+                        "Failed to resolve worker: HTTP {}: {}",
+                        status.as_u16(),
+                        msg
+                    ),
+                    None => format!("Failed to resolve worker: HTTP {}", status),
+                },
+            );
         }
 
         read_registry_response(resp).await?
@@ -268,6 +297,7 @@ pub async fn fetch_resolved_worker_graph(
         let mut body = serde_json::json!({
             "worker": name,
             "version": version.unwrap_or("latest"),
+            "iii_version": super::engine_compat::running_iii_version().to_string(),
         });
         if let Some(target) = target {
             body["target"] = serde_json::Value::String(target.to_string());
@@ -285,7 +315,12 @@ pub async fn fetch_resolved_worker_graph(
         }
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let raw = resp.text().await.unwrap_or_default();
+            // Resolver errors are `{"error":{"message":..}}`; show just the message.
+            let text = serde_json::from_str::<serde_json::Value>(&raw)
+                .ok()
+                .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
+                .unwrap_or(raw);
             return Err(format!(
                 "Failed to resolve worker graph: HTTP {} {}",
                 status, text
@@ -619,6 +654,131 @@ mod tests {
             "expected version=latest in download request, got: {path}"
         );
         server.abort();
+    }
+
+    /// Serve one canned response; resolves to the full raw request (headers + body).
+    async fn serve_once_capturing(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (String, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut data = Vec::new();
+            let mut buf = [0_u8; 4096];
+            loop {
+                let n = stream.read(&mut buf).await.unwrap();
+                data.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&data).to_string();
+                if let Some(idx) = text.find("\r\n\r\n") {
+                    let want = text[..idx]
+                        .to_ascii_lowercase()
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if data.len() >= idx + 4 + want {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&data).to_string());
+            let resp = format!(
+                "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+        });
+        (base_url, rx)
+    }
+
+    #[tokio::test]
+    async fn resolve_request_sends_iii_version_and_user_agent() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (base_url, rx) = serve_once_capturing("500 Internal Server Error", "{}").await;
+        unsafe { std::env::set_var("III_API_URL", &base_url) };
+        let _ = fetch_resolved_worker_graph("http", None, None).await;
+        unsafe { std::env::remove_var("III_API_URL") };
+
+        let running = crate::cli::engine_compat::running_iii_version().to_string();
+        let req = rx.await.expect("request captured");
+        assert!(
+            req.contains(&format!("\"iii_version\":\"{running}\"")),
+            "body missing iii_version: {req}"
+        );
+        assert!(
+            req.to_ascii_lowercase()
+                .contains(&format!("user-agent: iii/{running}")),
+            "missing user-agent: {req}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_worker_info_without_version_sends_iii_version() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_ci_env_vars_for_test();
+        let (base_url, rx) = serve_once_capturing("204 No Content", "").await;
+        unsafe { std::env::set_var("III_API_URL", &base_url) };
+        let result = fetch_worker_info("iii-exec", None).await;
+        unsafe { std::env::remove_var("III_API_URL") };
+
+        assert!(result.is_ok(), "{result:?}");
+        let running = crate::cli::engine_compat::running_iii_version().to_string();
+        let req = rx.await.expect("request captured");
+        let line = req.lines().next().unwrap_or_default();
+        assert!(
+            line.contains(&format!("iii_version={running}")),
+            "request line: {line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn incompatible_engine_409_is_readable_on_download_and_resolve() {
+        let _guard = crate::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        clear_ci_env_vars_for_test();
+        let msg = "http requires iii >= 0.26.0, running 0.25.9; run: iii update";
+
+        let (base_url, _rx) = serve_once_capturing(
+            "409 Conflict",
+            r#"{"error":"http requires iii >= 0.26.0, running 0.25.9; run: iii update","code":"incompatible_engine","required_iii_version":"0.26.0"}"#,
+        )
+        .await;
+        unsafe { std::env::set_var("III_API_URL", &base_url) };
+        let err = match fetch_worker_info("http", None).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected 409 error"),
+        };
+        assert!(err.contains("HTTP 409: ") && err.contains(msg), "{err}");
+
+        let (base_url, _rx) = serve_once_capturing(
+            "409 Conflict",
+            r#"{"error":{"code":"incompatible_engine","message":"http requires iii >= 0.26.0, running 0.25.9; run: iii update","required_iii_version":"0.26.0"}}"#,
+        )
+        .await;
+        unsafe { std::env::set_var("III_API_URL", &base_url) };
+        let err = match fetch_resolved_worker_graph("http", None, None).await {
+            Err(e) => e,
+            Ok(_) => panic!("expected 409 error"),
+        };
+        unsafe { std::env::remove_var("III_API_URL") };
+        assert!(
+            err.contains(msg) && !err.contains("incompatible_engine"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

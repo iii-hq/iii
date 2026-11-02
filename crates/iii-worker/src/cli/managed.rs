@@ -5032,6 +5032,14 @@ workers:
             "pdfkit",
             "Failed to resolve worker graph: HTTP 500 internal error"
         ));
+        assert!(!should_fallback_to_legacy_registry_error(
+            "http",
+            "Failed to resolve worker graph: HTTP 409 Conflict http requires iii >= 0.26.0, running 0.25.9; run: iii update"
+        ));
+        assert!(!should_fallback_to_legacy_registry_error(
+            "http",
+            "Failed to resolve worker: HTTP 409: http requires iii >= 0.26.0, running 0.25.9; run: iii update"
+        ));
     }
 
     #[tokio::test]
@@ -5481,7 +5489,9 @@ workers:
         fire_worker_telemetry("iii-http", "1.2.3+build.5").await;
 
         let path = rx.await.expect("request captured");
-        assert_eq!(path, "/download/iii-http?version=1.2.3%2Bbuild.5");
+        assert!(path.starts_with("/download/iii-http?"), "{path}");
+        assert!(path.contains("version=1.2.3%2Bbuild.5"), "{path}");
+        assert!(path.contains("iii_version="), "{path}");
         server.abort();
     }
 
