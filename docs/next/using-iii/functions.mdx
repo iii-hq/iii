@@ -86,17 +86,6 @@ and returns the result.
   </Tab>
 </Tabs>
 
-### Every function is observable
-
-Any worker can observe any function, private ones included, unless the function is registered with
-`observable: false` or RBAC restricts it. `worker.observe("math::add", "audit::record")` means: when
-`math::add` runs, `audit::record` runs. See [Observers](./observers) and
-[Run a function when something happens](#run-a-function-when-something-happens).
-
-The worker that registers a function can make it private or unobservable, and can override what iii
-does by default when it is observed; see
-[Observable functions](../creating-workers/observable-functions).
-
 ## Call a function
 
 `call` runs a function and resolves to its result. The engine routes the call to the worker that
@@ -289,6 +278,15 @@ function that represents it:
 </Tabs>
 
 See [Observers](./observers) and [Built-in event sources](./observers#built-in-event-sources).
+
+### Every function is observable
+
+Any worker can observe any function, private ones included, unless the function is registered with
+`observable: false` or RBAC restricts it.
+
+The worker that registers a function can make it private or unobservable, and can override what iii
+does by default when it is observed; see
+[Observable functions](../creating-workers/observable-functions).
 
 ## Call functions from the CLI
 
