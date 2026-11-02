@@ -567,7 +567,21 @@ no overloading, so the client's per-function form takes a `_for` suffix:
 | `iii.onObserverRemoved(id, hook)` | `iii.on_observer_removed_for(id, hook)` |
 | `iii.onObservationMatch(id, hook)` | `iii.on_observation_match_for(id, hook)` |
 | `iii.onObservationDeliver(id, hook)` | `iii.on_observation_deliver_for(id, hook)` |
+| `iii.onObserverAdded(null)`, `iii.onObserverAdded(id, null)` | `iii.clear_observer_added()`, `iii.clear_observer_added_for(id)` |
+| `iii.onObserverRemoved(null)`, `iii.onObserverRemoved(id, null)` | `iii.clear_observer_removed()`, `iii.clear_observer_removed_for(id)` |
+| `iii.onObservationMatch(id, null)`, `iii.onObservationDeliver(id, null)` | `iii.clear_observation_match_for(id)`, `iii.clear_observation_deliver_for(id)` |
+| `iii.observers(id)` | `iii.observers(id)` |
+| `iii.isObserved(id)`, `iii.isObserved(id, call)` | `iii.is_observed(id)`, `iii.is_observed_for(id, &call)` |
+| `iii.observe(source, target)`, `iii.observe(source, target, options)` | `iii.observe(source, target)`, `iii.observe_with(source, target, options)` |
 | `fn.onObserverAdded(hook)`, `fn.onObserverRemoved(hook)`, `fn.onObservationMatch(hook)`, `fn.onObservationDeliver(hook)` | `function.on_observer_added(hook)`, `function.on_observer_removed(hook)`, `function.on_observation_match(hook)`, `function.on_observation_deliver(hook)` |
+| `fn.onObserverAdded(null)`, `fn.onObserverRemoved(null)`, `fn.onObservationMatch(null)`, `fn.onObservationDeliver(null)` | `function.clear_observer_added()`, `function.clear_observer_removed()`, `function.clear_observation_match()`, `function.clear_observation_deliver()` |
+| `fn.observers()`, `fn.isObserved()`, `fn.isObserved(call)` | `function.observers()`, `function.is_observed()`, `function.is_observed_for(&call)` |
+
+An optional argument or a `null` in TypeScript is a method of its own in Rust:
+a `null` hook is a `clear_observer_*` or `clear_observation_*` method, the `options` of `observe` is
+`observe_with`, and the `call` of `isObserved` is `is_observed_for`. On a hook
+setter, `_for` marks the per-function form; on `is_observed_for`, it marks the
+form that checks a call.
 
 A hook is any value that implements the hook's trait. `Observer` is a cheap,
 cloneable handle passed by value, so async closures implement the traits, and
@@ -652,6 +666,11 @@ await iii.call_async({"observer": obs, "payload": payload})
 The methods work as decorators and as plain calls.
 
 ### 5.4 Go
+
+Go follows the Rust table with a `For` suffix (`OnObserverAddedFor`,
+`OnObservationMatchFor`, `IsObservedFor`). `Observe` takes a `Source`, so Go adds
+`client.ObserveFunction(id, target, opts...)` for `observe('fn::id', target)`
+(decision 23).
 
 ```go
 // by function id, before registering, so it sees every observer (§4.3)
