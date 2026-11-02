@@ -82,8 +82,8 @@ Deprecated with `iii-stream`:
 
 Deprecated with `pubsub` (the registry worker `pubsub`, formerly `iii-pubsub`):
 
-- Function `publish`, which subscribers observe with a filter on `input.topic`, and the
-  `pubsub` configuration entry.
+- Function `publish`, which subscribers observe with a filter on `input.topic`, and the `pubsub`
+  configuration entry.
 
 Not deprecated, keep using them:
 
@@ -401,12 +401,12 @@ A transport change alone does not reproduce the old policies. Moving a client fr
 Streams WebSocket to a Browser SDK observer of `stream::on-changed` changes the connection, not the
 dependency on `iii-stream`, and it keeps the deprecated sources.
 
-| Legacy mechanism                                                                                                    | Replacement                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `iii-stream` `auth_function` (authorizes dedicated WebSocket connections and stamps `context` on join/leave events) | Connection authorization by `iii-worker-manager` or `rbac-proxy`: `auth_function_id` runs once per connection and returns an `AuthResult` with `namespaces`, `allowed_functions`, `forbidden_functions` and a `context` forwarded to middleware. See [Access Control](../creating-workers/worker-manager). |
-| `stream::on-join` (a subscriber arrived, optionally rejected)                                                       | The provider's `onObserverAdded` hook. It sees the observer's id, target function, `args` and filters, and rejects the observer by throwing `ObserveRejection`.                                                                                                                                            |
-| `stream::on-leave` (a subscriber left)                                                                              | The provider's `onObserverRemoved` hook, which also runs when the observer is disposed after its worker disconnected.                                                                                                                                                                                      |
-| Per-subscription authorization in join handlers                                                                     | The session's grants: a session may observe a function only when it may invoke the function and the target, and the `on_observer_registration_function_id` hook can rewrite or deny each observer. Validation inside `onObserverAdded` adds the provider's own rules.                                      |
+| Legacy mechanism                                                                                                    | Replacement                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `iii-stream` `auth_function` (authorizes dedicated WebSocket connections and stamps `context` on join/leave events) | Connection authorization by `iii-worker-manager` or `rbac-proxy`: `auth_function_id` runs once per connection and returns an `AuthResult` with `namespaces`, `allowed_functions`, `forbidden_functions` and a `context` forwarded to middleware. See [Access Control](../creating-workers/worker-manager).                                                       |
+| `stream::on-join` (a subscriber arrived, optionally rejected)                                                       | The provider's `onObserverAdded` hook. It sees the observer's id, target function, `args` and filters, and rejects the observer by throwing `ObserveRejection`.                                                                                                                                                                                                  |
+| `stream::on-leave` (a subscriber left)                                                                              | The provider's `onObserverRemoved` hook. It also runs as soon as the observing worker disconnects, while the observer is `suspended`, not when the observer is disposed later. If that worker reattaches within `observers.observer_grace_ms`, `onObserverAdded` runs again before the observer is active, so a reconnect looks like a leave followed by a join. |
+| Per-subscription authorization in join handlers                                                                     | The session's grants: a session may observe a function only when it may invoke the function and the target, and the `on_observer_registration_function_id` hook can rewrite or deny each observer. Validation inside `onObserverAdded` adds the provider's own rules.                                                                                            |
 
 For tenant isolation, give each tenant or browser session its own namespace through the RBAC
 listener's `namespaces` grant, so a session observes only the functions granted to it, and run the
@@ -476,9 +476,9 @@ The Linkly tutorial and the real-time todo how-to use observable functions and t
 
 ## Checklist
 
-- [ ] List every call to `stream::*` and `publish`, and every observer of
-      `stream::on-changed`, `stream::on-join`, `stream::on-leave` and `publish`, including
-      calls whose failures your code ignores.
+- [ ] List every call to `stream::*` and `publish`, and every observer of `stream::on-changed`,
+      `stream::on-join`, `stream::on-leave` and `publish`, including calls whose failures your code
+      ignores.
 - [ ] Pick a recipe per use case and name the worker that owns each piece of data.
 - [ ] Move authorization to the RBAC listener and the provider's `onObserverAdded` validation.
 - [ ] Migrate producers and their consumers together. If you must publish to both paths for a while,
