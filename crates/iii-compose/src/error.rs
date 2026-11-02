@@ -157,6 +157,17 @@ pub enum ComposeError {
     #[error("{path} is not a valid iii.worker.yaml: {message}")]
     InvalidManifest { path: PathBuf, message: String },
 
+    #[error(
+        "container '{container}' requires iii {required} (iii_engine_version in {manifest}), \
+         but this is iii {running}. Run `iii update` to install a newer release"
+    )]
+    UnsupportedEngineVersion {
+        container: String,
+        manifest: PathBuf,
+        required: String,
+        running: String,
+    },
+
     #[error("container '{container}': worker directory {path} does not exist")]
     MissingWorkerDirectory { container: String, path: PathBuf },
 
@@ -626,6 +637,7 @@ impl ComposeError {
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
             Self::MissingStartCommand { .. } => "MISSING_START_COMMAND",
             Self::InvalidManifest { .. } => "INVALID_MANIFEST",
+            Self::UnsupportedEngineVersion { .. } => "UNSUPPORTED_ENGINE_VERSION",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
             Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
             Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",

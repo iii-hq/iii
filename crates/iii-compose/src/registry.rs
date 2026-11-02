@@ -425,6 +425,10 @@ pub async fn install_resolved(
         "bundle" => {
             let (install_dir, status) =
                 install_bundle(container, resolved, target, &cache_root).await?;
+            // Read from the bundle: the registry does not return the range, so
+            // this is the first point a bundle's manifest is on disk. `build`,
+            // `add`, `update` and a start all install through here.
+            crate::manifest::check_bundle_engine_version(container, &install_dir)?;
             (Payload::Bundle(install_dir), status)
         }
         // `engine` workers are compiled into the engine itself: there is no

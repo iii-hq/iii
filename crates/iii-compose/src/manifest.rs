@@ -6,9 +6,9 @@
 
 //! `iii.worker.yaml` subset parser and start-command resolution.
 //!
-//! Compose reads only `scripts.start` and `runtime.base_image`. The manifest is
-//! another tool's file, so unknown keys are tolerated here — the opposite of
-//! the compose file's strictness.
+//! Compose reads `name`, `scripts.start`, `runtime.base_image` and
+//! `iii_engine_version`. The manifest is another tool's file, so unknown keys
+//! are tolerated here — the opposite of the compose file's strictness.
 
 use std::path::{Path, PathBuf};
 
@@ -59,6 +59,10 @@ pub struct Manifest {
     pub name: Option<String>,
     pub start: Option<String>,
     pub base_image: Option<String>,
+    /// `iii_engine_version`: the iii versions the worker runs on. `None` when
+    /// the manifest predates the field, which reads as `>=0.25.0` and so
+    /// excludes no engine that checks it.
+    pub iii_engine_version: Option<semver::VersionReq>,
 }
 
 /// Reads the manifest in `dir`, if there is one. A missing manifest is not an
@@ -91,6 +95,11 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
         .map(str::trim)
         .filter(|image| !image.is_empty())
         .map(str::to_string);
+    let iii_engine_version = raw
+        .iii_engine_version
+        .as_ref()
+        .map(|value| parse_engine_requirement(value, &path))
+        .transpose()?;
 
     Ok(Some(Manifest {
         name: raw
@@ -100,6 +109,7 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
             .map(str::to_string),
         start: raw.scripts.and_then(|scripts| scripts.start),
         base_image,
+        iii_engine_version,
     }))
 }
 
@@ -141,6 +151,17 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     }
 
     let manifest = read_manifest(dir)?;
+    if let Some(required) = manifest
+        .as_ref()
+        .and_then(|manifest| manifest.iii_engine_version.as_ref())
+    {
+        check_engine_version(
+            key,
+            &dir.join(MANIFEST_FILE),
+            required,
+            crate::host_version(),
+        )?;
+    }
     let run_override = container.scripts.run.clone();
     let Some(start) = run_override.clone().or_else(|| {
         manifest
@@ -165,6 +186,85 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     }
 
     Ok(StartSpec::Shell(start))
+}
+
+/// Refuses a worker whose `iii_engine_version` the running iii does not
+/// satisfy. `running` is [`crate::host_version`]: library callers and tests
+/// record none, and a version that is not semver cannot be compared, so
+/// neither refuses anything.
+///
+/// The running version's pre-release and build suffixes are dropped first. A
+/// semver range only matches a pre-release of the release it names, so
+/// `>=0.26.0` would refuse `0.27.0-alpha.1`, and every alpha would refuse the
+/// workers its release is meant to run. The scaffolder's `min_iii_version`
+/// compares the same way.
+fn check_engine_version(
+    key: &str,
+    manifest: &Path,
+    required: &semver::VersionReq,
+    running: Option<&str>,
+) -> Result<()> {
+    let Some(running) = running else {
+        return Ok(());
+    };
+    let Ok(version) = semver::Version::parse(running.trim().trim_start_matches('v')) else {
+        return Ok(());
+    };
+    let release = semver::Version::new(version.major, version.minor, version.patch);
+    if required.matches(&release) {
+        return Ok(());
+    }
+    Err(ComposeError::UnsupportedEngineVersion {
+        container: key.to_string(),
+        manifest: manifest.to_path_buf(),
+        required: required.to_string(),
+        running: running.to_string(),
+    })
+}
+
+/// Checks the `iii_engine_version` of the bundle installed in `install_dir`.
+/// Only this key is parsed, so a bundle manifest that starts today cannot fail
+/// here over a key Compose does not use: the adapter reads the rest in the
+/// guest.
+pub(crate) fn check_bundle_engine_version(key: &str, install_dir: &Path) -> Result<()> {
+    bundle_engine_version(key, install_dir, crate::host_version())
+}
+
+fn bundle_engine_version(key: &str, install_dir: &Path, running: Option<&str>) -> Result<()> {
+    let path = install_dir.join(MANIFEST_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(ComposeError::Io { path, source }),
+    };
+    let raw: RawEngineRequirement =
+        serde_yaml::from_str(&text).map_err(|err| ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: err.to_string(),
+        })?;
+    let Some(value) = raw.iii_engine_version else {
+        return Ok(());
+    };
+    let required = parse_engine_requirement(&value, &path)?;
+    check_engine_version(key, &path, &required, running)
+}
+
+fn parse_engine_requirement(value: &serde_yaml::Value, path: &Path) -> Result<semver::VersionReq> {
+    let invalid = |message: String| ComposeError::InvalidManifest {
+        path: path.to_path_buf(),
+        message,
+    };
+    let range = value.as_str().ok_or_else(|| {
+        invalid(
+            "`iii_engine_version` must be a quoted semver range, for example \">=0.26.0\""
+                .to_string(),
+        )
+    })?;
+    semver::VersionReq::parse(range.trim()).map_err(|err| {
+        invalid(format!(
+            "`iii_engine_version` \"{range}\" is not a semver range: {err}"
+        ))
+    })
 }
 
 /// What one container would do on `up`.
@@ -318,10 +418,103 @@ struct RawManifest {
     /// consults the `base_image` key when `runtime` is a mapping.
     #[serde(default)]
     runtime: Option<serde_yaml::Value>,
+    /// Kept as a value so a range written as a number is reported, not lost.
+    #[serde(default)]
+    iii_engine_version: Option<serde_yaml::Value>,
+}
+
+/// The one key of a bundle's manifest Compose checks on the host.
+#[derive(Debug, Deserialize)]
+struct RawEngineRequirement {
+    #[serde(default)]
+    iii_engine_version: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawManifestScripts {
     #[serde(default)]
     start: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(range: &str, running: Option<&str>) -> Result<()> {
+        let required = semver::VersionReq::parse(range).unwrap();
+        check_engine_version("api", Path::new(MANIFEST_FILE), &required, running)
+    }
+
+    fn bundle(manifest: Option<&str>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(manifest) = manifest {
+            std::fs::write(dir.path().join(MANIFEST_FILE), manifest).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_running_release_inside_the_range_is_accepted() {
+        assert!(check(">=0.26.0", Some("0.26.0")).is_ok());
+        assert!(check(">=0.26.0", Some("0.27.3")).is_ok());
+    }
+
+    #[test]
+    fn a_running_release_outside_the_range_is_refused_naming_both_versions() {
+        let error = check(">=0.27.0", Some("0.26.4")).unwrap_err();
+        assert_eq!(error.code(), "UNSUPPORTED_ENGINE_VERSION");
+        let message = error.to_string();
+        assert!(
+            message.contains(">=0.27.0") && message.contains("0.26.4"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_pre_release_counts_as_the_release_it_precedes() {
+        // Plain semver matching refuses a later alpha, which is why the
+        // running version's suffix is dropped before matching.
+        let later_alpha = semver::Version::parse("0.27.0-alpha.1").unwrap();
+        assert!(
+            !semver::VersionReq::parse(">=0.26.0")
+                .unwrap()
+                .matches(&later_alpha)
+        );
+
+        assert!(check(">=0.26.0", Some("0.27.0-alpha.1")).is_ok());
+        assert!(check(">=0.26.0", Some("0.26.0-alpha.3")).is_ok());
+        assert!(check(">=0.27.0", Some("0.26.9-alpha.1")).is_err());
+    }
+
+    #[test]
+    fn without_a_comparable_running_version_nothing_is_refused() {
+        assert!(check(">=99.0.0", None).is_ok());
+        assert!(check(">=99.0.0", Some("dev")).is_ok());
+    }
+
+    #[test]
+    fn a_bundle_is_checked_on_its_engine_version_alone() {
+        // A list `scripts.start` would fail the full manifest parse.
+        let dir = bundle(Some(
+            "name: b\nscripts:\n  start: [node, index.js]\niii_engine_version: \">=0.27.0\"\n",
+        ));
+        let error = bundle_engine_version("b", dir.path(), Some("0.26.0")).unwrap_err();
+        assert_eq!(error.code(), "UNSUPPORTED_ENGINE_VERSION");
+        assert!(bundle_engine_version("b", dir.path(), Some("0.27.0")).is_ok());
+    }
+
+    #[test]
+    fn a_bundle_without_the_field_or_the_manifest_is_accepted() {
+        let without = bundle(Some("name: b\nscripts:\n  start: node index.js\n"));
+        assert!(bundle_engine_version("b", without.path(), Some("0.26.0")).is_ok());
+        let missing = bundle(None);
+        assert!(bundle_engine_version("b", missing.path(), Some("0.26.0")).is_ok());
+    }
+
+    #[test]
+    fn a_bundle_with_a_malformed_range_is_an_invalid_manifest() {
+        let dir = bundle(Some("name: b\niii_engine_version: \"newest\"\n"));
+        let error = bundle_engine_version("b", dir.path(), Some("0.26.0")).unwrap_err();
+        assert_eq!(error.code(), "INVALID_MANIFEST");
+    }
 }

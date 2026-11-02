@@ -550,3 +550,50 @@ containers:
         "the container in the order must be drawn: {outline:?}"
     );
 }
+
+const API_PROJECT: &str =
+    "namespace: orders\ncontainers:\n  api:\n    worker: path://./workers/api\n";
+
+#[test]
+fn the_engine_version_range_is_read_from_the_manifest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = project(
+        tmp.path(),
+        API_PROJECT,
+        &[(
+            "workers/api",
+            Some("iii_engine_version: \">=0.26.0\"\nscripts:\n  start: cargo run\n"),
+        )],
+    );
+
+    let manifest = iii_compose::manifest::read_manifest(&tmp.path().join("workers/api"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        manifest
+            .iii_engine_version
+            .map(|range| range.to_string())
+            .as_deref(),
+        Some(">=0.26.0")
+    );
+    // A test binary records no running iii version, so nothing is refused.
+    assert_eq!(
+        start_of(&file, "api").unwrap(),
+        StartSpec::Shell("cargo run".to_string())
+    );
+}
+
+#[test]
+fn a_malformed_engine_version_is_an_invalid_manifest() {
+    for manifest in [
+        "iii_engine_version: \"newest\"\nscripts:\n  start: cargo run\n",
+        "iii_engine_version: 0.26\nscripts:\n  start: cargo run\n",
+        "iii_engine_version: >=0.26.0\nscripts:\n  start: cargo run\n",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project(tmp.path(), API_PROJECT, &[("workers/api", Some(manifest))]);
+
+        let error = start_of(&file, "api").expect_err(manifest);
+        assert_eq!(error.code(), "INVALID_MANIFEST", "{manifest}");
+    }
+}

@@ -1,6 +1,6 @@
 ---
 title: "Worker manifest"
-description: "Field reference for iii.worker.yaml: name, dependencies, runtime base image, setup and start scripts, env, resources, and publish metadata."
+description: "Field reference for iii.worker.yaml: name, dependencies, runtime base image, setup and start scripts, env, resources, supported engine version, and publish metadata."
 owner: "devrel"
 type: "reference"
 ---
@@ -208,6 +208,28 @@ Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
 ### `memory`
 
 Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
+
+## `iii_engine_version`
+
+Optional. The iii versions the worker runs on, as a quoted semver range. Compose checks it before it
+starts the worker and refuses a worker whose range the running iii does not satisfy, with
+`UNSUPPORTED_ENGINE_VERSION`. Run `iii update` to install a release that satisfies it.
+
+```yaml
+iii_engine_version: ">=0.26.0"
+```
+
+- Write the lowest release the worker needs, with `>=`. A caret range such as `^0.26` ends before
+  `0.27.0`, so every later release would refuse the worker.
+- Quote the range: an unquoted value that starts with `>` is not a valid YAML string.
+- Compose ignores the pre-release and build suffixes of the running iii, so `0.27.0-alpha.1` counts
+  as `0.27.0`.
+- A manifest without the field is treated as `>=0.25.0`, which every iii that checks the field
+  satisfies.
+- Compose checks a `path://` worker when it validates or starts it, and a registry bundle when it
+  installs it. It does not read a registry binary's manifest, so a binary's range is not checked.
+- iii releases before 0.26 do not read the field and start the worker whatever its range.
+- A `path://` worker that runs in a VM also needs a `sandbox-libkrun` release that accepts the key.
 
 ## Publish metadata: `iii`, `deploy`, `manifest`, `tags`, `license`
 
