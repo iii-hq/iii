@@ -134,10 +134,10 @@ ensureSchema().catch((err) => logger.error("database: schema init failed", { err
 
 **Modify `link::create`** to write to both the database (durable record) and `state` (hot cache).
 The `code` column is the table's primary key, so the database itself refuses a second link with the
-same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of a
-database error, and `database::execute` reports the count as `affected_rows`. Zero means the code is
-taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering `409`
-with `link::create`'s own message rather than the database's.
+same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of
+a database error, and `database::execute` reports the count as `affected_rows`. Zero means the code
+is taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering
+`409` with `link::create`'s own message rather than the database's.
 
 ```typescript src/index.ts {4-17}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -300,7 +300,7 @@ iii call database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks W
 Run the loop a second time and each `POST /links` answers `409`, because the codes are taken:
 
 ```json
-{"error":"code `iii-example-1` is already taken"}
+{ "error": "code `iii-example-1` is already taken" }
 ```
 
 The redirects still go through, so the click count above grows by three on every run.
@@ -310,5 +310,5 @@ The redirects still go through, so the click count above grows by three on every
 Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast, and
 every redirect appends a timestamped row to the `clicks` table. But that row is written on the
 redirect's hot path, so a slow database write slows the redirect. Next, in
-[Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so
-redirects stay fast.
+[Ch. 4: Make it durable](./durable-execution), you move that write onto a queue so redirects stay
+fast.

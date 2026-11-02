@@ -42,15 +42,15 @@ the system.
   you aren't locked into the console. You can point the worker at Honeycomb, Grafana, Datadog, or
   any other OTel-compatible backend. See the worker's configuration on
   [workers.iii.dev/workers/iii-observability](https://workers.iii.dev/workers/iii-observability);
-  its settings are managed at runtime through the [configuration worker](/using-iii/configuration).
+  its settings are managed at runtime through the [configuration
+  worker](../../using-iii/configuration).
 </Info>
 
 For most teams the console (or your own OTel backend) is all you need day to day.
 
 <Note>
   The rest of this chapter is an optional deep dive on how to read the same logs and traces directly
-  from the engine. You can jump to [Ch. 3: Persist everything](/tutorials/linkly/persistence) if you
-  prefer.
+  from the engine. To skip it, continue with [Ch. 3: Persist everything](./persistence).
 </Note>
 
 ## Read the logs
@@ -169,5 +169,5 @@ which hop is responsible.
 
 Linkly is now observable: the console shows every worker, trace, and log as it happens, and you can
 read the same data from the engine with `iii call`. The links are still kept only in memory, though,
-so restarting the engine clears them. Next, in
-[Ch. 3: Persist everything](/tutorials/linkly/persistence), you move them into durable storage.
+so restarting the engine clears them. Next, in [Ch. 3: Persist everything](./persistence), you move
+them into durable storage.

@@ -199,11 +199,11 @@ Now install the dependencies:
 ```bash
 cd frontend
 npm install
-npm install iii-browser-sdk
+npm install iii-browser-sdk@0.26.0
 ```
 
-`iii-browser-sdk` installs at its latest release while the backend workers pin `iii-sdk` 0.26.0. The
-two work together: each one connects to the engine, never to the other.
+`iii-browser-sdk` is pinned to 0.26.0, the same version as the `iii-sdk` the backend workers pin:
+the tab uses the 0.26 `observe` and `call` API. Each one connects to the engine, never to the other.
 
 Then tell the app where the proxy is and which token to send. Create `frontend/.env.local`; Vite
 reads it at startup. `VITE_LINKLY_TOKEN` must equal `LINKLY_BROWSER_TOKEN` in the project's `.env`,
@@ -326,7 +326,10 @@ useEffect(() => {
     { function_id: "click-streamer::on-click", namespace: "default", deliver: "output" },
     "ui::on_click",
   );
-  listener.ready().then(sync);
+  // ready() rejects when the observe is refused, for example FORBIDDEN when
+  // the feed is missing from expose_functions or TOO_MANY_LISTENERS from the
+  // Ch. 5 cap.
+  listener.ready().then(sync, (err) => console.error("live clicks unavailable:", err));
   const stopListening = worker.addConnectionStateListener((state) => {
     if (state === "connected") sync();
   });

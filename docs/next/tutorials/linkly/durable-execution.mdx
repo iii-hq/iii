@@ -8,7 +8,8 @@ type: "tutorial"
 
 <Note>
   Earlier versions of this chapter published `link.created` with the `pubsub` worker. If your
-  project still has it, see [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
+  project still has it, see [Migrate from iii-stream and
+  pubsub](../../upgrading/migrate-from-streams).
 </Note>
 
 In Chapter 3 every redirect calls `link::record_click` directly, so the database write runs on the
@@ -61,8 +62,8 @@ database:
         url: sqlite:./data/analytics.db
 ```
 
-If `database::query db=analytics` later answers `UNKNOWN_DB`, the `analytics` entry is nested at
-the wrong level.
+If `database::query db=analytics` later answers `UNKNOWN_DB`, the `analytics` entry is nested at the
+wrong level.
 
 ## Make redirects fast with a queue
 
@@ -121,8 +122,8 @@ function is enough: each call of it runs its observers once. You'll build one in
 
 </Info>
 
-Here we'll publish an event when a link is created, and another when a link is updated. Later
-we'll make an `analytics` worker that collects data from these events. We don't have link updating
+Here we'll publish an event when a link is created, and another when a link is updated. Later we'll
+make an `analytics` worker that collects data from these events. We don't have link updating
 functionality yet, so we'll add that and an HTTP endpoint for it too.
 
 ### Publish on link.created
@@ -280,9 +281,9 @@ scripts:
   # start until the Ch. 4 block is uncommented. -u keeps the startup line
   # visible in the Compose logs instead of buffered.
   start: >-
-    grep -q '^[^#[:space:]]' src/main.py
-    || { echo 'analytics: src/main.py is still fully commented; uncomment its Ch. 4 block, then restart the analytics container' >&2; exit 1; };
-    exec .venv/bin/python -u src/main.py
+    grep -q '^[^#[:space:]]' src/main.py || { echo 'analytics: src/main.py is still fully commented;
+    uncomment its Ch. 4 block, then restart the analytics container' >&2; exit 1; }; exec
+    .venv/bin/python -u src/main.py
 ```
 
 ### Subscribe to link.created events
@@ -291,8 +292,8 @@ The scaffold ships `analytics/src/main.py` with this code commented out: uncomme
 (or replace the file with the code below). It observes `queue::on-message` for the `link.created`
 topic and records every new short link under the UTC day of the event's `created_at`.
 
-Delivery is at least once, so the same event can arrive twice. Instead of adding 1 to a counter,
-the worker keeps one row per link in `link_events`, keyed by `code`, and writes it with a single
+Delivery is at least once, so the same event can arrive twice. Instead of adding 1 to a counter, the
+worker keeps one row per link in `link_events`, keyed by `code`, and writes it with a single
 `INSERT ... ON CONFLICT(code) DO NOTHING`: a redelivered event finds its row and changes nothing.
 The per-day counts come from `daily_link_counts`, a view that counts those rows by day:
 
@@ -373,9 +374,9 @@ print("Analytics worker started")
 
 </Accordion>
 
-Analytics keeps its rows in its own database, so the `link` worker never has to know it exists.
-That is the `analytics` entry you uncommented at the start of the chapter, alongside the `primary`
-one from Chapter 3.
+Analytics keeps its rows in its own database, so the `link` worker never has to know it exists. That
+is the `analytics` entry you uncommented at the start of the chapter, alongside the `primary` one
+from Chapter 3.
 
 Restart Compose so it picks up the change:
 
@@ -406,8 +407,8 @@ iii call database::query db=analytics sql="SELECT day, count FROM daily_link_cou
 ```
 
 Now follow one of them a few times (each click goes through the queue instead of a blocking write),
-then change its target. `PUT /links/:code` publishes `link.updated` durably and the subscriber refreshes
-the cache, so `link::resolve` returns the new URL right away:
+then change its target. `PUT /links/:code` publishes `link.updated` durably and the subscriber
+refreshes the cache, so `link::resolve` returns the new URL right away:
 
 ```bash
 for _ in 1 2 3; do curl -s -o /dev/null http://127.0.0.1:3111/s/analyticslink1; done
@@ -425,5 +426,5 @@ iii call link::resolve code=analyticslink1
 Redirects return without waiting on a database write: click rows ride a queue, drained in the
 background. Link events fan out over durable topics to a Python analytics counter and a cache
 refresher, and the `link` worker does not know either of them exists. Next, in
-[Ch. 5: Stream live clicks](/tutorials/linkly/streaming), you broadcast every click in real time
-from a dedicated `click-streamer` worker.
+[Ch. 5: Stream live clicks](./streaming), you broadcast every click in real time from a dedicated
+`click-streamer` worker.

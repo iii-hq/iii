@@ -8,8 +8,8 @@ type: "tutorial"
 This path builds Linkly with an AI agent. You give the agent one prompt per chapter; it writes the
 workers, and you check the result.
 
-The goal here is to build a working link shortener service while demonstrating iii's
-efficiency when building systems agentically, along with its 4 core properties which we call CODE:
+The goal here is to build a working link shortener service while demonstrating iii's efficiency when
+building systems agentically, along with its 4 core properties which we call CODE:
 
 - Composability
 - Observability
@@ -28,8 +28,8 @@ iii project init linkly --template linkly-agentic
 cd linkly
 ```
 
-The `harness` worker runs a coding agent inside the [console](/using-iii/console). It reaches models
-through `llm-router`, which reads your provider key from `.env`.
+The `harness` worker runs a coding agent inside the [console](../../using-iii/console). It reaches
+models through `llm-router`, which reads your provider key from `.env`.
 
 Anthropic and OpenAI ship enabled: put a key for one in `.env` before you start Compose. For any
 other provider, add it after start. Select your provider for the exact steps:
@@ -198,7 +198,8 @@ builds that functionality: a `link::create` and a `link::resolve` function. Thes
 **extended** by the HTTP worker which can expose any function as an http endpoint.
 
 Since we started the project with `iii compose` and the http worker is already specified in
-`worker-compose.yaml` there is nothing else to do; the http worker provides http functionality by default.
+`worker-compose.yaml` there is nothing else to do; the http worker provides http functionality by
+default.
 
 Importantly this agent doesn't need to build it, or make a decision on which library to use, how to
 set it up, and how to run it. The HTTP worker, like all iii workers, has shipped as a self-contained
@@ -278,8 +279,8 @@ Send the same `POST /links` again and it answers `409` with
 ``{"error":"code `docs` is already taken"}``: only `link::create`'s stable `is already taken`
 message decides `409`, a body without `url` answers `400`, and any other failure answers `500`.
 
-The exploratory version of [Ch. 1: Foundations](/tutorials/linkly/foundations) explains
-`registerWorker`, `registerFunction`, and `observe` in depth.
+The exploratory version of [Ch. 1: Foundations](./foundations) explains `registerWorker`,
+`registerFunction`, and `observe` in depth.
 
 ## Ch. 2: Observe everything
 
@@ -314,8 +315,8 @@ iii call engine::traces::list name="GET /s/:code" limit=5 # the redirect traces,
 iii call engine::traces::tree trace_id=<your trace_id here> # read a specific trace
 ```
 
-The exploratory version of [Ch. 2: Observe everything](/tutorials/linkly/observability) walks you
-through engine observability.
+The exploratory version of [Ch. 2: Observe everything](./observability) walks you through engine
+observability.
 
 ## Ch. 3: Persist everything
 
@@ -369,8 +370,8 @@ then read the count off the result view.
 To confirm that the data persists, restart the database worker and run the same query again: the
 count is unchanged. Run `iii call compose::restart container=database` from the CLI, or invoke
 `compose::restart` on the **Functions** page with `{ "container": "database" }`. Restart only that
-container, never the whole project: the agent's harness runs in this project too, and a full
-restart cuts the agent off in the middle of its turn.
+container, never the whole project: the agent's harness runs in this project too, and a full restart
+cuts the agent off in the middle of its turn.
 
 The same flow from the CLI:
 
@@ -383,8 +384,8 @@ done
 iii call database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code LIKE 'iii-example-%'"
 ```
 
-The exploratory version of [Ch. 3: Persist everything](/tutorials/linkly/persistence) steps through
-the cache-then-database read path.
+The exploratory version of [Ch. 3: Persist everything](./persistence) steps through the
+cache-then-database read path.
 
 ## Ch. 4: Make it durable
 
@@ -456,8 +457,7 @@ curl -s -X PUT http://127.0.0.1:3111/links/link1 \
 iii call link::resolve code=link1
 ```
 
-The exploratory [Ch. 4: Make it durable](/tutorials/linkly/durable-execution) explains queues and
-durable topics.
+The exploratory [Ch. 4: Make it durable](./durable-execution) explains queues and durable topics.
 
 ## Ch. 5: Stream live clicks
 
@@ -522,8 +522,8 @@ done
 iii call link::click_summary
 ```
 
-The exploratory [Ch. 5: Stream live clicks](/tutorials/linkly/streaming) explains the feed function,
-`private` functions and the `onObserverAdded` hook, and shows a terminal listener for the feed.
+The exploratory [Ch. 5: Stream live clicks](./streaming) explains the feed function, `private`
+functions and the `onObserverAdded` hook, and shows a terminal listener for the feed.
 
 ## Ch. 6: Move bulk data with channels
 
@@ -579,8 +579,7 @@ the result.
 
 From the CLI, run `iii call link::resolve code=mylink`.
 
-Visit [Ch. 6: Move bulk data with channels](/tutorials/linkly/channels) to understand channels and
-`createChannel`.
+Visit [Ch. 6: Move bulk data with channels](./channels) to understand channels and `createChannel`.
 
 ## Ch. 7: Bring in the browser
 
@@ -609,23 +608,22 @@ Turn a browser tab into a worker.
   the standard node worker manifest (base_image `docker.io/iiidev/node:latest`, npm install and start
   scripts) and set `LINKLY_BROWSER_TOKEN: dev-token` in a .env.browser file at the root where
   worker-compose.yaml is. Add it with compose and set env_file on this worker to open .env.browser.
-- Add link::delete and link::request_delete({ code, browser_namespace }): request_delete asks the
-  tab's user::confirm_destructive_op in browser_namespace directly (the caller passes the full
-  "browser-<uuid>" string; the handler uses it as-is with no prefix construction). before deleting.
+- Add link::delete and link::request_delete({ code, session }): before deleting, request_delete asks
+  the tab's user::confirm_destructive_op in the `browser-${session}` namespace, which it builds from
+  the session id the caller passes.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
-  react-ts --no-interactive`, install iii-browser-sdk, and write frontend/src/iii.ts and
+  react-ts --no-interactive`, install iii-browser-sdk@0.26.0, and write frontend/src/iii.ts and
   frontend/src/App.tsx that connect in a per-tab `browser-<session>` namespace, call link::create
   in the default namespace, and register user::confirm_destructive_op. For a live click counter,
   observe click-streamer::on-click (namespace "default", deliver "output") with ui::on_click as the
   target, wait for the observer's ready(), then read the starting count with link::click_summary
   (default namespace); skip clicks whose id is at or below the last_id already counted, and read the
   count again after a reconnect.
-- In App.tsx, call link::request_delete with { code, browser_namespace: `browser-${SESSION_ID}` }.
-  Never pass the raw UUID as a namespace argument; always pass the fully-constructed string so the
-  server can use it without knowing the prefix convention.
+- In App.tsx, call link::request_delete with { code, session: SESSION_ID }, the raw session id; the
+  server adds the `browser-` prefix.
 - Have redirect links point at the http worker serving the redirects, not the frontend.
-- Have the frontend show the link it just created, and show the tab's own `browser-<session>`
-  namespace on the page so it can be copied. Do not list the existing links: the allowlist above
+- Have the frontend show the link it just created, and show the tab's session id on the page so it
+  can be copied. Do not list the existing links: the allowlist above
   exposes no function for that.
 
 This chapter has the most independent pieces. Add and configure the rbac-proxy yourself first, since
@@ -652,10 +650,9 @@ watch the live counter.
 Ask the server to delete it from the console at [http://127.0.0.1:3113](http://127.0.0.1:3113).
 
 Select the **Functions** page. Invoke `link::request_delete` with
-`{"code":"<code>","browser_namespace":"browser-<session>"}`, copying the namespace the app shows on
-the page.
+`{"code":"<code>","session":"<session>"}`, copying the session id the app shows on the page.
 
 The browser shows a confirm prompt, and the delete happens after the user accepts.
 
-The exploratory version of [Ch. 7: Bring in the browser](/tutorials/linkly/frontend) explains the
-RBAC listener, the auth function, and browser-registered functions.
+The exploratory version of [Ch. 7: Bring in the browser](./frontend) explains the RBAC listener, the
+auth function, and browser-registered functions.
