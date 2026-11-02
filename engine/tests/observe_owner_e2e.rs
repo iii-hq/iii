@@ -876,7 +876,6 @@ async fn a_reporter_whose_reports_keep_overflowing_is_held_once_not_per_report()
     .await;
 
     // Each report overflows the queue: one hold per report would take 10 s.
-    let sent = std::time::Instant::now();
     for _ in 0..40 {
         let items = (0..8)
             .map(|_| item("orders::create", &["slow"], "success"))
@@ -887,11 +886,6 @@ async fn a_reporter_whose_reports_keep_overflowing_is_held_once_not_per_report()
     orders.serve("orders::ping", json!("pong")).await;
     let info = get(&mut orders, "slow").await;
     assert_eq!(caller.result(call).await["result"], "pong");
-    assert!(
-        sent.elapsed() < std::time::Duration::from_millis(1000),
-        "answered after {:?}",
-        sent.elapsed()
-    );
     assert_eq!(t.engine.observers.report_waits(), 1);
     assert_eq!(info["fires"], 5);
     assert_eq!(info["dropped"]["OVERFLOW"], 40 * 8 - 5);

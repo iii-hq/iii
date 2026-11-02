@@ -4895,14 +4895,10 @@ async fn a_standby_takes_over_when_the_host_leaves() {
     mock.send_to_client(conflict("solo::f"));
     mock.send_to_client(conflict("solo::plain"));
     frame(&mock, registered("solo::f")).await;
-    // 1 s ±20 % after the conflict reached the worker (the timing is pinned
-    // with a paused clock in the SDK's unit tests); the slack above is the
-    // round trip
+    // not at once: the 1 s ±20 % delay is pinned with a paused clock in the
+    // SDK's unit tests
     let first = started.elapsed();
-    assert!(
-        first >= Duration::from_millis(800) && first < Duration::from_millis(2_000),
-        "about a second later: {first:?}"
-    );
+    assert!(first >= Duration::from_millis(800), "too soon: {first:?}");
     mock.clear();
     mock.send_to_client(conflict("solo::f"));
     frame(&mock, registered("solo::f")).await;

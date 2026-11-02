@@ -88,6 +88,7 @@ OBSERVE_FILES = [  # recursive and loose: a new or moved Node file (`src/reporte
 EXCLUDED = {
     'src/invocation-context.ts': 'browser-specific: a synchronous scope, no AsyncLocalStorage',
     'src/filter/**': 'imported by the browser SDK (src/filter.ts), not derived',
+    'tests/filter-*.test.ts': "they test src/filter, which the browser imports: Node's run covers it",
     'tests/observe-fake-engine.ts': "the browser's fake engine replaces the global WebSocket instead of mocking `ws`",
     'tests/observe-e2e-utils.ts': 'browser helpers live in tests/integration/observe-utils.ts',
     'tests/observe-local-span.test.ts': 'OpenTelemetry spans: the browser SDK has none',
@@ -295,31 +296,6 @@ def drop_unused_vi(text: str) -> str:
         return text
     return re.sub(r"(import \{[^}]*?), vi( \} from 'vitest')", r'\1\2', text)
 
-
-FILTER_CONFORMANCE = [
-    (
-        "import { compileFilter, FilterError } from '../src/filter'\n",
-        "import * as nodeFilter from '../../iii/src/filter'\nimport { compileFilter, FilterError } from '../src/filter'\n",
-        1,
-    ),
-    (
-        "describe('filter conformance vectors', () => {",
-        """/**
- * The browser SDK imports the Node SDK's evaluator instead of copying it, so
- * this runs the same code the Node SDK's own conformance test runs, here under
- * the browser package's build settings and in a DOM environment.
- */
-describe('the shared evaluator', () => {
-  it('is the Node SDK module, not a copy', () => {
-    expect(compileFilter).toBe(nodeFilter.compileFilter)
-    expect(FilterError).toBe(nodeFilter.FilterError)
-  })
-})
-
-describe('filter conformance vectors', () => {""",
-        1,
-    ),
-]
 
 HOOKS = UNIT + [
     # The browser client has no `getConnectionState()`: the fake engine reads the state.
@@ -613,9 +589,6 @@ FAULT_TOLERANCE = [
 ]
 
 TESTS = {
-    'filter-conformance.test.ts': ('filter-conformance.test.ts', FILTER_CONFORMANCE),
-    # The shared index of the filters' equality conditions, under the browser package's settings.
-    'filter-index.test.ts': ('filter-index.test.ts', []),
     'observe-observer.test.ts': ('observe-observer.test.ts', UNIT),
     'observe-hooks.test.ts': ('observe-hooks.test.ts', HOOKS),
     'observe-deliver.test.ts': ('observe-deliver.test.ts', DELIVER),

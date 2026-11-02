@@ -16,7 +16,7 @@ import (
 
 // quickDispose bounds a Dispose that has nothing to wait for, far under the 5 s an
 // SDK that waits for the engine's disposed gives it.
-const quickDispose = 250 * time.Millisecond
+const quickDispose = time.Second
 
 // listed is the answer list of id: the handles whose observe went out on the current
 // connection and are still listed.

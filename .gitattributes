@@ -10,8 +10,6 @@ sdk/packages/node/iii-browser/src/observe-wire.ts linguist-generated
 sdk/packages/node/iii-browser/src/reporter.ts linguist-generated
 sdk/packages/node/iii-browser/src/observable.ts linguist-generated
 sdk/packages/node/iii-browser/src/observe-types.ts linguist-generated
-sdk/packages/node/iii-browser/tests/filter-conformance.test.ts linguist-generated
-sdk/packages/node/iii-browser/tests/filter-index.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/observe-observer.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/observe-hooks.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/observe-deliver.test.ts linguist-generated
