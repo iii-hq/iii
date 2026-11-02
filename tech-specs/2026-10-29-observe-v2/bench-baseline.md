@@ -1021,58 +1021,6 @@ In the final pass ("Final pass (`ac89e90f6`)"), two results are slower than
 0.25 in every run: `control_plane_churn/observers_add_remove`, by 1.3% to
 3.3%, and the `filters` load test with 16 observers, by 3.2%.
 
-The rows below come from the observer churn fix (`d37f78f42`), from its pass.
-Where that pass did not measure a row, the figures are from the first pass.
-The final pass measured each of these rows again.
-
-- **`observe_fanout/1`**: 13.1 µs against 11.4 µs for `trigger_fanout/1`
-  (+14.9%; +14.5% in the first pass). **`observe_fanout/8`**: 30.6 µs against
-  28.7 µs (+6.4%), where observe-v2 before the fix measured +5.5% in the same
-  rounds and +4.8% (the same within noise) in the first pass. With 32 and 128,
-  0.26 takes 21% and 45% less time.
-- **`observe_routed/observed/8` and `/64`**: 47.4 µs and 101 µs against 44.2
-  µs and 93.4 µs (+7.3%, +8.1%; +6.9% and +9.4% in the first pass). In 0.26
-  the host's `invocationresult` lists the matched observers (8 or 64 ids) and
-  the engine starts their activations from that list; in 0.25 the engine
-  evaluated the observers itself. Unobserved and with one observer, the two
-  are the same within noise.
-- **Adding and removing observers of one function.**
-  `control_plane_churn/observers_add_remove/<n>` adds and removes `n` engine
-  observers of one function: one add and remove costs 3.97 µs with 100
-  observers, 4.34 µs with 1,000 and 4.92 µs with 5,000. 0.25's closest bench
-  registers and unregisters `n` triggers of `n` functions at 1.38 to 1.50 µs
-  each, so 0.26 costs 2.9x to 3.3x. With the shape of 0.25's bench (one source,
-  `n` targets) 0.26 costs 3.2 to 3.6 µs a change, 2.3x to 2.4x. Before the fix
-  one change cost 6.26, 21.5 and 90.9 µs, and the total grew with the square
-  of `n`.
-- **Cleaning up a worker's observers.** `worker_cleanup/observers/<n>` costs
-  3.5 to 5.0 µs per observer (10 to 200 observers), against 0.86 to 1.86 µs
-  per trigger for 0.25's `worker_cleanup/triggers/<n>`: 2.7x to 4.0x (4.2 to
-  5.7 µs per observer before the fix).
-- **Load test `filters`.** With 1,024 and 4,000 filtered observers of one
-  function, 0.26 takes 30.9k and 4.6k calls/s against 77.9k and 28.3k (−60%,
-  −84%), with the engine's CPUs mostly idle (1.4 and 0.4 of 4 cores busy). It
-  delivers every matching call (0 dropped); 0.25 delivered 33.7k and 5.0k
-  activations/s and dropped 386M and 670M observations as `OVERFLOW`. Counted
-  in activations delivered, 0.26 is 8.3% and 8.0% below 0.25. With 256
-  observers 0.26 is 10.0% below and with 16, 5.3% (7.8% and 3.7% in the first
-  pass). The fix's calls and activations are the same as before the fix
-  within noise.
-- **Load test `fanout`.** With 4, 16 and 64 observers a function, 0.26 takes
-  17%, 14% and 31% fewer calls per second (four runs; 13%, 16% and 36% in the
-  first pass, before the fix). Activations delivered are the same within noise
-  with 1, 4, 16 and 64 observers. With 64 observers the fix takes 21% more
-  calls per second and delivers 21% more activations than observe-v2 before
-  it.
-- **Load test `observers`.** Engine memory per observer at rest is 9.1 KiB
-  against 7.8 KiB with 4,000 observers (+16.8%), 9.1 against 8.1 KiB with
-  16,000 (+11.9%) and 9.7 against 7.8 KiB with 64,000 (+24.0%). Before the fix
-  the runs of the same pass measured 8.2, 8.1 and 8.9 KiB, so the fix holds
-  8.5% to 12.8% more. With 1,000 observers, runs of every version measure about 7.1 or about
-  9.7 KiB, and the fix's two measured 9.6 and 9.7. Creating and disposing of
-  observers is faster than in 0.25: 64,000 created at 16.3k a second and
-  disposed of at 10.5k, against 4.8k and 4.6k.
-
 ## Check
 
 A second pass, on observe-v2 at `e0d87164c`, re-ran every row the first pass

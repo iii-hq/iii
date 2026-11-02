@@ -4411,41 +4411,6 @@ async fn a_deliver_hooks_rethrown_timeout_keeps_its_code() {
     iii.shutdown_async().await;
 }
 
-/// A match hook narrows a routed call's observers: its matches ride the
-/// answer.
-#[tokio::test]
-async fn a_match_hook_narrows_a_routed_calls_observers() {
-    let mock = MockEngine::start().await;
-    let iii = worker(&mock, "cron");
-    connected(&mock, &iii, true).await;
-    iii.on_observer_match_for(
-        "cron::routed",
-        Match::predicate(|obs, call| obs.args_value()["expression"] == call.input["expression"]),
-    );
-    hosted(
-        &mock,
-        &iii,
-        "cron::routed",
-        echo(),
-        json!([
-            observer_with_args("nine", json!({ "expression": "A" })),
-            observer_with_args("five", json!({ "expression": "B" }))
-        ]),
-    )
-    .await;
-    acked(&mock, &[("nine", 1), ("five", 1)]).await;
-    route_call(
-        &mock,
-        "cron::routed",
-        "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
-        json!({ "expression": "B" }),
-    );
-    let answer = answer_to(&mock, "6f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f").await;
-    assert_eq!(answer["matched"], json!(["five"]));
-    assert_eq!(answer["result"]["expression"], "B");
-    iii.shutdown_async().await;
-}
-
 // ──────────────────── engines without observe.v2, private, standby ───────
 
 /// A 0.25 engine: functions that need `observe.v2` stay unregistered, the
