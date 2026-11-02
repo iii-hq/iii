@@ -2228,17 +2228,7 @@ Sentinel errors for the two failure modes that carry no payload. Compare with er
 
 | Name | Value | Description |
 | --- | --- | --- |
-| `EngineSources` | `struct {
-	FunctionsChanged     string
-	WorkersChanged       string
-	ObserversChanged     string
-	Log                  string
-	Span                 string
-	ConfigurationUpdated string
-	StreamChanged        string
-	StreamJoin           string
-	StreamLeave          string
-}{FunctionsChanged: FnOnFunctionsChanged, WorkersChanged: FnOnWorkersChanged, ObserversChanged: FnOnObserversChanged, Log: FnOnLog, Span: FnOnSpan, ConfigurationUpdated: FnOnConfigurationUpdate, StreamChanged: FnOnStreamChanged, StreamJoin: FnOnStreamJoin, StreamLeave: FnOnStreamLeave}` | EngineSources are the ids of the engine-hosted sources under the names every SDK gives them (EngineSources in the Node, browser, Python and Rust SDKs): EngineSources.FunctionsChanged is `FnOnFunctionsChanged`, and so on.<br /><br />`client.ObserveFunction(iii.EngineSources.FunctionsChanged, "catalog::refresh")` |
+| `EngineSources` | `struct { FunctionsChanged string; WorkersChanged string; ObserversChanged string; Log string; Span string; ConfigurationUpdated string; StreamChanged string; StreamJoin string; StreamLeave string }{FunctionsChanged: FnOnFunctionsChanged, WorkersChanged: FnOnWorkersChanged, ObserversChanged: FnOnObserversChanged, Log: FnOnLog, Span: FnOnSpan, ConfigurationUpdated: FnOnConfigurationUpdate, StreamChanged: FnOnStreamChanged, StreamJoin: FnOnStreamJoin, StreamLeave: FnOnStreamLeave}` | EngineSources are the ids of the engine-hosted sources under the names every SDK gives them (EngineSources in the Node, browser, Python and Rust SDKs): EngineSources.FunctionsChanged is `FnOnFunctionsChanged`, and so on.<br /><br />`client.ObserveFunction(iii.EngineSources.FunctionsChanged, "catalog::refresh")` |
 
 ## Types
 
