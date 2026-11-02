@@ -23,7 +23,7 @@ use iii_sandbox_contract::{
     WorkerPrepareResponse, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
     WorkerStatusRequest, WorkerStopRequest, adapter_function_id, code_of,
 };
-use iii_sdk::{IIIClient, protocol::TriggerRequest, runtime::IIIConnectionState};
+use iii_sdk::{IIIClient, protocol::CallRequest, runtime::IIIConnectionState};
 use sha2::{Digest, Sha256};
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -880,7 +880,7 @@ fn prepare_failed(
     {
         message.push_str(&format!(
             ". If {} was added after the adapter started, restart the adapter, which \
-             stops every VM: iii trigger compose::restart worker={adapter_key}",
+             stops every VM: iii call compose::restart worker={adapter_key}",
             dir.display()
         ));
     }
@@ -1296,7 +1296,7 @@ async fn send<T: serde::de::DeserializeOwned>(
     request: &impl serde::Serialize,
     timeout: Duration,
 ) -> std::result::Result<T, iii_sdk::Error> {
-    let request = TriggerRequest {
+    let request = CallRequest {
         function_id: adapter_function_id(adapter, suffix),
         payload: serde_json::to_value(request)?,
         action: None,
@@ -1309,7 +1309,7 @@ async fn send<T: serde::de::DeserializeOwned>(
             // SDK, which would send it on the next connection.
             biased;
             () = connection(client, false) => Err(iii_sdk::Error::NotConnected),
-            reply = client.trigger(request) => reply,
+            reply = client.call(request) => reply,
         }
     };
     let reply = tokio::time::timeout(timeout, sent)

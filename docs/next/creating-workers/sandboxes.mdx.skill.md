@@ -28,7 +28,7 @@ top-level `sandbox:` section in its engine config. [Upgrading to the sandbox
 worker](../upgrading/sandbox-worker) covers that case and the move from the 0.25 setup.
 
 <Note>
-  This page is a quick tour of the sandbox triggers. For the adapter's own documentation, see the
+  This page is a quick tour of the sandbox functions. For the adapter's own documentation, see the
   [sandbox-libkrun docs](https://workers.iii.dev/workers/sandbox-libkrun).
 </Note>
 

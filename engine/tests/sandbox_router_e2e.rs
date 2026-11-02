@@ -162,7 +162,7 @@ async fn fake_adapter(port: u16, major: u32, engine: &Engine) -> FakeAdapter {
                 "fake::fs::stat" => {
                     reply["error"] = json!({
                         "code": "function_not_found",
-                        "message": "nested trigger missed",
+                        "message": "nested call missed",
                     });
                 }
                 "fake::create" => {
@@ -495,7 +495,7 @@ async fn adapter_returned_function_not_found_passes_through() {
         .await
         .unwrap_err();
     assert_eq!(err.code, "function_not_found");
-    assert_eq!(err.message, "nested trigger missed");
+    assert_eq!(err.message, "nested call missed");
 }
 
 /// Caches the handshake, drops `fake::exec` and returns it with a pending

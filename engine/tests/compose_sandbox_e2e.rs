@@ -210,9 +210,9 @@ impl Project {
         );
     }
 
-    /// `iii trigger` against the project's engine. Compose answers in its own
+    /// `iii call` against the project's engine. Compose answers in its own
     /// namespace and the router in `default`, hence the optional namespace.
-    fn trigger(
+    fn call(
         &self,
         namespace: Option<&str>,
         function: &str,
@@ -222,14 +222,14 @@ impl Project {
         let mut command = iii_bin();
         command
             .env("HOME", self.home.path())
-            .args(["trigger", function, "--engine"])
+            .args(["call", function, "--engine"])
             .arg(format!("ws://127.0.0.1:{}", self.port))
             .args(["--timeout-ms", &timeout.as_millis().to_string()])
             .args(["--json", &payload.to_string()]);
         if let Some(namespace) = namespace {
             command.args(["--namespace", namespace]);
         }
-        let output = command.output().expect("run iii trigger");
+        let output = command.output().expect("run iii call");
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned());
         }
@@ -237,18 +237,18 @@ impl Project {
         Ok(if stdout.trim().is_empty() {
             Value::Null
         } else {
-            serde_json::from_str(&stdout).expect("iii trigger prints JSON")
+            serde_json::from_str(&stdout).expect("iii call prints JSON")
         })
     }
 
     fn compose_call(&self, function: &str, payload: Value, timeout: Duration) -> Value {
-        self.trigger(Some(NAMESPACE), function, payload, timeout)
+        self.call(Some(NAMESPACE), function, payload, timeout)
             .unwrap_or_else(|error| panic!("{function} failed: {error}"))
     }
 
     fn state(&self, key: &str) -> Option<String> {
         let status = self
-            .trigger(Some(NAMESPACE), "compose::status", json!({}), SHORT)
+            .call(Some(NAMESPACE), "compose::status", json!({}), SHORT)
             .ok()?;
         status["containers"]
             .as_array()?
@@ -403,7 +403,7 @@ impl Drop for Project {
 /// router, which forwards them to `sandbox-libkrun::*` in the owner's namespace.
 fn sandbox_exec_through_the_router(project: &Project) {
     let created = project
-        .trigger(None, "sandbox::create", json!({ "image": "python" }), LONG)
+        .call(None, "sandbox::create", json!({ "image": "python" }), LONG)
         .expect("sandbox::create through the router");
     let sandbox_id = created["sandbox_id"]
         .as_str()
@@ -411,7 +411,7 @@ fn sandbox_exec_through_the_router(project: &Project) {
         .to_owned();
 
     let exec = project
-        .trigger(
+        .call(
             None,
             "sandbox::exec",
             json!({ "sandbox_id": sandbox_id, "cmd": "python3", "args": ["-c", "print(1)"] }),
@@ -422,7 +422,7 @@ fn sandbox_exec_through_the_router(project: &Project) {
     assert_eq!(exec["stdout"], "1\n", "{exec}");
 
     project
-        .trigger(
+        .call(
             None,
             "sandbox::stop",
             json!({ "sandbox_id": sandbox_id, "wait": true }),
@@ -493,7 +493,7 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
         let mut seen = Value::Null;
         let deadline = Instant::now() + SHORT;
         while Instant::now() < deadline {
-            match project.trigger(
+            match project.call(
                 Some(NAMESPACE),
                 "sandbox-vm-worker::hello",
                 json!({}),

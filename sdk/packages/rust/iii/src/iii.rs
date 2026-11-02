@@ -1983,7 +1983,7 @@ pub(crate) struct IIIInner {
     held_frames: Mutex<Vec<PreparedEnvelope>>,
     /// Lets `iii ps` find this worker. Removed by `shutdown`/`shutdown_async`,
     /// not by the connection thread: a client that exits right after
-    /// `shutdown_async` (`iii trigger`) kills that thread before it ends.
+    /// `shutdown_async` (`iii call`) kills that thread before it ends.
     marker: Mutex<Option<crate::process_marker::Marker>>,
 }
 
@@ -4693,7 +4693,7 @@ mod tests {
         let path = path.expect("HOME must be writable for this test");
         assert!(path.exists());
 
-        // `iii trigger` exits right after this, without joining the thread.
+        // `iii call` exits right after this, without joining the thread.
         iii.shutdown_async().await;
         assert!(!path.exists(), "{} outlived shutdown_async", path.display());
     }

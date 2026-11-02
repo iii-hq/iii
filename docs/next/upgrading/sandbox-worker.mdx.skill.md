@@ -5,7 +5,7 @@
 
 iii 0.26 moves the VM code out of the engine. `iii-worker` and `iii-init` are gone, and so is the
 `iii-sandbox` worker you configured under `engine.workers`. The engine keeps `iii-sandbox` as a small
-router: it serves the `sandbox::*` triggers and forwards every call to a sandbox adapter. The
+router: it serves the `sandbox::*` functions and forwards every call to a sandbox adapter. The
 `sandbox-libkrun` worker is that adapter. It runs the VMs, it comes from the worker registry, and
 Compose installs it when a project needs it.
 
@@ -55,7 +55,7 @@ Compose does not move a configuration entry that you stored under `iii-sandbox`,
 with `configuration::set`. Read it in its template form:
 
 ```bash
-iii trigger configuration::get --json '{"id": "iii-sandbox", "raw": true}'
+iii call configuration::get --json '{"id": "iii-sandbox", "raw": true}'
 ```
 
 Copy the keys it prints into the `config_override` of the `sandbox-libkrun` container, as in the
@@ -101,7 +101,7 @@ sandbox:
 fail with S301, which names the namespace and both ways to install it.
 
 If a Compose project already runs in that namespace, add the adapter to it with
-`iii trigger compose::add worker=iii-sandbox`. If none runs, `compose::add` has nothing to edit: it
+`iii call compose::add worker=iii-sandbox`. If none runs, `compose::add` has nothing to edit: it
 only edits a compose file that exists, and a file with no `engine:` section must declare at least
 one container. Write a `worker-compose.yaml` that declares the adapter:
 
@@ -139,7 +139,7 @@ starts. A declared worker outside the compose directory, such as `path://../shar
 The adapter reads its roots only when it starts. A `path://` VM worker outside the compose
 directory that you add while it runs, for example with `compose::add`, fails with `SPAWN_FAILED`
 and the adapter's S501, which names the roots and links its entry. The error ends with the command
-that restarts the adapter, `iii trigger compose::restart worker=sandbox-libkrun`, which stops every
+that restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which stops every
 VM. Run it, or move the worker under the compose directory.
 
 ## Supported hosts

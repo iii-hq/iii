@@ -299,7 +299,7 @@ pub enum ComposeError {
 
     #[error(
         "{needed_by} needs the sandbox adapter '{adapter}', and --frozen does not edit the file. \
-         Run up once without --frozen, or: iii trigger compose::add worker=iii-sandbox"
+         Run up once without --frozen, or: iii call compose::add worker=iii-sandbox"
     )]
     SandboxAdapterNotDeclared { adapter: String, needed_by: String },
 
