@@ -269,10 +269,6 @@ pub struct ConfigurationCallRequest {
     pub description: String,
     /// JSON Schema describing the value shape
     pub schema: Value,
-    /// Previous value (null on registered/deleted-without-prior-state events)
-    pub old_value: Option<Value>,
-    /// New value with `${VAR:default}` placeholders expanded; null on deletion
-    pub new_value: Option<Value>,
     /// Optional caller-supplied metadata stored alongside the entry
     pub metadata: Option<Value>,
 }

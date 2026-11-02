@@ -321,7 +321,7 @@ keep firing.
 | --- | --- | --- |
 | `engine::on-functions-changed` | `engine::functions-available` | `{ event: "functions_changed", functions: [...] }`, bursts coalesced (~100 ms) |
 | `engine::on-workers-changed` | `engine::workers-available` | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated` |
-| `configuration::on-updated` | `configuration` | `{ type, event_type, id, name, ..., old_value, new_value }` |
+| `configuration::on-updated` | `configuration` | `{ type, event_type, id, name, ... }`, no value (read it with `configuration::get`) |
 | `observability::on-log` | `log` | one log record |
 | `observability::on-span` | `trace` | `{ trace_ids: [...] }` per window (~300 ms) |
 
