@@ -353,7 +353,7 @@ Two deliberate consequences:
   [Acks](#acks-and-rejection)), whereas Message-path rejections always reach
   the registrant via the forwarded `TriggerRegistrationResult`. Note the
   durability point corrects
-  [`engine-register-trigger-metadata.md`](../engine-register-trigger-metadata.md)
+  [`engine-register-trigger-metadata.md` (archived)](https://github.com/iii-hq/iii/blob/6cc82920f747acaebc1fa3ffdea3f87856054217/tech-specs/engine-register-trigger-metadata.md)
   §5.2 step 3, whose `_caller_worker_id` scoping claim is stale against
   shipped code.
 - **Parked registrations are invisible** to

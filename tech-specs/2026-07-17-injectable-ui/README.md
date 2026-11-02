@@ -277,7 +277,7 @@ This spec follows the repo SOPs in `workers/docs/sops`:
 - Vite HMR — the dispose → cache-busted re-import → re-register loop and CSS
   link-swap this design mimics; divergences called out in
   [hot-reload.md § Vite fidelity](hot-reload.md#vite-fidelity-what-we-mimic-what-we-dont).
-- [`engine-register-trigger-metadata.md`](../engine-register-trigger-metadata.md)
+- [`engine-register-trigger-metadata.md` (archived)](https://github.com/iii-hq/iii/blob/6cc82920f747acaebc1fa3ffdea3f87856054217/tech-specs/engine-register-trigger-metadata.md)
   — the metadata sidecar and `engine::register_trigger` surface (with one
   stale claim this spec corrects: function-path triggers are **not**
   disconnect-GC'd; see

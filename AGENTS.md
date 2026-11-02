@@ -260,7 +260,7 @@ client.ObserveFunction("orders::create", "alerts::big-order")
 
 ## Skills
 
-The `skills/` directory contains 8 agent skills auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`: 7 iii-prefixed knowledge skills (catalog in `skills/SKILLS.md`) and the `presentation` tool skill. Code examples live in each `SKILL.md`, in TypeScript, Python, Rust, and Go where the concept is language-specific.
+The `skills/` directory contains 8 agent skills auto-discovered by `npx skills add iii-hq/iii` and `npx skillkit install iii-hq/iii`: 7 iii-prefixed knowledge skills (catalog in `skills/README.md`) and the `presentation` tool skill. Code examples live in each `SKILL.md`, in TypeScript, Python, Rust, and Go where the concept is language-specific.
 
 ## Blog (agent knowledge base)
 
