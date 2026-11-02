@@ -2979,12 +2979,26 @@ impl Engine {
                 .find(|(_, (removed, _))| *removed == message_type)
         }) {
             if worker.first_removed_message(index) {
+                // The connection's own clone is stale; the registry holds the metadata.
+                let (name, runtime, version) = self
+                    .worker_registry
+                    .workers
+                    .get(&worker.id)
+                    .map(|w| (w.name.clone(), w.runtime.clone(), w.version.clone()))
+                    .unwrap_or_default();
+                let unknown = || "unknown".to_string();
+                let (name, runtime, version) = (
+                    name.unwrap_or_else(unknown),
+                    runtime.unwrap_or_else(unknown),
+                    version.unwrap_or_else(unknown),
+                );
                 tracing::warn!(
                     worker_id = %worker.id,
                     peer = %peer,
                     message_type = %removed,
-                    "dropping `{removed}` frames from this worker: this engine has no such \
-                     message; {replacement}"
+                    replacement = %replacement,
+                    "dropping `{removed}` frames from worker {name} ({runtime} SDK {version}): \
+                     this engine has no such message; run: iii worker update {name}"
                 );
             }
             return;
@@ -9033,6 +9047,42 @@ mod tests {
         }
         let other = WorkerConnection::new(mpsc::channel::<Outbound>(1).0);
         assert!(other.first_removed_message(0), "per connection");
+    }
+
+    /// The dropped-frame warning names the worker, its SDK and the command
+    /// that updates it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn removed_frame_warning_names_worker_and_update_hint() {
+        ensure_default_meter();
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.worker_registry.update_worker_metadata(
+            &worker.id,
+            "node".into(),
+            Some("0.25.4".into()),
+            Some("cron".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let frame = serde_json::json!({ "type": "registertrigger", "id": "t-1" }).to_string();
+        let error = serde_json::from_str::<Message>(&frame).expect_err("not a message");
+        engine
+            .undecodable_frame(&worker, peer, frame.as_bytes(), &error)
+            .await;
+        let logs = logs.contents();
+        assert!(
+            logs.contains("from worker cron (node SDK 0.25.4)"),
+            "{logs}"
+        );
+        assert!(logs.contains("run: iii worker update cron"), "{logs}");
     }
 
     /// A 0.25 SDK's `observe: { delivery: owner }` is refused with
