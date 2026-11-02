@@ -6,6 +6,10 @@
   customize what happens when the functions your worker hosts are observed, as a producer (setting
   things up for each observer, matching observers to calls, delivering events yourself), see
   [Observable functions](../creating-workers/observable-functions).
+
+Coming from 0.25 triggers? A `registerTrigger` becomes `observe`; see
+[Upgrading from 0.25.x to 0.26.x](../upgrading/from-0-25-x).
+
 </Info>
 
 `observe(a, b)` means: when `a` runs, `b` runs.
