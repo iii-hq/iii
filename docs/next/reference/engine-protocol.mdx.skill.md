@@ -131,12 +131,12 @@ different releases work together.
 
 What each feature turns on:
 
-| Feature             | Meaning                                                                                                                                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields. |
-| `observe.v2`        | Includes `observe.v1`. The host runs its functions' match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`.        |
-| `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                  |
-| `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                             |
+| Feature             | Meaning                                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields.      |
+| `observe.v2`        | Includes `observe.v1`. The host runs its functions' observation match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`. |
+| `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                       |
+| `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                                  |
 
 Rules:
 
@@ -161,8 +161,8 @@ Rules:
   `observe()` fails with `UNSUPPORTED`. An SDK runs one of its own functions in-process only after
   the engine confirmed that function with `FunctionRegistered { local_dispatch: true }`.
 - Against an engine that did not advertise `observe.v2`, an SDK leaves each function that declares
-  `args_format`, `private: true`, or `observable: false`, or that sets an `onObserverMatch` or
-  `onObserverDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
+  `args_format`, `private: true`, or `observable: false`, or that sets an `onObservationMatch` or
+  `onObservationDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
   registration until the current connection's `WorkerRegistered` lists `observe.v2`, and decides
   again on every reconnect, including when it replays registrations. Every other function, `call`,
   and `observe` work: the SDK reports matches of local calls only, sends no `matched` and no
@@ -419,7 +419,7 @@ default) for an activation never answered. The observed `input` never contains t
 
 ### Calls through an observer
 
-A function's `onObserverDeliver` hook can run an observer's target itself with
+A function's `onObservationDeliver` hook can run an observer's target itself with
 `iii.call({ observer, payload })`, for example to route an HTTP request to one route's handler and
 return that handler's response. The SDK sends an `InvokeFunction` whose `function_id` is the
 observer's `target` and whose `activation` carries `observer_id` only, without `namespace` or
@@ -552,11 +552,11 @@ answer's `result` or `error`, the caller it forwarded the call with, and the cal
 host runs what is worker code, the function's match and deliver hooks, and its answer carries one of
 three things:
 
-| The answer carries | When                                                                                                                                                                                               | The engine                                                                                                               |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| nothing more       | The function has no `onObserverMatch` and no `onObserverDeliver` hook.                                                                                                                             | Evaluates `on` and filters of every active observer of the function.                                                     |
-| `matched`          | The function has an `onObserverMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
-| `delivered: true`  | The function's `onObserverDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
+| The answer carries | When                                                                                                                                                                                                  | The engine                                                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| nothing more       | The function has no `onObservationMatch` and no `onObservationDeliver` hook.                                                                                                                          | Evaluates `on` and filters of every active observer of the function.                                                     |
+| `matched`          | The function has an `onObservationMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
+| `delivered: true`  | The function's `onObservationDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
 
 The answer for a function with a match hook:
 
@@ -754,10 +754,10 @@ function runs, the target runs. The **observing worker** is the connection that 
 
 The connection that hosts a function runs the function's hooks when it declared `observe.v2`. Its
 SDK runs the handler, then matches observers to the call: every active observer by default, or those
-the function's `onObserverMatch` hook selects by predicate or by keys. iii's delivery then selects
-the matching observers whose `on` and filters match the call. A function's `onObserverDeliver` hook
-takes delivery over: it receives the matching observers and calls through them itself. Where the
-filters run depends on the call:
+the function's `onObservationMatch` hook selects by predicate or by keys. iii's delivery then
+selects the matching observers whose `on` and filters match the call. A function's
+`onObservationDeliver` hook takes delivery over: it receives the matching observers and calls
+through them itself. Where the filters run depends on the call:
 
 - **Local call.** The host called its own function, and the engine never sees the call. The host
   evaluates `on` and filters and sends the observers delivered in a batched
