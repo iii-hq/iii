@@ -10,8 +10,6 @@ sdk/packages/node/iii-browser/src/observe-wire.ts linguist-generated
 sdk/packages/node/iii-browser/src/reporter.ts linguist-generated
 sdk/packages/node/iii-browser/src/observable.ts linguist-generated
 sdk/packages/node/iii-browser/src/observe-types.ts linguist-generated
-sdk/packages/node/iii-browser/tests/filter-conformance.test.ts linguist-generated
-sdk/packages/node/iii-browser/tests/filter-index.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/observe-observer.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/observe-hooks.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/observe-deliver.test.ts linguist-generated
@@ -21,5 +19,3 @@ sdk/packages/node/iii-browser/tests/observe-protocol-fixtures.test.ts linguist-g
 sdk/packages/node/iii-browser/tests/integration/observe-routed.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/integration/observe-local.test.ts linguist-generated
 sdk/packages/node/iii-browser/tests/integration/observe-fault-tolerance.test.ts linguist-generated
-# Raw benchmark runs; bench-baseline.md is the readable summary.
-tech-specs/2026-10-29-observe-v2/bench-baseline.json linguist-generated

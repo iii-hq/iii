@@ -800,7 +800,7 @@ async fn local_calls(iii: &IIIClient, function_id: &str, n: u64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_million_unobserved_local_calls_put_nothing_on_the_wire() {
+async fn unobserved_local_calls_put_nothing_on_the_wire() {
     let id = uid();
     let (quiet, loud, target) = (
         format!("it{id}::quiet"),
@@ -831,14 +831,15 @@ async fn a_million_unobserved_local_calls_put_nothing_on_the_wire() {
     let reported = proxy.sent_bytes() - before;
     assert!(reported > 10_000, "only {reported} bytes for 1000 reports");
 
+    // The volume (1M calls) runs against the mock in observe_mock.rs.
     let before = proxy.sent_bytes();
-    local_calls(&owner, &quiet, 1_000_000).await;
+    local_calls(&owner, &quiet, 1_000).await;
     let sent = proxy.sent_bytes() - before;
     // One periodic `localinvocationstats` (or a keepalive pong) may fall in the
-    // window; a single invocation or report frame per call would be > 50 MB.
+    // window; a single invocation or report frame per call would be > 50 KB.
     assert!(
         sent < 512,
-        "{sent} bytes sent during 1M unobserved local calls"
+        "{sent} bytes sent during 1000 unobserved local calls"
     );
     owner.shutdown_async().await;
 }

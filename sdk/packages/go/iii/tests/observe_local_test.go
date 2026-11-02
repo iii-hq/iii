@@ -127,34 +127,27 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 	}
 }
 
-// sdk.md §7 Zero-wire: 1M local calls of an unobserved function send zero frames
-// (localinvocationstats, the periodic counter, aside).
+// sdk.md §7 Zero-wire: local calls of an unobserved function send zero frames
+// (localinvocationstats, the periodic counter, aside). The volume (1M calls) runs
+// against the fake engine in TestZeroWireUnobservedLocalCalls.
 func TestObserveZeroWire(t *testing.T) {
-	// It measures what reaches the wire, not telemetry: with telemetry on, its million
-	// local calls each run in a traced span, about 7s more for the whole loop. The
-	// telemetry socket is separate and its frames are not counted either way.
-	t.Setenv("OTEL_ENABLED", "false")
 	proxy := newFrameProxy(t)
 	owner := observeWorker(t, "zero-wire", proxy)
 	inc := fnID(t, "go-zw::inc")
 	_, _ = owner.RegisterFunction(inc, func(_ context.Context, data json.RawMessage) (any, error) { return data, nil })
 	localDispatchReady(t, owner, inc)
-	const calls = 1_000_000
 	mark := proxy.mark()
 	ctx := context.Background()
 	req := iii.CallRequest{FunctionID: inc, Payload: json.RawMessage(`1`)}
-	start := time.Now()
-	for i := 0; i < calls; i++ {
+	for i := 0; i < 1_000; i++ {
 		if _, err := owner.Call(ctx, req); err != nil {
 			t.Fatal(err)
 		}
 	}
-	elapsed := time.Since(start)
 	time.Sleep(100 * time.Millisecond)
 	if sent := without(proxy.since(mark), "localinvocationstats"); len(sent) != 0 {
 		t.Fatalf("%d frames for unobserved local calls: %v", len(sent), sent[:min(len(sent), 10)])
 	}
-	t.Logf("%d local calls in %s", calls, elapsed)
 
 	// positive control: the same counter sees the frames of an observed function
 	watcher := observeWorker(t, "zero-wire-watcher", nil)

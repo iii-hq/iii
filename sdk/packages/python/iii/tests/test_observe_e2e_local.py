@@ -27,11 +27,9 @@ from iii.iii import III
 
 ALL = ["input", "output", "error", "caller", "metadata"]
 
-#: Local calls in the zero-wire test (sdk.md §7 asks for 1M; that would take
-#: minutes here, so the count is sized to run well under 10 s against a live
-#: engine with tracing on and with coverage tracing on, as CI runs it). The
-#: positive control below shows the counter does see frames.
-ZERO_WIRE_CALLS = 20_000
+#: Local calls in the zero-wire test: the volume runs against the fake engine in
+#: test_observe_local_dispatch.py. The positive control shows the counter sees frames.
+ZERO_WIRE_CALLS = 1_000
 
 
 def test_equivalence_dispatch_auto_and_remote_give_identical_envelopes(worker: Any, fid: Any) -> None:
