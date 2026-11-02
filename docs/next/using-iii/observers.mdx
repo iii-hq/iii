@@ -5,6 +5,13 @@ owner: "devrel"
 type: "how-to"
 ---
 
+<Info title="Observing functions, not hosting them">
+  This page is for consumers of observations: running your own function when another one runs. To
+  customize what happens when the functions your worker hosts are observed, as a producer (setting
+  things up for each observer, matching observers to calls, delivering events yourself), see
+  [Observable functions](../creating-workers/observable-functions).
+</Info>
+
 `observe(a, b)` means: when `a` runs, `b` runs.
 
 <Tabs>
@@ -1290,7 +1297,7 @@ namespace names `namespace: "default"`.
 | `engine::on-functions-changed`        | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`. `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
 | `engine::on-workers-changed`          | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                                                                                                                                                 |
 | `engine::on-observers-changed`        | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                                                                                                                                     |
-| `configuration::on-updated`           | `{ type: "configuration", event_type, id, name, description, schema, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. The event carries no value: read it with `configuration::get`.                                                                                                                   |
+| `configuration::on-updated`           | `{ type: "configuration", event_type, id, name, description, schema, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. The event carries no value: read it with `configuration::get`.                                                                          |
 | `observability::on-log`               | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                                                                                                                                        |
 | `observability::on-span`              | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
 | `stream::on-changed`                  | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id?, event }`, `event_type` one of `create`, `update`, `delete`, `sync`.                                                                                                                                                                          |
