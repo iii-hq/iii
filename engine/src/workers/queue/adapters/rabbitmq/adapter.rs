@@ -1214,16 +1214,16 @@ impl QueueAdapter for RabbitMQAdapter {
         };
 
         // Get main queue depth (passive declare to inspect without creating)
-        let depth = match self.passive_queue_message_count(&queue_name).await {
-            Ok(count) => count,
-            Err(_) => 0,
-        };
+        let depth = self
+            .passive_queue_message_count(&queue_name)
+            .await
+            .unwrap_or_default();
 
         // Get DLQ depth
-        let dlq_depth = match self.passive_queue_message_count(&dlq_name).await {
-            Ok(count) => count,
-            Err(_) => 0,
-        };
+        let dlq_depth = self
+            .passive_queue_message_count(&dlq_name)
+            .await
+            .unwrap_or_default();
 
         // Count consumers for this topic from subscriptions map
         let consumer_count = {

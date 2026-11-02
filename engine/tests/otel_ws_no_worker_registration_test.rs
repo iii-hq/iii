@@ -18,6 +18,7 @@
 //! port, connects one WS client to `/` and one to `/otel`, and asserts:
 //!   1. `/` produces exactly 1 registry entry.
 //!   2. `/otel` produces ZERO additional registry entries.
+//!
 //! Without the fix, `/otel` would 404 (pre-route) OR register the
 //! telemetry socket (pre-path-routing), both of which this test catches.
 
@@ -27,7 +28,7 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use iii::engine::Engine;
 use iii::workers::traits::Worker;
-use iii::workers::worker::{WorkerManager, WorkerManagerConfig};
+use iii::workers::worker::WorkerManager;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -84,7 +85,7 @@ async fn otel_path_skips_worker_registry_registration() {
     // happened. Wait up to 500ms to stay well clear of CI jitter.
     tokio::time::timeout(Duration::from_millis(500), async {
         loop {
-            if engine.worker_registry.list_workers().len() >= 1 {
+            if !engine.worker_registry.list_workers().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

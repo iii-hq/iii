@@ -3977,7 +3977,7 @@ mod tests {
         let registry = TriggerRegistry::new();
         let failing = Arc::new(ControlledRegistrator::new(true, false));
         registry.trigger_types.insert(
-            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"webhook".to_string()),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, "webhook"),
             TriggerType::new("webhook", "Webhook", Box::new(Arc::clone(&failing)), None),
         );
         registry
@@ -4000,7 +4000,7 @@ mod tests {
     async fn undeliverable_reregistration_of_live_binding_ends_parked_not_split() {
         let registry = TriggerRegistry::new();
         registry.trigger_types.insert(
-            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"webhook".to_string()),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, "webhook"),
             TriggerType::new(
                 "webhook",
                 "Webhook",
@@ -4031,7 +4031,7 @@ mod tests {
         let registry = TriggerRegistry::new();
         let registrator = Arc::new(ControlledRegistrator::new(false, false));
         registry.trigger_types.insert(
-            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &"webhook".to_string()),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, "webhook"),
             TriggerType::new(
                 "webhook",
                 "Webhook",

@@ -7049,7 +7049,7 @@ mod tests {
 
     fn insert_trigger_type_for(engine: &Engine, type_id: &str, registrator: &WorkerConnection) {
         engine.trigger_registry.trigger_types.insert(
-            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, &type_id.to_string()),
+            crate::trigger::type_key(crate::protocol::DEFAULT_NAMESPACE, type_id),
             crate::trigger::TriggerType::new(
                 type_id,
                 "test trigger type",

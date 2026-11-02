@@ -262,7 +262,7 @@ async fn retry_behavior_with_rabbitmq() {
 
     let total_calls = call_count.load(Ordering::SeqCst);
     assert!(
-        total_calls >= 1 && total_calls <= 3,
+        (1..=3).contains(&total_calls),
         "Expected 1-3 invocations (1 initial + up to 2 retries), got {total_calls}"
     );
 
@@ -917,7 +917,7 @@ async fn rmq_dlq_exhaustion_with_content_verification() {
         .expect("Should connect to RabbitMQ for DLQ inspection");
     let channel = conn.create_channel().await.expect("Should create channel");
 
-    let dlq_queue_name = format!("iii.__fn_queue::{}::dlq.queue", format!("{prefix}-test"));
+    let dlq_queue_name = format!("iii.__fn_queue::{prefix}-test::dlq.queue");
 
     let delivery = channel
         .basic_get(&dlq_queue_name, BasicGetOptions { no_ack: true })
@@ -1025,7 +1025,7 @@ async fn rmq_max_retries_zero_sends_directly_to_dlq() {
         .expect("Should connect to RabbitMQ for DLQ inspection");
     let channel = conn.create_channel().await.expect("Should create channel");
 
-    let dlq_queue_name = format!("iii.__fn_queue::{}::dlq.queue", format!("{prefix}-test"));
+    let dlq_queue_name = format!("iii.__fn_queue::{prefix}-test::dlq.queue");
 
     let delivery = channel
         .basic_get(&dlq_queue_name, BasicGetOptions { no_ack: true })
@@ -1228,7 +1228,7 @@ async fn rmq_handler_panic_recovery() {
         .expect("Should connect to RabbitMQ for DLQ inspection");
     let channel = conn.create_channel().await.expect("Should create channel");
 
-    let dlq_queue_name = format!("iii.__fn_queue::{}::dlq.queue", format!("{prefix}-test"));
+    let dlq_queue_name = format!("iii.__fn_queue::{prefix}-test::dlq.queue");
 
     let delivery = channel
         .basic_get(&dlq_queue_name, BasicGetOptions { no_ack: true })

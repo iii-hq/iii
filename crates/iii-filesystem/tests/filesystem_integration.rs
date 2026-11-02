@@ -224,9 +224,9 @@ fn lookup_nonexistent_returns_error() {
 fn getattr_root() {
     let h = setup_fs();
     let (st, _dur) = h.fs.getattr(test_ctx(), ROOT_ID, None).unwrap();
-    let mode = st.st_mode as u32;
+    let mode = st.st_mode;
     assert!(
-        (mode & libc::S_IFMT as u32) == libc::S_IFDIR as u32,
+        (mode & libc::S_IFMT) == libc::S_IFDIR,
         "root inode should be a directory, got mode {:#o}",
         mode
     );
@@ -267,7 +267,7 @@ fn mkdir_and_lookup() {
 
     let (st, _) = h.fs.getattr(ctx, dir_entry.inode, None).unwrap();
     assert!(
-        (st.st_mode as u32 & libc::S_IFMT as u32) == libc::S_IFDIR as u32,
+        (st.st_mode & libc::S_IFMT) == libc::S_IFDIR,
         "should be a directory"
     );
 }
@@ -612,8 +612,8 @@ fn nested_directory_lookup_open_read_python_encodings() {
     // Verify getattr says it's a directory.
     let (enc_st, _) = h.fs.getattr(ctx, enc_entry.inode, None).unwrap();
     assert_eq!(
-        enc_st.st_mode as u32 & libc::S_IFMT as u32,
-        libc::S_IFDIR as u32,
+        enc_st.st_mode & libc::S_IFMT,
+        libc::S_IFDIR,
         "encodings should be a directory"
     );
 

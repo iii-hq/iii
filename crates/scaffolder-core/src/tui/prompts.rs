@@ -6,7 +6,7 @@ use crate::telemetry;
 use crate::templates::manifest::{LanguageFiles, TemplateManifest};
 use crate::templates::{copier, fetcher::TemplateFetcher, version};
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// CLI arguments for the create command
 #[derive(Debug, Clone, Default)]
@@ -539,13 +539,14 @@ fn check_runtimes(
 /// command moves on. Matches the engine CLI's `REPORT_TIMEOUT`.
 const CREATED_EVENT_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
+#[allow(clippy::too_many_arguments)]
 async fn create_project(
     product_name: &'static str,
     cli_version: &str,
     fetcher: &mut TemplateFetcher,
     template_name: &str,
     manifest: &TemplateManifest,
-    project_dir: &PathBuf,
+    project_dir: &Path,
     selected_languages: &[check::Language],
     language_files: &LanguageFiles,
     skip_install: bool,
