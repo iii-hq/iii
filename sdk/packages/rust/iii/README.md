@@ -195,8 +195,8 @@ hooks, each overriding what iii does by default:
 | --------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `on_observer_added`   | What do I set up for this observer? Return an `ObserveRejection` to reject it.  | accepts the observer                                        |
 | `on_observer_removed` | What do I tear down?                                                            | forgets the observer                                        |
-| `on_observer_match`   | Does this observer want this call?                                              | every observer wants every call                             |
-| `on_observer_deliver` | I deliver this call myself: which observers, and what does the caller get back? | delivers to every matching observer whose filters match it  |
+| `on_observation_match`   | Does this observer want this call?                                              | every observer wants every call                             |
+| `on_observation_deliver` | I deliver this call myself: which observers, and what does the caller get back? | delivers to every matching observer whose filters match it  |
 
 Added and removed hooks run for one function (`..._for(id, hook)`, or on the
 `FunctionRef`) and for every function the worker hosts (`on_observer_added(hook)`):
@@ -241,7 +241,7 @@ iii.on_observer_added_for("cron::on-tick", |obs: Observer| async move {
 });
 // an observer of expression X wants the ticks of expression X; by keys, iii
 // keeps an index, however many observers there are
-iii.on_observer_match_for(
+iii.on_observation_match_for(
     "cron::on-tick",
     Match::keys(
         |obs| obs.args_value()["expression"].as_str().into(),
@@ -269,7 +269,7 @@ and returns what the caller gets back:
 ```rust
 use iii_sdk::{Call, CallRequest, Observer};
 
-iii.on_observer_deliver_for("http::on-request", {
+iii.on_observation_deliver_for("http::on-request", {
     let iii = iii.clone();
     move |call: Call, observers: Vec<Observer>| {
         let iii = iii.clone();
@@ -311,7 +311,7 @@ iii.on_observer_added_for("tmux::on-changed", {
         }
     }
 });
-iii.on_observer_match_for(
+iii.on_observation_match_for(
     "tmux::on-changed",
     Match::predicate(|obs, call| {
         match call.metadata.as_ref().and_then(|m| m["for_observer"].as_str()) {
@@ -326,7 +326,7 @@ With keys, file each observer under `for_observer:<id>` as well, and give such
 a call that one key.
 
 Functions with `args_format`, `private`, `observable(false)`, a match hook or
-a deliver hook (`on_observer_match`, `on_observer_deliver`) need an engine
+a deliver hook (`on_observation_match`, `on_observation_deliver`) need an engine
 that advertises `observe.v2`; against an older one they stay unregistered and
 the SDK logs `UNSUPPORTED` once.
 

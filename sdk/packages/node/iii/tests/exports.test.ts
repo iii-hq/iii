@@ -20,8 +20,8 @@ describe('Package Exports', () => {
     for (const hook of [
       'onObserverAdded',
       'onObserverRemoved',
-      'onObserverMatch',
-      'onObserverDeliver',
+      'onObservationMatch',
+      'onObservationDeliver',
       'observers',
       'isObserved',
     ]) {

@@ -220,8 +220,8 @@ func TestFunctionRefUnregisterClearsObserveState(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref.OnObserverAdded(func(context.Context, *Observer) error { return nil }).
-		OnObserverMatch(MatchFunc(func(*Observer, *Call) bool { return true })).
-		OnObserverDeliver(handlerAnswer)
+		OnObservationMatch(MatchFunc(func(*Observer, *Call) bool { return true })).
+		OnObservationDeliver(handlerAnswer)
 	obs := c.functionObservers("obs::fn")
 	if obs == nil {
 		t.Fatal("no observe state after RegisterFunction")
@@ -302,7 +302,7 @@ func TestForeignHandles(t *testing.T) {
 	zero := &FunctionRef{ID: "x"}
 	if zero.OnObserverAdded(func(context.Context, *Observer) error { return nil }) != zero ||
 		nilFn.OnObserverRemoved(func(context.Context, *Observer) {}) != nil ||
-		zero.OnObserverMatch(nil) != zero || zero.OnObserverDeliver(nil) != zero || zero.IsObservedFor(&Call{}) || zero.IsObserved() {
+		zero.OnObservationMatch(nil) != zero || zero.OnObservationDeliver(nil) != zero || zero.IsObservedFor(&Call{}) || zero.IsObserved() {
 		t.Error("a foreign handle's methods must return it and report nothing observed")
 	}
 }

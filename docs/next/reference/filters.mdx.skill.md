@@ -277,7 +277,7 @@ explicit operators only:
 ## Evaluate a filter in code
 
 A worker evaluates an observer's filters, with its `on`, through `obs.matches(call)` (`Matches` in
-Go). An `onObserverDeliver` hook that runs a target itself with `iii.call({ observer, payload })`
+Go). An `onObservationDeliver` hook that runs a target itself with `iii.call({ observer, payload })`
 checks the call this way first, for example to answer a request differently when the filters reject
 it. The Python, Rust, and Go SDKs also expose the evaluator itself, which is handy in tests:
 

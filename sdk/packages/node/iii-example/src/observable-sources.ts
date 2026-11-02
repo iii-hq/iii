@@ -77,7 +77,7 @@ const webhooks = iii
     else listeners.set(url, left)
   })
   // each webhook reaches the observers of its url
-  .onObserverMatch({
+  .onObservationMatch({
     observer: obs => (obs.args as WebhookArgs).url,
     call: call => call.input.url,
   })

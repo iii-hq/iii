@@ -7,7 +7,7 @@
 //! `match-keys`: an event source that matches observers by keys, as the
 //! database source does with its tables. One worker hosts `bench::keyed`, a
 //! private function whose handler returns its input, with an
-//! `onObserverMatch` by keys: an observer of `{ "key": "k42" }` is filed under
+//! `onObservationMatch` by keys: an observer of `{ "key": "k42" }` is filed under
 //! `k42`, and a call of `{ "key": "k42" }` matches it. N observers (up to
 //! 10,000) each take their own key, and the worker calls the function
 //! in-process: first with keys that match exactly one observer, then with a
@@ -40,7 +40,7 @@ pub const MOST: usize = 10_000;
 pub async fn run(env: &Env) -> Result<()> {
     let host = worker(&env.url, "keyed").await?;
     // Set by id before registering, so it sees every observer.
-    host.on_observer_match_for(
+    host.on_observation_match_for(
         KEYED,
         Match::keys(
             |obs| obs.args_value()["key"].as_str().into(),

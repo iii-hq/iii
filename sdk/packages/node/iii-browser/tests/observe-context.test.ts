@@ -801,7 +801,7 @@ describe('a deliver hook after an await', () => {
       .onObserverAdded((obs) => {
         routes.set(obs.args.name as string, obs)
       })
-      .onObserverDeliver(async (call) => {
+      .onObservationDeliver(async (call) => {
         seen.push(sdk.currentInvocation())
         await gate()
         const obs = routes.get(call.input.name)

@@ -56,7 +56,7 @@ const users = await iii.call({
 | Call (fire-and-forget)   | `iii.call({ function_id, payload, action: CallAction.Void() })`                | Call without waiting                                           |
 | Call (enqueue)           | `iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })`    | Route the call through a named queue                           |
 | Observe                  | `iii.observe('fn::id' \| { function_id, args?, filters? }, target, options?)`  | Call `target` on every matching call of a function             |
-| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObserverMatch`, `onObserverDeliver` | Change what observing a function this page hosts means         |
+| Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObservationMatch`, `onObservationDeliver` | Change what observing a function this page hosts means         |
 | Call through an observer | `await iii.call({ observer, payload })`                                        | Run an observer's target from a deliver hook                   |
 | Current invocation       | `iii.currentInvocation()` / `iii.withInvocation(inv, fn)`                      | The invocation the running handler serves (caller, activation) |
 | Create channel           | `createChannel(iii)` (from `iii-browser-sdk/helpers`)                          | Create a streaming channel pair (writer + reader)              |
@@ -164,12 +164,12 @@ hooks, each overriding a default:
 | ------------------------------------ | ------------------------------------------------------------------------------------- |
 | `onObserverAdded(obs)`               | accept the observer                                                                   |
 | `onObserverRemoved(obs)`             | stop delivering to it and forget it                                                   |
-| `onObserverMatch(obs, call)`         | every observer wants every call                                                       |
-| `onObserverDeliver(call, observers)` | run every matching observer whose filters match the call; return the handler's value |
+| `onObservationMatch(obs, call)`         | every observer wants every call                                                       |
+| `onObservationDeliver(call, observers)` | run every matching observer whose filters match the call; return the handler's value |
 
 `onObserverAdded` and `onObserverRemoved` can be set for every function the
 page hosts, or for one function by id or on its `FunctionRef`.
-`onObserverMatch` and `onObserverDeliver` are set per function. Each method
+`onObservationMatch` and `onObservationDeliver` are set per function. Each method
 returns its receiver, and `null` removes a hook.
 
 An event source returns the event it is called with. `args_format` describes
@@ -193,7 +193,7 @@ iii
   })
   .onObserverRemoved((obs) => clicks.release(obs.args.selector as string))
   // each click reaches the observers of its selector
-  .onObserverMatch((obs, call) => obs.args.selector === call.input.selector)
+  .onObservationMatch((obs, call) => obs.args.selector === call.input.selector)
 
 // a backend worker observes it
 // iii.observe({ function_id: 'ui::on-click', args: { selector: '#buy' } }, 'analytics::track-click')
@@ -203,7 +203,7 @@ With many observers, match by keys instead: the SDK keeps an index, one
 lookup per key whatever the number of observers.
 
 ```typescript
-iii.onObserverMatch('ui::on-click', {
+iii.onObservationMatch('ui::on-click', {
   observer: (obs) => obs.args.selector as string, // what this observer listens for
   call: (call) => call.input.selector, // what this call is
 })
@@ -219,7 +219,7 @@ gets back. It applies the observers' filters with `obs.matches(call)` and
 runs their targets with a call through the observer:
 
 ```typescript
-iii.onObserverDeliver('ui::on-command', async (call) => {
+iii.onObservationDeliver('ui::on-command', async (call) => {
   const handler = commands.match(call.input)
   if (!handler) return { handled: false }
   if (!handler.obs.matches(call)) return { handled: false }
@@ -250,7 +250,7 @@ iii.onObserverAdded('ui::on-click', (obs) => {
       // a rejected observer gets nothing
     })
 })
-iii.onObserverMatch('ui::on-click', (obs, call) =>
+iii.onObservationMatch('ui::on-click', (obs, call) =>
   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.selector === call.input.selector,
 )
 ```
@@ -258,12 +258,8 @@ iii.onObserverMatch('ui::on-click', (obs, call) =>
 With keys, file each observer under `for_observer:<id>` as well, and give such
 a call that one key.
 
-With `standby: true`, a second page that registers a function another
-connection already hosts waits and takes it over (with its observers) when that
-one leaves.
-
 A function that sets `args_format`, `private: true`, `observable: false`, an
-`onObserverMatch` hook or an `onObserverDeliver` hook needs an engine that
+`onObservationMatch` hook or an `onObservationDeliver` hook needs an engine that
 advertises `observe.v2`; against an older engine it stays unregistered, and the
 SDK logs `UNSUPPORTED` once for it.
 

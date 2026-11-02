@@ -59,7 +59,7 @@ def setup(iii: IIIClient) -> None:
         print(f"[webhook] {obs.target} no longer receives {obs.args['path']}")
 
     # each webhook reaches the observers of its path
-    iii.on_observer_match(
+    iii.on_observation_match(
         "example::on-webhook",
         observer=lambda obs: obs.args["path"],
         call=lambda call: call.input["path"],

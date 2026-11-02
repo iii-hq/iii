@@ -200,7 +200,7 @@ describe('functions with args and observer hooks', () => {
       .onObserverRemoved((obs) => {
         removed.push(obs)
       })
-      .onObserverMatch({ observer: (obs) => obs.args.expression as string, call: (c) => c.input.expression })
+      .onObservationMatch({ observer: (obs) => obs.args.expression as string, call: (c) => c.input.expression })
     return {
       fn,
       owner,
@@ -353,7 +353,7 @@ describe('functions with args and observer hooks', () => {
       .onObserverRemoved((obs) => {
         routes.delete(obs.args.path as string)
       })
-      .onObserverDeliver(async (call) => {
+      .onObservationDeliver(async (call) => {
         const obs = routes.get(call.input.path)
         if (!obs) return { status: 404 }
         if (!obs.matches(call)) return { status: 422 }
@@ -442,7 +442,7 @@ describe('calls for one observer (decision 52)', () => {
               // a rejected observer gets nothing
             })
         })
-        .onObserverMatch(
+        .onObservationMatch(
           form === 'predicate'
             ? (obs, call: Call<Change>) =>
                 call.metadata?.for_observer

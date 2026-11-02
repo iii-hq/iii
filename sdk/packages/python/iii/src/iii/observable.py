@@ -1,7 +1,7 @@
 """The host side of observe: per-function observer state, the observer hooks
 (``on_observer_added`` / ``on_observer_removed`` at both levels), the
-:class:`Observer` handed to them, matching (``on_observer_match``, the key
-index) and each call's delivery (iii's, or ``on_observer_deliver``).
+:class:`Observer` handed to them, matching (``on_observation_match``, the key
+index) and each call's delivery (iii's, or ``on_observation_deliver``).
 
 Where filters run (decision 55): the engine evaluates the observers' ``on``
 and filters for every call it routes. For a routed call this host runs only
@@ -91,7 +91,7 @@ class ObserveHost(Protocol):
         """The ``on_observer_removed`` set at ``level`` for ``function_id``."""
 
     def match_hook(self, function_id: str) -> MatchHook | None:
-        """The ``on_observer_match`` set for ``function_id``."""
+        """The ``on_observation_match`` set for ``function_id``."""
 
     def hook_queue(self, function_id: str) -> HookQueue:
         """The queue the observer hooks of ``function_id`` run in, shared by
@@ -204,16 +204,16 @@ def _rejection_of(error: BaseException) -> tuple[str, str]:
 
 
 def match_keys(keys: Any, what: str) -> tuple[str, ...]:
-    """What a key function of ``on_observer_match`` returned, as distinct
+    """What a key function of ``on_observation_match`` returned, as distinct
     keys in order. Raises ``TypeError`` for anything but a string or strings."""
     if isinstance(keys, str):
         return (keys,)
     if isinstance(keys, (bytes, bytearray, Mapping)) or not isinstance(keys, Iterable):
-        raise TypeError(f"on_observer_match: the {what} key function must return a string or strings")
+        raise TypeError(f"on_observation_match: the {what} key function must return a string or strings")
     out = tuple(dict.fromkeys(keys))
     for key in out:
         if not isinstance(key, str):
-            raise TypeError(f"on_observer_match: the {what} key function returned a {type(key).__name__} key")
+            raise TypeError(f"on_observation_match: the {what} key function returned a {type(key).__name__} key")
     return out
 
 
@@ -353,7 +353,7 @@ class Observer:
                     return for_observer == obs.id
                 return obs.args["session"] == call.input["session"]
 
-            iii.on_observer_match("tmux::on-changed", wants)
+            iii.on_observation_match("tmux::on-changed", wants)
 
         Raises:
             ObserveRejection: The observer was rejected, or removed, first.
@@ -451,7 +451,7 @@ class ActiveSet:
     change swaps in a new one (copy-on-write)."""
 
     observers: tuple[Observer, ...] = ()
-    #: The ``on_observer_match`` this snapshot matches with.
+    #: The ``on_observation_match`` this snapshot matches with.
     match: MatchHook | None = None
     #: Matching by keys: key → the observers filed under it.
     index: Mapping[str, tuple[Observer, ...]] | None = None
@@ -629,7 +629,7 @@ class FunctionObservers:
 
     def matching(self, active: ActiveSet, call: Call[Any, Any]) -> tuple[Observer, ...]:
         """The observers of ``active`` that want ``call``: all of them
-        without ``on_observer_match``, those the predicate accepts, or those
+        without ``on_observation_match``, those the predicate accepts, or those
         filed under one of the call's keys, each once. A match hook that
         raises matches nothing, and is logged once per function."""
         match = active.match
@@ -664,18 +664,18 @@ class FunctionObservers:
         if self._match_failure_logged:
             return
         self._match_failure_logged = True
-        log.error("on_observer_match of %s raised; the call matches no observer", self.function_id, exc_info=error)
+        log.error("on_observation_match of %s raised; the call matches no observer", self.function_id, exc_info=error)
 
     def _keys_failure(self, obs: Observer, error: BaseException) -> str:
         return f"the keys of observer {obs.id} of {self.function_id} could not be computed: {error}"
 
     def match_changed(self) -> None:
-        """The function's ``on_observer_match`` was set or removed (any
+        """The function's ``on_observation_match`` was set or removed (any
         thread): the active set takes it on the SDK loop."""
         self.host.call_soon(self._rebuild)
 
     def _rebuild(self) -> None:
-        """Takes the function's current ``on_observer_match`` (SDK loop).
+        """Takes the function's current ``on_observation_match`` (SDK loop).
         Matching by keys files the active observers anew; their keys are
         computed outside the lock, and an observer whose keys raise is
         rejected (``OBSERVE_REJECTED``)."""
@@ -1128,9 +1128,9 @@ class FunctionObservers:
 
 
 class Delivery:
-    """One call's delivery: the observers that want it (``on_observer_match``,
+    """One call's delivery: the observers that want it (``on_observation_match``,
     from the active set when the call started), then the function's
-    ``on_observer_deliver``, which delivers the call itself, or iii's
+    ``on_observation_deliver``, which delivers the call itself, or iii's
     delivery. For a local call, iii's delivery reports the matched observers
     whose ``on`` and filters match the call in one report item. For a routed
     call the engine evaluates ``on`` and filters: the answer lists in

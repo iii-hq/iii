@@ -54,10 +54,10 @@ the helpers package, installed alongside the SDK: `@iii-dev/helpers` (Node, with
 | Durable enqueue | `CallAction.Enqueue({ queue })` | `{"type": "enqueue", "queue": name}` | `CallAction::Enqueue { queue }` | `iii.EnqueueAction(queue)` |
 | Fire and forget | `CallAction.Void()` | `{"type": "void"}` | `CallAction::Void` | `iii.VoidAction()` |
 | Observe a function | `observe(source, target, options?)`; `observe('fn::id', target)` | `observe(source, target, options)` | `observe(Source::function(id)..., target)` / `observe_with(.., ObserverOptions)` | `client.Observe(iii.Source{...}, target, opts...)` / `client.ObserveFunction(id, target)` |
-| Function options for observers | `{ args_format, private, observable, standby }` | `args_format=`, `private=`, `observable=`, `standby=` | `.args_format::<T>().private().observable(false).standby()` | `iii.FunctionOptions{ArgsFormat, Private, ...}` |
-| Observer hooks, one function | `iii.onObserverAdded(id, h)`, `onObserverRemoved(id, h)`, `onObserverMatch(id, m)`, `onObserverDeliver(id, h)`, or the same on the `FunctionRef` | `@iii.on_observer_added(id)`, `@ref.on_observer_removed`, `ref.on_observer_match(m)`, `ref.on_observer_deliver(h)` | `on_observer_added_for(id, h)`, `on_observer_removed_for(id, h)`, `on_observer_match_for(id, m)`, `on_observer_deliver_for(id, h)`, or `function.on_observer_added(h)` | `client.OnObserverAddedFor(id, h)`, `OnObserverRemovedFor`, `OnObserverMatchFor`, `OnObserverDeliverFor`, or `ref.OnObserverAdded(h)` |
+| Function options for observers | `{ args_format, private, observable }` | `args_format=`, `private=`, `observable=` | `.args_format::<T>().private().observable(false)` | `iii.FunctionOptions{ArgsFormat, Private, ...}` |
+| Observer hooks, one function | `iii.onObserverAdded(id, h)`, `onObserverRemoved(id, h)`, `onObservationMatch(id, m)`, `onObservationDeliver(id, h)`, or the same on the `FunctionRef` | `@iii.on_observer_added(id)`, `@ref.on_observer_removed`, `ref.on_observation_match(m)`, `ref.on_observation_deliver(h)` | `on_observer_added_for(id, h)`, `on_observer_removed_for(id, h)`, `on_observation_match_for(id, m)`, `on_observation_deliver_for(id, h)`, or `function.on_observer_added(h)` | `client.OnObserverAddedFor(id, h)`, `OnObserverRemovedFor`, `OnObservationMatchFor`, `OnObservationDeliverFor`, or `ref.OnObserverAdded(h)` |
 | Observer hooks, every function | `iii.onObserverAdded(h)`, `iii.onObserverRemoved(h)` | `@iii.on_observer_added`, `@iii.on_observer_removed` | `on_observer_added(h)`, `on_observer_removed(h)` | `client.OnObserverAdded(h)`, `client.OnObserverRemoved(h)` |
-| Match observers to calls | `onObserverMatch(id, (obs, call) => boolean)` or `onObserverMatch(id, { observer, call })` | `on_observer_match(id, predicate)` or `on_observer_match(id, observer=, call=)` | `Match::predicate(f)` or `Match::keys(observer_keys, call_keys)` | `iii.MatchFunc(f)` or `iii.MatchKeys(observerKeys, callKeys)` |
+| Match observers to calls | `onObservationMatch(id, (obs, call) => boolean)` or `onObservationMatch(id, { observer, call })` | `on_observation_match(id, predicate)` or `on_observation_match(id, observer=, call=)` | `Match::predicate(f)` or `Match::keys(observer_keys, call_keys)` | `iii.MatchFunc(f)` or `iii.MatchKeys(observerKeys, callKeys)` |
 | Call through an observer (in a deliver hook; no metadata) | `call({ observer: obs, payload })` | `call_async({"observer": obs, "payload": p})` | `call(CallRequest::observer(&obs, payload))` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: p})` |
 | Call for one observer (initial state) | `call({ function_id, payload, metadata: { for_observer: obs.id } })` | `call_async({"function_id": id, "payload": p, "metadata": {"for_observer": obs.id}})` | `call(CallRequest::new(id, payload).metadata(json!({ "for_observer": obs.id() })))` | `client.Call(ctx, iii.CallRequest{FunctionID: id, Payload: p, Metadata: meta})` |
 | Current invocation | `currentInvocation()` | `current_invocation()` | `iii_sdk::current_invocation()` | `iii.InvocationFromContext(ctx)` |
@@ -191,14 +191,14 @@ sources.
 - `registerFunction` returns a `FunctionRef` with the hook methods, `isObserved(call?)` and
   `observers()` (Python `is_observed(call=None)`, Rust `is_observed()` / `is_observed_for(&call)`,
   Go `ref.IsObserved()` / `ref.IsObservedFor(call)`). With a call, on a function whose
-  `onObserverMatch` uses keys, `isObserved` looks up the call's keys.
+  `onObservationMatch` uses keys, `isObserved` looks up the call's keys.
 - A call to a function the same worker registered runs in-process once the engine confirmed it.
   Force the engine path per call with `dispatch: 'remote'` (Node, browser, Python
   `"dispatch": "remote"`), Rust `CallRequest::new(..).dispatch(Dispatch::Remote)`, Go
   `Dispatch: iii.DispatchRemote`; or per function with `localDispatch: false`
   (`local_dispatch=False`, `.local_dispatch(false)`, `LocalDispatch: &off`).
 - Against an engine without `observe.v2`, a function that declares `args_format`, `private`, or
-  `observable: false`, or sets `onObserverMatch` or `onObserverDeliver`, stays unregistered and the SDK logs
+  `observable: false`, or sets `onObservationMatch` or `onObservationDeliver`, stays unregistered and the SDK logs
   `UNSUPPORTED` once; everything else works.
 - `trigger` is a deprecated alias of `call` in every SDK and the CLI (`trigger_async`, `Trigger`,
   `TriggerRequest`, `TriggerAction`, `iii trigger`): the same function or type, marked deprecated

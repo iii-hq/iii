@@ -8,7 +8,7 @@ import { engineWsUrl, sleep } from './utils'
  * Fault tolerance to bad worker sequencing: an observer of a function that is
  * not (yet) hosted stays pending and becomes active when a host registers the
  * function, runs its `onObserverAdded` and acks it, including when the host
- * restarts or a standby takes over (v2 §7).
+ * restarts (v2 §7).
  *
  * The suite shares one long-running engine, so every id carries a per-run
  * suffix: an observer left behind by a crashed previous run must never reach
@@ -27,7 +27,7 @@ type HostHarness = {
 describe('Observer fault tolerance (pending until hosted)', () => {
   const clients: IIIClient[] = []
 
-  function createHost(sourceId: string, opts: { standby?: boolean; name?: string } = {}): HostHarness {
+  function createHost(sourceId: string, opts: { name?: string } = {}): HostHarness {
     const addedSpy = vi.fn((_obs: Observer) => undefined)
     const removedSpy = vi.fn((_obs: Observer) => undefined)
     // Named off the per-test source id: unique against every other live
@@ -41,7 +41,6 @@ describe('Observer fault tolerance (pending until hosted)', () => {
       .registerFunction(sourceId, (event: Record<string, unknown>) => event, {
         args_format: { type: 'object', required: ['tag'], properties: { tag: { type: 'string' } } },
         private: true,
-        standby: opts.standby,
       })
       .onObserverAdded(addedSpy)
       .onObserverRemoved(removedSpy)
@@ -131,26 +130,4 @@ describe('Observer fault tolerance (pending until hosted)', () => {
     expect(host.addedSpy).not.toHaveBeenCalled()
   })
 
-  it('a standby takes the function over when its host leaves, and runs its hooks for every observer', async () => {
-    const SOURCE = `test::standby-node-${RUN}`
-    const host = createHost(SOURCE, { name: `${SOURCE}::host-a` })
-    await sleep(300)
-    const standby = createHost(SOURCE, { name: `${SOURCE}::host-b`, standby: true })
-    const { handle, handlerSpy } = createConsumer(SOURCE, `${SOURCE}::consumer`)
-    await handle.ready()
-    await sleep(1500) // the standby retries meanwhile
-    expect(host.addedSpy).toHaveBeenCalledTimes(1)
-    expect(standby.addedSpy).not.toHaveBeenCalled()
-
-    await host.sdk.shutdown()
-    clients.splice(clients.indexOf(host.sdk), 1)
-    await sleep(2500)
-    expect(standby.addedSpy).toHaveBeenCalledTimes(1)
-    await handle.ready()
-
-    await standby.fire({ n: 3 })
-    await sleep(400)
-    expect(handlerSpy).toHaveBeenCalledTimes(1)
-    expect(handlerSpy.mock.calls[0][0]).toMatchObject({ input: { n: 3 } })
-  })
 })

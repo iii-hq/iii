@@ -509,8 +509,8 @@ return an `error`).
 
 When a function runs, iii runs the target of each observer whose filters match the call, and the
 function's return value is the `output` its observers see. The worker that hosts a function changes
-that default with four hooks (`onObserverAdded`, `onObserverRemoved`, `onObserverMatch` and
-`onObserverDeliver`) and describes the function to the engine with the `args_format`, `private` and
+that default with four hooks (`onObserverAdded`, `onObserverRemoved`, `onObservationMatch` and
+`onObservationDeliver`) and describes the function to the engine with the `args_format`, `private` and
 `observable` options. See [Observable functions](./observable-functions).
 
 ## Unregister a function

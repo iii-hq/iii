@@ -20,7 +20,7 @@ import (
 // empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid
 // JSON; build it with [HMACAuth], [BearerAuth] or [APIKeyAuth]. Pass at most one
 // [RegisterFunctionOptions] for the description, formats, metadata, args_format,
-// private, observable or standby; LocalDispatch does not apply, since there is nothing
+// private or observable; LocalDispatch does not apply, since there is nothing
 // to run in-process. The engine delivers the function's calls itself, so a deliver hook
 // does not run for it; the added and removed hooks do.
 //
