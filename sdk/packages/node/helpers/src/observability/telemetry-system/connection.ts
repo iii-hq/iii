@@ -15,6 +15,7 @@ export class SharedEngineConnection {
   private wsUrl: string
   private connecting = false
   private shuttingDown = false
+  private closed = false
   private pendingMessages: Array<{ frame: Buffer; callback?: (err?: Error) => void }> = []
   private reconnectAttempt = 0
   private reconnectTimeout: NodeJS.Timeout | null = null
@@ -75,6 +76,11 @@ export class SharedEngineConnection {
       })
 
       this.ws.on('close', () => {
+        // shutdown() already closed this socket and reported it
+        if (this.closed) {
+          return
+        }
+
         this.connecting = false
         this.ws = null
 
@@ -254,6 +260,10 @@ export class SharedEngineConnection {
   async shutdown(): Promise<void> {
     // Set shutdown flag to prevent reconnection attempts
     this.shuttingDown = true
+    // The close handshake completes after shutdown() has returned: silence the
+    // socket's 'close' listener so nothing logs once the caller has moved on
+    // (a test runner tearing its worker down, a process exiting)
+    this.closed = true
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
@@ -263,6 +273,8 @@ export class SharedEngineConnection {
     if (this.ws) {
       this.ws.close()
       this.ws = null
+      this.connecting = false
+      console.log('[OTel] Connection closed during shutdown')
     }
 
     // Notify pending message callbacks that they won't be delivered

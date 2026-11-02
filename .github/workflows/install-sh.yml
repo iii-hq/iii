@@ -57,8 +57,8 @@ jobs:
             os: ubuntu-22.04
           - name: ubuntu-24.04
             os: ubuntu-24.04
-          - name: macos-14
-            os: macos-14
+          - name: macos-15
+            os: macos-15
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
