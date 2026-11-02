@@ -399,9 +399,15 @@ impl ComposeFile {
     /// diagnostics and to resolve relative paths. A relative `path` is made
     /// absolute first, so what is resolved against it (a VM's `host_path`)
     /// does not depend on the working directory of whoever reads it next.
+    /// A rooted path is kept as given: on Windows `/srv/app` has no drive,
+    /// and making it absolute would pin it to the current one.
     pub fn parse(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
-        let path = std::path::absolute(&path).unwrap_or(path);
+        let path = if path.has_root() {
+            path
+        } else {
+            std::path::absolute(&path).unwrap_or(path)
+        };
         let base_dir = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -1448,6 +1454,23 @@ engine:
         assert_eq!(
             parsed.containers["vm"].worker_dir(),
             Some(cwd.join("../outside").as_path())
+        );
+    }
+
+    /// A rooted path is not pinned to the current drive on Windows, so a
+    /// project parsed from `/srv/app` resolves its workers under `/srv/app`.
+    #[test]
+    fn a_rooted_compose_path_is_kept_as_given() {
+        let parsed = ComposeFile::parse(
+            "containers:\n  vm: {worker: path://./api}\n",
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+        assert_eq!(parsed.path, PathBuf::from("/srv/app/worker-compose.yaml"));
+        assert_eq!(parsed.base_dir, PathBuf::from("/srv/app"));
+        assert_eq!(
+            parsed.containers["vm"].worker_dir(),
+            Some(Path::new("/srv/app/api"))
         );
     }
 
