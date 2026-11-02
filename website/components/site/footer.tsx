@@ -2,20 +2,13 @@ import { ArrowUpRightIcon } from 'lucide-react'
 import type { ComponentType } from 'react'
 
 import { HauntedLink } from '@/components/halloween/haunted-link'
-import { IconChatGpt, IconClaude, IconGrok, IconPerplexity } from '@/components/icons/assistants'
+import { assistantIcons } from '@/components/icons/assistants'
 import { IconDiscord, IconGitHub, IconLinkedIn, IconX } from '@/components/icons/iconly'
 import { askAbout, links } from '@/lib/site'
 import { cn } from '@/lib/utils'
 
 type Icon = ComponentType<{ className?: string }>
 type Item = { label: string; href: string; icon?: Icon; external?: boolean }
-
-const assistantIcons: Record<(typeof askAbout)[number]['id'], Icon> = {
-  chatgpt: IconChatGpt,
-  claude: IconClaude,
-  perplexity: IconPerplexity,
-  grok: IconGrok,
-}
 
 const rowClass =
   'group/link flex min-h-9 items-center gap-2.5 rounded-md text-[14px] text-foreground/75 outline-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-4'

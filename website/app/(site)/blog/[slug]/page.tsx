@@ -5,6 +5,7 @@ import styles from '@/components/article/article.module.css'
 import { PageHead } from '@/components/article/page-head'
 import { Prose } from '@/components/article/prose'
 import { TocRail } from '@/components/article/toc-rail'
+import { AskAi } from '@/components/blog/ask-ai'
 import { PostImage } from '@/components/blog/post-image'
 import { PostNav } from '@/components/blog/post-nav'
 import { wideContainer } from '@/components/landing/section'
@@ -145,6 +146,7 @@ export default async function BlogPost({ params }: { params: Promise<Params> }) 
                   </>
                 ) : null}
               </p>
+              <AskAi markdownUrl={`${site.url}/blog/${slug}.md`} />
             </PageHead>
 
             {banner ? (
