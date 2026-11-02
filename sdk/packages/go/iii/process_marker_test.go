@@ -75,3 +75,21 @@ func TestAnnounceProcessIgnoresAnUnwritableDirectory(t *testing.T) {
 	}
 	announceProcess("ws://x", "y", filepath.Join(blocker, "run"))()
 }
+
+// A short-lived program returns from main right after Close, before the
+// supervisor goroutine ends, so Close itself must take the marker.
+func TestCloseRemovesTheWorkerMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	dir := filepath.Join(home, ".iii", "run")
+
+	c := RegisterWorker("ws://127.0.0.1:1")
+	if markers := readMarkers(t, dir); len(markers) != 1 {
+		t.Fatalf("expected one marker, got %v", markers)
+	}
+	_ = c.Close()
+	if markers := readMarkers(t, dir); len(markers) != 0 {
+		t.Fatalf("marker outlived Close: %v", markers)
+	}
+}

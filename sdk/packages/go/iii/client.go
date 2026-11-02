@@ -136,7 +136,9 @@ type Client struct {
 	shutOnce sync.Once
 	shutDone chan struct{} // closed when the first Close or Shutdown has finished
 	// shutForce cuts a running Shutdown short (a Close called meanwhile). Guarded by mu.
-	shutForce     context.CancelFunc
+	shutForce context.CancelFunc
+	// removeMarker removes this client's `iii ps` marker, once. Guarded by mu.
+	removeMarker  func()
 	connected     chan struct{} // closed once the first connection is established
 	connOnce      sync.Once
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
@@ -1060,8 +1062,12 @@ func (c *Client) startSupervisor() {
 		c.started.Store(true)
 		c.startTelemetry() // otel_client.go: OpenTelemetry starts with the lifecycle
 		c.reporter.start()
-		// Lets `iii ps` find this worker until Close ends the supervisor.
-		remove := announceProcess(c.url, c.name, "")
+		// Lets `iii ps` find this worker. Close and Shutdown remove it themselves:
+		// a program that exits right after them ends before the supervisor does.
+		remove := sync.OnceFunc(announceProcess(c.url, c.name, ""))
+		c.mu.Lock()
+		c.removeMarker = remove
+		c.mu.Unlock()
 		go func() {
 			defer remove()
 			c.supervise()
@@ -1990,6 +1996,12 @@ func (c *Client) terminate(ctx context.Context, graceful bool) error {
 		defer stop()
 	}
 	defer close(c.shutDone)
+	c.mu.Lock()
+	removeMarker := c.removeMarker
+	c.mu.Unlock()
+	if removeMarker != nil {
+		removeMarker()
+	}
 
 	// Last chance for buffered reports and counters to reach the engine. A writer
 	// that does not drain (a peer that stopped reading) cannot hold the shutdown up:
