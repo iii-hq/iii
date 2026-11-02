@@ -197,6 +197,14 @@ function is observable, so it has no replacement. For the model, see
 | metric label `iii.observer.activations.total{delivery="auto" \| "owner"}`                                                       | `delivery="engine" \| "host" \| "observer_call"`                                                                                                                                                         |
 | telemetry fields `trigger_count`, `trigger_types`, `trigger_registrations`                                                      | `observer_count`, `observable_function_count`, `private_function_count`                                                                                                                                  |
 | `durable:subscriber` served by the engine's queue compatibility module                                                          | `queue::on-message`, served by the queue worker                                                                                                                                                          |
+| `iii-sandbox` under `engine.workers` in `worker-compose.yaml`                                                                   | `engine.sandbox`, and a `sandbox-libkrun` container whose `config_override` holds the settings                                                                                                           |
+| `iii-sandbox` in a `config.yaml` that no Compose file manages                                                                   | a top-level `sandbox:` section, with the `sandbox-libkrun` adapter running in its namespace                                                                                                              |
+| `iii-worker` and `iii-init` binaries                                                                                            | removed; the `sandbox-libkrun` worker runs sandboxes and VM workers                                                                                                                                      |
+
+A compose file that still lists `iii-sandbox` under `engine.workers` fails `iii compose --up` with
+`SANDBOX_CONFIG_MOVED`, and a `config.yaml` that lists it makes the engine refuse to start with
+`UNSUPPORTED_CONFIG_WORKERS`. [Upgrading to the sandbox worker](./sandbox-worker) covers the move,
+stored sandbox configuration, and the binaries and VM state that 0.25 left behind.
 
 An `rbac` config that sets `on_trigger_registration_function_id` without
 `on_observer_registration_function_id`, or `on_trigger_type_registration_function_id` without
@@ -1586,6 +1594,8 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
       observe
 - [ ] Replace `engine::triggers::*` and `engine::registered-triggers::*` in scripts and dashboards
       with `engine::functions::*` and `engine::observers::*`
+- [ ] Move `iii-sandbox` out of `engine.workers` and `config.yaml`, and remove `iii-worker` and
+      `iii-init`, as in [Upgrading to the sandbox worker](./sandbox-worker)
 
 <Note>
   For the observer model, see [Observers](../using-iii/observers). For the four hooks and private
