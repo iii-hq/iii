@@ -20,19 +20,10 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 response_format: None,
                 metadata: Some(json!({"version": "1.0"})),
                 invocation: None,
+                args_format: None,
+                private: false,
+                observable: true,
                 observe: None,
-            },
-        ),
-        (
-            "RegisterTrigger",
-            Message::RegisterTrigger {
-                id: "bench-trigger-0".to_string(),
-                trigger_type: "http".to_string(),
-                function_id: "bench.echo".to_string(),
-                config: json!({"api_path": "bench/0", "http_method": "POST"}),
-                metadata: None,
-                namespace: None,
-                trigger_namespace: None,
             },
         ),
         (
@@ -64,6 +55,8 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                     "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
                 ),
                 baggage: None,
+                matched: None,
+                delivered: false,
             },
         ),
         (
@@ -79,6 +72,8 @@ fn build_messages() -> Vec<(&'static str, Message)> {
                 }),
                 traceparent: None,
                 baggage: None,
+                matched: None,
+                delivered: false,
             },
         ),
         (

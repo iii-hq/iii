@@ -18,8 +18,8 @@ describe('Data Channels', () => {
         const records: Record[] = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
 
         const sum = records.reduce((acc, r) => acc + r.value, 0)
-        const max = Math.max(...records.map(r => r.value))
-        const min = Math.min(...records.map(r => r.value))
+        const max = Math.max(...records.map((r) => r.value))
+        const min = Math.min(...records.map((r) => r.value))
 
         return {
           label: input.label,
@@ -34,28 +34,28 @@ describe('Data Channels', () => {
       },
     )
 
-    const sender = iii.registerFunction(
-      'test.data.sender',
-      async (input: { records: Record[] }) => {
-        const channel = await createChannel(iii)
+    const sender = iii.registerFunction('test.data.sender', async (input: { records: Record[] }) => {
+      const channel = await createChannel(iii)
 
-        const writePromise = new Promise<void>((resolve, reject) => {
-          const payload = Buffer.from(JSON.stringify(input.records))
-          channel.writer.stream.end(payload, (err?: Error | null) => {
-            if (err) reject(err)
-            else resolve()
-          })
+      const writePromise = new Promise<void>((resolve, reject) => {
+        const payload = Buffer.from(JSON.stringify(input.records))
+        channel.writer.stream.end(payload, (err?: Error | null) => {
+          if (err) reject(err)
+          else resolve()
         })
+      })
 
-        const result = await iii.trigger({ function_id: 'test.data.processor', payload: {
+      const result = await iii.call({
+        function_id: 'test.data.processor',
+        payload: {
           label: 'metrics-batch',
           reader: channel.readerRef,
-        } })
+        },
+      })
 
-        await writePromise
-        return result
-      },
-    )
+      await writePromise
+      return result
+    })
 
     await sleep(300)
 
@@ -69,7 +69,10 @@ describe('Data Channels', () => {
       ]
 
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.trigger<{ records: Record[] }, any>({ function_id: 'test.data.sender', payload: { records } })
+      const result = await iii.call<{ records: Record[] }, any>({
+        function_id: 'test.data.sender',
+        payload: { records },
+      })
 
       expect(result.label).toBe('metrics-batch')
       expect(result.messages).toHaveLength(5)
@@ -134,7 +137,7 @@ describe('Data Channels', () => {
         const outputChannel = await createChannel(iii)
 
         const messages: unknown[] = []
-        outputChannel.reader.onMessage(msg => {
+        outputChannel.reader.onMessage((msg) => {
           messages.push(JSON.parse(msg))
         })
 
@@ -160,10 +163,13 @@ describe('Data Channels', () => {
           writeNext()
         })
 
-        const callPromise = iii.trigger({ function_id: 'test.stream.worker', payload: {
-          reader: inputChannel.readerRef,
-          writer: outputChannel.writerRef,
-        } })
+        const callPromise = iii.call({
+          function_id: 'test.stream.worker',
+          payload: {
+            reader: inputChannel.readerRef,
+            writer: outputChannel.writerRef,
+          },
+        })
 
         const resultChunks: Buffer[] = []
         for await (const chunk of outputChannel.reader.stream) {
@@ -188,7 +194,7 @@ describe('Data Channels', () => {
       const text = 'The quick brown fox jumps over the lazy dog and then runs around the park'
 
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.trigger<{ text: string; chunkSize: number }, any>({
+      const result = await iii.call<{ text: string; chunkSize: number }, any>({
         function_id: 'test.stream.coordinator',
         payload: {
           text,
@@ -196,9 +202,7 @@ describe('Data Channels', () => {
         },
       })
 
-      const progressMessages = result.messages.filter(
-        (m: { type: string }) => m.type === 'progress',
-      )
+      const progressMessages = result.messages.filter((m: { type: string }) => m.type === 'progress')
       const completeMessage = result.messages.find((m: { type: string }) => m.type === 'complete')
 
       expect(progressMessages.length).toBeGreaterThan(0)

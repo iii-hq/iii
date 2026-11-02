@@ -23,11 +23,11 @@ fn source_label_name(s: &crate::core::WorkerSource) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stderr capture for the daemon trigger path.
+// Stderr capture for the daemon call path.
 //
 // Why: `handle_managed_*` reports user-facing errors via `eprintln!`. On the
-// CLI path the user sees the colored output directly. On the trigger path the
-// daemon's stderr is forwarded to the engine's terminal but the trigger
+// CLI path the user sees the colored output directly. On the call path the
+// daemon's stderr is forwarded to the engine's terminal but the call
 // response only carries `WorkerOpError::Internal { "rc N" }` — the actual
 // reason ("Worker 'X' not found", "HTTP 422 ...") is lost to the caller.
 //
@@ -53,10 +53,10 @@ static STDERR_CAPTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_n
 
 /// Returns `true` when fd 2 is a regular file. Used to distinguish the
 /// engine-spawned subprocess case (stderr → on-disk log file) from the
-/// daemon trigger case (stderr → pipe). On the file path we want stderr
+/// daemon call case (stderr → pipe). On the file path we want stderr
 /// to flow through live so the wait UI's `tail:` row sees progress in
 /// real time; on the pipe path we still want to capture for clean
-/// trigger-response error reporting.
+/// call-response error reporting.
 fn stderr_is_regular_file() -> bool {
     use std::os::unix::io::FromRawFd;
     // dup fd 2 so the temporary `File` wrapper's Drop only closes the
@@ -98,9 +98,9 @@ where
     // tempfile until the handler completed, dumping it all at once at
     // the end and leaving the wait UI's `tail:` row stuck on the first
     // line ("• starting <name>") for minutes. Detect "stderr is a
-    // regular file" and let it flow through live too. The SDK trigger
+    // regular file" and let it flow through live too. The SDK call
     // path (daemon → engine pipe → stderr=FIFO) still captures, so
-    // clean error responses to trigger callers are preserved.
+    // clean error responses to callers are preserved.
     if stderr_is_regular_file() {
         return (f().await, String::new());
     }
@@ -185,7 +185,7 @@ fn extract_error_message(captured: &str) -> String {
     if captured.is_empty() {
         return String::new();
     }
-    // Strip ANSI color codes for cleaner output in the trigger response.
+    // Strip ANSI color codes for cleaner output in the call's response.
     let stripped: String = strip_ansi(captured);
     let lines: Vec<&str> = stripped.lines().collect();
 
@@ -208,7 +208,7 @@ fn extract_error_message(captured: &str) -> String {
 ///
 /// The underlying CLI handlers signal failure via i32 + stderr text (no
 /// structured errors). For known patterns we lift to typed variants so
-/// trigger callers see W110 (NotFound) etc. instead of W900 with a
+/// callers see W110 (NotFound) etc. instead of W900 with a
 /// human-readable message that varies across releases.
 ///
 /// `op` describes the operation ("add"/"remove"/...), used in the
@@ -270,7 +270,7 @@ pub fn classify_handler_error(rc: i32, captured: &str, op: &str, name_hint: &str
 /// its real, colored error already reached the user directly. CLI callers
 /// should exit nonzero without re-printing it: the wrapper carries nothing
 /// the user hasn't seen, and "[W900] internal" mislabels what is usually a
-/// plain user error (caught by the live DX audit). Daemon trigger callers
+/// plain user error (caught by the live DX audit). Daemon callers
 /// still receive it over the bus as a last-resort envelope when stderr
 /// capture itself failed.
 pub fn is_bare_rc_wrapper(e: &WorkerOpError) -> bool {
@@ -326,8 +326,8 @@ pub(crate) struct EngineWorkerSnapshot {
 
 /// A held connection to the engine for repeated snapshot queries (e.g. the
 /// `iii worker status` watch loop). One connect/disconnect pair per probe
-/// lifetime — connecting per query would fire the engine's workers-available
-/// triggers on every poll.
+/// lifetime — connecting per query would fire the engine's
+/// `engine::on-workers-changed` observers on every poll.
 pub(crate) struct EngineProbe {
     iii: iii_sdk::IIIClient,
 }
@@ -351,10 +351,10 @@ impl EngineProbe {
     }
 
     pub(crate) async fn snapshot(&self) -> Option<EngineWorkerSnapshot> {
-        use iii_sdk::protocol::TriggerRequest;
+        use iii_sdk::protocol::CallRequest;
         let result = self
             .iii
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "engine::workers::list".to_string(),
                 payload: serde_json::json!({}),
                 action: None,
@@ -469,7 +469,7 @@ impl WorkerHostShim for CliHostShim {
         // recover the canonical worker name on success. For OCI installs
         // `source_label_name` returns a raw reference, which lockfile
         // lookups miss and clients can't feed back into other worker::*
-        // triggers. The canonical name is whatever the installer actually
+        // functions. The canonical name is whatever the installer actually
         // wrote to config.yaml; local re-adds (no diff) resolve it from
         // the manifest instead.
         let pre_config_names: std::collections::HashSet<String> =
@@ -665,7 +665,7 @@ impl WorkerHostShim for CliHostShim {
 
         // Source of truth: union of declared workers (config.yaml) + on-disk
         // managed dirs + live processes. Same shape `iii worker list` prints,
-        // but structured so trigger callers get the data, not just stdout.
+        // but structured so callers get the data, not just stdout.
         let config_names = crate::cli::config_file::list_worker_names();
         let disk_names = discover_disk_worker_names();
         let ps_names = discover_running_worker_names_from_ps();
@@ -699,7 +699,7 @@ impl WorkerHostShim for CliHostShim {
         // Engine truth: what's actually connected/registered right now.
         // `None` = engine down or query failed; local signals only.
         let engine = if engine_running {
-            // Outer deadline as a backstop over the SDK's own trigger
+            // Outer deadline as a backstop over the SDK's own call
             // timeout: list must never hang on a half-up engine.
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -843,7 +843,7 @@ fn post_install_worker_name(
         // Re-adds (force: true) leave the config.yaml entry in place, so the
         // pre/post diff finds nothing new. Resolve from the manifest (falling
         // back to the directory name) — the raw path label is not a worker
-        // name and no other worker::* trigger accepts it.
+        // name and no other worker::* function accepts it.
         crate::core::WorkerSource::Local { path } => {
             crate::cli::local_worker::resolve_worker_name(path)
         }
@@ -1085,9 +1085,9 @@ mod tests {
         );
     }
 
-    /// Regression: when fd 2 is a pipe (the daemon-trigger case the
+    /// Regression: when fd 2 is a pipe (the daemon-call case the
     /// capture path was designed for), the helper must return false.
-    /// If this ever flips, trigger callers stop seeing clean error
+    /// If this ever flips, callers stop seeing clean error
     /// messages in their responses.
     #[test]
     fn stderr_is_regular_file_rejects_pipe() {
@@ -1110,7 +1110,7 @@ mod tests {
 
         assert!(
             !result,
-            "stderr_is_regular_file must return false for pipes (daemon-trigger path)"
+            "stderr_is_regular_file must return false for pipes (daemon-call path)"
         );
     }
 
@@ -1285,7 +1285,7 @@ mod tests {
     /// Regression: a forced re-add of a local worker found no NEW name in
     /// the config.yaml pre/post diff (the entry already existed) and fell
     /// back to the raw path label — `worker::add` returned
-    /// `name: "/tmp/hello-world"`, which no other worker::* trigger
+    /// `name: "/tmp/hello-world"`, which no other worker::* function
     /// accepts. Local sources must resolve the name from the manifest.
     #[test]
     fn post_install_worker_name_local_readd_resolves_manifest_name() {

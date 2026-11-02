@@ -97,3 +97,21 @@ const extractRefsRecursive = (
     extractRefsRecursive(value, path, refs)
   }
 }
+
+/**
+ * Freezes the plain objects and arrays of `value`, deeply, so a write to
+ * them throws (in strict code). Class instances (a `Date`, a `Map`, a
+ * channel) are left as they are, and so is what they hold. Returns `value`.
+ */
+export function freezePlain<T>(value: T): T {
+  const stack: unknown[] = [value]
+  while (stack.length > 0) {
+    const v = stack.pop()
+    if (v === null || typeof v !== 'object' || Object.isFrozen(v)) continue
+    const proto = Object.getPrototypeOf(v)
+    if (!Array.isArray(v) && proto !== Object.prototype && proto !== null) continue
+    Object.freeze(v)
+    for (const member of Object.values(v as Record<string, unknown>)) stack.push(member)
+  }
+  return value
+}

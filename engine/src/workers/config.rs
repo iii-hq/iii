@@ -523,6 +523,7 @@ pub(crate) fn runtime_worker_info_from_registration(
 
     let worker_type = entry.worker_type().to_string();
     let mut function_ids = registrations.function_ids.clone();
+    function_ids.extend(worker.hosted_sources().into_iter().map(str::to_string));
     function_ids.sort();
     function_ids.dedup();
 

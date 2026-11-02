@@ -16,7 +16,6 @@ from .iii_types import (
     CallerWire,
     ErrorBody,
     FunctionTargetWire,
-    ObserveDescriptor,
     ObserveMessage,
     ObserverAckMessage,
     ObserveSourceWire,
@@ -24,7 +23,6 @@ from .iii_types import (
 
 if TYPE_CHECKING:
     from .invocation_context import ActiveInvocation
-    from .observe_types import ObserveHooks
 
 
 def decode_caller(value: Any) -> dict[str, Any] | None:
@@ -66,6 +64,17 @@ def strip_caller(caller: dict[str, Any] | None) -> dict[str, Any] | None:
     if caller is None:
         return None
     return {k: v for k, v in caller.items() if k != "parent"}
+
+
+def report_caller(caller: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The ``caller`` a report item carries: the call's ``function_id``,
+    ``invocation_id`` and ``parent``, never the top-level ``worker_id`` /
+    ``worker_name`` (the engine stamps those); ``None`` when nothing is left
+    (a call made outside any handler)."""
+    if caller is None:
+        return None
+    reported = {k: v for k, v in caller.items() if k not in ("worker_id", "worker_name")}
+    return reported or None
 
 
 def caller_for(ctx: ActiveInvocation) -> dict[str, Any]:
@@ -124,22 +133,6 @@ def build_observe_message(
         expires_in_ms=opts.get("expires_in_ms"),
         max_in_flight=opts.get("max_in_flight"),
     )
-
-
-def observe_descriptor(hooks: ObserveHooks | None, args_format: Any) -> ObserveDescriptor | None:
-    """``registerfunction.observe``: the four fields that travel, or ``None``
-    when none is set. ``args_format`` is the resolved JSON Schema."""
-    if hooks is None:
-        return None
-    descriptor = ObserveDescriptor(
-        delivery=hooks.delivery,
-        args_format=snapshot(args_format, "observe.args_format") if args_format is not None else None,
-        legacy_trigger_type=hooks.legacy_trigger_type,
-        allow=hooks.allow,
-    )
-    if not descriptor.model_dump(exclude_none=True):
-        return None
-    return descriptor
 
 
 def build_observer_ack(

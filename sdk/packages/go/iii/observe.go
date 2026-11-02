@@ -15,21 +15,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// This file wires observe into the Client (sdk.md §2, §4, §5): Observe, feature
-// negotiation, the inbound observe messages, and what the owner side and the reporter
-// need from the connection.
+// This file wires observe into the Client: Observe, feature negotiation, the inbound
+// observe messages, and what the hosting side and the reporter need from the
+// connection.
 
 // Features this SDK declares in its engine::workers::register payload. The engine
-// advertises the first two in WorkerRegistered. FeatureLargeMessagesV1 is
-// declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it
-// messages of that size whatever version it reports.
+// advertises the first three in WorkerRegistered: observe.v2 includes observe.v1, and
+// with it this worker runs the match and deliver hooks of the functions it hosts for
+// their routed calls, whose observers' on and filters the engine evaluates.
+// FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to
+// 64 MiB, so the engine sends it messages of that size whatever version it reports.
 const (
 	FeatureObserveV1       = "observe.v1"
+	FeatureObserveV2       = "observe.v2"
 	FeatureLocalDispatchV1 = "local-dispatch.v1"
 	FeatureLargeMessagesV1 = "large-messages.v1"
 )
 
-var sdkFeatures = []string{FeatureObserveV1, FeatureLocalDispatchV1, FeatureLargeMessagesV1}
+var sdkFeatures = []string{FeatureObserveV1, FeatureObserveV2, FeatureLocalDispatchV1, FeatureLargeMessagesV1}
 
 // Engine functions of the observer registry.
 const (
@@ -43,42 +46,29 @@ var unsupportedReason = &ObserveReason{
 	Message: "the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later",
 }
 
-const migrationGuide = "https://iii.dev/docs/upgrading/from-0-24-x"
-
-// CONTRACT §5: one warning per process per deprecated API.
-const (
-	deprecatedRegisterTrigger = "RegisterTrigger is deprecated and will be removed in a future release. " +
-		"Use client.Observe(source, target) instead. Migration guide: " + migrationGuide
-	deprecatedRegisterTriggerType = "RegisterTriggerType is deprecated and will be removed in a future release. " +
-		"Register a function with an observe descriptor (RegisterFunction(id, handler, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{ ... }})) instead. " +
-		"Migration guide: " + migrationGuide
-)
-
-var (
-	deprecationMu     sync.Mutex
-	deprecationWarned = map[string]bool{}
-)
-
-func warnDeprecated(message string) {
-	deprecationMu.Lock()
-	warned := deprecationWarned[message]
-	deprecationWarned[message] = true
-	deprecationMu.Unlock()
-	if !warned {
-		log.Printf("iii: %s", message)
-	}
-}
-
-// Observe observes a function: every event of source (an invocation of an auto
-// function, or what its owner hands over) that passes source.Filters invokes target, a
-// function registered by some worker (until it is, the observer stays pending).
+// Observe observes a function: when source.FunctionID runs, target runs, for every
+// call that the function's worker delivers to the observer and that passes
+// source.Filters. target is a function registered by some worker (until it is, the
+// observer stays pending). source.Args go to the worker that hosts the function, which
+// reads them in its hooks (a cron expression, a route).
 //
 // It returns the handle at once, also before the connection is up; the observer is
 // replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS,
-// INVALID_FILTER, FORBIDDEN, SELF_TARGET, an owner's rejection, and UNSUPPORTED against
-// an engine without observe) show up as state error and fail [ObserverHandle.Ready].
+// INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and
+// UNSUPPORTED against an engine without observe) show up as state error and fail
+// [ObserverHandle.Ready]. An observeresult in state error is the engine's refusal of
+// that observe and the handle's final answer: the engine holds no observer for it (it
+// stores nothing for a refused observe, and disposes an observer it holds in error as
+// it answers that observer's replay), the handle is not sent again on a later
+// connection, and its Dispose sends nothing. An observer that turns error after its
+// observe was answered (the host's rejection, OWNER_TIMEOUT) is held by the engine: the
+// handle is replayed, and its Dispose unobserves it.
 // The returned error is for a request that cannot be sent at all: a missing function
-// or target, a reused id, a blank namespace, args or filters that are not JSON.
+// or target, a blank namespace, args or filters that are not JSON, and an id a handle
+// of this client holds. A handle holds its id until it is disposed (by
+// [ObserverHandle.Dispose] or by the engine); an Observe of a held id sends nothing,
+// leaves the holder alone and returns an *ObserveRejectionError with code
+// OBSERVER_ID_CONFLICT. Once the holder is disposed the id is free at once.
 //
 //	client.RegisterFunction("alerts::payment-failed", notify)
 //	failures, err := client.Observe(iii.Source{
@@ -160,9 +150,9 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	}
 
 	c.mu.Lock()
-	if _, dup := c.observers[id]; dup {
+	if _, held := c.observers[id]; held {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("iii: Observe: observer id already in use: %s", id)
+		return nil, &ObserveRejectionError{Code: "OBSERVER_ID_CONFLICT", Message: "observer id already in use: " + id}
 	}
 	c.observerSeq++
 	h := newObserverHandle(c, id, frame, c.observerSeq)
@@ -180,15 +170,32 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	return h, nil
 }
 
+// ObserveFunction observes functionID with target, every call and the observer
+// defaults: [Client.Observe] with Source{FunctionID: functionID}.
+func (c *Client) ObserveFunction(functionID, target string, opts ...ObserverOptions) (*ObserverHandle, error) {
+	return c.Observe(Source{FunctionID: functionID}, target, opts...)
+}
+
 // IsObserved reports whether functionID, registered by this worker, has active
-// observers: one atomic load, for the emit fast path.
+// observers, so a source can skip building an event nobody wants. It takes no lock: a
+// lookup of functionID and one atomic load. [FunctionRef.IsObserved] is the load alone.
 func (c *Client) IsObserved(functionID string) bool {
 	f := c.functionObservers(functionID)
 	return f != nil && f.isObserved()
 }
 
+// IsObservedFor reports whether call of functionID, registered by this worker, would
+// reach an observer. On a function matched by keys ([MatchKeys]) it is true when an
+// observer is filed under one of the call's keys (one lookup per key); on any other
+// function call is ignored, and it is [Client.IsObserved]. Set what the keys read
+// (Input, Metadata).
+func (c *Client) IsObservedFor(functionID string, call *Call) bool {
+	f := c.functionObservers(functionID)
+	return f != nil && f.isObservedFor(call)
+}
+
 // Observers returns the active observers of functionID, registered by this worker, as
-// its owner sees them.
+// its host sees them.
 func (c *Client) Observers(functionID string) []*Observer {
 	f := c.functionObservers(functionID)
 	if f == nil {
@@ -197,19 +204,19 @@ func (c *Client) Observers(functionID string) []*Observer {
 	return f.observers()
 }
 
-// LocalDispatchActive reports whether Trigger runs functionID in-process: it is
+// LocalDispatchActive reports whether Call runs functionID in-process: it is
 // registered here, the engine confirmed it with local_dispatch, and
 // RegisterFunctionOptions.LocalDispatch did not opt out.
 func (c *Client) LocalDispatchActive(functionID string) bool {
 	f := c.functionObservers(functionID)
-	return f != nil && f.dispatch.Load().enabled
+	return f != nil && f.state.Load().local
 }
 
+// functionObservers is the observe state of functionID's current registration, or nil;
+// it takes no lock.
 func (c *Client) functionObservers(functionID string) *functionObservers {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if fn, ok := c.functions[functionID]; ok {
-		return fn.observe
+	if f, ok := c.observeByID.Load(functionID); ok {
+		return f.(*functionObservers)
 	}
 	return nil
 }
@@ -221,12 +228,19 @@ func (c *Client) sendObserve(h *ObserverHandle, epoch uint64) {
 }
 
 // sendObserveLocked queues h's observe frame for connection epoch, unless h was
-// disposed meanwhile or that connection is no longer the registered one (its own
-// replay sends it then). The caller holds observeMu, which orders observe and
-// unobserve frames.
+// disposed or refused meanwhile or epoch is not the registered connection (whose own
+// replay sends it), and lists h for the engine's answers. The caller holds observeMu,
+// which orders observe and unobserve frames, so the list is in the order the frames go
+// out.
 func (c *Client) sendObserveLocked(h *ObserverHandle, epoch uint64) {
 	c.mu.Lock()
-	live := c.registeredLocked(epoch) && c.engineFeatures[FeatureObserveV1] && c.observers[h.id] == h
+	live := c.registeredLocked(epoch) && c.engineFeatures[FeatureObserveV1] && c.observers[h.id] == h && !h.refused
+	if live {
+		if c.observeSent == nil {
+			c.observeSent = map[string][]sentObserve{}
+		}
+		c.observeSent[h.id] = append(c.observeSent[h.id], sentObserve{handle: h})
+	}
 	c.mu.Unlock()
 	if !live {
 		return
@@ -337,10 +351,12 @@ func (c *Client) disposeObserver(h *ObserverHandle) {
 	if c.observers[h.id] == h {
 		delete(c.observers, h.id)
 	}
+	refused := h.refused
 	c.mu.Unlock()
-	if h.wasSent() {
+	if h.wasSent() && !refused {
 		// sent on the registered connection, or parked for the next one (a Reattach
-		// would otherwise keep the observer alive)
+		// would otherwise keep the observer alive); the engine holds no observer for a
+		// refused observe
 		c.routeUnobserveLocked(h.id)
 	}
 }
@@ -370,9 +386,14 @@ func (c *Client) queueUnobserveLocked(id string, epoch uint64) {
 }
 
 // onWorkerRegistered: the engine said what it supports on this connection. With
-// observe.v1 the observers are replayed (after the functions, sent on connect) and held
-// reports flushed; without it Observe fails with UNSUPPORTED and observe hooks are
-// inactive.
+// observe.v2 the functions that need it, held until WorkerRegistered, are registered;
+// without it they stay unregistered (UNSUPPORTED, logged once each) and are released:
+// no local dispatch, their observers removed through the removed hooks, their buffered
+// reports dropped (INACTIVE). With observe.v1
+// the observers are replayed (after the functions) and held reports flushed; without
+// it Observe fails with UNSUPPORTED. Hook ids this worker has not registered are
+// reported once each, after a grace period (checkHookIDsLater), which catches a
+// mistyped id.
 func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 	// Holding observeMu across the replay keeps a concurrent Dispose (or a re-routed
 	// unobserve) either before it (parked, drained here) or after it (sent directly).
@@ -386,25 +407,52 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 		c.engineFeatures[f] = true
 	}
 	c.registeredOnConnection = true
-	supported, epoch := c.engineFeatures[FeatureObserveV1], c.epoch
+	supported, v2, epoch := c.engineFeatures[FeatureObserveV1], c.engineFeatures[FeatureObserveV2], c.epoch
 	handles := make([]*ObserverHandle, 0, len(c.observers))
 	for _, h := range c.observers {
-		handles = append(handles, h)
+		// a refused handle has its final answer: it is not sent again
+		if !h.refused {
+			handles = append(handles, h)
+		}
 	}
 	unobserve := c.pendingUnobserve
 	c.pendingUnobserve = nil
-	var inactive []string
-	if !supported {
-		for id, fn := range c.functions {
-			if fn.observe.needsObserve() && !c.hooksInactiveWarned[id] {
-				c.hooksInactiveWarned[id] = true
-				inactive = append(inactive, id)
-			}
+	var held []*RegisterFunctionMessage
+	var unsupported []registeredFunction
+	var warn []string
+	for id, fn := range c.functions {
+		if !c.needsV2Locked(fn) {
+			continue
+		}
+		if v2 {
+			held = append(held, fn.message)
+			continue
+		}
+		unsupported = append(unsupported, fn)
+		if c.markUnsupportedLocked(fn) {
+			warn = append(warn, id)
 		}
 	}
+	c.checkHookIDsLater(epoch)
 	c.mu.Unlock()
 	slices.SortFunc(handles, func(a, b *ObserverHandle) int { return cmp.Compare(a.seq, b.seq) })
+	slices.SortFunc(held, func(a, b *RegisterFunctionMessage) int { return cmp.Compare(a.ID, b.ID) })
+	slices.Sort(warn)
 
+	// The held registrations go through the observe pump, on this connection only and
+	// ahead of the observers that may name them as targets.
+	for _, m := range held {
+		if frame, err := prepareJSON(m); err == nil {
+			c.queueObserveFrameLocked(observeFrame{data: frame, epoch: epoch})
+		}
+	}
+	for _, id := range warn {
+		logUnsupported(id)
+	}
+	for _, fn := range unsupported {
+		fn.observe.release()
+		c.reporter.discardFunction(fn.message.ID)
+	}
 	if supported {
 		for _, id := range unobserve {
 			c.queueUnobserveLocked(id, epoch)
@@ -418,39 +466,144 @@ func (c *Client) onWorkerRegistered(msg *WorkerRegisteredMessage) {
 	for _, h := range handles {
 		h.setState(ObserverError, unsupportedReason)
 	}
-	slices.Sort(inactive)
-	for _, id := range inactive {
-		logHooksInactive(id)
-	}
 	c.reporter.clear()
 }
 
-func logHooksInactive(functionID string) {
-	log.Printf("iii: function %q declares observe hooks or owner delivery, but the engine does not support observe (observe.v1): "+
-		"it is registered as a plain function and its observe hooks are inactive", functionID)
+// hookIDCheckDelay is how long after the connection is registered, or after a hook is
+// set for an id this worker has not registered, the SDK checks the hook ids: a
+// registration that follows its hooks within it is not reported.
+const hookIDCheckDelay = 1500 * time.Millisecond
+
+// checkHookIDsLater checks the hook ids once hookIDCheckDelay has passed, if
+// connection epoch is still the registered one then. The caller holds mu.
+func (c *Client) checkHookIDsLater(epoch uint64) {
+	delay := c.hookIDDelay
+	if delay <= 0 {
+		delay = hookIDCheckDelay
+	}
+	time.AfterFunc(delay, func() { c.checkHookIDs(epoch) })
 }
 
-func (c *Client) onObserverState(id, state string, reason *ErrorBody) {
+// checkHookIDs logs, once per id, each hook id this worker has not registered, which
+// catches a mistyped id.
+func (c *Client) checkHookIDs(epoch uint64) {
 	c.mu.Lock()
-	h := c.observers[id]
-	c.mu.Unlock()
-	if h == nil {
+	if !c.registeredLocked(epoch) {
+		c.mu.Unlock()
 		return
 	}
-	st := toObserverState(state)
-	var r *ObserveReason
-	if reason != nil {
-		r = &ObserveReason{Code: reason.Code, Message: reason.Message}
-	}
-	h.setState(st, r)
-	if st == ObserverDisposed {
-		// disposed by the engine (max_fires, expiry): not replayed
-		c.mu.Lock()
-		if c.observers[id] == h {
-			delete(c.observers, id)
+	var unknown []string
+	for id := range c.functionHooks {
+		if _, ok := c.functions[id]; !ok && !c.hookIDWarned[id] {
+			c.hookIDWarned[id] = true
+			unknown = append(unknown, id)
 		}
-		c.mu.Unlock()
 	}
+	c.mu.Unlock()
+	slices.Sort(unknown)
+	for _, id := range unknown {
+		log.Printf("iii: observer hooks are set for %q, which this worker has not registered", id)
+	}
+}
+
+// sentObserve is a handle whose observe went out on the current connection, and
+// whether its observeresult arrived.
+type sentObserve struct {
+	handle   *ObserverHandle
+	answered bool
+}
+
+// The engine reads a connection's messages in order, sends that connection its observe
+// answers in the order it makes them, and answers every observe with exactly one
+// observeresult (decision 56). So an observeresult for an id answers the oldest listed
+// handle of the id still unanswered, and an observerstatechanged is about the newest
+// listed one that has its observeresult. A disposed handle stays listed until the
+// engine's disposed for it arrives, a newer handle of the id has its observeresult, or
+// the connection closes: the late disposed of an earlier observer reaches the earlier
+// handle, never the one that observes under its id again. An observeresult in state
+// error refuses the observe: the engine holds no observer for it (it stores nothing
+// for a refused observe, and disposes an observer it holds in error as it answers that
+// observer's replay), so that answer is the handle's final answer, and the handle
+// leaves the list when it arrives.
+
+// onObserveResult applies an observeresult to the oldest listed handle of id still
+// unanswered; with none it is dropped. A refusal unlists the handle for good, and its
+// Dispose sends nothing; one in state disposed frees its id too.
+func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
+	st := toObserverState(state)
+	c.mu.Lock()
+	list := c.observeSent[id]
+	i := slices.IndexFunc(list, func(s sentObserve) bool { return !s.answered })
+	if i < 0 {
+		c.mu.Unlock()
+		return
+	}
+	h := list[i].handle
+	// the handles before it are answered, and disposed: a newer one has its answer now
+	list = slices.Delete(list, 0, i)
+	list[0].answered = true
+	c.observeSent[id] = list
+	switch {
+	case st == ObserverDisposed:
+		c.forgetLocked(h)
+	case st == ObserverError:
+		// set before the state, so a Dispose that sees the error sends nothing
+		h.refused = true
+		c.unlistLocked(h)
+	}
+	c.mu.Unlock()
+	h.setState(st, observeReason(reason))
+}
+
+// onObserverStateChanged applies an observerstatechanged to the newest listed handle
+// of id that has its observeresult; with none it is dropped (a reattached connection
+// hears its observers resume before its replayed observes are answered, and each
+// replay's observeresult carries the current state).
+func (c *Client) onObserverStateChanged(id, state string, reason *ErrorBody) {
+	st := toObserverState(state)
+	c.mu.Lock()
+	list := c.observeSent[id]
+	i := len(list) - 1
+	for i >= 0 && !list[i].answered {
+		i--
+	}
+	if i < 0 {
+		c.mu.Unlock()
+		return
+	}
+	h := list[i].handle
+	if st == ObserverDisposed {
+		// disposed by the engine (unobserve, max_fires, expiry): not replayed
+		c.forgetLocked(h)
+	}
+	c.mu.Unlock()
+	h.setState(st, observeReason(reason))
+}
+
+// forgetLocked drops h, which the engine disposed, from the answer list and frees its
+// id. The caller holds mu.
+func (c *Client) forgetLocked(h *ObserverHandle) {
+	c.unlistLocked(h)
+	if c.observers[h.id] == h {
+		delete(c.observers, h.id)
+	}
+}
+
+// unlistLocked drops h from the answer list of its id. The caller holds mu.
+func (c *Client) unlistLocked(h *ObserverHandle) {
+	list := slices.DeleteFunc(c.observeSent[h.id], func(s sentObserve) bool { return s.handle == h })
+	if len(list) == 0 {
+		delete(c.observeSent, h.id)
+	} else {
+		c.observeSent[h.id] = list
+	}
+}
+
+func observeReason(reason *ErrorBody) *ObserveReason {
+	if reason == nil {
+		return nil
+	}
+	return &ObserveReason{Code: reason.Code, Message: reason.Message}
 }
 
 // isObserveFrame reports the observe-family frames (SDK-PARITY decision 16) and, for
@@ -481,7 +634,9 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		epoch := c.epoch
 		fn, ok := c.functions[msg.ID]
 		c.mu.Unlock()
-		if ok {
+		// The answer to a registration withdrawn on this connection (a function that
+		// needs observe.v2, on an engine without it) is ignored: it stays unregistered.
+		if ok && !fn.observe.heldOn(epoch) {
 			// held reports go once the set is applied and acked (applySet kicks)
 			fn.observe.onFunctionRegistered(msg, epoch)
 		}
@@ -491,7 +646,8 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		epoch := c.epoch
 		fn, ok := c.functions[msg.FunctionID]
 		c.mu.Unlock()
-		if ok {
+		// An observer of a registration withdrawn on this connection: no hook, no ack.
+		if ok && !fn.observe.heldOn(epoch) {
 			fn.observe.onObserverAdded(msg, epoch)
 		}
 	case MsgObserverRemoved:
@@ -503,10 +659,10 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		if len(msg.Warnings) > 0 {
 			log.Printf("iii: observer %s: %s", msg.ID, strings.Join(msg.Warnings, "; "))
 		}
-		c.onObserverState(msg.ID, msg.State, msg.Error)
+		c.onObserveResult(msg.ID, msg.State, msg.Error)
 	case MsgObserverStateChanged:
 		msg := dec.ObserverStateChanged
-		c.onObserverState(msg.ID, msg.State, msg.Reason)
+		c.onObserverStateChanged(msg.ID, msg.State, msg.Reason)
 	}
 }
 
@@ -604,10 +760,11 @@ func (c *Client) reportQueued() int {
 }
 
 // reportOnline implements reporterHost.
-func (c *Client) reportOnline() (uint64, bool) {
+func (c *Client) reportOnline() (uint64, bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.epoch, c.state == StateConnected && c.registeredOnConnection && c.engineFeatures[FeatureObserveV1]
+	online := c.state == StateConnected && c.registeredOnConnection && c.engineFeatures[FeatureObserveV1]
+	return c.epoch, online, online && c.engineFeatures[FeatureObserveV2]
 }
 
 // reportStatus implements reporterHost.

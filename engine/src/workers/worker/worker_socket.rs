@@ -451,6 +451,8 @@ mod tests {
                     error: None,
                     traceparent: None,
                     baggage: None,
+                    matched: None,
+                    delivered: false,
                 }))
                 .await
                 .unwrap();

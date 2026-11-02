@@ -14,13 +14,12 @@ import threading
 import time
 import traceback
 import uuid
-import warnings
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from importlib.metadata import version
-from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, overload
 
 import websockets
 from iii_helpers.http import HttpInvocationConfig
@@ -36,23 +35,27 @@ from websockets.asyncio.client import ClientConnection
 
 from . import _wire_json
 from .channels import ChannelReader, ChannelWriter, resolve_headers
-from .errors import InvocationError, RegistrationRejectedError, _wrap_wire_error
+from .errors import InvocationError, ObserveRejection, RegistrationRejectedError, _wrap_wire_error
 from .filter._value import ABSENT, to_json_value
 from .format_utils import extract_request_format, extract_response_format
+from .function_ref import FunctionRef
 from .iii_constants import (
     DEFAULT_ENGINE_URL,
     DEFAULT_RECONNECTION_CONFIG,
     MAX_QUEUE_SIZE,
     ConnectionStateCallback,
-    FunctionRef,
     IIIConnectionState,
     InitOptions,
 )
 from .iii_types import (
     FEATURE_OBSERVE_V1,
+    FEATURE_OBSERVE_V2,
     SDK_FEATURES,
     ActivationWire,
+    CallActionEnqueue,
+    CallActionVoid,
     CallerWire,
+    CallRequest,
     FunctionRegisteredMessage,
     InvocationResultMessage,
     InvokeFunctionMessage,
@@ -64,18 +67,10 @@ from .iii_types import (
     RegisterFunctionFormat,
     RegisterFunctionInput,
     RegisterFunctionMessage,
-    RegisterTriggerInput,
-    RegisterTriggerMessage,
-    RegisterTriggerTypeInput,
-    RegisterTriggerTypeMessage,
+    RegistrationRejectedMessage,
     StreamChannelRef,
-    TriggerActionEnqueue,
-    TriggerActionVoid,
-    TriggerRequest,
     UnobserveMessage,
     UnregisterFunctionMessage,
-    UnregisterTriggerMessage,
-    UnregisterTriggerTypeMessage,
     WorkerRegisteredMessage,
 )
 from .invocation_context import (
@@ -89,8 +84,32 @@ from .invocation_context import (
     run_in_thread,
     set_context,
 )
-from .observable import OBSERVE_HOOK_TIMEOUT_S, FunctionObservers, Observer
-from .observe_types import ObserveHook, ObserveHooks, ObserveReason, ObserverOptions, ObserveSource, Target
+from .observable import (
+    OBSERVE_HOOK_TIMEOUT_S,
+    ActiveSet,
+    CallLike,
+    Delivery,
+    FunctionObservers,
+    HookQueue,
+    Level,
+    Observer,
+    is_async_callable,
+    same_data,
+)
+from .observe_types import (
+    AddedHook,
+    Call,
+    DeliverHook,
+    Key,
+    MatchHook,
+    MatchKeys,
+    MatchPredicate,
+    ObserveReason,
+    ObserverOptions,
+    ObserveSource,
+    RemovedHook,
+    Target,
+)
 from .observe_wire import (
     build_observe_message,
     build_observer_ack,
@@ -99,18 +118,21 @@ from .observe_wire import (
     decode_caller,
     decode_error,
     decode_observe_depth,
-    observe_descriptor,
+    snapshot,
     strip_caller,
 )
 from .observer_handle import ObserverHandle, to_observer_state
 from .process_marker import announce_process
 from .reporter import FunctionStatus, Reporter
 from .stream import IStream
-from .triggers import Trigger, TriggerConfig, TriggerHandler, TriggerTypeRef
-from .types import Channel, RemoteFunctionData, RemoteTriggerTypeData, is_channel_ref
+from .types import Channel, RemoteFunctionData, is_channel_ref
 
 RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
 TResult = TypeVar("TResult")
+AddedT = TypeVar("AddedT", bound=AddedHook)
+RemovedT = TypeVar("RemovedT", bound=RemovedHook)
+MatchT = TypeVar("MatchT", bound=MatchPredicate)
+DeliverT = TypeVar("DeliverT", bound=DeliverHook)
 
 log = logging.getLogger("iii.iii")
 
@@ -133,39 +155,6 @@ def _json_fragments(payload: bytes) -> Iterator[str]:
         yield payload[offset:end].decode("utf-8")
         offset = end
 
-_MIGRATION_GUIDE = "https://iii.dev/docs/upgrading/from-0-24-x"
-
-#: CONTRACT §5: one warning per process per deprecated API.
-_DEPRECATIONS = {
-    "register_trigger": (
-        "register_trigger is deprecated and will be removed in a future release. Use "
-        f"iii.observe(source, target) instead. Migration guide: {_MIGRATION_GUIDE}"
-    ),
-    "register_trigger_type": (
-        "register_trigger_type is deprecated and will be removed in a future release. Register a function "
-        "with an observe descriptor (register_function(id, handler, observe=ObserveHooks(...))) instead. "
-        f"Migration guide: {_MIGRATION_GUIDE}"
-    ),
-}
-_deprecations_warned: set[str] = set()
-_deprecations_lock = threading.Lock()
-
-
-def _warn_deprecated(api: str, stacklevel: int) -> None:
-    """The language marker (``DeprecationWarning`` at the caller) on every
-    call, and the SDK log warning once per process per API.
-
-    ``stacklevel`` is relative to the caller of this function, as for
-    ``warnings.warn``.
-    """
-    message = _DEPRECATIONS[api]
-    warnings.warn(message, DeprecationWarning, stacklevel=stacklevel + 1)
-    with _deprecations_lock:
-        if api in _deprecations_warned:
-            return
-        _deprecations_warned.add(api)
-    log.warning(message)
-
 
 #: Frames of the observe family: held while a new connection has not said
 #: whether its engine supports observe, and dropped when it does not.
@@ -179,10 +168,22 @@ _OBSERVE_FAMILY = frozenset(
     }
 )
 
+
+def _observer_id_conflict(observer_id: str) -> ObserveRejection:
+    """What ``observe`` raises for an id a handle of this client holds (decision 56)."""
+    return ObserveRejection("OBSERVER_ID_CONFLICT", f"observe: observer id already in use: {observer_id}")
+
+
 _UNSUPPORTED_REASON: ObserveReason = {
     "code": "UNSUPPORTED",
     "message": "the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later",
 }
+
+#: Rejections of one function's registration: the connection stays open.
+_FUNCTION_REJECTIONS = frozenset({"FUNCTION_NAMESPACE_CONFLICT", "INVALID_ARGS_FORMAT", "UNSUPPORTED"})
+
+#: The second argument of a hook method that was not passed (``on_observer_added("id")``).
+_MISSING: Any = object()
 
 
 def _clone_value(value: Any) -> Any:
@@ -199,26 +200,6 @@ def _clone_value(value: Any) -> Any:
         return None if mapped is ABSENT else mapped
 
 
-def _validate_observe_hooks(function_id: str, hooks: ObserveHooks | None) -> None:
-    """``args_format`` needs ``delivery="owner"``: an auto function's events are
-    its invocations, offered to every observer."""
-    if hooks is None:
-        return
-    delivery = hooks.delivery
-    if delivery is not None and delivery not in ("auto", "owner"):
-        raise InvocationError(
-            code="INVALID_OBSERVE_DESCRIPTOR",
-            message=f"observe.delivery must be 'auto' or 'owner', got {delivery!r}",
-            function_id=function_id,
-        )
-    if hooks.args_format is not None and delivery != "owner":
-        raise InvocationError(
-            code="INVALID_OBSERVE_DESCRIPTOR",
-            message="observe.args_format requires delivery='owner' (an auto function takes no args)",
-            function_id=function_id,
-        )
-
-
 def _handler_error_body(error: BaseException) -> dict[str, Any]:
     """The error a handler's failure becomes, the same on the local and the remote path."""
     return {
@@ -228,8 +209,30 @@ def _handler_error_body(error: BaseException) -> dict[str, Any]:
     }
 
 
-def _is_async_callable(fn: Callable[..., Any]) -> bool:
-    return inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+def _answer_error_body(error: BaseException) -> dict[str, Any]:
+    """The error a call answers with when its ``on_observer_deliver`` raised:
+    an :class:`ObserveRejection` or :class:`InvocationError` keeps its code,
+    anything else is ``invocation_failed``."""
+    if isinstance(error, ObserveRejection):
+        return {"code": error.code, "message": error.message}
+    if isinstance(error, InvocationError):
+        body: dict[str, Any] = {"code": error.code, "message": error.message}
+        if error.stacktrace is not None:
+            body["stacktrace"] = error.stacktrace
+        return body
+    return _handler_error_body(error)
+
+
+def _routed_matched(delivery: Delivery | None, active: ActiveSet, hook: DeliverHook | None) -> list[str] | None:
+    """A routed answer's ``matched``: the ids the function's match hook
+    matched, ``[]`` when it matched none or could not run, and ``None`` for a
+    function without one or with a deliver hook (its answer says
+    ``delivered``)."""
+    if hook is not None or active.match is None:
+        return None
+    if delivery is None or delivery.matched is None:
+        return []
+    return delivery.matched
 
 
 @dataclass
@@ -241,10 +244,14 @@ class _SpanOutcome:
 #: sdk.md §3: a local call nested deeper than this goes through the engine.
 _MAX_LOCAL_DEPTH = 64
 
+#: Why ``call`` refuses a call through an observer that names metadata (v2
+#: §4.6, decision 53); the same message in every SDK.
+_OBSERVER_CALL_METADATA = "a call through an observer takes no metadata; its target receives the observer's metadata"
+
 
 @dataclass
-class _Call:
-    """One ``trigger`` request, normalized, with the path it takes."""
+class _Request:
+    """One ``call`` request, normalized, with the path it takes."""
 
     function_id: str
     payload: Any
@@ -252,6 +259,8 @@ class _Call:
     metadata: Any
     namespace: str | None
     timeout_ms: int
+    #: A call through this observer: it runs the observer's target.
+    observer_id: str | None = None
     #: The local function when the call runs in-process.
     local: RemoteFunctionData | None = None
     state: FunctionObservers | None = None
@@ -259,19 +268,26 @@ class _Call:
 
 @dataclass
 class _LocalInvocation:
-    """What a local call works on: its context and the copies of the payload."""
+    """What a local call works on: its context, the input and metadata its
+    handler sees, those its delivery sees (``call_input``,
+    ``call_metadata``), and the active set and deliver hook it started
+    with."""
 
     ctx: ActiveInvocation
     state: FunctionObservers
-    compiled: tuple[Observer, ...]
+    active: ActiveSet
+    hook: DeliverHook | None
     input: Any = None
     metadata: Any = None
-    observed_input: Any = None
-    observed_metadata: Any = None
-    traceparent: str | None = None
-    baggage: str | None = None
+    call_input: Any = None
+    call_metadata: Any = None
     started_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
     t0: float = field(default_factory=time.perf_counter)
+
+    @property
+    def delivers(self) -> bool:
+        """It has a deliver hook or observers: the call is delivered when it ends."""
+        return self.hook is not None or bool(self.active.observers)
 
 
 def _metadata_passing_mode(handler: Callable[..., Any]) -> str:
@@ -380,7 +396,7 @@ class _PendingInvocation:
 
 
 class _ObserveHost:
-    """What the owner side (:class:`FunctionObservers`) and the reporter need
+    """What the host side (:class:`FunctionObservers`) and the reporter need
     from the client. Frames are only sent from the SDK loop."""
 
     reporter: Reporter
@@ -429,28 +445,47 @@ class _ObserveHost:
         return identity
 
     def send_ack(
-        self, function_id: str, namespace: str | None, observer_id: str, revision: int, error: dict[str, str] | None
+        self,
+        function_id: str,
+        namespace: str | None,
+        observer_id: str,
+        revision: int,
+        error: dict[str, str] | None,
+        on_sent: Callable[[], None] | None = None,
     ) -> None:
         # Sent in order with the report frames (FIFO on the SDK loop); never
         # queued while disconnected: the next functionregistered re-acks.
         client = self._client
         data = client._prepare_json(build_observer_ack(function_id, namespace, observer_id, revision, error))
+
         def send() -> None:
-            client._send_frame(data)
+            client._send_frame(data, on_sent=on_sent)
 
         if threading.current_thread() is client._thread:
             send()
         else:
             self.call_soon(send)
 
-    def call_target(self, target: str, observer_id: str, payload: Any, timeout_ms: int | None) -> Any:
-        return self._client._run_on_loop(self._client._owner_call(target, observer_id, payload, timeout_ms))
+    def added_hook(self, function_id: str, level: Level) -> AddedHook | None:
+        client = self._client
+        return client._worker_added if level == "worker" else client._added_hooks.get(function_id)
 
-    async def call_target_async(self, target: str, observer_id: str, payload: Any, timeout_ms: int | None) -> Any:
-        return await self._client._on_sdk_loop(self._client._owner_call(target, observer_id, payload, timeout_ms))
+    def removed_hook(self, function_id: str, level: Level) -> RemovedHook | None:
+        client = self._client
+        return client._worker_removed if level == "worker" else client._removed_hooks.get(function_id)
 
-    async def invoke_hook(self, hook: ObserveHook, obs: Observer) -> None:
-        if _is_async_callable(hook):
+    def match_hook(self, function_id: str) -> MatchHook | None:
+        return self._client._match_hooks.get(function_id)
+
+    def hook_queue(self, function_id: str) -> HookQueue:
+        queues = self._client._hook_queues
+        queue = queues.get(function_id)
+        if queue is None:
+            queue = queues[function_id] = HookQueue(function_id)
+        return queue
+
+    async def invoke_hook(self, hook: AddedHook | RemovedHook, obs: Observer) -> None:
+        if is_async_callable(hook):
             await cast(Awaitable[None], hook(obs))
             return
         # A sync hook runs on a thread of its own, so it may call the sync SDK API.
@@ -463,6 +498,12 @@ class _ObserveHost:
 
     def trace_headers(self) -> tuple[str | None, str | None]:
         return self._client._inject_traceparent(), self._client._inject_baggage()
+
+    def on_sdk_thread(self) -> bool:
+        return threading.current_thread() is self._client._thread
+
+    def delivers_v2(self) -> bool:
+        return self._client._delivers_v2()
 
 
 class III:
@@ -502,7 +543,7 @@ class III:
         return explicit if explicit is not None else self._worker_namespace()
 
     def _invocation_namespace(
-        self, explicit: str | None, function_id: str, source: str = "TriggerRequest.namespace"
+        self, explicit: str | None, function_id: str, source: str = "CallRequest.namespace"
     ) -> str | None:
         """Resolve one invocation namespace.
 
@@ -523,7 +564,7 @@ class III:
         namespace". The two mean opposite things: absent asks for the engine's
         default, blank names a namespace and gives nothing to name it with.
         Read as absent, the worker registers in ``default``, and every call and
-        trigger it makes now follows it there -- a whole project quietly
+        observer it makes now follows it there -- a whole project quietly
         serving from the wrong namespace, and the one thing an operator cannot
         see by reading the declaration.
 
@@ -554,8 +595,6 @@ class III:
         self._ws: ClientConnection | None = None
         self._functions: dict[str, RemoteFunctionData] = {}
         self._pending: dict[str, _PendingInvocation] = {}
-        self._triggers: dict[str, RegisterTriggerMessage] = {}
-        self._trigger_types: dict[str, RemoteTriggerTypeData] = {}
         self._queue: list[dict[str, Any]] = []
         self._reconnect_task: asyncio.Task[None] | None = None
         self._running = False
@@ -574,9 +613,17 @@ class III:
         self._fatal_error: RegistrationRejectedError | None = None
         self._reattach_token: str | None = None
 
-        # observe (0.25). Observers this worker created, replayed (same id) on
-        # every connection, until disposed.
+        # observe (0.25). Observers this worker created, by the id each holds,
+        # replayed (same id) on every connection, until disposed. Changed under
+        # `_observers_lock` (any thread), together with scheduling the frame
+        # the change sends, so the frames of one id leave in the order of the
+        # changes.
         self._observers: dict[str, ObserverHandle] = {}
+        self._observers_lock = threading.Lock()
+        # SDK loop: per id, the handles whose `observe` went out on the current
+        # connection, oldest first; the engine's answers are attributed by
+        # their order (decision 56).
+        self._observe_sent: dict[str, list[ObserverHandle]] = {}
         # The engine's features (`WorkerRegistered.features`), kept across a
         # disconnect until the next `WorkerRegistered` replaces them.
         self._engine_features: frozenset[str] = frozenset()
@@ -589,6 +636,29 @@ class III:
         self._held_observe_frames: list[dict[str, Any]] = []
         self._hooks_inactive_warned: set[str] = set()
         self._observe_hook_timeout_s = OBSERVE_HOOK_TIMEOUT_S
+        # Observer hooks: the worker's, and each function's by id. Kept across
+        # unregister() and a later registration of the same id.
+        self._worker_added: AddedHook | None = None
+        self._worker_removed: RemovedHook | None = None
+        self._added_hooks: dict[str, AddedHook] = {}
+        self._removed_hooks: dict[str, RemovedHook] = {}
+        self._match_hooks: dict[str, MatchHook] = {}
+        self._deliver_hooks: dict[str, DeliverHook] = {}
+        # The hooks of each function id run one at a time, across
+        # unregister() and a later registration of the id (SDK loop).
+        self._hook_queues: dict[str, HookQueue] = {}
+        # Logged once each: a hook id no function of this worker has, and a
+        # function an engine without observe.v2 cannot host.
+        self._hook_ids_warned: set[str] = set()
+        # The check for those ids runs this long after the connection is
+        # registered, or after a hook is set by id, so the registrations of
+        # the worker's setup code are in place by then.
+        self._hook_id_check_delay_s = 1.0
+        self._hook_id_check: asyncio.TimerHandle | None = None
+        self._unsupported_warned: set[str] = set()
+        # standby: functions waiting for their id to be free, and the retry period.
+        self._standing_by: set[str] = set()
+        self._standby_retry_s = 1.0
         # Tasks nobody awaits (local `void` calls, report frames): kept alive here.
         self._background: set[asyncio.Future[Any]] = set()
         # Bytes of frames handed to the socket and not written yet, and their writes.
@@ -634,7 +704,7 @@ class III:
         """Block until the WebSocket connection to the engine is established."""
         # A terminal registration rejection (e.g. a worker-name collision) is not
         # retryable: surface the typed error so callers observe the export
-        # contract instead of a generic ConnectionError or a hung trigger.
+        # contract instead of a generic ConnectionError or a hung call.
         if self._fatal_error is not None:
             raise self._fatal_error
         if self._connection_state == "connected":
@@ -845,6 +915,8 @@ class III:
     async def _on_connected(self) -> None:
         self._connection_epoch += 1
         self._registered_on_connection = False
+        # The engine answers the observes of this connection only.
+        self._observe_sent.clear()
         self._set_connection_state("connected")
         # Reconnect: present the previous engine-assigned identity BEFORE the
         # registration replay so the engine retires the old connection and the
@@ -858,13 +930,15 @@ class III:
             if self._reattach_token:
                 reattach["reattach_token"] = self._reattach_token
             await self._send(reattach)
-        # Re-register all (snapshot to avoid mutation from caller thread)
-        for trigger_type_data in list(self._trigger_types.values()):
-            await self._send(trigger_type_data.message)
-        for function_data in list(self._functions.values()):
+        # Re-register (snapshot to avoid mutation from caller thread). A
+        # function that needs observe.v2 waits for this connection's
+        # `WorkerRegistered` (_on_engine_features).
+        for function_id, function_data in list(self._functions.items()):
+            replayed = cast(FunctionObservers, function_data.observe)
+            if self._needs_v2(function_id, function_data) or replayed.sent_epoch == self._connection_epoch:
+                continue
+            replayed.sent_epoch = self._connection_epoch
             await self._send(function_data.message)
-        for trigger in list(self._triggers.values()):
-            await self._send(trigger)
 
         # Flush queue (swap to avoid O(n^2) pop(0))
         pending, self._queue = self._queue, []
@@ -939,7 +1013,7 @@ class III:
             f"reason={getattr(ws, 'close_reason', None)!r})"
         )
         # A fatal registration rejection already set the terminal `failed`
-        # state and cleared `_running`; the socket close it triggers must not
+        # state and cleared `_running`; the socket close it causes must not
         # regress the state back to `disconnected`.
         if self._fatal_error is None:
             self._set_connection_state("disconnected")
@@ -988,14 +1062,22 @@ class III:
             ),
         )
         if data.get("type") == MessageType.INVOCATION_RESULT.value:
-            fallback = _wire_json.dumps(
-                {
-                    "type": MessageType.INVOCATION_RESULT.value,
-                    "invocation_id": data.get("invocation_id"),
-                    "function_id": data.get("function_id"),
-                    "error": {"code": error.code, "message": error.message},
-                }
-            )
+            answer: dict[str, Any] = {
+                "type": MessageType.INVOCATION_RESULT.value,
+                "invocation_id": data.get("invocation_id"),
+                "function_id": data.get("function_id"),
+                "error": {"code": error.code, "message": error.message},
+            }
+            # Not the handler's outcome, so it activates no observer: to an
+            # engine with observe.v2 it says `delivered` when the deliver hook
+            # delivered the call, and `matched: []` otherwise, whatever the
+            # function's hooks. An engine without observe.v2 gets the bare error.
+            if FEATURE_OBSERVE_V2 in self._engine_features:
+                if data.get("delivered") is True:
+                    answer["delivered"] = True
+                else:
+                    answer["matched"] = []
+            fallback = _wire_json.dumps(answer)
             if len(fallback.encode("utf-8")) <= _MAX_JSON_OUTBOUND_BYTES:
                 return fallback
         raise error
@@ -1097,6 +1179,15 @@ class III:
         elif msg_type == MessageType.FUNCTION_REGISTERED.value:
             registered = FunctionRegisteredMessage.model_validate(data)
             state = self._observe_state(registered.id)
+            if state is not None and state.sent_epoch != self._connection_epoch:
+                # The answer to a registration this connection withdrew (a
+                # function that needs observe.v2 on an engine without it): the
+                # function stays unregistered.
+                log.debug("functionregistered for a withdrawn registration of %r ignored", registered.id)
+                return
+            if registered.id in self._standing_by:
+                self._standing_by.discard(registered.id)
+                log.info("Function %r is hosted by this worker now (standby)", registered.id)
             if state is not None:
                 state.on_function_registered(
                     registered.namespace,
@@ -1110,7 +1201,10 @@ class III:
         elif msg_type == MessageType.OBSERVER_ADDED.value:
             added = ObserverAddedMessage.model_validate(data)
             state = self._observe_state(added.function_id)
-            if state is not None:
+            if state is not None and state.sent_epoch != self._connection_epoch:
+                # An observer of a registration this connection withdrew: no hook runs, no ack goes out.
+                log.debug("observeradded for a withdrawn registration of %r ignored", added.function_id)
+            elif state is not None:
                 state.on_observer_added(added.namespace, added.revision, added.observer)
         elif msg_type == MessageType.OBSERVER_REMOVED.value:
             removed = ObserverRemovedMessage.model_validate(data)
@@ -1121,16 +1215,12 @@ class III:
             result = ObserveResultMessage.model_validate(data)
             if result.warnings:
                 log.warning("Observer %s: %s", result.id, "; ".join(result.warnings))
-            self._on_observer_state(result.id, result.state, result.error.model_dump() if result.error else None)
+            self._on_observe_result(result.id, result.state, result.error.model_dump() if result.error else None)
         elif msg_type == MessageType.OBSERVER_STATE_CHANGED.value:
             changed = ObserverStateChangedMessage.model_validate(data)
-            self._on_observer_state(changed.id, changed.state, changed.reason.model_dump() if changed.reason else None)
-        elif msg_type == MessageType.REGISTER_TRIGGER.value:
-            asyncio.create_task(self._handle_trigger_registration(data))
-        elif msg_type == MessageType.UNREGISTER_TRIGGER.value:
-            asyncio.create_task(self._handle_trigger_unregistration(data))
-        elif msg_type == MessageType.TRIGGER_REGISTRATION_RESULT.value:
-            self._handle_trigger_registration_result(data)
+            self._on_observer_state_changed(
+                changed.id, changed.state, changed.reason.model_dump() if changed.reason else None
+            )
         elif msg_type == MessageType.WORKER_REGISTERED.value:
             worker = WorkerRegisteredMessage.model_validate(data)
             self._worker_id = worker.worker_id
@@ -1143,39 +1233,66 @@ class III:
     def _handle_registration_rejected(self, data: dict[str, Any]) -> None:
         """Handle a ``registrationrejected`` push from the engine.
 
-        Two codes with different semantics arrive here:
+        Codes with different semantics arrive here:
 
         * ``FUNCTION_NAMESPACE_CONFLICT`` -- another live worker already exports
           this one function id. Only that registration is refused; the engine
           keeps the connection open and this worker keeps serving everything
-          else. Non-fatal: log and continue.
+          else. Non-fatal: log and continue. A function registered with
+          ``standby=True`` retries every second (±20 %) until the id is free.
+        * ``INVALID_ARGS_FORMAT``, ``UNSUPPORTED`` -- the engine refused one
+          function's registration (an ``args_format`` that is not a JSON
+          Schema, an option it does not support). Non-fatal, like the above.
         * ``WORKER_NAMESPACE_CONFLICT`` -- another live worker already holds this
           ``(namespace, worker_name)``. The engine closes the connection. Fatal:
           stop and do NOT reconnect. Any unknown code is treated as fatal too.
         """
-        code = data.get("code", "")
+        rejected = RegistrationRejectedMessage.model_validate(data)
+        code = rejected.code
 
-        if code == "FUNCTION_NAMESPACE_CONFLICT":
+        if code in _FUNCTION_REJECTIONS and rejected.function_id:
+            function_id = rejected.function_id
+            fn = self._functions.get(function_id)
             # The engine refused it: no local dispatch, no observers for it here.
-            state = self._observe_state(data.get("function_id", ""))
+            state = self._observe_state(function_id)
             if state is not None:
                 state.on_registration_rejected(self._connection_epoch)
-            log.warning(
-                "Function registration rejected (%s): namespace=%r "
-                "function_id=%r already owned by worker %r. Skipping that "
-                "function; the worker keeps serving its other exports.",
-                code,
-                data.get("namespace", ""),
-                data.get("function_id", ""),
-                data.get("owner_worker_id", ""),
-            )
+            if code == "FUNCTION_NAMESPACE_CONFLICT" and fn is not None and fn.standby:
+                if function_id not in self._standing_by:
+                    self._standing_by.add(function_id)
+                    log.info(
+                        "Function %r is hosted by worker %r; standing by to host it when that worker leaves",
+                        function_id,
+                        rejected.owner_worker_id,
+                    )
+                delay = self._standby_retry_s * random.uniform(0.8, 1.2)
+                self._loop.call_later(delay, self._retry_standby, fn, self._connection_epoch)
+                return
+            if code == "FUNCTION_NAMESPACE_CONFLICT":
+                log.warning(
+                    "Function registration rejected (%s): namespace=%r "
+                    "function_id=%r already owned by worker %r. Skipping that "
+                    "function; the worker keeps serving its other exports.",
+                    code,
+                    rejected.namespace,
+                    function_id,
+                    rejected.owner_worker_id,
+                )
+            else:
+                log.error(
+                    "Function registration rejected (%s): namespace=%r function_id=%r. Skipping that "
+                    "function; the worker keeps serving its other exports.",
+                    code,
+                    rejected.namespace,
+                    function_id,
+                )
             return
 
         error = RegistrationRejectedError(
             code=code,
-            namespace=data.get("namespace", ""),
-            worker_name=data.get("worker_name", ""),
-            owner_worker_id=data.get("owner_worker_id", ""),
+            namespace=rejected.namespace,
+            worker_name=rejected.worker_name or "",
+            owner_worker_id=rejected.owner_worker_id,
         )
         log.error(
             "Worker registration rejected (%s): namespace=%r worker_name=%r "
@@ -1214,56 +1331,229 @@ class III:
         """Connected to an engine that advertised ``observe.v1``."""
         return self._is_open() and self._registered_on_connection and FEATURE_OBSERVE_V1 in self._engine_features
 
+    def _delivers_v2(self) -> bool:
+        """This connection's engine advertised ``observe.v2``: the host runs
+        its functions' match and deliver hooks for its routed calls, and
+        reports carry ``output_is_input``."""
+        return self._registered_on_connection and FEATURE_OBSERVE_V2 in self._engine_features
+
     def _on_engine_features(self, features: list[str]) -> None:
         """``WorkerRegistered`` told this connection what the engine supports.
 
         With ``observe.v1`` the held observe frames and the observers are
         sent (after the functions, replayed on connect) and held reports
-        flushed; without it ``observe()`` fails with ``UNSUPPORTED``, observe
-        hooks are inactive, and held observe frames are dropped.
+        flushed; without it ``observe()`` fails with ``UNSUPPORTED``, observer
+        hooks are inactive, and held observe frames are dropped. With
+        ``observe.v2`` the functions that need it are registered; without it
+        they stay unregistered, each logged ``UNSUPPORTED`` once.
         """
         self._engine_features = frozenset(features)
         self._registered_on_connection = True
+        for function_id in list(self._functions):
+            self._sync_registration(function_id)
+        self._schedule_hook_id_check()
         held, self._held_observe_frames = self._held_observe_frames, []
         if FEATURE_OBSERVE_V1 in self._engine_features:
+            # The unobserves queued while disconnected go out before any
+            # replay: the engine disposes an earlier observer of an id before
+            # it reads the observe of the handle that holds the id now.
             for frame in held:
-                self._spawn(self._send(frame))
-            for handle in list(self._observers.values()):
+                if not self._send_frame(self._prepare_json(frame)):
+                    self._enqueue(frame)
+            for handle in self._held_observers():
                 self._send_observe(handle)
             self._reporter.flush()
             return
-        for handle in list(self._observers.values()):
+        for handle in self._held_observers():
             handle._set_state("error", _UNSUPPORTED_REASON)
-        for function_id, fn in list(self._functions.items()):
-            if isinstance(fn.observe, FunctionObservers) and fn.observe.needs_observe:
+        for function_id in list(self._functions):
+            if self._has_observer_hooks(function_id):
                 self._warn_hooks_inactive(function_id)
         self._reporter.clear()
+
+    def _held_observers(self) -> list[ObserverHandle]:
+        """The handles replayed on a connection: every handle that holds its
+        id, except those the engine refused (an ``error`` answer is final)."""
+        with self._observers_lock:
+            return [handle for handle in self._observers.values() if not handle._refused]
+
+    def _has_observer_hooks(self, function_id: str) -> bool:
+        return (
+            self._worker_added is not None
+            or self._worker_removed is not None
+            or function_id in self._added_hooks
+            or function_id in self._removed_hooks
+            or function_id in self._match_hooks
+        )
 
     def _warn_hooks_inactive(self, function_id: str) -> None:
         if function_id in self._hooks_inactive_warned:
             return
         self._hooks_inactive_warned.add(function_id)
         log.warning(
-            "Function %r declares observe hooks or owner delivery, but the engine does not support observe "
-            "(observe.v1): it is registered as a plain function and its observe hooks are inactive.",
+            "Function %r has observer hooks, but the engine does not support observe (observe.v1): "
+            "its observer hooks are inactive.",
             function_id,
         )
 
-    def _on_observer_state(self, observer_id: str, wire_state: str, reason: dict[str, Any] | None) -> None:
-        handle = self._observers.get(observer_id)
-        if handle is None:
+    def _schedule_hook_id_check(self) -> None:
+        """SDK loop: names the hook ids this worker has not registered
+        ``_hook_id_check_delay_s`` from now, once the connection is registered.
+        A later call pushes the check back, so it runs after the setup code
+        that sets hooks and registers functions."""
+        if not self._registered_on_connection:
+            return  # this connection's WorkerRegistered schedules it
+        if self._hook_id_check is not None:
+            self._hook_id_check.cancel()
+        self._hook_id_check = self._loop.call_later(self._hook_id_check_delay_s, self._warn_unregistered_hook_ids)
+
+    def _hook_set_by_id(self) -> None:
+        """A hook was set by function id (any thread): the unregistered-id check runs after it."""
+        try:
+            self._loop.call_soon_threadsafe(self._schedule_hook_id_check)
+        except RuntimeError:
+            pass  # shut down
+
+    def _warn_unregistered_hook_ids(self) -> None:
+        """Once per id: observer hooks set by id for a function this worker has not registered."""
+        self._hook_id_check = None
+        ids = set(self._added_hooks) | set(self._removed_hooks) | set(self._match_hooks) | set(self._deliver_hooks)
+        for function_id in sorted(ids - set(self._functions) - self._hook_ids_warned):
+            self._hook_ids_warned.add(function_id)
+            log.warning(
+                "Observer hooks are set for %r, which this worker has not registered; check the function id.",
+                function_id,
+            )
+
+    # registration: what an engine without observe.v2 cannot host waits or stays out
+
+    def _needs_v2(self, function_id: str, data: RemoteFunctionData) -> bool:
+        """``args_format``, ``private``, ``observable=False``, an
+        ``on_observer_match`` or an ``on_observer_deliver``: the function needs
+        an engine with ``observe.v2`` (decision 18)."""
+        return data.needs_v2 or function_id in self._match_hooks or function_id in self._deliver_hooks
+
+    def _schedule_registration(self, function_id: str) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self._sync_registration, function_id)
+        except RuntimeError:
+            pass  # shut down
+
+    def _sync_registration(self, function_id: str) -> None:
+        """SDK loop: sends a function's ``registerfunction`` on the current
+        connection when it may go, and keeps a function that needs
+        ``observe.v2`` off an engine without it, released there (no local
+        dispatch, no observers)."""
+        data = self._functions.get(function_id)
+        if data is None or not self._is_open():
+            return  # replayed on the next connection
+        state = cast(FunctionObservers, data.observe)
+        epoch = self._connection_epoch
+        if not self._needs_v2(function_id, data) or (
+            self._registered_on_connection and FEATURE_OBSERVE_V2 in self._engine_features
+        ):
+            if state.sent_epoch != epoch and self._send_frame(self._prepare_json(data.message)):
+                state.sent_epoch = epoch
             return
+        if not self._registered_on_connection:
+            return  # held until this connection's WorkerRegistered
+        if function_id not in self._unsupported_warned:
+            self._unsupported_warned.add(function_id)
+            log.error(
+                "Function %r needs observe.v2 (args_format, private, observable=False, on_observer_match or "
+                "on_observer_deliver), "
+                "which the engine does not support (UNSUPPORTED): it stays unregistered. Upgrade the engine to "
+                "0.26 or later.",
+                function_id,
+            )
+        if state.sent_epoch == epoch:
+            # Registered as a plain function before it set on_observer_match or on_observer_deliver.
+            self._send_frame(self._prepare_json(UnregisterFunctionMessage(id=function_id)))
+        if state.released_epoch != epoch:
+            # Unregistered on this connection: no local dispatch, no observers,
+            # also when an earlier engine had registered it.
+            state.on_registration_rejected(epoch)
+
+    def _retry_standby(self, data: RemoteFunctionData, epoch: int) -> None:
+        """SDK loop: a standby registration again, unless the function was
+        unregistered or the connection changed (its replay registers it)."""
+        function_id = data.message.id
+        if self._functions.get(function_id) is not data or epoch != self._connection_epoch:
+            return
+        log.debug("Retrying the standby registration of %r", function_id)
+        self._sync_registration(function_id)
+
+    def _on_observe_result(self, observer_id: str, wire_state: str, error: dict[str, Any] | None) -> None:
+        """SDK loop: an ``observeresult`` answers the oldest ``observe`` of the
+        id sent on this connection that has no answer yet. The handles listed
+        before it are disposed ones, which hear nothing more.
+
+        ``error`` is a refusal, whether it answers the handle's first
+        ``observe`` or a replay: the engine stores nothing for a refused
+        ``observe`` and disposes an observer in ``error`` as it answers its
+        replay, so it holds no observer for the handle and the answer is
+        final. The handle leaves the id's list, is not replayed, and its
+        dispose() sends no ``unobserve``."""
+        listed = self._observe_sent.get(observer_id)
+        if not listed:
+            return
+        for position, handle in enumerate(listed):
+            if not handle._answered:
+                break
+        else:
+            return  # every observe of the id sent here has its answer
+        handle._answered = True
+        del listed[:position]
+        state = to_observer_state(wire_state)
+        if state == "error":
+            with self._observers_lock:
+                handle._refused = True
+                listed.remove(handle)
+                if not listed:
+                    del self._observe_sent[observer_id]
+        self._apply_observer_state(handle, wire_state, error)
+
+    def _on_observer_state_changed(self, observer_id: str, wire_state: str, reason: dict[str, Any] | None) -> None:
+        """SDK loop: an ``observerstatechanged`` is about the newest handle of
+        the id whose ``observeresult`` arrived on this connection. One that
+        arrives before any answer is dropped: a reattached connection hears
+        its observers resume before their replays are answered, and each
+        replay's answer carries the current state."""
+        listed = self._observe_sent.get(observer_id)
+        if not listed:
+            return
+        handle = next((h for h in reversed(listed) if h._answered), None)
+        if handle is not None:
+            self._apply_observer_state(handle, wire_state, reason)
+
+    def _apply_observer_state(self, handle: ObserverHandle, wire_state: str, reason: dict[str, Any] | None) -> None:
         state = to_observer_state(wire_state)
         body = decode_error(reason)
         if state == "disposed":
-            # Forgotten first: it is not replayed once anyone sees it disposed.
-            self._observers.pop(observer_id, None)
+            # The engine disposed it: the id is free, nothing is replayed, and
+            # its dispose() sends no unobserve.
+            handle._engine_disposed = True
+            with self._observers_lock:
+                if self._observers.get(handle.id) is handle:
+                    del self._observers[handle.id]
+            listed = self._observe_sent.get(handle.id)
+            if listed is not None and handle in listed:
+                listed.remove(handle)
+                if not listed:
+                    del self._observe_sent[handle.id]
         handle._set_state(state, cast(ObserveReason, body) if body else None)
 
     def _send_observe(self, handle: ObserverHandle) -> None:
-        """Sends (or replays) an observer on the SDK loop, when the socket is open."""
+        """SDK loop: sends (or replays) a held observer once per connection,
+        when the socket is open, and lists it for its id's answers."""
+        epoch = self._connection_epoch
+        if handle._sent_epoch == epoch or handle._refused or self._observers.get(handle.id) is not handle:
+            return
         if self._send_frame(self._prepare_json(handle._message)):
             handle._sent = True
+            handle._sent_epoch = epoch
+            handle._answered = False
+            self._observe_sent.setdefault(handle.id, []).append(handle)
 
     def _after_observe(self, handle: ObserverHandle) -> None:
         """SDK loop: a new observer goes out now if this connection is registered."""
@@ -1275,22 +1565,44 @@ class III:
             handle._set_state("error", _UNSUPPORTED_REASON)
 
     def _dispose_observer(self, handle: ObserverHandle) -> None:
-        if self._observers.get(handle.id) is handle:
-            del self._observers[handle.id]
-        if not handle._sent:
+        """Any thread: the handle gives up its id at once. Its ``unobserve``
+        is decided on the SDK loop, scheduled under the lock, so it goes out
+        before the ``observe`` of a handle that takes the id next."""
+        with self._observers_lock:
+            if handle._disposed_by_worker:
+                return  # a dispose() on another thread got here first
+            handle._disposed_by_worker = True
+            if self._observers.get(handle.id) is handle:
+                del self._observers[handle.id]
+            try:
+                self._loop.call_soon_threadsafe(self._unobserve, handle)
+            except RuntimeError:
+                pass  # shut down: nothing more is sent
+
+    def _unobserve(self, handle: ObserverHandle) -> None:
+        """SDK loop: the ``unobserve`` of a disposed handle the engine may
+        hold. Queued while disconnected and held until the connection is
+        registered, so it goes out before the replays; a reattach would
+        otherwise keep the observer alive."""
+        if not handle._sent or handle._engine_disposed or handle._refused:
             return
+        frame = self._to_dict(UnobserveMessage(id=handle.id))
+        if not self._is_open():
+            self._enqueue(frame)
+        elif not self._registered_on_connection:
+            self._held_observe_frames.append(frame)
+        elif FEATURE_OBSERVE_V1 in self._engine_features:
+            self._send_frame(self._prepare_json(frame))
 
-        async def unobserve() -> None:
-            # Queued while disconnected: a reattach would otherwise keep it alive.
-            if not self._is_open() or FEATURE_OBSERVE_V1 in self._engine_features:
-                await self._send(UnobserveMessage(id=handle.id))
-
-        self._schedule_on_loop(unobserve())
-
-    def _send_frame(self, data: str, on_failure: Callable[[BaseException], None] | None = None) -> bool:
+    def _send_frame(
+        self,
+        data: str,
+        on_failure: Callable[[BaseException], None] | None = None,
+        on_sent: Callable[[], None] | None = None,
+    ) -> bool:
         """SDK loop: sends one prepared JSON frame when the socket is open.
         Its bytes count as unsent until the socket took them; ``on_failure``
-        runs if the write fails."""
+        runs if the write fails, ``on_sent`` once it succeeded."""
         ws = self._ws
         if ws is None or ws.state.name != "OPEN":
             return False
@@ -1306,6 +1618,8 @@ class III:
                 raise
             finally:
                 self._inflight_bytes -= size
+            if on_sent is not None:
+                on_sent()
 
         task = asyncio.ensure_future(send())
         self._frame_sends.add(task)
@@ -1362,14 +1676,6 @@ class III:
         # registrations by name, so that identity must win over a name
         # embedded in worker code.
         return os.environ.get("III_WORKER_NAME") or self._options.worker_name or f"{platform.node()}:{os.getpid()}"
-
-    async def _owner_call(self, target: str, observer_id: str, payload: Any, timeout_ms: int | None) -> Any:
-        """``obs.call``: an ``InvokeFunction`` to the observer's target with the
-        activation; no namespace (CONTRACT D13: the engine routes to the
-        observer's stored target)."""
-        return await self._invoke_remote(
-            target, payload, None, None, None, timeout_ms, activation={"observer_id": observer_id}
-        )
 
     def _outgoing_observe_fields(self) -> tuple[dict[str, Any] | None, int | None]:
         """``caller`` and ``observe_depth`` an outgoing call carries from the
@@ -1446,9 +1752,8 @@ class III:
         )
         payload_max_bytes = resolve_max_bytes_from_env()
 
-        # INTERNAL and named `execute` (not `call`/`trigger`): the engine
-        # already emits the SERVER `call <fn>` span for this hop AND a
-        # `trigger <fn>` span from fire_triggers. Reusing either name would
+        # INTERNAL and named `execute` (not `call`): the engine already emits
+        # the SERVER `call <fn>` span for this hop. Reusing that name would
         # duplicate an engine span under the worker's service. `execute` is
         # unique, so the worker handler span reads as a clean internal child
         # of the engine's call span (and is collapsible by a single rule).
@@ -1521,6 +1826,9 @@ class III:
         return outcome.result, outcome.traceparent
 
     def _resolve_channels(self, data: Any) -> Any:
+        """``data`` with its channel refs as readers and writers. Containers
+        are rebuilt only along the path to a ref: without refs it is ``data``
+        itself (a private function's input passes by reference)."""
         if is_channel_ref(data):
             ref = StreamChannelRef(**data)
             return (
@@ -1529,11 +1837,19 @@ class III:
                 else ChannelWriter(self._address, ref, self._options.headers)
             )
         if isinstance(data, dict):
-            return {k: self._resolve_channels(v) for k, v in data.items()}
-        if isinstance(data, list):
-            return [self._resolve_channels(v) for v in data]
-        if isinstance(data, tuple):
-            return tuple(self._resolve_channels(v) for v in data)
+            resolved_dict: dict[Any, Any] | None = None
+            for key, value in data.items():
+                resolved = self._resolve_channels(value)
+                if resolved is not value:
+                    if resolved_dict is None:
+                        resolved_dict = dict(data)
+                    resolved_dict[key] = resolved
+            return data if resolved_dict is None else resolved_dict
+        if isinstance(data, (list, tuple)):
+            items = [self._resolve_channels(v) for v in data]
+            if all(new is old for new, old in zip(items, data)):
+                return data
+            return items if isinstance(data, list) else tuple(items)
         return data
 
     async def _handle_invoke(
@@ -1551,7 +1867,7 @@ class III:
     ) -> None:
         # The invocation context every handler sees (`current_invocation()`),
         # and what the calls it makes carry as their caller. Activations carry
-        # an id and are answered like any call (CONTRACT D16).
+        # an id and are answered like any call.
         token = set_context(
             ActiveInvocation(
                 function_id=path,
@@ -1560,8 +1876,6 @@ class III:
                 caller=caller,
                 activation=activation,
                 metadata=metadata,
-                traceparent=traceparent,
-                baggage=baggage,
             )
         )
         try:
@@ -1624,6 +1938,31 @@ class III:
             task.add_done_callback(self._log_task_exception)
             return
 
+        # The engine evaluates the observers' `on` and filters of every call it
+        # routes (decision 55). On an observe.v2 engine the host runs the
+        # function's match hook, and its answer names the observers the hook
+        # matched, or its deliver hook, and its answer says it delivered the
+        # call. The call is matched against the observers active when it starts.
+        if self._delivers_v2():
+            state = cast(FunctionObservers, func.observe)
+            active = state.active
+            hook = self._deliver_hooks.get(path)
+            if hook is not None or active.match is not None or active.observers:
+                await self._invoke_routed_and_deliver(
+                    invocation_id,
+                    path,
+                    func,
+                    state,
+                    active,
+                    hook,
+                    data,
+                    resolved_data,
+                    traceparent,
+                    baggage,
+                    metadata,
+                )
+                return
+
         try:
             result, response_traceparent = await self._invoke_with_otel_context(
                 path,
@@ -1670,88 +2009,91 @@ class III:
                 )
             )
 
-    async def _handle_trigger_registration(self, data: dict[str, Any]) -> None:
-        trigger_type_id = data.get("trigger_type")
-        handler_data = (
-            self._trigger_types.get(trigger_type_id) if trigger_type_id else None
-        )
-
-        trigger_id = data.get("id", "")
-        function_id = data.get("function_id", "")
-        config = data.get("config")
-        metadata = data.get("metadata")
-        namespace = data.get("namespace")
-
-        result_base = {
-            "type": MessageType.TRIGGER_REGISTRATION_RESULT.value,
-            "id": trigger_id,
-            "trigger_type": trigger_type_id,
-            "function_id": function_id,
-        }
-
-        if not handler_data:
-            return
-
+    async def _invoke_routed_and_deliver(
+        self,
+        invocation_id: str,
+        path: str,
+        func: RemoteFunctionData,
+        state: FunctionObservers,
+        active: ActiveSet,
+        hook: DeliverHook | None,
+        data: Any,
+        resolved_data: Any,
+        traceparent: str | None,
+        baggage: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> None:
+        """A routed call of an observed function, or of one with a match or
+        deliver hook, on an ``observe.v2`` engine: the handler, then its
+        delivery, then the answer. The handler gets ``resolved_data`` (channel
+        refs as readers and writers); its delivery sees ``data``, the input as
+        it arrived. The engine evaluates ``on`` and filters (decision 55): the
+        answer of a function with a deliver hook carries ``delivered: true``,
+        that of a function with a match hook the ids it matched in
+        ``matched``, and that of any other function neither."""
+        handler = cast(Callable[..., Awaitable[Any]], func.handler)
+        ctx = cast(ActiveInvocation, current_context())
+        delivered = True if hook is not None else None
+        started_at_ms = time.time() * 1000.0
+        t0 = time.perf_counter()
+        delivery: Delivery | None = None
+        answer: InvocationResultMessage
         try:
-            await handler_data.handler.register_trigger(
-                TriggerConfig(
-                    id=trigger_id,
-                    function_id=function_id,
-                    config=config,
-                    metadata=metadata,
-                    namespace=namespace,
+            with self._execute_span(path, resolved_data, traceparent, baggage) as outcome:
+                output: Any = None
+                handler_error: BaseException | None = None
+                try:
+                    output = await handler(resolved_data, metadata)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:
+                    handler_error = error
+                    log.error("Error in handler %s", path, exc_info=error)
+                delivery = Delivery(
+                    state,
+                    Call(
+                        function_id=path,
+                        invocation_id=invocation_id,
+                        status="success" if handler_error is None else "error",
+                        input=data,
+                        output=output,
+                        error=_handler_error_body(handler_error) if handler_error is not None else None,
+                        caller=ctx.caller,
+                        metadata=metadata,
+                    ),
+                    handler_error,
+                    active,
+                    routed=True,
+                    started_at_ms=started_at_ms,
+                    duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    observe_depth=ctx.observe_depth,
                 )
+                ok, value = await delivery.run_async(hook)
+                if not ok:
+                    raise guard_exit(value)
+                outcome.result = value
+            answer = InvocationResultMessage(
+                invocation_id=invocation_id,
+                function_id=path,
+                result=value,
+                traceparent=outcome.traceparent,
+                matched=_routed_matched(delivery, active, hook),
+                delivered=delivered,
             )
-            await self._send(result_base)
-        except Exception as e:
-            log.exception(f"Error registering trigger {trigger_id}")
-            await self._send(
-                {
-                    **result_base,
-                    "error": {"code": "trigger_registration_failed", "message": str(e)},
-                }
+        except _TraceContextError as te:
+            failure = original_error(cast(BaseException, te.__cause__))
+            own = delivery is not None and failure is delivery.handler_error
+            if not own:
+                log.error("Error in on_observer_deliver of %s", path, exc_info=failure)
+            answer = InvocationResultMessage(
+                invocation_id=invocation_id,
+                function_id=path,
+                error=cast(Delivery, delivery).call.error if own else _answer_error_body(failure),
+                traceparent=te.traceparent,
+                matched=_routed_matched(delivery, active, hook),
+                delivered=delivered,
             )
-
-    def _handle_trigger_registration_result(self, data: dict[str, Any]) -> None:
-        error = data.get("error")
-        if not error:
-            return
-
-        trigger_id = data.get("id", "")
-        trigger_type = data.get("trigger_type", "")
-        message = error.get("message", "") if isinstance(error, dict) else str(error)
-        log.error(
-            "[iii] Trigger registration failed for %r (%s): %s",
-            trigger_id,
-            trigger_type,
-            message,
-        )
-
-    async def _handle_trigger_unregistration(self, data: dict[str, Any]) -> None:
-        trigger_type_id = data.get("trigger_type")
-        if not trigger_type_id:
-            return
-
-        handler_data = self._trigger_types.get(trigger_type_id)
-        if not handler_data:
-            return
-
-        trigger_id = data.get("id", "")
-        function_id = data.get("function_id", "")
-        config = data.get("config")
-        metadata = data.get("metadata")
-
-        try:
-            await handler_data.handler.unregister_trigger(
-                TriggerConfig(
-                    id=trigger_id,
-                    function_id=function_id,
-                    config=config,
-                    metadata=metadata,
-                )
-            )
-        except Exception:
-            log.exception(f"Error unregistering trigger {trigger_id}")
+        await self._send(answer)
 
     # Connection state management
 
@@ -1836,197 +2178,6 @@ class III:
         return self._worker_id
 
     # Public API
-    def register_trigger_type(
-        self,
-        trigger_type: "RegisterTriggerTypeInput | dict[str, Any]",
-        handler: TriggerHandler[Any],
-    ) -> "TriggerTypeRef[Any, Any]":
-        """Register a custom trigger type with the engine.
-
-        .. deprecated:: 0.25.0
-            Register a function with an observe descriptor instead:
-            ``register_function(id, handler, observe=ObserveHooks(delivery="owner",
-            on_observer_added=..., on_observer_removed=...))``. Emits a
-            ``DeprecationWarning`` and logs a warning once per process. Migration
-            guide: https://iii.dev/docs/upgrading/from-0-24-x
-
-        Returns a :class:`TriggerTypeRef` handle with ``register_trigger``
-        and ``register_function`` methods.
-
-        Args:
-            trigger_type: A ``RegisterTriggerTypeInput`` or dict with
-                ``id``, ``description``, and optional ``trigger_request_format``
-                / ``call_request_format`` (Pydantic class or dict).
-            handler: A ``TriggerHandler`` instance.
-
-        Returns:
-            A ``TriggerTypeRef`` with typed ``register_trigger`` and
-            ``register_function`` methods.
-
-        Examples:
-            >>> webhook = worker.register_trigger_type(
-            ...     RegisterTriggerTypeInput(
-            ...         id="webhook",
-            ...         description="Webhook trigger",
-            ...         trigger_request_format=WebhookConfig,
-            ...         call_request_format=WebhookCallRequest,
-            ...     ),
-            ...     WebhookHandler(),
-            ... )
-            >>> webhook.register_function("handler", handle_webhook)
-            >>> webhook.register_trigger("handler", WebhookConfig(url="/hook"))
-        """
-        _warn_deprecated("register_trigger_type", stacklevel=2)
-        if isinstance(trigger_type, dict):
-            trigger_type = RegisterTriggerTypeInput(**trigger_type)
-
-        config_cls = (
-            trigger_type.trigger_request_format
-            if isinstance(trigger_type.trigger_request_format, type)
-            else None
-        )
-        request_cls = (
-            trigger_type.call_request_format
-            if isinstance(trigger_type.call_request_format, type)
-            else None
-        )
-
-        msg = RegisterTriggerTypeMessage(
-            id=trigger_type.id,
-            description=trigger_type.description,
-            trigger_request_format=_resolve_format(trigger_type.trigger_request_format),
-            call_request_format=_resolve_format(trigger_type.call_request_format),
-        )
-        # Isolate retained JSON fields from later caller mutations.
-        msg = msg.model_copy(deep=True)
-        self._send_if_connected(msg)
-        self._trigger_types[trigger_type.id] = RemoteTriggerTypeData(
-            message=msg, handler=handler
-        )
-
-        return TriggerTypeRef(
-            iii=self,
-            trigger_type_id=trigger_type.id,
-            config_cls=config_cls,
-            request_cls=request_cls,
-        )
-
-    def unregister_trigger_type(
-        self, trigger_type: "RegisterTriggerTypeInput | dict[str, Any]"
-    ) -> None:
-        """Unregister a previously registered trigger type.
-
-        .. deprecated:: 0.25.0
-            Trigger types are replaced by functions with an observe descriptor;
-            unregister the function instead. Migration guide:
-            https://iii.dev/docs/upgrading/from-0-24-x
-
-        Args:
-            trigger_type: A ``RegisterTriggerTypeInput`` or dict with ``id``, an
-                optional ``description``, and (dict only) the ``namespace`` it
-                was registered in.
-
-        Examples:
-            >>> worker.unregister_trigger_type({"id": "webhook", "description": "Webhook trigger"})
-            >>> worker.unregister_trigger_type(RegisterTriggerTypeInput(id="webhook", description="Webhook trigger"))
-        """
-        warnings.warn(
-            "unregister_trigger_type is deprecated and will be removed in a future release. Trigger types are "
-            f"replaced by functions with an observe descriptor. Migration guide: {_MIGRATION_GUIDE}",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        # The engine reads `{id, namespace?}` (sdk/fixtures/protocol/observe/unregistertriggertype.json).
-        namespace: str | None = None
-        if isinstance(trigger_type, dict):
-            type_id = trigger_type["id"]
-            namespace = trigger_type.get("namespace")
-        else:
-            type_id = trigger_type.id
-        self._trigger_types.pop(type_id, None)
-        self._send_if_connected(UnregisterTriggerTypeMessage(id=type_id, namespace=namespace))
-
-    def register_trigger(
-        self, trigger: RegisterTriggerInput | dict[str, Any]
-    ) -> Trigger:
-        """Bind a trigger configuration to a registered function.
-
-        .. deprecated:: 0.25.0
-            Use ``iii.observe(source, target)`` instead:
-            ``iii.observe({"function_id": ..., "args": ..., "filters": ...}, target,
-            {"metadata": ...})``. Emits a ``DeprecationWarning`` and logs a
-            warning once per process. The http, cron, queue, state, stream,
-            pubsub and database workers still publish trigger types: keep
-            using ``register_trigger`` for them until they ship source
-            functions. Migration guide:
-            https://iii.dev/docs/upgrading/from-0-24-x
-
-        <!-- docs:expand-params -->
-
-        Args:
-            trigger: A ``RegisterTriggerInput`` or dict with ``type``,
-                ``function_id``, and optional ``config``.
-
-        Returns:
-            A ``Trigger`` object with an ``unregister()`` method.  The
-            trigger ID is auto-generated (UUID) by the SDK and sent to
-            the engine as part of the registration message.
-
-        Examples:
-            >>> trigger = worker.register_trigger({
-            ...   'type': 'http',
-            ...   'function_id': 'greet',
-            ...   'config': {'api_path': '/greet', 'http_method': 'GET'}
-            ... })
-            >>> trigger = worker.register_trigger(RegisterTriggerInput(
-            ...     type="http", function_id="greet",
-            ...     config={'api_path': '/greet', 'http_method': 'GET'}
-            ... ))
-            >>> trigger.unregister()
-        """
-        return self._register_trigger(trigger, stacklevel=2)
-
-    def _register_trigger(self, trigger: RegisterTriggerInput | dict[str, Any], *, stacklevel: int) -> Trigger:
-        """``register_trigger``; ``stacklevel`` points the deprecation warning at the user's call."""
-        _warn_deprecated("register_trigger", stacklevel=stacklevel + 1)
-        if isinstance(trigger, dict):
-            trigger = RegisterTriggerInput(**trigger)
-        trigger_id = str(uuid.uuid4())
-        msg = RegisterTriggerMessage(
-            id=trigger_id,
-            trigger_type=trigger.type,
-            function_id=trigger.function_id,
-            config=trigger.config,
-            metadata=trigger.metadata,
-            # Unset means this worker's namespace, not the engine's default. A
-            # trigger names a function, and the function a worker registers
-            # lands in the worker's namespace, so defaulting anywhere else
-            # registers a trigger that fires and resolves nothing. Naming
-            # another namespace, ``default`` included, stays a matter of saying
-            # so.
-            namespace=self._call_namespace(
-                trigger.namespace, "RegisterTriggerInput.namespace"
-            ),
-            # Passed through untouched, ``None`` included. ``None`` is the
-            # engine's two-step resolution -- this worker's namespace, then the
-            # engine's own -- which carries an unmigrated worker onto the
-            # engine's provider while letting a project's own win when it has
-            # one. The SDK cannot decide this locally: a sibling worker in the
-            # same project may be the one providing the type.
-            trigger_namespace=trigger.trigger_namespace,
-        )
-        # Isolate retained JSON fields from later caller mutations.
-        msg = msg.model_copy(deep=True)
-        self._send_if_connected(msg)
-        self._triggers[trigger_id] = msg
-
-        def unregister() -> None:
-            self._triggers.pop(trigger_id, None)
-            self._send_if_connected(
-                UnregisterTriggerMessage(id=trigger_id, trigger_type=msg.trigger_type)
-            )
-
-        return Trigger(unregister)
 
     def register_function(
         self,
@@ -2037,7 +2188,10 @@ class III:
         metadata: dict[str, Any] | None = None,
         request_format: RegisterFunctionFormat | dict[str, Any] | None = None,
         response_format: RegisterFunctionFormat | dict[str, Any] | None = None,
-        observe: ObserveHooks | dict[str, Any] | None = None,
+        args_format: Any = None,
+        private: bool = False,
+        observable: bool = True,
+        standby: bool = False,
         local_dispatch: bool = True,
     ) -> FunctionRef:
         """Register a function with the engine.
@@ -2048,13 +2202,23 @@ class III:
         Handlers can be synchronous or asynchronous.  Sync handlers are
         automatically wrapped with ``run_in_executor`` so they do not
         block the event loop.  Each handler receives a ``data`` argument
-        containing the trigger payload, and may optionally accept a second
+        containing the call's payload, and may optionally accept a second
         ``metadata`` argument carrying per-invocation metadata (e.g.
         ``def handler(data, metadata=None)`` or ``def handler(data, *,
         metadata=None)``).  Metadata is only forwarded to handlers that
         declare a parameter literally named ``metadata``, so existing
         handlers, including ones with unrelated extra parameters,
         ``*args``, or ``**kwargs``, keep working unchanged.
+
+        The handler's return value is what the function's observers observe.
+        An event source's handler returns the event it is called with. What
+        this worker does when the function is observed is set with the hook
+        methods (``on_observer_added``, ``on_observer_removed``,
+        ``on_observer_match``, ``on_observer_deliver``) on the client by id or
+        on the returned ``FunctionRef``. Set ``on_observer_added`` and
+        ``on_observer_removed`` by id before registering so they run for every
+        observer: the engine may announce an observer before a hook set on the
+        ``FunctionRef`` is in place.
 
         ``request_format`` and ``response_format`` are auto-extracted
         from the handler's type hints when omitted or passed as ``None``
@@ -2067,7 +2231,7 @@ class III:
             function_id: Unique string identifier for the function.
             handler_or_invocation: A callable handler or
                 ``HttpInvocationConfig``.  Callable handlers receive
-                ``data`` (the trigger payload) as the first argument and
+                ``data`` (the call's payload) as the first argument and
                 may optionally accept ``metadata`` (per-invocation
                 metadata) as a second argument; they may return a value.
             description: Human-readable description of what the function does.
@@ -2077,14 +2241,22 @@ class III:
                 first-parameter type hint.  Pass an explicit schema to
                 override; there is no way to register with no schema
                 when the handler is typed.
-            response_format: Schema describing expected output.  Same
-                auto-extraction semantics as ``request_format``.
-            observe: Makes the function observable on its own terms: owner
-                delivery (``delivery="owner"``, ``args_format``), and
-                callbacks when an observer is added or removed (an
-                :class:`ObserveHooks`, a subclass of it, or a dict of its
-                fields). Without it the function is still observable (auto
-                delivery, no args).
+            response_format: Schema describing the handler's return value,
+                what observers observe.  Same auto-extraction semantics as
+                ``request_format``.
+            args_format: JSON Schema (or a Pydantic model) of the observers'
+                ``args``; the engine validates them (``INVALID_ARGS``). A
+                function without it takes no args.
+            private: Only this worker may call the function; others may
+                observe it. This worker's own calls pass the input and the
+                result by reference: the handler and hooks treat both as
+                read-only.
+            observable: ``False``: nobody may observe the function
+                (``NOT_OBSERVABLE``), for functions whose payloads carry
+                credentials.
+            standby: When another worker already hosts the id
+                (``FUNCTION_NAMESPACE_CONFLICT``), retry every second (±20 %)
+                and take the function over when that worker leaves.
             local_dispatch: Calls this worker makes to its own function run
                 in-process once the engine confirmed it (default ``True``).
                 Like a remote invocation, each local call to a sync handler
@@ -2094,20 +2266,21 @@ class III:
                 go through the engine (also for a handler that relies on
                 engine-side effects).
 
+        A function that declares ``args_format``, ``private`` or
+        ``observable=False``, or has an ``on_observer_match`` or an
+        ``on_observer_deliver``, needs an engine with ``observe.v2``: against
+        an older engine it stays unregistered and ``UNSUPPORTED`` is logged
+        once.
+
         Returns:
-            A ``FunctionRef`` with an ``id`` attribute, an ``unregister()``
-            method, and ``is_observed()`` / ``observers()`` (the active
-            observers, as this owner sees them).  Call ``unregister()`` to
-            remove the function from the engine.
+            A ``FunctionRef``: ``id``, the hook methods, ``observers()``,
+            ``is_observed()`` and ``unregister()``.
 
         Raises:
-            TypeError: If ``function_id`` is not a string, or if
+            TypeError: If ``function_id`` is not a string, if
                 ``handler_or_invocation`` is not callable or
-                ``HttpInvocationConfig``.
+                ``HttpInvocationConfig``, or if ``args_format`` is not JSON.
             ValueError: If ``function_id`` is empty or already registered.
-            InvocationError: ``INVALID_OBSERVE_DESCRIPTOR`` when ``observe``
-                declares ``args_format`` without ``delivery="owner"``, or an
-                unknown ``delivery``.
 
         Examples:
             >>> def greet(data):
@@ -2123,6 +2296,10 @@ class III:
             >>> async def greet(data: GreetInput) -> GreetOutput:
             ...     return GreetOutput(message=f"Hello, {data.name}!")
             >>> fn = worker.register_function("greet", greet, description="Greets a user")
+
+            >>> on_tick = worker.register_function(
+            ...     "cron::on-tick", lambda tick: tick, args_format=CronArgs, private=True
+            ... )
         """
         if not isinstance(function_id, str):
             raise TypeError(
@@ -2133,12 +2310,9 @@ class III:
         if function_id in self._functions:
             raise ValueError(f"function id '{function_id}' already registered")
 
-        # The hooks stay here; only the descriptor's four fields travel, and
-        # `local_dispatch` is this SDK's alone.
-        hooks = ObserveHooks.from_value(observe)
-        _validate_observe_hooks(function_id, hooks)
-        descriptor = observe_descriptor(hooks, _resolve_format(hooks.args_format) if hooks is not None else None)
-
+        resolved_args_format = (
+            snapshot(_resolve_format(args_format), "args_format") if args_format is not None else None
+        )
         handler_for_extraction = (
             handler_or_invocation if callable(handler_or_invocation) else None
         )
@@ -2153,25 +2327,30 @@ class III:
             request_format=request_format,
             response_format=response_format,
         )
+        # Only what the engine reads travels: the defaults (`private: false`,
+        # `observable: true`) are left out, and hooks, `standby` and
+        # `local_dispatch` stay in this SDK.
+        msg = RegisterFunctionMessage(
+            id=func.id,
+            invocation=handler_or_invocation if isinstance(handler_or_invocation, HttpInvocationConfig) else None,
+            description=func.description,
+            metadata=func.metadata,
+            request_format=func.request_format,
+            response_format=func.response_format,
+            args_format=resolved_args_format,
+            private=True if private else None,
+            observable=None if observable else False,
+        )
+        # Isolate retained JSON fields from later caller mutations.
+        msg = msg.model_copy(deep=True)
+        self._prepare_json(msg)
+        needs_v2 = resolved_args_format is not None or private or not observable
 
         if isinstance(handler_or_invocation, HttpInvocationConfig):
-            msg = RegisterFunctionMessage(
-                id=func.id,
-                invocation=handler_or_invocation,
-                description=func.description,
-                metadata=func.metadata,
-                request_format=func.request_format,
-                response_format=func.response_format,
-                observe=descriptor,
+            observe_state = FunctionObservers(
+                function_id, local_dispatch, False, self._observe_host, private=private
             )
-            # Isolate retained JSON fields from later caller mutations.
-            msg = msg.model_copy(deep=True)
-            observe_state = FunctionObservers(function_id, hooks, local_dispatch, False, self._observe_host)
-            data = RemoteFunctionData(message=msg, observe=observe_state)
-            self._prepare_json(msg)
-            # Stored before it is sent: the engine's `functionregistered` must find it.
-            self._functions[func.id] = data
-            self._send_if_connected(msg)
+            data = RemoteFunctionData(message=msg, observe=observe_state, needs_v2=needs_v2, standby=standby)
         else:
             if not callable(handler_or_invocation):
                 actual_type = type(handler_or_invocation).__name__
@@ -2179,17 +2358,6 @@ class III:
                     f"handler_or_invocation must be callable or HttpInvocationConfig, got {actual_type}"
                 )
             handler = cast("Callable[..., Any]", handler_or_invocation)
-            msg = RegisterFunctionMessage(
-                id=func.id,
-                description=func.description,
-                metadata=func.metadata,
-                request_format=func.request_format,
-                response_format=func.response_format,
-                observe=descriptor,
-            )
-            # Isolate retained JSON fields from later caller mutations.
-            msg = msg.model_copy(deep=True)
-            self._prepare_json(msg)
 
             # Decide once, at registration time, whether this handler accepts
             # per-invocation metadata. 1-arg handlers keep working unchanged.
@@ -2202,7 +2370,7 @@ class III:
                     return handler(input_data, metadata=metadata)
                 return handler(input_data)
 
-            is_async = _is_async_callable(handler)
+            is_async = is_async_callable(handler)
             if is_async:
 
                 async def wrapped(input_data: Any, metadata: dict[str, Any] | None = None) -> Any:
@@ -2216,19 +2384,21 @@ class III:
                     # (the `execute` span) follow the handler.
                     return await run_in_thread(_call_handler, input_data, metadata)
 
-            observe_state = FunctionObservers(function_id, hooks, local_dispatch, True, self._observe_host)
+            observe_state = FunctionObservers(function_id, local_dispatch, True, self._observe_host, private=private)
             data = RemoteFunctionData(
                 message=msg,
                 handler=wrapped,
                 observe=observe_state,
                 call_sync=None if is_async else _call_handler,
+                needs_v2=needs_v2,
+                standby=standby,
             )
-            # Stored before it is sent: the engine's `functionregistered` must find it.
-            self._functions[func.id] = data
-            self._send_if_connected(msg)
+        # Stored before it is sent: the engine's `functionregistered` must find it.
+        self._functions[func.id] = data
+        self._schedule_registration(func.id)
 
         if (
-            observe_state.needs_observe
+            self._has_observer_hooks(function_id)
             and self._registered_on_connection
             and FEATURE_OBSERVE_V1 not in self._engine_features
         ):
@@ -2239,33 +2409,349 @@ class III:
         def unregister() -> None:
             if self._functions.get(func_id) is data:
                 del self._functions[func_id]
+            self._standing_by.discard(func_id)
             self._send_if_connected(UnregisterFunctionMessage(id=func_id))
             observe_state.dispose()
 
-        return FunctionRef(
-            id=func_id,
-            unregister=unregister,
-            _is_observed=observe_state.is_observed,
-            _observers=observe_state.observers,
-        )
+        return FunctionRef(self, func_id, unregister)
 
-    def trigger(self, request: "dict[str, Any] | TriggerRequest") -> Any:
-        """Invoke a remote function.
+    # observer hooks
+
+    @overload
+    def on_observer_added(self, function_id_or_hook: AddedT) -> AddedT: ...
+    @overload
+    def on_observer_added(self, function_id_or_hook: None) -> None: ...
+    @overload
+    def on_observer_added(self, function_id_or_hook: str) -> Callable[[AddedT], AddedT]: ...
+    @overload
+    def on_observer_added(self, function_id_or_hook: str, hook: AddedT) -> AddedT: ...
+    @overload
+    def on_observer_added(self, function_id_or_hook: str, hook: None) -> None: ...
+    def on_observer_added(self, function_id_or_hook: Any, hook: Any = _MISSING) -> Any:
+        """Sets what runs when an observer is added, before it is accepted:
+        for every function this worker hosts (``on_observer_added(hook)``), or
+        for one (``on_observer_added("fn::id", hook)``). Works as a decorator,
+        ``@iii.on_observer_added`` or ``@iii.on_observer_added("fn::id")``, and
+        returns the hook; ``None`` removes it.
+
+        The worker's hook runs, then the function's; the observer is accepted
+        (acked, then active) once both resolved. A hook that raises rejects
+        the observer with the :class:`ObserveRejection` it raised, or
+        ``OBSERVE_REJECTED``; one still running after 30 s rejects it with
+        ``OWNER_TIMEOUT``. Then the ``on_observer_removed`` of each level whose
+        hook already resolved runs. Hooks may be sync (on a thread of their
+        own) or async, and the hooks of one function run one at a time.
+
+        Hooks are stored by function id, so they can be set before the
+        function is registered (which makes them run for every observer) and
+        stay in place across ``unregister()``. A hook set while the function
+        already has active observers runs for each of them at once (a raise
+        rejects that observer) and logs one warning. A second after the
+        connection is registered, and after the last hook set by id, a
+        warning names each hook id this worker has not registered.
+
+        Examples:
+            >>> @iii.on_observer_added            # every function this worker hosts
+            ... async def retain(obs):
+            ...     await events.retain()
+            >>> @iii.on_observer_added("cron::on-tick")
+            ... def start(obs):
+            ...     scheduler.retain(obs.args["expression"])
+        """
+        if isinstance(function_id_or_hook, str):
+            function_id = function_id_or_hook
+            if hook is _MISSING:
+
+                def decorator(fn: AddedT) -> AddedT:
+                    self._set_added_hook(function_id, fn)
+                    return fn
+
+                return decorator
+            self._set_added_hook(function_id, hook)
+            return hook
+        if hook is not _MISSING:
+            raise TypeError("on_observer_added takes a hook, or a function id and a hook")
+        self._set_added_hook(None, function_id_or_hook)
+        return function_id_or_hook
+
+    @overload
+    def on_observer_removed(self, function_id_or_hook: RemovedT) -> RemovedT: ...
+    @overload
+    def on_observer_removed(self, function_id_or_hook: None) -> None: ...
+    @overload
+    def on_observer_removed(self, function_id_or_hook: str) -> Callable[[RemovedT], RemovedT]: ...
+    @overload
+    def on_observer_removed(self, function_id_or_hook: str, hook: RemovedT) -> RemovedT: ...
+    @overload
+    def on_observer_removed(self, function_id_or_hook: str, hook: None) -> None: ...
+    def on_observer_removed(self, function_id_or_hook: Any, hook: Any = _MISSING) -> Any:
+        """Sets what runs when an accepted observer goes (on ``unobserve``, on
+        disposal, after a late rejection): for every function this worker
+        hosts, or for one. The same forms as :meth:`on_observer_added`.
+
+        It runs exactly once for every accepted observer, the function's hook
+        and then the worker's, and never for an observer that was not
+        accepted. An error it raises is logged; the observer is removed
+        either way.
+
+        Examples:
+            >>> iii.on_observer_removed(lambda obs: events.release())
+            >>> @iii.on_observer_removed("cron::on-tick")
+            ... def stop(obs):
+            ...     scheduler.release(obs.args["expression"])
+        """
+        if isinstance(function_id_or_hook, str):
+            function_id = function_id_or_hook
+            if hook is _MISSING:
+
+                def decorator(fn: RemovedT) -> RemovedT:
+                    self._set_removed_hook(function_id, fn)
+                    return fn
+
+                return decorator
+            self._set_removed_hook(function_id, hook)
+            return hook
+        if hook is not _MISSING:
+            raise TypeError("on_observer_removed takes a hook, or a function id and a hook")
+        self._set_removed_hook(None, function_id_or_hook)
+        return function_id_or_hook
+
+    @overload
+    def on_observer_match(self, function_id: str) -> Callable[[MatchT], MatchT]: ...
+    @overload
+    def on_observer_match(self, function_id: str, hook: MatchT) -> MatchT: ...
+    @overload
+    def on_observer_match(self, function_id: str, hook: MatchKeys) -> MatchKeys: ...
+    @overload
+    def on_observer_match(self, function_id: str, hook: None) -> None: ...
+    @overload
+    def on_observer_match(
+        self, function_id: str, *, observer: Callable[[Observer], Key], call: Callable[[Call[Any, Any]], Key]
+    ) -> MatchKeys: ...
+    def on_observer_match(
+        self, function_id: str, hook: Any = _MISSING, *, observer: Any = None, call: Any = None
+    ) -> Any:
+        """Sets which observers want each call of one function. By default
+        every observer wants every call; iii's delivery then applies their
+        ``on`` and filters, and an ``on_observer_deliver`` receives only the
+        observers that matched.
+
+        As a predicate, ``hook(obs, call) -> bool`` is asked once per active
+        observer per call, before filters; a predicate that raises counts as
+        no match. As keys, ``observer=`` and ``call=`` key functions each
+        return a string or strings, and an observer wants a call when they
+        share a key: the SDK computes an observer's keys once, when it is
+        accepted, and files it under each, so a call costs one lookup per key
+        whatever the number of observers. An observer whose key function
+        raises is rejected (``OBSERVE_REJECTED``); a call whose key function
+        raises matches no observer. A match hook that raises is logged once
+        per function. Wildcards are keys too: file an observer of every table
+        under ``"primary|*|insert"`` and give a change the keys
+        ``"primary|orders|insert"``, ``"primary|orders|*"``,
+        ``"primary|*|insert"`` and ``"primary|*|*"``.
+
+        A host that sends one observer something of its own (its initial
+        state) calls the function with ``"metadata": {"for_observer":
+        obs.id}``, and the hook gives such a call to that observer alone: a
+        predicate compares the ids, and key functions also file each observer
+        under ``f"for_observer:{obs.id}"`` and give such a call that one key.
+
+        Works as a decorator for a predicate
+        (``@iii.on_observer_match("fn::id")``) and returns the hook (a
+        :class:`MatchKeys` for the keys form); ``None`` removes it. A match
+        hook set while the function has active observers is applied to them
+        on the SDK loop, which rebuilds the index from them. Predicates and
+        key functions are sync: they run on every call. A function with a
+        match hook needs an engine with ``observe.v2``: against an older one
+        it stays unregistered, and ``UNSUPPORTED`` is logged once.
+
+        Examples:
+            >>> iii.on_observer_match(
+            ...     "cron::on-tick", lambda obs, call: obs.args["expression"] == call.input["expression"]
+            ... )
+            >>> iii.on_observer_match(
+            ...     "database::on-row-changed",
+            ...     observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",
+            ...     call=lambda call: f"{call.input['table']}|{call.input['op']}",
+            ... )
+        """
+        if not isinstance(function_id, str):
+            raise TypeError("on_observer_match takes a function id, and a predicate or observer= and call=")
+        if observer is not None or call is not None:
+            if hook is not _MISSING:
+                raise TypeError("on_observer_match takes a predicate or observer= and call= key functions, not both")
+            if observer is None or call is None:
+                raise TypeError("on_observer_match: keys take both observer= and call=")
+            keys = MatchKeys(observer=observer, call=call)
+            self._set_match_hook(function_id, keys)
+            return keys
+        if hook is _MISSING:
+
+            def decorator(fn: MatchT) -> MatchT:
+                self._set_match_hook(function_id, fn)
+                return fn
+
+            return decorator
+        self._set_match_hook(function_id, hook)
+        return hook
+
+    @overload
+    def on_observer_deliver(self, function_id: str) -> Callable[[DeliverT], DeliverT]: ...
+    @overload
+    def on_observer_deliver(self, function_id: str, hook: DeliverT) -> DeliverT: ...
+    @overload
+    def on_observer_deliver(self, function_id: str, hook: None) -> None: ...
+    def on_observer_deliver(self, function_id: str, hook: Any = _MISSING) -> Any:
+        """Delivers each call of one function itself: ``hook(call,
+        observers)`` receives the :class:`Call` and the observers that matched
+        it (``on_observer_match``, or all of them), as a snapshot taken when
+        the call started, and what it returns (or raises) is what the caller
+        gets back. iii delivers nothing for that function: the hook calls
+        through observers (``iii.call({"observer": obs, ...})``) and applies
+        their ``on`` and filters with ``obs.matches(call)``. Works as a
+        decorator (``@iii.on_observer_deliver("fn::id")``) and returns the
+        hook; ``None`` restores iii's delivery.
+
+        The hook runs inside the function's invocation, so the calls it makes
+        have that invocation as their caller. A sync hook runs on a thread of
+        its own. A function with a deliver hook needs an engine with
+        ``observe.v2``.
+
+        Examples:
+            >>> @iii.on_observer_deliver("http::on-request")
+            ... async def route(call, observers):
+            ...     obs = routes.match(call.input)
+            ...     if obs is None:
+            ...         return {"status_code": 404}
+            ...     if not obs.matches(call):
+            ...         return {"status_code": 422}
+            ...     return await iii.call_async({"observer": obs, "payload": call.input})
+        """
+        if not isinstance(function_id, str):
+            raise TypeError("on_observer_deliver takes a function id, and a hook")
+        if hook is _MISSING:
+
+            def decorator(fn: DeliverT) -> DeliverT:
+                self._set_deliver_hook(function_id, fn)
+                return fn
+
+            return decorator
+        self._set_deliver_hook(function_id, hook)
+        return hook
+
+    def _set_added_hook(self, function_id: str | None, hook: AddedHook | None) -> None:
+        if hook is not None and not callable(hook):
+            raise TypeError(f"on_observer_added: the hook must be callable, got {type(hook).__name__}")
+        if function_id is None:
+            self._worker_added = hook
+            targets = [cast(FunctionObservers, fn.observe) for fn in list(self._functions.values())]
+        else:
+            if hook is None:
+                self._added_hooks.pop(function_id, None)
+            else:
+                self._added_hooks[function_id] = hook
+                self._hook_set_by_id()
+            state = self._observe_state(function_id)
+            targets = [state] if state is not None else []
+        if hook is not None:
+            level: Level = "worker" if function_id is None else "function"
+            for state in targets:
+                state.catch_up(level)
+
+    def _set_removed_hook(self, function_id: str | None, hook: RemovedHook | None) -> None:
+        if hook is not None and not callable(hook):
+            raise TypeError(f"on_observer_removed: the hook must be callable, got {type(hook).__name__}")
+        if function_id is None:
+            self._worker_removed = hook
+        elif hook is None:
+            self._removed_hooks.pop(function_id, None)
+        else:
+            self._removed_hooks[function_id] = hook
+            self._hook_set_by_id()
+
+    def _set_match_hook(self, function_id: str, hook: MatchHook | None) -> None:
+        if hook is None:
+            self._match_hooks.pop(function_id, None)
+        else:
+            if isinstance(hook, MatchKeys):
+                functions: tuple[Any, ...] = (hook.observer, hook.call)
+            elif callable(hook):
+                functions = (hook,)
+            else:
+                raise TypeError(
+                    f"on_observer_match: the hook must be a predicate, MatchKeys or None, got {type(hook).__name__}"
+                )
+            for fn in functions:
+                if not callable(fn):
+                    raise TypeError(f"on_observer_match: a key function must be callable, got {type(fn).__name__}")
+                if is_async_callable(fn):
+                    raise TypeError("on_observer_match: predicates and key functions are sync; they run on every call")
+            self._match_hooks[function_id] = hook
+            self._hook_set_by_id()
+        state = self._observe_state(function_id)
+        if state is not None:
+            state.match_changed()
+            # It decides whether the function needs observe.v2.
+            self._schedule_registration(function_id)
+
+    def _set_deliver_hook(self, function_id: str, hook: DeliverHook | None) -> None:
+        if hook is not None and not callable(hook):
+            raise TypeError(f"on_observer_deliver: the hook must be callable, got {type(hook).__name__}")
+        if hook is None:
+            self._deliver_hooks.pop(function_id, None)
+        else:
+            self._deliver_hooks[function_id] = hook
+            self._hook_set_by_id()
+        if self._observe_state(function_id) is not None:
+            # It decides whether the function needs observe.v2.
+            self._schedule_registration(function_id)
+
+    def observers(self, function_id: str) -> list[Observer]:
+        """The active observers of a function this worker hosts, as it sees them.
+
+        Examples:
+            >>> for obs in iii.observers("cron::on-tick"):
+            ...     print(obs.id, obs.args)
+        """
+        state = self._observe_state(function_id)
+        return state.observers() if state is not None else []
+
+    def is_observed(self, function_id: str, call: CallLike | None = None) -> bool:
+        """Whether a call of a function this worker hosts would reach anyone,
+        so a source can skip building an event nobody wants.
+
+        Without ``call``: whether the function has any active observer (one
+        load). With ``call`` (a :class:`Call` or a partial one,
+        ``{"input": ...}``) on a function matched by keys
+        (``on_observer_match``): whether an observer is filed under one of
+        the call's keys. On any other function the call is ignored.
+
+        Examples:
+            >>> if iii.is_observed("database::on-row-changed", {"input": change}):
+            ...     iii.call({"function_id": "database::on-row-changed", "payload": change})
+        """
+        state = self._observe_state(function_id)
+        return state.is_observed(call) if state is not None else False
+
+    # calling
+
+    def call(self, request: "dict[str, Any] | CallRequest") -> Any:
+        """Call a function and return its result.
 
         <!-- docs:expand-params -->
 
         The routing behavior and return type depend on the ``action`` field:
 
         - No action: synchronous, waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
+        - ``CallAction.Enqueue(...)``: async via named queue, returns a dict
           with ``messageReceiptId``.
-        - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
+        - ``CallAction.Void()``: fire-and-forget, returns ``None``.
 
         A function this worker registered with a handler, once the engine
-        confirmed it, runs in-process (local dispatch, sdk.md §3): a sync
-        handler on a thread of its own (the caller waits up to the timeout),
-        an async one on the SDK loop. Its observers are still evaluated, and
-        only matched calls reach the engine. ``dispatch="remote"`` (or
+        confirmed it, runs in-process (local dispatch): a sync handler on a
+        thread of its own (the caller waits up to the timeout), an async one
+        on the SDK loop. Its observers are still delivered to, and only
+        matched calls reach the engine. ``dispatch="remote"`` (or
         ``action=Enqueue``) always goes through the engine. Whatever a local
         handler raises, ``BaseException``s such as ``KeyboardInterrupt`` and
         ``SystemExit`` included, reaches the caller as
@@ -2273,11 +2759,28 @@ class III:
         ``__cause__`` (for a ``Void`` call nothing reaches the caller: the
         error is logged).
 
+        ``metadata`` is any JSON value; the handler receives it beside the
+        payload, and ``None`` is no metadata.
+
+        A request with ``observer`` (an :class:`Observer` of a function this
+        worker hosts) calls through it: the engine runs the observer's target
+        with its policy (``max_fires``, expiry, ``max_in_flight``), metadata
+        sidecar and loop guard, and the call resolves to the target's result.
+        It takes no ``metadata``: the target's metadata argument is the
+        observer's registration metadata, and a request that names metadata
+        raises ``ValueError`` before anything is sent.
+        The payload goes as given: filters are applied where the worker
+        chooses observers: iii's delivery, or ``obs.matches(call)`` in an
+        ``on_observer_deliver``. A call through an observer belongs in that
+        deliver hook; to send one observer something outside delivery (its
+        initial state), call the function with ``"metadata": {"for_observer":
+        obs.id}`` (see :meth:`Observer.accepted`).
+
         Args:
-            request: A ``TriggerRequest`` or dict with ``function_id``,
-                ``payload``, and optional ``action`` / ``timeout_ms`` /
-                ``metadata`` / ``namespace`` / ``dispatch`` (``"auto"``, the
-                default, or ``"remote"``).
+            request: A ``CallRequest`` or dict with ``function_id`` (or
+                ``observer``), ``payload``, and optional ``action`` /
+                ``timeout_ms`` / ``metadata`` / ``namespace`` / ``dispatch``
+                (``"auto"``, the default, or ``"remote"``).
 
         Returns:
             The function's return value for synchronous (no-action) calls,
@@ -2287,37 +2790,42 @@ class III:
         Raises:
             InvocationError: For any engine rejection. Inspect ``code``:
                 ``'TIMEOUT'`` if the invocation timed out, ``'FORBIDDEN'`` if
-                RBAC denied it.
+                RBAC denied it or the function is private to another worker;
+                for a call through an observer ``'NOT_FUNCTION_OWNER'``,
+                ``'OBSERVER_NOT_FOUND'``, ``'OBSERVER_NOT_ACTIVE'``,
+                ``'OVERFLOW'``, ``'LOOP_GUARD'``.
 
         Examples:
-            >>> result = worker.trigger({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+            >>> result = worker.call({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> worker.call({'function_id': 'notify', 'payload': {}, 'action': CallAction.Void()})
+            >>> worker.call({'observer': obs, 'payload': request})  # in a deliver hook
         """
-        call = self._prepare_call(request)
-        if call.local is not None:
-            return self._invoke_local_sync(call)
-        return self._run_on_loop(self._invoke_remote_call(call))
+        req = self._prepare_call(request)
+        if req.local is not None:
+            return self._invoke_local_sync(req)
+        return self._run_on_loop(self._invoke_remote_call(req))
 
-    async def trigger_async(self, request: "dict[str, Any] | TriggerRequest") -> Any:
-        """Invoke a remote function.
+    async def call_async(self, request: "dict[str, Any] | CallRequest") -> Any:
+        """Call a function and return its result (on any event loop).
 
         The routing behavior and return type depend on the ``action`` field:
 
         - No action: synchronous, waits for the function to return.
-        - ``TriggerAction.Enqueue(...)``: async via named queue, returns a dict
+        - ``CallAction.Enqueue(...)``: async via named queue, returns a dict
           with ``messageReceiptId``.
-        - ``TriggerAction.Void()``: fire-and-forget, returns ``None``.
+        - ``CallAction.Void()``: fire-and-forget, returns ``None``.
 
-        Works from any event loop. A function this worker registered with a
-        handler, once the engine confirmed it, runs in-process on the
-        calling loop (a sync handler on a thread of its own);
-        ``dispatch="remote"`` (or ``action=Enqueue``) always goes through
-        the engine.
+        A function this worker registered with a handler, once the engine
+        confirmed it, runs in-process on the calling loop (a sync handler on
+        a thread of its own); ``dispatch="remote"`` (or ``action=Enqueue``)
+        always goes through the engine. A request with ``observer`` calls
+        through it, as for :meth:`call`.
 
         Args:
-            request: A ``TriggerRequest`` or dict with ``function_id``, ``payload``,
-                and optional ``action`` / ``timeout_ms`` / ``metadata`` /
-                ``namespace`` / ``dispatch`` (``"auto"`` or ``"remote"``).
+            request: A ``CallRequest`` or dict with ``function_id`` (or
+                ``observer``), ``payload``, and optional ``action`` /
+                ``timeout_ms`` / ``metadata`` / ``namespace`` / ``dispatch``
+                (``"auto"`` or ``"remote"``).
 
         Returns:
             The function's return value for synchronous (no-action) calls,
@@ -2330,44 +2838,95 @@ class III:
                 RBAC denied it.
 
         Examples:
-            >>> result = await worker.trigger_async({'function_id': 'greet', 'payload': {'name': 'World'}})
-            >>> await worker.trigger_async({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+            >>> result = await worker.call_async({'function_id': 'greet', 'payload': {'name': 'World'}})
+            >>> await worker.call_async(
+            ...     {'function_id': 'stock::on-changed', 'payload': state,
+            ...      'metadata': {'for_observer': obs.id}, 'action': CallAction.Void()}
+            ... )
         """
-        call = self._prepare_call(request)
-        if call.local is not None:
-            return await self._invoke_local_async(call)
-        return await self._on_sdk_loop(self._invoke_remote_call(call))
+        req = self._prepare_call(request)
+        if req.local is not None:
+            return await self._invoke_local_async(req)
+        return await self._on_sdk_loop(self._invoke_remote_call(req))
 
-    def _prepare_call(self, request: "dict[str, Any] | TriggerRequest") -> "_Call":
-        """Normalizes a trigger request and picks the path (sdk.md §3)."""
+    def trigger(self, request: "dict[str, Any] | CallRequest") -> Any:
+        """Call a function: :meth:`call` under its 0.25 name.
+
+        .. deprecated:: 0.26.0
+            Use :meth:`call`.
+        """
+        return self.call(request)
+
+    async def trigger_async(self, request: "dict[str, Any] | CallRequest") -> Any:
+        """Call a function: :meth:`call_async` under its 0.25 name.
+
+        .. deprecated:: 0.26.0
+            Use :meth:`call_async`.
+        """
+        return await self.call_async(request)
+
+    def _prepare_call(self, request: "dict[str, Any] | CallRequest") -> _Request:
+        """Normalizes a call request and picks the path (local or routed)."""
         if self._fatal_error is not None:
             raise self._fatal_error
-        req = request if isinstance(request, dict) else request.model_dump()
-        function_id = req["function_id"]
+        # Read field by field: `observer` is an Observer, not something to dump.
+        req: dict[str, Any] = (
+            request
+            if isinstance(request, dict)
+            else {name: getattr(request, name) for name in CallRequest.model_fields}
+        )
         action = req.get("action")
         if isinstance(action, dict):
             if action.get("type") == "enqueue":
-                action = TriggerActionEnqueue(queue=action["queue"])
+                action = CallActionEnqueue(queue=action["queue"])
             elif action.get("type") == "void":
-                action = TriggerActionVoid()
+                action = CallActionVoid()
         dispatch = req.get("dispatch")
         if dispatch not in (None, "auto", "remote"):
             raise ValueError(f"dispatch must be 'auto' or 'remote', got {dispatch!r}")
+        timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
+        observer = req.get("observer")
+        if observer is not None:
+            # Through an observer: always the engine, which routes to the
+            # observer's stored target (no namespace) with its policy and metadata.
+            if not isinstance(observer, Observer):
+                raise TypeError(f"call: observer must be an iii.Observer, got {type(observer).__name__}")
+            for name in ("function_id", "namespace"):
+                if req.get(name) is not None:
+                    raise ValueError(f"call: a call through an observer takes no {name}")
+            # Its target's metadata is the observer's: refused before anything
+            # is sent (decision 53). ``None`` is no metadata.
+            if req.get("metadata") is not None:
+                raise ValueError(_OBSERVER_CALL_METADATA)
+            if isinstance(action, CallActionEnqueue):
+                raise ValueError("call: a call through an observer cannot be enqueued")
+            return _Request(
+                function_id=observer.target,
+                payload=req.get("payload"),
+                action=action,
+                metadata=None,
+                namespace=None,
+                timeout_ms=timeout_ms,
+                observer_id=observer.id,
+            )
+        function_id = req.get("function_id")
+        if not isinstance(function_id, str) or not function_id:
+            raise ValueError("call: function_id (or observer) is required")
         # Engine-owned builtins stay in ``default``. Other implicit calls stay
         # in this worker's namespace. An explicit request namespace wins.
-        namespace = self._invocation_namespace(req.get("namespace"), function_id)
-        call = _Call(
+        namespace = self._invocation_namespace(req.get("namespace"), function_id, "CallRequest.namespace")
+        call = _Request(
             function_id=function_id,
             payload=req.get("payload"),
             action=action,
             metadata=req.get("metadata"),
             namespace=namespace,
-            timeout_ms=req.get("timeout_ms") or self._options.invocation_timeout_ms,
+            timeout_ms=timeout_ms,
         )
         # Local dispatch: a function this worker hosts, confirmed by the engine
         # for in-process calls, in the namespace it registered in. `enqueue`
         # expects a queue receipt, so it always goes to the engine.
-        if dispatch != "remote" and not isinstance(action, TriggerActionEnqueue):
+        if dispatch != "remote" and not isinstance(action, CallActionEnqueue):
             fn = self._functions.get(function_id)
             state = fn.observe if fn is not None else None
             if (
@@ -2385,9 +2944,16 @@ class III:
                     call.state = state
         return call
 
-    async def _invoke_remote_call(self, call: "_Call") -> Any:
+    async def _invoke_remote_call(self, call: _Request) -> Any:
+        activation = {"observer_id": call.observer_id} if call.observer_id is not None else None
         return await self._invoke_remote(
-            call.function_id, call.payload, call.action, call.metadata, call.namespace, call.timeout_ms
+            call.function_id,
+            call.payload,
+            call.action,
+            call.metadata,
+            call.namespace,
+            call.timeout_ms,
+            activation=activation,
         )
 
     async def _invoke_remote(
@@ -2413,7 +2979,7 @@ class III:
         }
 
         # Void: fire-and-forget, no response expected
-        if isinstance(action, TriggerActionVoid):
+        if isinstance(action, CallActionVoid):
             await self._send(
                 InvokeFunctionMessage(
                     function_id=function_id,
@@ -2437,8 +3003,8 @@ class III:
         )
 
         try:
-            enqueue_action: TriggerActionEnqueue | None = (
-                action if isinstance(action, TriggerActionEnqueue) else None
+            enqueue_action: CallActionEnqueue | None = (
+                action if isinstance(action, CallActionEnqueue) else None
             )
 
             await self._send(
@@ -2471,11 +3037,19 @@ class III:
             # late result finds nothing left to settle.
             self._pending.pop(invocation_id, None)
 
-    # observe: the local path (sdk.md §4.3)
+    # the local path
 
-    def _local_invocation(self, call: "_Call") -> "_LocalInvocation":
-        """The new invocation context and the copies a local call works on.
-        Raises what copying the payload raises."""
+    def _local_invocation(self, call: _Request) -> _LocalInvocation:
+        """The new invocation context, the values a local call works on, and
+        the active set and deliver hook it starts with. A private function's
+        input and metadata pass by reference, so its handler that returns its
+        input reports it once (``output_is_input``). Any other function's
+        handler gets copies, and its delivery a copy of the payload and the
+        metadata as the caller passed them, taken here, at call start, when
+        the call is delivered; a handler that returns its own copy unchanged
+        reports the value once too (``_local_delivery``). The delivery sees channel refs as the caller
+        passed them; the handler gets readers and writers. Raises what
+        copying the payload raises."""
         state = cast(FunctionObservers, call.state)
         parent = current_context()
         caller: dict[str, Any] = dict(self._observe_host.identity())
@@ -2485,9 +3059,8 @@ class III:
             grandparent = strip_caller(parent.caller)
             if grandparent:
                 caller["parent"] = grandparent
-        # The handler's own copy of the metadata sidecar: what it receives, and
-        # what the events it emits see as `metadata`.
-        metadata = _clone_value(call.metadata)
+        # The handler's metadata sidecar: its own copy, unless the function is private.
+        metadata = call.metadata if state.private else _clone_value(call.metadata)
         ctx = ActiveInvocation(
             function_id=call.function_id,
             invocation_id=str(uuid.uuid4()),
@@ -2496,48 +3069,67 @@ class III:
             metadata=metadata,
             local_depth=(parent.local_depth if parent is not None else 0) + 1,
         )
-        # Evaluated against the observers active when the call starts; nothing
-        # is copied for reporting when there are none.
-        compiled = state.compiled if state.delivery == "auto" else ()
-        local = _LocalInvocation(ctx=ctx, state=state, compiled=compiled)
-        if compiled:
-            # What observers see is what the caller passed at the start (input
-            # and metadata), not what anyone made of them by the end.
-            local.observed_input = _clone_value(call.payload)
-            local.observed_metadata = _clone_value(call.metadata)
-            local.traceparent, local.baggage = self._inject_traceparent(), self._inject_baggage()
-        local.input = self._resolve_channels(_clone_value(call.payload))
+        # Matched against the observers active when the call starts.
+        local = _LocalInvocation(
+            ctx=ctx, state=state, active=state.active, hook=self._deliver_hooks.get(call.function_id)
+        )
+        if state.private:
+            local.call_input, local.call_metadata = call.payload, call.metadata
+            local.input = self._resolve_channels(call.payload)
+        else:
+            if local.delivers:
+                local.call_input, local.call_metadata = _clone_value(call.payload), _clone_value(call.metadata)
+            local.input = self._resolve_channels(_clone_value(call.payload))
         local.metadata = metadata
         return local
 
-    def _finish_local(
-        self, call: "_Call", local: "_LocalInvocation", ok: bool, output: Any, error: BaseException | None
-    ) -> None:
-        """Counts a finished local call and reports it when an observer matches. Never raises."""
+    def _local_delivery(
+        self, call: _Request, local: _LocalInvocation, output: Any, handler_error: BaseException | None
+    ) -> Delivery | None:
+        """The delivery of a finished local call, or ``None`` when nothing
+        observes it and it has no deliver hook."""
+        if not local.delivers:
+            return None
+        if (
+            handler_error is None
+            and not local.state.private
+            and output is local.input
+            and isinstance(output, (dict, list))
+            and same_data(local.call_input, local.input)
+        ):
+            # The handler returned its own copy of the input unchanged: the
+            # call is delivered with the input it started with as its output,
+            # so the report carries the value once (``output_is_input``).
+            output = local.call_input
+        return Delivery(
+            local.state,
+            Call(
+                function_id=call.function_id,
+                invocation_id=local.ctx.invocation_id,
+                status="success" if handler_error is None else "error",
+                input=local.call_input,
+                output=output,
+                error=_handler_error_body(handler_error) if handler_error is not None else None,
+                caller=local.ctx.caller,
+                metadata=local.call_metadata,
+            ),
+            handler_error,
+            local.active,
+            routed=False,
+            started_at_ms=local.started_at_ms,
+            duration_ms=(time.perf_counter() - local.t0) * 1000.0,
+            observe_depth=local.ctx.observe_depth,
+        )
+
+    def _count_local(self, call: _Request, local: _LocalInvocation, ok: bool) -> None:
+        """Counts a finished local call (``localinvocationstats``). Never raises."""
         try:
-            duration_ms = (time.perf_counter() - local.t0) * 1000.0
-            self._reporter.record_local(call.function_id, ok, duration_ms)
-            if local.compiled:
-                local.state.report_local(
-                    local.compiled,
-                    invocation_id=local.ctx.invocation_id,
-                    ok=ok,
-                    input_=local.observed_input,
-                    output=output,
-                    error=_handler_error_body(error) if error is not None else None,
-                    caller=local.ctx.caller,
-                    metadata=local.observed_metadata,
-                    started_at_ms=local.started_at_ms,
-                    duration_ms=duration_ms,
-                    observe_depth=local.ctx.observe_depth,
-                    traceparent=local.traceparent,
-                    baggage=local.baggage,
-                )
+            self._reporter.record_local(call.function_id, ok, (time.perf_counter() - local.t0) * 1000.0)
         except Exception:
-            log.exception("Failed to report a local invocation of %s", call.function_id)
+            log.exception("Failed to count a local invocation of %s", call.function_id)
 
     @staticmethod
-    def _local_error(call: "_Call", error: BaseException) -> InvocationError:
+    def _local_error(call: _Request, error: BaseException) -> InvocationError:
         """The error a failed local call raises: the remote path's shape."""
         body = _handler_error_body(error)
         failure = InvocationError(
@@ -2546,7 +3138,29 @@ class III:
         failure.__cause__ = error
         return failure
 
-    def _local_timeout(self, call: "_Call", local: "_LocalInvocation") -> InvocationError:
+    def _local_answer_error(
+        self, call: _Request, error: BaseException, handler_error: BaseException | None
+    ) -> InvocationError:
+        """The error a local call raises: the handler's as ``invocation_failed``;
+        a deliver hook's with the code of its ``ObserveRejection`` or
+        ``InvocationError``."""
+        if error is handler_error or not isinstance(error, (ObserveRejection, InvocationError)):
+            return self._local_error(call, error)
+        body = _answer_error_body(error)
+        failure = InvocationError(
+            code=body["code"],
+            message=body["message"],
+            function_id=call.function_id,
+            stacktrace=body.get("stacktrace"),
+        )
+        failure.__cause__ = error
+        return failure
+
+    def _local_result(self, call: _Request, value: Any) -> Any:
+        """What the caller gets: a copy, or the value itself from a private function."""
+        return value if cast(FunctionObservers, call.state).private else _clone_value(value)
+
+    def _local_timeout(self, call: _Request, local: _LocalInvocation) -> InvocationError:
         return InvocationError(
             code="TIMEOUT",
             message=f"invocation timed out after {call.timeout_ms}ms",
@@ -2554,45 +3168,64 @@ class III:
             invocation_id=local.ctx.invocation_id,
         )
 
-    async def _invoke_local_async(self, call: "_Call", local: "_LocalInvocation | None" = None) -> Any:
-        """Runs the handler in-process on the calling loop (a sync handler on
-        a thread of its own), with a copy of the payload, in a new invocation
-        context; the same timeout and error shape as the remote path. Puts
-        nothing on the wire when nobody observes the function."""
+    async def _run_local(self, call: _Request, local: _LocalInvocation) -> Any:
+        """A local call in its invocation context: the handler, then its
+        delivery, inside the ``execute`` span. Returns what the caller gets
+        back, or raises the :class:`InvocationError` it gets."""
         fn = cast(RemoteFunctionData, call.local)
         handler = cast(Callable[..., Awaitable[Any]], fn.handler)
+        handler_error: BaseException | None = None
+        try:
+            with self._execute_span(call.function_id, local.input, None, None) as outcome:
+                output: Any = None
+                try:
+                    output = await handler(local.input, local.metadata)
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as error:
+                    handler_error = error
+                delivery = self._local_delivery(call, local, output, handler_error)
+                if delivery is None:
+                    ok, value = handler_error is None, output if handler_error is None else handler_error
+                else:
+                    ok, value = await delivery.run_async(local.hook)
+                self._count_local(call, local, ok)
+                if not ok:
+                    raise guard_exit(value)
+                outcome.result = value
+        except _TraceContextError as error:
+            cause = original_error(error, (_TraceContextError,))
+            raise self._local_answer_error(call, cause, handler_error) from cause
+        return value
+
+    async def _invoke_local_async(self, call: _Request, local: _LocalInvocation | None = None) -> Any:
+        """Runs the handler in-process on the calling loop (a sync handler on
+        a thread of its own), with a copy of the payload, in a new invocation
+        context, then its delivery; the same timeout and error shape as the
+        remote path. Puts nothing on the wire when nobody observes the
+        function."""
         if local is None:
             local = self._local_invocation(call)
-        started = local
-        void = isinstance(call.action, TriggerActionVoid)
+        void = isinstance(call.action, CallActionVoid)
         token = set_context(local.ctx)
         try:
             # The task copies this context: the handler (and the `execute`
             # span) run in the new invocation.
-            task = asyncio.ensure_future(
-                self._invoke_with_otel_context(call.function_id, handler, local.input, None, None, local.metadata)
-            )
+            task = asyncio.ensure_future(self._run_local(call, local))
         finally:
             reset_context(token)
 
-        def done(t: "asyncio.Future[tuple[Any, str | None]]") -> None:
-            if t.cancelled():
-                return
-            error = t.exception()
-            if error is None:
-                self._finish_local(call, started, True, t.result()[0], None)
-                return
-            original = original_error(error, (_TraceContextError,))
-            self._finish_local(call, started, False, None, original)
-            if void:
-                log.error("Error invoking function %s: %r", call.function_id, original)
-
-        task.add_done_callback(done)
-
         if void:
-            # Kept alive until it ends; its error is logged above.
+
+            def logged(t: asyncio.Future[Any]) -> None:
+                if not t.cancelled() and t.exception() is not None:
+                    error = t.exception()
+                    log.error("Error invoking function %s: %r", call.function_id, getattr(error, "__cause__", error))
+
+            # Kept alive until it ends; its error is logged.
             self._background.add(task)
             task.add_done_callback(self._background.discard)
+            task.add_done_callback(logged)
             return None
 
         # Raced, not cancelled: like a remote handler, it runs to its end.
@@ -2603,21 +3236,22 @@ class III:
             raise self._local_timeout(call, local)
         error = task.exception()
         if error is not None:
-            raise self._local_error(call, original_error(error, (_TraceContextError,)))
-        return _clone_value(task.result()[0])
+            raise error
+        return self._local_result(call, task.result())
 
-    def _invoke_local_sync(self, call: "_Call") -> Any:
-        """``trigger()`` on the local path, from a thread: a sync handler runs
-        on a thread of its own (in a copy of the caller's context) while the
-        caller waits with the call's timeout, as the remote path does: on
-        ``TIMEOUT`` the handler still runs to its end. An async handler runs
-        on the SDK loop."""
+    def _invoke_local_sync(self, call: _Request) -> Any:
+        """``call()`` on the local path, from a thread: a sync handler and a
+        sync deliver hook run on a thread of their own (in a copy of the
+        caller's context) while the caller waits with the call's timeout, as
+        the remote path does: on ``TIMEOUT`` the handler still runs to its
+        end. An async handler runs on the SDK loop, and so does an async
+        deliver hook."""
         if threading.current_thread() is self._thread:
             raise RuntimeError(
                 "Cannot call sync SDK methods from the event loop thread. Use async handler methods instead."
             )
         fn = cast(RemoteFunctionData, call.local)
-        void = isinstance(call.action, TriggerActionVoid)
+        void = isinstance(call.action, CallActionVoid)
         # The copies and snapshots are taken here, at call start, on the caller's thread.
         local = self._local_invocation(call)
         if fn.call_sync is None:
@@ -2630,26 +3264,36 @@ class III:
         sync_handler = fn.call_sync
         done: concurrent.futures.Future[Any] = concurrent.futures.Future()
 
+        def on_sdk_loop(coro: Coroutine[Any, Any, Any]) -> Any:
+            return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
         def run() -> None:
             set_context(local.ctx)
+            handler_error: BaseException | None = None
             try:
                 with self._execute_span(call.function_id, local.input, None, None) as outcome:
-                    outcome.result = sync_handler(local.input, local.metadata)
+                    output: Any = None
+                    try:
+                        output = sync_handler(local.input, local.metadata)
+                    except BaseException as error:
+                        # SystemExit, KeyboardInterrupt, ...: still a failed local invocation
+                        handler_error = error
+                    delivery = self._local_delivery(call, local, output, handler_error)
+                    if delivery is None:
+                        ok, value = handler_error is None, output if handler_error is None else handler_error
+                    else:
+                        ok, value = delivery.run_sync(local.hook, on_sdk_loop)
+                    self._count_local(call, local, ok)
+                    if not ok:
+                        raise guard_exit(value)
+                    outcome.result = value
             except _TraceContextError as error:
                 cause = original_error(error, (_TraceContextError,))
-                self._finish_local(call, local, False, None, cause)
-                done.set_exception(cause)
+                done.set_exception(self._local_answer_error(call, cause, handler_error))
                 if void:
-                    log.error("Error invoking function %s: %s", call.function_id, cause)
-            except BaseException as error:
-                # SystemExit, KeyboardInterrupt, ...: still a failed local invocation
-                self._finish_local(call, local, False, None, error)
-                done.set_exception(error)
-                if void:
-                    log.error("Error invoking function %s: %r", call.function_id, error)
+                    log.error("Error invoking function %s: %r", call.function_id, cause)
             else:
-                self._finish_local(call, local, True, outcome.result, None)
-                done.set_result(outcome.result)
+                done.set_result(value)
 
         # A copy of the caller's context: what the handler sets stays in it.
         threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
@@ -2660,31 +3304,45 @@ class III:
             raise self._local_timeout(call, local)
         error = done.exception()
         if error is not None:
-            raise self._local_error(call, error) from error
-        return _clone_value(done.result())
+            raise error
+        return self._local_result(call, done.result())
 
     # observe: the observing side
 
     def observe(
         self,
-        source: "ObserveSource | dict[str, Any]",
+        source: "str | ObserveSource | dict[str, Any]",
         target: "Target",
         options: "ObserverOptions | dict[str, Any] | None" = None,
     ) -> ObserverHandle:
-        """Observes a function: every event of ``source`` (an invocation of an
-        auto function, or what its owner hands over) that passes
-        ``source["filters"]`` invokes ``target``, a registered function.
+        """Observes a function: when ``source`` runs, ``target`` runs. Every
+        call of the source function that passes ``source["filters"]`` invokes
+        ``target``, a registered function, with the ``Observed`` envelope
+        (``input``, ``output`` or ``error``, ``caller``, ...);
+        ``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
+        value instead. The worker that hosts the source can decide otherwise
+        in its ``on_observer_deliver``.
 
         Returns synchronously, also before the connection is up; the observer
-        is replayed with the same id on every reconnect. Errors
-        (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``, an owner's
-        rejection, ``UNSUPPORTED`` against an engine without observe) show up
-        as state ``error`` and make ``ready()`` raise :class:`ObserveRejection`.
+        is replayed with the same id on every reconnect. The handle holds its
+        id until its ``dispose()`` is called or the engine disposes it; the
+        id is free again at once after that. Errors
+        (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
+        ``NOT_OBSERVABLE``, the rejection of the source's worker,
+        ``UNSUPPORTED`` against an engine without observe) show up as state
+        ``error`` and make ``ready()`` raise :class:`ObserveRejection`. An
+        ``error`` answer to the handle's ``observe`` or to its replay after a
+        reconnect is the engine's refusal and the handle's final answer: the
+        engine holds no observer for it, it is not replayed, it holds its id
+        until its ``dispose()``, and that ``dispose()`` sends nothing. An
+        observer that moves to ``error`` after its answer stays held: it is
+        replayed, and its ``dispose()`` sends an ``unobserve``.
 
         Args:
-            source: What is observed: ``function_id``, ``namespace``,
-                ``args`` (owner-delivered functions only), ``filters``, and
-                ``on`` / ``capture`` / ``deliver``.
+            source: What is observed: a function id, or ``function_id``,
+                ``namespace``, ``args`` (read by the worker that hosts the
+                function, validated against its ``args_format``),
+                ``filters``, and ``on`` / ``capture`` / ``deliver``.
             target: The function to invoke: its id, or
                 ``{"function_id": ..., "namespace": ...}``. Register it first;
                 until then the observer stays ``pending``.
@@ -2692,11 +3350,13 @@ class III:
                 ``max_in_flight``, ``metadata`` (the activation's metadata sidecar).
 
         Raises:
-            ValueError: ``source["function_id"]`` or ``target`` missing, or
-                the id is already in use.
+            ObserveRejection: ``OBSERVER_ID_CONFLICT``: a handle of this
+                client holds the id. Nothing is sent, and that handle is untouched.
+            ValueError: ``source["function_id"]`` or ``target`` missing.
             TypeError: The source, target or options are not JSON.
 
         Examples:
+            >>> iii.observe("orders::create", "alerts::big-order")
             >>> iii.register_function("alerts::payment-failed", notify)
             >>> failures = iii.observe(
             ...     {"function_id": "payments::charge", "on": "error",
@@ -2707,8 +3367,10 @@ class III:
             >>> failures.ready()            # or: await failures.ready_async()
             >>> failures.dispose()
         """
+        if isinstance(source, str):
+            source = {"function_id": source}
         if not isinstance(source, dict):
-            raise TypeError("observe: source must be a dict")
+            raise TypeError("observe: source must be a function id or a dict")
         function_id = source.get("function_id")
         if not isinstance(function_id, str) or not function_id.strip():
             raise ValueError("observe: source.function_id is required")
@@ -2720,7 +3382,7 @@ class III:
         if not isinstance(observer_id, str):
             raise TypeError("observe: options.id must be a string")
         if observer_id in self._observers:
-            raise ValueError(f"observe: observer id already in use: {observer_id}")
+            raise _observer_id_conflict(observer_id)
         message = build_observe_message(
             observer_id,
             cast("dict[str, Any]", source),
@@ -2736,11 +3398,14 @@ class III:
             lambda: threading.current_thread() is self._thread,
             self._run_callback,
         )
-        self._observers[observer_id] = handle
-        try:
-            self._loop.call_soon_threadsafe(self._after_observe, handle)
-        except RuntimeError:
-            pass  # shut down: it stays pending
+        with self._observers_lock:
+            # Of two threads racing past the check above, one loses here.
+            if self._observers.setdefault(observer_id, handle) is not handle:
+                raise _observer_id_conflict(observer_id)
+            try:
+                self._loop.call_soon_threadsafe(self._after_observe, handle)
+            except RuntimeError:
+                pass  # shut down: it stays pending
         return handle
 
     def current_invocation(self) -> InvocationContext | None:
@@ -2769,7 +3434,7 @@ class III:
 
         Public callers must use the free function from ``iii.helpers``.
         """
-        result = await self.trigger_async(
+        result = await self.call_async(
             {
                 "function_id": "engine::channels::create",
                 "payload": {"buffer_size": buffer_size},
@@ -2819,14 +3484,16 @@ class III:
             "name": worker_name,
             "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
             "pid": os.getpid(),
-            "isolation": os.environ.get("III_ISOLATION") or None,
             "namespace": namespace,
             "telemetry": telemetry,
-            # Opts this connection into the observe messages (CONTRACT D2).
+            # Opts this connection into the observe messages and host delivery.
             "features": list(SDK_FEATURES),
         }
-        # Optional, like the other SDKs: only send `description` when set so the
-        # engine's `#[serde(default)]` field stays absent otherwise.
+        # Optional, like the other SDKs: only send `isolation` and `description`
+        # when set so the engine's `#[serde(default)]` fields stay absent otherwise.
+        isolation = os.environ.get("III_ISOLATION")
+        if isolation:
+            metadata["isolation"] = isolation
         if self._options.worker_description:
             metadata["description"] = self._options.worker_description
         return metadata
@@ -2837,7 +3504,7 @@ class III:
             data=self._get_worker_metadata(),
             traceparent=self._inject_traceparent(),
             baggage=self._inject_baggage(),
-            action=TriggerActionVoid(),
+            action=CallActionVoid(),
         )
         asyncio.run_coroutine_threadsafe(self._send(msg), self._loop)
 
@@ -2884,29 +3551,33 @@ class III:
         )
 
 
-class TriggerAction:
-    """Factory for creating trigger actions used with ``trigger()``.
+class CallAction:
+    """Factory for creating call actions used with ``call()``.
 
     Examples:
-        >>> from iii import TriggerAction
+        >>> from iii import CallAction
         >>> # The queue must be declared in the queue worker's queue_configs.
-        >>> worker.trigger({'function_id': 'process', 'payload': {}, 'action': TriggerAction.Enqueue(queue='jobs')})
-        >>> worker.trigger({'function_id': 'notify', 'payload': {}, 'action': TriggerAction.Void()})
+        >>> worker.call({'function_id': 'process', 'payload': {}, 'action': CallAction.Enqueue(queue='jobs')})
+        >>> worker.call({'function_id': 'notify', 'payload': {}, 'action': CallAction.Void()})
     """
 
     @staticmethod
-    def Enqueue(*, queue: str) -> TriggerActionEnqueue:
+    def Enqueue(*, queue: str) -> CallActionEnqueue:
         """Route the invocation through a named queue for async processing.
 
         Args:
             queue: Name of the target queue.
         """
-        return TriggerActionEnqueue(queue=queue)
+        return CallActionEnqueue(queue=queue)
 
     @staticmethod
-    def Void() -> TriggerActionVoid:
+    def Void() -> CallActionVoid:
         """Fire-and-forget routing. No response is returned."""
-        return TriggerActionVoid()
+        return CallActionVoid()
+
+
+TriggerAction = CallAction
+"""Deprecated alias of :class:`CallAction`."""
 
 
 def resolve_engine_url(address: str | None = None) -> str:

@@ -5,7 +5,7 @@ owner: "devrel"
 type: "how-to"
 ---
 
-Every call in a iii system passes through the engine: function invocations, trigger firings, and
+Every call in a iii system passes through the engine: function calls, observer activations, and
 channel messages all flow across it. Because every worker communicates through the engine, it can
 trace work as it moves from one worker to the next, giving you observability across the whole system
 without each worker instrumenting itself. The automatically supplied `iii-observability` worker
@@ -97,8 +97,8 @@ than to raw stdout.
 
 - prints it in the engine's output, labeled with the worker's OpenTelemetry service name (set it
   with `OTEL_SERVICE_NAME`), unless the observability worker sets `logs_console_output: false`;
-- stores it: `iii trigger engine::logs::list` returns it, and the [console](../using-iii/console)
-  shows it next to the trace it was logged in.
+- stores it: `iii call engine::logs::list` returns it, and the [console](../using-iii/console) shows
+  it next to the trace it was logged in.
 
 Under `iii compose --up`, the engine's output goes to `engine.log` in the compose state directory,
 `.iii/compose/<namespace>/` by default (see [Compose logs](../using-iii/compose#compose-logs)).
@@ -117,14 +117,14 @@ For lines in your worker's own terminal, print them yourself (`console.log`, `pr
 `fmt.Println`).
 
 You can also query recorded logs and emit one-off log lines through the observability worker's
-triggers, for example:
+functions, for example:
 
 ```bash
 # emit a log line from the CLI
-iii trigger engine::log::info --json '{"message":"hello from the CLI"}'
+iii call engine::log::info --json '{"message":"hello from the CLI"}'
 
 # find it in the stored logs
-iii trigger engine::logs::list | grep -C 10 hello
+iii call engine::logs::list | grep -C 10 hello
 ```
 
 ## Traces
@@ -141,20 +141,20 @@ engine:
     iii-sandbox: {}
 ```
 
-Start this file with `iii compose --up` before calling the sandbox function. `iii-sandbox` is an
-engine-owned exception, so it belongs under the top-level `engine.workers`, not under `containers`.
+Start this file with `iii compose --up` before calling the sandbox function. Declare `iii-sandbox`
+under the top-level `engine.workers`, not under `containers`.
 
 ```bash
 # run something to produce a trace
-iii trigger sandbox::run image=python lang=python code='print(1)'
+iii call sandbox::run image=python lang=python code='print(1)'
 
 # count the recorded traces (workers export spans a moment after the call,
 # so re-run this until it reports a non-zero count)
-iii trigger engine::traces::list | jq '.total'
+iii call engine::traces::list | jq '.total'
 
 # grab the most recent trace id and print its span tree
-TID=$(iii trigger engine::traces::list | jq -r '.traces[-1].trace_id')
-iii trigger engine::traces::tree trace_id=$TID
+TID=$(iii call engine::traces::list | jq -r '.traces[-1].trace_id')
+iii call engine::traces::tree trace_id=$TID
 ```
 
 <Note>
@@ -167,8 +167,7 @@ iii trigger engine::traces::tree trace_id=$TID
 
 The observability worker hosts two event sources you can [observe](../using-iii/observers):
 `observability::on-log`, one event per log record, and `observability::on-span`, the ids of the
-traces that recorded spans in each window of about 300 ms. They replace the `log` and `trace`
-trigger types, which keep working.
+traces that recorded spans in each window of about 300 ms.
 
 ```typescript
 // invoke alerts::log for every ERROR log record
@@ -183,8 +182,8 @@ worker.observe(
 ```
 
 Each event runs its targets in a trace of its own, and log records and spans in that trace are not
-events again. A target that logs while it handles an event does not trigger itself: the SDK loggers
-record the trace the handler runs in, and so does `engine::log::*` when the call passes no
+events again. A target that logs while it handles an event does not run itself again: the SDK
+loggers record the trace the handler runs in, and so does `engine::log::*` when the call passes no
 `trace_id`.
 
 Activity outside that trace is bounded by depth. A span the engine records for a call made inside a
@@ -203,19 +202,19 @@ Check engine health, or clear stored observability data while developing:
 
 ```bash
 # overall health status
-iii trigger engine::health::check | jq -r .status
+iii call engine::health::check | jq -r .status
 
 # clear stored logs
-iii trigger engine::logs::clear
+iii call engine::logs::clear
 
 # the logs are now empty
-iii trigger engine::logs::list
+iii call engine::logs::list
 
 # clear stored traces
-iii trigger engine::traces::clear
+iii call engine::traces::clear
 
 # the trace count is now zero
-iii trigger engine::traces::list | jq '.total'
+iii call engine::traces::list | jq '.total'
 ```
 
 <Note>

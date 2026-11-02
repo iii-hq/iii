@@ -5,36 +5,35 @@ function uniqueTopic(prefix: string): string {
   return `${prefix}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`
 }
 
-describe('PubSub', () => {
+describe('PubSub: observers of publish, filtered by topic', () => {
   it('should subscribe and receive published messages', async () => {
     const topic = uniqueTopic('test.topic')
     const receivedMessages: Record<string, unknown>[] = []
     let resolveReceived: () => void
-    const received = new Promise<void>(r => {
+    const received = new Promise<void>((r) => {
       resolveReceived = r
     })
 
-    const fn = iii.registerFunction(
-      `test.pubsub.subscriber.${topic}`,
-      async (data: Record<string, unknown>) => {
-        receivedMessages.push(data)
-        resolveReceived?.()
-        return {}
-      },
-    )
-
-    const trigger = iii.registerTrigger({
-      type: 'subscribe',
-      function_id: fn.id,
-      config: { topic },
+    const fn = iii.registerFunction(`test.pubsub.subscriber.${topic}`, async (data: Record<string, unknown>) => {
+      receivedMessages.push(data)
+      resolveReceived?.()
+      return {}
     })
+
+    const subscription = iii.observe(
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topic } }, deliver: 'input' },
+      fn.id,
+    )
 
     await sleep(300)
 
-    await iii.trigger({ function_id: 'publish', payload: {
-      topic,
-      data: { message: 'Hello PubSub!' },
-    } })
+    await iii.call({
+      function_id: 'publish',
+      payload: {
+        topic,
+        data: { message: 'Hello PubSub!' },
+      },
+    })
 
     await Promise.race([
       received,
@@ -44,10 +43,11 @@ describe('PubSub', () => {
     ])
 
     expect(receivedMessages).toHaveLength(1)
-    expect(receivedMessages[0]).toHaveProperty('message', 'Hello PubSub!')
+    // deliver: 'input' hands the target what publish was called with
+    expect(receivedMessages[0]).toEqual({ topic, data: { message: 'Hello PubSub!' } })
 
     fn.unregister()
-    trigger.unregister()
+    await subscription.dispose()
   })
 
   it('should isolate messages by topic', async () => {
@@ -57,45 +57,40 @@ describe('PubSub', () => {
     const receivedA: Record<string, unknown>[] = []
     const receivedB: Record<string, unknown>[] = []
     let resolveA: () => void
-    const receivedAPromise = new Promise<void>(r => {
+    const receivedAPromise = new Promise<void>((r) => {
       resolveA = r
     })
 
-    const fnA = iii.registerFunction(
-      `test.pubsub.topic_a.${topicA}`,
-      async (data: Record<string, unknown>) => {
-        receivedA.push(data)
-        resolveA?.()
-        return {}
-      },
-    )
-
-    const fnB = iii.registerFunction(
-      `test.pubsub.topic_b.${topicB}`,
-      async (data: Record<string, unknown>) => {
-        receivedB.push(data)
-        return {}
-      },
-    )
-
-    const triggerA = iii.registerTrigger({
-      type: 'subscribe',
-      function_id: fnA.id,
-      config: { topic: topicA },
+    const fnA = iii.registerFunction(`test.pubsub.topic_a.${topicA}`, async (data: Record<string, unknown>) => {
+      receivedA.push(data)
+      resolveA?.()
+      return {}
     })
 
-    const triggerB = iii.registerTrigger({
-      type: 'subscribe',
-      function_id: fnB.id,
-      config: { topic: topicB },
+    const fnB = iii.registerFunction(`test.pubsub.topic_b.${topicB}`, async (data: Record<string, unknown>) => {
+      receivedB.push(data)
+      return {}
     })
+
+    const subscriptionA = iii.observe(
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topicA } }, deliver: 'input' },
+      fnA.id,
+    )
+
+    const subscriptionB = iii.observe(
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topicB } }, deliver: 'input' },
+      fnB.id,
+    )
 
     await sleep(300)
 
-    await iii.trigger({ function_id: 'publish', payload: {
-      topic: topicA,
-      data: { for: 'a' },
-    } })
+    await iii.call({
+      function_id: 'publish',
+      payload: {
+        topic: topicA,
+        data: { for: 'a' },
+      },
+    })
 
     await Promise.race([
       receivedAPromise,
@@ -111,7 +106,7 @@ describe('PubSub', () => {
 
     fnA.unregister()
     fnB.unregister()
-    triggerA.unregister()
-    triggerB.unregister()
+    await subscriptionA.dispose()
+    await subscriptionB.dispose()
   })
 })

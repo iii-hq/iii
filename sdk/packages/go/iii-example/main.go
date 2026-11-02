@@ -1,7 +1,8 @@
 // Command example is a hello-world iii worker, mirroring the Node SDK README's
-// hello-world (sdk/packages/node/iii/README.md). It registers a function, binds an HTTP
-// trigger to it, invokes it once to show the round trip, then serves until interrupted
-// so the HTTP trigger can be exercised against a running engine.
+// hello-world (sdk/packages/node/iii/README.md). It registers a function, routes
+// POST /greet to it by observing the http worker's http::on-request, observes its own
+// function with a second one, calls it once to show the round trip, then serves until
+// interrupted so the route can be exercised against a running engine.
 //
 // Run it against a local engine:
 //
@@ -9,9 +10,9 @@
 //	go run .                   # from sdk/packages/go/iii-example
 //	curl -X POST localhost:3111/greet -H 'Content-Type: application/json' -d '{"name":"world"}'
 //
-// The Content-Type header matters: the engine only parses a JSON body into the request
-// envelope's "body" field, so a form-urlencoded request (curl's -d default) arrives with
-// body=null and the handler falls back to its default.
+// The http worker parses a request body sent as application/json into the request's
+// "body" field; for any other content type "body" is null, and the handler greets
+// "world".
 package main
 
 import (
@@ -26,10 +27,9 @@ import (
 	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
 )
 
-// httpRequest is the subset of the engine's HTTP-trigger ApiRequest envelope this
-// example reads. When a function is invoked via an "http" trigger, the engine wraps the
-// request as { path, method, body, headers, ... } and the parsed request body lives
-// under "body" — not at the top level. See engine/src/workers/rest_api/README.md.
+// httpRequest is the subset of the HTTP request this example reads. The target of an
+// http::on-request observer receives the request as { path, method, body, headers, ... };
+// body is the parsed JSON body.
 type httpRequest struct {
 	Body greetBody `json:"body"`
 }
@@ -38,9 +38,8 @@ type greetBody struct {
 	Name string `json:"name"`
 }
 
-// httpResponse is the engine's HTTP-trigger ApiResponse envelope: the function must
-// return { status_code, body } for the HTTP worker to build a response. Returning the
-// payload directly would yield an empty HTTP body.
+// httpResponse is the HTTP response: the function returns { status_code, body }, which
+// the http worker sends as the response.
 type httpResponse struct {
 	StatusCode int `json:"status_code"`
 	Body       any `json:"body"`
@@ -53,14 +52,14 @@ func main() {
 	}
 
 	// RegisterWorker creates the client and starts connecting in the background, matching
-	// registerWorker in the Node/Rust SDKs. Register functions/triggers below; they are
-	// sent once Connect reports the first connection.
+	// registerWorker in the Node/Rust SDKs. Register functions and observers below; they
+	// are sent once Connect reports the first connection.
 	client := iii.RegisterWorker(url)
 
 	// Register the function. The handler receives the raw JSON payload and returns any
 	// value, which the SDK marshals into the invocation result. Because this function is
-	// exposed over HTTP, it speaks the engine's HTTP envelope: read the request from
-	// req.Body and return an ApiResponse { status_code, body }.
+	// exposed over HTTP, it reads the request from req.Body and returns
+	// { status_code, body }.
 	if _, err := client.RegisterFunction("hello::greet", func(ctx context.Context, data json.RawMessage) (any, error) {
 		var req httpRequest
 		if err := json.Unmarshal(data, &req); err != nil {
@@ -78,14 +77,25 @@ func main() {
 		log.Fatalf("register function: %v", err)
 	}
 
-	// Bind an HTTP trigger so the engine exposes the function at POST /greet.
-	if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-		ID:         "hello-http",
-		Type:       "http",
-		FunctionID: "hello::greet",
-		Config:     json.RawMessage(`{"api_path":"/greet","http_method":"POST"}`),
+	// Route POST /greet to the function: observe the http worker's http::on-request
+	// with the route as args. The http worker calls hello::greet through the observer
+	// and answers the request with its result.
+	if _, err := client.Observe(iii.Source{
+		FunctionID: "http::on-request",
+		Args:       iii.Args{"method": "POST", "path": "/greet"},
+	}, "hello::greet"); err != nil {
+		log.Fatalf("observe http::on-request: %v", err)
+	}
+
+	// Every function is observable: log each greeting hello::greet returns.
+	if _, err := client.RegisterFunction("hello::on-greeted", func(ctx context.Context, data json.RawMessage) (any, error) {
+		log.Printf("greeted: %s", data)
+		return nil, nil
 	}); err != nil {
-		log.Fatalf("register trigger: %v", err)
+		log.Fatalf("register function: %v", err)
+	}
+	if _, err := client.Observe(iii.Source{FunctionID: "hello::greet", Deliver: iii.DeliverOutput}, "hello::on-greeted"); err != nil {
+		log.Fatalf("observe hello::greet: %v", err)
 	}
 
 	// Connect and run the registration handshake.
@@ -97,22 +107,22 @@ func main() {
 	defer client.Close()
 	log.Printf("worker connected to %s", url)
 
-	// Invoke the function once over the socket to show the await round trip. The payload
-	// uses the same HTTP envelope the handler reads (body.name), so this matches what the
-	// engine sends for a POST /greet.
+	// Call the function once over the socket to show the await round trip. The payload
+	// has the request shape the handler reads (body.name), so this matches what the http
+	// worker sends for a POST /greet.
 	callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := client.Trigger(callCtx, iii.TriggerRequest{
+	result, err := client.Call(callCtx, iii.CallRequest{
 		FunctionID: "hello::greet",
 		Payload:    json.RawMessage(`{"body":{"name":"world"}}`),
 	})
 	if err != nil {
-		log.Printf("trigger hello::greet: %v", err)
+		log.Printf("call hello::greet: %v", err)
 	} else {
 		log.Printf("hello::greet returned: %s", result)
 	}
 
-	// Serve until interrupted so the HTTP trigger stays live.
+	// Serve until interrupted so the route stays live.
 	log.Print("serving; POST to /greet on the engine's HTTP port, or Ctrl-C to exit")
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)

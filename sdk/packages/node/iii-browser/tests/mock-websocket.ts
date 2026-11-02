@@ -220,23 +220,12 @@ export class MockEngine {
     )
   }
 
-  sendWorkerRegistered(workerId?: string): void {
+  sendWorkerRegistered(workerId?: string, features?: string[]): void {
     this.socket.simulateMessage(
       JSON.stringify({
         type: 'workerregistered',
         worker_id: workerId ?? `worker-${crypto.randomUUID().slice(0, 8)}`,
-      }),
-    )
-  }
-
-  sendRegisterTrigger(triggerType: string, id: string, functionId: string, config: unknown): void {
-    this.socket.simulateMessage(
-      JSON.stringify({
-        type: 'registertrigger',
-        trigger_type: triggerType,
-        id,
-        function_id: functionId,
-        config,
+        ...(features !== undefined ? { features } : {}),
       }),
     )
   }
@@ -260,12 +249,7 @@ export class MockEngine {
           const parsed = JSON.parse(data)
           if (parsed.type === 'invokefunction' && parsed.invocation_id) {
             queueMicrotask(() => {
-              this.respondToInvocation(parsed.invocation_id, {
-                functions: [],
-                workers: [],
-                triggers: [],
-                trigger_types: [],
-              })
+              this.respondToInvocation(parsed.invocation_id, { functions: [], workers: [], observers: [] })
             })
           }
         } catch {

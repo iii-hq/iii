@@ -9,13 +9,14 @@
 //! what it offered, what came back, and what the engine cost meanwhile.
 
 mod connections;
-mod emit;
 mod fanout;
 mod filters;
 mod local;
+mod match_keys;
 mod observers;
 mod overload;
 mod rpc;
+mod source;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use iii_helpers::observability::OtelConfig;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
     Error, IIIClient, InitOptions, RegisterFunction, WorkerIdentityMode, register_worker,
@@ -42,7 +43,8 @@ pub const ALL: &[&str] = &[
     "fanout",
     "filters",
     "observers",
-    "emit",
+    "source",
+    "match-keys",
     "local",
     "overload",
     "connections",
@@ -52,11 +54,14 @@ pub const ALL: &[&str] = &[
 pub fn describe(name: &str) -> &'static str {
     match name {
         "rpc" => "worker-to-worker calls through the engine, no observers (the routing baseline)",
-        "fanout" => "the same calls with N auto observers on the called function",
+        "fanout" => "the same calls with N observers on the called function",
         "filters" => "N observers with selective filters on one function: each call matches one",
         "observers" => "how many observers the engine holds, and what each one costs in memory",
-        "emit" => {
-            "an owner (cron/database-style source) emitting to N observers: floods, then the sustained rate"
+        "source" => {
+            "an event source (cron/database-style) calling itself with N observers: floods, then the sustained rate"
+        }
+        "match-keys" => {
+            "an event source matching observers by keys: 1 of up to 10,000 observers per call, then none"
         }
         "local" => "a worker calling its own function in-process, unobserved and observed",
         "overload" => {
@@ -67,6 +72,29 @@ pub fn describe(name: &str) -> &'static str {
         }
         _ => "",
     }
+}
+
+/// Engine `observers:` settings a scenario needs, as `key=value`, on top of
+/// the defaults. A run's own `--observers` setting of the same key wins.
+pub fn engine_observers(name: &str) -> &'static [&'static str] {
+    match name {
+        // 10,000 observers of one function, past the default 4096.
+        "match-keys" => &["max_per_function=10240"],
+        _ => &[],
+    }
+}
+
+/// The engine `observers:` settings of a run of `scenario`: what the scenario
+/// needs, then the run's own, which replace a scenario setting of the same key.
+pub fn observer_settings(scenario: &str, run: &[String]) -> Vec<String> {
+    let key = |kv: &str| kv.split_once('=').map_or(kv, |(k, _)| k).trim().to_string();
+    let mut out: Vec<String> = engine_observers(scenario)
+        .iter()
+        .filter(|kv| !run.iter().any(|own| key(own) == key(kv)))
+        .map(|kv| kv.to_string())
+        .collect();
+    out.extend(run.iter().cloned());
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -327,7 +355,8 @@ pub async fn run(name: &str, env: &Env) -> Result<()> {
         "fanout" => fanout::run(env).await,
         "filters" => filters::run(env).await,
         "observers" => observers::run(env).await,
-        "emit" => emit::run(env).await,
+        "source" => source::run(env).await,
+        "match-keys" => match_keys::run(env).await,
         "local" => local::run(env).await,
         "overload" => overload::run(env).await,
         "connections" => connections::run(env).await,
@@ -392,11 +421,11 @@ pub fn sink(counter: Arc<AtomicU64>) -> RegisterFunction {
 pub async fn wait_callable(caller: &IIIClient, function_id: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let req = TriggerRequest {
+        let req = CallRequest {
             timeout_ms: Some(2_000),
-            ..TriggerRequest::new(function_id, json!({ "probe": true }))
+            ..CallRequest::new(function_id, json!({ "probe": true }))
         };
-        match caller.trigger(req).await {
+        match caller.call(req).await {
             Ok(_) => return Ok(()),
             Err(e) if Instant::now() > deadline => {
                 return Err(e).with_context(|| format!("{function_id} never became callable"));
@@ -419,7 +448,7 @@ pub async fn closed_loop<F>(
     request: F,
 ) -> Load
 where
-    F: Fn(usize, u64) -> TriggerRequest + Send + Sync + 'static,
+    F: Fn(usize, u64) -> CallRequest + Send + Sync + 'static,
 {
     let request = Arc::new(request);
     let mut tasks = Vec::with_capacity(concurrency);
@@ -434,7 +463,7 @@ where
                 req.timeout_ms.get_or_insert(10_000);
                 seq += 1;
                 let t = Instant::now();
-                match caller.trigger(req).await {
+                match caller.call(req).await {
                     Ok(_) => load.ok(t.elapsed()),
                     Err(e) => {
                         load.err(e);
@@ -485,9 +514,9 @@ impl ObserverTotals {
 
 pub async fn observer_totals(ctl: &IIIClient) -> Result<ObserverTotals> {
     let out = ctl
-        .trigger(TriggerRequest {
+        .call(CallRequest {
             timeout_ms: Some(60_000),
-            ..TriggerRequest::new("engine::observers::list", json!({}))
+            ..CallRequest::new("engine::observers::list", json!({}))
         })
         .await
         .context("engine::observers::list")?;

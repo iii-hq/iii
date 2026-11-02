@@ -27,5 +27,5 @@ iii.registerFunction('probe::sse', async req => {
 for (const [method, path, function_id] of [
   ['GET', '/probe', 'probe::buffered'], ['POST', '/probe', 'probe::buffered'],
   ['POST', '/read', 'probe::read'], ['POST', '/sse', 'probe::sse'],
-]) iii.registerTrigger({ type: 'http', function_id, config: { http_method: method, api_path: path } });
+]) iii.observe({ function_id: 'http::on-request', args: { method, path } }, function_id);
 console.log('Reproduction worker started');

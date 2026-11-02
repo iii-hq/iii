@@ -25,17 +25,22 @@ import (
 // channel): JSON leaves it out.
 func view(v any) (value any, present bool) {
 	switch x := v.(type) {
+	// v itself where it is its own JSON form: converting x back to an interface
+	// would allocate
 	case nil:
 		return nil, true
 	case bool:
-		return x, true
+		return v, true
 	case string:
 		if utf8.ValidString(x) {
-			return x, true
+			return v, true
 		}
 		return viaJSON(x)
 	case float64:
-		return finite(x), true
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return nil, true
+		}
+		return v, true
 	case json.Number:
 		if !validNumber(string(x)) {
 			return nil, false // not a JSON number: encoding/json refuses it

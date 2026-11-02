@@ -63,8 +63,7 @@ Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
 ### HttpMethod
 
-HTTP method accepted by `HttpInvocationConfig`. Distinct from the core
-`builtin_triggers` HTTP method enum, which also covers HEAD/OPTIONS.
+HTTP method accepted by `HttpInvocationConfig`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -142,12 +141,16 @@ Connection state for the shared WebSocket
 
 ### Logger
 
-Structured logger that emits logs as OpenTelemetry LogRecords.
+Structured logger that sends logs to the engine as OpenTelemetry
+LogRecords. The engine prints them in its own output and stores them
+(`engine::logs::list`); they do not appear in the worker's own output.
 
 Every log call automatically captures the active trace and span context,
 correlating your logs with distributed traces without any manual wiring.
-When OTel is not initialized, Logger gracefully falls back to the `tracing`
-crate.
+When OTel is not initialized (before the worker's OpenTelemetry export
+starts, or with `OTEL_ENABLED=false`), Logger falls back to the `tracing`
+crate, which prints nothing unless the program installs a subscriber, for
+example `tracing_subscriber::fmt().init()`.
 
 Pass structured data as the second argument to any log method. Using a
 `serde_json::Value` object of key-value pairs (instead of string
@@ -171,7 +174,7 @@ Configuration for OpenTelemetry initialization
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `enabled` | `Option<bool>` | No | Whether OpenTelemetry export is enabled. Defaults to true. Set to false or `OTEL_ENABLED=false/0/no/off` to disable. |
-| `service_name` | `Option<String>` | No | The service name to report. Defaults to the `OTEL_SERVICE_NAME` env var. |
+| `service_name` | `Option<String>` | No | The service name to report. Defaults to the `OTEL_SERVICE_NAME` env var,<br />then the program's file name, then `iii-rust-sdk`. |
 | `service_version` | `Option<String>` | No | The service version to report. Defaults to the `SERVICE_VERSION` env var or "unknown". |
 | `service_namespace` | `Option<String>` | No | The service namespace to report. Defaults to the `SERVICE_NAMESPACE` env var. |
 | `service_instance_id` | `Option<String>` | No | The service instance ID to report. Defaults to the `SERVICE_INSTANCE_ID` env var or an auto-generated UUID. |
@@ -232,7 +235,7 @@ use iii_helpers::queue;
 
 ### EnqueueResult
 
-Result returned when a function is invoked with `TriggerAction.Enqueue`.
+Result returned when a function is called with `CallAction::Enqueue`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -240,7 +243,7 @@ Result returned when a function is invoked with `TriggerAction.Enqueue`.
 
 ## stream
 
-Stream trigger configs, change events, IO inputs, and update operations.
+Stream change events, IO inputs, and update operations.
 
 **Import**
 
@@ -250,7 +253,7 @@ use iii_helpers::stream;
 
 ### Types
 
-[`MergePath`](#mergepath) · [`StreamAuthInput`](#streamauthinput) · [`StreamAuthResult`](#streamauthresult) · [`StreamChangeEvent`](#streamchangeevent) · [`StreamChangeEventDetail`](#streamchangeeventdetail) · [`StreamDeleteInput`](#streamdeleteinput) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamEventType`](#streameventtype) · [`StreamGetInput`](#streamgetinput) · [`StreamJoinLeaveEvent`](#streamjoinleaveevent) · [`StreamJoinLeaveTriggerConfig`](#streamjoinleavetriggerconfig) · [`StreamJoinResult`](#streamjoinresult) · [`StreamListGroupsInput`](#streamlistgroupsinput) · [`StreamListInput`](#streamlistinput) · [`StreamSetInput`](#streamsetinput) · [`StreamSetResult`](#streamsetresult) · [`StreamTriggerConfig`](#streamtriggerconfig) · [`StreamUpdateInput`](#streamupdateinput) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateOp`](#updateop) · [`UpdateOpError`](#updateoperror)
+[`MergePath`](#mergepath) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamSetResult`](#streamsetresult) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateOp`](#updateop) · [`UpdateOpError`](#updateoperror)
 
 ### MergePath
 
@@ -277,68 +280,6 @@ failing the array match first.
 
 ---
 
-### StreamAuthInput
-
-Input for stream authentication.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `headers` | `HashMap<String, String>` | Yes | Request headers. |
-| `path` | `String` | Yes | Request path. |
-| `query_params` | `HashMap<String, Vec<String>>` | Yes | Query parameters. |
-| `addr` | `String` | Yes | Client address. |
-
----
-
-### StreamAuthResult
-
-Result of stream authentication.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `context` | `Option<Value>` | No | Arbitrary context passed to stream handlers after authentication. |
-
----
-
-### StreamChangeEvent
-
-Handler input for `stream` triggers, fired when an item changes
-via `stream::set`, `stream::update`, or `stream::delete`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `event_type` | `String` | Yes | Always `"stream"`. |
-| `timestamp` | `i64` | Yes | Unix timestamp (milliseconds) of the event. |
-| `stream_name` | `String` | Yes | The stream where the change occurred. |
-| `group_id` | `String` | Yes | The group where the change occurred. |
-| `id` | `Option<String>` | No | The item ID that changed. |
-| `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | The event detail containing mutation type and data. |
-
----
-
-### StreamChangeEventDetail
-
-Detail of a stream change event containing the mutation type and data.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `event_type` | [`StreamEventType`](#streameventtype) | Yes | The kind of mutation (create, update, or delete). |
-| `data` | `Value` | Yes | The data associated with the event. |
-
----
-
-### StreamDeleteInput
-
-Input for deleting a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | Name of the stream. |
-| `group_id` | `String` | Yes | Group identifier. |
-| `item_id` | `String` | Yes | Item identifier. |
-
----
-
 ### StreamDeleteResult
 
 Result of a stream delete operation.
@@ -346,99 +287,6 @@ Result of a stream delete operation.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `old_value` | `Option<Value>` | No | Previous value (if it existed). |
-
----
-
-### StreamEventType
-
-The kind of mutation that occurred on a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Create` | `unit` | Yes | - |
-| `Update` | `unit` | Yes | - |
-| `Delete` | `unit` | Yes | - |
-
----
-
-### StreamGetInput
-
-Input for retrieving a single stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | Name of the stream. |
-| `group_id` | `String` | Yes | Group identifier. |
-| `item_id` | `String` | Yes | Item identifier. |
-
----
-
-### StreamJoinLeaveEvent
-
-Event payload for stream join/leave triggers.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `subscription_id` | `String` | Yes | Unique subscription identifier. |
-| `stream_name` | `String` | Yes | Name of the stream. |
-| `group_id` | `String` | Yes | Group identifier. |
-| `id` | `Option<String>` | No | Item identifier (if applicable). |
-| `context` | `Option<Value>` | No | Auth context from `StreamAuthResult`. |
-
----
-
-### StreamJoinLeaveTriggerConfig
-
-Trigger config for `stream:join` and `stream:leave` triggers.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `Option<String>` | No | Stream name to watch |
-| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-
----
-
-### StreamJoinResult
-
-Result of a stream join request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `unauthorized` | `bool` | Yes | Whether the join was unauthorized. |
-
----
-
-### StreamListGroupsInput
-
-Input for listing all groups in a stream.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | Name of the stream. |
-
----
-
-### StreamListInput
-
-Input for listing all items in a stream group.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | Name of the stream. |
-| `group_id` | `String` | Yes | Group identifier. |
-
----
-
-### StreamSetInput
-
-Input for setting a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | Name of the stream. |
-| `group_id` | `String` | Yes | Group identifier. |
-| `item_id` | `String` | Yes | Item identifier. |
-| `data` | `Value` | Yes | Data to store. |
 
 ---
 
@@ -450,32 +298,6 @@ Result of a stream set operation.
 | --- | --- | --- | --- |
 | `old_value` | `Option<Value>` | No | Previous value (if it existed). |
 | `new_value` | `Value` | Yes | The value after the update |
-
----
-
-### StreamTriggerConfig
-
-Trigger config for `stream` triggers. Filters which item changes fire the handler.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `Option<String>` | No | Stream name to watch |
-| `group_id` | `Option<String>` | No | Group ID filter |
-| `item_id` | `Option<String>` | No | Item ID filter |
-| `condition_function_id` | `Option<String>` | No | Optional function ID to evaluate before invoking handler |
-
----
-
-### StreamUpdateInput
-
-Input for atomically updating a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `String` | Yes | Name of the stream. |
-| `group_id` | `String` | Yes | Group identifier. |
-| `item_id` | `String` | Yes | Item identifier. |
-| `ops` | Vec&lt;[`UpdateOp`](#updateop)&gt; | Yes | Ordered list of update operations to apply atomically. |
 
 ---
 
@@ -503,6 +325,16 @@ Operations that can be performed atomically on a stream value
 | `Decrement` | `{ path: String, by: i64 }` | Yes | Decrement numeric value |
 | `Append` | \{ path: Option&lt;[`MergePath`](#mergepath)&gt;, value: Value \} | Yes | Append an element to an array or concatenate a string at the<br />optional path. Path may be omitted (root append), a single<br />first-level key, or an array of literal segments for nested<br />append. See `MergePath` for the variant shape. |
 | `Remove` | `{ path: String }` | Yes | Remove a field |
+| `append` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create an Append operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
+| `append_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create an Append operation at a nested path of literal segments. Convenience wrapper for `append(vec!["a", "b"], v)`. |
+| `append_root` | `fn(value: impl Into<Value>) -> Self` | Yes | Create an Append operation at the root level (no path). |
+| `decrement` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create a Decrement operation |
+| `increment` | `fn(path: impl Into<String>, by: i64) -> Self` | Yes | Create an Increment operation |
+| `merge` | `fn(value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at root level |
+| `merge_at` | fn(path: impl Into&lt;[`MergePath`](#mergepath)&gt;, value: impl Into&lt;Value&gt;) -&gt; Self | Yes | Create a Merge operation at a specific path. Accepts a single first-level key (`"foo"`) or any type that converts into `MergePath` (e.g. `Vec<String>` for nested paths). |
+| `merge_at_path` | `fn(segments: I, value: impl Into<Value>) -> Self` | Yes | Create a Merge operation at a nested path of literal segments. Convenience wrapper for `merge_at(vec!["a", "b"], v)`. |
+| `remove` | `fn(path: impl Into<String>) -> Self` | Yes | Create a Remove operation |
+| `set` | `fn(path: impl Into<String>, value: impl Into<Option<Value>>) -> Self` | Yes | Create a Set operation |
 
 ---
 
@@ -529,7 +361,7 @@ use iii_helpers::worker_connection_manager;
 
 ### Types
 
-[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult)
 
 ### AuthInput
 
@@ -558,8 +390,6 @@ context is forwarded to the middleware.
 | `namespaces` | `HashMap<String, Vec<String>>` | Yes | Grants scoped to one namespace each: `{ "orders": ["svc::*"] }`. A value<br />is an exact function ID or a wildcard, in either the bare (`svc::*`) or<br />the `match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Leave it empty to add no namespace-scoped<br />grants: the session may declare any namespace, and only<br />`allowed_functions` and `expose_functions` apply. |
 | `allowed_functions` | `Vec<String>` | Yes | Additional function IDs to allow beyond the `expose_functions` config,<br />in the `default` namespace only. Put per-namespace grants in<br />`AuthResult::namespaces`. |
 | `forbidden_functions` | `Vec<String>` | Yes | Function IDs to deny even if they match `expose_functions`.<br />Takes precedence over allowed. |
-| `allowed_trigger_types` | `Option<Vec<String>>` | No | Trigger type IDs the worker may register triggers for.<br />When `None`, all types are allowed. |
-| `allow_trigger_type_registration` | `bool` | Yes | Whether the worker may register new trigger types. Defaults to `false`. |
 | `allow_function_registration` | `bool` | Yes | Whether the worker may register new functions. Defaults to `true`. |
 | `context` | `Value` | Yes | Arbitrary context forwarded to the middleware function on every<br />invocation. |
 | `function_registration_prefix` | `Option<String>` | No | Optional prefix applied to all function IDs registered by this worker. |
@@ -579,6 +409,9 @@ fields, or return an error to deny the registration.
 | `description` | `Option<String>` | No | Human-readable description of the function. |
 | `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the function. |
 | `namespace` | `String` | Yes | Namespace the function registers in. The same id can exist in several<br />namespaces, so the hook needs this to authorize per namespace. |
+| `private` | `bool` | Yes | Only the registering worker may call the function. |
+| `observable` | `bool` | Yes | Whether the function may be observed. An older engine omits it:<br />`true`. |
+| `args_format` | `Option<Value>` | No | JSON Schema of the function's observer args, when it takes any. |
 | `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
 
 ---
@@ -593,63 +426,6 @@ Omitted fields keep the original value from the registration request.
 | `function_id` | `Option<String>` | No | Mapped function ID. |
 | `description` | `Option<String>` | No | Mapped description. |
 | `metadata` | `Option<Value>` | No | Mapped metadata. |
-
----
-
-### OnTriggerRegistrationInput
-
-Input passed to the `on_trigger_registration_function_id` hook
-when a worker attempts to register a trigger through the RBAC port.
-Return an `OnTriggerRegistrationResult` with the (possibly mapped)
-fields, or return an error to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `trigger_id` | `String` | Yes | ID of the trigger being registered. |
-| `trigger_type` | `String` | Yes | Trigger type identifier. |
-| `function_id` | `String` | Yes | ID of the function this trigger is bound to. |
-| `config` | `Value` | Yes | Trigger-specific configuration. |
-| `metadata` | `Option<Value>` | No | Arbitrary metadata attached to the trigger. |
-| `namespace` | `String` | Yes | Namespace the trigger's target resolves in (explicit, or `default` when<br />absent). The same function id can exist in several namespaces, so the hook<br />needs this to authorize per target namespace. |
-| `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
-
----
-
-### OnTriggerRegistrationResult
-
-Result returned from the `on_trigger_registration_function_id` hook.
-Omitted fields keep the original value from the registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `trigger_id` | `Option<String>` | No | Mapped trigger ID. |
-| `trigger_type` | `Option<String>` | No | Mapped trigger type. |
-| `function_id` | `Option<String>` | No | Mapped function ID. |
-| `config` | `Option<Value>` | No | Mapped trigger configuration. |
-
----
-
-### OnTriggerTypeRegistrationInput
-
-Input passed to the `on_trigger_type_registration_function_id` hook
-when a worker attempts to register a new trigger type through the RBAC port.
-Return an `OnTriggerTypeRegistrationResult` with the (possibly mapped)
-fields, or return an error to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `trigger_type_id` | `String` | Yes | ID of the trigger type being registered. |
-| `description` | `String` | Yes | Human-readable description of the trigger type. |
-| `context` | `Value` | Yes | Auth context from `AuthResult.context` for this session. |
-
----
-
-### OnTriggerTypeRegistrationResult
-
-Result returned from the `on_trigger_type_registration_function_id` hook.
-Omitted fields keep the original value from the registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `trigger_type_id` | `Option<String>` | No | Mapped trigger type ID. |
-| `description` | `Option<String>` | No | Mapped description. |
+| `private` | `Option<bool>` | No | Replaces the registration's `private`. |
+| `observable` | `Option<bool>` | No | Replaces the registration's `observable`. |
+| `args_format` | `Option<Value>` | No | Replaces the registration's `args_format`. |

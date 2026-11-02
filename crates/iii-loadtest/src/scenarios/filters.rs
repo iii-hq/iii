@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use iii_sdk::Source;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::json;
 
 use super::{
@@ -80,7 +80,7 @@ pub async fn run(env: &Env) -> Result<()> {
                     let load = closed_loop(&callers, CONCURRENCY, deadline, move |task, seq| {
                         // Spread k over [0, n) without a shared RNG.
                         let k = (seq.wrapping_mul(2_654_435_761) + task as u64) % n;
-                        TriggerRequest::new("bench::echo-0", json!({ "k": k }))
+                        CallRequest::new("bench::echo-0", json!({ "k": k }))
                     })
                     .await;
                     let ended = Instant::now();

@@ -28,27 +28,31 @@ pub const ENGINE_CAPABILITIES_HEADER: &str = "x-iii-capabilities";
 /// should then set `TCP_NODELAY` on its side too (nginx and Envoy do).
 pub const ENGINE_CAPABILITY_TCP_NODELAY: &str = "tcp-nodelay";
 
-/// Routing action for [`TriggerRequest`]. Determines how the engine handles
+/// Routing action for [`CallRequest`]. Determines how the engine handles
 /// the invocation.
 ///
 /// - `Enqueue`: Routes through a named queue for async processing.
 /// - `Void`: Fire-and-forget, no response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum TriggerAction {
+pub enum CallAction {
     /// Routes the invocation through a named queue.
     Enqueue { queue: String },
     /// Fire-and-forget routing.
     Void,
 }
 
-/// Request object for `trigger()`.
+/// [`CallAction`] under its 0.25 name.
+#[deprecated(since = "0.26.0", note = "use CallAction")]
+pub type TriggerAction = CallAction;
+
+/// Request object for [`IIIClient::call`](crate::IIIClient::call).
 ///
 /// ```rust
-/// # use iii_sdk::protocol::{TriggerRequest, TriggerAction};
+/// # use iii_sdk::{CallAction, CallRequest};
 /// # use serde_json::json;
 /// // Simple call
-/// TriggerRequest {
+/// CallRequest {
 ///     function_id: "my::function".to_string(),
 ///     payload: json!({ "key": "value" }),
 ///     action: None,
@@ -56,43 +60,41 @@ pub enum TriggerAction {
 /// };
 ///
 /// // With action
-/// TriggerRequest {
+/// CallRequest {
 ///     function_id: "my::function".to_string(),
 ///     payload: json!({}),
-///     action: Some(TriggerAction::Enqueue { queue: "payments".to_string() }),
+///     action: Some(CallAction::Enqueue { queue: "payments".to_string() }),
 ///     timeout_ms: None,
 /// };
 ///
 /// // With metadata
-/// TriggerRequest {
-///     function_id: "my::function".to_string(),
-///     payload: json!({}),
-///     action: None,
-///     timeout_ms: None,
-/// }
-/// .metadata(json!({ "tenant": "acme" }));
+/// CallRequest::new("my::function", json!({})).metadata(json!({ "tenant": "acme" }));
 /// ```
 #[derive(Debug, Clone)]
-pub struct TriggerRequest {
+pub struct CallRequest {
     /// ID of the function to invoke.
     pub function_id: String,
     /// Input data passed to the function.
     pub payload: Value,
-    /// Sets how the trigger is routed. `None` for a synchronous request/response.
-    /// Set a routing scheme otherwise (e.g. `TriggerAction::Enqueue { .. }`, `TriggerAction::Void`).
-    pub action: Option<TriggerAction>,
+    /// Sets how the call is routed. `None` for a synchronous request/response.
+    /// Set a routing scheme otherwise (e.g. `CallAction::Enqueue { .. }`, `CallAction::Void`).
+    pub action: Option<CallAction>,
     /// Override the default invocation timeout, in milliseconds.
     pub timeout_ms: Option<u64>,
 }
 
-impl TriggerRequest {
+/// [`CallRequest`] under its 0.25 name.
+#[deprecated(since = "0.26.0", note = "use CallRequest")]
+pub type TriggerRequest = CallRequest;
+
+impl CallRequest {
     /// A synchronous request/response call of `function_id` with `payload`,
     /// the default timeout and no routing action.
     ///
     /// ```rust
-    /// # use iii_sdk::protocol::TriggerRequest;
+    /// # use iii_sdk::CallRequest;
     /// # use serde_json::json;
-    /// let request = TriggerRequest::new("orders::create", json!({ "sku": "A-1" }));
+    /// let request = CallRequest::new("orders::create", json!({ "sku": "A-1" }));
     /// assert!(request.action.is_none());
     /// ```
     pub fn new(function_id: impl Into<String>, payload: Value) -> Self {
@@ -104,32 +106,63 @@ impl TriggerRequest {
         }
     }
 
+    /// A call through `observer`: the engine runs the observer's target with
+    /// `payload`, as given, and applies the observer's policy, metadata
+    /// sidecar and loop guard. Only the worker that hosts the observer's
+    /// function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process.
+    /// It takes no metadata: the target's metadata argument is the observer's
+    /// registration metadata, and [`IIIClient::call`](crate::IIIClient::call)
+    /// refuses a request given [`metadata`](CallRequestWithMetadata::metadata)
+    /// before anything is sent.
+    /// It belongs in the function's deliver hook, whose function documents
+    /// what its targets receive; to send one observer something outside
+    /// delivery (its initial state), call the function with metadata
+    /// `{ "for_observer": <observer id> }` (see [`Observer::accepted`](crate::Observer::accepted)).
+    ///
+    /// ```rust,no_run
+    /// # use iii_sdk::{CallAction, CallRequest, IIIClient, Observer};
+    /// # use serde_json::json;
+    /// # async fn demo(iii: &IIIClient, obs: &Observer) -> Result<(), iii_sdk::Error> {
+    /// // in the deliver hook of http::on-request
+    /// let response = iii.call(CallRequest::observer(obs, json!({ "path": "/users/42" }))).await?;
+    /// // fire-and-forget
+    /// iii.call(CallRequest::observer(obs, json!({ "path": "/audit" })).action(CallAction::Void))
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn observer(observer: &crate::Observer, payload: Value) -> CallRequestWithMetadata {
+        let mut request =
+            CallRequestWithMetadata::from(CallRequest::new(observer.target(), payload));
+        request.observer = Some(observer.id().to_string());
+        request
+    }
+
     /// Attach per-invocation metadata without adding a required field to
-    /// [`TriggerRequest`] struct literals.
-    pub fn metadata(self, metadata: Value) -> TriggerRequestWithMetadata {
-        TriggerRequestWithMetadata::from(self).metadata(metadata)
+    /// [`CallRequest`] struct literals.
+    pub fn metadata(self, metadata: Value) -> CallRequestWithMetadata {
+        CallRequestWithMetadata::from(self).metadata(metadata)
     }
 
     /// Target a specific namespace for this invocation without adding a
-    /// required field to [`TriggerRequest`] struct literals. Serializes into
+    /// required field to [`CallRequest`] struct literals. Serializes into
     /// [`Message::InvokeFunction`]'s `namespace`.
     ///
     /// Leaving it unset does not mean the engine's default: the call inherits
     /// this worker's namespace. Say `default` to reach the engine's from a
     /// namespaced worker.
-    pub fn namespace(self, namespace: impl Into<String>) -> TriggerRequestWithMetadata {
-        TriggerRequestWithMetadata::from(self).namespace(namespace)
+    pub fn namespace(self, namespace: impl Into<String>) -> CallRequestWithMetadata {
+        CallRequestWithMetadata::from(self).namespace(namespace)
     }
 
     /// Choose the path this call takes: [`Dispatch::Auto`] (the default) runs
     /// a function this worker hosts in-process when the engine allows it;
     /// [`Dispatch::Remote`] always goes through the engine.
-    pub fn dispatch(self, dispatch: Dispatch) -> TriggerRequestWithMetadata {
-        TriggerRequestWithMetadata::from(self).dispatch(dispatch)
+    pub fn dispatch(self, dispatch: Dispatch) -> CallRequestWithMetadata {
+        CallRequestWithMetadata::from(self).dispatch(dispatch)
     }
 }
 
-/// Which path [`IIIClient::trigger`](crate::IIIClient::trigger) takes.
+/// Which path [`IIIClient::call`](crate::IIIClient::call) takes.
 ///
 /// A call to a function registered by this same worker runs in-process
 /// ("local dispatch") when all of these hold:
@@ -138,13 +171,14 @@ impl TriggerRequest {
 ///    and was not registered with [`RegisterFunction::local_dispatch(false)`](crate::RegisterFunction::local_dispatch);
 /// 2. the engine confirmed it with `functionregistered { local_dispatch: true }`;
 /// 3. the call resolves to the namespace the function is registered in;
-/// 4. the action is not [`TriggerAction::Enqueue`] (a `Void` call runs
+/// 4. the action is not [`CallAction::Enqueue`] (a `Void` call runs
 ///    locally, fire-and-forget);
-/// 5. the dispatch is not [`Dispatch::Remote`].
+/// 5. the dispatch is not [`Dispatch::Remote`], and the call is not made
+///    through an observer ([`CallRequest::observer`]).
 ///
-/// Otherwise the call goes through the engine as before. A local call returns
-/// the same result, error shape and timeout as a remote one, and is reported
-/// to the engine only when an observer's filters match it.
+/// Otherwise the call goes through the engine. A local call returns the same
+/// result, error shape and timeout as a remote one, and is reported to the
+/// engine only when an observer's filters match it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Dispatch {
     /// Run in-process when the five conditions above hold, else remote.
@@ -154,18 +188,28 @@ pub enum Dispatch {
     Remote,
 }
 
-/// Trigger request plus optional per-invocation metadata, target namespace
-/// and dispatch.
+/// A [`CallRequest`] plus optional per-invocation metadata, target namespace,
+/// dispatch and the observer it is made through.
 #[derive(Debug, Clone)]
-pub struct TriggerRequestWithMetadata {
-    pub(crate) request: TriggerRequest,
+pub struct CallRequestWithMetadata {
+    pub(crate) request: CallRequest,
     pub(crate) metadata: Option<Value>,
     pub(crate) namespace: Option<String>,
     pub(crate) dispatch: Dispatch,
+    /// Set by [`CallRequest::observer`]: the id of the observer whose target
+    /// `request.function_id` is.
+    pub(crate) observer: Option<String>,
 }
 
-impl TriggerRequestWithMetadata {
-    /// Attach per-invocation metadata.
+/// [`CallRequestWithMetadata`] under its 0.25 name.
+#[deprecated(since = "0.26.0", note = "use CallRequestWithMetadata")]
+pub type TriggerRequestWithMetadata = CallRequestWithMetadata;
+
+impl CallRequestWithMetadata {
+    /// Attach per-invocation metadata: any JSON value, which the handler
+    /// receives as its metadata argument. `Value::Null` is the same as no
+    /// metadata. A call through an observer ([`CallRequest::observer`]) takes
+    /// none.
     pub fn metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
         self
@@ -182,11 +226,23 @@ impl TriggerRequestWithMetadata {
         self.dispatch = dispatch;
         self
     }
+
+    /// How the call is routed; see [`CallRequest::action`].
+    pub fn action(mut self, action: CallAction) -> Self {
+        self.request.action = Some(action);
+        self
+    }
+
+    /// Override the default invocation timeout.
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.request.timeout_ms = Some(timeout.as_millis() as u64);
+        self
+    }
 }
 
-impl<T> From<T> for TriggerRequestWithMetadata
+impl<T> From<T> for CallRequestWithMetadata
 where
-    T: Into<TriggerRequest>,
+    T: Into<CallRequest>,
 {
     fn from(request: T) -> Self {
         Self {
@@ -194,6 +250,7 @@ where
             metadata: None,
             namespace: None,
             dispatch: Dispatch::Auto,
+            observer: None,
         }
     }
 }
@@ -201,56 +258,6 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
-    RegisterTriggerType {
-        id: String,
-        description: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger_request_format: Option<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        call_request_format: Option<Value>,
-        /// Namespace this provider serves. Absent means the connection's own.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-    },
-    RegisterTrigger {
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        config: Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata: Option<Value>,
-        /// Namespace the trigger's target function resolves in.
-        ///
-        /// The engine reads an absent field as its default namespace. The SDK
-        /// does not leave it absent: `register_trigger` fills it from this
-        /// worker's namespace, because the function a trigger names is one this
-        /// worker registered, and that landed in the worker's namespace. Name
-        /// another namespace, `default` included, to bind elsewhere.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-        /// Namespace to find the provider in. Absent asks the engine to resolve
-        /// it: this connection's namespace first, then the engine's own.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        trigger_namespace: Option<String>,
-    },
-    TriggerRegistrationResult {
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<ErrorBody>,
-    },
-    UnregisterTrigger {
-        id: String,
-        trigger_type: String,
-    },
-    UnregisterTriggerType {
-        id: String,
-        /// Namespace the provider was registered in. Absent means the sending
-        /// connection's namespace. The SDK never sets it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-    },
     RegisterFunction {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,11 +270,25 @@ pub enum Message {
         metadata: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         invocation: Option<HttpInvocationConfig>,
-        /// How observers of this function are delivered. Absent means
-        /// `delivery: auto`, observable, no args. The SDK-local hooks never
-        /// travel.
+        /// JSON Schema of observers' `args`; the engine validates every
+        /// `observe` against it (`INVALID_ARGS`). Absent: the function takes
+        /// no args.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        observe: Option<Box<ObserveDescriptor>>,
+        args_format: Option<Value>,
+        /// Only the hosting connection may call it; others may observe it.
+        #[serde(
+            default,
+            deserialize_with = "null_as_default",
+            skip_serializing_if = "is_false"
+        )]
+        private: bool,
+        /// `false`: nobody may observe it (`NOT_OBSERVABLE`).
+        #[serde(
+            default = "default_true",
+            deserialize_with = "null_as_true",
+            skip_serializing_if = "is_true"
+        )]
+        observable: bool,
     },
     UnregisterFunction {
         id: String,
@@ -283,7 +304,7 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        action: Option<TriggerAction>,
+        action: Option<CallAction>,
         /// Per-invocation metadata sidecar, surfaced to the handler as a
         /// distinct argument alongside `data`. Optional and additive
         /// for wire compatibility with engines that don't send it.
@@ -293,7 +314,7 @@ pub enum Message {
         /// that don't send it stay wire-compatible, and the engine reads an
         /// absent field as its default namespace.
         ///
-        /// A call made through this SDK does not arrive absent: `trigger` fills
+        /// A call made through this SDK does not arrive absent: `call` fills
         /// it from this worker's namespace unless the request names one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         namespace: Option<String>,
@@ -305,8 +326,10 @@ pub enum Message {
         /// Depth of the causal chain in observe hops. Absent means 0.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observe_depth: Option<u32>,
-        /// Engine → worker: present on every observer activation. Worker →
-        /// engine: marks an owner delivery ([`Observer::call`](crate::Observer::call)).
+        /// Engine → worker: present on every observer activation and on the
+        /// target's call of a call through an observer. Worker → engine: a
+        /// call through an observer ([`CallRequest::observer`]), with
+        /// `observer_id` only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         activation: Option<Activation>,
     },
@@ -321,6 +344,30 @@ pub enum Message {
         traceparent: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
+        /// Host → engine, from an `observe.v2` host's answer to a routed
+        /// call of a function with a match hook: the observers the hook
+        /// matched, before `on` and filters, each once; `[]` when it matched
+        /// none, and when the host holds no observer of the function for it
+        /// to match (the hook does not run). The engine evaluates `on` and
+        /// filters of those of them that are active observers of the
+        /// function. Absent when the function has no match hook: the engine
+        /// evaluates every active observer of the function. The
+        /// `payload_too_large` answer that replaces one too large to send
+        /// activates no observer: `[]`, or `delivered`. The engine strips it
+        /// before forwarding a result.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        matched: Option<Vec<String>>,
+        /// Host → engine, from an `observe.v2` host's answer to a routed
+        /// call: the function's deliver hook delivered the call, and the
+        /// answer is what the hook returned or threw. The engine activates
+        /// nothing for it. Sent only as `true`, which outweighs `matched`;
+        /// the engine strips it before forwarding a result.
+        #[serde(
+            default,
+            deserialize_with = "null_as_default",
+            skip_serializing_if = "is_false"
+        )]
+        delivered: bool,
     },
     Ping,
     Pong,
@@ -342,8 +389,8 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reattach_token: Option<String>,
         /// Protocol features the engine supports ([`FEATURE_OBSERVE_V1`],
-        /// [`FEATURE_LOCAL_DISPATCH_V1`]). Absent from engines older than
-        /// 0.25; a malformed list reads as empty.
+        /// [`FEATURE_OBSERVE_V2`], [`FEATURE_LOCAL_DISPATCH_V1`]). Absent from
+        /// engines older than 0.25; a malformed list reads as empty.
         #[serde(
             default,
             deserialize_with = "deserialize_features",
@@ -351,11 +398,12 @@ pub enum Message {
         )]
         features: Vec<String>,
     },
-    /// Pushed by the engine when a registration collides with a live worker in
-    /// the same namespace. The `code` distinguishes the two cases:
+    /// Pushed by the engine when it refuses a registration.
     /// [`WORKER_NAMESPACE_CONFLICT`] is fatal (the engine closes the connection;
-    /// the SDK stops and does not reconnect), while [`FUNCTION_NAMESPACE_CONFLICT`]
-    /// refuses a single function id and keeps the connection open.
+    /// the SDK stops and does not reconnect). A rejection that names a
+    /// `function_id` ([`FUNCTION_NAMESPACE_CONFLICT`],
+    /// [`observe_codes::INVALID_ARGS_FORMAT`], [`observe_codes::UNSUPPORTED`])
+    /// refuses that one function and keeps the connection open.
     RegistrationRejected {
         code: String,
         namespace: String,
@@ -377,7 +425,7 @@ pub enum Message {
         source: Box<ObserveSource>,
         /// The right side: the function each activation invokes.
         target: ObserveTarget,
-        /// The activation's metadata sidecar. Never shown to the owner.
+        /// The activation's metadata sidecar. Never shown to the host.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -413,7 +461,7 @@ pub enum Message {
         #[serde(default, deserialize_with = "null_as_default")]
         fires: u64,
     },
-    /// Engine → owner: the `registerfunction` success ack, with the full
+    /// Engine → host: the `registerfunction` success ack, with the full
     /// current observer set. Enables local dispatch for this function.
     FunctionRegistered {
         id: String,
@@ -428,7 +476,7 @@ pub enum Message {
         #[serde(default, deserialize_with = "null_as_default")]
         observers: Vec<ObserverView>,
     },
-    /// Engine → owner: one observer attached to a function this connection
+    /// Engine → host: one observer attached to a function this connection
     /// hosts. Awaits `observerack`.
     ObserverAdded {
         function_id: String,
@@ -440,7 +488,7 @@ pub enum Message {
         revision: u64,
         observer: ObserverView,
     },
-    /// Engine → owner: one observer detached.
+    /// Engine → host: one observer detached.
     ObserverRemoved {
         function_id: String,
         #[serde(
@@ -451,7 +499,7 @@ pub enum Message {
         revision: u64,
         id: String,
     },
-    /// Owner → engine: accepts one added observer, or rejects it with `error`
+    /// Host → engine: accepts one added observer, or rejects it with `error`
     /// (also later, for an active observer: a late rejection).
     ObserverAck {
         function_id: String,
@@ -464,13 +512,13 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
-    /// Owner → engine: matched local invocations of auto functions and
-    /// `obs.emit` events of owner functions, batched.
+    /// Host → engine: what the host's delivery matched in local calls,
+    /// batched. The engine evaluates the observers of the calls it routes.
     InvocationsObserved {
         #[serde(default, deserialize_with = "null_as_default")]
         items: Vec<ObservedItem>,
     },
-    /// Owner → engine: local invocation counts and SDK-side report drops,
+    /// Host → engine: local invocation counts and SDK-side report drops,
     /// every 10 s and only when non-zero.
     LocalInvocationStats {
         window_ms: u64,
@@ -492,6 +540,12 @@ pub enum Message {
 /// messages. The SDK declares it, and enables `observe()` only when the
 /// engine advertises it too.
 pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
+/// Protocol feature: the host runs the match and deliver hooks of the
+/// functions it hosts for their routed calls too, and says on each answer how
+/// the call is delivered (`invocationresult.matched` and `delivered`), and
+/// registers functions with `args_format`, `private` and `observable`.
+/// Includes [`FEATURE_OBSERVE_V1`].
+pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
 /// Protocol feature: the SDK runs its own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
@@ -500,8 +554,9 @@ pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
 /// [`WorkerMetadata::version`](crate::iii::WorkerMetadata::version) reports.
 pub const FEATURE_LARGE_MESSAGES_V1: &str = "large-messages.v1";
 /// What this SDK declares in the `engine::workers::register` payload.
-pub const SDK_FEATURES: [&str; 3] = [
+pub const SDK_FEATURES: [&str; 4] = [
     FEATURE_OBSERVE_V1,
+    FEATURE_OBSERVE_V2,
     FEATURE_LOCAL_DISPATCH_V1,
     FEATURE_LARGE_MESSAGES_V1,
 ];
@@ -540,6 +595,26 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// A `bool` that defaults to `true`, sent as `null`, reads as `true`.
+fn null_as_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(true))
+}
+
 fn null_as_default_namespace<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -576,12 +651,15 @@ where
 /// Error codes, state reasons and drop reasons of observe, exactly as the
 /// engine uses them (protocol.md §4).
 pub mod observe_codes {
-    /// The engine lacks `observe.v1` (raised by the SDK).
+    /// The engine lacks the observe feature a call needs: `observe.v1` for
+    /// `observe()`, `observe.v2` for a function that declares `args_format`,
+    /// `private` or `observable: false`, or sets a deliver hook or a match
+    /// hook (raised by the SDK).
     pub const UNSUPPORTED: &str = "UNSUPPORTED";
     /// Args fail the function's `args_format`, or args on a function without one.
     pub const INVALID_ARGS: &str = "INVALID_ARGS";
-    /// `args_format` with `delivery: auto`.
-    pub const INVALID_OBSERVE_DESCRIPTOR: &str = "INVALID_OBSERVE_DESCRIPTOR";
+    /// A registration's `args_format` is not a valid JSON Schema.
+    pub const INVALID_ARGS_FORMAT: &str = "INVALID_ARGS_FORMAT";
     pub const INVALID_FILTER: &str = "INVALID_FILTER";
     pub const INVALID_FILTER_PATH: &str = "INVALID_FILTER_PATH";
     pub const NOT_OBSERVABLE: &str = "NOT_OBSERVABLE";
@@ -589,21 +667,18 @@ pub mod observe_codes {
     pub const SELF_TARGET: &str = "SELF_TARGET";
     pub const LIMIT_EXCEEDED: &str = "LIMIT_EXCEEDED";
     pub const OBSERVER_ID_CONFLICT: &str = "OBSERVER_ID_CONFLICT";
-    /// `on_observer_added` did not finish within 30 s.
+    /// An `on_observer_added` hook did not finish within 30 s.
     pub const OWNER_TIMEOUT: &str = "OWNER_TIMEOUT";
-    /// `on_observer_added` failed with a plain error.
+    /// An `on_observer_added` hook failed with a plain error.
     pub const OBSERVE_REJECTED: &str = "OBSERVE_REJECTED";
     pub const OBSERVER_NOT_FOUND: &str = "OBSERVER_NOT_FOUND";
+    /// A call through an observer from a connection that does not host the
+    /// observer's function.
     pub const NOT_FUNCTION_OWNER: &str = "NOT_FUNCTION_OWNER";
-    /// `emit` / `call` on an auto function.
-    pub const NOT_OWNER_DELIVERED: &str = "NOT_OWNER_DELIVERED";
-    /// `emit` / `call` for an observer that is not active (any more).
+    /// A call through an observer that is not active.
     pub const OBSERVER_NOT_ACTIVE: &str = "OBSERVER_NOT_ACTIVE";
-    pub const TARGET_MISMATCH: &str = "TARGET_MISMATCH";
     pub const OVERFLOW: &str = "OVERFLOW";
     pub const LOOP_GUARD: &str = "LOOP_GUARD";
-    /// `call` on a payload the observer's filters reject; nothing was sent.
-    pub const FILTERS_NOT_MATCHED: &str = "FILTERS_NOT_MATCHED";
     pub const OWNER_UNAVAILABLE: &str = "OWNER_UNAVAILABLE";
     pub const TARGET_UNAVAILABLE: &str = "TARGET_UNAVAILABLE";
     pub const OBSERVER_DISCONNECTED: &str = "OBSERVER_DISCONNECTED";
@@ -692,20 +767,6 @@ macro_rules! wire_string_enum {
 }
 
 wire_string_enum! {
-    /// How a function's observers are delivered.
-    #[derive(Default)]
-    pub enum Delivery {
-        /// The function's invocations are the events; every observer is
-        /// offered every invocation.
-        #[default]
-        Auto => "auto",
-        /// The owner routes events to observers by their args
-        /// ([`Observer::emit`](crate::Observer::emit) / [`Observer::call`](crate::Observer::call)).
-        Owner => "owner",
-    }
-}
-
-wire_string_enum! {
     /// What an activation ships to the target. A filter may read any root,
     /// whatever is captured.
     pub enum Capture {
@@ -723,7 +784,7 @@ pub fn default_capture() -> Vec<Capture> {
 }
 
 wire_string_enum! {
-    /// Which outcomes of an auto function's invocation activate an observer.
+    /// Which outcomes of a call activate an observer.
     #[derive(Default)]
     pub enum On {
         #[default]
@@ -740,9 +801,9 @@ wire_string_enum! {
         /// The [`Observed`](crate::Observed) envelope.
         #[default]
         Envelope => "envelope",
-        /// The observed invocation's input alone.
+        /// The observed call's input alone.
         Input => "input",
-        /// The observed invocation's output alone.
+        /// The observed call's output alone.
         Output => "output",
     }
 }
@@ -750,7 +811,7 @@ wire_string_enum! {
 wire_string_enum! {
     /// Observer lifecycle states.
     pub enum ObserverState {
-        /// Waiting for its function's owner (and its ack) or its target.
+        /// Waiting for its function's host (and its ack) or its target.
         Pending => "pending",
         /// Delivering.
         Active => "active",
@@ -764,7 +825,7 @@ wire_string_enum! {
 }
 
 wire_string_enum! {
-    /// Outcome of an observed invocation. An emitted event is always `success`.
+    /// Outcome of an observed call.
     pub enum InvocationStatus {
         Success => "success",
         Error => "error",
@@ -773,25 +834,6 @@ wire_string_enum! {
 
 fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
-}
-
-/// `registerfunction.observe`: the wire half of a function's observe hooks.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ObserveDescriptor {
-    /// Absent means [`Delivery::Auto`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<Delivery>,
-    /// JSON Schema the engine validates observers' `args` against. Owner
-    /// delivery only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args_format: Option<Value>,
-    /// Old `registerTrigger({ type })` calls bind to this function when no
-    /// live provider of that trigger type exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_trigger_type: Option<String>,
-    /// Absent means `true`; `false` refuses observers (`NOT_OBSERVABLE`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow: Option<bool>,
 }
 
 /// The left side of `iii.observe` on the wire. Absent fields stay absent; the
@@ -821,7 +863,7 @@ pub struct ObserveTarget {
     pub namespace: Option<String>,
 }
 
-/// An observer as its function's owner sees it (`functionregistered`,
+/// An observer as its function's host sees it (`functionregistered`,
 /// `observeradded`): never the observer's metadata, policy or observing
 /// worker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -830,7 +872,7 @@ pub struct ObserverView {
     /// `{}` for an observer without args.
     #[serde(default = "empty_object", deserialize_with = "null_as_empty_object")]
     pub args: Value,
-    /// The observer's filters in normal form; `{}` matches every event.
+    /// The observer's filters in normal form; `{}` matches every call.
     #[serde(default = "empty_object", deserialize_with = "null_as_empty_object")]
     pub filters: Value,
     /// Target function id (its namespace is not disclosed).
@@ -842,18 +884,6 @@ pub struct ObserverView {
     pub capture: Vec<Capture>,
     #[serde(default, deserialize_with = "null_as_default")]
     pub on: On,
-    /// Set when the engine's legacy shim created this observer from an old
-    /// `registerTrigger`. `null` reads as absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy: Option<LegacyTrigger>,
-}
-
-/// The old `registerTrigger` an observer was created from by the engine's
-/// legacy shim. The owner reads `config` as the observer's args.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LegacyTrigger {
-    pub trigger_type: String,
-    pub config: Value,
 }
 
 /// Who made an invocation. `worker_id` / `worker_name` are stamped by the
@@ -905,13 +935,14 @@ impl Caller {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Activation {
     pub observer_id: String,
-    /// Engine → worker: unique per activation. Absent on an owner's `call`.
+    /// Engine → worker: unique per activation. Absent on a call through an
+    /// observer as its host sends it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_id: Option<String>,
 }
 
-/// One item of `invocationsobserved`: a matched local invocation of an auto
-/// function, or an emitted event of an owner function.
+/// One item of `invocationsobserved`: one local call and the observers
+/// iii's delivery selected for it.
 ///
 /// `input` / `output` / `error` / `metadata` keep `null` apart from absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -957,6 +988,14 @@ pub struct ObservedItem {
     pub traceparent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baggage: Option<String>,
+    /// The handler returned its input: the item carries it once, as `input`,
+    /// and the engine fills `output` from it.
+    #[serde(
+        default,
+        deserialize_with = "null_as_default",
+        skip_serializing_if = "is_false"
+    )]
+    pub output_is_input: bool,
 }
 
 /// Per-function counts in `localinvocationstats`.
@@ -981,196 +1020,6 @@ pub struct DroppedReportStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterTriggerTypeMessage {
-    /// Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`).
-    pub id: String,
-    /// Human-readable description of what this trigger type does.
-    pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_request_format: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_request_format: Option<Value>,
-    /// Namespace this provider serves. `None` lets the engine use the
-    /// connection's own, which is what a worker providing a trigger type for
-    /// its own project wants.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-}
-
-impl RegisterTriggerTypeMessage {
-    pub fn to_message(&self) -> Message {
-        Message::RegisterTriggerType {
-            id: self.id.clone(),
-            description: self.description.clone(),
-            trigger_request_format: self.trigger_request_format.clone(),
-            call_request_format: self.call_request_format.clone(),
-            namespace: self.namespace.clone(),
-        }
-    }
-}
-
-/// Input for [`IIIClient::register_trigger`](crate::IIIClient::register_trigger).
-/// The `id` is auto-generated internally.
-///
-/// **Deprecated since 0.25.0** with `register_trigger`: use
-/// [`IIIClient::observe`](crate::IIIClient::observe) with a
-/// [`Source`](crate::Source) instead. Migration guide:
-/// <https://iii.dev/docs/upgrading/from-0-24-x>.
-///
-/// Build it with [`RegisterTriggerInput::new`], or with
-/// [`IIITrigger`](crate::builtin_triggers::IIITrigger) for a type the engine
-/// provides. A struct literal has to name every field, so each field added here
-/// breaks it: `namespace` did that once and `trigger_namespace` did it again,
-/// which is why the constructors exist.
-///
-/// The two are different questions. `namespace` is where the target function
-/// resolves; `trigger_namespace` is where the trigger type's provider is found,
-/// and `None` there asks the engine to take this worker's namespace first and
-/// the engine's own second.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterTriggerInput {
-    /// Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`).
-    pub trigger_type: String,
-    /// ID of the function this trigger invokes when it fires.
-    pub function_id: String,
-    /// Trigger-type-specific configuration, matching the shape the trigger type expects.
-    pub config: Value,
-    /// Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-    /// Namespace the trigger's target function resolves in. `None` inherits
-    /// this worker's namespace; name another namespace, including `default`,
-    /// to bind the trigger elsewhere.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    /// Namespace to find the trigger type's provider in. `None` asks the
-    /// engine to resolve it: this worker's namespace first, the engine's own
-    /// second. Naming one is strict.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_namespace: Option<String>,
-}
-
-impl RegisterTriggerInput {
-    /// A trigger of `trigger_type`, bound to `function_id`, configured by
-    /// `config`.
-    ///
-    /// Use this for a trigger type nothing built in provides -- one this worker
-    /// or a neighbour registered. For the engine's own types, prefer
-    /// [`IIITrigger`](crate::builtin_triggers::IIITrigger), which knows the id
-    /// and the config shape:
-    ///
-    /// ```no_run
-    /// # use iii_sdk::protocol::RegisterTriggerInput;
-    /// # use serde_json::json;
-    /// RegisterTriggerInput::new("kick", "orders::sync", json!({ "every": "1m" }))
-    ///     .in_namespace("billing")
-    ///     .in_trigger_namespace("shop-a");
-    /// ```
-    ///
-    /// Everything else defaults to "not named", which is what the great
-    /// majority of registrations want. Reaching for a struct literal instead
-    /// means every field added here becomes a breaking change for the caller,
-    /// which is what this exists to stop.
-    pub fn new(
-        trigger_type: impl Into<String>,
-        function_id: impl Into<String>,
-        config: Value,
-    ) -> Self {
-        Self {
-            trigger_type: trigger_type.into(),
-            function_id: function_id.into(),
-            config,
-            metadata: None,
-            namespace: None,
-            trigger_namespace: None,
-        }
-    }
-
-    /// Resolve this trigger's target function in `namespace` instead of this
-    /// worker's.
-    pub fn in_namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.namespace = Some(namespace.into());
-        self
-    }
-
-    /// Find the trigger type's provider in `namespace`, and only there.
-    ///
-    /// A different question from [`in_namespace`](Self::in_namespace): that one
-    /// locates the target function, this one locates the provider that fires
-    /// it. Left unset, the engine resolves it -- this worker's namespace first,
-    /// then its own -- which is what carries a worker that has not been
-    /// migrated onto the engine's providers without saying anything.
-    pub fn in_trigger_namespace(mut self, namespace: impl Into<String>) -> Self {
-        self.trigger_namespace = Some(namespace.into());
-        self
-    }
-
-    /// Deliver `metadata` to the handler alongside every payload this trigger
-    /// fires.
-    pub fn with_metadata(mut self, metadata: Value) -> Self {
-        self.metadata = Some(metadata);
-        self
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegisterTriggerMessage {
-    pub id: String,
-    pub trigger_type: String,
-    pub function_id: String,
-    pub config: Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub namespace: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trigger_namespace: Option<String>,
-}
-
-impl RegisterTriggerMessage {
-    pub fn to_message(&self) -> Message {
-        Message::RegisterTrigger {
-            id: self.id.clone(),
-            trigger_type: self.trigger_type.clone(),
-            function_id: self.function_id.clone(),
-            config: self.config.clone(),
-            metadata: self.metadata.clone(),
-            namespace: self.namespace.clone(),
-            trigger_namespace: self.trigger_namespace.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnregisterTriggerMessage {
-    pub id: String,
-    pub trigger_type: String,
-}
-
-impl UnregisterTriggerMessage {
-    pub fn to_message(&self) -> Message {
-        Message::UnregisterTrigger {
-            id: self.id.clone(),
-            trigger_type: self.trigger_type.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UnregisterTriggerTypeMessage {
-    pub id: String,
-}
-
-impl UnregisterTriggerTypeMessage {
-    pub fn to_message(&self) -> Message {
-        Message::UnregisterTriggerType {
-            id: self.id.clone(),
-            namespace: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegisterFunctionMessage {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1183,10 +1032,15 @@ pub struct RegisterFunctionMessage {
     pub metadata: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invocation: Option<HttpInvocationConfig>,
-    /// The wire half of the function's observe hooks; see
-    /// [`RegisterFunction::observe`](crate::RegisterFunction::observe).
+    /// See [`RegisterFunction::args_format`](crate::RegisterFunction::args_format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observe: Option<ObserveDescriptor>,
+    pub args_format: Option<Value>,
+    /// See [`RegisterFunction::private`](crate::RegisterFunction::private).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub private: bool,
+    /// See [`RegisterFunction::observable`](crate::RegisterFunction::observable).
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub observable: bool,
 }
 
 impl RegisterFunctionMessage {
@@ -1198,7 +1052,9 @@ impl RegisterFunctionMessage {
             response_format: None,
             metadata: None,
             invocation: None,
-            observe: None,
+            args_format: None,
+            private: false,
+            observable: true,
         }
     }
     pub fn with_description(mut self, description: String) -> Self {
@@ -1213,8 +1069,16 @@ impl RegisterFunctionMessage {
             response_format: self.response_format.clone(),
             metadata: self.metadata.clone(),
             invocation: self.invocation.clone(),
-            observe: self.observe.clone().map(Box::new),
+            args_format: self.args_format.clone(),
+            private: self.private,
+            observable: self.observable,
         }
+    }
+
+    /// Needs an engine that advertised [`FEATURE_OBSERVE_V2`]: it declares
+    /// `args_format`, `private` or `observable: false`.
+    pub(crate) fn declares_v2(&self) -> bool {
+        self.args_format.is_some() || self.private || !self.observable
     }
 }
 
@@ -1266,7 +1130,9 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
-            observe: None,
+            args_format: None,
+            private: false,
+            observable: true,
         };
 
         let message = msg.to_message();
@@ -1284,6 +1150,9 @@ mod tests {
         assert_eq!(serialized["type"], "registerfunction");
         assert_eq!(serialized["id"], "functions.echo");
         assert_eq!(serialized["description"], "Echo function");
+        for default in ["args_format", "private", "observable", "observe"] {
+            assert!(serialized.get(default).is_none(), "{default} is left out");
+        }
     }
 
     #[test]
@@ -1303,7 +1172,9 @@ mod tests {
                 headers: HashMap::new(),
                 auth: None,
             }),
-            observe: None,
+            args_format: None,
+            private: false,
+            observable: true,
         };
 
         let serialized = serde_json::to_value(msg.to_message()).unwrap();

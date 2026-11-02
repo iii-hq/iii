@@ -48,14 +48,6 @@ pub struct ObserverIdInput {
     pub caller_worker_id: Option<String>,
 }
 
-/// The `RegisterTrigger` a legacy observer stands for (protocol.md §6).
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct LegacyTriggerInfo {
-    pub trigger_type: String,
-    /// The trigger's config, which the owner reads as the observer's args.
-    pub config: Value,
-}
-
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ObserverTargetInfo {
     pub function_id: String,
@@ -64,7 +56,8 @@ pub struct ObserverTargetInfo {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct ObservingWorkerInfo {
-    /// The observing connection's id.
+    /// The observing connection's id; the nil UUID for an observer the
+    /// engine owns.
     pub worker_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worker_name: Option<String>,
@@ -84,8 +77,6 @@ pub struct ObserverInfo {
     /// The observed function.
     pub function_id: String,
     pub namespace: String,
-    /// `auto` or `owner`, from the observed function's registration.
-    pub delivery: String,
     pub args: Value,
     /// The observer's filters, normalized.
     pub filters: Value,
@@ -109,9 +100,6 @@ pub struct ObserverInfo {
     pub expires_in_ms: Option<u64>,
     pub max_in_flight: u32,
     pub created_at_ms: u64,
-    /// Set when the legacy shim made this observer from a `RegisterTrigger`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub legacy: Option<LegacyTriggerInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -129,15 +117,10 @@ impl ObserverRegistry {
     fn info(&self, observer: &Observer) -> ObserverInfo {
         let (state, reason) = observer.snapshot_state();
         let observing = observer.observing();
-        let delivery = self
-            .function_entry(&observer.function)
-            .map(|entry| if entry.is_auto() { "auto" } else { "owner" })
-            .unwrap_or("auto");
         ObserverInfo {
             id: observer.id.clone(),
             function_id: observer.function.1.clone(),
             namespace: observer.function.0.clone(),
-            delivery: delivery.to_string(),
             args: observer.args.clone(),
             filters: observer.filter.normalized().clone(),
             target: ObserverTargetInfo {
@@ -154,7 +137,7 @@ impl ObserverRegistry {
             deliver: observer.deliver.to_string(),
             worker: ObservingWorkerInfo {
                 worker_id: observing.connection.to_string(),
-                worker_name: observing.worker_name,
+                worker_name: observing.worker_name.as_deref().map(str::to_string),
             },
             state: state.to_string(),
             reason: reason.map(|r| ReasonInfo {
@@ -168,10 +151,6 @@ impl ObserverRegistry {
             expires_in_ms: observer.policy.expires_in_ms,
             max_in_flight: observer.policy.max_in_flight,
             created_at_ms: observer.created_at_ms,
-            legacy: observer.legacy.as_ref().map(|binding| LegacyTriggerInfo {
-                trigger_type: binding.trigger.trigger_type.clone(),
-                config: binding.trigger.config.clone(),
-            }),
         }
     }
 

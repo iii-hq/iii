@@ -153,12 +153,12 @@ func (c *Client) stopMetricsReporting() {
 	}
 }
 
-// startInvocationSpan starts the span around a handler, as the Node SDK's handler
-// wrapper does: named "execute <function id>" (the engine already emits the "call" and
-// "trigger" spans), kind INTERNAL, a child of the trace context in ctx, with the
+// startInvocationSpan starts the span around a handler and its delivery, as the Node
+// SDK's handler wrapper does: named "execute <function id>" (the engine already emits
+// the spans of the call's routing), kind INTERNAL, a child of the trace context in ctx, with the
 // redacted input and output recorded as iii.invocation.input / iii.invocation.output
 // events unless III_DISABLE_TRACE_PAYLOADS is set (capped by
-// III_TRACE_PAYLOAD_MAX_BYTES). The returned function ends the span with the handler's
+// III_TRACE_PAYLOAD_MAX_BYTES). The returned function ends the span with the call's
 // outcome: OK, or ERROR with an exception event. Without running telemetry both are
 // no-ops and ctx is returned unchanged.
 func (c *Client) startInvocationSpan(ctx context.Context, input json.RawMessage) (context.Context, func(result any, err error)) {

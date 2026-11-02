@@ -282,7 +282,7 @@ fn handle_frame(
             // and returns S218 promptly. Without this, the temp
             // leaks for up to WRITE_IDLE_TIMEOUT (30s) before
             // streaming.rs's safety valve fires — too late for any
-            // caller-side test that asserts cleanup at trigger
+            // caller-side test that asserts cleanup at call
             // timeout.
             if signal == libc::SIGKILL {
                 let _ = fs_writes

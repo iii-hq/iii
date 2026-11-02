@@ -17,7 +17,7 @@ I've spent the last year reviewing this pattern across teams. The diagnosis ever
 
 The teams shipping reliable agents have moved validation, isolation, and observability out of "things the engineer remembers to do" and into properties of the runtime. The discipline is real, and it is reproducible because the architecture absorbs it. The teams forgetting are working in abstractions that make the bad shape easier to write than the right one.
 
-The unit shrank. Agent is too coarse to be the unit of execution in a production backend, the same way "page" was too coarse for production frontend before component-level state. The unit that survives concurrency, observability, and version drift is narrower. Three primitives close the vocabulary: Worker is a narrowly focused set of capabilities, Function is the unit of execution, Trigger is how functions get invoked. The Engine sits between them as a protocol bus, unopinionated about language or runtime, holding the websocket connections, handling discovery, routing calls between workers.
+The unit shrank. Agent is too coarse to be the unit of execution in a production backend, the same way "page" was too coarse for production frontend before component-level state. The unit that survives concurrency, observability, and version drift is narrower. Three primitives close the vocabulary: Worker is a narrowly focused set of capabilities, Function is the unit of execution, Observer runs one function when another runs. The Engine sits between them as a protocol bus, unopinionated about language or runtime, holding the websocket connections, handling discovery, routing calls between workers.
 
 This is the architecture we're building at iii. The argument below is what the primitives buy you, with the production failure modes they remove.
 
@@ -47,13 +47,13 @@ Because memory is just a worker, swapping it out is a registry operation. `memor
 
 Tools are just functions. When a model invokes a tool, it's calling a function on some worker through the engine. There is no separate tool runtime, no separate tool registry, no separate tool schema format. The "tool" the model sees is the function's input schema. The "tool result" the model reads is the function's typed output. MCP tool calls, A2A function calls, internal worker-to-worker calls, and HTTP-exposed endpoints all resolve to the same primitive. Once tools are functions, the category stops needing its own vocabulary.
 
-## Triggers are how functions get invoked
+## Calls and observers are how functions get invoked
 
-A Trigger is the entry point that causes a function to run. HTTP request to an exposed function. Queue message routed to a function. Cron firing on a schedule. Another worker calling a function through the engine. MCP tool call from a model. A2A call from another agent. Browser-side event from `iii-browser-sdk` on port 49135. Or simply using a manual `trigger()` in your code or `iii trigger` in the CLI.
+A function runs when something calls it: another worker through the engine with `call()`, an MCP tool call from a model, an A2A call from another agent, `iii call` in the CLI. Everything else is an observer. `observe(a, b)` means that when function `a` runs, function `b` runs. An HTTP request is a call of `http::on-request`, a queue message a call of `queue::on-message`, a cron tick a call of `cron::on-tick`, a browser-side event a call of a function the tab hosts through `iii-browser-sdk` on port 49135. Observing one of them is how a function runs on that event.
 
-Triggers are how the outside world reaches functions, and how workers reach each other. The function's schema is what gets validated. The trigger is what supplies the input. An HTTP trigger on `memory::set` turns the request body into the function's typed input. A queue trigger turns the message payload into the same shape. An A2A trigger turns the agent-to-agent call into the same shape. Different sources, same validated boundary.
+Calls and observers are how the outside world reaches functions, and how workers reach each other. The function's schema is what gets validated. The call is what supplies the input. An HTTP route hands the request to the function, a queue topic hands it the message payload, an A2A call hands it the agent-to-agent payload. Different sources, same validated boundary.
 
-This is why the entry-point bugs disappear. There is no second way into a function. Every path runs through the same schema check at the engine. The team that adds a new HTTP endpoint doesn't get a new opportunity to forget validation, because there is no validation to remember; the function has a schema and the engine enforces it on every trigger that fires it.
+This is why the entry-point bugs disappear. There is no second way into a function. Every path runs through the same schema check at the engine. The team that adds a new HTTP endpoint doesn't get a new opportunity to forget validation, because there is no validation to remember; the function has a schema and the engine enforces it on every call.
 
 ## The harness disappears
 
@@ -73,7 +73,7 @@ Once Worker is the primitive, categories that used to be separate runtimes colla
 
 Sandbox provider is a worker. The 40+ providers we've mapped (E2B, Daytona, Modal, Vercel sandbox and the rest) all express as workers with sandbox-shaped functions. The choice of provider becomes a registry swap rather than an integration rewrite.
 
-Browser tab is a worker. `iii-browser-sdk` runs on port 49135 and registers the tab as a worker the engine can address. Browser-side events are triggers. DOM operations are functions. The page becomes part of the same execution graph as the backend.
+Browser tab is a worker. `iii-browser-sdk` runs on port 49135 and registers the tab as a worker the engine can address. Browser-side events are calls of functions the tab hosts. DOM operations are functions. The page becomes part of the same execution graph as the backend.
 
 External agent is a worker via the A2A protocol. MCP server is a worker via the MCP bridge. The agent itself is a peer worker, not a privileged consumer of tools. The "agent calls tools" mental model collapses into "worker calls function on another worker."
 
@@ -83,7 +83,7 @@ Integration cost goes from quadratic to linear. Each new capability is one regis
 
 The teams shipping reliable agents at scale share three properties. Narrow components with single scopes. Typed boundaries between them. Observability that runs across boundaries by default.
 
-Workers are narrow because the primitive is. Functions are typed because they have schemas the engine enforces. Triggers fire functions through the same validated boundary regardless of source. Observability runs across boundaries because the engine instruments every function call. The properties production teams converge on after months of incident reports are the defaults of the architecture.
+Workers are narrow because the primitive is. Functions are typed because they have schemas the engine enforces. Calls and observers reach functions through the same validated boundary regardless of source. Observability runs across boundaries because the engine instruments every function call. The properties production teams converge on after months of incident reports are the defaults of the architecture.
 
 This is the same shape that played out in frontend in 2013. jQuery applications scattered DOM state across whichever closure was handy. The discipline of "keep state in one place, derive the DOM from it" was well understood and got forgotten in approximately every codebase, because the framework didn't enforce it. React made the discipline structural. The bug class went away because the architecture stopped allowing the bad shape.
 
@@ -91,7 +91,7 @@ The four failure patterns at the top of this post are the agent-runtime equivale
 
 ## Closing
 
-The model is the easy part. The runtime around the model is where reliability lives, and the runtime is best expressed as an architecture rather than a checklist. Worker, Function, Trigger is the smallest closed vocabulary I've found that absorbs the production discipline into the primitive. Workers as narrowly focused sets of capabilities, typed functions as the unit of execution, triggers as the invocation source, state served by a memory worker like any other. The bugs that show up at month six stop being possible at the layer where teams currently make them.
+The model is the easy part. The runtime around the model is where reliability lives, and the runtime is best expressed as an architecture rather than a checklist. Worker, Function, Observer is the smallest closed vocabulary I've found that absorbs the production discipline into the primitive. Workers as narrowly focused sets of capabilities, typed functions as the unit of execution, observers as the way one function's run starts another, state served by a memory worker like any other. The bugs that show up at month six stop being possible at the layer where teams currently make them.
 
 iii.dev. Engine, registry, and SDKs are open.
 

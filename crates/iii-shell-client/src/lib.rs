@@ -85,16 +85,16 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// bytes for this long, we abort the upload with `S218`. Without
 /// this, a hard-terminated channel writer (caller-side
 /// `ws.terminate()` with no close frame) leaves the worker's
-/// `next_binary().await` hanging indefinitely — the trigger never
+/// `next_binary().await` hanging indefinitely — the call never
 /// returns, the supervisor's temp file leaks until its 30s
-/// recv_timeout safety valve fires, and the SDK's outer trigger
+/// recv_timeout safety valve fires, and the SDK's outer call
 /// timeout lands first as an opaque "Invocation timeout".
 ///
 /// 5s is well above realistic per-chunk inter-arrival latency on
 /// a healthy 64 KiB-frame channel (chunks typically arrive in
-/// milliseconds) and tight enough that the host-side trigger
+/// milliseconds) and tight enough that the host-side call
 /// returns `S218` before any reasonable caller-side test timeout
-/// fires. Aborting the host trigger triggers a shell.sock
+/// fires. Aborting the host call triggers a shell.sock
 /// disconnect, which in turn fires the relay's SIGKILL fan-out;
 /// the dispatcher's `Signal` handler then drops the corr_id from
 /// `fs_writes`, the supervisor unlinks the temp, all within
@@ -641,11 +641,11 @@ impl Session {
 
         // Stream chunks (64 KiB buffer). Each `reader.read` is bounded
         // by `FS_WRITE_READ_IDLE_TIMEOUT` so a stalled / hard-terminated
-        // caller-side data channel can't pin the trigger handler. On
+        // caller-side data channel can't pin the function handler. On
         // timeout we abort with S218; the dropped Session disconnects
         // shell.sock, the relay's SIGKILL fan-out cascades into the
         // supervisor, the temp file gets unlinked, and the caller sees
-        // a typed S218 error well before any outer SDK trigger timeout.
+        // a typed S218 error well before any outer SDK call timeout.
         let mut buf = vec![0u8; 64 * 1024];
         loop {
             let n = match tokio::time::timeout(FS_WRITE_READ_IDLE_TIMEOUT, reader.read(&mut buf))

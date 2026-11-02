@@ -4,58 +4,116 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Engine-hosted event sources (README §9, protocol.md §3.2): the functions
-//! that replace the engine's own trigger types and those of the engine
-//! workers still in use.
+//! Engine-hosted sources: functions the engine hosts whose handler returns
+//! the event they are called with, observed like any other function.
 //!
-//! | Function | Replaces the trigger type | Event (`input`) |
-//! |---|---|---|
-//! | `engine::on-functions-changed` | `engine::functions-available` | `{ event: "functions_changed", functions: [...] }` |
-//! | `engine::on-workers-changed` | `engine::workers-available` | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated` |
-//! | `configuration::on-updated` | `configuration` | the `configuration` trigger's event |
-//! | `observability::on-log` | `log` | one log record, as the `log` trigger sends it |
-//! | `observability::on-span` | `trace` | `{ trace_ids }`, one coalesced window, as the `trace` trigger sends it |
+//! | Function | Event (`input` and `output`) |
+//! |---|---|
+//! | `engine::on-functions-changed` | `{ event: "functions_changed", functions: [...] }`, one call per burst of registrations (~100ms) |
+//! | `engine::on-workers-changed` | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated` |
+//! | `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one call per observer creation (its first state) and per state change |
+//! | `configuration::on-updated` | a configuration entry registered, updated or deleted |
+//! | `observability::on-log` | one ingested log record |
+//! | `observability::on-span` | `{ trace_ids }`, one coalesced window of span activity |
+//! | `stream::on-changed` | one stream write or custom event (`iii-stream`) |
+//! | `stream::on-join`, `stream::on-leave` | a stream client joined or left a group (`iii-stream`) |
 //!
-//! Each is an auto function observed like any other. Its events are
-//! evaluated by the engine itself ([`ObserverRegistry::emit`]) wherever the
-//! old trigger type fires, which keeps working: one event per occurrence, a
-//! successful invocation whose input is the event and whose output is empty,
-//! with the engine as the caller. Nothing is built while nothing observes the
-//! function. Its `request_format` describes the event (closed at the top
-//! level), so an observer's `input.*` filter paths are checked. Calling one
-//! directly is refused with `FORBIDDEN`: its events are the engine's to emit,
-//! and such a call is not one of them.
+//! Each is a private function: the engine calls it ([`ObserverRegistry::emit`])
+//! once per occurrence, a successful call with the engine as its caller
+//! (`{ worker_name: "iii-engine" }`), and evaluates its observers itself.
+//! Nothing is built while nothing observes the function. Its `request_format`
+//! and `response_format` describe the event (closed at the top level), so an
+//! observer's `input.*` and `output.*` filter paths are checked. Any other
+//! call, the engine's included, is refused with `FORBIDDEN`: by its handler,
+//! and by the routed hook while the source is observed, so a refused call is
+//! never one of its events. Unobserved, a source is not in the routed hook's
+//! view and costs other calls nothing.
+
+use std::sync::Arc;
 
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
-use super::ObserverRegistry;
+use super::{
+    Emission, FunctionOptions, ObserverRegistry, dispatch::Evaluation, lifecycle::Observer,
+    owner::private_refusal,
+};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
+    event_formats::{
+        ConfigurationEvent, LogEvent, SpanEvent, StreamChangedEvent, StreamJoinLeaveEvent,
+    },
     function::FunctionResult,
-    protocol::{DEFAULT_NAMESPACE, ErrorBody, observe_codes},
-    trigger_formats::{ConfigurationCallRequest, LogCallRequest, TraceCallRequest},
+    protocol::{DEFAULT_NAMESPACE, ErrorBody, ObserverState},
 };
 
-/// Replaces the `engine::functions-available` trigger type.
 pub const ON_FUNCTIONS_CHANGED: &str = "engine::on-functions-changed";
-/// Replaces the `engine::workers-available` trigger type.
 pub const ON_WORKERS_CHANGED: &str = "engine::on-workers-changed";
-/// Replaces the `configuration` trigger type.
+pub const ON_OBSERVERS_CHANGED: &str = "engine::on-observers-changed";
 pub const CONFIGURATION_ON_UPDATED: &str = "configuration::on-updated";
-/// Replaces the `log` trigger type.
 pub const OBSERVABILITY_ON_LOG: &str = "observability::on-log";
-/// Replaces the `trace` trigger type.
 pub const OBSERVABILITY_ON_SPAN: &str = "observability::on-span";
+pub const STREAM_ON_CHANGED: &str = "stream::on-changed";
+pub const STREAM_ON_JOIN: &str = "stream::on-join";
+pub const STREAM_ON_LEAVE: &str = "stream::on-leave";
 
 impl ObserverRegistry {
-    /// Marks `(namespace, function_id)` as an event source: the routed hook
-    /// ignores calls to it, and [`Self::emit`] produces its events.
-    pub fn declare_event_source(&self, namespace: &str, function_id: &str) {
-        let key = (namespace.to_string(), function_id.to_string());
-        if self.event_sources.insert(key.clone(), ()).is_none() {
-            self.refresh_active(&key);
+    /// One call of `engine::on-observers-changed`: `observer` became `state`
+    /// (or was created in it). Handed to the evaluator at once, so a caller
+    /// holding `observer`'s status lock hands its changes over in the order
+    /// they happened. Returned when no evaluator task runs, for the caller to
+    /// evaluate once it let go of that lock: an activation may take it.
+    #[must_use = "an event no evaluator task took is evaluated by the caller"]
+    pub(super) fn observer_changed(
+        &self,
+        observer: &Observer,
+        state: &ObserverState,
+        reason: &dyn Fn() -> Option<ErrorBody>,
+    ) -> Option<UnqueuedEvent> {
+        if !self
+            .observers_changed_watched
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
         }
+        let registry = self.this()?;
+        let evaluation = registry.emission(
+            DEFAULT_NAMESPACE,
+            ON_OBSERVERS_CHANGED,
+            Emission::default(),
+            || {
+                payload_built();
+                let mut event = json!({
+                    "observer_id": observer.id,
+                    "function_id": observer.function.1,
+                    "target": observer.target.1,
+                    "state": state.as_str(),
+                });
+                if let Some(reason) = reason() {
+                    event["reason"] = json!({ "code": reason.code, "message": reason.message });
+                }
+                Some(event)
+            },
+        )?;
+        let evaluation = registry.try_enqueue(evaluation)?;
+        Some(UnqueuedEvent {
+            registry,
+            evaluation,
+        })
+    }
+}
+
+/// An event of an engine-hosted source no evaluator task took (see
+/// [`ObserverRegistry::observer_changed`]).
+pub(super) struct UnqueuedEvent {
+    registry: Arc<ObserverRegistry>,
+    evaluation: Evaluation,
+}
+
+impl UnqueuedEvent {
+    /// Evaluates it here: the caller holds no lock an activation may take.
+    pub(super) fn evaluate(self) {
+        self.registry.evaluate(self.evaluation);
     }
 }
 
@@ -64,7 +122,7 @@ thread_local! {
     static PAYLOADS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Called where an event source builds an event's payload. Tests read the
+/// Called where an engine-hosted source builds an event. Tests read the
 /// count ([`payloads_built`]): unobserved, nothing should be built.
 #[inline]
 pub(crate) fn payload_built() {
@@ -78,50 +136,49 @@ pub(crate) fn payloads_built() -> usize {
     PAYLOADS_BUILT.with(|built| built.get())
 }
 
-/// Registers the engine-hosted event source `function_id` in `default`.
-pub fn register_event_source(
-    engine: &Engine,
-    function_id: &str,
-    description: &str,
-    request_format: Value,
-) {
+/// Registers the engine-hosted source `function_id` in `default`: a private
+/// function whose calls are the events [`ObserverRegistry::emit`] makes, each
+/// its own input and output, described by `format`. Its handler refuses every
+/// call.
+pub fn register_event_source(engine: &Engine, function_id: &str, description: &str, format: Value) {
+    // The engine hosts its sources: a worker that registered the id while no
+    // engine module did (iii-stream added by a config reload) loses it.
+    engine.release_to_engine(DEFAULT_NAMESPACE, function_id);
     engine
         .observers
-        .declare_event_source(DEFAULT_NAMESPACE, function_id);
-    let refusal = format!(
-        "`{function_id}` is an event source the engine emits: observe it instead of calling it"
-    );
+        .set_options(DEFAULT_NAMESPACE, function_id, FunctionOptions::private());
+    let refused_id = function_id.to_string();
     engine.register_function_handler(
         RegisterFunctionRequest {
             function_id: function_id.to_string(),
             description: Some(description.to_string()),
-            request_format: Some(request_format),
-            response_format: None,
+            request_format: Some(format.clone()),
+            response_format: Some(format),
             metadata: Some(json!({ "source": "builtin", "observe": "event" })),
         },
-        Handler::new(move |_input: Value| {
-            let refusal = refusal.clone();
-            async move { FunctionResult::Failure(ErrorBody::new(observe_codes::FORBIDDEN, refusal)) }
+        Handler::new(move |_: Value| {
+            let refused = private_refusal(&refused_id);
+            async move { FunctionResult::Failure(refused) }
         }),
     );
 }
 
-/// `engine::on-functions-changed` and `engine::on-workers-changed`.
+/// `engine::on-functions-changed`, `engine::on-workers-changed` and
+/// `engine::on-observers-changed`.
 pub fn register_engine_event_sources(engine: &Engine) {
     register_event_source(
         engine,
         ON_FUNCTIONS_CHANGED,
-        "Event source: the set of registered functions changed (a burst is coalesced over \
-         ~100ms). The event lists every function. Replaces the engine::functions-available \
-         trigger type.",
+        "Engine-hosted source: the set of registered functions changed (a burst is coalesced \
+         over ~100ms). The event lists every function.",
         functions_changed_format(),
     );
     register_event_source(
         engine,
         ON_WORKERS_CHANGED,
-        "Event source: a worker connected (`worker_connected`), disconnected \
+        "Engine-hosted source: a worker connected (`worker_connected`), disconnected \
          (`worker_disconnected`) or announced its metadata with engine::workers::register \
-         (`worker_metadata_updated`). Replaces the engine::workers-available trigger type.",
+         (`worker_metadata_updated`).",
         closed(json!({
             "type": "object",
             "required": ["event", "worker_id"],
@@ -134,6 +191,14 @@ pub fn register_engine_event_sources(engine: &Engine) {
             }
         })),
     );
+    register_event_source(
+        engine,
+        ON_OBSERVERS_CHANGED,
+        "Engine-hosted source: an observer was created or changed state. One call per \
+         creation, with the state it starts in, and one per state change; `reason` says why, \
+         when there is one.",
+        observers_changed_format(),
+    );
 }
 
 /// `configuration::on-updated`.
@@ -141,10 +206,9 @@ pub fn register_configuration_event_source(engine: &Engine) {
     register_event_source(
         engine,
         CONFIGURATION_ON_UPDATED,
-        "Event source: a configuration entry was registered, updated or deleted \
-         (`input.event_type`); `input.id` is the configuration id, usually the worker's name. \
-         Replaces the configuration trigger type.",
-        closed(schema_of::<ConfigurationCallRequest>()),
+        "Engine-hosted source: a configuration entry was registered, updated or deleted \
+         (`input.event_type`); `input.id` is the configuration id, usually the worker's name.",
+        closed(schema_of::<ConfigurationEvent>()),
     );
 }
 
@@ -153,17 +217,42 @@ pub fn register_observability_event_sources(engine: &Engine) {
     register_event_source(
         engine,
         OBSERVABILITY_ON_LOG,
-        "Event source: one log record was ingested (filter on `input.severity_text`, \
-         `input.service_name`, ...). Replaces the log trigger type.",
-        closed(schema_of::<LogCallRequest>()),
+        "Engine-hosted source: one log record was ingested (filter on `input.severity_text`, \
+         `input.service_name`, ...).",
+        closed(schema_of::<LogEvent>()),
     );
     register_event_source(
         engine,
         OBSERVABILITY_ON_SPAN,
-        "Event source: spans were recorded; one event per ~300ms window lists the distinct \
-         trace ids it touched (re-read them with engine::traces::*). Replaces the trace \
-         trigger type.",
-        closed(schema_of::<TraceCallRequest>()),
+        "Engine-hosted source: spans were recorded; one call per ~300ms window lists the \
+         distinct trace ids it touched (re-read them with engine::traces::*).",
+        closed(schema_of::<SpanEvent>()),
+    );
+}
+
+/// `stream::on-changed`, `stream::on-join` and `stream::on-leave`.
+pub fn register_stream_event_sources(engine: &Engine) {
+    register_event_source(
+        engine,
+        STREAM_ON_CHANGED,
+        "Engine-hosted source: a stream item was created, updated or deleted, a group was \
+         synced, or a custom event was sent to a group (filter on `input.stream_name`, \
+         `input.group_id`).",
+        closed(schema_of::<StreamChangedEvent>()),
+    );
+    register_event_source(
+        engine,
+        STREAM_ON_JOIN,
+        "Engine-hosted source: a stream client subscribed to a group (filter on \
+         `input.stream_name`, `input.group_id`).",
+        closed(schema_of::<StreamJoinLeaveEvent>()),
+    );
+    register_event_source(
+        engine,
+        STREAM_ON_LEAVE,
+        "Engine-hosted source: a stream client left a group (filter on `input.stream_name`, \
+         `input.group_id`).",
+        closed(schema_of::<StreamJoinLeaveEvent>()),
     );
 }
 
@@ -178,14 +267,42 @@ fn functions_changed_format() -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["function_id", "namespace", "worker_name"],
+                    "required": ["function_id", "namespace", "worker_name", "observer_count"],
                     "properties": {
                         "function_id": { "type": "string" },
                         "namespace": { "type": "string" },
                         "worker_name": { "type": "string" },
                         "description": { "type": "string" },
-                        "metadata": {}
+                        "metadata": {},
+                        "args_format": {},
+                        "private": { "type": "boolean" },
+                        "observable": { "type": "boolean" },
+                        "observer_count": { "type": "integer", "minimum": 0 }
                     }
+                }
+            }
+        }
+    }))
+}
+
+fn observers_changed_format() -> Value {
+    closed(json!({
+        "type": "object",
+        "required": ["observer_id", "function_id", "target", "state"],
+        "properties": {
+            "observer_id": { "type": "string" },
+            "function_id": { "type": "string" },
+            "target": { "type": "string" },
+            "state": {
+                "type": "string",
+                "enum": ["pending", "active", "suspended", "error", "disposed"]
+            },
+            "reason": {
+                "type": "object",
+                "required": ["code", "message"],
+                "properties": {
+                    "code": { "type": "string" },
+                    "message": { "type": "string" }
                 }
             }
         }
@@ -207,7 +324,7 @@ fn closed(mut schema: Value) -> Value {
     schema
 }
 
-/// In-process observers of event sources, for the event sources' own tests.
+/// In-process observers of engine-hosted sources, for their own tests.
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{sync::Arc, time::Duration};
@@ -256,8 +373,8 @@ pub(crate) mod test_support {
         (worker, rx)
     }
 
-    /// `source ~> target` with `deliver: input` (like a trigger), defaults
-    /// otherwise.
+    /// `source ~> target` with `deliver: input` (the call's input alone),
+    /// defaults otherwise.
     pub fn request(id: &str, source: &str, target: &str, filters: Option<Value>) -> ObserveRequest {
         ObserveRequest {
             id: id.to_string(),
@@ -295,7 +412,14 @@ pub(crate) mod test_support {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("`{id}` never became active"));
+        .unwrap_or_else(|_| {
+            let observer = engine.observers.get(&id);
+            panic!(
+                "`{id}` never became active: {:?} {:?}",
+                observer.as_ref().map(|o| o.state()),
+                observer.and_then(|o| o.reason())
+            )
+        });
     }
 
     /// Observes `source` with `target` from a new observing worker and waits
@@ -325,10 +449,11 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Deliver;
 
-    /// An event source's events reach its observers (with the engine's
-    /// depth), are not built while nothing observes it, and a direct call is
-    /// refused and evaluated by nobody.
+    /// An engine-hosted source's events reach its observers (with the
+    /// engine's depth), are not built while nothing observes it, and a direct
+    /// call is refused and evaluated by nobody.
     #[tokio::test]
     async fn an_event_source_emits_only_what_is_observed() {
         use std::sync::{
@@ -361,6 +486,7 @@ mod tests {
             Some(json!({ "input.worker_id": { "$ne": "w-skip" } })),
         )
         .await;
+        let evaluated = engine.observers.evaluated();
         engine
             .observers
             .emit(DEFAULT_NAMESPACE, ON_WORKERS_CHANGED, build(1));
@@ -371,20 +497,124 @@ mod tests {
 
         let refused = engine.call(ON_WORKERS_CHANGED, json!({})).await;
         assert_eq!(refused.unwrap_err().code, "FORBIDDEN");
-        let evaluated = engine.observers.evaluated();
-        assert_eq!(evaluated, 1, "the direct call is not one of its events");
+        assert_eq!(
+            engine.observers.evaluated(),
+            evaluated + 1,
+            "the direct call is not one of its events"
+        );
+        assert!(
+            engine
+                .observers
+                .options(DEFAULT_NAMESPACE, ON_WORKERS_CHANGED)
+                .private
+        );
+    }
+
+    /// A source's event is its call's input and output: observers see it as
+    /// `input` and as `output`, with the engine as the caller.
+    #[tokio::test]
+    async fn an_event_is_the_input_and_the_output_and_the_engine_calls() {
+        let engine = std::sync::Arc::new(Engine::new());
+        register_engine_event_sources(&engine);
+        let mut sink = test_support::capture(&engine, "test::workers");
+        let (worker, _socket) = test_support::worker(&engine);
+        let mut request = test_support::request(
+            "obs-envelope",
+            ON_WORKERS_CHANGED,
+            "test::workers",
+            Some(json!({ "output.event": { "$eq": "worker_connected" } })),
+        );
+        request.source.deliver = Some(Deliver::Envelope);
+        test_support::observe_request(&engine, &worker, request).await;
+
+        let event = json!({ "event": "worker_connected", "worker_id": "w-1" });
+        engine
+            .observers
+            .emit(DEFAULT_NAMESPACE, ON_WORKERS_CHANGED, || {
+                Some(event.clone())
+            });
+        let envelope = test_support::next(&mut sink).await;
+        assert_eq!(envelope["input"], event);
+        assert_eq!(envelope["output"], event);
+        assert_eq!(envelope["caller"], json!({ "worker_name": "iii-engine" }));
+    }
+
+    /// Every observer's creation, in the state it was created in, and every
+    /// state change after it is one call of `engine::on-observers-changed`.
+    #[tokio::test]
+    async fn observer_state_changes_are_an_engine_hosted_source() {
+        let engine = std::sync::Arc::new(Engine::new());
+        register_engine_event_sources(&engine);
+        let mut changes = test_support::capture(&engine, "test::changes");
+        let _changes_socket = test_support::observe(
+            &engine,
+            "obs-changes",
+            ON_OBSERVERS_CHANGED,
+            "test::changes",
+            Some(json!({ "input.observer_id": { "$eq": "watched" } })),
+        )
+        .await;
+        let _source = test_support::capture(&engine, "test::source");
+        let (worker, _socket) = test_support::worker(&engine);
+        engine
+            .observers
+            .observe(
+                &engine,
+                &worker,
+                test_support::request("watched", "test::source", "test::target", None),
+            )
+            .await;
+        // Created pending: its target is missing.
+        let created = test_support::next(&mut changes).await;
+        assert_eq!(created["state"], "pending");
+        assert_eq!(created["reason"]["code"], "TARGET_UNAVAILABLE");
+        let _target = test_support::capture(&engine, "test::target");
+        assert_eq!(
+            test_support::next(&mut changes).await,
+            json!({
+                "observer_id": "watched",
+                "function_id": "test::source",
+                "target": "test::target",
+                "state": "active"
+            })
+        );
+
+        let observer = engine.observers.get("watched").unwrap();
+        engine
+            .observers
+            .dispose(&observer, "UNOBSERVED", "disposed by the test");
+        let disposed = test_support::next(&mut changes).await;
+        assert_eq!(disposed["state"], "disposed");
+        assert_eq!(disposed["reason"]["code"], "UNOBSERVED");
+
+        // Created active, its function and target registered: no change
+        // follows, and its creation is still called.
+        let (other, _other_socket) = test_support::worker(&engine);
+        engine
+            .observers
+            .observe(
+                &engine,
+                &other,
+                test_support::request("watched", "test::source", "test::target", None),
+            )
+            .await;
+        assert_eq!(
+            test_support::next(&mut changes).await["state"],
+            "active",
+            "the creation"
+        );
     }
 
     #[test]
     fn event_formats_are_closed_and_name_their_fields() {
         for (schema, field) in [
             (functions_changed_format(), "functions"),
-            (
-                closed(schema_of::<ConfigurationCallRequest>()),
-                "event_type",
-            ),
-            (closed(schema_of::<LogCallRequest>()), "severity_text"),
-            (closed(schema_of::<TraceCallRequest>()), "trace_ids"),
+            (observers_changed_format(), "observer_id"),
+            (closed(schema_of::<ConfigurationEvent>()), "event_type"),
+            (closed(schema_of::<LogEvent>()), "severity_text"),
+            (closed(schema_of::<SpanEvent>()), "trace_ids"),
+            (closed(schema_of::<StreamChangedEvent>()), "stream_name"),
+            (closed(schema_of::<StreamJoinLeaveEvent>()), "group_id"),
         ] {
             assert_eq!(schema["additionalProperties"], false, "{schema}");
             assert!(schema["properties"].get(field).is_some(), "{schema}");

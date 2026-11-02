@@ -21,7 +21,7 @@ on:
       scenarios:
         description: 'Scenarios (iii-loadtest scenarios lists them)'
         required: false
-        default: 'rpc,fanout,filters,observers,emit,local,overload,connections'
+        default: 'rpc,fanout,filters,observers,source,match-keys,local,overload,connections'
       quick:
         description: 'Short steps, fewer levels: checks the pipeline, never published'
         type: boolean
@@ -54,7 +54,7 @@ jobs:
     timeout-minutes: 300
     env:
       PROFILES: ${{ inputs.profiles || 'host,1x512,2x1024,4x2048' }}
-      SCENARIOS: ${{ inputs.scenarios || 'rpc,fanout,filters,observers,emit,local,overload,connections' }}
+      SCENARIOS: ${{ inputs.scenarios || 'rpc,fanout,filters,observers,source,match-keys,local,overload,connections' }}
       QUICK: ${{ inputs.quick && '--quick' || '' }}
       PUBLISH: ${{ github.event_name != 'workflow_dispatch' || (inputs.publish && !inputs.quick) }}
     steps:

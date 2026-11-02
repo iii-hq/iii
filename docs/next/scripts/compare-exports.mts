@@ -93,7 +93,7 @@ function extractTypedoc(jsonPath: string, pkg: string): Export[] {
 // griffe dumps the whole package; the public import paths are the root barrel
 // plus this fixed set of submodules (the rest are backing/impl modules).
 const PY_PUBLIC_SUBMODULES = new Set([
-  'channel', 'errors', 'trigger', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state', 'helpers',
+  'channel', 'errors', 'runtime', 'engine', 'protocol', 'internal', 'utils', 'stream', 'state', 'helpers',
 ])
 function griffeResolve(obj: any, index: Map<string, any>, depth = 0): any {
   if (!obj || depth > 10) return obj
@@ -156,7 +156,7 @@ const RD_KIND: Record<string, string> = {
 // never the public Stage-1 re-export path (`iii_sdk::channel`). So walk the
 // public module tree from the crate root, following `pub use`, and prefer the
 // clean submodule path over the impl module it's defined in.
-const RD_IMPL_MODULES = new Set(['channels', 'triggers', 'structs', 'types', 'iii', 'builtin_triggers', 'error', 'stream_provider', 'helpers'])
+const RD_IMPL_MODULES = new Set(['channels', 'structs', 'types', 'iii', 'error', 'stream_provider', 'helpers'])
 function extractRustdoc(jsonPath: string): Export[] {
   const data = JSON.parse(readFileSync(jsonPath, 'utf-8'))
   const index: Record<string, any> = data.index ?? {}

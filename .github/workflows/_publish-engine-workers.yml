@@ -99,10 +99,9 @@ jobs:
           export PATH="$HOME/.local/bin:$HOME/.iii/bin:$PATH"
           iii --version
 
-      # Boot the engine with no workers so we can snapshot the trigger
-      # types registered by `mandatory` workers (e.g. iii-observability's
-      # `log` trigger type). The collect step diffs those out so the target
-      # worker's payload only carries the types it actually contributes.
+      # Boot the engine with no workers. It runs its mandatory workers
+      # (configuration, iii-engine-functions, iii-observability, ...) on its
+      # own; the reload step adds the target worker when it is not one of them.
       - name: Start III engine
         run: |
           set -euo pipefail
@@ -116,32 +115,22 @@ jobs:
               cat iii-engine.log
               exit 1
             fi
-            if iii trigger 'engine::workers::list' --json '{}' >/tmp/iii-workers.json 2>/tmp/iii-trigger.err; then
-              cat /tmp/iii-workers.json
+            if iii call 'engine::workers::list' --json '{}' >engine-workers.json 2>/tmp/iii-call.err; then
+              cat engine-workers.json
               exit 0
             fi
             sleep 1
           done
 
           echo "::error::iii engine did not become ready"
-          cat /tmp/iii-trigger.err || true
+          cat /tmp/iii-call.err || true
           cat iii-engine.log || true
           exit 1
 
-      - name: Snapshot engine trigger types baseline
-        run: |
-          set -euo pipefail
-          # `engine::trigger-types::list` was retired in the engine_fn rework.
-          # `engine::triggers::list` now returns trigger TYPES (templates).
-          iii trigger \
-            'engine::triggers::list' \
-            --json '{"include_internal": false}' \
-            > trigger-types-baseline.json
-          cat trigger-types-baseline.json
-
       # Reload the engine with the target worker by overwriting config.yaml.
       # The engine watches config.yaml and reloads on change, so the target
-      # worker registers without restarting.
+      # worker registers without restarting. A worker the engine already runs
+      # is left out: config.yaml does not accept the mandatory workers.
       - name: Reload engine with target worker (${{ inputs.worker }})
         env:
           WORKER: ${{ inputs.worker }}
@@ -149,8 +138,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import os, pathlib, yaml
+          import json, os, pathlib, yaml
           worker = os.environ["WORKER"]
+          running = json.loads(pathlib.Path("engine-workers.json").read_text(encoding="utf-8"))
+          if any(w.get("name") == worker for w in running.get("workers") or []):
+              print(f"{worker} already runs in the engine; config.yaml stays empty")
+              raise SystemExit(0)
           worker_dir = pathlib.Path(os.environ["WORKER_DIR"])
           manifest = worker_dir / "iii.worker.yaml"
           meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
@@ -169,8 +162,7 @@ jobs:
           python3 .github/scripts/collect_engine_worker_interface.py \
             --worker "$WORKER" \
             --out worker-interface.json \
-            --wait-seconds 120 \
-            --trigger-types-baseline trigger-types-baseline.json
+            --wait-seconds 120
 
       - name: Build payload
         id: payload

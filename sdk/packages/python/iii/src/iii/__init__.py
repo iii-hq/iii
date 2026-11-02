@@ -3,7 +3,7 @@
 from iii_helpers.queue import EnqueueResult
 
 from .errors import InvocationError, ObserveRejection, RegistrationRejectedError
-from .iii import TriggerAction, register_worker
+from .iii import CallAction, TriggerAction, register_worker
 from .iii_constants import (
     DEFAULT_ENGINE_URL,
     ConnectionStateCallback,
@@ -12,6 +12,9 @@ from .iii_constants import (
     TelemetryOptions,
 )
 from .iii_types import (
+    CallActionEnqueue,
+    CallActionVoid,
+    CallRequest,
     MiddlewareFunctionInput,
     TriggerActionEnqueue,
     TriggerActionVoid,
@@ -19,14 +22,21 @@ from .iii_types import (
 from .invocation_context import InvocationContext, current_invocation
 from .observable import Observer
 from .observe_types import (
+    AddedHook,
+    Call,
     Caller,
     Capture,
+    DeliverHook,
     Filter,
+    Key,
+    MatchHook,
+    MatchKeys,
+    MatchPredicate,
     Observed,
-    ObserveHooks,
     ObserverOptions,
     ObserverState,
     ObserveSource,
+    RemovedHook,
     Target,
 )
 from .observer_handle import ObserverHandle
@@ -43,6 +53,7 @@ __all__ = [
     "ObserveRejection",
     "RegistrationRejectedError",
     # Core
+    "CallAction",
     "ConnectionStateCallback",
     "DEFAULT_ENGINE_URL",
     "IIIConnectionState",
@@ -53,6 +64,9 @@ __all__ = [
     # RBAC types
     "MiddlewareFunctionInput",
     # Message types
+    "CallActionEnqueue",
+    "CallActionVoid",
+    "CallRequest",
     "TriggerActionEnqueue",
     "TriggerActionVoid",
     # Queue
@@ -64,17 +78,24 @@ __all__ = [
     # Stream
     "IStream",
     # Observe
+    "AddedHook",
+    "Call",
     "Caller",
     "Capture",
     "current_invocation",
+    "DeliverHook",
     "Filter",
     "InvocationContext",
+    "Key",
+    "MatchHook",
+    "MatchKeys",
+    "MatchPredicate",
     "Observed",
-    "ObserveHooks",
     "Observer",
     "ObserverHandle",
     "ObserverOptions",
     "ObserverState",
     "ObserveSource",
+    "RemovedHook",
     "Target",
 ]

@@ -13,14 +13,11 @@ use function_macros::{function, service};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
-use tracing::Instrument;
 
 use crate::{
-    condition::check_condition,
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
     protocol::ErrorBody,
-    trigger::TriggerType,
     workers::{
         configuration::{
             adapters::{ConfigurationAdapter, ExternalChange, RegisterKind},
@@ -37,7 +34,6 @@ use crate::{
                 ConfigurationSchemaInput, ConfigurationSchemaView, ConfigurationSetInput,
                 ConfigurationSetResult, MigrateAction,
             },
-            trigger::{ConfigurationTriggers, TRIGGER_TYPE},
         },
         traits::{AdapterFactory, ConfigurableWorker, Worker},
     },
@@ -47,8 +43,6 @@ use crate::{
 pub struct ConfigurationWorker {
     pub(crate) store: Arc<ConfigurationStore>,
     pub(crate) engine: Arc<Engine>,
-    pub(crate) triggers: Arc<ConfigurationTriggers>,
-    pub(crate) ttl_seconds: u64,
     /// Holds the watcher loop handle so destroy() can stop external-edit
     /// fan-out before the adapter is torn down.
     watch_task: Arc<TokioMutex<Option<tokio::task::JoinHandle<()>>>>,
@@ -68,6 +62,10 @@ impl Worker for ConfigurationWorker {
         self.register_functions(engine);
     }
 
+    fn hosted_sources(&self) -> Vec<&'static str> {
+        vec![crate::observer::events::CONFIGURATION_ON_UPDATED]
+    }
+
     async fn initialize(&self) -> anyhow::Result<()> {
         tracing::info!("Initializing ConfigurationWorker");
 
@@ -80,16 +78,6 @@ impl Worker for ConfigurationWorker {
             );
         }
 
-        let _ = self
-            .engine
-            .register_trigger_type(TriggerType::new(
-                TRIGGER_TYPE,
-                "Configuration trigger — fires on register/update/delete events",
-                Box::new(self.clone()),
-                None,
-            ))
-            .await;
-        // The function replacing the trigger type (README §9).
         crate::observer::events::register_configuration_event_source(&self.engine);
 
         // Start the adapter's external-change watcher (no-op for adapters
@@ -98,7 +86,7 @@ impl Worker for ConfigurationWorker {
         if let Err(err) = self.store.adapter().watch(tx).await {
             tracing::warn!(
                 error = %err,
-                "Adapter watch failed; external edits will not fire triggers"
+                "Adapter watch failed; external edits will not reach listeners or observers"
             );
         } else {
             let worker = self.clone();
@@ -115,7 +103,6 @@ impl Worker for ConfigurationWorker {
 
     async fn destroy(&self) -> anyhow::Result<()> {
         tracing::info!("Destroying ConfigurationWorker");
-        self.triggers.abort_all_expiries().await;
         if let Some(handle) = self.watch_task.lock().await.take() {
             handle.abort();
         }
@@ -139,11 +126,15 @@ impl ConfigurableWorker for ConfigurationWorker {
     }
 
     fn build(engine: Arc<Engine>, config: Self::Config, adapter: Arc<Self::Adapter>) -> Self {
+        if config.ttl_seconds != 0 {
+            tracing::warn!(
+                ttl_seconds = config.ttl_seconds,
+                "configuration: `ttl_seconds` is ignored; entries persist until they are deleted"
+            );
+        }
         Self {
             store: Arc::new(ConfigurationStore::new(adapter)),
             engine,
-            triggers: Arc::new(ConfigurationTriggers::new()),
-            ttl_seconds: config.ttl_seconds,
             watch_task: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -163,104 +154,24 @@ impl ConfigurationWorker {
     /// (with `#[doc(hidden)]`) so integration tests in `engine/tests/` can
     /// drive the worker without booting the full engine.
     #[doc(hidden)]
-    pub fn for_test(
-        engine: Arc<Engine>,
-        adapter: Arc<dyn ConfigurationAdapter>,
-        ttl_seconds: u64,
-    ) -> Self {
+    pub fn for_test(engine: Arc<Engine>, adapter: Arc<dyn ConfigurationAdapter>) -> Self {
         Self {
             store: Arc::new(ConfigurationStore::new(adapter)),
             engine,
-            triggers: Arc::new(ConfigurationTriggers::new()),
-            ttl_seconds,
             watch_task: Arc::new(TokioMutex::new(None)),
         }
     }
 
-    /// Trigger fan-out for an event already produced by the worker
-    /// (register/set) or surfaced by the adapter watcher (file edit).
+    /// Broadcasts an event already produced by the worker (register/set) or
+    /// surfaced by the adapter watcher (file edit): to the engine's in-process
+    /// listeners, then to the observers of `configuration::on-updated` (the
+    /// event is built only when one needs it).
     pub(crate) async fn fan_out(&self, event: ConfigurationEventData) {
-        // `configuration::on-updated` observers see every event; the event is
-        // built only when one does.
+        self.engine.configuration_listeners.notify(&event);
         self.engine.observers.emit(
             crate::protocol::DEFAULT_NAMESPACE,
             crate::observer::events::CONFIGURATION_ON_UPDATED,
             || event_value(&event),
-        );
-        let triggers = self.triggers.matching(&event.id).await;
-        if triggers.is_empty() {
-            return;
-        }
-
-        let Some(event_value) = event_value(&event) else {
-            tracing::error!("Failed to serialise configuration event");
-            return;
-        };
-        let engine = self.engine.clone();
-        let event_type_wire = match event.event_type {
-            ConfigurationEventType::Registered => "configuration:registered",
-            ConfigurationEventType::Updated => "configuration:updated",
-            ConfigurationEventType::Deleted => "configuration:deleted",
-        };
-        let id = event.id.clone();
-        let current_span = tracing::Span::current();
-
-        tokio::spawn(
-            async move {
-                for trigger in triggers {
-                    if let Some(filter) = trigger.config.event_types.as_ref()
-                        && !filter.iter().any(|t| t == event_type_wire)
-                    {
-                        continue;
-                    }
-
-                    if let Some(condition_id) = trigger.config.condition_function_id.as_ref() {
-                        match check_condition(
-                            engine.as_ref(),
-                            &trigger.trigger.namespace,
-                            condition_id,
-                            event_value.clone(),
-                        )
-                        .await
-                        {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                tracing::debug!(
-                                    function_id = %trigger.trigger.function_id,
-                                    "Condition returned false, skipping handler"
-                                );
-                                continue;
-                            }
-                            Err(err) => {
-                                tracing::error!(
-                                    condition_function_id = %condition_id,
-                                    error = ?err,
-                                    "Condition function errored, skipping handler"
-                                );
-                                continue;
-                            }
-                        }
-                    }
-
-                    if let Err(err) = engine
-                        .call_with_metadata_ns(
-                            &trigger.trigger.namespace,
-                            &trigger.trigger.function_id,
-                            event_value.clone(),
-                            trigger.trigger.metadata.clone(),
-                        )
-                        .await
-                    {
-                        tracing::error!(
-                            function_id = %trigger.trigger.function_id,
-                            id = %id,
-                            error = ?err,
-                            "Configuration trigger handler failed"
-                        );
-                    }
-                }
-            }
-            .instrument(tracing::info_span!(parent: current_span, "configuration_triggers", "iii.function.kind" = "internal")),
         );
     }
 
@@ -357,31 +268,11 @@ impl ConfigurationWorker {
         }
         self.fan_out(event).await;
     }
-
-    /// TTL-driven cleanup. Called from the trigger module when the
-    /// last-trigger countdown elapses.
-    pub(crate) async fn expire_configuration(&self, id: &str) -> anyhow::Result<()> {
-        match self.store.delete(id).await {
-            Ok(Some(entry)) => {
-                let event = entry_to_event(
-                    &entry,
-                    ConfigurationEventType::Deleted,
-                    Some(entry.value.clone()),
-                    None,
-                );
-                self.fan_out(event).await;
-                Ok(())
-            }
-            Ok(None) => Ok(()),
-            Err(err) => Err(err.into()),
-        }
-    }
 }
 
-/// The event as triggers and `configuration::on-updated` observers get it.
+/// The event as `configuration::on-updated` observers get it.
 fn event_value(event: &ConfigurationEventData) -> Option<Value> {
-    // Counted (tests) where it is built, whoever builds it: unobserved and
-    // with no trigger, nothing should.
+    // Counted (tests) where it is built: unobserved, nothing should be.
     crate::observer::events::payload_built();
     serde_json::to_value(event).ok()
 }
@@ -726,7 +617,7 @@ mod tests {
                 .expect("fs adapter"),
         ) as Arc<dyn ConfigurationAdapter>;
         let engine = Arc::new(Engine::new());
-        let worker = ConfigurationWorker::for_test(engine.clone(), adapter, 0);
+        let worker = ConfigurationWorker::for_test(engine.clone(), adapter);
         (engine, worker, dir)
     }
 
@@ -749,10 +640,10 @@ mod tests {
         }
     }
 
-    /// `configuration::on-updated` observers get the `configuration` trigger's
-    /// event, filtered on the configuration id.
+    /// `configuration::on-updated` observers get each change, filtered on the
+    /// configuration id.
     #[tokio::test]
-    async fn configuration_on_updated_observers_get_the_trigger_event() {
+    async fn configuration_on_updated_observers_get_each_change() {
         use crate::observer::events::{
             CONFIGURATION_ON_UPDATED, register_configuration_event_source, test_support,
         };
@@ -789,6 +680,36 @@ mod tests {
         assert_eq!(event["event_type"], "configuration:registered");
         assert_eq!(event["new_value"], json!({ "port": 3112 }));
         assert!(sink.try_recv().is_err());
+    }
+
+    /// The engine's in-process listeners hear the changes of the entry they
+    /// listen to, whether anything observes `configuration::on-updated` or
+    /// not.
+    #[tokio::test]
+    async fn in_process_listeners_hear_their_entry() {
+        use crate::workers::configuration::structs::ConfigurationEventType;
+        let (engine, worker, _dir) = setup().await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        engine.configuration_listeners.listen(
+            "test::listener",
+            "iii-stream",
+            &[ConfigurationEventType::Updated],
+            Arc::new(move |event| {
+                let _ = tx.send(event.new_value.clone());
+            }),
+        );
+        let _ = worker
+            .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
+            .await;
+        let _ = worker
+            .set_fn(ConfigurationSetInput {
+                id: "iii-stream".into(),
+                value: json!({ "port": 2 }),
+                flush: true,
+            })
+            .await;
+        assert_eq!(rx.recv().await, Some(Some(json!({ "port": 2 }))));
+        assert!(rx.try_recv().is_err(), "the registration is not an update");
     }
 
     #[tokio::test]
@@ -1270,8 +1191,8 @@ mod tests {
         worker
             .register_fn(register_input("iii-stream", Some(json!({ "port": 1 }))))
             .await;
-        // initialize() primes the cache, registers the trigger type, and starts
-        // the directory watcher — exactly as a real boot does.
+        // initialize() primes the cache, registers configuration::on-updated,
+        // and starts the directory watcher — exactly as a real boot does.
         worker
             .initialize()
             .await

@@ -471,7 +471,7 @@ fn stat_request_example() -> serde_json::Value {
 }
 
 /// Mirrors `FsEntry`. Note: the shell protocol does not carry uid/gid;
-/// those fields are absent at this trigger level.
+/// those fields are absent from this function's response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StatResponse {
     pub name: String,

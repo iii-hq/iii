@@ -477,7 +477,7 @@ pub enum ComposeError {
     #[error(
         "a worker named '{container}' is already registered in namespace '{namespace}'. \
          Another daemon owns this project, or a worker from an earlier run is still \
-         connected. `iii trigger engine::workers::list` names it"
+         connected. `iii call engine::workers::list` names it"
     )]
     ContainerNameTaken {
         container: String,
@@ -489,7 +489,7 @@ pub enum ComposeError {
 
     #[error(
         "no project '{id}' here. Name the compose file on the first call: \
-         iii trigger compose::up id={id} file=./worker-compose.yaml"
+         iii call compose::up id={id} file=./worker-compose.yaml"
     )]
     UnknownProject { id: String },
 
@@ -522,7 +522,7 @@ pub enum ComposeError {
     /// already there rather than to debug a rejection.
     #[error(
         "another compose daemon already serves {engine_url}. \
-         Use it (iii trigger compose::list) or stop it (iii trigger compose::stop).\n  \
+         Use it (iii call compose::list) or stop it (iii call compose::stop).\n  \
          the engine said: {detail}"
     )]
     DaemonAlreadyServing { engine_url: String, detail: String },

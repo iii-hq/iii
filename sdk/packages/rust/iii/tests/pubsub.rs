@@ -1,9 +1,7 @@
-//! Integration tests for PubSub operations.
+//! Integration tests for PubSub operations: a subscriber observes
+//! `publish` with a filter on `input.topic`.
 //!
 //! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
-
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
 
 mod common;
 
@@ -13,8 +11,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::RegisterFunction;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
+use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
 
 fn unique_topic(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,6 +20,24 @@ fn unique_topic(prefix: &str) -> String {
         .unwrap()
         .as_millis();
     format!("{prefix}_{ts}")
+}
+
+/// Observes the messages published to `topic`: the target gets each call's
+/// input, `{ topic, data }`.
+async fn subscribe(iii: &IIIClient, topic: &str, target: &str) -> ObserverHandle {
+    let observer = iii.observe(
+        Source::function("publish")
+            .filters(json!({ "input.topic": { "$eq": topic } }))
+            .deliver(Deliver::Input),
+        target,
+    );
+    // An observer of a function nobody hosts stays pending: bound the wait so a
+    // missing pubsub worker fails the test instead of hanging it.
+    tokio::time::timeout(Duration::from_secs(10), observer.ready())
+        .await
+        .expect("`publish` is not hosted: is the pubsub worker running?")
+        .expect("subscribe");
+    observer
 }
 
 #[tokio::test]
@@ -51,17 +66,11 @@ async fn subscribe_and_receive_published_messages() {
         }),
     );
 
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "subscribe".to_string(),
-            fn_id.clone(),
-            json!({"topic": topic}),
-        ))
-        .expect("register trigger");
+    let subscription = subscribe(iii, &topic, &fn_id).await;
 
     common::settle().await;
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "publish".to_string(),
         payload: json!({"topic": topic, "data": {"message": "Hello PubSub!"}}),
         action: None,
@@ -77,10 +86,10 @@ async fn subscribe_and_receive_published_messages() {
 
     let msgs = received.lock().await;
     assert_eq!(msgs.len(), 1);
-    assert_eq!(msgs[0]["message"], "Hello PubSub!");
+    assert_eq!(msgs[0]["data"]["message"], "Hello PubSub!");
 
+    subscription.dispose().await.expect("dispose");
     fn_ref.unregister();
-    trigger.unregister();
 }
 
 #[tokio::test]
@@ -127,24 +136,12 @@ async fn topic_isolation() {
         }),
     );
 
-    let trigger_a = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "subscribe".to_string(),
-            fn_id_a.clone(),
-            json!({"topic": topic_a}),
-        ))
-        .expect("register trigger a");
-    let trigger_b = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "subscribe".to_string(),
-            fn_id_b.clone(),
-            json!({"topic": topic_b}),
-        ))
-        .expect("register trigger b");
+    let subscription_a = subscribe(iii, &topic_a, &fn_id_a).await;
+    let subscription_b = subscribe(iii, &topic_b, &fn_id_b).await;
 
     common::settle().await;
 
-    iii.trigger(TriggerRequest {
+    iii.call(CallRequest {
         function_id: "publish".to_string(),
         payload: json!({"topic": topic_a, "data": {"for": "a"}}),
         action: None,
@@ -163,8 +160,8 @@ async fn topic_isolation() {
     assert_eq!(received_a.lock().await.len(), 1);
     assert_eq!(received_b.lock().await.len(), 0);
 
+    subscription_a.dispose().await.expect("dispose a");
+    subscription_b.dispose().await.expect("dispose b");
     fn_a.unregister();
     fn_b.unregister();
-    trigger_a.unregister();
-    trigger_b.unregister();
 }

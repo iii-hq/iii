@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from iii import InitOptions, TriggerAction
+from iii import CallAction, InitOptions
 from iii.errors import RegistrationRejectedError
 from iii.iii import III, _detect_project_name
 from iii.iii_constants import TelemetryOptions
@@ -29,15 +29,14 @@ def _call_metadata_method(options: InitOptions | None = None) -> dict[str, objec
     return stub._get_worker_metadata()
 
 
-def test_get_worker_metadata_isolation_is_none_when_env_unset(
+def test_get_worker_metadata_leaves_isolation_out_when_env_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("III_ISOLATION", raising=False)
 
     metadata = _call_metadata_method()
 
-    assert "isolation" in metadata
-    assert metadata["isolation"] is None
+    assert "isolation" not in metadata
 
 
 def test_get_worker_metadata_forwards_iii_isolation_env_var(
@@ -121,8 +120,8 @@ def test_get_worker_metadata_explicit_namespace_wins_over_env(
     assert metadata["namespace"] == "analytics"
 
 
-def _capture_triggered_message(request: dict[str, object]) -> dict[str, object]:
-    """Drive the real ``trigger_async`` void path and return the serialized wire dict."""
+def _capture_called_message(request: dict[str, object]) -> dict[str, object]:
+    """Drive the real ``call_async`` void path and return the serialized wire dict."""
     stub = III.__new__(III)
     stub._options = InitOptions()
     stub._fatal_error = None
@@ -138,18 +137,18 @@ def _capture_triggered_message(request: dict[str, object]) -> dict[str, object]:
 
     async def run() -> None:
         stub._loop = asyncio.get_running_loop()  # the SDK loop the remote path runs on
-        await stub.trigger_async(request)
+        await stub.call_async(request)
 
     asyncio.run(run())
     return captured["wire"]  # type: ignore[return-value]
 
 
-def test_trigger_serializes_namespace_when_set() -> None:
-    wire = _capture_triggered_message(
+def test_call_serializes_namespace_when_set() -> None:
+    wire = _capture_called_message(
         {
             "function_id": "state::get",
             "payload": {},
-            "action": TriggerAction.Void(),
+            "action": CallAction.Void(),
             "namespace": "analytics",
         }
     )
@@ -157,12 +156,12 @@ def test_trigger_serializes_namespace_when_set() -> None:
     assert wire["namespace"] == "analytics"
 
 
-def test_trigger_omits_namespace_when_absent() -> None:
-    wire = _capture_triggered_message(
+def test_call_omits_namespace_when_absent() -> None:
+    wire = _capture_called_message(
         {
             "function_id": "state::get",
             "payload": {},
-            "action": TriggerAction.Void(),
+            "action": CallAction.Void(),
         }
     )
 

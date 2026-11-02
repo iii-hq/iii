@@ -7,9 +7,9 @@
 
 <Note>
   This page documents the wire-level protocol the engine and SDK workers exchange. Most projects use
-  a language SDK ([Node](./sdk-node), [Python](./sdk-python),
-  [Rust](./sdk-rust), [Browser](./sdk-browser)) and never touch the
-  protocol directly. The shapes below are the source of truth those SDKs serialize to.
+  a language SDK ([Node](./sdk-node), [Python](./sdk-python), [Rust](./sdk-rust), [Go](./sdk-go),
+  [Browser](./sdk-browser)) and never touch the protocol directly. The shapes below are the source
+  of truth those SDKs serialize to.
 </Note>
 
 <Note>
@@ -23,34 +23,35 @@
 The engine binds its worker and stream WebSockets. Project HTTP routes and observability use their
 own workers:
 
-| Port    | Bound by           | Surface                                                       |
-| ------- | ------------------ | ------------------------------------------------------------- |
-| `3111`  | `http` worker      | Project HTTP routes (configurable in `worker-compose.yaml`).   |
-| `3112`  | engine             | Stream API (WebSocket; consumer-side stream subscriptions).   |
-| `49134` | engine             | SDK WebSocket; this is what `iii_sdk::register_worker` opens. |
+| Port    | Bound by                   | Surface                                                                                |
+| ------- | -------------------------- | -------------------------------------------------------------------------------------- |
+| `3111`  | `http` worker              | Project HTTP routes (configurable in `worker-compose.yaml`).                           |
+| `3112`  | engine                     | Stream API (WebSocket; consumer-side stream subscriptions).                            |
+| `49134` | engine                     | SDK WebSocket; this is what `iii_sdk::register_worker` opens.                          |
 | `9464`  | `iii-observability` worker | Prometheus metrics endpoint (typically exposed from the same container as the engine). |
 
-The [console](../using-iii/console) UI (ADE) runs on `3113` by default. Add it to a project
-with `iii trigger compose::add worker=ade`.
+The [console](../using-iii/console) UI (ADE) runs on `3113` by default. Add it to a project with
+`iii call compose::add worker=ade`.
 
 ## Connection flow
 
 A worker opens the SDK WebSocket (default `ws://127.0.0.1:49134`). On connect the engine assigns the
 worker a UUID and sends a `WorkerRegistered { worker_id, reattach_token, features }` frame carrying
-it. The worker sends the registrations it holds in memory (each `RegisterFunction`, `RegisterTrigger`,
-and `RegisterTriggerType` it intends to expose, then each `Observe` it owns) and calls
-`engine::workers::register` to publish its own metadata (runtime, version, OS, PID, isolation,
-optional `namespace`, an optional one-line `description`, and the protocol `features` it supports),
-which the engine acknowledges with a `RegisterWorkerResult`. See
-[Feature negotiation](#feature-negotiation) for what `features` turns on.
+it. The worker sends the registrations it holds in memory (each `RegisterFunction` it intends to
+expose, then each `Observe` it owns) and calls `engine::workers::register` to publish its own
+metadata (runtime, version, OS, PID, isolation, optional `namespace`, an optional one-line
+`description`, and the protocol `features` it supports), which the engine acknowledges with a
+`RegisterWorkerResult`. See [Feature negotiation](#feature-negotiation) for what `features` turns
+on.
 
 The engine answers every request on the worker listener (`/`, `/otel`, `/ws/channels/{id}`),
 including the WebSocket upgrade, with an `x-iii-capabilities` response header: optional transport
 capabilities as comma-separated tokens. Clients ignore tokens they do not know. `tcp-nodelay` means
-the engine's end of the socket has `TCP_NODELAY` set, so the worker may disable Nagle on its end too.
-A worker must not disable Nagle without this token: with Nagle on the engine's end only, a worker
-that answers immediately leaves the engine's next small frame waiting for the worker's delayed ACK
-(~40 ms on Linux), which is slower than keeping Nagle on both ends. Older engines send no header.
+the engine's end of the socket has `TCP_NODELAY` set, so the worker may disable Nagle on its end
+too. A worker must not disable Nagle without this token: with Nagle on the engine's end only, a
+worker that answers immediately leaves the engine's next small frame waiting for the worker's
+delayed ACK (~40 ms on Linux), which is slower than keeping Nagle on both ends. Older engines send
+no header.
 
 The connection is bidirectional from that point on: the engine pushes `InvokeFunction` frames at the
 worker, and the worker pushes `InvocationResult`, additional registrations, or unregistrations back.
@@ -91,21 +92,23 @@ waits up to 1 s for the close reply before it drops the socket.
 
 ## Feature negotiation
 
-Observers and local dispatch (0.25) are negotiated per connection, so a 0.24 SDK keeps working
-against a 0.25 engine, and a 0.25 SDK against a 0.24 engine.
+Observers, host delivery, and local dispatch are negotiated per connection, so SDKs and engines from
+different releases work together.
 
-- **Engine to worker.** `WorkerRegistered` carries `features`. A 0.25 engine sends
-  `["observe.v1", "local-dispatch.v1"]`; older engines omit the field.
+- **Engine to worker.** `WorkerRegistered` carries `features`. This engine sends
+  `["observe.v1", "observe.v2", "local-dispatch.v1"]`, in that order. A 0.25 engine sends
+  `["observe.v1", "local-dispatch.v1"]`; engines before 0.25 omit the field.
 - **Worker to engine.** The worker lists the features it supports in the `features` array of its
-  `engine::workers::register` payload. A pre-0.25 SDK sends none. Besides the two above, a worker
-  can declare `large-messages.v1`, which the engine never advertises (see the rules below).
+  `engine::workers::register` payload. Every 0.26 SDK declares `observe.v1`, `observe.v2`, and
+  `local-dispatch.v1`. The Node, Python, Rust, and Go SDKs also declare `large-messages.v1`, which
+  the engine never advertises (see the rules below). A pre-0.25 SDK sends none.
 
 ```json
 {
   "type": "workerregistered",
   "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
   "reattach_token": "0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f",
-  "features": ["observe.v1", "local-dispatch.v1"]
+  "features": ["observe.v1", "observe.v2", "local-dispatch.v1"]
 }
 ```
 
@@ -115,39 +118,56 @@ against a 0.25 engine, and a 0.25 SDK against a 0.24 engine.
   "function_id": "engine::workers::register",
   "data": {
     "runtime": "node",
-    "version": "0.25.0",
+    "version": "0.26.0",
     "name": "billing",
     "os": "linux 6.8.0",
     "pid": 4242,
     "namespace": "default",
-    "features": ["observe.v1", "local-dispatch.v1", "large-messages.v1"]
+    "features": ["observe.v1", "observe.v2", "local-dispatch.v1", "large-messages.v1"]
   },
   "action": { "type": "void" }
 }
 ```
 
+What each feature turns on:
+
+| Feature             | Meaning                                                                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields. |
+| `observe.v2`        | Includes `observe.v1`. The host runs its functions' match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`.        |
+| `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                  |
+| `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                             |
+
 Rules:
 
 - The first `engine::workers::register` that carries a non-empty `features` list fixes the
-  connection's features. Later declarations are ignored (logged at `debug`). The engine keeps at most
-  32 names, and drops names longer than 64 bytes. A malformed list costs the worker its features,
-  never its registration.
-- The engine pushes `FunctionRegistered`, `ObserverAdded`, and `ObserverRemoved` only to
-  connections that declared `observe.v1`. `ObserveResult` and `ObserverStateChanged` answer a
-  connection's own `Observe` and go to it regardless. Old SDKs never receive a message type they
-  cannot decode.
+  connection's features. Later declarations are ignored (logged at `debug`). The engine keeps at
+  most 32 names, and drops names longer than 64 bytes. A malformed list costs the worker its
+  features, never its registration.
+- The engine pushes `FunctionRegistered`, `ObserverAdded`, and `ObserverRemoved` only to connections
+  that declared `observe.v1`. `ObserveResult` and `ObserverStateChanged` answer a connection's own
+  `Observe` and go to it regardless. Old SDKs never receive a message type they cannot decode.
 - The engine adds `caller`, `observe_depth`, and `activation` to an `InvokeFunction` only when the
   receiving connection declared `observe.v1`.
-- The engine decodes every worker-to-engine observe message from any connection.
-- `large-messages.v1` commits the connection to receiving JSON messages up to 64 MiB
-  (67,108,864 bytes of serialized envelope), sent as one WebSocket text frame or as a fragmented
-  message. The engine then sends it messages up to that size whatever `version` it reports, except
-  to `runtime: "browser"` (16 MiB). Without it, the engine falls back to the reported SDK version;
-  no other feature counts. The Rust, Node, Python, and Go SDKs declare it from 0.25.0; the browser
-  SDK does not. See [Payload size](../creating-workers/channels#payload-size).
+- The engine decodes every worker-to-engine observe message from any connection, and reads
+  `InvocationResult.matched` and `InvocationResult.delivered` only from connections that declared
+  `observe.v2`.
+- `large-messages.v1` commits the connection to receiving JSON messages up to 64 MiB (67,108,864
+  bytes of serialized envelope), sent as one WebSocket text frame or as a fragmented message. The
+  engine then sends it messages up to that size whatever `version` it reports, except to
+  `runtime: "browser"` (16 MiB). Without it, the engine falls back to the reported SDK version; no
+  other feature counts. See [Payload size](../creating-workers/channels#payload-size).
 - An SDK enables `observe()` only when the engine advertised `observe.v1`; against an older engine,
   `observe()` fails with `UNSUPPORTED`. An SDK runs one of its own functions in-process only after
   the engine confirmed that function with `FunctionRegistered { local_dispatch: true }`.
+- Against an engine that did not advertise `observe.v2`, an SDK leaves each function that declares
+  `args_format`, `private: true`, or `observable: false`, or that sets an `onObserverMatch` or
+  `onObserverDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
+  registration until the current connection's `WorkerRegistered` lists `observe.v2`, and decides
+  again on every reconnect, including when it replays registrations. Every other function, `call`,
+  and `observe` work: the SDK reports matches of local calls only, sends no `matched` and no
+  `delivered`, and sends `output` where it would set `output_is_input`, and the engine evaluates
+  every active observer of a routed call.
 - If the namespace grace timer drains before `engine::workers::register` arrives, the connection is
   treated as legacy until it does; the engine then sends `FunctionRegistered` for the functions the
   connection already registered.
@@ -158,39 +178,26 @@ Every frame is a JSON object discriminated by `type` (the lowercased variant nam
 `registerfunction`). The full set, defined on `Message` in
 [`engine/src/protocol.rs`](https://github.com/iii-hq/iii/blob/main/engine/src/protocol.rs):
 
-| Frame                       | Direction        | Purpose                                                |
-| --------------------------- | ---------------- | ------------------------------------------------------ |
-| `RegisterFunction`          | worker -> engine | Make a function callable by `function_id`, optionally with an `observe` descriptor. |
-| `FunctionRegistered`        | engine -> worker | Ack a `RegisterFunction`, with the function's current observers (0.25, `observe.v1`). |
-| `UnregisterFunction`        | worker -> engine | Drop a previously registered function.                 |
-| `Observe`                   | worker -> engine | Create (or replay) an observer: a source function, filters, and a target (0.25). |
-| `Unobserve`                 | worker -> engine | Dispose an observer this connection owns (0.25).       |
-| `ObserveResult`             | engine -> worker | Reply to `Observe`: the observer's state, error, and warnings (0.25). |
-| `ObserverStateChanged`      | engine -> worker | An observer's lifecycle transition, sent to the observing worker (0.25). |
-| `ObserverAdded`             | engine -> worker | An observer was attached to a function this connection hosts (0.25, `observe.v1`). |
-| `ObserverRemoved`           | engine -> worker | An observer was detached from a function this connection hosts (0.25, `observe.v1`). |
-| `ObserverAck`               | worker -> engine | The owner accepts or rejects an added observer (0.25). |
-| `InvocationsObserved`       | worker -> engine | Batched reports of matched local invocations and `obs.emit` events (0.25). |
-| `LocalInvocationStats`      | worker -> engine | Periodic counts of local invocations and SDK-side report drops (0.25). |
-| `RegisterTrigger`           | worker -> engine | Deprecated. Bind a function to a trigger instance.     |
-| `UnregisterTrigger`         | worker -> engine | Deprecated. Drop a trigger binding.                    |
-| `TriggerRegistrationResult` | engine -> worker | Deprecated. Ack / error for a `RegisterTrigger`.       |
-| `RegisterTriggerType`       | worker -> engine | Deprecated. Declare a new trigger type the worker advertises. |
-| `UnregisterTriggerType`     | worker -> engine | Deprecated. Retire a trigger type this connection provides (decoded since 0.25). |
-| `RegisterService`           | worker -> engine | Group related functions under a service id.            |
-| `InvokeFunction`            | bidirectional    | Call a registered function with a payload.             |
-| `InvocationResult`          | bidirectional    | Carry the function's result or error back.             |
-| `WorkerRegistered`          | engine -> worker | Acknowledge the worker, with the assigned `worker_id` and the engine's `features`. |
-| `RegistrationRejected`      | engine -> worker | Refuse a registration that collides with a live worker in the same namespace, or carries an invalid `observe` descriptor. |
-| `Ping` / `Pong`             | bidirectional    | Liveness; keeps idle connections from timing out.      |
-
-<Warning>
-  The trigger messages (`RegisterTrigger`, `UnregisterTrigger`, `TriggerRegistrationResult`,
-  `RegisterTriggerType`, `UnregisterTriggerType`) are deprecated in 0.25. They keep working in this
-  release and will be removed in a future one. New providers register a function with an `observe`
-  descriptor, and new consumers send `Observe`. See [Upgrading from
-  0.24.x](../upgrading/from-0-24-x).
-</Warning>
+| Frame                  | Direction        | Purpose                                                                                                    |
+| ---------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| `RegisterFunction`     | worker -> engine | Make a function callable by `function_id`, with its schemas, `args_format`, `private`, and `observable`.   |
+| `FunctionRegistered`   | engine -> worker | Ack a `RegisterFunction`, with the function's current observers (`observe.v1`).                            |
+| `UnregisterFunction`   | worker -> engine | Drop a previously registered function.                                                                     |
+| `Observe`              | worker -> engine | Create (or replay) an observer: a function with its `args` and `filters`, and a target.                    |
+| `Unobserve`            | worker -> engine | Dispose an observer this connection owns.                                                                  |
+| `ObserveResult`        | engine -> worker | Reply to `Observe`: the observer's state, error, and warnings.                                             |
+| `ObserverStateChanged` | engine -> worker | An observer's lifecycle transition, sent to the observing worker.                                          |
+| `ObserverAdded`        | engine -> worker | An observer was attached to a function this connection hosts (`observe.v1`).                               |
+| `ObserverRemoved`      | engine -> worker | An observer was detached from a function this connection hosts (`observe.v1`).                             |
+| `ObserverAck`          | worker -> engine | The host accepts or rejects an added observer.                                                             |
+| `InvocationsObserved`  | worker -> engine | Batched reports of observed calls the host delivered.                                                      |
+| `LocalInvocationStats` | worker -> engine | Periodic counts of local invocations and SDK-side report drops.                                            |
+| `RegisterService`      | worker -> engine | Group related functions under a service id.                                                                |
+| `InvokeFunction`       | bidirectional    | Call a registered function with a payload.                                                                 |
+| `InvocationResult`     | bidirectional    | Carry the function's result or error back; from an `observe.v2` host, also the observers it matched.       |
+| `WorkerRegistered`     | engine -> worker | Acknowledge the worker, with the assigned `worker_id` and the engine's `features`.                         |
+| `RegistrationRejected` | engine -> worker | Refuse a registration: an identity conflict with a live worker in the same namespace, or an invalid field. |
+| `Ping` / `Pong`        | bidirectional    | Liveness; keeps idle connections from timing out.                                                          |
 
 ## `RegisterFunction`
 
@@ -204,172 +211,79 @@ Every frame is a JSON object discriminated by `type` (the lowercased variant nam
     "properties": { "a": { "type": "number" }, "b": { "type": "number" } }
   },
   "response_format": { "type": "object", "properties": { "c": { "type": "number" } } },
-  "metadata": { "owner": "math-team" },
-  "invocation": null
+  "metadata": { "owner": "math-team" }
 }
 ```
 
-`id` is required. `description`, `request_format`, `response_format`, and `metadata` are optional
-and feed the iii console and the agent-readable skills. `invocation` is reserved for external HTTP
-functions (`HttpInvocationRef`); leave it out (or `null`) for in-process handlers. Since 0.25 the
-engine omits `request_format` and `response_format` when it sends a registration that has none,
-instead of writing `null`.
+| Field                     | Default | Meaning                                                                                                                                                                                                     |
+| ------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                      | none    | Required. The function id.                                                                                                                                                                                  |
+| `description`, `metadata` | none    | Feed the iii console and the agent-readable skills.                                                                                                                                                         |
+| `request_format`          | none    | JSON Schema of the call's input.                                                                                                                                                                            |
+| `response_format`         | none    | JSON Schema of the handler's return value, which is what observers observe.                                                                                                                                 |
+| `args_format`             | none    | JSON Schema the engine validates each observer's `args` against (`INVALID_ARGS`). A function without it takes no args. A value that is not a valid JSON Schema is refused with `INVALID_ARGS_FORMAT`.       |
+| `private`                 | `false` | `true`: the engine accepts an `InvokeFunction` of the function only from the connection that hosts it. Other workers may observe it. A private function cannot be an observer's target. Needs `observe.v2`. |
+| `observable`              | `true`  | `false`: every `Observe` of the function fails with `NOT_OBSERVABLE`.                                                                                                                                       |
+| `invocation`              | none    | Reserved for external HTTP functions (`HttpInvocationRef`). Leave it out for in-process handlers.                                                                                                           |
 
-### `observe` descriptor
+A field that is not set is left out, and so are `private: false` and `observable: true`. The engine
+leaves out `request_format` and `response_format` when it sends a registration that has none. The
+SDK's observer hooks and its `standby` option stay in the worker and never travel. See
+[Observable functions](../creating-workers/observable-functions) for the provider side.
 
-Every function is observable. A function that wants to say how its observers are delivered adds an
-optional `observe` object (0.25). The SDK-local callbacks (`onObserverAdded`, `onObserverRemoved`)
-never travel; only these four fields do. The example's `cron::on-tick` is illustrative: the cron
-worker still publishes the `cron` trigger type in 0.25.
+An event source sets the v2 fields. This `cron::on-tick` validates its observers' `args`, may be
+called only by its own worker, and returns the tick it is called with, so its `response_format` is
+its `request_format`:
 
 ```json
 {
   "type": "registerfunction",
   "id": "cron::on-tick",
-  "description": "Fires on a cron schedule. Observe it with args { expression }.",
+  "description": "One call per tick of a cron expression. Observe it with args { expression }.",
   "request_format": {
     "type": "object",
     "required": ["expression", "scheduled_time"],
     "properties": {
       "expression": { "type": "string" },
-      "scheduled_time": { "type": "string", "format": "date-time" }
+      "scheduled_time": { "type": "string", "format": "date-time" },
+      "actual_time": { "type": "string", "format": "date-time" }
     }
   },
-  "observe": {
-    "delivery": "owner",
-    "args_format": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["expression"],
-      "properties": { "expression": { "type": "string" } }
-    },
-    "legacy_trigger_type": "cron",
-    "allow": true
-  }
+  "response_format": {
+    "type": "object",
+    "required": ["expression", "scheduled_time"],
+    "properties": {
+      "expression": { "type": "string" },
+      "scheduled_time": { "type": "string", "format": "date-time" },
+      "actual_time": { "type": "string", "format": "date-time" }
+    }
+  },
+  "args_format": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["expression"],
+    "properties": { "expression": { "type": "string" } }
+  },
+  "private": true
 }
 ```
-
-| Field                 | Default | Meaning                                                                                                   |
-| --------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
-| `delivery`            | `auto`  | `auto`: every invocation is an event offered to every observer. `owner`: the owner hands each event to the observers it belongs to (`obs.emit` / `obs.call`). |
-| `args_format`         | none    | JSON Schema the engine validates each observer's `args` against (`INVALID_ARGS`). Owner delivery only.   |
-| `legacy_trigger_type` | none    | A trigger type this function stands in for: the engine turns an old `RegisterTrigger` of that type into an observer of this function when no live provider of the type exists. See [Legacy shim](#legacy-shim). |
-| `allow`               | `true`  | `false` refuses every observer with `NOT_OBSERVABLE`.                                                     |
-
-A function without `observe` is observable with `delivery: auto` and accepts no args. The engine
-answers a descriptor with `args_format` and `delivery: auto`, or with an unknown `delivery` value,
-with `RegistrationRejected { code: "INVALID_OBSERVE_DESCRIPTOR", function_id }` and does not register
-the function. See [Observable functions](../creating-workers/observable-functions) for the provider
-side.
 
 When the registration is accepted, a connection that declared `observe.v1` receives
 [`FunctionRegistered`](#functionregistered).
 
-## `RegisterTrigger`
+### Registrations from older SDKs
 
-<Note>
-  Deprecated in 0.25: use [`Observe`](#observe) instead. `RegisterTrigger` keeps working through a
-  live trigger-type provider, or through the [legacy shim](#legacy-shim) once the provider moved to a
-  function. See [Upgrading from 0.24.x](../upgrading/from-0-24-x).
-</Note>
+A 0.25 SDK describes observation with an `observe` object on `RegisterFunction`:
+`{ delivery?, args_format?, legacy_trigger_type?, allow? }`. The engine decodes it from any
+connection:
 
-```json
-{
-  "type": "registertrigger",
-  "id": "math::add@http",
-  "trigger_type": "http",
-  "function_id": "math::add",
-  "config": { "api_path": "/math/add", "http_method": "POST" },
-  "metadata": null,
-  "namespace": "orders",
-  "trigger_namespace": null
-}
-```
+- `delivery: "auto"` and an absent `delivery` are accepted.
+- `delivery: "owner"`, or a value the engine does not know, is refused with `RegistrationRejected`
+  `UNSUPPORTED`, and the function is not registered.
+- `allow: false` registers the function as `observable: false`; an absent `allow` is `true`.
+- `args_format` and `legacy_trigger_type` are decoded and ignored.
 
-`config` is the per-trigger-type configuration; the shape is defined by whatever worker advertised
-that `trigger_type` (e.g. `http` for `http` triggers). The engine responds with a
-`TriggerRegistrationResult` carrying an optional `error: ErrorBody`.
-
-`namespace` specifies the namespace of the target function. It uses the same namespace system as
-worker registration. Usually, it has the same value as the worker namespace.
-
-A trigger can call a function in a different namespace. For this reason, `RegisterTrigger` includes
-the target `namespace`. If this field is not present, `function_id` resolves in `default`. A present
-field must be a non-empty string; the engine rejects `null` and any other non-string value.
-
-`trigger_namespace` specifies where to find the trigger type's provider. It is a different question
-from `namespace`: one locates the target function, the other locates the provider that fires it.
-
-If `trigger_namespace` is not present, the engine resolves it in two steps: the registering
-connection's namespace first, then `default`. This is not the same as sending `"default"`. The two
-steps let a project register its own provider for a trigger type id that the engine also provides,
-while a worker that names nothing still reaches the engine's provider.
-
-If `trigger_namespace` is present, resolution is strict: that namespace or nothing. A binding that
-names a namespace is never moved to another provider.
-
-When a provider registers in a namespace after a binding already resolved to `default`, the engine
-moves that binding to the new provider. Start order does not decide which provider serves a
-project.
-
-These fields target `math::add` in `default`:
-
-```json
-{ "function_id": "math::add" }
-```
-
-These fields target `math::add` in `orders`:
-
-```json
-{ "function_id": "math::add", "namespace": "orders" }
-```
-
-## `RegisterTriggerType`
-
-<Note>
-  Deprecated in 0.25: register a function with an [`observe` descriptor](#observe-descriptor)
-  instead. `RegisterTriggerType` keeps working in this release. See [Upgrading from
-  0.24.x](../upgrading/from-0-24-x).
-</Note>
-
-```json
-{
-  "type": "registertriggertype",
-  "id": "webhook",
-  "description": "HTTP webhook trigger",
-  "trigger_request_format": { "type": "object", ... },
-  "call_request_format": { "type": "object", ... },
-  "namespace": null
-}
-```
-
-`trigger_request_format` is the JSON Schema for the trigger's per-binding `config`.
-`call_request_format` is the JSON Schema for the payload delivered to bound functions when the
-trigger fires.
-
-`namespace` is the namespace this provider serves. If it is not present, the engine files the
-provider under the registering connection's namespace. Providers are keyed by
-`(namespace, trigger_type_id)`, so two workers in different namespaces can advertise the same
-`trigger_type` id without replacing each other.
-
-The engine's own providers (`http`, `cron`, `state`, `stream`) register in `default`.
-
-## `UnregisterTriggerType`
-
-```json
-{ "type": "unregistertriggertype", "id": "webhook" }
-```
-
-Every SDK has always sent this frame when a provider retires a trigger type, but engines before 0.25
-did not decode it and dropped it with a decode warning. A 0.25 engine handles it: it removes the
-trigger type when the sending connection is its provider, and ignores the frame (with a `debug` log)
-otherwise. Bindings of that type then move to a fallback provider, are taken by a function that
-declares the type as its `legacy_trigger_type` (see [Legacy shim](#legacy-shim)), or stay stored,
-unserved, until a provider returns.
-
-`namespace` is optional and names the namespace the provider was filed under. If it is not present,
-the engine uses the sending connection's namespace, as for `RegisterTriggerType`. Like the other
-trigger messages, `UnregisterTriggerType` is deprecated.
+No 0.26 SDK sends this object.
 
 ## `InvokeFunction`
 
@@ -386,49 +300,57 @@ trigger messages, `UnregisterTriggerType` is deprecated.
 }
 ```
 
-`invocation_id` is omitted on `Void` invocations (the worker has no result channel to reply on).
-The optional `metadata` field on a trigger registration (`null` / `None` in the examples above)
-is arbitrary JSON stored with the trigger and delivered to the receiving function as a
-distinct argument alongside the payload. It is useful for providing contextual information about
-the trigger or execution context to the receiving function. A target function shared by many
-triggers can use it to recover which registration fired and with what context.
+`invocation_id` is omitted on `Void` invocations from a caller (the caller has no result channel to
+reply on). `metadata` is any JSON value delivered to the receiving function as a distinct argument
+alongside the payload: the call's metadata sidecar. `null` is the same as no metadata: the engine
+reads it as absent, and every SDK leaves the field out and hands its handler no metadata. On an
+activation it is the observer's `metadata`, which lets a target shared by many observers recover
+which one fired and with what context.
 
-`metadata` can be provided both via `registerTrigger` and direct `trigger()` invocations.
-
-`traceparent` and `baggage` contain W3C trace
-context. `action` is the routing flag (see [Trigger actions](#trigger-actions) below);
-absent / `null` means synchronous.
+`traceparent` and `baggage` contain W3C trace context. `action` is the routing flag (see
+[Invocation actions](#invocation-actions) below); absent / `null` means synchronous.
 
 `namespace` is optional and selects the namespace `function_id` resolves in. Omit the field to
 resolve in `default`; omission also keeps a peer that never sends it wire compatible. Send a
 non-empty string when the field is present. The engine rejects `null` and any other non-string
 value. See [Namespaces](#namespaces) for the resolution rules.
 
+**Private functions.** The engine accepts an `InvokeFunction` of a function registered with
+`private: true` only from the connection that hosts it. Any other connection, and the engine itself
+(RBAC hooks, middleware), gets an `InvocationResult` error `FORBIDDEN`. The hosting connection's own
+`InvokeFunction` of its private function skips the session's RBAC middleware.
+
 ### Observe fields
 
-0.25 adds three optional fields. Their meaning depends on the direction:
+Three optional fields carry causality and activations. Their meaning depends on the direction:
 
-| Field           | Worker -> engine                                                                                         | Engine -> worker                                                                                                 |
-| --------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Field           | Worker -> engine                                                                                                                                                                                    | Engine -> worker                                                                                                                       |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `caller`        | `{ function_id?, invocation_id?, parent? }`: the handler the call was made from, asserted by the SDK when the call is made inside a handler. `parent` is that handler's own caller, one level only. | The same, plus `worker_id` and `worker_name`, which the engine stamps from the calling connection (overwriting whatever the SDK sent). |
-| `observe_depth` | Depth of the causal chain in observe hops, copied from the current handler. Omitted when `0`.           | Copied from the caller; set to the observed depth + 1 on an activation.                                           |
-| `activation`    | `{ observer_id }`: marks an owner delivery (`obs.call`).                                                 | `{ observer_id, activation_id }`: present on every activation of an observer's target.                           |
+| `observe_depth` | Depth of the causal chain in observe hops, copied from the current handler. Omitted when `0`.                                                                                                       | Copied from the caller; set to the observed depth + 1 on an activation.                                                                |
+| `activation`    | `{ observer_id }`: a [call through an observer](#calls-through-an-observer).                                                                                                                        | `{ observer_id, activation_id }`: present on every activation of an observer's target.                                                 |
 
 The engine adds these fields to a frame it sends only when the receiving connection declared
 `observe.v1`. It reads them leniently: a malformed value counts as absent instead of failing the
-call. `caller.parent` is one level only; a `parent` inside `parent` is not part of the format and the
-engine drops it. `caller.worker_*` cannot be forged; `function_id`, `invocation_id`, and `parent` are
-asserted by the calling SDK and are useful for routing and filtering, not for authorization. The
-engine still injects `_caller_worker_id` into `data` in this release.
+call. `caller.parent` is one level only; a `parent` inside `parent` is not part of the format and
+the engine drops it. `caller.worker_*` cannot be forged; `function_id`, `invocation_id`, and
+`parent` are asserted by the calling SDK and are useful for routing and filtering, not for
+authorization. The engine still injects `_caller_worker_id` into `data` in this release.
 
-A routed call, as the engine forwards it:
+A routed call, as the engine forwards it. To an `observe.v2` host, every routed call carries an
+`invocation_id`, `void` calls included, so the host answers each one (see
+[Who delivers](#who-delivers)):
 
 ```json
 {
   "type": "invokefunction",
   "invocation_id": "4a6c8e0b-2d4f-4a6c-9e1b-3d5f7a9c1e3b",
   "function_id": "database::execute",
-  "data": { "db": "primary", "sql": "UPDATE invoices SET status = 'paid' WHERE id = $1", "params": [77] },
+  "data": {
+    "db": "primary",
+    "sql": "UPDATE invoices SET status = 'paid' WHERE id = $1",
+    "params": [77]
+  },
   "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
   "caller": {
     "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
@@ -446,15 +368,16 @@ A routed call, as the engine forwards it:
 }
 ```
 
-**Activations.** When an observer fires, the engine invokes its target with an ordinary
-`InvokeFunction`. `data` is the `Observed` envelope (or the observed `input` / `output`, per the
-observer's `deliver`), `metadata` is the observer's metadata sidecar, and `caller` is the engine
-(`worker_name: "iii-engine"`, with the observed function and invocation). An activation carries an
-`invocation_id` and no `action`: the target's SDK answers it with an `InvocationResult` like any
-call. For auto and `obs.emit` activations the engine discards the result; the answer frees the
-observer's `max_in_flight` slot, and so does `observers.activation_timeout_ms` (30 s by default) for
-an activation never answered. The observed `input` never contains the engine's `_caller_worker_id`
-stamp.
+**Activations.** When iii delivers a call to an observer, the engine invokes its target with an
+ordinary `InvokeFunction`. `data` is the `Observed` envelope (or the observed `input` / `output`,
+per the observer's `deliver`), `metadata` is the observer's metadata sidecar, and `caller` is the
+engine (`worker_name: "iii-engine"`, with the observed function and invocation). An activation
+carries an `invocation_id` and no `action`: the target's SDK answers it with an `InvocationResult`
+like any call. The engine discards that result for the observed side, and delivers the call to the
+target's own observers as for any routed answer ([Routed answers](#routed-answers)). The answer
+frees the observer's `max_in_flight` slot, and so does `observers.activation_timeout_ms` (30 s by
+default) for an activation never answered. The observed `input` never contains the engine's
+`_caller_worker_id` stamp.
 
 ```json
 {
@@ -494,22 +417,29 @@ stamp.
 }
 ```
 
-**Owner delivery (`obs.call`).** The owner of an owner-delivered function sends an `InvokeFunction`
-to the observer's target with `activation: { observer_id }`, and gets the target's result back as an
-ordinary `InvocationResult`. The SDK sends no `namespace`: the engine routes the call to the
-observer's stored target and ignores a `namespace` if one is present. The engine checks, in order:
+### Calls through an observer
+
+A function's `onObserverDeliver` hook can run an observer's target itself with
+`iii.call({ observer, payload })`, for example to route an HTTP request to one route's handler and
+return that handler's response. The SDK sends an `InvokeFunction` whose `function_id` is the
+observer's `target` and whose `activation` carries `observer_id` only, without `namespace` or
+`metadata`. The engine routes the call to the observer's stored target and ignores a `namespace` or
+a `metadata` if one is present: the target's metadata is the observer's. Every SDK refuses a call
+through an observer that names metadata before sending it. The engine checks, in order:
 
 1. The observer exists, else `OBSERVER_NOT_FOUND`.
-2. The sender is the current owner of the observed function, else `NOT_FUNCTION_OWNER`.
-3. The observed function has `delivery: owner`, else `NOT_OWNER_DELIVERED`.
-4. The observer is `active`, else `OBSERVER_NOT_ACTIVE`.
-5. `function_id` equals the observer's target, else `TARGET_MISMATCH`.
-6. Policy: depth (`LOOP_GUARD`), expiry, `max_fires`, then `max_in_flight` (`OVERFLOW`; an owner
-   delivery over the limit fails instead of queueing, because the owner waits for the result).
+2. The sender hosts the observed function, else `NOT_FUNCTION_OWNER`.
+3. The observer is `active`, else `OBSERVER_NOT_ACTIVE`.
+4. Policy: depth (`LOOP_GUARD`), expiry, `max_fires`, then `max_in_flight`. A call over the
+   observer's `max_in_flight` fails at once with `OVERFLOW`.
 
 It then adds the observer's metadata, an `activation_id`, and `observe_depth + 1`, and routes the
-call. A failed check comes back as the `InvocationResult.error` of that call; a target that does not
-answer within `observers.activation_timeout_ms` fails with `TIMEOUT`.
+call. The call runs as an activation of the observer: the target runs under the session of the
+worker that created the observer, and the payload goes as given less a top-level
+`_caller_worker_id`, so the host's identity and grants authorize nothing the target does. It is that
+worker's call: a private target takes it only when that worker hosts the target. The host is the
+call's `caller`. The deliver hook applies the observer's `on` and filters with `obs.matches(call)`
+before it calls.
 
 ```json
 {
@@ -529,9 +459,46 @@ answer within `observers.activation_timeout_ms` fails with `TIMEOUT`.
     "function_id": "http::on-request",
     "invocation_id": "9b1d3f5a-7c9e-4b1d-8f3a-5c7e9b1d3f5a"
   },
-  "activation": { "observer_id": "4f2a9b1c-7d3e-4f6a-8b5c-2e1d0f9a8b7c" }
+  "activation": { "observer_id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c" }
 }
 ```
+
+`caller` is the `http::on-request` invocation the deliver hook runs in. A request/response call gets
+a failed check back as the `InvocationResult.error` of that call, and a target that does not answer
+within `observers.activation_timeout_ms` fails with `TIMEOUT`:
+
+```json
+{
+  "type": "invocationresult",
+  "invocation_id": "5d7f9b1c-3e5a-4c7e-9a1c-3e5f7b9d1f3a",
+  "function_id": "users::get",
+  "error": {
+    "code": "NOT_FUNCTION_OWNER",
+    "message": "observer b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c observes a function this connection does not host"
+  }
+}
+```
+
+A fire-and-forget call through an observer (`action: { "type": "void" }`, no `invocation_id`) gets
+no answer. The engine drops a refused one, counts it in `iii.observer.dropped.total` with its code
+as the reason, and logs it at `debug`:
+
+```json
+{
+  "type": "invokefunction",
+  "function_id": "storefront::sync-stock",
+  "data": { "sku": "A-1", "available": 12 },
+  "action": { "type": "void" },
+  "activation": { "observer_id": "868c8f79-e34f-4390-8ca6-7904b54ba84a" }
+}
+```
+
+A host sends one observer something of its own, such as its initial state once `obs.accepted()`
+resolves, as a call of its own function with `metadata: { "for_observer": "<observer id>" }`. The
+function's match hook gives that call to that observer alone, and it reaches the engine as every
+call of the function does: an `InvocationsObserved` item for a local call, `matched` on the
+`InvocationResult` of a routed one. See
+[Send an observer its initial state](../creating-workers/observable-functions#send-an-observer-its-initial-state).
 
 ## `InvocationResult`
 
@@ -543,7 +510,6 @@ Success:
   "invocation_id": "9f3c…",
   "function_id": "math::add",
   "result": { "c": 5 },
-  "error": null,
   "traceparent": "00-…",
   "baggage": "k=v,…"
 }
@@ -556,7 +522,6 @@ Failure:
   "type": "invocationresult",
   "invocation_id": "9f3c…",
   "function_id": "math::add",
-  "result": null,
   "error": {
     "code": "invocation_failed",
     "message": "boom",
@@ -565,14 +530,86 @@ Failure:
 }
 ```
 
-`ErrorBody.code` values that appear in `InvocationResult.error` include `invocation_failed` (handler threw),
-`invocation_stopped` (the owning worker disconnected mid-flight, so the engine cancels the in-flight
-call and surfaces this code to the caller), `function_not_found`, `function_not_invokable`,
-`TIMEOUT` (client-side timeout), `FORBIDDEN` (RBAC denial).
+`"result": null` is a function that returned `null`. `result` is absent when the function returned
+nothing, and on an answer that carries `error`.
+
+`ErrorBody.code` values that appear in `InvocationResult.error` include `invocation_failed` (handler
+threw), `invocation_stopped` (the hosting worker disconnected mid-flight, so the engine cancels the
+in-flight call and surfaces this code to the caller), `function_not_found`,
+`function_not_invokable`, `TIMEOUT` (client-side timeout), and `FORBIDDEN` (RBAC denial, or a call
+to a private function from a connection that does not host it). A call through an observer can also
+fail with the codes in [Calls through an observer](#calls-through-an-observer).
 
 A `function_not_found` message names the namespace the lookup ran in, and lists the namespaces where
-the id does exist: `Function state::get not found in namespace default. It is registered in
-namespace(s): orders, analytics.`
+the id does exist:
+`Function state::get not found in namespace default. It is registered in namespace(s): orders, analytics.`
+
+### Routed answers
+
+An `observe.v2` host's answer to a routed call says how the call is delivered. The engine evaluates
+the observers' `on` and filters itself, with the input it kept when it forwarded the call, the
+answer's `result` or `error`, the caller it forwarded the call with, and the call's metadata. The
+host runs what is worker code, the function's match and deliver hooks, and its answer carries one of
+three things:
+
+| The answer carries | When                                                                                                                                                                                               | The engine                                                                                                               |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| nothing more       | The function has no `onObserverMatch` and no `onObserverDeliver` hook.                                                                                                                             | Evaluates `on` and filters of every active observer of the function.                                                     |
+| `matched`          | The function has an `onObserverMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
+| `delivered: true`  | The function's `onObserverDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
+
+The answer for a function with a match hook:
+
+```json
+{
+  "type": "invocationresult",
+  "invocation_id": "1f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+  "function_id": "orders::create",
+  "result": { "order_id": "ord_1002", "total": 1250 },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
+  "matched": ["8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70", "9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81"]
+}
+```
+
+The answer for a function with a deliver hook:
+
+```json
+{
+  "type": "invocationresult",
+  "invocation_id": "9a1c3e5b-7d9f-4b1d-8f3b-5d7f9b1d3f5b",
+  "function_id": "approvals::request",
+  "result": { "approved": true, "by": "risk-review" },
+  "delivered": true
+}
+```
+
+- An answer for a function without hooks is the plain success or failure above: an absent `matched`
+  leaves every observer to the engine. A function with a match hook and no deliver hook always
+  answers with `matched`, `[]` included. A host sends at most one of `matched` and `delivered`; with
+  both, `delivered` wins.
+- An answer too large to send is answered with the error `payload_too_large`. The error is not the
+  handler's outcome, so it activates no observer: it carries `delivered: true` when the deliver hook
+  delivered the call, and `matched: []` otherwise, whatever the function's hooks. A host whose
+  engine lacks `observe.v2` sends the bare error. The caller gets `payload_too_large` either way.
+- `matched` may ride an answer that carries `error`: iii's delivery rethrows the handler's error,
+  and the envelope's `status` and `error` come from the answer.
+- The host names the observers of a routed call on its answer only. An
+  [`InvocationsObserved`](#invocationsobserved) item reports a local call.
+- The engine reads `matched` and `delivered` only from `observe.v2` connections, on every routed
+  answer, a target's answer to an activation or to a call through an observer included, and strips
+  both before it forwards the result to the caller.
+- Only the function's host answers for its observers. An answer from an `observe.v2` connection that
+  does not host the function (a caller answering its own call by its `invocation_id`, say) activates
+  nothing and is not evaluated, whatever it carries: each observer its `matched` names counts a
+  `REPORTER_NOT_OWNER` drop, and without `matched` (neither field, or `delivered`) every active
+  observer of the function does. The caller gets the answer's result.
+- A routed call whose answer never comes (its caller left, the host went away) activates nothing:
+  each of the function's observers counts a `CANCELLED` drop.
+- The envelope's `input` is the input the engine routed, and its `output` is `result`. Delivery
+  costs no frame beyond the answer. The engine matches the filters through an index of their `$eq`
+  and `$in` conditions, and evaluates every filter where the lookups would spare little, so a call
+  costs at most about the evaluation of every filter plus one lookup per indexed path, and about one
+  lookup when many observers filter on their own value of one path (see [Filters](./filters)).
 
 ## `RegistrationRejected`
 
@@ -586,15 +623,17 @@ namespace(s): orders, analytics.`
 }
 ```
 
-The engine sends this message when a registration conflicts with a live worker in `namespace`.
-`owner_worker_id` identifies the worker that owns the identity. `code` specifies the identity field
-and the severity. Each message contains only one identity field:
+The engine sends this message when it refuses a registration. Each message contains one identity
+field. For a conflict with a live worker in `namespace`, `owner_worker_id` identifies the worker
+that owns the identity; on every other rejection it is `""`. `code` specifies the cause and the
+severity:
 
-| `code`                        | Identity field | Connection           | Severity                                                                                        |
-| ----------------------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------------------- |
-| `WORKER_NAMESPACE_CONFLICT`   | `worker_name`  | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.                                         |
-| `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions. |
-| `INVALID_OBSERVE_DESCRIPTOR`  | `function_id`  | stays open           | Non-fatal. The function's [`observe` descriptor](#observe-descriptor) is invalid (`args_format` with `delivery: auto`, or an unknown `delivery`); the function is not registered. `owner_worker_id` is empty. |
+| `code`                        | Identity field | Connection           | Severity                                                                                                                                                                      |
+| ----------------------------- | -------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WORKER_NAMESPACE_CONFLICT`   | `worker_name`  | closed by the engine | Fatal. The SDK stops the worker and does not reconnect.                                                                                                                       |
+| `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions.                                                                               |
+| `INVALID_ARGS_FORMAT`         | `function_id`  | stays open           | Non-fatal. The function's `args_format` is not a valid JSON Schema; the function is not registered.                                                                           |
+| `UNSUPPORTED`                 | `function_id`  | stays open           | Non-fatal. A 0.25 SDK's [`observe` object](#registrations-from-older-sdks) asks for `delivery: "owner"`, or a value the engine does not know; the function is not registered. |
 
 A function conflict has this format:
 
@@ -611,93 +650,129 @@ A function conflict has this format:
 ### Function conflict behavior
 
 Worker registration and function registration are separate operations. The engine can accept a
-worker and reject one of its functions.
+worker and reject one of its functions. A function id has one host per namespace, so a function's
+observer hooks run once per observer, in that host, however many instances of the worker run.
 
 For a function ownership conflict, the engine:
 
-1. Keeps the current function owner.
+1. Keeps the current function host.
 2. Does not register the new handler.
 3. Sends `FUNCTION_NAMESPACE_CONFLICT` to the new worker.
 4. Keeps the new worker connection open.
 5. Continues to register and serve the new worker's other functions.
 
 `FUNCTION_NAMESPACE_CONFLICT` is a registration result. It is not an invocation result. A later
-invocation of the same function id in the same namespace goes to the current owner. It does not go
-to the worker whose registration was rejected.
+invocation of the same function id in the same namespace goes to the current host. It does not go to
+the worker whose registration was rejected.
+
+A function registered with the SDK's `standby` option waits: on `FUNCTION_NAMESPACE_CONFLICT` the
+SDK retries the registration every second (with 20 % jitter) until it succeeds or the function is
+unregistered. When the host disconnects, the function's observers go `pending`; the standby that
+registers next receives them in `FunctionRegistered`, runs its hooks for each, and they become
+active again.
 
 <Warning>
-A connected worker does not confirm that all its functions are registered. The SDK reports a
-function conflict as a warning and keeps the worker active. If the worker requires all its functions,
-treat this warning as a startup or deployment error.
+  A connected worker does not confirm that all its functions are registered. The SDK reports a
+  function conflict as a warning and keeps the worker active. If the worker requires all its
+  functions, treat this warning as a startup or deployment error.
 </Warning>
 
 A worker restarting against its own not-yet-cleaned connection is not a conflict: the engine treats
 a connection that has begun tearing down as not live, so the restart reclaims its name immediately.
 
-## Trigger actions
+## Invocation actions
 
-`InvokeFunction.action` is tagged by `type` and lowercase-encoded on the wire:
+`InvokeFunction.action` is tagged by `type` and lowercase-encoded on the wire. The SDKs build it
+with `CallAction`:
 
-| Wire shape                               | Meaning                                                  |
-| ---------------------------------------- | -------------------------------------------------------- |
-| omitted / `null`                         | Synchronous; the worker replies with `InvocationResult`. |
-| `{ "type": "void" }`                     | Fire-and-forget; no `invocation_id`, no reply.           |
+| Wire shape                               | Meaning                                              |
+| ---------------------------------------- | ---------------------------------------------------- |
+| omitted / `null`                         | Synchronous; the caller gets an `InvocationResult`.  |
+| `{ "type": "void" }`                     | Fire-and-forget; no `invocation_id`, no reply.       |
 | `{ "type": "enqueue", "queue": "math" }` | Route through the named queue (provided by `queue`). |
 
 ## Invocation lifecycle
 
 For synchronous calls the engine assigns an `invocation_id`, forwards the `InvokeFunction` to the
-owning worker, and waits for the matching `InvocationResult`. For `Void` actions the engine forwards
-without an `invocation_id` and never expects a reply. For `Enqueue` the engine hands the invocation
-to the queue worker, which persists it and re-invokes the target function on a subscriber according
-to the queue's retry policy.
+hosting worker, and waits for the matching `InvocationResult`. For `Void` actions the caller gets no
+reply: the engine forwards the call without an `invocation_id`, except to an `observe.v2` host,
+which gets one and answers with the observers its delivery matched; the engine activates them and
+drops the result. For `Enqueue` the engine hands the invocation to the queue worker, which persists
+it and invokes the target function according to the queue's retry policy.
 
 ## Observe messages
 
-0.25 makes every function observable. An **observer** is what `iii.observe(source, target, options)`
-creates: a source function with its `args` and `filters`, a target function, and a policy. The
-**observing worker** is the connection that sent `Observe`; the **owner** is the connection that
-hosts the observed function. For the model, see [Observers](../using-iii/observers); for the
-provider side, see [Observable functions](../creating-workers/observable-functions); for the filter
-language, see [Filters](./filters).
-
-<Note>
-  The wire examples on this page use `cron::on-tick`, `http::on-request`, and
-  `database::on-row-changed` as illustrative source functions. The cron, http, and database workers
-  have not migrated in 0.25 and still publish trigger types.
-</Note>
+Every function is observable. An **observer** is what `iii.observe(source, target, options)`
+creates: a function with its `args` and `filters`, a target function, and a policy. When the
+function runs, the target runs. The **observing worker** is the connection that sent `Observe`; the
+**host** is the connection that hosts the observed function. For the model, see
+[Observers](../using-iii/observers); for the host side, see
+[Observable functions](../creating-workers/observable-functions); for the filter language, see
+[Filters](./filters).
 
 ### Wire rules
 
 - **Optional means absent.** An optional field that is not set is left out, never sent as `null`.
   Decoders accept `null` for it anyway. In `InvocationsObserved` items, `input`, `output`, `error`,
-  and `metadata` keep `null` apart from absent: `"output": null` is a function that returned `null`.
-- **Enums are lowercase strings.** `delivery`: `auto | owner`. `capture[]`:
-  `input | output | error | caller | metadata`. `on`: `success | error | complete`. `deliver`:
-  `envelope | input | output`. `state`: `pending | active | suspended | error | disposed`.
-  `status`: `success | error`. A decoder keeps a value it does not know instead of failing the frame.
+  and `metadata` keep `null` apart from absent: `"output": null` is a function that returned `null`,
+  while a missing `output` was not captured, does not exist, or equals `input`
+  (`"output_is_input": true`).
+- **Enums are lowercase strings.** `capture[]`: `input | output | error | caller | metadata`. `on`:
+  `success | error | complete`. `deliver`: `envelope | input | output`. `state`:
+  `pending | active | suspended | error | disposed`. `status`: `success | error`. A decoder keeps a
+  value it does not know instead of failing the frame.
 - **Defaults.** Absent `on` is `success`, absent `capture` is `["input", "output", "caller"]`,
-  absent `deliver` is `envelope`, absent `observe.delivery` is `auto`, absent `observe.allow` is
-  `true`, and absent `observe_depth` is `0` (`0` is omitted when sending). `capture: []` is valid:
-  the target then gets ids, status, and timings only.
+  absent `deliver` is `envelope`, and absent `observe_depth` is `0`. A field at its default is left
+  out when sending: `observe_depth: 0`, `private: false` and `observable: true` on
+  `RegisterFunction`, `observed: []` on `InvocationResult`, and `output_is_input: false` on
+  `InvocationsObserved` items. `capture: []` is valid: the target then gets ids, status, and timings
+  only.
 - **Unknown values are refused, never defaulted.** An `Observe` with an unknown `on`, `deliver`, or
   `capture[]` value gets `ObserveResult` with error `UNSUPPORTED` (the message names the field). A
-  `RegisterFunction` with an unknown `observe.delivery` gets `RegistrationRejected`
-  `INVALID_OBSERVE_DESCRIPTOR`.
+  `RegisterFunction` whose `args_format` is not a valid JSON Schema gets `RegistrationRejected`
+  `INVALID_ARGS_FORMAT`.
 - **Ids are strings.** Observer ids are client-generated UUID v4 strings, stable across replays.
-- **Malformed frames.** An `Observe` the engine cannot decode but whose `id` is a string gets
-  `ObserveResult` with error `INVALID_ARGS`.
-- **Revisions.** `revision` counts adds and removes per `(namespace, function_id)` and grows by one
-  on each. An SDK ignores an `ObserverAdded` or `ObserverRemoved` whose `revision` is not greater
-  than the one it holds on the same connection. `FunctionRegistered` is always accepted and replaces
-  the set (revisions restart after an engine restart).
-- **Normal form.** The `filters` the engine pushes to an owner are the observer's filters in normal
-  form: `{}` matches every event, anything else is `{"$and": [...]}` at every level. Compile them as
+- **Malformed frames.** The engine reads `caller`, `observe_depth`, and `activation` on
+  `InvokeFunction`, and `matched` and `delivered` on `InvocationResult`, leniently: a bad `caller`,
+  `observe_depth`, or `activation` counts as absent, a `matched` that is neither an array nor `null`
+  counts as `[]` (a non-string id in it is skipped), `delivered` counts only when it is `true`, and
+  the rest of the frame is handled. An `Observe` the engine cannot decode but whose `id` is a string
+  gets `ObserveResult` with error `INVALID_ARGS`.
+- **Revisions.** `revision` counts announcements per `(namespace, function_id)` and grows by one
+  with each: `FunctionRegistered`, every `ObserverAdded`, and every `ObserverRemoved`. An SDK
+  ignores an `ObserverAdded` or `ObserverRemoved` whose `revision` is not greater than the one it
+  holds on the same connection. `FunctionRegistered` is always accepted and replaces the set
+  (revisions restart after an engine restart).
+- **Normal form.** The `filters` the engine pushes to a host are the observer's filters in normal
+  form: `{}` matches every call, anything else is `{"$and": [...]}` at every level. Compile them as
   given. See [Filters](./filters).
-- **What owners see.** An owner receives an observer's `id`, `args` (`{}` when none), normalized
-  `filters`, `target` function id (its namespace is not disclosed), `capture`, `on`, and `legacy`
-  when set. It never receives `deliver`, the observer's metadata, its policy, or the observing
-  worker.
+- **What hosts see.** A host receives an observer's `id`, `args` (`{}` when none), normalized
+  `filters`, `target` function id (its namespace is not disclosed), `capture`, and `on`. It never
+  receives `deliver`, the observer's metadata, its policy, or the observing worker.
+
+### Who delivers
+
+The connection that hosts a function runs the function's hooks when it declared `observe.v2`. Its
+SDK runs the handler, then matches observers to the call: every active observer by default, or those
+the function's `onObserverMatch` hook selects by predicate or by keys. iii's delivery then selects
+the matching observers whose `on` and filters match the call. A function's `onObserverDeliver` hook
+takes delivery over: it receives the matching observers and calls through them itself. Where the
+filters run depends on the call:
+
+- **Local call.** The host called its own function, and the engine never sees the call. The host
+  evaluates `on` and filters and sends the observers delivered in a batched
+  [`InvocationsObserved`](#invocationsobserved) report. Nothing is sent when nothing matches, or
+  when the deliver hook delivered the call.
+- **Routed call.** The engine routed the call to the host with an `invocation_id`, and holds its
+  input, caller, and metadata. The host's answer names the observers the match hook matched, or says
+  that the deliver hook delivered the call, and the engine evaluates `on` and filters
+  ([Routed answers](#routed-answers)).
+- **Through an observer.** The host runs one observer's target itself with an `InvokeFunction` that
+  carries `activation.observer_id` (see [Calls through an observer](#calls-through-an-observer)).
+
+The engine evaluates every active observer of a routed call to a host without `observe.v2`, of a
+call to an engine-hosted function, and of a call to a function registered with `invocation`
+(HTTP-invoked: the engine calls the endpoint, so no connection answers).
 
 ### `Observe`
 
@@ -725,24 +800,25 @@ idempotently (same `id`, same spec).
 }
 ```
 
-| Field                 | Required | Meaning                                                                                                       |
-| --------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
-| `id`                  | yes      | Client-generated UUID, stable across replays.                                                                 |
-| `source.function_id`  | yes      | The observed function.                                                                                        |
-| `source.namespace`    | no       | Resolves like `InvokeFunction.namespace`; absent means `default`. SDKs fill in the worker's namespace.         |
-| `source.args`         | no       | For the owner of an owner-delivered function; validated against its `args_format` (`INVALID_ARGS`). An auto function accepts no args. |
-| `source.filters`      | no       | Which events reach the target. Absent, `null`, or `{}` matches every event.                                   |
-| `source.capture`      | no       | What travels to the target (auto and `obs.emit`). Default `["input", "output", "caller"]`.                   |
-| `source.on`           | no       | Which outcomes activate an auto observer: `success` (default), `error`, `complete`.                          |
-| `source.deliver`      | no       | What the target receives (auto and `obs.emit`): `envelope` (default), `input`, `output`.                     |
-| `target.function_id`  | yes      | The function each activation invokes. Until it is registered the observer stays `pending`.                   |
-| `target.namespace`    | no       | Absent means `default`. SDKs fill in the worker's namespace.                                                  |
-| `metadata`            | no       | The metadata sidecar of every activation. Never shown to the owner.                                          |
-| `max_fires`           | no       | Dispose the observer after this many activations (`MAX_FIRES`).                                               |
-| `expires_in_ms`       | no       | Dispose the observer after this long (`EXPIRED`).                                                             |
-| `max_in_flight`       | no       | Concurrent activations; default `observers.default_max_in_flight` (64).                                       |
+| Field                | Required | Meaning                                                                                                                    |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | yes      | Client-generated UUID, stable across replays.                                                                              |
+| `source.function_id` | yes      | The observed function.                                                                                                     |
+| `source.namespace`   | no       | Resolves like `InvokeFunction.namespace`; absent means `default`. SDKs fill in the worker's namespace.                     |
+| `source.args`        | no       | For the function's worker, which reads them in its hooks; validated against the function's `args_format` (`INVALID_ARGS`). |
+| `source.filters`     | no       | Which calls reach the target. Absent, `null`, or `{}` matches every call.                                                  |
+| `source.capture`     | no       | What travels to the target when iii delivers. Default `["input", "output", "caller"]`.                                     |
+| `source.on`          | no       | Which outcomes reach the target: `success` (default), `error`, `complete`.                                                 |
+| `source.deliver`     | no       | What the target receives when iii delivers: `envelope` (default), `input`, `output`.                                       |
+| `target.function_id` | yes      | The function each activation invokes. Until it is registered the observer stays `pending`.                                 |
+| `target.namespace`   | no       | Absent means `default`. SDKs fill in the worker's namespace.                                                               |
+| `metadata`           | no       | The metadata sidecar of every activation. Never shown to the host.                                                         |
+| `max_fires`          | no       | Dispose the observer after this many activations (`MAX_FIRES`).                                                            |
+| `expires_in_ms`      | no       | Dispose the observer after this long (`EXPIRED`).                                                                          |
+| `max_in_flight`      | no       | Concurrent activations; default `observers.default_max_in_flight` (64).                                                    |
 
-The minimal form names only the two functions:
+The minimal form names only the two functions. It is the frame
+`iii.observe('orders::archive', 'search::reindex-order')` sends:
 
 ```json
 {
@@ -753,12 +829,36 @@ The minimal form names only the two functions:
 }
 ```
 
-At creation the engine checks RBAC (the session must be allowed to invoke both the observed function
-and the target, and the `on_observer_registration_function_id` hook may rewrite or deny), args,
-filters (including filter paths against the function's `request_format` / `response_format`), the
-per-connection and per-function limits, and that the target is not the observed function
-(`SELF_TARGET`). A replay with the same `id` and a different spec fails with
-`OBSERVER_ID_CONFLICT`.
+At creation the engine checks RBAC (the session's grants must cover both the observed function and
+the target, whether or not the observed function is private, and the
+`on_observer_registration_function_id` hook may rewrite or deny), that the function is observable
+(`NOT_OBSERVABLE`), args, filters (including filter paths against the function's `request_format` /
+`response_format`), the per-connection and per-function limits, that the target is not the observed
+function (`SELF_TARGET`), and that the target is not a private function (`FORBIDDEN`).
+
+An `Observe` whose `id` an observer already holds is a replay when it comes from the observing
+connection with the same spec: the engine answers with the observer's current state. The replay of
+an observer in `error` is refused with that error: the engine disposes the observer as it answers,
+sends nothing more about it, and holds nothing under the `id`. A different spec, or another
+connection, fails with `OBSERVER_ID_CONFLICT`, except for a worker back on a new connection. When
+the observer is `suspended` because its observing worker is away, an `Observe` of its `id` from a
+connection under the same worker name in the same namespace (as declared on
+`engine::workers::register`) replaces it. Any connection can declare any name, so the two
+connections must also be the same principal: both on ports without `rbac`, or both on RBAC ports
+where the auth function gave them the same `context`, one that is not empty. A session with no
+`context` replaces nothing, and a connection on a port without `rbac` and an RBAC session never
+replace each other's observers. A restarted worker re-observes under the ids it used before this
+way, and a queue consumer keyed by observer id keeps its backlog. The engine runs every check above
+first, and replaces the suspended observer when it creates the new one: it disposes the suspended
+observer with `OBSERVER_DISCONNECTED`, sends its host nothing more about it (the host got
+`ObserverRemoved` when the worker left), and the host gets an `ObserverAdded` for the new observer,
+as for any new `id`. An `Observe` the engine refuses leaves the suspended observer holding its `id`.
+The earlier connection, reattaching, has its replay of that observer answered with `disposed`.
+
+The takeover needs a worker name that stays the same across restarts: `III_WORKER_NAME`, which a
+supervisor sets, or the SDK's worker name option. The SDKs default the name to `hostname:pid` (the
+browser SDK to a random name), which changes when the process restarts, so a restarted worker under
+the default name gets `OBSERVER_ID_CONFLICT` until the grace period ends.
 
 ### `Unobserve`
 
@@ -777,8 +877,8 @@ Engine -> observing worker. The reply to `Observe` (also to a replay): the obser
 ```
 
 A rejected observer carries `state: error` and the `error`. `warnings` lists filter paths the engine
-could not verify against the function's schemas (an open schema, a remote `$ref`, several
-`anyOf` branches):
+could not verify against the function's schemas (an open schema, a remote `$ref`, several `anyOf`
+branches):
 
 ```json
 {
@@ -810,19 +910,59 @@ Engine -> observing worker. Every lifecycle transition. `fires` is always sent; 
 
 States:
 
-| State       | Meaning                                                                                                     |
-| ----------- | ----------------------------------------------------------------------------------------------------------- |
-| `pending`   | No owner yet, waiting for the owner's ack, or no target yet. An observer goes back to `pending` when its function's owner disconnects or unregisters it, and is replayed when the function registers again. |
-| `active`    | Delivering. On a function hosted with local dispatch, `active` means the owner acked the observer.          |
-| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`). |
-| `error`     | Rejected (invalid args or filters, RBAC, an owner rejection). See `reason`.                                 |
-| `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, or the grace period elapsed. A replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
+| State       | Meaning                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                                                                                                                          |
+| `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                                                               |
+| `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                                                           |
+| `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                                                      |
+| `disposed`  | Gone for good: `Unobserve`, `max_fires` reached, expired, the grace period elapsed, or replaced by an `Observe` from its worker's new connection. On a connection that reattached, a replayed `Observe` of a disposed observer is answered with `disposed` and its reason, also after a `Reattach` that comes later than the grace period (within `observers.disposed_retention_ms`). |
+
+### Answer order and observer ids
+
+The engine reads one connection's messages in order and sends that connection its observe answers
+(`ObserveResult`, `ObserverStateChanged`) in the order it makes them. It answers every `Observe`
+with exactly one `ObserveResult`, and sends `ObserveResult` for nothing else. An `id` therefore
+names one observer at a time on the wire, and an SDK can observe again under an id as soon as it has
+unobserved the earlier observer of that id, or received its `disposed`. It tells the two observers'
+answers apart by order:
+
+- It keeps, per id, the observers whose `Observe` it sent on the current connection, oldest first. A
+  disposed one stays listed until its `disposed` arrives, a newer observer of the id has its
+  `ObserveResult`, or the connection closes.
+- An `ObserveResult` for the id answers the oldest listed observer that has none yet.
+- An `ObserverStateChanged` for the id is about the newest listed observer that has its
+  `ObserveResult`. One that arrives before any has it is dropped: a reattached connection hears its
+  observers resume before its replayed `Observe`s are answered, and each replay's `ObserveResult`
+  carries the current state.
+- On a new connection, the `Unobserve`s queued while disconnected go out before any replayed
+  `Observe`, so the engine disposes the earlier observer before it reads the new one's `Observe`.
+- An `ObserveResult` that refuses the `Observe` (`state: "error"`) is that observer's last answer,
+  and the observer leaves the list when it arrives. Disposing a refused observer sends nothing. A
+  dispose whose `Unobserve` went out before the refusal arrived ends when the refusal arrives.
+
+The engine's `disposed` for the earlier observer, sent before it read the new `Observe`, reaches the
+earlier observer's handle, and the new handle gets its own answers only. The engine stores nothing
+for a refused `Observe`, and ignores an `Unobserve` of an id that none of the connection's observers
+holds: nothing answers it, and another connection's observer of that id stays as it was. An SDK
+refuses an `observe` whose id one of its live handles holds, with `OBSERVER_ID_CONFLICT` and nothing
+sent.
+
+An observer the engine disposes (`max_fires`, expiry, an admin) frees its `id` on a connection that
+heard its `disposed`: one that had the observer's `ObserveResult` before the `ObserverStateChanged`
+that disposed it. That connection may observe under the `id` again at once. On a connection that
+reattached, the engine answers the first `Observe` of that `id` with `disposed` and its reason when
+the disposal came at most `observers.observer_grace_ms` before the earlier connection closed, or
+while it was away: it reads the `Observe` as a replay whose `disposed` was lost with the earlier
+connection, and does not create the observer again with new counters. A `Reattach` later than the
+grace period gets the same answer, within `observers.disposed_retention_ms`. After that answer, or
+an `Unobserve` of the `id` from the connection, the `id` is free there.
 
 ### `FunctionRegistered`
 
-Engine -> owner (only to connections that declared `observe.v1`). The success ack `RegisterFunction`
-never had, sent once per registration and again after a re-registration. It carries the function's
-full current observer set and whether the SDK may run the function in-process.
+Engine -> host (only to connections that declared `observe.v1`). The success ack of
+`RegisterFunction`, sent once per registration and again after a re-registration. It carries the
+function's full current observer set and whether the SDK may run the function in-process.
 
 ```json
 {
@@ -844,19 +984,29 @@ full current observer set and whether the SDK may run the function in-process.
 }
 ```
 
-- `observers` is sent even when empty.
-- `local_dispatch` is `true` when the engine's `observers.local_dispatch` is on, the session has no
-  RBAC middleware, and the connection may invoke the function itself. Only then may the SDK run its
-  own calls to the function in-process.
-- The owner must ack every observer listed, each with this message's `revision`, including the ones
-  it already held before a re-registration: a new registration starts a new owner relationship.
-  Until it is acked an observer stays `pending`; after `observers.owner_ack_timeout_ms` (30 s by
-  default) it fails with `OWNER_TIMEOUT`.
+- `observers` is sent even when empty. It lists the function's observers except those whose
+  observing worker is away (`suspended` with `OBSERVER_DISCONNECTED`): each of those comes in its
+  own `ObserverAdded` when the worker reattaches.
+- `local_dispatch` is `true` when the engine's `observers.local_dispatch` is on, the connection may
+  invoke the function itself, and the session has no RBAC middleware or hosts the function
+  privately. Only then may the SDK run its own calls to the function in-process.
+- The host must ack every observer listed, each with this message's `revision`, including the ones
+  it already held before a re-registration: a new registration starts a new host relationship. The
+  message replaces the set of observers the host holds for the function. An entry already held with
+  the same `args` is re-acked without running hooks; a new entry runs `onObserverAdded` and is acked
+  once it resolves; an entry whose `args` changed counts as removed, then added; a held observer the
+  message does not list is removed. A standby that takes over the function holds none of its
+  observers, so it runs `onObserverAdded` for each entry and acks it the same way. Until it is acked
+  an observer stays `pending`. When it is not acked within `observers.owner_ack_timeout_ms` (30 s by
+  default) of the host moving on to it (the host runs a function's hooks one at a time, in
+  announcement order), it fails with `OWNER_TIMEOUT`.
 
 ### `ObserverAdded`
 
-Engine -> owner (only to connections that declared `observe.v1`). One observer attached to a function
-this connection hosts. It waits for an `ObserverAck`.
+Engine -> host (only to connections that declared `observe.v1`). One observer attached to a function
+this connection hosts: a new observer, or one whose observing worker reattached within
+`observers.observer_grace_ms` (in the order the worker created its observers). It waits for an
+`ObserverAck`.
 
 ```json
 {
@@ -875,13 +1025,14 @@ this connection hosts. It waits for an `ObserverAck`.
 }
 ```
 
-The engine always sends `capture` and `on` resolved. `observer.legacy` is present only for an
-observer made by the [legacy shim](#legacy-shim).
+The engine always sends `capture` and `on` resolved. `capture` also names the part the observer's
+`deliver` hands its target (`input` under `deliver: input`, `output` under `deliver: output`), so a
+host that reports a local call sends it.
 
 ### `ObserverRemoved`
 
-Engine -> owner (only to connections that declared `observe.v1`). One observer detached: `Unobserve`,
-disposal, the observing worker's grace period elapsed, or a late rejection.
+Engine -> host (only to connections that declared `observe.v1`). One observer detached: `Unobserve`,
+disposal, its observing worker disconnecting, or a late rejection.
 
 ```json
 {
@@ -895,10 +1046,11 @@ disposal, the observing worker's grace period elapsed, or a late rejection.
 
 ### `ObserverAck`
 
-Owner -> engine. Accepts one announced observer, echoing `function_id`, `namespace`, `id`, and the
-`revision` of the message that announced it (`ObserverAdded`, or `FunctionRegistered`). The SDK sends
-it after the owner's `onObserverAdded` callback returns, so whatever the owner indexed there is in
-place before the engine marks the observer `active`.
+Host -> engine. Accepts one announced observer, echoing `function_id`, `namespace`, `id`, and the
+`revision` of the message that announced it (`ObserverAdded`, or `FunctionRegistered`). The SDK
+sends it once every `onObserverAdded` hook that applies to the observer has resolved (the worker's
+hook, then the function's), so whatever the hooks set up is in place before the engine marks the
+observer `active`.
 
 ```json
 {
@@ -911,8 +1063,8 @@ place before the engine marks the observer `active`.
 ```
 
 With `error`, the ack rejects the observer, which turns `error` with that reason. The code is the
-owner's own (here `INVALID_CRON_EXPRESSION`), `OBSERVE_REJECTED` when the callback threw a plain
-error, or `OWNER_TIMEOUT`:
+one the hook threw with `ObserveRejection` (here `INVALID_CRON_EXPRESSION`), `OBSERVE_REJECTED` when
+the hook threw any other error, or `OWNER_TIMEOUT` for a hook that ran past 30 s:
 
 ```json
 {
@@ -927,17 +1079,16 @@ error, or `OWNER_TIMEOUT`:
 
 - `namespace` is optional; absent means the sending connection's namespace.
 - An ack whose `revision` is older than the announcement is ignored as stale.
-- **Late rejection.** An owner may send an ack with `error` for an observer that is already `active`
-  (for example after a configuration reload removed what it observed). The engine moves the observer
-  to `error` and sends `ObserverRemoved` back to the owner.
-- The owner never changes an observer's filters.
+- **Late rejection.** A host may send an ack with `error` for an observer that is already `active`
+  (`obs.reject(code, message)`, for example after a configuration reload removed what it observed).
+  The engine moves the observer to `error` and sends `ObserverRemoved` back to the host.
+- The host never changes an observer's filters.
 
 ### `InvocationsObserved`
 
-Owner -> engine. Batched reports: matched local invocations of auto functions (the SDK evaluated the
-filters), and `obs.emit` events of owner-delivered functions (the owner picked the observers, the SDK
-applied their filters). SDKs flush at 256 items or after 5 ms, whichever comes first, and split a
-flush to stay under the 16 MiB frame limit.
+Host -> engine. Batched reports of the host's local calls: calls of its own functions that it made
+itself. SDKs flush at 256 items or after 5 ms, whichever comes first, and split a flush to stay
+under the 16 MiB frame limit.
 
 ```json
 {
@@ -952,58 +1103,83 @@ flush to stay under the 16 MiB frame limit.
       "input": { "customer_id": "cus_8812", "amount": 1250, "currency": "EUR" },
       "error": { "code": "CARD_DECLINED", "message": "card declined by issuer" },
       "caller": {
-        "worker_id": "2b8d4f6a-1c3e-4a5b-9d7f-0e2c4a6b8d1f",
-        "worker_name": "checkout",
         "function_id": "checkout::confirm",
         "invocation_id": "5e7a9c1b-2d4f-4b6a-8c0e-1f3a5c7e9b20"
       },
-      "metadata": { "session_id": "s_41" },
       "started_at_ms": 1760350000123,
       "duration_ms": 12.75,
       "observe_depth": 0,
       "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    },
+    {
+      "function_id": "database::on-row-changed",
+      "namespace": "default",
+      "invocation_id": "c3f5a7b9-0d2e-4f4a-8b6c-7d9e1f3a5b7c",
+      "matched": ["e2a4c6b8-1d3f-4a5b-8c7d-9e0f1a2b3c4d", "f3b5d7c9-2e4a-4b6c-9d8e-0f1a2b3c4d5e"],
+      "status": "success",
+      "input": {
+        "db": "primary",
+        "table": "invoices",
+        "op": "update",
+        "returning": [{ "id": 77, "status": "paid", "amount": 1250 }]
+      },
+      "output_is_input": true,
+      "caller": {
+        "function_id": "database::execute",
+        "invocation_id": "4a6c8e0b-2d4f-4a6c-9e1b-3d5f7a9c1e3b",
+        "parent": {
+          "worker_id": "7c9e1a3b-5d7f-4b9d-8f1a-3b5d7f9a1c3e",
+          "worker_name": "billing",
+          "function_id": "billing::close-invoice",
+          "invocation_id": "6b8d0f2a-4c6e-4a8c-9e0b-2d4f6a8c0e2a"
+        }
+      },
+      "started_at_ms": 1760350000201,
+      "duration_ms": 0.004,
+      "observe_depth": 2
     }
   ]
 }
 ```
 
-| Item field                                  | Meaning                                                                                                  |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `function_id`, `invocation_id`              | The observed function and invocation (for an emit, the invocation it was made in).                       |
-| `namespace`                                 | Optional; absent means the reporting connection's namespace.                                             |
-| `matched`                                   | The observers whose filters matched. One event emitted to several observers in one flush is one item.   |
-| `status`                                    | `success` or `error`; an emitted event is always `success`.                                             |
-| `input`, `output`, `error`, `metadata`      | The union of what the matched observers capture.                                                         |
-| `caller`                                    | Who caused the invocation. The engine stamps `worker_id` and `worker_name` from the reporting connection. |
-| `started_at_ms`, `duration_ms`              | Timing; `duration_ms` is a float.                                                                        |
-| `observe_depth`, `traceparent`, `baggage`   | Optional; carried into the activation.                                                                   |
+| Item field                                | Meaning                                                                                                                                                                                                                                                                                          |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `function_id`, `invocation_id`            | The observed function and its local call.                                                                                                                                                                                                                                                        |
+| `namespace`                               | Optional; absent means the reporting connection's namespace.                                                                                                                                                                                                                                     |
+| `matched`                                 | The observers iii's delivery selected: those the function's match hook matched (every active observer by default) whose `on` and filters matched the call.                                                                                                                                       |
+| `status`                                  | `success` or `error`.                                                                                                                                                                                                                                                                            |
+| `input`, `output`, `error`, `metadata`    | The union of what the matched observers capture.                                                                                                                                                                                                                                                 |
+| `output_is_input`                         | `true` when the handler returned its input, as an event source does: the item carries `input` once and the engine fills `output` from it. Sent only to an engine that advertised `observe.v2`.                                                                                                   |
+| `caller`                                  | Who caused the call. The SDK sends the `function_id`, `invocation_id`, and `parent` of the call's context, and sends no `caller` for a call made outside any handler. The engine sets `worker_id` and `worker_name` on every item from the reporting connection, overwriting any that were sent. |
+| `started_at_ms`, `duration_ms`            | Timing; `duration_ms` is a float.                                                                                                                                                                                                                                                                |
+| `observe_depth`, `traceparent`, `baggage` | `observe_depth` is always sent; the others are optional. All three carry into the activation.                                                                                                                                                                                                    |
 
 The engine checks the items one by one:
 
-- The reporting connection must be the current owner of the function, else the item is dropped as
-  `REPORTER_NOT_OWNER`.
-- An item that does not decode, or whose `status` is neither `success` nor `error`, is dropped alone
+- The reporting connection must host the function, else the item is dropped as `REPORTER_NOT_OWNER`.
+- An item that does not decode, whose `status` is neither `success` nor `error`, or whose
+  `invocation_id` is a routed call the engine forwarded to that connection, is dropped alone
   (counted as `INVALID_REPORT`), and the rest of the batch is applied.
 - `matched` ids that are not active observers of that function are dropped as `INACTIVE`.
-- The engine does not re-evaluate filters on reports: the owner is authoritative for its own
-  function's data. `on` is not checked for owner-delivered functions.
+- The engine does not evaluate filters on reports: the host is authoritative for its own function's
+  calls.
 
 Reports have backpressure. When an item finds an observer's queue full (`OVERFLOW`), the engine
 stops reading from the reporting connection until that queue is back to half of
 `observers.max_queue_per_observer` and the queues together are under half of their 64 MiB, the
-observer leaves `active`, or 250 ms pass. A worker that
-reports faster than the targets take is slowed by its own socket, and its SDK drops the excess from
-its bounded report buffer (`BUFFER_FULL`), so the engine does not spend its CPU decoding reports it
-would drop. Everything else the worker sends waits behind the report meanwhile, so the holds are
-paced: after holding a connection, the engine reads it for at least a quarter as long before it may
-hold it again, and drops the items that overflow meanwhile (`OVERFLOW`). A connection is held at
-most 250 ms at a time and at most four fifths of the time, however long its reports keep
-overflowing. The engine does not wait for an observer whose target the reporting connection hosts:
-the answers that would free the queue come in on that connection.
+observer leaves `active`, or 250 ms pass. A worker that reports faster than the targets take is
+slowed by its own socket, and its SDK drops the excess from its bounded report buffer
+(`BUFFER_FULL`), so the engine does not spend its CPU decoding reports it would drop. Everything
+else the worker sends waits behind the report meanwhile, so the holds are paced: after holding a
+connection, the engine reads it for at least a quarter as long before it may hold it again, and
+drops the items that overflow meanwhile (`OVERFLOW`). A connection is held at most 250 ms at a time
+and at most four fifths of the time, however long its reports keep overflowing. The engine does not
+wait for an observer whose target the reporting connection hosts: the answers that would free the
+queue come in on that connection.
 
 ### `LocalInvocationStats`
 
-Owner -> engine. Every 10 s, only when non-zero: per-function counts of local invocations (which feed
+Host -> engine. Every 10 s, only when non-zero: per-function counts of local invocations (which feed
 the engine's invocation metrics) and SDK-side report drops.
 
 ```json
@@ -1011,117 +1187,74 @@ the engine's invocation metrics) and SDK-side report drops.
   "type": "localinvocationstats",
   "window_ms": 10000,
   "functions": [
-    { "function_id": "database::on-row-changed", "count": 48211, "errors": 0, "duration_ms_sum": 190.2 },
+    {
+      "function_id": "database::on-row-changed",
+      "count": 48211,
+      "errors": 0,
+      "duration_ms_sum": 190.2
+    },
     { "function_id": "orders::archive", "count": 37, "errors": 2, "duration_ms_sum": 15.5 }
   ],
-  "dropped_reports": [{ "function_id": "database::on-row-changed", "reason": "BUFFER_FULL", "count": 12 }]
+  "dropped_reports": [
+    { "function_id": "database::on-row-changed", "reason": "BUFFER_FULL", "count": 12 }
+  ]
 }
 ```
 
-`functions[].errors` and `functions[].duration_ms_sum` default to `0`; both arrays default to empty.
-The engine ignores entries for functions the connection does not own. `dropped_reports[].reason` is
-`BUFFER_FULL` or `TOO_LARGE`; any other reason is counted as `OTHER`.
-
-### Legacy shim
-
-A provider can move from a trigger type to a function without breaking workers that still send
-`RegisterTrigger`. The function declares `observe.legacy_trigger_type` with the trigger type it
-replaces. When a `RegisterTrigger` names a type with no live old-style provider, and a function
-declares that type (looked up in the trigger's `trigger_namespace` only when it names one, otherwise
-in the registering connection's namespace, then `default`), the engine:
-
-1. Creates an observer on that function, owned by the registering connection: the trigger id becomes
-   the observer id, with no args or filters, `deliver: input` (so the target receives what a trigger
-   handler received), the trigger's `metadata` as the metadata sidecar, and
-   `legacy: { trigger_type, config }`.
-2. Sends `ObserverAdded` to the owner with `observer.legacy`:
-
-   ```json
-   {
-     "type": "observeradded",
-     "function_id": "http::on-request",
-     "namespace": "default",
-     "revision": 4,
-     "observer": {
-       "id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c",
-       "args": {},
-       "filters": {},
-       "target": "users::get",
-       "capture": ["input", "output", "caller"],
-       "on": "success",
-       "legacy": {
-         "trigger_type": "http",
-         "config": { "api_path": "/users/:id", "http_method": "GET" }
-       }
-     }
-   }
-   ```
-
-3. The owner validates `legacy.config` as its trigger handler did, reads it as the observer's args,
-   and acks or rejects it like any observer. The engine skips `args_format` validation for it.
-4. The registrant gets one `TriggerRegistrationResult` with the outcome: a success once the owner
-   acked (SDKs ignore it), or the owner's `error` if it rejected.
-5. `UnregisterTrigger` (or `engine::unregister_trigger`) disposes the observer.
-
-A live old-style provider always wins for new registrations: the shim is a fallback, and the
-observers it made stay where they are when such a provider registers later. A new `RegisterTrigger`
-with the same id replaces the observer, as it replaces a trigger. Only an owner that declared
-`observe.v1` stands in for a trigger type; `legacy_trigger_type` on any other owner is ignored.
-Bindings stored while no provider existed convert when a stand-in registers. When the owner leaves,
-its legacy observers wait and are replayed like any other observer.
+Senders always send `functions[].errors` and `functions[].duration_ms_sum`, `0` included; a decoder
+reads an absent one as `0`, and an absent array as empty. The engine ignores entries for functions
+the connection does not host. `dropped_reports[].reason` is `BUFFER_FULL` or `TOO_LARGE`; any other
+reason is counted as `OTHER`.
 
 ### Error codes
 
 `ObserveResult.error.code` and `ObserverStateChanged.reason.code` on a rejected observer:
 
-| Code                         | When                                                                                                        |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`                | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value. |
-| `INVALID_ARGS`               | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode. |
-| `INVALID_OBSERVE_DESCRIPTOR` | A `RegisterFunction` declares `args_format` with `delivery: auto`, or an unknown `delivery` (`RegistrationRejected`). |
-| `INVALID_FILTER`             | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.  |
-| `INVALID_FILTER_PATH`        | A filter path is not in the function's closed `request_format` / `response_format`.                         |
-| `NOT_OBSERVABLE`             | The function registered `observe.allow: false`.                                                             |
-| `FORBIDDEN`                  | RBAC denies the observed function or the target, or the registration hook denied.                          |
-| `SELF_TARGET`                | The target is the observed function.                                                                        |
-| `LIMIT_EXCEEDED`             | `observers.max_per_connection` or `observers.max_per_function` reached.                                     |
-| `OBSERVER_ID_CONFLICT`       | A replay with the same `id` and a different spec.                                                           |
-| `OWNER_TIMEOUT`              | The owner did not ack within `observers.owner_ack_timeout_ms`.                                              |
-| `OBSERVE_REJECTED`           | The owner's `onObserverAdded` callback threw a plain error.                                                 |
-| owner codes                  | Carried verbatim from `ObserverAck.error` (for example `HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`).   |
+| Code                   | When                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value.                                                                                                                                                                                                                                                                                                                    |
+| `INVALID_ARGS`         | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode.                                                                                                                                                                                                                                                  |
+| `INVALID_FILTER`       | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.                                                                                                                                                                                                                                                                                                                                  |
+| `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` / `response_format`.                                                                                                                                                                                                                                                                                                                                                        |
+| `NOT_OBSERVABLE`       | The function registered `observable: false`.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `FORBIDDEN`            | RBAC denies the observed function or the target, the registration hook denied, or the target is a private function.                                                                                                                                                                                                                                                                                                                        |
+| `SELF_TARGET`          | The target is the observed function.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `LIMIT_EXCEEDED`       | `observers.max_per_connection` or `observers.max_per_function` reached.                                                                                                                                                                                                                                                                                                                                                                    |
+| `OBSERVER_ID_CONFLICT` | Another observer holds the `id`: the same connection's, with a different spec, or another connection's. A `suspended` observer's own worker, on a new connection under the same worker name and namespace (and the same principal: both on ports without `rbac`, or both with the same non-empty auth `context`), replaces it. An SDK refuses an `observe` whose id one of its live handles holds with this code, before anything is sent. |
+| `OWNER_TIMEOUT`        | The host did not ack within `observers.owner_ack_timeout_ms`: an `onObserverAdded` hook ran past it.                                                                                                                                                                                                                                                                                                                                       |
+| `OBSERVE_REJECTED`     | An `onObserverAdded` hook threw an error other than `ObserveRejection`.                                                                                                                                                                                                                                                                                                                                                                    |
+| host codes             | Carried verbatim from `ObserverAck.error`: the code of the `ObserveRejection` a hook threw (for example `HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`).                                                                                                                                                                                                                                                                                 |
 
-Owner delivery (`obs.call`) fails with `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`,
-`NOT_OWNER_DELIVERED`, `OBSERVER_NOT_ACTIVE`, `TARGET_MISMATCH`, `LOOP_GUARD`, `OVERFLOW`, `TIMEOUT`,
-or the target's own error. SDK-side, `obs.call` fails with `FILTERS_NOT_MATCHED` (the observer's
-filters reject the payload; nothing is sent), `NOT_OWNER_DELIVERED` (`obs.emit` or `obs.call` on an
-auto function), or `OBSERVER_NOT_ACTIVE`.
+A call through an observer fails with `OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`,
+`OBSERVER_NOT_ACTIVE`, `LOOP_GUARD`, `OVERFLOW`, `TIMEOUT`, or the target's own error.
 
 State reasons (`ObserverStateChanged.reason.code`):
 
-| Reason                  | Meaning                                                                    |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `OWNER_UNAVAILABLE`     | The observed function's owner is gone; the observer waits as `pending`.    |
-| `TARGET_UNAVAILABLE`    | The target function is not registered: `pending` until it first registers, `suspended` when it goes away later. |
-| `OBSERVER_DISCONNECTED` | The observing worker disconnected; the grace period runs.                  |
-| `EXPIRED`               | `expires_in_ms` elapsed.                                                   |
-| `MAX_FIRES`             | `max_fires` reached.                                                       |
-| `UNOBSERVED`            | Disposed by `Unobserve` (or `engine::observers::dispose`).                 |
+| Reason                  | Meaning                                                                                                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OWNER_UNAVAILABLE`     | The observed function's host is gone; the observer waits as `pending`.                                                                                         |
+| `TARGET_UNAVAILABLE`    | The target function is not registered: `pending` until it first registers, `suspended` when it goes away later.                                                |
+| `OBSERVER_DISCONNECTED` | The observing worker disconnected: `suspended` while the grace period runs, `disposed` when it ends or when the worker's new connection replaces the observer. |
+| `EXPIRED`               | `expires_in_ms` elapsed.                                                                                                                                       |
+| `MAX_FIRES`             | `max_fires` reached.                                                                                                                                           |
+| `UNOBSERVED`            | Disposed by `Unobserve` (or `engine::observers::dispose`).                                                                                                     |
 
 Drop reasons, counted per observed function in `iii.observer.dropped.total` (never silent; the
 metric is updated once a second):
 
-| Reason               | Meaning                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------- |
-| `INACTIVE`           | The observer was not `active` when the event arrived.                                 |
-| `LOOP_GUARD`         | The activation would exceed `observers.max_observe_depth` (8 by default).             |
-| `MAX_FIRES`          | The observer had no fires left.                                                       |
-| `OVERFLOW`           | `max_in_flight` and the observer's queue (`observers.max_queue_per_observer`) are full, or the queues of all observers together hold 64 MiB of events. |
-| `REPORTER_NOT_OWNER` | A report came from a connection that does not own the function.                       |
-| `CANCELLED`          | An observed invocation ended without a result (its caller gave up); counted for each observer that was waiting for it. |
-| `INVALID_REPORT`     | An `InvocationsObserved` item did not decode or had an unknown `status`.              |
-| `BUFFER_FULL`        | SDK-side: the reporter's buffer was full (via `LocalInvocationStats`).                |
-| `TOO_LARGE`          | One event too large on its own, whatever the load: what its observers capture or filter on is over the 64 MiB the engine keeps for an event, the activation is larger than the target worker accepts (a refused activation is a drop, not an activation failure), or, SDK-side, one report item was larger than the 8 MiB buffer (via `LocalInvocationStats`). The engine logs a warning at most once a minute per observer. |
-| `OTHER`              | An SDK-side reason the engine does not know.                                          |
+| Reason               | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INACTIVE`           | The observer was not `active` when the call arrived.                                                                                                                                                                                                                                                                                                                                                                      |
+| `LOOP_GUARD`         | The activation would exceed `observers.max_observe_depth` (8 by default).                                                                                                                                                                                                                                                                                                                                                 |
+| `MAX_FIRES`          | The observer had no fires left.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `OVERFLOW`           | `max_in_flight` and the observer's queue (`observers.max_queue_per_observer`) are full, or the queues of all observers together hold 64 MiB of calls. When the engine has no room to evaluate a call's filters, it evaluates none, and each observer the call could activate counts it, whatever its filters: every active observer, or the ones the host's match hook named.                                             |
+| `REPORTER_NOT_OWNER` | A report, or an answer to a routed call, came from a connection that does not host the function.                                                                                                                                                                                                                                                                                                                          |
+| `CANCELLED`          | An observed invocation ended without a result (its caller gave up); counted for each observer that was waiting for it.                                                                                                                                                                                                                                                                                                    |
+| `INVALID_REPORT`     | An `InvocationsObserved` item did not decode, had an unknown `status`, or reported a routed call.                                                                                                                                                                                                                                                                                                                         |
+| `BUFFER_FULL`        | SDK-side: the reporter's buffer was full (via `LocalInvocationStats`).                                                                                                                                                                                                                                                                                                                                                    |
+| `TOO_LARGE`          | One call too large on its own, whatever the load: what its observers capture or filter on is over the 64 MiB the engine keeps for a call, the activation is larger than the target worker accepts (a refused activation is a drop, not an activation failure), or, SDK-side, one report item was larger than the 8 MiB buffer (via `LocalInvocationStats`). The engine logs a warning at most once a minute per observer. |
+| `OTHER`              | An SDK-side reason the engine does not know.                                                                                                                                                                                                                                                                                                                                                                              |
+| refusal codes        | A fire-and-forget call through an observer that the engine refused, counted under its code (`OBSERVER_NOT_FOUND`, `NOT_FUNCTION_OWNER`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`).                                                                                                                                                                                                                                 |
 
 ## Namespaces
 
@@ -1131,8 +1264,8 @@ example, `state::get` has the same id in every namespace. Registries are keyed b
 once per namespace.
 
 A worker declares its namespace on the `engine::workers::register` call
-([`RegisterWorkerInput.namespace`](#engine-discovery-functions)). A
-connection that declares none lands in `default`.
+([`RegisterWorkerInput.namespace`](#engine-discovery-functions)). A connection that declares none
+lands in `default`.
 
 ### Resolution
 
@@ -1144,8 +1277,8 @@ Invocation routing is strict. It never falls back to another namespace:
 | `"orders"`                     | `orders` only                |
 | `null` or any other non-string | the engine rejects the frame |
 
-The SDKs fill the field from the worker namespace when the caller sets none on the invocation, so the
-frame carries the worker's own namespace, or `default` when the worker declared none.
+The SDKs fill the field from the worker namespace when the caller sets none on the invocation, so
+the frame carries the worker's own namespace, or `default` when the worker declared none.
 
 A miss returns `function_not_found` naming the namespaces where the id does exist.
 
@@ -1173,51 +1306,52 @@ as an absent field: the engine rejects it, as it rejects any non-string value.
 
 ## Engine discovery functions
 
-The engine registers a set of functions under the `engine::*` prefix for introspection
-and worker lifecycle. Defined in
+The engine registers a set of functions under the `engine::*` prefix for introspection and worker
+lifecycle. Defined in
 [`engine/src/workers/engine_fn/mod.rs`](https://github.com/iii-hq/iii/blob/main/engine/src/workers/engine_fn/mod.rs):
 
-| Function                      | Purpose                                                                       |
-| ----------------------------- | ----------------------------------------------------------------------------- |
-| `engine::channels::create`    | Create a streaming-channel reader / writer pair.                              |
-| `engine::functions::list`     | List every registered function (filterable by `include_internal`).            |
-| `engine::functions::info`     | Inspect one or more functions (a single `function_id`, or up to 32 `function_ids`): schemas, owner, and registered triggers. Accepts an optional `namespace`. |
-| `engine::workers::list`       | List every connected worker with metrics.                                     |
-| `engine::workers::info`       | Inspect one connected worker's full surface (functions, trigger types, registered triggers). Takes `name` plus an optional `namespace`. |
-| `engine::triggers::list`      | List every registered trigger type (filterable by `include_internal`).        |
-| `engine::triggers::info`      | Inspect one trigger type: schemas, owner, and live instance count. Accepts an optional `namespace`; absent resolves the caller's namespace first, then `default`. |
-| `engine::registered-triggers::list` | List every registered trigger instance (filterable by `include_internal`). Each row carries a `status`; pass `include_pending: true` to also list registrations with `status: pending`, whose trigger type has no provider yet. |
-| `engine::registered-triggers::info` | Inspect one registered trigger instance, with denormalized trigger and function detail. |
-| `engine::workers::register`   | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`). |
-| `engine::register_trigger`    | Register a trigger that fires `function_id` directly, with optional `metadata` delivered to the handler as a distinct argument. The binding is registered in the calling worker's namespace: the target resolves there and the provider is looked up there first, then in `default`. Returns the trigger id. |
-| `engine::unregister_trigger`  | Unregister a trigger by id. Idempotent; reports whether it existed. Also disposes an observer the [legacy shim](#legacy-shim) made from a trigger. |
-| `engine::observers::list`     | List observers (0.25). Optional filters: `function_id`, `namespace`, and `worker` (the observing worker's name or connection id). Returns `{ observers: [...] }`: id, function, `delivery`, `args`, normalized `filters`, `target`, `capture`, `on`, `deliver`, observing worker, `state`, `reason`, `fires`, drops and activation failures by reason, the policy (`max_fires`, `expires_in_ms`, `max_in_flight`), `created_at_ms`, and `legacy` when set. Never the observer's metadata. Under RBAC, only observers of functions the caller may invoke are listed. |
-| `engine::observers::get`      | Inspect one observer by `id`, in the same shape. An observer the caller may not see fails with `OBSERVER_NOT_FOUND`. |
-| `engine::observers::dispose`  | Dispose an observer by `id`; returns `{ disposed: true }`. Only the observing worker or an unrestricted caller (an in-process engine call, or a connection without an `rbac` section) may dispose it; anyone else gets `FORBIDDEN`. |
+| Function                     | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::channels::create`   | Create a streaming-channel reader / writer pair.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `engine::functions::list`    | List every registered function (filterable by `include_internal`). Each row carries `args_format`, `private`, `observable`, and `observer_count`.                                                                                                                                                                                                                                                                                                                                                                             |
+| `engine::functions::info`    | Inspect one or more functions (a single `function_id`, or up to 32 `function_ids`): schemas, host, `args_format`, `private`, `observable`, and `observer_count`. Accepts an optional `namespace`.                                                                                                                                                                                                                                                                                                                             |
+| `engine::workers::list`      | List every connected worker with metrics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `engine::workers::info`      | Inspect one connected worker's full surface: the `functions` it hosts and the `observers` it created. Takes `name` plus an optional `namespace`.                                                                                                                                                                                                                                                                                                                                                                              |
+| `engine::workers::register`  | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`, and `features`).                                                                                                                                                                                                                                                                                                                                                                                   |
+| `engine::observers::list`    | List observers. Optional filters: `function_id`, `namespace`, and `worker` (the observing worker's name or connection id). Returns `{ observers: [...] }`: id, function, `args`, normalized `filters`, `target`, `capture`, `on`, `deliver`, observing worker, `state`, `reason`, `fires`, drops and activation failures by reason, the policy (`max_fires`, `expires_in_ms`, `max_in_flight`), and `created_at_ms`. Never the observer's metadata. Under RBAC, only observers of functions the caller may invoke are listed. |
+| `engine::observers::get`     | Inspect one observer by `id`, in the same shape. An observer the caller may not see fails with `OBSERVER_NOT_FOUND`.                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `engine::observers::dispose` | Dispose an observer by `id`; returns `{ disposed: true }`. Only the observing worker or an unrestricted caller (an in-process engine call, or a connection without an `rbac` section) may dispose it; anyone else gets `FORBIDDEN`.                                                                                                                                                                                                                                                                                           |
 
 Every row returned by `engine::functions::list`, `engine::functions::info`, `engine::workers::list`,
-and `engine::workers::info` carries a `namespace` field naming the registry key under which the entry
-is registered. It distinguishes two rows that share a `function_id` or a worker `name`. Neither
-`list` function takes a `namespace` filter; both return every namespace.
+and `engine::workers::info` carries a `namespace` field naming the registry key under which the
+entry is registered. It distinguishes two rows that share a `function_id` or a worker `name`.
+Neither `list` function takes a `namespace` filter; both return every namespace.
 
-## Engine discovery triggers
+## Engine-hosted sources
 
-| Trigger                       | Fires when                                |
-| ----------------------------- | ----------------------------------------- |
-| `engine::functions-available` | A function is registered or unregistered. |
-| `engine::workers-available`   | A worker connects or disconnects.         |
+The engine hosts event sources as functions in the `default` namespace. Each is a private function
+whose handler returns its event, so a call's `input` and `output` are both the event. They take no
+args: observe them with filters on the event. Only the engine calls them; a call from a worker fails
+with `FORBIDDEN`.
 
-In 0.25 these trigger types keep firing, and the engine also hosts an event-source function for each.
-Observe the function instead of registering a trigger, with `deliver: "input"` (the events have no
-output):
+| Function                                                    | Event                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::on-functions-changed`                              | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`; `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
+| `engine::on-workers-changed`                                | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`.                                                                                                                                                                                                                |
+| `engine::on-observers-changed`                              | `{ observer_id, function_id, target, state, reason? }`: one call per observer state change.                                                                                                                                                                                                                                 |
+| `configuration::on-updated`                                 | A configuration entry was registered, updated, or deleted; filter on `input.id` and `input.event_type`.                                                                                                                                                                                                                     |
+| `observability::on-log`                                     | One log record; filter on `input.severity_number`.                                                                                                                                                                                                                                                                          |
+| `observability::on-span`                                    | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
+| `stream::on-changed`, `stream::on-join`, `stream::on-leave` | Hosted by `iii-stream` while it runs; filter on `input.stream_name` and `input.group_id`.                                                                                                                                                                                                                                   |
 
-| Event source                   | Replaces                      | Event (`input`)                                                                                           |
-| ------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `engine::on-functions-changed` | `engine::functions-available` | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata? }] }`; changes within about 100 ms are coalesced into one event. |
-| `engine::on-workers-changed`   | `engine::workers-available`   | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated` |
+A call of an engine-hosted source has `caller` `{ worker_name: "iii-engine" }`, so an envelope that
+captures `caller` carries it and a filter on `caller.worker_name` sees `iii-engine`. The
+activation's own `caller` is the engine with the source's `function_id` and `invocation_id`.
 
-Both live in `default`. Calling them directly fails with `FORBIDDEN`: their events are the engine's to
-emit. See [Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
+When an observer names no `namespace`, the SDK resolves `engine::*` and `configuration::*` in
+`default` and every other function in the observing worker's namespace. A worker in another
+namespace names `namespace: "default"` to observe `observability::*` or `stream::*`. See
+[Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
 
 ## Engine-collected metrics
 
@@ -1233,8 +1367,8 @@ units come from
 | `iii.invocation.duration`     | histogram  | s           |
 | `iii.invocation.errors.total` | counter    | errors      |
 
-Since 0.25 a worker runs calls to its own functions in-process (local dispatch), so the engine does not
-route them. SDKs report their counts in `LocalInvocationStats`, and the engine adds them to
+Since 0.25 a worker runs calls to its own functions in-process (local dispatch), so the engine does
+not route them. SDKs report their counts in `LocalInvocationStats`, and the engine adds them to
 `iii.invocations.total` with the labels `function_id`, `status` (`ok` or `error`), and
 `dispatch="local"`. Local invocations have no engine-side `iii.invocation.duration` sample.
 
@@ -1242,12 +1376,12 @@ route them. SDKs report their counts in `LocalInvocationStats`, and the engine a
 
 Labelled per observed function, not per observer, to bound cardinality.
 
-| Metric                                   | Instrument | Unit        | Labels                                                         |
-| ---------------------------------------- | ---------- | ----------- | -------------------------------------------------------------- |
-| `iii.observer.activations.total`         | counter    | activations | `function_id`, `delivery` (`auto` or `owner`)                  |
-| `iii.observer.dropped.total`             | counter    | events      | `function_id`, `reason` (see [drop reasons](#error-codes))     |
-| `iii.observers`                          | gauge      | observers   | `state`                                                        |
-| `iii.observer.reports.total`             | counter    | reports     | `function_id`                                                  |
+| Metric                                   | Instrument | Unit        | Labels                                                                    |
+| ---------------------------------------- | ---------- | ----------- | ------------------------------------------------------------------------- |
+| `iii.observer.activations.total`         | counter    | activations | `function_id`, `delivery` (`engine`, `host`, or `observer_call`)          |
+| `iii.observer.dropped.total`             | counter    | events      | `function_id`, `reason` (see [drop reasons](#error-codes))                |
+| `iii.observers`                          | gauge      | observers   | `state`                                                                   |
+| `iii.observer.reports.total`             | counter    | reports     | `function_id`                                                             |
 | `iii.observer.activation.failures.total` | counter    | activations | `function_id`, `reason` (`TIMEOUT`, `TARGET_UNAVAILABLE`, `TARGET_ERROR`) |
 
 ### Workers

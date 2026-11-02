@@ -56,8 +56,8 @@ def worker() -> Iterator[Callable[..., III]]:
 def flush_client(client: III) -> None:
     """Client barrier: buffered reports are flushed, and the frames the
     observe machinery handed to the socket (reports, acks, observe frames:
-    ``_send_frame``) have been written. Calls made with ``trigger`` are
-    written before ``trigger`` returns (or by their own task, for ``Void``)."""
+    ``_send_frame``) have been written. Calls made with ``call`` are
+    written before ``call`` returns (or by their own task, for ``Void``)."""
 
     async def drain() -> None:
         client._reporter.flush()
@@ -79,13 +79,13 @@ def settle_engine(rounds: int = 2) -> None:
             if client.get_connection_state() != "connected":
                 continue
             flush_client(client)
-            client.trigger({"function_id": "engine::functions::list", "payload": {}, "dispatch": "remote"})
+            client.call({"function_id": "engine::functions::list", "payload": {}, "dispatch": "remote"})
             probe = getattr(client, "_e2e_probe", None)
             if probe is None:
                 probe = f"py-probe-{uuid.uuid4().hex[:8]}::settle"
                 client.register_function(probe, lambda data: None)
                 client._e2e_probe = probe  # type: ignore[attr-defined]
-            client.trigger({"function_id": probe, "payload": {}, "dispatch": "remote"})
+            client.call({"function_id": probe, "payload": {}, "dispatch": "remote"})
 
 
 @pytest.fixture
@@ -155,17 +155,24 @@ def local_dispatch_ready(client: III, function_id: str, timeout: float = 5.0) ->
 
 
 class FrameCounter:
-    """Counts every frame the worker writes to its socket (at the write, on the SDK loop)."""
+    """Counts every frame the worker writes to its socket (at the write, on the SDK loop), and keeps the
+    ``invocationsobserved`` items among them."""
 
     def __init__(self, client: III) -> None:
         self.types: list[str] = []
+        self.frames: list[dict[str, Any]] = []
+        self.items: list[dict[str, Any]] = []
         ws = client._ws
         assert ws is not None
         real = ws.send
 
         async def send(data: Any, *args: Any, **kwargs: Any) -> None:
             text = data if isinstance(data, str) else bytes(data).decode()
-            self.types.append(str(_frame_type(text)))
+            frame = _frame(text)
+            self.types.append(str(frame.get("type")))
+            self.frames.append(frame)
+            if frame.get("type") == "invocationsobserved":
+                self.items.extend(frame.get("items", []))
             await real(data, *args, **kwargs)
 
         ws.send = send  # type: ignore[method-assign]
@@ -175,13 +182,14 @@ class FrameCounter:
         return len(self.types)
 
 
-def _frame_type(text: str) -> Any:
+def _frame(text: str) -> dict[str, Any]:
     import json
 
     try:
-        return json.loads(text).get("type")
+        frame = json.loads(text)
     except Exception:
-        return None
+        return {}
+    return frame if isinstance(frame, dict) else {}
 
 
 def drop_connection(client: III) -> None:

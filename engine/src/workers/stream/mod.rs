@@ -11,7 +11,6 @@ mod connection;
 mod socket;
 #[allow(clippy::module_inception)]
 mod stream;
-mod trigger;
 pub(crate) mod utils;
 
 pub mod registry;

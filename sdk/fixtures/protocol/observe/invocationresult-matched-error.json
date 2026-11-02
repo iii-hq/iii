@@ -1,0 +1,13 @@
+{
+  "type": "invocationresult",
+  "invocation_id": "7e95470a-c2a9-46ed-9939-5ccef87cb3b6",
+  "function_id": "payments::charge",
+  "error": {
+    "code": "CARD_DECLINED",
+    "message": "card declined by issuer"
+  },
+  "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-b7ad6b7169203331-01",
+  "matched": [
+    "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60"
+  ]
+}

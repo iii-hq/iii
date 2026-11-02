@@ -293,7 +293,7 @@ The web console's "deny" button uses a fixed "Rejected by operator." message wit
 
 Keep in mind that the AI Agent Harness only gates the harness dispatch path.
 
-A direct `iii trigger release::set_flag` call bypassed approval-gate entirely in our test, because that's a direct Trigger rather than a harness dispatch. iii's rbac-proxy Worker exists to put a role/team boundary in front of direct calls like that one.
+A direct `iii call release::set_flag` call bypassed approval-gate entirely in our test, because that's a direct call rather than a harness dispatch. iii's rbac-proxy Worker exists to put a role/team boundary in front of direct calls like that one.
 
 <div class="compare">
 

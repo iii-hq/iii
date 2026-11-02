@@ -2,7 +2,7 @@
 
 Covers the wire mirror (``InvokeFunctionMessage.metadata``), the handler
 signature convention (metadata is forwarded only when the handler accepts
-it -- 1-arg handlers keep working), and the outbound ``trigger`` API.
+it -- 1-arg handlers keep working), and the outbound ``call`` API.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -12,7 +12,7 @@ import pytest
 import iii.iii as iii_module
 from iii.iii import III, _metadata_passing_mode
 from iii.iii_constants import InitOptions
-from iii.iii_types import InvokeFunctionMessage, TriggerActionVoid, TriggerRequest
+from iii.iii_types import CallActionVoid, CallRequest, InvokeFunctionMessage
 
 
 @pytest.fixture
@@ -219,17 +219,17 @@ def test_one_arg_handler_still_works_with_metadata_present(client):
     assert result_msg.result == {"ok": True}
 
 
-# --- outbound trigger() populates the wire metadata field ------------------
+# --- outbound call() populates the wire metadata field ---------------------
 
 
-def test_trigger_async_dict_populates_outbound_metadata(client):
+def test_call_async_dict_populates_outbound_metadata(client):
     with patch.object(client, "_send", new_callable=AsyncMock) as send_mock:
         client._run_on_loop(
-            client.trigger_async(
+            client.call_async(
                 {
                     "function_id": "remote::fn",
                     "payload": {"a": 1},
-                    "action": TriggerActionVoid(),
+                    "action": CallActionVoid(),
                     "metadata": {"caller": "svc-a"},
                 }
             )
@@ -241,14 +241,14 @@ def test_trigger_async_dict_populates_outbound_metadata(client):
     assert msg.metadata == {"caller": "svc-a"}
 
 
-def test_trigger_async_request_object_populates_outbound_metadata(client):
+def test_call_async_request_object_populates_outbound_metadata(client):
     with patch.object(client, "_send", new_callable=AsyncMock) as send_mock:
         client._run_on_loop(
-            client.trigger_async(
-                TriggerRequest(
+            client.call_async(
+                CallRequest(
                     function_id="remote::fn",
                     payload={"a": 1},
-                    action=TriggerActionVoid(),
+                    action=CallActionVoid(),
                     metadata={"caller": "svc-b"},
                 )
             )
@@ -258,14 +258,14 @@ def test_trigger_async_request_object_populates_outbound_metadata(client):
     assert msg.metadata == {"caller": "svc-b"}
 
 
-def test_trigger_async_without_metadata_leaves_field_none(client):
+def test_call_async_without_metadata_leaves_field_none(client):
     with patch.object(client, "_send", new_callable=AsyncMock) as send_mock:
         client._run_on_loop(
-            client.trigger_async(
+            client.call_async(
                 {
                     "function_id": "remote::fn",
                     "payload": {},
-                    "action": TriggerActionVoid(),
+                    "action": CallActionVoid(),
                 }
             )
         )

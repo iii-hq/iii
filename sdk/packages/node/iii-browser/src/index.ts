@@ -7,53 +7,49 @@ export {
   RegistrationRejectedError,
   type RegistrationRejectedInit,
 } from './errors'
-
-export { EngineFunctions, EngineTriggers } from './iii-constants'
+export { CallAction, type InitOptions, registerWorker, TriggerAction } from './iii'
 export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
-
-export { type InitOptions, registerWorker, TriggerAction } from './iii'
+export { EngineFunctions, EngineSources } from './iii-constants'
 
 export type {
   AuthInput,
   AuthResult,
+  CallRequest,
   EnqueueResult,
   MessageType,
   MiddlewareFunctionInput,
-  ObserveDescriptorWire,
   OnFunctionRegistrationInput,
-  OpenEnum,
   OnFunctionRegistrationResult,
-  OnTriggerRegistrationInput,
-  OnTriggerRegistrationResult,
-  OnTriggerTypeRegistrationInput,
-  OnTriggerTypeRegistrationResult,
+  OpenEnum,
   RegisterFunctionFormat,
   RegisterFunctionMessage,
-  RegisterTriggerMessage,
-  RegisterTriggerTypeMessage,
   StreamChannelRef,
   TriggerRequest,
 } from './iii-types'
 
 export type {
+  AddedHook,
+  Call,
   Caller,
   CallerInfo,
   Capture,
+  DeliverHook,
   Filter,
   InvocationContext,
-  ObserveDoc,
+  Key,
+  MatchHook,
+  MatchKeys,
+  MatchPredicate,
   Observed,
-  ObserveHooks,
   ObserveReason,
   Observer,
   ObserverHandle,
   ObserverOptions,
   ObserverState,
   ObserveSource,
+  RemovedHook,
   Target,
 } from './observe-types'
-
-export type { TriggerConfig, TriggerHandler } from './triggers'
 
 export type {
   ApiRequest,
@@ -63,9 +59,5 @@ export type {
   ISdk,
   RegisterFunctionInput,
   RegisterFunctionOptions,
-  RegisterTriggerInput,
-  RegisterTriggerTypeInput,
   RemoteFunctionHandler,
-  Trigger,
-  TriggerTypeRef,
 } from './types'

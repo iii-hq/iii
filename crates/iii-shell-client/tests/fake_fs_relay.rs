@@ -502,7 +502,7 @@ async fn fs_read_stream_handles_partial_frame_reads() {
 /// REGRESSION: `Session::fs_write_stream` must not hang forever
 /// when the caller-supplied `AsyncRead` stalls indefinitely
 /// (mirrors a hard-terminated channel WS where `next_binary()`
-/// never resolves). Without the per-read idle timeout, the trigger
+/// never resolves). Without the per-read idle timeout, the function
 /// handler sits in `reader.read().await` forever, the SDK's outer
 /// timeout fires as an opaque "Invocation timeout", and the
 /// supervisor's temp file leaks for up to 30s before its

@@ -12,6 +12,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 // Inputs are resolved relative to the repo root (the pipeline runs from there).
 const ROOT = process.cwd()
 const DOCS_OUTPUT = resolve(__dirname, '../reference')
+// rustdoc writes its JSON under the cargo target dir.
+const CARGO_TARGET = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : resolve(ROOT, 'target')
+// --strict: a missing extraction JSON fails the run (the drift check needs every page).
+const STRICT = process.argv.includes('--strict')
 
 interface GenerationTarget {
   name: string
@@ -42,11 +46,11 @@ const targets: GenerationTarget[] = [
   },
   {
     name: 'Rust SDK',
-    jsonPath: resolve(ROOT, 'target/doc/iii_sdk.json'),
+    jsonPath: resolve(CARGO_TARGET, 'doc/iii_sdk.json'),
     outputPath: resolve(DOCS_OUTPUT, 'sdk-rust.mdx'),
     parser: parseRustdoc,
     sourcePath: 'sdk/packages/rust/iii/src',
-    helpersJsonPath: resolve(ROOT, 'target/doc/iii_helpers.json'),
+    helpersJsonPath: resolve(CARGO_TARGET, 'doc/iii_helpers.json'),
   },
   {
     // One go/doc dump (docs/next/scripts/godoc-json) covers the whole module:
@@ -81,7 +85,7 @@ const targets: GenerationTarget[] = [
   },
   {
     name: 'Helpers (Rust)',
-    jsonPath: resolve(ROOT, 'target/doc/iii_helpers.json'),
+    jsonPath: resolve(CARGO_TARGET, 'doc/iii_helpers.json'),
     outputPath: resolve(DOCS_OUTPUT, 'helpers-rust.mdx'),
     parser: parseHelpersRustdoc,
     sourcePath: 'sdk/packages/rust/helpers/src',
@@ -104,8 +108,10 @@ for (const target of targets) {
   console.log(`\n[generate-api-docs] Processing ${target.name}...`)
 
   if (!existsSync(target.jsonPath)) {
-    console.warn(`  [SKIP] JSON file not found: ${target.jsonPath}`)
-    console.warn(`  Run the extraction step first (see .github/workflows/generate-api-docs.yml).`)
+    const log = STRICT ? console.error : console.warn
+    log(`  [${STRICT ? 'ERROR' : 'SKIP'}] JSON file not found: ${target.jsonPath}`)
+    log(`  Run the extraction step first (see .github/workflows/generate-api-docs.yml).`)
+    if (STRICT) hasErrors = true
     continue
   }
 

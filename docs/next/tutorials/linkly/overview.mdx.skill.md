@@ -9,8 +9,8 @@ durable execution, storage, analytics, a live click stream, bulk imports, and pe
 untrusted browser workers that have all the same functionality and observability as the base system.
 
 Each chapter adds one capability by adding a worker to your existing system. The point is not the
-link shortener itself, but the pattern: a real system on iii is a set of small workers that invoke
-each other's functions and triggers. You add capability without needing to refactor existing
+link shortener itself, but the pattern: a real system on iii is a set of small workers that call
+each other's functions and observe them. You add capability without needing to refactor existing
 functionality.
 
 <Note>New to iii? [Install](/install) it before you begin.</Note>
@@ -32,12 +32,12 @@ them into separate sections.
 ### Ch. 1: Foundations
 
 Build a custom `link` worker with `link::create` and `link::resolve`, store links in memory, then
-expose them over HTTP with `http` as `POST /links` and `GET /s/:code`.
+expose them over HTTP as `POST /links` and `GET /s/:code` by observing `http::on-request`.
 
 ### Ch. 2: Observe everything
 
 Use the engine-injected `iii-observability` functions for logs and traces, and open the `console` to
-inspect functions, triggers, and live invocations.
+inspect functions, observers, and live invocations.
 
 ### Ch. 3: Persist everything
 
@@ -47,12 +47,12 @@ with `state` kept in front as a fast read cache.
 ### Ch. 4: Make it durable
 
 Push click events onto `queue` so redirects stay fast, and publish `link.created` and `link.updated`
-events on durable topics that an analytics function and a cache refresher each subscribe to.
+events on durable topics that an analytics function and a cache refresher each observe.
 
 ### Ch. 5: Stream live clicks
 
-Push every click to listeners in real time from a dedicated `click-streamer` worker that owns a
-trigger type, and read the running total with a query.
+Push every click to listeners in real time from a dedicated `click-streamer` worker whose feed
+function runs once per click, and read the running total with a query.
 
 ### Ch. 6: Move bulk data with channels
 
@@ -60,5 +60,5 @@ Bulk-load links from a CSV in a single streamed upload over a channel.
 
 ### Ch. 7: Bring in the browser
 
-Turn a browser tab into a worker with the browser SDK: invoke `link::create` directly, bind to the
+Turn a browser tab into a worker with the browser SDK: call `link::create` directly, observe the
 live click feed, and register a browser-side function the server can call.

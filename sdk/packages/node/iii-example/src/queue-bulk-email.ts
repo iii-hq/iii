@@ -1,4 +1,4 @@
-import { Logger, TriggerAction } from 'iii-sdk'
+import { Logger, CallAction } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
@@ -21,10 +21,10 @@ useApi(
     logger.info('Launching campaign', { subject, recipientCount: recipients.length })
 
     for (const recipient of recipients) {
-      await iii.trigger({
+      await iii.call({
         function_id: 'emails::send',
         payload: { to: recipient.email, subject, body },
-        action: TriggerAction.Enqueue({ queue: 'bulk-email' }),
+        action: CallAction.Enqueue({ queue: 'bulk-email' }),
       })
     }
 

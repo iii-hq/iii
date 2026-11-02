@@ -12,7 +12,7 @@ use serde_json::Value;
 ///
 /// `value` is stored verbatim — including any `${VAR:default}` template
 /// strings. Expansion happens on read (`configuration::get`) and during
-/// trigger fan-out so env-var changes propagate without a worker restart.
+/// event fan-out so env-var changes propagate without a worker restart.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ConfigurationEntry {
     /// Stable identifier (e.g. `iii-stream`, `iii-observability`).
@@ -200,7 +200,7 @@ pub struct ConfigurationListResult {
     pub configurations: Vec<ConfigurationSchemaView>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum ConfigurationEventType {
     #[serde(rename = "configuration:registered")]
     Registered,
@@ -210,9 +210,9 @@ pub enum ConfigurationEventType {
     Deleted,
 }
 
-/// Trigger event payload. Mirrors [`crate::trigger_formats::ConfigurationCallRequest`]
-/// but lives next to the worker so the in-process invoker doesn't depend on
-/// the schema-only struct.
+/// The `configuration::on-updated` event. Mirrors
+/// [`crate::event_formats::ConfigurationEvent`] but lives next to the worker
+/// so the in-process listeners don't depend on the schema-only struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigurationEventData {
     #[serde(rename = "type")]
@@ -259,7 +259,7 @@ mod tests {
             (ConfigurationEventType::Updated, "configuration:updated"),
             (ConfigurationEventType::Deleted, "configuration:deleted"),
         ] {
-            let v = serde_json::to_value(&variant).unwrap();
+            let v = serde_json::to_value(variant).unwrap();
             assert_eq!(v.as_str().unwrap(), wire);
         }
     }

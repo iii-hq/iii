@@ -18,10 +18,9 @@ type Internal = ISdk & {
   reattachToken?: string
   ws?: WebSocket
   functions: Map<string, { message: { metadata?: unknown }; handler?: unknown }>
-  triggers: Map<string, { config?: unknown }>
-  triggerTypes: Map<string, { message: { description?: string }; handler?: unknown }>
   registerWorkerMetadata: () => void
   sendMessage: (...args: unknown[]) => void
+  engineFeatures: ReadonlySet<string>
 }
 
 let engine: MockEngine
@@ -57,7 +56,7 @@ afterEach(async () => {
 })
 
 describe('Browser JSON frame size', () => {
-  it.each([-1, 0, 1])('enforces the inclusive complete-envelope boundary (%i)', delta => {
+  it.each([-1, 0, 1])('enforces the inclusive complete-envelope boundary (%i)', (delta) => {
     makeSdk()
     const envelope = message(payloadForEnvelopeBytes(LIMIT + delta))
     if (delta > 0) {
@@ -87,37 +86,35 @@ describe('Browser JSON frame size', () => {
   it('rejects oversized local invocation arguments, clears pending state and preserves function id', async () => {
     makeSdk()
     const payload = payloadForEnvelopeBytes(LIMIT + 1)
-    const promise = sdk.trigger({ function_id: 'browser::large', payload })
-    const rejection = await promise.catch(error => error)
+    const promise = sdk.call({ function_id: 'browser::large', payload })
+    const rejection = await promise.catch((error) => error)
     expect(rejection).toMatchObject({
       name: 'InvocationError',
       code: 'payload_too_large',
       function_id: 'browser::large',
     })
-    const serializedBytes = new TextEncoder().encode(JSON.stringify({
-      type: MessageType.InvokeFunction,
-      invocation_id: '00000000-0000-4000-8000-000000000000',
-      function_id: 'browser::large',
-      data: payload,
-    })).byteLength
+    const serializedBytes = new TextEncoder().encode(
+      JSON.stringify({
+        type: MessageType.InvokeFunction,
+        invocation_id: '00000000-0000-4000-8000-000000000000',
+        function_id: 'browser::large',
+        data: payload,
+      }),
+    ).byteLength
     expect((rejection as Error).message).toBe(
       `payload_too_large: Serialized JSON envelope is ${serializedBytes} bytes; limit is ${LIMIT} bytes. Use channels for larger payloads: ${LINK}`,
     )
     expect(sdk.invocations.size).toBe(0)
     expect(sdk.messagesToSend).toHaveLength(0)
-    expect(
-      engine.findAllSent('invokefunction').some(entry => entry.function_id === 'browser::large'),
-    ).toBe(false)
+    expect(engine.findAllSent('invokefunction').some((entry) => entry.function_id === 'browser::large')).toBe(false)
     expect(engine.socket.readyState).toBe(WebSocket.OPEN)
 
-    await sdk.trigger({
+    await sdk.call({
       function_id: 'browser::small',
       payload: { ok: true },
       action: { type: 'void' },
     })
-    const small = engine
-      .findAllSent('invokefunction')
-      .find(entry => entry.function_id === 'browser::small')
+    const small = engine.findAllSent('invokefunction').find((entry) => entry.function_id === 'browser::small')
     expect(small).toBeDefined()
     expect(engine.socket.readyState).toBe(WebSocket.OPEN)
   })
@@ -127,10 +124,8 @@ describe('Browser JSON frame size', () => {
     await engine.waitForOpen()
     sdk.registerFunction('browser::handler', async () => payloadForEnvelopeBytes(LIMIT + 1))
     engine.invokeFunction('browser::handler', {}, 'invoke-result-1')
-    await new Promise<void>(resolve => setTimeout(resolve, 0))
-    const result = socket
-      .findAllSent('invocationresult')
-      .find(entry => entry.invocation_id === 'invoke-result-1')
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    const result = socket.findAllSent('invocationresult').find((entry) => entry.invocation_id === 'invoke-result-1')
     expect(result).toMatchObject({
       invocation_id: 'invoke-result-1',
       function_id: 'browser::handler',
@@ -142,12 +137,40 @@ describe('Browser JSON frame size', () => {
       /^Serialized JSON envelope is \d+ bytes; limit is 16777216 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/,
     )
     expect(socket.readyState).toBe(WebSocket.OPEN)
-    await sdk.trigger({ function_id: 'browser::still-open', payload: {}, action: { type: 'void' } })
-    expect(
-      socket
-        .findAllSent('invokefunction')
-        .some(entry => entry.function_id === 'browser::still-open'),
-    ).toBe(true)
+    await sdk.call({ function_id: 'browser::still-open', payload: {}, action: { type: 'void' } })
+    expect(socket.findAllSent('invokefunction').some((entry) => entry.function_id === 'browser::still-open')).toBe(true)
+  })
+
+  it('replaces an answer too large to send with an error that activates no observer on an observe.v2 engine', () => {
+    makeSdk()
+    const answer = (fields: Record<string, unknown>) =>
+      JSON.parse(
+        sdk.prepareJson({
+          type: MessageType.InvocationResult,
+          invocation_id: 'i',
+          function_id: 'f',
+          result: 'x'.repeat(LIMIT),
+          ...fields,
+        }),
+      ) as Record<string, unknown>
+    const fields = (frame: Record<string, unknown>) => ({ matched: frame.matched, delivered: frame.delivered })
+    sdk.engineFeatures = new Set(['observe.v1', 'observe.v2'])
+    for (const [sent, expected] of [
+      // no hooks: the engine would evaluate every observer against the error
+      [{}, { matched: [], delivered: undefined }],
+      // the observers a match hook matched, or none
+      [{ matched: ['o'] }, { matched: [], delivered: undefined }],
+      [{ matched: [] }, { matched: [], delivered: undefined }],
+      // the deliver hook delivered the call
+      [{ delivered: true }, { matched: undefined, delivered: true }],
+    ] as const) {
+      const frame = answer(sent)
+      expect(frame).toMatchObject({ invocation_id: 'i', error: { code: 'payload_too_large' } })
+      expect(frame).not.toHaveProperty('result')
+      expect(fields(frame), JSON.stringify(sent)).toEqual(expected)
+    }
+    sdk.engineFeatures = new Set(['observe.v1'])
+    expect(fields(answer({}))).toEqual({ matched: undefined, delivered: undefined })
   })
 
   it('does not retain oversized registrations and snapshots accepted registration JSON independently', async () => {
@@ -158,85 +181,42 @@ describe('Browser JSON frame size', () => {
         metadata: { note: 'x'.repeat(LIMIT) },
       }),
     ).toThrow('limit is 16777216 bytes')
-    expect(() =>
-      sdk.registerTrigger({
-        type: 'custom',
-        function_id: 'browser::target',
-        config: { note: 'x'.repeat(LIMIT) },
-      }),
-    ).toThrow('limit is 16777216 bytes')
-    expect(() =>
-      sdk.registerTriggerType(
-        { id: 'custom', description: 'x'.repeat(LIMIT) },
-        {
-          registerTrigger: async () => undefined,
-          unregisterTrigger: async () => undefined,
-        },
-      ),
-    ).toThrow('limit is 16777216 bytes')
     expect(sdk.functions.has('browser::rejected')).toBe(false)
-    expect(sdk.triggers.size).toBe(0)
-    expect(sdk.triggerTypes.has('custom')).toBe(false)
 
     const metadata = { nested: { value: 'original' } }
-    const config = { nested: { value: 'original' } }
-    const type = { id: 'browser-type', description: 'original' }
-    sdk.registerFunction('browser::accepted', async () => null, { metadata })
-    sdk.registerTriggerType(type, {
-      registerTrigger: async () => undefined,
-      unregisterTrigger: async () => undefined,
-    })
-    sdk.registerTrigger({ type: type.id, function_id: 'browser::accepted', config })
+    const argsFormat = { type: 'object' as const, properties: { nested: { type: 'string' } } }
+    sdk.registerFunction('browser::accepted', async () => null, { metadata, args_format: argsFormat })
     metadata.nested.value = 'mutated'
-    config.nested.value = 'mutated'
-    type.description = 'mutated'
+    argsFormat.properties.nested.type = 'mutated'
 
     const replaySocket = new WebSocket('ws://test:49135') as unknown as MockWebSocket
     replaySocket.readyState = WebSocket.OPEN
     sdk.ws = replaySocket as unknown as WebSocket
     sdk.onSocketOpen()
 
-    const replayFunction = replaySocket.findAllSent('registerfunction')
-      .find(entry => entry.id === 'browser::accepted')
-    const replayTriggerType = replaySocket.findAllSent('registertriggertype')
-      .find(entry => entry.id === 'browser-type')
-    const replayTrigger = replaySocket.findAllSent('registertrigger')
-      .find(entry => entry.function_id === 'browser::accepted')
+    // A function with `args_format` waits for this connection's `WorkerRegistered` (observe.v2).
+    replaySocket.simulateMessage(
+      JSON.stringify({ type: 'workerregistered', worker_id: 'w-1', features: ['observe.v1', 'observe.v2'] }),
+    )
+
+    const replayFunction = replaySocket
+      .findAllSent('registerfunction')
+      .find((entry) => entry.id === 'browser::accepted')
     expect(replayFunction?.metadata).toEqual({ nested: { value: 'original' } })
-    expect(replayTriggerType?.description).toBe('original')
-    expect(replayTrigger?.config).toEqual({ nested: { value: 'original' } })
+    expect(replayFunction?.args_format).toEqual({ type: 'object', properties: { nested: { type: 'string' } } })
     expect(socket.readyState).toBe(WebSocket.OPEN)
   })
 
-  it.each([
-    'type',
-    'function',
-    'trigger',
-  ])('contains permanent registration rejection during real onopen replay (%s)', kind => {
+  it('contains permanent registration rejection during real onopen replay', () => {
     const socket = makeSdk(false)
-    sdk.registerTriggerType(
-      { id: 'custom', description: 'ok' },
-      {
-        registerTrigger: async () => undefined,
-        unregisterTrigger: async () => undefined,
-      },
-    )
     sdk.registerFunction('browser::first', async () => null)
-    sdk.registerTrigger({ type: 'custom', function_id: 'browser::first', config: {} })
-    const retainedType = sdk.triggerTypes.get('custom')
     const retainedFunction = sdk.functions.get('browser::first')
-    const retainedTrigger = [...sdk.triggers.values()][0]
-    if (kind === 'type' && retainedType) retainedType.message.description = 'x'.repeat(LIMIT)
-    if (kind === 'function' && retainedFunction)
-      retainedFunction.message.metadata = { note: 'x'.repeat(LIMIT) }
-    if (kind === 'trigger' && retainedTrigger) retainedTrigger.config = { note: 'x'.repeat(LIMIT) }
+    if (retainedFunction) retainedFunction.message.metadata = { note: 'x'.repeat(LIMIT) }
     sdk.registerFunction('browser::later', async () => null)
     sdk.messagesToSend.push({ type: 'pong' })
 
     expect(() => socket.simulateOpen()).not.toThrow()
-    expect(
-      socket.findAllSent('registerfunction').some(entry => entry.id === 'browser::later'),
-    ).toBe(true)
+    expect(socket.findAllSent('registerfunction').some((entry) => entry.id === 'browser::later')).toBe(true)
     expect(socket.sentMessages[socket.sentMessages.length - 1]).toBe('{"type":"pong"}')
     expect(sdk.messagesToSend).toHaveLength(0)
     expect(socket.readyState).toBe(WebSocket.OPEN)
@@ -275,9 +255,7 @@ describe('Browser JSON frame size', () => {
     }
     sdk.messagesToSend.push(oversizedResult)
     expect(() => socket.simulateOpen()).not.toThrow()
-    const fallback = socket
-      .findAllSent('invocationresult')
-      .find(entry => entry.invocation_id === 'queued-result')
+    const fallback = socket.findAllSent('invocationresult').find((entry) => entry.invocation_id === 'queued-result')
     expect(fallback).toMatchObject({ error: { code: 'payload_too_large' } })
     expect(fallback).not.toHaveProperty('result')
     expect(socket.readyState).toBe(WebSocket.OPEN)

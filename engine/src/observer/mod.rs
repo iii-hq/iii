@@ -5,34 +5,41 @@
 // See LICENSE and PATENTS files for details.
 
 //! Observers: the engine side of `iii.observe(source, target)`
-//! (`tech-specs/2026-10-13-observe/protocol.md` §3).
+//! (`tech-specs/2026-10-13-observe/protocol.md` §3,
+//! `tech-specs/2026-10-29-observe-v2`).
 //!
 //! - `registry`: `observe` / `unobserve`, validation, replay, the observing
 //!   connection's disconnect, grace and `Reattach`.
 //! - `owner`: the observed functions, kept in step with the function registry
-//!   (descriptor, availability, the routed hook's active sets).
+//!   (options, availability, host sync, the routed hook's active sets).
 //! - `lifecycle`: observer states, derived from facts, and
 //!   `observerstatechanged`.
-//! - `dispatch`: the routed hook, policy and activations.
+//! - `dispatch`: the routed hook, reports, calls through an observer, policy
+//!   and activations.
 //! - `context`: the caller / depth / activation of the running invocation.
 //! - `builtins`: `engine::observers::list | get | dispose`.
-//! - `legacy`: the phase 5 shim from `RegisterTrigger` to observers.
-//! - `events`: engine-hosted event sources (`engine::on-functions-changed`,
+//! - `events`: engine-hosted sources (`engine::on-functions-changed`,
 //!   `configuration::on-updated`, ...).
+//! - `engine_owned`: observers the engine creates for its own modules.
 
 pub mod builtins;
 mod config;
 mod context;
 mod dispatch;
+pub mod engine_owned;
 pub mod events;
-mod legacy;
 mod lifecycle;
 mod owner;
+mod persistent;
 mod registry;
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock, Weak, atomic::AtomicU64},
+    hash::{BuildHasherDefault, Hash, Hasher},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU64, AtomicUsize},
+    },
 };
 
 use arc_swap::ArcSwap;
@@ -41,10 +48,12 @@ use uuid::Uuid;
 
 pub use config::ObserversConfig;
 pub use context::{ENGINE_CALLER_NAME, InvocationCtx};
-pub use dispatch::{Emission, ObservedCall, OwnerCall, ReportHold};
-pub use legacy::{LegacyRegistration, ShimBinding, ShimType};
+pub use dispatch::{
+    Emission, HostDelivery, ObservedCall, ObserverCall, ReportHold, RoutedAnswers, RoutedDelivery,
+};
+pub use engine_owned::{ENGINE_CONNECTION, EngineObserver, StandingObserver};
 pub use lifecycle::Observer;
-pub use owner::{ActiveSet, validate_descriptor};
+pub use owner::{ActiveSet, FunctionOptions, validate_args_format};
 pub use registry::ObserveRequest;
 
 use crate::{
@@ -66,11 +75,175 @@ pub(crate) struct Deps {
     pub function_owners: Arc<DashMap<FnKey, (Uuid, crate::engine::InvocationKind)>>,
 }
 
+/// One observer in an index, by identity: two observers under the same id
+/// (one replacing the other, decision 51) are two entries, and taking one out
+/// leaves the other. The index holds the observer, so its address names it
+/// for as long as the entry is there.
+#[derive(Clone)]
+pub(crate) struct Held(pub(crate) Arc<Observer>);
+
+impl PartialEq for Held {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Held {}
+
+impl Hash for Held {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(Arc::as_ptr(&self.0) as usize);
+    }
+}
+
+/// Hashes an observer's address ([`Held`]): addresses are the engine's own,
+/// so a multiply and a shift spread them well enough.
+#[derive(Default)]
+pub(crate) struct AddressHasher(u64);
+
+impl Hasher for AddressHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(*byte)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+
+    fn write_usize(&mut self, address: usize) {
+        // Allocations are 16-byte aligned: the low bits say nothing.
+        self.0 = ((address as u64) >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 ^= self.0 >> 29;
+    }
+}
+
+/// Observers indexed by identity (see [`Held`]).
+pub(crate) type HeldSet = HashSet<Held, BuildHasherDefault<AddressHasher>>;
+
+/// Hashes a connection id: the engine makes them (random v4 UUIDs) and only
+/// looks up the ones a worker presents, so their two halves folded and
+/// multiplied spread them well enough.
+#[derive(Default)]
+pub(crate) struct ConnectionHasher(u64);
+
+impl Hasher for ConnectionHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for half in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..half.len()].copy_from_slice(half);
+            let word = u64::from_le_bytes(word);
+            self.0 = (self.0.rotate_left(29) ^ word).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+        self.0 ^= self.0 >> 32;
+    }
+
+    /// The length a slice's hash writes first: always 16 here.
+    fn write_usize(&mut self, _length: usize) {}
+}
+
+/// A map keyed by connection id (see [`ConnectionHasher`]).
+pub(crate) type ByConnection<V> = DashMap<Uuid, V, BuildHasherDefault<ConnectionHasher>>;
+
 /// An observing connection that went away, while its observers wait for a
-/// `Reattach`.
+/// `Reattach` until `deadline`. Another close of the same connection starts
+/// a grace period of its own: what ends an earlier one finds a later
+/// deadline here and leaves it.
 struct Departed {
     token: Uuid,
-    timer: tokio::task::AbortHandle,
+    deadline: tokio::time::Instant,
+    /// The connection's own timer, when no task ends grace periods (see
+    /// [`Graces`]).
+    timer: Option<tokio::task::AbortHandle>,
+    /// Each observer whose tombstone the connection held when it closed,
+    /// with why: one the engine disposed while the connection was there, or
+    /// whose tombstone a `Reattach` gave it, within
+    /// `observers.observer_grace_ms`. Its `disposed` may have been lost with
+    /// the connection. A `Reattach` gives each a tombstone on the new
+    /// connection; at the end of the grace period they join the
+    /// connection's [`lifecycle::Expired`] record.
+    disposed: Vec<(Arc<str>, Arc<crate::protocol::ErrorBody>)>,
+}
+
+/// Grace periods in progress, by deadline. The task that exports drop counts
+/// ([`ObserverRegistry::start_drop_export`]) ends them: it sleeps until the
+/// earlier of its next export and the earliest deadline, so a disconnect
+/// queues its deadline and starts no task, and wakes the task only when that
+/// deadline comes before the task's next wake.
+#[derive(Default)]
+struct Graces {
+    queue: lifecycle::Lock<GraceQueue>,
+    wake: tokio::sync::Notify,
+}
+
+#[derive(Default)]
+struct GraceQueue {
+    /// `(deadline, connection)`, earliest first.
+    due: std::collections::BinaryHeap<std::cmp::Reverse<(tokio::time::Instant, Uuid)>>,
+    /// When the task wakes next, once it waited.
+    wakes_at: Option<tokio::time::Instant>,
+}
+
+impl Graces {
+    /// Queues `connection`'s grace period, ending at `deadline`.
+    fn queue(&self, deadline: tokio::time::Instant, connection: Uuid) {
+        let wake = {
+            let mut queue = self.queue.write();
+            queue.due.push(std::cmp::Reverse((deadline, connection)));
+            queue.wakes_at.is_some_and(|at| deadline < at)
+        };
+        if wake {
+            self.wake.notify_one();
+        }
+    }
+
+    /// The grace periods that end by `now`, taken out of the queue.
+    fn take_due(&self, now: tokio::time::Instant) -> Vec<(tokio::time::Instant, Uuid)> {
+        let mut queue = self.queue.write();
+        let mut due = Vec::new();
+        while let Some(std::cmp::Reverse((deadline, _))) = queue.due.peek()
+            && *deadline <= now
+        {
+            if let Some(std::cmp::Reverse(ended)) = queue.due.pop() {
+                due.push(ended);
+            }
+        }
+        due
+    }
+
+    /// When the task wakes next: at `export`, or at the earliest deadline
+    /// when it comes first.
+    fn wake_at(&self, export: tokio::time::Instant) -> tokio::time::Instant {
+        let mut queue = self.queue.write();
+        let at = queue
+            .due
+            .peek()
+            .map_or(export, |std::cmp::Reverse((deadline, _))| {
+                (*deadline).min(export)
+            });
+        queue.wakes_at = Some(at);
+        at
+    }
+}
+
+/// Clears [`ObserverRegistry::drop_export`] when the task ends, with its
+/// runtime too, polled or not: disconnects then time their grace periods
+/// themselves, and the next `observe` starts the task again.
+struct ExportRunning(Weak<ObserverRegistry>);
+
+impl Drop for ExportRunning {
+    fn drop(&mut self) {
+        if let Some(registry) = self.0.upgrade() {
+            registry
+                .drop_export
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
 }
 
 /// Every observer, indexed for the routed hook (by function), for the
@@ -78,18 +251,42 @@ struct Departed {
 pub struct ObserverRegistry {
     config: ArcSwap<ObserversConfig>,
     deps: OnceLock<Deps>,
+    /// The `Arc` this registry lives in, for work started where only `&self`
+    /// is at hand (an engine-hosted source's event, a standing observer).
+    this: OnceLock<Weak<ObserverRegistry>>,
     runtime: OnceLock<tokio::runtime::Handle>,
     by_id: DashMap<String, Arc<Observer>>,
-    by_connection: DashMap<Uuid, HashSet<String>>,
+    /// Each live observer under its observing connection, and under its
+    /// target, by identity. An observer is filed in both in the same step
+    /// that gives it its id in `by_id`, under its status lock, so whoever
+    /// finds it by id (to dispose of it) finds it here too.
+    by_connection: ByConnection<HeldSet>,
     by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
-    by_target: DashMap<FnKey, HashSet<String>>,
-    /// The routed hook's view: auto functions with active observers. Read with
-    /// one atomic load per invocation, replaced (copy-on-write) on change.
-    observed: ArcSwap<HashMap<FnKey, Arc<ActiveSet>>>,
-    /// Serializes rebuilds of `observed`.
-    rebuild: Mutex<()>,
-    notifiers: DashMap<Uuid, lifecycle::Notifier>,
-    departed: DashMap<Uuid, Departed>,
+    by_target: DashMap<FnKey, HeldSet>,
+    /// The routed hook's view (see [`ObserverRegistry::route`]): functions
+    /// with active observers and private functions a connection hosts, each
+    /// with its active set, and the functions anyone may call whose last
+    /// active observer left since the view was last copied (see
+    /// `routed_live`). An invocation reads it with one atomic load, and
+    /// clones the set of a function it holds under that set's read lock. A
+    /// function's set is replaced in place; the view is copied
+    /// (copy-on-write) only when a function joins or leaves it, or who may
+    /// call a function changes.
+    routed: ArcSwap<owner::RoutedView>,
+    /// The functions of `routed` the routed hook finds: with active
+    /// observers, or with a host only it may call them. A function whose
+    /// last active observer left stays in the view, found by nobody, until
+    /// the view is next copied. Changed with `routed`, under `rebuild`.
+    routed_live: AtomicUsize,
+    /// Serializes rebuilds of `routed`.
+    rebuild: lifecycle::Lock<()>,
+    /// `engine::on-observers-changed` has active observers: what an observer's
+    /// transition reads before it looks for them (set with `routed`).
+    observers_changed_watched: std::sync::atomic::AtomicBool,
+    notifiers: ByConnection<Arc<lifecycle::Notifier>>,
+    departed: ByConnection<Departed>,
+    /// The grace periods of `departed` that the drop-export task ends.
+    graces: Arc<Graces>,
     state_counts: lifecycle::StateCounts,
     payload_copies: AtomicU64,
     /// Times a reporting connection's reader waited for room in a queue its
@@ -111,22 +308,30 @@ pub struct ObserverRegistry {
     evaluator_bytes: std::sync::atomic::AtomicUsize,
     /// Recently disposed observers, by id: a replay from the same worker
     /// learns the disposal instead of re-creating the observer.
-    tombstones: DashMap<String, lifecycle::Tombstone>,
+    tombstones: DashMap<Arc<str>, lifecycle::Tombstone>,
     /// Tombstones by expiry, oldest first.
-    tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, String)>>,
+    tombstone_order: Mutex<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
+    /// Tombstones of each connected worker's connection, oldest first, by
+    /// expiry: the engine's disposals of its observers, and the tombstones
+    /// its `Reattach` gave it. Its close keeps those still in effect in its
+    /// `departed` record (see [`Departed::disposed`]), even with no observer
+    /// left.
+    tombstoned: ByConnection<std::collections::VecDeque<(std::time::Instant, Arc<str>)>>,
     /// Observing connections whose grace period ended, by connection: a
     /// late `Reattach` learns their observers are disposed.
     expired: DashMap<Uuid, lifecycle::Expired>,
     /// `expired` by expiry, oldest first.
     expired_order: Mutex<lifecycle::ExpiredOrder>,
-    /// Engine-hosted event sources (see [`events`]).
-    event_sources: DashMap<FnKey, ()>,
-    /// Functions registered with `observe.delivery: owner`: only their owner
-    /// invokes them (see [`ObserverRegistry::may_invoke`]). Read on every
-    /// invocation with one atomic load; replaced (copy-on-write) on change.
-    owner_delivered: ArcSwap<HashSet<FnKey>>,
+    /// Engine-owned observers kept in every namespace that registers their
+    /// function (see [`ObserverRegistry::observe_everywhere`]).
+    standing: Mutex<Vec<StandingObserver>>,
+    /// `standing.len()`, read on every registration with one atomic load.
+    standing_count: AtomicUsize,
     /// Owner announcements made so far: each one's generation.
     announcements: AtomicU64,
+    /// Observers that joined their function so far: the last one's
+    /// [`Observer::seq`].
+    created: AtomicU64,
     /// The last revision of functions whose entry was dropped as unused:
     /// revisions never go back within an engine's lifetime.
     revisions: DashMap<FnKey, u64>,
@@ -151,15 +356,19 @@ impl ObserverRegistry {
         Self {
             config: ArcSwap::from_pointee(ObserversConfig::default()),
             deps: OnceLock::new(),
+            this: OnceLock::new(),
             runtime: OnceLock::new(),
             by_id: DashMap::new(),
-            by_connection: DashMap::new(),
+            by_connection: ByConnection::default(),
             by_function: DashMap::new(),
             by_target: DashMap::new(),
-            observed: ArcSwap::from_pointee(HashMap::new()),
-            rebuild: Mutex::new(()),
-            notifiers: DashMap::new(),
-            departed: DashMap::new(),
+            routed: ArcSwap::from_pointee(HashMap::new()),
+            routed_live: AtomicUsize::new(0),
+            rebuild: lifecycle::Lock::new(()),
+            observers_changed_watched: std::sync::atomic::AtomicBool::new(false),
+            notifiers: ByConnection::default(),
+            departed: ByConnection::default(),
+            graces: Arc::default(),
             state_counts: lifecycle::StateCounts::default(),
             payload_copies: AtomicU64::new(0),
             report_waits: AtomicU64::new(0),
@@ -172,11 +381,13 @@ impl ObserverRegistry {
             evaluator_bytes: std::sync::atomic::AtomicUsize::new(dispatch::EVALUATOR_BYTES),
             tombstones: DashMap::new(),
             tombstone_order: Mutex::new(std::collections::VecDeque::new()),
+            tombstoned: ByConnection::default(),
             expired: DashMap::new(),
             expired_order: Mutex::new(lifecycle::ExpiredOrder::default()),
-            event_sources: DashMap::new(),
-            owner_delivered: ArcSwap::from_pointee(HashSet::new()),
+            standing: Mutex::new(Vec::new()),
+            standing_count: AtomicUsize::new(0),
             announcements: AtomicU64::new(0),
+            created: AtomicU64::new(0),
             revisions: DashMap::new(),
             revision_order: Mutex::new(std::collections::VecDeque::new()),
             drop_export: std::sync::atomic::AtomicBool::new(false),
@@ -185,18 +396,24 @@ impl ObserverRegistry {
     }
 
     pub(crate) fn attach(
-        &self,
+        self: &Arc<Self>,
         functions: Arc<FunctionsRegistry>,
         workers: Arc<WorkerConnectionRegistry>,
         invocations: Weak<InvocationHandler>,
         function_owners: Arc<DashMap<FnKey, (Uuid, crate::engine::InvocationKind)>>,
     ) {
+        let _ = self.this.set(Arc::downgrade(self));
         let _ = self.deps.set(Deps {
             functions,
             workers,
             invocations,
             function_owners,
         });
+    }
+
+    /// The `Arc` this registry lives in, once [`Self::attach`] ran.
+    fn this(&self) -> Option<Arc<Self>> {
+        self.this.get().and_then(Weak::upgrade)
     }
 
     pub fn config(&self) -> Arc<ObserversConfig> {
@@ -228,7 +445,8 @@ impl ObserverRegistry {
 
     /// Starts the task that sends drop counts to `iii.observer.dropped.total`
     /// every [`dispatch::DROP_EXPORT_INTERVAL`], once there is a meter and a
-    /// runtime.
+    /// runtime. It ends grace periods too, each at its deadline (see
+    /// [`Graces`]).
     fn start_drop_export(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
         if metrics().is_none() || self.drop_export.load(Ordering::Acquire) {
@@ -241,17 +459,56 @@ impl ObserverRegistry {
             return;
         }
         let registry = Arc::downgrade(self);
+        let graces = self.graces.clone();
+        // Moved into the task, so a task its runtime drops before polling
+        // it clears the flag too.
+        let running = ExportRunning(registry.clone());
         runtime.spawn(async move {
-            let mut tick = tokio::time::interval(dispatch::DROP_EXPORT_INTERVAL);
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let _running = running;
+            // Exports as a `tokio::time::interval` with
+            // `MissedTickBehavior::Delay` ticks: at once, then every
+            // interval, the next one an interval after a late one.
+            let interval = dispatch::DROP_EXPORT_INTERVAL;
+            let mut export = tokio::time::Instant::now();
             loop {
-                tick.tick().await;
-                let Some(registry) = registry.upgrade() else {
-                    return;
-                };
-                registry.export_drops();
+                let now = tokio::time::Instant::now();
+                if now >= export {
+                    let Some(registry) = registry.upgrade() else {
+                        return;
+                    };
+                    registry.export_drops();
+                    export = if now > export + std::time::Duration::from_millis(5) {
+                        now + interval
+                    } else {
+                        export + interval
+                    };
+                }
+                let ended = graces.take_due(now);
+                if !ended.is_empty() {
+                    let Some(registry) = registry.upgrade() else {
+                        return;
+                    };
+                    for (deadline, connection) in ended {
+                        registry.grace_due(connection, deadline);
+                    }
+                }
+                let wake = graces.wake_at(export);
+                tokio::select! {
+                    () = tokio::time::sleep_until(wake) => {}
+                    () = graces.wake.notified() => {}
+                }
             }
         });
+    }
+
+    /// Ends `connection`'s grace period at `deadline` (see [`Graces`]), or
+    /// returns `false` when no task ends grace periods.
+    fn queue_grace(&self, deadline: tokio::time::Instant, connection: Uuid) -> bool {
+        if !self.drop_export.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        self.graces.queue(deadline, connection);
+        true
     }
 
     /// Sends what each live observer dropped since the last export to
@@ -263,6 +520,7 @@ impl ObserverRegistry {
         for observer in self.by_id.iter() {
             dispatch::export_drops(observer.value());
         }
+        self.state_counts.record();
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Observer>> {
@@ -277,11 +535,227 @@ impl ObserverRegistry {
     pub fn count_in_state(&self, state: &ObserverState) -> i64 {
         self.state_counts.get(state)
     }
+
+    /// Live observers of `(namespace, function_id)`, in any state but
+    /// `disposed`.
+    pub fn observer_count(&self, namespace: &str, function_id: &str) -> usize {
+        self.function_entry(&(namespace.to_string(), function_id.to_string()))
+            .map_or(0, |entry| entry.len())
+    }
+
+    /// Ids of the live observers `connection` created, sorted.
+    pub fn created_by(&self, connection: Uuid) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .by_connection
+            .get(&connection)
+            .map(|held| held.iter().map(|held| held.0.id.clone()).collect())
+            .unwrap_or_default();
+        ids.sort();
+        ids
+    }
+
+    /// The live observers `connection` observes for.
+    fn observing_for(&self, connection: Uuid) -> Vec<Arc<Observer>> {
+        self.by_connection
+            .get(&connection)
+            .map(|held| held.iter().map(|held| held.0.clone()).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// A random (version 4) UUID for the ids the observer paths make (an event's
+/// invocation, an activation and its invocation), from the thread's CSPRNG
+/// (`rand::random`: ChaCha12, reseeded from the OS).
+pub(crate) fn new_uuid() -> Uuid {
+    uuid::Builder::from_random_bytes(rand::random()).into_uuid()
 }
 
 /// The engine metrics, when the meter is initialized (it is on every serve
 /// path; unit tests that never call `ensure_default_meter` get `None`).
 pub(crate) fn metrics() -> Option<&'static EngineMetrics> {
+    #[cfg(test)]
+    if let Some(recorded) = test_metrics::RECORDING.with(std::cell::Cell::get) {
+        return Some(recorded);
+    }
     crate::workers::observability::metrics::get_meter()
         .map(|_| crate::workers::observability::metrics::get_engine_metrics())
+}
+
+/// What the complexity tests count: observer slots copied into a new node of
+/// an active set, or copied out of a function's observers in bulk, the one way
+/// to scan them, on this thread. A change that rebuilt a function's set from
+/// its observers, or scanned them, would count them all.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SLOTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn add(slots: usize) {
+        SLOTS.with(|counted| counted.set(counted.get() + slots));
+    }
+
+    /// What was counted since the last call.
+    pub(crate) fn take() -> usize {
+        SLOTS.with(|counted| counted.replace(0))
+    }
+}
+
+/// Points where a test's threads pause at random ([`interleave::point`]), so
+/// another thread's work lands in between: only on threads that asked for it
+/// ([`interleave::enable`]).
+#[cfg(test)]
+pub(crate) mod interleave {
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The thread's xorshift state; `0` while it pauses nowhere.
+        static STATE: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Pauses this thread at random at every point from now on.
+    pub(crate) fn enable(seed: u64) {
+        STATE.with(|state| state.set(seed | 1));
+    }
+
+    /// One point: a yield one time in four, a sleep of up to 63 µs another,
+    /// nothing otherwise.
+    pub(crate) fn point() {
+        STATE.with(|state| {
+            let mut x = state.get();
+            if x == 0 {
+                return;
+            }
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            state.set(x);
+            match x % 4 {
+                0 => std::thread::yield_now(),
+                1 => std::thread::sleep(std::time::Duration::from_micros(x >> 58)),
+                _ => {}
+            }
+        });
+    }
+}
+
+/// Reads back the observer metrics a test emits: [`test_metrics::record`]
+/// sends this thread's to a meter of its own, which the test reads.
+#[cfg(test)]
+pub(crate) mod test_metrics {
+    use std::{
+        cell::Cell,
+        sync::{Arc, Mutex},
+    };
+
+    use opentelemetry::{KeyValue, metrics::MeterProvider as _};
+    use opentelemetry_sdk::{
+        error::OTelSdkResult,
+        metrics::{
+            PeriodicReader, SdkMeterProvider, Temporality,
+            data::{AggregatedMetrics, MetricData, ResourceMetrics},
+            exporter::PushMetricExporter,
+        },
+    };
+
+    use crate::workers::observability::metrics::EngineMetrics;
+
+    thread_local! {
+        pub(super) static RECORDING: Cell<Option<&'static EngineMetrics>> =
+            const { Cell::new(None) };
+    }
+
+    /// One `u64` sum series: `(metric, attributes, value)`.
+    type Series = (String, Vec<KeyValue>, u64);
+
+    /// The `u64` sums of the last export.
+    #[derive(Clone, Default)]
+    struct Exported(Arc<Mutex<Vec<Series>>>);
+
+    impl PushMetricExporter for Exported {
+        fn export(
+            &self,
+            metrics: &ResourceMetrics,
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+            let mut sums = Vec::new();
+            for scope in metrics.scope_metrics() {
+                for metric in scope.metrics() {
+                    if let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() {
+                        for point in sum.data_points() {
+                            sums.push((
+                                metric.name().to_string(),
+                                point.attributes().cloned().collect(),
+                                point.value(),
+                            ));
+                        }
+                    }
+                }
+            }
+            *self.0.lock().unwrap() = sums;
+            std::future::ready(Ok(()))
+        }
+
+        fn force_flush(&self) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn shutdown_with_timeout(&self, _: std::time::Duration) -> OTelSdkResult {
+            Ok(())
+        }
+
+        fn temporality(&self) -> Temporality {
+            Temporality::Cumulative
+        }
+    }
+
+    /// The metrics this thread emitted since [`record`].
+    pub(crate) struct Recorded {
+        provider: SdkMeterProvider,
+        exported: Exported,
+    }
+
+    impl Recorded {
+        /// The sum of counter `name` over its series carrying every one of
+        /// `attributes`.
+        pub(crate) fn sum(&self, name: &str, attributes: &[(&str, &str)]) -> u64 {
+            self.provider.force_flush().expect("export the metrics");
+            self.exported
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(metric, series, _)| {
+                    metric == name
+                        && attributes.iter().all(|(key, value)| {
+                            series
+                                .iter()
+                                .any(|kv| kv.key.as_str() == *key && kv.value.as_str() == *value)
+                        })
+                })
+                .map(|(_, _, value)| value)
+                .sum()
+        }
+    }
+
+    impl Drop for Recorded {
+        fn drop(&mut self) {
+            RECORDING.with(|slot| slot.set(None));
+        }
+    }
+
+    /// Sends the observer metrics this thread emits from now on to a meter
+    /// the returned [`Recorded`] reads. Async tests use a current-thread
+    /// runtime, so the tasks they spawn emit on this thread too.
+    pub(crate) fn record() -> Recorded {
+        let exported = Exported::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exported.clone()).build())
+            .build();
+        let metrics: &'static EngineMetrics =
+            Box::leak(Box::new(EngineMetrics::with_meter(&provider.meter("iii"))));
+        RECORDING.with(|slot| slot.set(Some(metrics)));
+        Recorded { provider, exported }
+    }
 }

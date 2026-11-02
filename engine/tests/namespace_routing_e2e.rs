@@ -364,8 +364,6 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
             "tier".to_string(),
             MetadataValue::Exact(json!("public")),
         )]))],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     };
@@ -386,9 +384,7 @@ async fn rbac_metadata_filters_see_the_function_from_the_requested_namespace() {
         namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: vec![],
-        allowed_trigger_types: None,
         allow_function_registration: true,
-        allow_trigger_type_registration: true,
         context: json!({}),
         function_registration_prefix: None,
     }));

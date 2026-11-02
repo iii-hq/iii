@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::protocol::TriggerAction;
+use crate::protocol::CallAction;
 
 /// Input passed to the RBAC middleware function on every function invocation
 /// through the RBAC port.
@@ -17,7 +17,7 @@ pub struct MiddlewareFunctionInput {
     pub payload: Value,
     /// Routing action, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<TriggerAction>,
+    pub action: Option<CallAction>,
     /// Auth context returned by the auth function for this session.
     pub context: Value,
     /// Target namespace the invoke addressed; forward the call here to stay in

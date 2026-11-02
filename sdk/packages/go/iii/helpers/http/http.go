@@ -4,8 +4,8 @@
 //
 // It covers two kinds of functions:
 //
-//   - Functions served behind an http trigger. The http worker invokes them with an
-//     [InternalRequest]: the parsed request plus two channel refs, request_body (the
+//   - Functions that observe http::on-request (the target of an observer with route
+//     args). The http worker calls them with an [InternalRequest]: the parsed request plus two channel refs, request_body (the
 //     read end carrying the raw request body) and response (the write end for the
 //     status, the headers and the body). [Wrap] adapts a handler that takes a
 //     [StreamRequest] and a [StreamResponse] into an [iii.Handler], like the Node http()
@@ -45,8 +45,8 @@ import (
 
 // Method is an HTTP method accepted by [InvocationConfig] (Node HttpMethod). It is an
 // alias of string so the constants assign directly to [iii.HTTPInvocationRef].Method.
-// It is distinct from the http trigger's http_method, which also accepts HEAD and
-// OPTIONS.
+// It is distinct from the method arg of an http::on-request observer, which also
+// accepts HEAD and OPTIONS.
 type Method = string
 
 // HTTP methods accepted by [InvocationConfig]. An empty Method means [MethodPost].
@@ -120,7 +120,8 @@ func (v MultiValue) MarshalJSON() ([]byte, error) {
 	}
 }
 
-// Request is the buffered HTTP request a function behind an http trigger receives, Node
+// Request is the buffered HTTP request the target of an http::on-request observer
+// receives, Node
 // HttpRequest<TBody> and Rust HttpRequest<T>. T is the type of the parsed body; use
 // json.RawMessage to keep it raw. Decode the handler payload into it, or register the
 // function with [iii.RegisterFunctionTyped].
@@ -143,8 +144,8 @@ type Request[T any] struct {
 	RequestBody *iii.StreamChannelRef `json:"request_body,omitempty"`
 }
 
-// Response is a buffered HTTP response returned from a function behind an http trigger,
-// Node HttpResponse and Rust HttpResponse<T>. T is the type of the body: the http worker
+// Response is a buffered HTTP response returned from the target of an http::on-request
+// observer, Node HttpResponse and Rust HttpResponse<T>. T is the type of the body: the http worker
 // sends a string Body verbatim when Headers sets a content-type, and encodes anything
 // else as JSON (a []byte encodes as a base64 string, so stream binary bodies through a
 // [StreamResponse]). A [Wrap] handler returns a Response to answer without streaming.
@@ -157,8 +158,8 @@ type Response[T any] struct {
 	Body T `json:"body,omitempty"`
 }
 
-// InternalRequest is the payload the http worker sends to a function behind an http
-// trigger, Node InternalHttpRequest: the parsed request plus the two channel refs. The
+// InternalRequest is the payload the http worker sends to the target of an
+// http::on-request observer, Node InternalHttpRequest: the parsed request plus the two channel refs. The
 // Node SDK resolves the refs into a reader and a writer before it calls the handler; in
 // Go they stay refs, opened by [Wrap] or by hand with [iii.Client.OpenReader] and
 // [iii.Client.OpenWriter].

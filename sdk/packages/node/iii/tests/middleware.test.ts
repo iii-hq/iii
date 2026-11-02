@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
 import type { HttpRequest, HttpResponse } from '@iii-dev/helpers/http'
-import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
+import { describe, expect, it } from 'vitest'
+import { execute, httpRequest, iii, sleep } from './utils'
 
 describe('HTTP Middleware', () => {
   it('should execute middleware that continues to handler', async () => {
@@ -19,15 +19,13 @@ describe('HTTP Middleware', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: handlerFn.id,
-      config: {
-        api_path: 'test/mw/continue',
-        http_method: 'GET',
-        middleware_function_ids: ['test.mw.continue'],
+    const route = iii.observe(
+      {
+        function_id: 'http::on-request',
+        args: { method: 'GET', path: '/test/mw/continue', middleware_function_ids: ['test.mw.continue'] },
       },
-    })
+      handlerFn.id,
+    )
 
     await sleep(300)
 
@@ -39,7 +37,7 @@ describe('HTTP Middleware', () => {
 
     mwFn.unregister()
     handlerFn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should short-circuit when middleware responds', async () => {
@@ -61,15 +59,13 @@ describe('HTTP Middleware', () => {
       },
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: handlerFn.id,
-      config: {
-        api_path: 'test/mw/block',
-        http_method: 'GET',
-        middleware_function_ids: ['test.mw.block'],
+    const route = iii.observe(
+      {
+        function_id: 'http::on-request',
+        args: { method: 'GET', path: '/test/mw/block', middleware_function_ids: ['test.mw.block'] },
       },
-    })
+      handlerFn.id,
+    )
 
     await sleep(300)
 
@@ -81,7 +77,7 @@ describe('HTTP Middleware', () => {
 
     mwFn.unregister()
     handlerFn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should execute multiple middleware in order', async () => {
@@ -105,15 +101,17 @@ describe('HTTP Middleware', () => {
       },
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: handlerFn.id,
-      config: {
-        api_path: 'test/mw/order',
-        http_method: 'GET',
-        middleware_function_ids: ['test.mw.order.first', 'test.mw.order.second'],
+    const route = iii.observe(
+      {
+        function_id: 'http::on-request',
+        args: {
+          method: 'GET',
+          path: '/test/mw/order',
+          middleware_function_ids: ['test.mw.order.first', 'test.mw.order.second'],
+        },
       },
-    })
+      handlerFn.id,
+    )
 
     await sleep(300)
 
@@ -125,7 +123,7 @@ describe('HTTP Middleware', () => {
     mw1.unregister()
     mw2.unregister()
     handlerFn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should pass request metadata to middleware', async () => {
@@ -144,15 +142,13 @@ describe('HTTP Middleware', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: handlerFn.id,
-      config: {
-        api_path: 'test/mw/meta/:id',
-        http_method: 'GET',
-        middleware_function_ids: ['test.mw.meta'],
+    const route = iii.observe(
+      {
+        function_id: 'http::on-request',
+        args: { method: 'GET', path: '/test/mw/meta/:id', middleware_function_ids: ['test.mw.meta'] },
       },
-    })
+      handlerFn.id,
+    )
 
     await sleep(300)
 
@@ -168,7 +164,7 @@ describe('HTTP Middleware', () => {
 
     mwFn.unregister()
     handlerFn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 
   it('should work without middleware (regression)', async () => {
@@ -180,14 +176,10 @@ describe('HTTP Middleware', () => {
       }),
     )
 
-    const trigger = iii.registerTrigger({
-      type: 'http',
-      function_id: fn.id,
-      config: {
-        api_path: 'test/mw/none',
-        http_method: 'GET',
-      },
-    })
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/mw/none' } },
+      fn.id,
+    )
 
     await sleep(300)
 
@@ -197,6 +189,6 @@ describe('HTTP Middleware', () => {
     expect(response.data).toEqual({ message: 'no middleware' })
 
     fn.unregister()
-    trigger.unregister()
+    await route.dispose()
   })
 })

@@ -11,9 +11,15 @@ use serde_json::{Value, json};
 
 use iii_sdk::Message;
 use iii_sdk::protocol::{
-    Capture, Delivery, InvocationStatus, ObserveDescriptor, ObserverState, On,
-    RegisterFunctionMessage, UnregisterTriggerTypeMessage,
+    Capture, InvocationStatus, ObserverState, On, RegisterFunctionMessage, SDK_FEATURES,
 };
+
+/// The two files that carry the 0.25 `observe` object, which no v2 SDK sends
+/// and v2 SDK types do not have (fixtures README).
+const ENGINE_ONLY: [&str; 2] = [
+    "registerfunction-v1-owner.json",
+    "registerfunction-v1-not-observable.json",
+];
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/protocol/observe")
@@ -49,6 +55,9 @@ fn decode(value: &Value) -> Message {
 #[test]
 fn every_fixture_round_trips_without_loss() {
     for (name, value) in all_fixtures() {
+        if ENGINE_ONLY.contains(&name.as_str()) {
+            continue;
+        }
         let message = decode(&value);
         assert!(
             !matches!(message, Message::Unknown),
@@ -76,8 +85,16 @@ fn optional_fields_accept_null() {
             &["type", "function_id", "revision", "id"],
         ),
         ("invokefunction", &["type", "function_id", "data"]),
+        (
+            "invocationresult",
+            &["type", "invocation_id", "function_id"],
+        ),
+        ("registerfunction", &["type", "id"]),
     ];
     for (name, value) in all_fixtures() {
+        if ENGINE_ONLY.contains(&name.as_str()) {
+            continue;
+        }
         let tag = value["type"].as_str().unwrap();
         let Some((_, keep)) = required.iter().find(|(t, _)| *t == tag) else {
             continue;
@@ -90,7 +107,7 @@ fn optional_fields_accept_null() {
                 .unwrap_or_else(|e| panic!("{name}: `{key}: null` failed to decode: {e}"));
         }
         if value.get("observer").is_some() {
-            for key in ["args", "filters", "capture", "on", "legacy"] {
+            for key in ["args", "filters", "capture", "on"] {
                 let mut nulled = value.clone();
                 nulled["observer"][key] = Value::Null;
                 let Message::ObserverAdded { observer: view, .. } = decode(&nulled) else {
@@ -103,8 +120,7 @@ fn optional_fields_accept_null() {
                         view.capture,
                         vec![Capture::Input, Capture::Output, Capture::Caller]
                     ),
-                    "on" => assert_eq!(view.on, On::Success),
-                    _ => assert!(view.legacy.is_none()),
+                    _ => assert_eq!(view.on, On::Success),
                 }
             }
         }
@@ -153,9 +169,86 @@ fn unknown_message_types_and_enum_values_decode() {
     assert_eq!(observer.filters, json!({}));
 }
 
+/// `null` for a field with a default reads as that default: `private` and
+/// `observable` on `registerfunction`, `matched` (absent) and `delivered`
+/// (`false`) on `invocationresult`, `output_is_input` on report items.
+#[test]
+fn defaults_sent_as_null_read_as_the_default() {
+    let Message::RegisterFunction {
+        private,
+        observable,
+        args_format,
+        ..
+    } = decode(&json!({
+        "type": "registerfunction", "id": "f", "private": null, "observable": null,
+        "args_format": null
+    }))
+    else {
+        panic!()
+    };
+    assert!(!private && observable && args_format.is_none());
+
+    let Message::InvocationResult {
+        matched, delivered, ..
+    } = decode(&json!({
+        "type": "invocationresult", "invocation_id": "1f3a5c7e-9b0d-4f2a-8c4e-6a8c0e2b4d6f",
+        "function_id": "f", "result": 1, "matched": null, "delivered": null
+    }))
+    else {
+        panic!()
+    };
+    assert!(matched.is_none() && !delivered);
+
+    let mut source = fixture("invocationsobserved-event-source.json");
+    source["items"][0]["output_is_input"] = Value::Null;
+    let Message::InvocationsObserved { items } = decode(&source) else {
+        panic!()
+    };
+    assert!(!items[0].output_is_input);
+
+    // and the defaults sent explicitly decode too
+    let Message::RegisterFunction {
+        private,
+        observable,
+        ..
+    } = decode(
+        &json!({ "type": "registerfunction", "id": "f", "private": false, "observable": true }),
+    )
+    else {
+        panic!()
+    };
+    assert!(!private && observable);
+}
+
+/// The engine-only files carry the 0.25 `observe` object: the SDK decodes
+/// them (the object is an unknown field) and never builds it.
+#[test]
+fn the_engine_only_observe_object_is_never_built() {
+    for name in ENGINE_ONLY {
+        let value = fixture(name);
+        assert!(value.get("observe").is_some(), "{name}");
+        let message = decode(&value);
+        assert!(
+            serde_json::to_value(&message)
+                .unwrap()
+                .get("observe")
+                .is_none(),
+            "{name}: re-encoded with an observe object"
+        );
+    }
+}
+
 #[test]
 fn engine_to_worker_fixtures_carry_their_meaning() {
     let Message::WorkerRegistered { features, .. } = decode(&fixture("workerregistered.json"))
+    else {
+        panic!()
+    };
+    assert_eq!(
+        features,
+        vec!["observe.v1", "observe.v2", "local-dispatch.v1"]
+    );
+    let Message::WorkerRegistered { features, .. } = decode(&fixture("workerregistered-v1.json"))
     else {
         panic!()
     };
@@ -182,13 +275,11 @@ fn engine_to_worker_fixtures_carry_their_meaning() {
     assert_eq!(observers[0].capture, vec![Capture::Input]);
     assert_eq!(observers[1].filters, json!({}));
 
-    let Message::ObserverAdded { observer, .. } = decode(&fixture("observeradded-legacy.json"))
-    else {
+    let Message::ObserverAdded { observer, .. } = decode(&fixture("observeradded.json")) else {
         panic!()
     };
-    let legacy = observer.legacy.expect("legacy trigger");
-    assert_eq!(legacy.trigger_type, "http");
-    assert_eq!(legacy.config["api_path"], "/users/:id");
+    assert_eq!(observer.args["expression"], "0 0 9 * * Mon-Fri");
+    assert_eq!(observer.target, "billing::send-reminders");
 
     let Message::ObserveResult {
         state,
@@ -234,7 +325,73 @@ fn engine_to_worker_fixtures_carry_their_meaning() {
     assert_eq!(items[0].status, InvocationStatus::Error);
     assert_eq!(items[1].output, Some(Value::Null), "null output is kept");
     assert!(items[0].output.is_none(), "absent output stays absent");
-    assert_eq!(items[2].matched.len(), 2);
+    assert!(items[1].caller.is_none(), "a call made outside any handler");
+    assert!(
+        items
+            .iter()
+            .filter_map(|item| item.caller.as_ref())
+            .all(|caller| caller.worker_id.is_none() && caller.worker_name.is_none()),
+        "the engine stamps the worker"
+    );
+
+    let Message::InvocationsObserved { items } =
+        decode(&fixture("invocationsobserved-event-source.json"))
+    else {
+        panic!()
+    };
+    assert!(items[0].output_is_input);
+    assert!(items[0].output.is_none(), "the value travels once");
+
+    // A routed call's answer says how the call is delivered (decision 55):
+    // to every observer, to those the match hook matched, or by the deliver
+    // hook.
+    let answer = |name: &str| match decode(&fixture(name)) {
+        Message::InvocationResult {
+            result,
+            error,
+            matched,
+            delivered,
+            ..
+        } => (result, error, matched, delivered),
+        other => panic!("{name}: {other:?}"),
+    };
+    let (result, _, matched, delivered) = answer("invocationresult-routed.json");
+    assert!(result.is_some());
+    assert!(matched.is_none() && !delivered, "every observer");
+    let (result, _, matched, delivered) = answer("invocationresult-matched.json");
+    assert!(result.is_some() && !delivered);
+    assert_eq!(matched.unwrap().len(), 2);
+    let (result, error, matched, delivered) = answer("invocationresult-matched-error.json");
+    assert!(result.is_none() && !delivered);
+    assert_eq!(error.unwrap().code, "CARD_DECLINED");
+    assert_eq!(
+        matched.unwrap(),
+        vec!["c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60"]
+    );
+    let (_, _, matched, delivered) = answer("invocationresult-matched-none.json");
+    assert_eq!(matched, Some(Vec::new()), "matched none: sent as []");
+    assert!(!delivered);
+    let (result, _, matched, delivered) = answer("invocationresult-delivered.json");
+    assert!(result.is_some() && delivered && matched.is_none());
+
+    let Message::InvokeFunction { activation, .. } =
+        decode(&fixture("invokefunction-observer-call-forwarded.json"))
+    else {
+        panic!()
+    };
+    let activation = activation.unwrap();
+    assert_eq!(
+        activation.observer_id,
+        "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c"
+    );
+    assert!(activation.activation_id.is_some());
+}
+
+/// What this SDK declares on `engine::workers::register`.
+#[test]
+fn the_sdk_declares_the_native_feature_list() {
+    let register = fixture("invokefunction-workers-register.json");
+    assert_eq!(json!(SDK_FEATURES), register["data"]["features"]);
 }
 
 #[test]
@@ -249,41 +406,29 @@ fn registerfunction_messages_build_the_fixtures() {
         response_format: Some(json!({ "type": "null" })),
         metadata: None,
         invocation: None,
-        observe: None,
+        args_format: None,
+        private: false,
+        observable: true,
     };
     assert_eq!(
         serde_json::to_value(plain.to_message()).unwrap(),
         fixture("registerfunction.json")
     );
 
-    let owner = fixture("registerfunction-owner.json");
-    let mut message = RegisterFunctionMessage::with_id("cron::on-tick".into())
-        .with_description("Fires on a cron schedule. Observe it with args { expression }.".into());
-    message.request_format = Some(owner["request_format"].clone());
-    message.observe = Some(ObserveDescriptor {
-        delivery: Some(Delivery::Owner),
-        args_format: Some(owner["observe"]["args_format"].clone()),
-        legacy_trigger_type: Some("cron".into()),
-        allow: Some(true),
-    });
-    assert_eq!(serde_json::to_value(message.to_message()).unwrap(), owner);
+    let private = fixture("registerfunction-private.json");
+    let mut message = RegisterFunctionMessage::with_id("cron::on-tick".into()).with_description(
+        "One call per tick of a cron expression. Observe it with args { expression }.".into(),
+    );
+    message.request_format = Some(private["request_format"].clone());
+    message.response_format = Some(private["response_format"].clone());
+    message.args_format = Some(private["args_format"].clone());
+    message.private = true;
+    assert_eq!(serde_json::to_value(message.to_message()).unwrap(), private);
 
     let closed = fixture("registerfunction-not-observable.json");
     let mut message = RegisterFunctionMessage::with_id("vault::read-secret".into())
         .with_description(closed["description"].as_str().unwrap().into());
     message.request_format = Some(closed["request_format"].clone());
-    message.observe = Some(ObserveDescriptor {
-        delivery: Some(Delivery::Auto),
-        allow: Some(false),
-        ..ObserveDescriptor::default()
-    });
+    message.observable = false;
     assert_eq!(serde_json::to_value(message.to_message()).unwrap(), closed);
-
-    let unregister = UnregisterTriggerTypeMessage {
-        id: "webhook".into(),
-    };
-    assert_eq!(
-        serde_json::to_value(unregister.to_message()).unwrap(),
-        fixture("unregistertriggertype.json")
-    );
 }

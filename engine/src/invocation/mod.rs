@@ -18,7 +18,7 @@ use crate::telemetry::SpanExt;
 
 use crate::{
     function::{Function, FunctionResult, HandlerFn},
-    observer::{InvocationCtx, ObserverRegistry},
+    observer::{HostDelivery, InvocationCtx, ObserverRegistry},
     protocol::ErrorBody,
     worker_connections::WorkerConnection,
     workers::observability::metrics::get_engine_metrics,
@@ -44,11 +44,33 @@ async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
     (handler.as_ref())(invocation_id, data, session, metadata).await
 }
 
+/// How a routed call ended: the executor's answer and, from a host that
+/// declared `observe.v2`, how its observers are delivered.
+#[derive(Debug)]
+pub struct Completion {
+    pub result: Result<Option<Value>, ErrorBody>,
+    /// Set when the answering connection declared `observe.v2`: whether its
+    /// match hook narrowed the call's observers, or its deliver hook
+    /// delivered the call (decision 55).
+    pub delivered: Option<HostDelivery>,
+}
+
+impl From<Result<Option<Value>, ErrorBody>> for Completion {
+    /// A result that is no host's answer: the engine stopped the call, or did
+    /// not send it.
+    fn from(result: Result<Option<Value>, ErrorBody>) -> Self {
+        Self {
+            result,
+            delivered: None,
+        }
+    }
+}
+
 pub struct Invocation {
     pub id: Uuid,
     pub function_id: String,
     pub worker_id: Option<Uuid>,
-    pub sender: oneshot::Sender<Result<Option<Value>, ErrorBody>>,
+    pub sender: oneshot::Sender<Completion>,
     /// W3C traceparent for distributed tracing context
     pub traceparent: Option<String>,
     /// W3C baggage for cross-cutting context propagation
@@ -94,15 +116,23 @@ impl InvocationHandler {
             .map(|(_, sender)| sender)
     }
 
+    /// Whether the engine waits for the answer to `invocation_id`, a call of
+    /// `function_id`.
+    pub(crate) fn is_pending(&self, invocation_id: &Uuid, function_id: &str) -> bool {
+        self.invocations
+            .get(invocation_id)
+            .is_some_and(|invocation| invocation.function_id == function_id)
+    }
+
     pub fn halt_invocation(&self, invocation_id: &Uuid) {
         let invocation = self.remove(invocation_id);
 
         if let Some(invocation) = invocation {
-            let _ = invocation.sender.send(Err(ErrorBody {
+            let _ = invocation.sender.send(Completion::from(Err(ErrorBody {
                 code: "invocation_stopped".into(),
                 message: "Invocation stopped".into(),
                 stacktrace: None,
-            }));
+            })));
         }
     }
 
@@ -123,6 +153,7 @@ impl InvocationHandler {
             invocation_id,
             worker_id,
             None,
+            worker_id,
             function_id,
             crate::protocol::DEFAULT_NAMESPACE,
             body,
@@ -153,10 +184,12 @@ impl InvocationHandler {
         metadata: Option<Value>,
         ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
+        let worker_id = caller.map(|worker| worker.id);
         self.handle_invocation_inner(
             invocation_id,
-            caller.map(|worker| worker.id),
+            worker_id,
             caller.filter(|_| invocation_id.is_some()),
+            worker_id,
             function_id,
             namespace,
             body,
@@ -170,12 +203,55 @@ impl InvocationHandler {
         .await
     }
 
+    /// A call through an observer: `host` sent it and gets its answer, and
+    /// it is the observing worker's call. `observing` is the observing
+    /// connection (`None` for an observer the engine owns): a private
+    /// target takes the call only from it, as RBAC takes the observing
+    /// worker's `session`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn handle_observer_call(
+        &self,
+        invocation_id: Uuid,
+        host: &WorkerConnection,
+        observing: Option<Uuid>,
+        function_id: String,
+        namespace: &str,
+        body: Value,
+        function_handler: Arc<HandlerFn>,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+        session: Option<Arc<Session>>,
+        metadata: Option<Value>,
+        ctx: InvocationCtx,
+    ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
+        self.handle_invocation_inner(
+            Some(invocation_id),
+            Some(host.id),
+            Some(host),
+            observing,
+            function_id,
+            namespace,
+            body,
+            function_handler,
+            traceparent,
+            baggage,
+            session,
+            metadata,
+            ctx,
+        )
+        .await
+    }
+
+    /// `worker_id` and `caller` are the calling connection; `routed_as` is
+    /// whose call a private function checks (the calling connection, or the
+    /// observing one for a call through an observer).
     #[allow(clippy::too_many_arguments)]
     async fn handle_invocation_inner<H: AsRef<HandlerFn> + Send>(
         &self,
         invocation_id: Option<Uuid>,
         worker_id: Option<Uuid>,
         caller: Option<&WorkerConnection>,
+        routed_as: Option<Uuid>,
         function_id: String,
         namespace: &str,
         body: Value,
@@ -188,19 +264,20 @@ impl InvocationHandler {
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // The routed observer hook (protocol.md §3.2). Unobserved — the usual
         // case — it costs one atomic load and copies nothing; observed, it
-        // keeps only what the active observers need.
+        // keeps only what the active observers need. A private function is
+        // invoked by its host only.
         let observers = self.observers.get();
-        // An owner-delivered function is invoked by its owner only.
-        if let Some(registry) = observers
-            && let Err(refused) = registry.may_invoke(namespace, &function_id, worker_id)
-        {
-            return Ok(Err(refused));
-        }
-        let observed = observers.and_then(|registry| {
+        let observed = match observers.map(|registry| {
             registry
-                .watch_routed(namespace, &function_id)
-                .map(|set| registry.begin(set, &body, &metadata, &traceparent, &baggage, &ctx))
-        });
+                .route(namespace, &function_id, routed_as)
+                .map(|set| (registry, set))
+        }) {
+            Some(Err(refused)) => return Ok(Err(refused)),
+            Some(Ok((registry, Some(set)))) => {
+                Some(registry.begin(set, &body, &metadata, &traceparent, &baggage))
+            }
+            Some(Ok((_, None))) | None => None,
+        };
         // The context goes in scope around the handler (and is kept for the
         // hook) unless there is nothing in it: engine orchestration at depth 0,
         // with no context around it already, is the same as none.
@@ -272,11 +349,10 @@ impl InvocationHandler {
         //     descendants) nest under the caller's trace instead of orphaning
         //     into a new one. `WorkerConnection::handle_function` falls back to
         //     this ambient context (see `worker_connections/traits.rs`).
-        //   - Built-in: state/stream writes fire triggers in a spawned
-        //     `*_triggers` span. Without the caller context that span (and the
-        //     trigger handlers it invokes) would root a brand-new, disconnected
-        //     trace; attaching it nests the fan-out under the writer (e.g.
-        //     `approval::resolve` → state write → `turn::on_approval`).
+        //   - Built-in: a stream write calls `stream::on-changed`, whose
+        //     activations take the writer's trace context. Without the caller
+        //     context they would root a brand-new, disconnected trace;
+        //     attaching it nests them under the writer.
         let dispatch_cx = if traceparent.is_some() || baggage.is_some() {
             let cx = crate::telemetry::extract_context(traceparent.as_deref(), baggage.as_deref());
             // The caller's baggage names the CALLER; rewrite `iii.function.id`
@@ -296,7 +372,9 @@ impl InvocationHandler {
 
         let invocation_fut = async {
             let invocation_id = invocation_id.unwrap_or_else(Uuid::new_v4);
-            let (sender, receiver) = oneshot::channel();
+            let (sender, receiver) = oneshot::channel::<Completion>();
+            // What an `observe.v2` host's answer says it delivered.
+            let mut delivered = None;
             // A worker can reply or disconnect before its handler returns Deferred.
             self.invocations.insert(invocation_id, Invocation {
                 id: invocation_id,
@@ -364,7 +442,10 @@ impl InvocationHandler {
                     acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
-                    if !crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
+                    // Copied once, by the first successful user call.
+                    if acc.first_user_success_fn.get().is_none()
+                        && !crate::workers::telemetry::is_iii_builtin_function_id(&function_id)
+                    {
                         let _ = acc.first_user_success_fn.set(function_id.clone());
                     }
 
@@ -452,7 +533,10 @@ impl InvocationHandler {
                     acc.invocations_deferred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     acc.increment_function(&function_id);
 
-                    receiver.await
+                    receiver.await.map(|completion| {
+                        delivered = completion.delivered;
+                        completion.result
+                    })
                 }
             };
             match &result {
@@ -463,8 +547,34 @@ impl InvocationHandler {
                     tracing::Span::current().record("otel.status_code", "ERROR");
                 }
             };
-            if let (Some(registry), Some(observed), Some(ctx)) = (observers, observed, &ctx) {
-                registry.complete(observed, namespace, &function_id, invocation_id, &result, ctx);
+            if let Some(registry) = observers {
+                match observed {
+                    // An observed call always keeps its context.
+                    Some(observed) => {
+                        if let Some(ctx) = &ctx {
+                            registry.complete(
+                                observed,
+                                namespace,
+                                &function_id,
+                                invocation_id,
+                                &result,
+                                delivered,
+                                ctx,
+                            );
+                        }
+                    }
+                    // Unobserved when it began: the observers its host's
+                    // match hook named are counted, not activated.
+                    None => {
+                        if let Some(delivered) = delivered {
+                            registry.not_held(
+                                namespace,
+                                &function_id,
+                                delivered.delivery.named(),
+                            );
+                        }
+                    }
+                }
             }
             result
         }
@@ -607,14 +717,40 @@ mod tests {
         // The invocation should have been removed.
         assert!(handler.invocations.is_empty());
 
-        // The receiver should get an error result.
+        // The receiver should get an error result, which nobody delivered.
         let result = receiver.try_recv();
         assert!(result.is_ok());
-        let inner = result.unwrap();
-        assert!(inner.is_err());
-        let error = inner.unwrap_err();
+        let completion = result.unwrap();
+        assert!(completion.delivered.is_none());
+        let error = completion.result.unwrap_err();
         assert_eq!(error.code, "invocation_stopped");
         assert_eq!(error.message, "Invocation stopped");
+    }
+
+    #[test]
+    fn a_call_is_pending_until_its_answer_is_taken() {
+        let handler = InvocationHandler::new();
+        let id = Uuid::new_v4();
+        let (sender, _receiver) = oneshot::channel();
+        handler.invocations.insert(
+            id,
+            Invocation {
+                id,
+                function_id: "orders::create".to_string(),
+                worker_id: None,
+                sender,
+                traceparent: None,
+                baggage: None,
+            },
+        );
+        assert!(handler.is_pending(&id, "orders::create"));
+        assert!(
+            !handler.is_pending(&id, "orders::other"),
+            "another function"
+        );
+        assert!(!handler.is_pending(&Uuid::new_v4(), "orders::create"));
+        handler.remove(&id);
+        assert!(!handler.is_pending(&id, "orders::create"));
     }
 
     #[test]

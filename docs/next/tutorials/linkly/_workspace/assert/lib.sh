@@ -16,7 +16,7 @@ check() {
 t() {
   local ns="${NAMESPACE:-default}"
   [[ "$1" == engine::* ]] && ns=default
-  "${III_BIN:-iii}" trigger -n "$ns" --engine "${III_URL:-ws://127.0.0.1:49134}" "$@" 2>&1
+  "${III_BIN:-iii}" call -n "$ns" --engine "${III_URL:-ws://127.0.0.1:49134}" "$@" 2>&1
 }
 
 # POST /links with a code that already exists: 409 and link::create's own

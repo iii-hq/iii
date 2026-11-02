@@ -81,7 +81,7 @@ pub struct AdapterEnsureOutcome {
 
 /// External-edit report surfaced by adapters that watch their backing
 /// store (e.g. the `fs` adapter's `notify` watcher). Drives the worker's
-/// trigger fan-out for changes that did not originate from a local
+/// event fan-out for changes that did not originate from a local
 /// `configuration::*` call.
 #[derive(Debug, Clone)]
 pub enum ExternalChange {

@@ -1,16 +1,16 @@
 ---
 name: iii
-description: How iii works and the iii-sdk surface for authoring workers, triggers, and functions. Teaches the ordered way to gain a capability before writing code — (1) check functions already registered in the engine, (2) search the public registry via iii-directory, (3) build a worker. Single self-contained skill — meant for system-prompt injection; do not re-fetch.
+description: How iii works and the iii-sdk surface for authoring workers, functions, and observers. Teaches the ordered way to gain a capability before writing code — (1) check functions already registered in the engine, (2) search the public registry via iii-directory, (3) build a worker. Single self-contained skill — meant for system-prompt injection; do not re-fetch.
 ---
 
 # iii
 
-iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, triggers, and functions. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every trigger bound to them. Workers are independent OS processes that open a WebSocket to the engine and register **Functions** (`service::name` handlers) and **Triggers** (the events that invoke those Functions). There is no direct worker-to-worker traffic — every call routes through the engine, which makes the language, runtime, and physical location of any worker invisible to its callers.
+iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, functions, and observers. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every observer between those functions. Workers are independent OS processes that open a WebSocket to the engine, register **Functions** (`service::name` handlers), and **observe** functions: each matching call of the observed function invokes a target function. There is no direct worker-to-worker traffic — every call routes through the engine, which makes the language, runtime, and physical location of any worker invisible to its callers.
 
 ## When to Use
 
-Use this skill to discover live iii capabilities, call functions, author SDK workers, bind trigger
-types, or operate project workers through Compose.
+Use this skill to discover live iii capabilities, call functions, author SDK workers, observe
+functions, or operate project workers through Compose.
 
 **You extend yourself by writing iii workers.** A few lines get you on the bus:
 
@@ -24,7 +24,7 @@ iii.registerFunction('demo::add', async (payload: { a: number; b: number }) => {
 })
 ```
 
-The instant the handshake completes, `demo::add` is callable from any worker (and the harness itself) via `iii.trigger({ function_id: 'demo::add', payload: { a: 2, b: 3 } })`. No restart, no registration with the harness — the engine routes it automatically.
+The instant the handshake completes, `demo::add` is callable from any worker (and the harness itself) via `iii.call({ function_id: 'demo::add', payload: { a: 2, b: 3 } })`. No restart, no registration with the harness — the engine routes it automatically.
 
 ## The four primitives
 
@@ -33,13 +33,13 @@ The instant the handshake completes, `demo::add` is callable from any worker (an
 | Engine | One coordinator process. Routes every invocation. | The operator |
 | Worker | A process that opens a WebSocket to the engine. | Anyone who writes one |
 | Function | A named handler inside a worker, id `service::name`. Stable across worker restarts. | The registering worker |
-| Trigger | A `(type, config, function_id)` triple. Causes a function to run when an event fires. | A worker (the type-publisher) + a caller (the binding) |
+| Observer | A `(source function, filters, target function)` binding. Each matching call of the source invokes the target. | The observing worker |
 
 Three consequences worth internalising:
 
 1. **No worker-to-worker traffic.** Every call is `worker → engine → worker`. Workers never address each other directly. Location and language are invisible.
 2. **No restart coordination.** Restarting a worker is invisible to callers as long as it re-registers the same function ids. Two workers registering the same function id = automatic load-balance.
-3. **No polling unless you opt in.** Triggers are the engine's push channel. The engine fans events out to bound functions when the underlying source fires.
+3. **No polling unless you opt in.** Observers are the engine's push channel. When a function runs, the engine invokes the targets of its matching observers.
 
 The function id is the only contract between any two workers.
 
@@ -48,11 +48,11 @@ graph TD
   Harness["harness (LLM worker)"] <-->|"WS"| Engine["iii engine :49134 (registry + router)"]
   Engine <-->|"WS"| WorkerA["your authored worker my::fn"]
   Engine <-->|"WS"| WorkerB["installed registry worker"]
-  Engine <-->|"WS"| Provider["trigger-type provider"]
+  Engine <-->|"WS"| Provider["event-source worker"]
   External["external event (request, timer, queue, ...)"] -->|"native protocol"| Provider
 ```
 
-Every edge to the engine is a WebSocket. A trigger-type provider terminates some native protocol — an inbound request, a timer, a queue message — and translates it into engine traffic.
+Every edge to the engine is a WebSocket. An event-source worker terminates some native protocol — an inbound request, a timer, a queue message — and calls one of its functions (`http::on-request`, `cron::on-tick`, `queue::on-message`) once per event; observers of that function run.
 
 ## Need a capability? Discover before you build — in this order
 
@@ -66,7 +66,7 @@ The most common harness mistake is reimplementing something that already exists,
 // engine::workers::list      — every connected worker.
 ```
 
-If a registered function fits, just call it: `iii.trigger({ function_id, payload })`.
+If a registered function fits, just call it: `iii.call({ function_id, payload })`.
 
 **2. Search the public registry.** If nothing registered fits, look for a worker to install. This goes through the `iii-directory` worker:
 
@@ -80,7 +80,7 @@ If a registered function fits, just call it: `iii.trigger({ function_id, payload
 When one fits, add it through the project's Compose daemon:
 
 ```bash
-iii trigger -n <compose-namespace> compose::add worker=<worker>
+iii call -n <compose-namespace> compose::add worker=<worker>
 ```
 
 `iii-directory` is itself a registry worker, so confirm it is connected before calling `directory::*`:
@@ -99,8 +99,8 @@ iii trigger -n <compose-namespace> compose::add worker=<worker>
 ```ts
 import {
   registerWorker, // factory; opens the WS from your code's perspective synchronously
-  TriggerAction, // .Void() | .Enqueue({ queue })
-  InvocationError, // typed error thrown by iii.trigger()
+  CallAction, // .Void() | .Enqueue({ queue })
+  InvocationError, // typed error thrown by iii.call()
 } from 'iii-sdk'
 import { Logger } from '@iii-dev/helpers/observability' // OTel-aware structured logger; falls back to console.*
 
@@ -120,30 +120,29 @@ ref.id // 'svc::do-thing'
 ref.unregister() // drop just this function, keep the WS open
 
 // Invoke. Three modes — same method, different `action`.
-await iii.trigger({ function_id, payload, timeoutMs })
-await iii.trigger({ function_id, payload, action: TriggerAction.Void() })
-await iii.trigger({ function_id, payload, action: TriggerAction.Enqueue({ queue }) })
+await iii.call({ function_id, payload, timeoutMs })
+await iii.call({ function_id, payload, action: CallAction.Void() })
+await iii.call({ function_id, payload, action: CallAction.Enqueue({ queue }) })
 
-// Bind a function to an event.
-iii.registerTrigger({ type, function_id, config })
-
-// Publish a new event source other workers can bind to.
-iii.registerTriggerType({ id, description }, { registerTrigger, unregisterTrigger })
+// React to a function's calls: `target` runs on every matching call.
+const observer = iii.observe({ function_id, args, filters }, target)
+await observer.ready()
+await observer.dispose()
 
 await iii.shutdown() // graceful close; engine evicts this worker's functions immediately
 ```
 
 `registerWorker(url, options?)` opens the WebSocket synchronously from your code's perspective — there is no separate `await connect()`. The handle queues calls until the handshake lands.
 
-Schemas in `registerFunction` (`description`, `request_format`, `response_format`) are JSON-Schema-shaped **metadata** — the engine does not validate payloads against them today. Declare them anyway: they surface in `engine::functions::info`, document the contract for the next caller, and reserve a slot for future runtime validation.
+Schemas in `registerFunction` (`description`, `request_format`, `response_format`) are JSON-Schema-shaped **metadata** — the engine does not validate payloads against them. Declare them anyway: they surface in `engine::functions::info`, document the contract for the next caller, and let the engine check observers' filter paths against them.
 
 ### The three invocation modes
 
 | `action` | Caller blocks? | Retries? | Returns | Use when |
 |---|---|---|---|---|
 | (omitted) | yes | no | the function's result | you need the value to continue |
-| `TriggerAction.Void()` | no | no | `null` | one-way notification, no result needed |
-| `TriggerAction.Enqueue({ queue })` | no | yes | `{ messageReceiptId }` | slow/unreliable work; the queue handles retry + back-pressure |
+| `CallAction.Void()` | no | no | `null` | one-way notification, no result needed |
+| `CallAction.Enqueue({ queue })` | no | yes | `{ messageReceiptId }` | slow/unreliable work; the queue handles retry + back-pressure |
 
 ### Errors
 
@@ -155,66 +154,65 @@ Rule of thumb: if a retry might succeed, throw; if it will fail the same way, re
 ### Lifecycle
 
 - `iii.shutdown()` flushes pending traffic and closes the WS; the engine evicts the worker's functions immediately and resolves in-flight calls to it as `invocation_stopped`.
-- `ref.unregister()` removes one registration (`FunctionRef`, `Trigger`, or `TriggerTypeRef`) without touching the others.
-- The SDK reconnects automatically with backoff and **replays registrations verbatim** — never re-register manually. Callers see `invocation_stopped` during the disconnect window; treat it as cancellation, not transient failure.
+- `ref.unregister()` removes one function without touching the others; `observer.dispose()` removes one observer.
+- The SDK reconnects automatically with backoff and **replays registrations and observers verbatim** — never re-register manually. Callers see `invocation_stopped` during the disconnect window; treat it as cancellation, not transient failure.
 
-## Triggers — discover the type, don't hardcode it
+## Observers — discover the function, don't hardcode it
 
-A trigger's `type` is a literal string published by some worker, and its `config` shape is defined by that worker. There is no fixed catalogue — discover what is available rather than assuming:
+Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `cron::on-tick`, `queue::on-message`, `stream::on-changed`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
 
 ```jsonc
-// engine::triggers::list             → every trigger TYPE currently published (legal `type:` values).
-// engine::triggers::info { id }       → that type's config + return JSON Schema, and its provider.
+// engine::functions::list             → every function, event sources included.
+// engine::functions::info { function_id }
+//                                      → its request/response schemas (what `filters` can read)
+//                                        and its `args_format` (what `args` it needs).
 // directory::registry::workers::info  → the provider's README, when you need prose + examples.
 ```
 
-Then bind, passing the literal type string and the `config` its schema requires:
+Then observe it, passing the `args` its `args_format` requires and the `filters` that pick its calls:
 
 ```ts
-iii.registerTrigger({
-  type: '<type from the list above>',
-  function_id: 'svc::handler',
-  config: {
-    /* keys per the type's schema */
-  },
-})
-```
+iii.registerFunction('svc::handler', async ({ input, output }) => handle(input, output))
 
-Two cautions that apply to every trigger type:
-
-- `registerTrigger` succeeds at the engine even when the `type` provider is **not connected** or the `config` keys are wrong — the binding lands but never fires. Confirm the provider is up (`engine::triggers::list` shows the type) and copy `config` keys from the type's schema, not from memory.
-- The bound function receives whatever payload **that trigger type** delivers (its request schema in `engine::triggers::info`) and must return whatever shape that type expects. The handler contract is the trigger type's, not a generic one — check the schema before writing the handler.
-
-### Custom trigger types — the deepest leverage
-
-`registerTriggerType` turns your worker's native event source (a webhook hit, a file change, a row update) into something the whole bus can react to without polling. Keep a `{ trigger_id → { function_id, config } }` table in memory and walk it when the source fires:
-
-```ts
-type FsWatchConfig = { path: string; recursive?: boolean }
-const bindings = new Map<string, { function_id: string; config: FsWatchConfig }>()
-
-iii.registerTriggerType<FsWatchConfig>(
-  { id: 'fs::watch', description: 'Fires when a file under `path` changes.' },
+const observer = iii.observe(
   {
-    async registerTrigger({ id, function_id, config }) {
-      bindings.set(id, { function_id, config })
-      startWatching(id, config)
+    function_id: '<function from the list above>',
+    args: {
+      /* keys per the function's args_format */
     },
-    async unregisterTrigger({ id }) {
-      stopWatching(id)
-      bindings.delete(id)
-    },
+    filters: { 'input.total': { $gte: 500 } }, // explicit operators
   },
+  'svc::handler',
 )
-
-function onChange(triggerId: string, path: string) {
-  const binding = bindings.get(triggerId)
-  if (!binding) return
-  iii.trigger({ function_id: binding.function_id, payload: { path }, action: TriggerAction.Void() })
-}
+await observer.ready() // fails with the reason: INVALID_ARGS, INVALID_FILTER, FORBIDDEN, ...
 ```
 
-From the caller's side, your custom type is indistinguishable from any built-in one.
+Two cautions that apply to every observer:
+
+- An observer stays `pending` until both its function and its target are registered, and `ready()` fails when the function's worker refuses it. Await `ready()` and check `engine::observers::list` rather than assuming it is active.
+- The target receives the `Observed` envelope (`input`, `output` or `error`, `caller`, ...) by default; pass `deliver: 'input'` or `'output'` to receive one of them alone. Check the function's schemas before writing the handler.
+
+### Event sources of your own — the deepest leverage
+
+A function your worker calls once per native event (a webhook hit, a file change, a row update) turns that event into something the whole bus can react to without polling. Register it `private` (only your worker calls it) with an `args_format` for what observers pass, and keep the native watch alive while observers exist:
+
+```ts
+type FsWatchArgs = { path: string; recursive?: boolean }
+
+iii
+  .registerFunction('fs::on-change', (event) => event, {
+    args_format: { type: 'object', required: ['path'], properties: { path: { type: 'string' } } },
+    private: true,
+  })
+  .onObserverAdded((obs) =>
+    startWatching(obs.id, obs.args as FsWatchArgs, (path) =>
+      iii.call({ function_id: 'fs::on-change', payload: { path } }),
+    ),
+  )
+  .onObserverRemoved((obs) => stopWatching(obs.id))
+```
+
+From the observer's side, your event source is indistinguishable from any built-in one.
 
 ## Worker lifecycle — `compose::*`
 
@@ -222,12 +220,12 @@ Project workers live in `worker-compose.yaml`. The Compose daemon owns their ins
 restart, update, and shutdown lifecycle:
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::status file=worker-compose.yaml
-iii trigger -n dev compose::logs file=worker-compose.yaml worker=state tail=100
-iii trigger -n dev compose::restart file=worker-compose.yaml worker=state
-iii trigger -n dev compose::update file=worker-compose.yaml worker=state
-iii trigger -n dev compose::down file=worker-compose.yaml
+iii call -n dev compose::add worker=state
+iii call -n dev compose::status file=worker-compose.yaml
+iii call -n dev compose::logs file=worker-compose.yaml worker=state tail=100
+iii call -n dev compose::restart file=worker-compose.yaml worker=state
+iii call -n dev compose::update file=worker-compose.yaml worker=state
+iii call -n dev compose::down file=worker-compose.yaml
 ```
 
 `iii worker` and `worker::*` were removed. Use `engine::workers::list` for live registrations and
@@ -241,9 +239,7 @@ stderr.
 | `engine::functions::list` | Every function across all workers. Filter `prefix` / `search`. |
 | `engine::functions::info { function_id }` | One function's schemas, description, owning worker. |
 | `engine::workers::list` | Every WS-connected worker. |
-| `engine::triggers::list` | Every trigger TYPE published (legal `type:` values). |
-| `engine::triggers::info { id }` | One trigger type's config / return schema + provider. |
-| `engine::registered-triggers::list` | Every trigger INSTANCE bound. Filter `function_id` / `worker`. |
+| `engine::observers::list` | Every observer: function, args, filters, target, state, fires. |
 | `compose::status` | Declared containers, process state, PID, ownership, and last error. |
 | `compose::logs` | Bounded worker stdout/stderr entries and continuation cursors. |
 | `compose::list` | Projects held by one Compose daemon. |
@@ -256,20 +252,20 @@ view; consult both when diagnosing a declared container that did not register.
 
 ## Trust runtime probes over introspection
 
-`engine::*::list` reads can come back empty for blurred reasons: an older engine that lacks the surface, a store that lags live state, or genuinely nothing registered. **Disambiguate with a runtime probe** — call the function with `iii.trigger(...)`. If the probe succeeds, the registration is live regardless of what `*::list` reported. Don't unbind or re-register on the strength of an empty list alone; you'll churn a working worker.
+`engine::*::list` reads can come back empty for blurred reasons: an older engine that lacks the surface, a store that lags live state, or genuinely nothing registered. **Disambiguate with a runtime probe** — call the function with `iii.call(...)`. If the probe succeeds, the registration is live regardless of what `*::list` reported. Don't dispose or re-register on the strength of an empty list alone; you'll churn a working worker.
 
 ## Anti-patterns
 
-- **Polling instead of a trigger type.** A function on a timer reading a queue / file / table every N seconds is almost always wrappable as a custom trigger type. See [Custom trigger types](#custom-trigger-types--the-deepest-leverage).
+- **Polling instead of an event source.** A function on a timer reading a queue / file / table every N seconds is almost always wrappable as an event source. See [Event sources of your own](#event-sources-of-your-own--the-deepest-leverage).
 - **Reinventing what exists.** Run the discovery steps (`engine::functions::list`, then `directory::registry::workers::list`) before authoring anything.
 - **Hardwiring a remembered worker.** Pick the capability the live engine and registry surface, in order — not the one you reached for last time.
-- **Side-channel state between workers.** Don't have workers read each other's files or hit each other's endpoints; route every cross-worker call through `iii.trigger`, and use a shared-state worker (discover one in the registry) for shared key/value.
-- **Catching the wrong error type.** `iii.trigger()` throws `InvocationError`; catch that specifically or you lose `code` / `function_id` / `stacktrace`.
-- **Trusting introspection over runtime probes.** An empty `*::list` can mean lag, not absence — a successful `iii.trigger()` is the authoritative signal.
+- **Side-channel state between workers.** Don't have workers read each other's files or hit each other's endpoints; route every cross-worker call through `iii.call`, and use a shared-state worker (discover one in the registry) for shared key/value.
+- **Catching the wrong error type.** `iii.call()` throws `InvocationError`; catch that specifically or you lose `code` / `function_id` / `stacktrace`.
+- **Trusting introspection over runtime probes.** An empty `*::list` can mean lag, not absence — a successful `iii.call()` is the authoritative signal.
 
 ## Boundaries
 
 - Do not put project workers in `config.yaml`; use `worker-compose.yaml`.
 - Do not call removed `iii worker` commands or `worker::*` functions.
 - Do not add registry packages of kind `engine` as Compose roots; the engine supplies them.
-- Treat function ids and trigger schemas from the live engine as authoritative.
+- Treat function ids, schemas, and `args_format` from the live engine as authoritative.

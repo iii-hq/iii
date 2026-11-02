@@ -1,15 +1,15 @@
-"""The iii.runtime submodule exposes the runtime types; the root no longer does."""
+"""The iii.runtime submodule exposes the runtime types; the root does not."""
 
 
 def test_runtime_subpath() -> None:
-    from iii.runtime import FunctionRef, TriggerTypeRef
+    from iii.function_ref import FunctionRef as Defined
+    from iii.runtime import FunctionRef, IIIConnectionState
 
-    assert FunctionRef is not None
-    assert TriggerTypeRef is not None
+    assert FunctionRef is Defined
+    assert IIIConnectionState is not None
 
 
 def test_runtime_types_not_at_root() -> None:
     import iii
 
-    for name in ("FunctionRef", "TriggerTypeRef"):
-        assert not hasattr(iii, name)
+    assert not hasattr(iii, "FunctionRef")

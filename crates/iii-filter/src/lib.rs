@@ -26,8 +26,10 @@
 
 mod error;
 mod eval;
+mod index;
 mod parse;
 mod path;
+mod pmap;
 mod schema;
 
 use std::fmt;
@@ -36,6 +38,7 @@ use std::sync::{Arc, OnceLock};
 use serde_json::Value;
 
 pub use error::{ErrorCode, FilterError};
+pub use index::{FilterIndex, Iter, Matches};
 
 use crate::parse::SizeLimit;
 
@@ -183,6 +186,21 @@ impl Filter {
     /// Evaluates against `{ "input"?, "output"?, "error"?, "caller"?, "metadata"? }`.
     pub fn matches_value(&self, doc: &Value) -> bool {
         self.matches(&Doc::from_value(doc))
+    }
+
+    /// The `$eq` / `$in` conditions of the top-level `$and` (see
+    /// [`FilterIndex`]).
+    pub(crate) fn equality_terms(&self) -> impl Iterator<Item = (&path::Path, &[Value])> {
+        self.inner.node.equality_terms()
+    }
+
+    /// Whether a [`FilterIndex`] files this filter under one of its
+    /// conditions: its top-level `$and` holds an `$eq` of a scalar (a number,
+    /// a string, a boolean or `null`) or an `$in` of scalars on a document
+    /// path. A [`FilterIndex`] evaluates any other filter on every match.
+    pub fn is_indexable(&self) -> bool {
+        self.equality_terms()
+            .any(|(_, literals)| index::indexable_literals(literals))
     }
 
     /// Checks `input.*` paths against `request_format` and `output.*` paths

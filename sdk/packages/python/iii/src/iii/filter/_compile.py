@@ -34,7 +34,8 @@ from ._errors import (
     MAX_SET_ITEMS,
     FilterError,
 )
-from ._path import Resolver, compile_path, parse_path
+from ._index import Term, literal_key, path_key
+from ._path import Path, Resolver, compile_path, parse_path
 from ._value import ABSENT, array_element, as_double, is_number, json_equals
 
 #: A compiled filter node: ``element`` is the current ``$any`` element (``@``).
@@ -135,13 +136,16 @@ def check_json(src: Any) -> None:
         raise FilterError.invalid(f"{_where(at)}: a {type(value).__name__} is not JSON")
 
 
-def compile_source(src: Any, trusted: bool = False) -> tuple[Pred, frozenset[str], dict[str, Any], bool]:
+def compile_source(
+    src: Any, trusted: bool = False
+) -> tuple[Pred, frozenset[str], dict[str, Any], bool, tuple[Term, ...]]:
     """Validates ``src`` and compiles it.
 
-    Returns ``(pred, roots, json, match_all)``. Raises :class:`FilterError`
-    (``INVALID_FILTER``) when the filter is not valid. ``trusted`` skips the
-    encoded size limit, for filters the engine already validated (the normal
-    form it pushes to owners, which can be longer than the filter written).
+    Returns ``(pred, roots, json, match_all, equality_terms)``. Raises
+    :class:`FilterError` (``INVALID_FILTER``) when the filter is not valid.
+    ``trusted`` skips the encoded size limit, for filters the engine already
+    validated (the normal form it pushes to owners, which can be longer than
+    the filter written).
     """
     if not isinstance(src, dict):
         raise FilterError.invalid(f"a filter must be a JSON object, found {_kind(src)}")
@@ -152,8 +156,9 @@ def compile_source(src: Any, trusted: bool = False) -> tuple[Pred, frozenset[str
     source: dict[str, Any] = json.loads(text)
     roots: set[str] = set()
     clauses: list[Pred] = []
-    _collect_clauses(source, 1, False, _Budget(), roots, clauses)
-    return _and(clauses), frozenset(roots), source, not clauses
+    terms: list[Term] = []
+    _collect_clauses(source, 1, False, _Budget(), roots, clauses, terms)
+    return _and(clauses), frozenset(roots), source, not clauses, tuple(terms)
 
 
 def _parse_filter(src: Any, depth: int, in_any: bool, budget: _Budget, roots: set[str]) -> Pred:
@@ -186,9 +191,19 @@ def _and(clauses: list[Pred]) -> Pred:
     return every
 
 
-def _collect_clauses(src: Any, depth: int, in_any: bool, budget: _Budget, roots: set[str], out: list[Pred]) -> None:
+def _collect_clauses(
+    src: Any,
+    depth: int,
+    in_any: bool,
+    budget: _Budget,
+    roots: set[str],
+    out: list[Pred],
+    terms: list[Term] | None = None,
+) -> None:
     """Collects the clauses of ``src`` and of every filter its ``$and``s hold.
-    ``$and`` adds no depth, so it is walked with an explicit stack."""
+    ``$and`` adds no depth, so it is walked with an explicit stack. With
+    ``terms`` (the top-level filter), also collects the equality conditions
+    of those clauses (see :func:`_equality_term`)."""
     if depth > MAX_DEPTH:
         raise FilterError.invalid(f"filters nested deeper than {MAX_DEPTH} levels")
     pending: list[Any] = [src]
@@ -220,7 +235,26 @@ def _collect_clauses(src: Any, depth: int, in_any: bool, budget: _Budget, roots:
                 if path.root != "@":
                     roots.add(path.root)
                 ops = _parse_operator_object(key, value, depth, budget)
-                out.append(_path_clause(compile_path(path), ops))
+                resolve = compile_path(path)
+                out.append(_path_clause(resolve, ops))
+                if terms is not None and path.root != "@":
+                    _equality_terms(path, resolve, value, terms)
+
+
+def _equality_terms(path: Path, resolve: Resolver, ops: dict[str, Any], terms: list[Term]) -> None:
+    """The equality conditions of one clause of the top-level ``$and``: its
+    ``$eq`` of a scalar, and its ``$in`` of scalars (not empty). A document
+    whose value at ``path`` equals none of a condition's values fails the
+    clause, and so the filter. An array or object operand gives none."""
+    for name, operand in ops.items():
+        if name == "$eq":
+            key = literal_key(operand)
+            if key is not None:
+                terms.append((path_key(path), resolve, frozenset((key,))))
+        elif name == "$in" and operand:
+            keys = [literal_key(item) for item in operand]
+            if all(key is not None for key in keys):
+                terms.append((path_key(path), resolve, frozenset(key for key in keys if key is not None)))
 
 
 def _any_of(children: tuple[Pred, ...]) -> Pred:

@@ -12,9 +12,9 @@
 </Note>
 
 <Warning title="The iii-console binary was removed">
-  The legacy `iii-console` binary is no longer built or released. `iii console` now only prints a
-  notice that points here, and the command will be removed in an upcoming release. Use the iii
-  console in ADE described on this page instead.
+  iii releases no `iii-console` binary. `iii console` prints a notice that points here and exits,
+  and the command goes away in an upcoming release. The iii console is the ADE console this page
+  describes.
 </Warning>
 
 ## Open the console
@@ -31,14 +31,14 @@ iii compose --up
 ```
 
 ```bash
-iii trigger compose::add worker=ade
+iii call compose::add worker=ade
 ```
 
 `compose::add` resolves `ade` from the registry, declares it in `worker-compose.yaml`, and starts
 it next to the engine. Then open `http://127.0.0.1:3113` in your browser.
 
 If you run more than one Compose daemon, pass its namespace, for example
-`iii trigger -n dev compose::add worker=ade`.
+`iii call -n dev compose::add worker=ade`.
 
 ## What you can do in it
 
@@ -51,7 +51,7 @@ Chat with an agent running on the [`harness`](https://github.com/iii-hq/workers/
 worker. Add the agent stack with:
 
 ```bash
-iii trigger compose::add worker=harness
+iii call compose::add worker=harness
 ```
 
 The first time you open the console on a machine, a setup wizard helps you connect a model

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::protocol::CallRequest;
 use serde_json::json;
 
 use super::{Env, Measured, closed_loop, echo, payload, shutdown, wait_callable, workers};
@@ -39,7 +39,7 @@ pub async fn run(env: &Env) -> Result<()> {
     let calls = |pad: String| {
         let ids = ids.clone();
         move |task: usize, seq: u64| {
-            TriggerRequest::new(ids[task % ids.len()].as_str(), payload(seq, &pad))
+            CallRequest::new(ids[task % ids.len()].as_str(), payload(seq, &pad))
         }
     };
 

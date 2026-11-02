@@ -1,5 +1,7 @@
 version: 2
 mode: docs
+rules:
+  path: .skill-check-rules
 docs:
   include:
     - "docs/next/**/*.md"

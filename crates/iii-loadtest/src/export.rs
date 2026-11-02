@@ -149,7 +149,7 @@ pub struct Highlights {
     pub cpu_us_per_call: Option<f64>,
     /// `fanout`: the most activations per second.
     pub fanout_activations_per_sec: Option<f64>,
-    /// `emit`: the highest paced rate delivered in full (≥ 95%)...
+    /// `source`: the highest paced rate delivered in full (≥ 95%)...
     pub sustained_activations_per_sec: Option<f64>,
     /// ...and the first that was not, with the share that arrived.
     pub saturated_at: Option<f64>,
@@ -157,6 +157,10 @@ pub struct Highlights {
     /// `filters`: calls per second with the most filtered observers.
     pub filtered_calls_per_sec: Option<f64>,
     pub filtered_observers: Option<u64>,
+    /// `match-keys`: calls per second with the most keyed observers, each
+    /// call matching one of them.
+    pub keyed_calls_per_sec: Option<f64>,
+    pub keyed_observers: Option<u64>,
     /// `observers`: memory per held observer, and the most held at rest.
     pub bytes_per_observer: Option<f64>,
     pub observers_held: Option<u64>,
@@ -336,7 +340,7 @@ pub fn highlights(runs: &[RunResult], profile: &str) -> Highlights {
         .filter_map(|s| extra_f64(s, "activations_per_sec"))
         .reduce(f64::max);
 
-    let paced: Vec<(f64, f64)> = steps(runs, profile, "emit")
+    let paced: Vec<(f64, f64)> = steps(runs, profile, "source")
         .into_iter()
         .filter_map(|s| {
             Some((
@@ -358,6 +362,15 @@ pub fn highlights(runs: &[RunResult], profile: &str) -> Highlights {
     if let Some(s) = steps(runs, profile, "filters").into_iter().last() {
         h.filtered_calls_per_sec = Some(s.ops_per_sec);
         h.filtered_observers = param_u64(s, "observers");
+    }
+
+    if let Some(s) = steps(runs, profile, "match-keys")
+        .into_iter()
+        .rev()
+        .find(|s| param_u64(s, "matching") == Some(1))
+    {
+        h.keyed_calls_per_sec = Some(s.ops_per_sec);
+        h.keyed_observers = param_u64(s, "observers");
     }
 
     let at_rest = |scenario: &str, key: &str, count: &str| {
@@ -606,11 +619,11 @@ mod tests {
             ),
             run(
                 "2x1024",
-                "emit",
+                "source",
                 vec![
                     step(
                         "1k",
-                        "emits",
+                        "calls",
                         1000.0,
                         json!({}),
                         json!({"offered_per_sec": 1000, "delivery_ratio": 1.0}),
@@ -618,7 +631,7 @@ mod tests {
                     ),
                     step(
                         "50k",
-                        "emits",
+                        "calls",
                         50_000.0,
                         json!({}),
                         json!({"offered_per_sec": 50000, "delivery_ratio": 0.99}),
@@ -626,7 +639,7 @@ mod tests {
                     ),
                     step(
                         "100k",
-                        "emits",
+                        "calls",
                         100_000.0,
                         json!({}),
                         json!({"offered_per_sec": 100000, "delivery_ratio": 0.64}),

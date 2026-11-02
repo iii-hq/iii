@@ -1,9 +1,7 @@
 /**
- * Helper free functions that operate on an {@link IIIClient} instance.
- *
- * These were previously instance methods on the SDK. They take the iii
- * instance as the first argument so the public API surface of `IIIClient` stays
- * focused on the core lifecycle and registration methods.
+ * Helper free functions that operate on an {@link IIIClient} instance: each one
+ * takes the client as its first argument, so `IIIClient` itself keeps to the
+ * connection lifecycle, functions, calls and observers.
  */
 import type { Channel, IIIClient } from './types'
 import type { IStream } from './stream'
@@ -18,8 +16,6 @@ type IIIWithHelperShims = IIIClient & {
 
 /**
  * Create a streaming channel pair for worker-to-worker data transfer.
- *
- * Free-function form of the previous `IIIClient.createChannel` instance method.
  */
 export function createChannel(iii: IIIClient, bufferSize?: number): Promise<Channel> {
   return (iii as IIIWithHelperShims).__helpers_create_channel(bufferSize)
@@ -28,8 +24,6 @@ export function createChannel(iii: IIIClient, bufferSize?: number): Promise<Chan
 /**
  * Register a custom stream implementation by wiring its 5 callable methods
  * to `stream::get/set/delete/list/list_groups`.
- *
- * Free-function form of the previous `IIIClient.createStream` instance method.
  *
  * @deprecated createStream is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */

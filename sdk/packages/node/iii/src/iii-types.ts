@@ -1,4 +1,5 @@
 import type { HttpInvocationConfig } from '@iii-dev/helpers/http'
+import type { Observer } from './observe-types'
 
 /**
  * Any JSON value: the TypeScript equivalent of the engine's arbitrary-JSON
@@ -12,11 +13,6 @@ export enum MessageType {
   UnregisterFunction = 'unregisterfunction',
   InvokeFunction = 'invokefunction',
   InvocationResult = 'invocationresult',
-  RegisterTriggerType = 'registertriggertype',
-  RegisterTrigger = 'registertrigger',
-  UnregisterTrigger = 'unregistertrigger',
-  UnregisterTriggerType = 'unregistertriggertype',
-  TriggerRegistrationResult = 'triggerregistrationresult',
   WorkerRegistered = 'workerregistered',
   RegistrationRejected = 'registrationrejected',
   Reattach = 'reattach',
@@ -28,17 +24,17 @@ export enum MessageType {
   ObserveResult = 'observeresult',
   /** Engine → observing worker: an observer's lifecycle transition. */
   ObserverStateChanged = 'observerstatechanged',
-  /** Engine → owner: the `registerfunction` ack, with the function's full observer set. */
+  /** Engine → host: the `registerfunction` ack, with the function's full observer set. */
   FunctionRegistered = 'functionregistered',
-  /** Engine → owner: one observer attached to a function this connection hosts. */
+  /** Engine → host: one observer attached to a function this connection hosts. */
   ObserverAdded = 'observeradded',
-  /** Engine → owner: one observer detached. */
+  /** Engine → host: one observer detached. */
   ObserverRemoved = 'observerremoved',
-  /** Owner → engine: accept (or reject) an added observer. */
+  /** Host → engine: accept (or reject) an added observer. */
   ObserverAck = 'observerack',
-  /** Owner → engine: matched local invocations and `obs.emit` events, batched. */
+  /** Host → engine: the calls of its functions that observers matched, batched. */
   InvocationsObserved = 'invocationsobserved',
-  /** Owner → engine: periodic counts of local invocations and report drops. */
+  /** Host → engine: periodic counts of local invocations and report drops. */
   LocalInvocationStats = 'localinvocationstats',
 }
 
@@ -47,6 +43,12 @@ export enum MessageType {
  * `engine::workers::register` `features` from the SDK).
  */
 export const FEATURE_OBSERVE_V1 = 'observe.v1'
+/**
+ * The host delivers the calls of its functions (routed ones included), and
+ * functions may set `args_format`, `private`, `observable: false` and
+ * `onObserverDeliver`. Includes `observe.v1`.
+ */
+export const FEATURE_OBSERVE_V2 = 'observe.v2'
 export const FEATURE_LOCAL_DISPATCH_V1 = 'local-dispatch.v1'
 /**
  * Declared by the SDK only: it receives JSON messages up to 64 MiB, so the
@@ -56,6 +58,7 @@ export const FEATURE_LARGE_MESSAGES_V1 = 'large-messages.v1'
 /** What this SDK declares in `engine::workers::register`. */
 export const SDK_FEATURES: readonly string[] = [
   FEATURE_OBSERVE_V1,
+  FEATURE_OBSERVE_V2,
   FEATURE_LOCAL_DISPATCH_V1,
   FEATURE_LARGE_MESSAGES_V1,
 ]
@@ -68,7 +71,7 @@ export type OpenEnum<T extends string> = T | (string & {})
 
 /** What an observer ships to its target (`capture`). */
 export type CaptureWire = OpenEnum<'input' | 'output' | 'error' | 'caller' | 'metadata'>
-/** When an auto observer fires (`on`). */
+/** Which outcomes of a call reach the observer (`on`). */
 export type ObserveOnWire = OpenEnum<'success' | 'error' | 'complete'>
 /** What the target receives (`deliver`). */
 export type ObserveDeliverWire = OpenEnum<'envelope' | 'input' | 'output'>
@@ -93,18 +96,6 @@ export type CallerWire = {
 export type ActivationWire = {
   observer_id: string
   activation_id?: string
-}
-
-/** `RegisterFunction.observe`: the part of the observe hooks that travels. Callbacks never do. */
-export type ObserveDescriptorWire = {
-  /** `auto` (default) or `owner`. */
-  delivery?: OpenEnum<'auto' | 'owner'>
-  /** Owner only: validates the observers' `args` in the engine (`INVALID_ARGS`). */
-  args_format?: RegisterFunctionFormat
-  /** Phase 5 shim: accept old `registertrigger { trigger_type }` for this type. */
-  legacy_trigger_type?: string
-  /** Default `true`; `false` makes every `observe` on it fail with `NOT_OBSERVABLE`. */
-  allow?: boolean
 }
 
 /** `observe.source`: the left side of `iii.observe`. */
@@ -152,19 +143,17 @@ export type ObserverStateChangedMessage = {
 }
 
 /**
- * An observer as its function's owner sees it: never the observer's metadata,
- * policy or connection. `target` is the target function id.
+ * An observer as the host of its function sees it: never the observer's
+ * metadata, policy or connection. `target` is the target function id.
  */
 export type ObserverInfoWire = {
   id: string
   args: Record<string, unknown>
-  /** The observer's filters, normalized by the engine. `{}` matches every event. */
+  /** The observer's filters, normalized by the engine. `{}` matches every call. */
   filters: Record<string, unknown>
   target: string
   capture: CaptureWire[]
   on: ObserveOnWire
-  /** Phase 5 shim only: the old trigger config the owner reads as args. */
-  legacy?: { trigger_type: string; config: unknown }
 }
 
 export type FunctionRegisteredMessage = {
@@ -202,17 +191,20 @@ export type ObserverAckMessage = {
   error?: ErrorBody
 }
 
-/** One matched local invocation (auto) or one `obs.emit` event (owner). */
+/** One local call of a hosted function, with the observers its delivery selected. */
 export type ObservedItemWire = {
   function_id: string
   namespace?: string
   invocation_id: string
-  /** Observer ids whose filters matched (the same event coalesced for several). */
+  /** The observers delivered. */
   matched: string[]
   status: OpenEnum<'success' | 'error'>
   /** `null` is a value here: absent means not captured or does not exist. */
   input?: unknown
+  /** Absent with `output_is_input`: the engine fills it from `input`. */
   output?: unknown
+  /** The handler returned its input; left out when `false`. */
+  output_is_input?: boolean
   error?: unknown
   caller?: CallerWire
   metadata?: unknown
@@ -237,7 +229,7 @@ export type LocalFunctionStatsWire = {
 
 export type DroppedReportStatsWire = {
   function_id: string
-  /** `BUFFER_FULL` | `TOO_LARGE` (SDK-side drops). */
+  /** `BUFFER_FULL` | `TOO_LARGE` | `INACTIVE` (SDK-side drops). */
   reason: string
   count: number
 }
@@ -249,79 +241,10 @@ export type LocalInvocationStatsMessage = {
   dropped_reports: DroppedReportStatsWire[]
 }
 
-/** @deprecated Trigger types are replaced by functions with an observe descriptor (`RegisterFunctionMessage.observe`). */
-export type RegisterTriggerTypeMessage = {
-  message_type: MessageType.RegisterTriggerType
-  /** Unique identifier for the trigger type (e.g. `state`, `durable:subscriber`). */
-  id: string
-  /** Human-readable description of what this trigger type does. */
-  description: string
-  /**
-   * Namespace this provider serves. Omit to let the engine use this
-   * connection's own, which is what a worker providing a trigger type for its
-   * own project wants.
-   */
-  namespace?: string
-}
-
-export type UnregisterTriggerTypeMessage = {
-  message_type: MessageType.UnregisterTriggerType
-  id: string
-}
-
-export type UnregisterTriggerMessage = {
-  message_type: MessageType.UnregisterTrigger
-  id: string
-  type?: string
-}
-
 export type ErrorBody = {
   code: string
   message: string
   stacktrace?: string
-}
-
-export type TriggerRegistrationResultMessage = {
-  message_type: MessageType.TriggerRegistrationResult
-  id: string
-  type: string
-  function_id: string
-  error?: ErrorBody
-}
-
-/** @deprecated Replaced by {@link ObserveMessage} (`iii.observe`). */
-export type RegisterTriggerMessage = {
-  /** Wire discriminator; always `MessageType.RegisterTrigger`. */
-  message_type: MessageType.RegisterTrigger
-  /** Unique trigger identifier, generated by the SDK during registration. */
-  id: string
-  /** Identifier of the registered trigger type this trigger uses (e.g. `storage::object-created`, `http`). */
-  type: string
-  /** ID of the function this trigger invokes when it fires. */
-  function_id: string
-  /** Trigger-type-specific configuration, matching the shape the trigger type expects. */
-  config: unknown
-  /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
-  metadata?: Record<string, unknown>
-  /**
-   * Namespace the trigger's target function resolves in.
-   *
-   * Omitting it does not bind in the engine's default: `registerTrigger` fills
-   * it from this worker's namespace, because the function a trigger names is
-   * one this worker registered, and that landed in the worker's namespace. Name
-   * another namespace, `default` included, to bind elsewhere.
-   */
-  namespace?: string
-  /**
-   * Namespace to find the trigger type's provider in.
-   *
-   * Omitting it is not the same as `'default'`: it asks the engine to resolve,
-   * taking this worker's namespace first and the engine's own second. That is
-   * what lets a project ship its own provider for a type id the engine also
-   * provides, while a worker that has not been migrated keeps reaching the
-   * engine's without saying so. Naming one is strict.
-   */
-  trigger_namespace?: string
 }
 
 export type RegisterFunctionFormat = {
@@ -359,19 +282,23 @@ export type RegisterFunctionMessage = {
    */
   id: string
   /**
-   * The description of the function.
+   * Human-readable summary of the function, listed by discovery
+   * (`engine::functions::list`).
    */
   description?: string
   /**
-   * The request format of the function.
+   * JSON Schema of the call's input.
    */
   request_format?: RegisterFunctionFormat
   /**
-   * The response format of the function.
+   * JSON Schema of the handler's return value: what the function's observers
+   * observe.
    */
   response_format?: RegisterFunctionFormat
   /**
-   * Arbitrary metadata attached to the function.
+   * Arbitrary metadata attached to the function, stored with it and listed by
+   * discovery (`engine::functions::list`). It is distinct from the per-call
+   * metadata a handler receives.
    */
   metadata?: Record<string, unknown>
   /**
@@ -379,20 +306,41 @@ export type RegisterFunctionMessage = {
    */
   invocation?: HttpInvocationConfig
   /**
-   * The observe descriptor: how observers of this function are delivered.
-   * Only these four fields travel; the hooks stay in the SDK.
+   * JSON Schema of the `args` an observer of this function passes. The
+   * engine validates every observer's args against it (`INVALID_ARGS`)
+   * before the added hooks run, and refuses a schema that is not valid
+   * (`INVALID_ARGS_FORMAT`). A function without it takes no args.
    */
-  observe?: ObserveDescriptorWire
+  args_format?: RegisterFunctionFormat
+  /**
+   * Only this worker may call the function: the engine answers a call from
+   * any other connection with `FORBIDDEN`, and refuses the function as an
+   * observer's target. Any worker may observe it, and its observers receive
+   * every call this worker makes. For event sources, whose calls from
+   * anywhere else would be forged events. This worker's own calls pass the
+   * input and the result by reference: the handler and hooks treat both as
+   * read-only (frozen when `NODE_ENV` is `development`). Default `false`;
+   * sent only when `true`.
+   */
+  private?: boolean
+  /**
+   * `false`: nobody may observe the function (`NOT_OBSERVABLE`), for one
+   * whose payloads carry credentials. Default `true`; sent only when `false`.
+   */
+  observable?: boolean
 }
 
 /**
- * Routing action for {@link TriggerRequest}. Determines how the engine
+ * Routing action for {@link CallRequest}. Determines how the engine
  * handles the invocation.
  *
  * - `enqueue`: Routes through a named queue for async processing.
  * - `void`: Fire-and-forget, no response.
  */
-export type TriggerAction = { type: 'enqueue'; queue: string } | { type: 'void' }
+export type CallAction = { type: 'enqueue'; queue: string } | { type: 'void' }
+
+/** @deprecated Use {@link CallAction}, the same type. */
+export type TriggerAction = CallAction
 
 /**
  * Input passed to the RBAC middleware function on every function invocation
@@ -405,7 +353,7 @@ export type MiddlewareFunctionInput = {
   /** Payload sent by the caller. */
   payload: Record<string, unknown>
   /** Routing action, if any. */
-  action?: TriggerAction
+  action?: CallAction
   /** Auth context returned by the auth function for this session. */
   context: Record<string, unknown>
   /**
@@ -416,34 +364,64 @@ export type MiddlewareFunctionInput = {
 }
 
 /**
- * Request object passed to {@link IIIClient.trigger}.
+ * Request object passed to {@link IIIClient.call}: a function by id, or the
+ * target of an observer.
  *
  * @typeParam TInput - Type of the payload.
  */
-export type TriggerRequest<TInput = unknown> = {
-  /** ID of the function to invoke. */
-  function_id: string
-  /** Input data passed to the function. */
-  payload: TInput
-  /** Sets how the trigger is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `TriggerAction.Enqueue()`, `TriggerAction.Void()`). */
-  action?: TriggerAction
-  /** Override the default invocation timeout, in milliseconds. */
-  timeoutMs?: number
-  /** Arbitrary user-specifiable metadata supplied to the triggered handler function on every invocation. */
-  metadata?: unknown
-  /**
-   * Target namespace for routing. Omit to inherit this worker's; say `default`
-   * to reach the engine's from a namespaced worker. Serialized into the
-   * {@link InvokeFunctionMessage} `namespace` field.
-   */
-  namespace?: string
-  /**
-   * `auto` (default) runs a function this worker hosts in-process when the
-   * engine confirmed it for local dispatch; `remote` always goes through the
-   * engine. Tests use it, and so do callers that rely on engine-side effects.
-   */
-  dispatch?: 'auto' | 'remote'
-}
+export type CallRequest<TInput = unknown> =
+  | {
+      /** ID of the function to invoke. */
+      function_id: string
+      observer?: never
+      /** Input data passed to the function. */
+      payload: TInput
+      /** Sets how the call is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `CallAction.Enqueue()`, `CallAction.Void()`). */
+      action?: CallAction
+      /** Override the default invocation timeout, in milliseconds. */
+      timeoutMs?: number
+      /**
+       * Per-invocation metadata (any JSON value), supplied to the called handler
+       * beside the payload. `null` is the same as no metadata.
+       */
+      metadata?: unknown
+      /**
+       * Target namespace for routing. Omit to inherit this worker's; say `default`
+       * to reach the engine's from a namespaced worker. Serialized into the
+       * {@link InvokeFunctionMessage} `namespace` field.
+       */
+      namespace?: string
+      /**
+       * `auto` (default) runs a function this worker hosts in-process when the
+       * engine confirmed it for local dispatch; `remote` always goes through the
+       * engine. Tests use it, and so do callers that rely on engine-side effects.
+       */
+      dispatch?: 'auto' | 'remote'
+    }
+  | {
+      /**
+       * An observer of a function this worker hosts: the call runs the
+       * observer's target, with the observer's policy, metadata and loop
+       * guard. Only the host of the observed function may call through it
+       * (`NOT_FUNCTION_OWNER`).
+       */
+      observer: Observer
+      function_id?: never
+      /** Input data passed to the target, as given (the observer's filters are not applied). */
+      payload: TInput
+      /** `CallAction.Void()` for fire-and-forget. Omit for a synchronous request/response. */
+      action?: CallAction
+      /** Override the default invocation timeout, in milliseconds. */
+      timeoutMs?: number
+      /**
+       * A call through an observer takes no metadata: its target receives the
+       * observer's registration metadata. `call` refuses one that names it.
+       */
+      metadata?: never
+    }
+
+/** @deprecated Use {@link CallRequest}, the same type. */
+export type TriggerRequest<TInput = unknown> = CallRequest<TInput>
 
 export type InvokeFunctionMessage = {
   message_type: MessageType.InvokeFunction
@@ -468,9 +446,9 @@ export type InvokeFunctionMessage = {
    */
   baggage?: string
   /**
-   * Trigger action for queue routing or fire-and-forget
+   * Call action for queue routing or fire-and-forget
    */
-  action?: TriggerAction
+  action?: CallAction
   /**
    * Optional per-invocation metadata (arbitrary JSON). Travels as a separate
    * channel from `data`. Omitted from the JSON when undefined; absence on
@@ -482,7 +460,7 @@ export type InvokeFunctionMessage = {
    * when undefined, and the engine reads an absent field as its default
    * namespace (backward compatible with older engines).
    *
-   * A call made through this SDK does not arrive absent: `trigger` fills it
+   * A call made through this SDK does not arrive absent: `call` fills it
    * from this worker's namespace unless the request names one.
    */
   namespace?: string
@@ -493,7 +471,7 @@ export type InvokeFunctionMessage = {
   caller?: CallerWire
   /** Depth of the causal chain in observe hops; omitted when 0. */
   observe_depth?: number
-  /** Present on every activation of an observer's target; marks an owner delivery (`obs.call`) outbound. */
+  /** Present on every activation of an observer's target; outbound, marks a call through an observer. */
   activation?: ActivationWire
 }
 
@@ -517,6 +495,21 @@ export type InvocationResultMessage = {
    * W3C baggage header for cross-cutting context propagation
    */
   baggage?: string
+  /**
+   * Host → engine (`observe.v2`): the observers the function's match hook
+   * (`onObserverMatch`) matched for this routed call, before their `on` and
+   * filters, which the engine evaluates; `[]` when it matched none. Left out
+   * by a function without a match hook: the engine then evaluates every
+   * active observer of the function.
+   */
+  matched?: string[]
+  /**
+   * Host → engine (`observe.v2`): the function's deliver hook
+   * (`onObserverDeliver`) delivered this routed call, and the engine
+   * activates no observer for it. Sent only as `true`, and without
+   * `matched`.
+   */
+  delivered?: boolean
 }
 
 export type WorkerRegisteredMessage = {
@@ -524,13 +517,13 @@ export type WorkerRegisteredMessage = {
   worker_id: string
   /** Secret to present in a reattach frame on reconnect; absent on older engines. */
   reattach_token?: string
-  /** Protocol features the engine supports (`observe.v1`, `local-dispatch.v1`); absent on engines older than 0.25. */
+  /** Protocol features the engine supports (`observe.v1`, `observe.v2`, `local-dispatch.v1`); absent on engines older than 0.25. */
   features?: string[]
 }
 
 /**
- * Sent by the engine when this worker's registration collides with a live
- * worker in `namespace`. The `code` decides severity:
+ * Sent by the engine when it refuses a registration. The `code` decides
+ * severity:
  *
  * - `WORKER_NAMESPACE_CONFLICT`: another worker already holds this
  *   `(namespace, worker_name)`. The engine closes the connection -- fatal: the
@@ -539,18 +532,21 @@ export type WorkerRegisteredMessage = {
  *   `function_id`. The engine keeps the connection
  *   open -- non-fatal: only that registration is refused and the worker keeps
  *   serving its other functions.
+ * - `INVALID_ARGS_FORMAT` (the function's `args_format` is not a valid JSON
+ *   Schema) and `UNSUPPORTED`: only that function is refused, the connection
+ *   stays open.
  */
 export type RegistrationRejectedMessage = {
   message_type: MessageType.RegistrationRejected
-  /** Machine-readable rejection code (`WORKER_NAMESPACE_CONFLICT` | `FUNCTION_NAMESPACE_CONFLICT`). */
+  /** Machine-readable rejection code. */
   code: string
-  /** Namespace in which the collision occurred. */
+  /** Namespace of the refused registration. */
   namespace: string
   /** Contested worker name. Present only for `WORKER_NAMESPACE_CONFLICT`. */
   worker_name?: string
-  /** Contested function id. Present only for `FUNCTION_NAMESPACE_CONFLICT`. */
+  /** The refused function. Present on every rejection of one function. */
   function_id?: string
-  /** ID of the live worker that already owns the contested identity. */
+  /** ID of the live worker that already owns the contested identity; `""` on a rejection that is not a conflict. */
   owner_worker_id: string
 }
 
@@ -577,11 +573,6 @@ export type IIIMessage =
   | UnregisterFunctionMessage
   | InvokeFunctionMessage
   | InvocationResultMessage
-  | RegisterTriggerMessage
-  | RegisterTriggerTypeMessage
-  | UnregisterTriggerMessage
-  | UnregisterTriggerTypeMessage
-  | TriggerRegistrationResultMessage
   | WorkerRegisteredMessage
   | RegistrationRejectedMessage
   | ObserveMessage

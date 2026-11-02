@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, register_worker};
-use serde::Serialize;
-use serde_json::Value;
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Deliver, IIIClient, Source, register_worker};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::{
     builtins::pubsub_lite::BuiltInPubSubLite,
@@ -33,12 +33,18 @@ struct PubSubInput {
     data: Value,
 }
 
-#[derive(Serialize)]
-struct SubscribeTrigger {
-    topic: String,
+/// A [`PubSubInput`] on [`STREAM_EVENTS_TOPIC`], as the observer of
+/// [`PUBLISH_FUNCTION_ID`] receives it.
+#[derive(Deserialize)]
+struct PublishedStreamEvent {
+    data: StreamWrapperMessage,
 }
 
 pub const STREAM_EVENTS_TOPIC: &str = "stream.events";
+/// The pubsub worker's publish function: every engine bridged to the remote
+/// instance publishes its stream events through it, and observes its calls on
+/// [`STREAM_EVENTS_TOPIC`] to receive the others'.
+const PUBLISH_FUNCTION_ID: &str = "publish";
 
 pub struct BridgeAdapter {
     pub_sub: Arc<BuiltInPubSubLite>,
@@ -83,7 +89,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::update".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -111,8 +117,8 @@ impl StreamAdapter for BridgeAdapter {
         tracing::debug!(data = ?data.clone(), "Emitting event");
 
         self.bridge
-            .trigger(TriggerRequest {
-                function_id: "publish".to_string(),
+            .call(CallRequest {
+                function_id: PUBLISH_FUNCTION_ID.to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
                 timeout_ms: None,
@@ -138,7 +144,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::set".to_string(),
                 payload: serde_json::to_value(input).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -165,7 +171,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::get".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -192,7 +198,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::delete".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -214,7 +220,7 @@ impl StreamAdapter for BridgeAdapter {
 
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::list".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -234,7 +240,7 @@ impl StreamAdapter for BridgeAdapter {
         };
         let result = self
             .bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: "stream::list_groups".to_string(),
                 payload: serde_json::to_value(data).unwrap_or(serde_json::Value::Null),
                 action: None,
@@ -273,8 +279,8 @@ impl StreamAdapter for BridgeAdapter {
                 let pub_sub = pub_sub.clone();
 
                 async move {
-                    match serde_json::from_value::<StreamWrapperMessage>(data) {
-                        Ok(data) => {
+                    match serde_json::from_value::<PublishedStreamEvent>(data) {
+                        Ok(PublishedStreamEvent { data }) => {
                             tracing::debug!(data = ?data.clone(), "Event: Received event");
                             pub_sub.send_msg(data);
                             Ok(Value::Null)
@@ -292,15 +298,12 @@ impl StreamAdapter for BridgeAdapter {
             }),
         );
 
-        #[allow(deprecated)]
-        let _ = self.bridge.register_trigger(RegisterTriggerInput::new(
-            "subscribe".to_string(),
+        self.bridge.observe(
+            Source::function(PUBLISH_FUNCTION_ID)
+                .filters(json!({ "input.topic": { "$eq": STREAM_EVENTS_TOPIC } }))
+                .deliver(Deliver::Input),
             handler_function_id,
-            serde_json::to_value(SubscribeTrigger {
-                topic: STREAM_EVENTS_TOPIC.to_string(),
-            })
-            .unwrap_or_default(),
-        ));
+        );
 
         self.pub_sub.watch_events().await;
         Ok(())

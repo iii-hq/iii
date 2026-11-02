@@ -2,10 +2,10 @@
   "type": "observerack",
   "function_id": "cron::on-tick",
   "namespace": "default",
-  "id": "a07d4c2e-6b1f-4a3d-9e8c-5f2a1b3c4d5e",
-  "revision": 13,
+  "id": "e5b7d9f1-3a2c-4e6b-8d0f-2a4c6e8b0d1f",
+  "revision": 15,
   "error": {
     "code": "INVALID_CRON_EXPRESSION",
-    "message": "invalid day-of-week field"
+    "message": "invalid day-of-week field 'Mon-Fry' in '0 0 9 * * Mon-Fry'"
   }
 }

@@ -28,20 +28,15 @@ func TestJSONNamesMatchNode(t *testing.T) {
 	}{
 		{"AuthInput", AuthInput{}, []string{"headers", "query_params", "ip_address"}},
 		{"AuthResult", AuthResult{}, []string{
-			"namespaces", "allowed_functions", "forbidden_functions", "allowed_trigger_types",
-			"allow_trigger_type_registration", "allow_function_registration", "context",
+			"namespaces", "allowed_functions", "forbidden_functions", "allow_function_registration", "context",
 			"function_registration_prefix",
 		}},
-		{"OnTriggerTypeRegistrationInput", OnTriggerTypeRegistrationInput{}, []string{"trigger_type_id", "description", "context"}},
-		{"OnTriggerTypeRegistrationResult", OnTriggerTypeRegistrationResult{}, []string{"trigger_type_id", "description"}},
-		{"OnTriggerRegistrationInput", OnTriggerRegistrationInput{}, []string{
-			"trigger_id", "trigger_type", "function_id", "config", "metadata", "namespace", "context",
-		}},
-		{"OnTriggerRegistrationResult", OnTriggerRegistrationResult{}, []string{"trigger_id", "trigger_type", "function_id", "config"}},
 		{"OnFunctionRegistrationInput", OnFunctionRegistrationInput{}, []string{
-			"function_id", "description", "metadata", "namespace", "context",
+			"function_id", "description", "metadata", "namespace", "context", "private", "observable", "args_format",
 		}},
-		{"OnFunctionRegistrationResult", OnFunctionRegistrationResult{}, []string{"function_id", "description", "metadata"}},
+		{"OnFunctionRegistrationResult", OnFunctionRegistrationResult{}, []string{
+			"function_id", "description", "metadata", "private", "observable", "args_format",
+		}},
 	}
 	for _, tc := range cases {
 		if got := jsonNames(tc.v); !reflect.DeepEqual(got, tc.want) {
@@ -71,34 +66,31 @@ func TestAuthInputDecodesEngineInput(t *testing.T) {
 
 // TestAuthResultZeroValueKeepsEngineDefaults checks the zero value sends nothing the
 // engine would read differently from an omitted field: Vec fields are omitted (the
-// engine rejects null for them) and allowed_trigger_types is null (None: all allowed).
+// engine rejects null for them).
 func TestAuthResultZeroValueKeepsEngineDefaults(t *testing.T) {
 	out, err := json.Marshal(AuthResult{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"allowed_trigger_types":null}`; string(out) != want {
+	if want := `{}`; string(out) != want {
 		t.Fatalf("zero AuthResult = %s, want %s", out, want)
 	}
 }
 
 func TestAuthResultExplicitValues(t *testing.T) {
 	out, err := json.Marshal(AuthResult{
-		Namespaces:                   map[string][]string{"orders": {"svc::*"}},
-		AllowedFunctions:             []string{"a::b"},
-		ForbiddenFunctions:           []string{"a::secret"},
-		AllowedTriggerTypes:          []string{},
-		AllowTriggerTypeRegistration: true,
-		AllowFunctionRegistration:    new(bool),
-		Context:                      json.RawMessage(`{"user_id":"u1"}`),
-		FunctionRegistrationPrefix:   "tenant1",
+		Namespaces:                 map[string][]string{"orders": {"svc::*"}},
+		AllowedFunctions:           []string{"a::b"},
+		ForbiddenFunctions:         []string{"a::secret"},
+		AllowFunctionRegistration:  new(bool),
+		Context:                    json.RawMessage(`{"user_id":"u1"}`),
+		FunctionRegistrationPrefix: "tenant1",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := `{"namespaces":{"orders":["svc::*"]},"allowed_functions":["a::b"],` +
-		`"forbidden_functions":["a::secret"],"allowed_trigger_types":[],` +
-		`"allow_trigger_type_registration":true,"allow_function_registration":false,` +
+		`"forbidden_functions":["a::secret"],"allow_function_registration":false,` +
 		`"context":{"user_id":"u1"},"function_registration_prefix":"tenant1"}`
 	if string(out) != want {
 		t.Fatalf("AuthResult = %s\nwant         %s", out, want)
@@ -113,32 +105,21 @@ func TestAuthResultDecodesDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r.Namespaces != nil || r.AllowedFunctions != nil || r.ForbiddenFunctions != nil ||
-		r.AllowedTriggerTypes != nil || r.AllowTriggerTypeRegistration ||
 		r.AllowFunctionRegistration != nil || r.Context != nil || r.FunctionRegistrationPrefix != "" {
 		t.Fatalf("decoded {} = %+v, want the zero value", r)
 	}
 }
 
-// TestHookInputsDecodeEngineInputs decodes the hook inputs exactly as the engine builds
-// them (engine/src/engine/mod.rs), including null description and metadata.
+// TestHookInputsDecodeEngineInputs decodes the hook input exactly as the engine builds
+// it (engine/src/engine/mod.rs), including null description and metadata, and the
+// private and observable options it always sends.
 func TestHookInputsDecodeEngineInputs(t *testing.T) {
-	var tt OnTriggerTypeRegistrationInput
-	mustUnmarshal(t, `{"trigger_type_id":"acme::webhook","description":"Acme hooks","context":{"k":1}}`, &tt)
-	if tt.TriggerTypeID != "acme::webhook" || tt.Description != "Acme hooks" || string(tt.Context) != `{"k":1}` {
-		t.Errorf("OnTriggerTypeRegistrationInput = %+v", tt)
-	}
-
-	var tr OnTriggerRegistrationInput
-	mustUnmarshal(t, `{"trigger_id":"t1","trigger_type":"http","function_id":"api::get","config":{"api_path":"/x"},"metadata":null,"namespace":"default","context":{}}`, &tr)
-	if tr.TriggerID != "t1" || tr.TriggerType != "http" || tr.FunctionID != "api::get" ||
-		string(tr.Config) != `{"api_path":"/x"}` || tr.Namespace != "default" || string(tr.Context) != `{}` {
-		t.Errorf("OnTriggerRegistrationInput = %+v", tr)
-	}
-
 	var fn OnFunctionRegistrationInput
-	mustUnmarshal(t, `{"function_id":"svc::f","description":null,"metadata":{"team":"core"},"namespace":"orders","context":{"u":"x"}}`, &fn)
+	mustUnmarshal(t, `{"function_id":"svc::f","description":null,"metadata":{"team":"core"},"namespace":"orders","context":{"u":"x"},`+
+		`"private":true,"observable":false,"args_format":{"type":"object"}}`, &fn)
 	if fn.FunctionID != "svc::f" || fn.Description != "" || string(fn.Metadata) != `{"team":"core"}` ||
-		fn.Namespace != "orders" || string(fn.Context) != `{"u":"x"}` {
+		fn.Namespace != "orders" || string(fn.Context) != `{"u":"x"}` ||
+		!fn.Private || fn.Observable || string(fn.ArgsFormat) != `{"type":"object"}` {
 		t.Errorf("OnFunctionRegistrationInput = %+v", fn)
 	}
 }
@@ -147,22 +128,16 @@ func TestHookInputsDecodeEngineInputs(t *testing.T) {
 // (the engine only reads the keys that are present) and that a pointer to "" clears a
 // description.
 func TestHookResultsOmitUnmappedFields(t *testing.T) {
-	for name, v := range map[string]any{
-		"OnTriggerTypeRegistrationResult": OnTriggerTypeRegistrationResult{},
-		"OnTriggerRegistrationResult":     OnTriggerRegistrationResult{},
-		"OnFunctionRegistrationResult":    OnFunctionRegistrationResult{},
-	} {
-		out, err := json.Marshal(v)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(out) != `{}` {
-			t.Errorf("empty %s = %s, want {}", name, out)
-		}
+	out, err := json.Marshal(OnFunctionRegistrationResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `{}` {
+		t.Errorf("empty OnFunctionRegistrationResult = %s, want {}", out)
 	}
 
 	empty := ""
-	out, err := json.Marshal(OnFunctionRegistrationResult{FunctionID: "svc::g", Description: &empty, Metadata: json.RawMessage(`{"a":1}`)})
+	out, err = json.Marshal(OnFunctionRegistrationResult{FunctionID: "svc::g", Description: &empty, Metadata: json.RawMessage(`{"a":1}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,12 +145,14 @@ func TestHookResultsOmitUnmappedFields(t *testing.T) {
 		t.Errorf("OnFunctionRegistrationResult = %s, want %s", out, want)
 	}
 
-	out, err = json.Marshal(OnTriggerRegistrationResult{TriggerID: "t2", TriggerType: "cron", FunctionID: "f", Config: json.RawMessage(`{"expression":"* * * * * *"}`)})
+	// each option present replaces the registration's value
+	private := false
+	out, err = json.Marshal(OnFunctionRegistrationResult{Private: &private, ArgsFormat: json.RawMessage(`{"type":"object"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"trigger_id":"t2","trigger_type":"cron","function_id":"f","config":{"expression":"* * * * * *"}}`; string(out) != want {
-		t.Errorf("OnTriggerRegistrationResult = %s, want %s", out, want)
+	if want := `{"private":false,"args_format":{"type":"object"}}`; string(out) != want {
+		t.Errorf("OnFunctionRegistrationResult = %s, want %s", out, want)
 	}
 }
 

@@ -1,12 +1,13 @@
 // Derived from sdk/packages/node/iii/tests/observe-local-dispatch.test.ts by scripts/sync-browser-observe.py; edit those, not this file.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { registerWorker, TriggerAction } from '../src/index'
+import { CallAction, registerWorker } from '../src/index'
+import { sameData } from '../src/observable'
 import type { InvocationContext } from '../src/observe-types'
-import type { ISdk } from '../src/types'
+import type { FunctionRef, ISdk } from '../src/types'
 import { utf8ByteLength } from '../src/utils'
 import * as fake from './observe-fake-engine'
 
-/** Local dispatch, the invocation context and caller propagation against a fake engine (sdk.md §3, §4.3). */
+/** Local dispatch, the invocation context, caller propagation and iii's delivery of local calls against a fake engine (sdk.md §3, §4.3; v2 §4.4, §6). */
 const { functionRegistered, observerInfo, settle, reportedItems } = fake
 
 let sdk: ISdk | undefined
@@ -30,7 +31,7 @@ function worker(opts: { namespace?: string; reporter?: object } = {}) {
 const invokes = (socket: ReturnType<typeof fake.lastSocket>) =>
   socket.framesOf('invokefunction').filter((f) => f.function_id !== 'engine::workers::register')
 
-describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
+describe('the local path: when call() runs in-process (sdk.md §3)', () => {
   it('runs a confirmed function in-process and puts nothing on the wire', async () => {
     const { sdk, socket } = worker()
     const handler = vi.fn(async (input: { n: number }) => ({ doubled: input.n * 2 }))
@@ -38,7 +39,7 @@ describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
     socket.open()
     socket.deliver(functionRegistered('math::double'))
     socket.clear()
-    await expect(sdk.trigger({ function_id: 'math::double', payload: { n: 21 } })).resolves.toEqual({ doubled: 42 })
+    await expect(sdk.call({ function_id: 'math::double', payload: { n: 21 } })).resolves.toEqual({ doubled: 42 })
     expect(handler).toHaveBeenCalledTimes(1)
     expect(socket.sent).toHaveLength(0)
   })
@@ -60,12 +61,12 @@ describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
     }
     socket.clear()
     void sdk
-      .trigger({
+      .call({
         function_id: 'math::double',
         payload: {},
         timeoutMs: 20,
         namespace: c.namespace as string | undefined,
-        action: c.enqueue ? TriggerAction.Enqueue({ queue: 'q' }) : undefined,
+        action: c.enqueue ? CallAction.Enqueue({ queue: 'q' }) : undefined,
         dispatch: c.remote ? 'remote' : undefined,
       })
       .catch(() => undefined)
@@ -81,8 +82,8 @@ describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
     socket.open()
     socket.deliver(functionRegistered('orders::archive', [], { namespace: 'orders' }))
     socket.clear()
-    await sdk.trigger({ function_id: 'orders::archive', payload: {} })
-    await sdk.trigger({ function_id: 'orders::archive', payload: {}, namespace: 'orders' })
+    await sdk.call({ function_id: 'orders::archive', payload: {} })
+    await sdk.call({ function_id: 'orders::archive', payload: {}, namespace: 'orders' })
     expect(handler).toHaveBeenCalledTimes(2)
     expect(socket.sent).toHaveLength(0)
   })
@@ -92,12 +93,12 @@ describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
     let local = 0
     sdk.registerFunction('rec::down', async (n: number): Promise<number> => {
       local++
-      return n === 0 ? 0 : sdk.trigger({ function_id: 'rec::down', payload: n - 1 })
+      return n === 0 ? 0 : sdk.call({ function_id: 'rec::down', payload: n - 1 })
     })
     socket.open()
     socket.deliver(functionRegistered('rec::down'))
     socket.clear()
-    const result = sdk.trigger({ function_id: 'rec::down', payload: 100 })
+    const result = sdk.call({ function_id: 'rec::down', payload: 100 })
     await settle()
     expect(local).toBe(64)
     const [remote] = invokes(socket)
@@ -125,7 +126,7 @@ describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
     socket.deliver(functionRegistered('jobs::run'))
     socket.clear()
     await expect(
-      sdk.trigger({ function_id: 'jobs::run', payload: {}, action: TriggerAction.Void() }),
+      sdk.call({ function_id: 'jobs::run', payload: {}, action: CallAction.Void() }),
     ).resolves.toBeUndefined()
     expect(ran).not.toHaveBeenCalled()
     release()
@@ -141,7 +142,7 @@ describe('the local path: when trigger() runs in-process (sdk.md §3)', () => {
     socket.open()
     socket.deliver(functionRegistered('math::double'))
     socket.drop()
-    await expect(sdk.trigger({ function_id: 'math::double', payload: 4 })).resolves.toBe(8)
+    await expect(sdk.call({ function_id: 'math::double', payload: 4 })).resolves.toBe(8)
   })
 })
 
@@ -157,7 +158,7 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     socket.open()
     socket.deliver(functionRegistered('val::mutate'))
     const payload = { list: [1, 2], at: new Date(0) }
-    const result = await sdk.trigger<typeof payload, { list: number[] }>({ function_id: 'val::mutate', payload })
+    const result = await sdk.call<typeof payload, { list: number[] }>({ function_id: 'val::mutate', payload })
     expect(payload.list).toEqual([1, 2])
     expect(result).toEqual({ list: [1] })
     expect(result).not.toBe(kept)
@@ -170,7 +171,37 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     sdk.registerFunction('val::echo', async (input: unknown) => input)
     socket.open()
     socket.deliver(functionRegistered('val::echo'))
-    await expect(sdk.trigger({ function_id: 'val::echo', payload: { a: 1, f: () => 1 } })).resolves.toEqual({ a: 1 })
+    await expect(sdk.call({ function_id: 'val::echo', payload: { a: 1, f: () => 1 } })).resolves.toEqual({ a: 1 })
+  })
+
+  it('metadata is any JSON value, and null is no metadata: local, sent and received alike (decision 54)', async () => {
+    const { sdk, socket } = worker()
+    const seen: unknown[] = []
+    sdk.registerFunction('val::meta', async (_input: unknown, metadata?: unknown) => {
+      seen.push(metadata)
+      return null
+    })
+    socket.open()
+    socket.deliver(functionRegistered('val::meta'))
+    socket.clear()
+    const values = [null, ['a', 1], 'tag', 0, false, { tenant: 'acme' }]
+    const absent = [undefined, ['a', 1], 'tag', 0, false, { tenant: 'acme' }]
+    // local: the handler gets undefined for null, every other value as given
+    for (const metadata of values) await sdk.call({ function_id: 'val::meta', payload: {}, metadata })
+    expect(seen).toStrictEqual(absent)
+    expect(socket.sent).toHaveLength(0)
+    // routed: null is left off the frame
+    for (const metadata of values) {
+      await sdk.call({ function_id: 'val::meta', payload: {}, metadata, dispatch: 'remote', action: CallAction.Void() })
+    }
+    expect(invokes(socket).map((f) => ('metadata' in f ? f.metadata : undefined))).toStrictEqual(absent)
+    // received: an invokefunction with metadata null reaches the handler as undefined
+    seen.length = 0
+    for (const [i, metadata] of values.entries()) {
+      socket.deliver(fake.invokeFunction('val::meta', {}, { invocation_id: `in-${i}`, metadata: metadata as never }))
+    }
+    await settle()
+    expect(seen).toStrictEqual(absent)
   })
 
   it('a failing handler rejects with the error body the remote path gives', async () => {
@@ -180,10 +211,10 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     })
     socket.open()
     socket.deliver(functionRegistered('err::local'))
-    const local = await sdk.trigger({ function_id: 'err::local', payload: {} }).catch((e) => e)
+    const local = await sdk.call({ function_id: 'err::local', payload: {} }).catch((e) => e)
 
     // the remote path: the engine forwards the handler's error body
-    const remote = sdk.trigger({ function_id: 'err::remote', payload: {} }).catch((e) => e)
+    const remote = sdk.call({ function_id: 'err::remote', payload: {} }).catch((e) => e)
     const frame = invokes(socket).find((f) => f.function_id === 'err::remote') as Record<string, unknown>
     socket.deliver({
       type: 'invocationresult',
@@ -216,7 +247,7 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     socket.open()
     socket.deliver(functionRegistered('slow::late'))
     await settle()
-    const call = sdk.trigger({ function_id: 'slow::late', payload: {}, timeoutMs: 50 })
+    const call = sdk.call({ function_id: 'slow::late', payload: {}, timeoutMs: 50 })
     const outcome = call.catch((e) => e)
     await fake.elapse(50)
     expect(await outcome).toMatchObject({ code: 'TIMEOUT', function_id: 'slow::late' })
@@ -231,9 +262,9 @@ describe('value semantics, errors and timeouts: the same as the remote path', ()
     socket.deliver(functionRegistered('slow::fn'))
     // The browser SDK's timeout, on both paths: an Error with this message, a `code` and the `function_id`.
     const timedOut = { code: 'TIMEOUT', message: 'Invocation timeout after 30ms: slow::fn', function_id: 'slow::fn' }
-    await expect(sdk.trigger({ function_id: 'slow::fn', payload: {}, timeoutMs: 30 })).rejects.toMatchObject(timedOut)
+    await expect(sdk.call({ function_id: 'slow::fn', payload: {}, timeoutMs: 30 })).rejects.toMatchObject(timedOut)
     await expect(
-      sdk.trigger({ function_id: 'slow::fn', payload: {}, timeoutMs: 30, dispatch: 'remote' }),
+      sdk.call({ function_id: 'slow::fn', payload: {}, timeoutMs: 30, dispatch: 'remote' }),
     ).rejects.toMatchObject(timedOut)
   })
 })
@@ -244,7 +275,7 @@ describe('the invocation context and caller propagation', () => {
     const seen: Record<string, InvocationContext | undefined> = {}
     sdk.registerFunction('chain::outer', async () => {
       seen.outer = sdk.currentInvocation()
-      return sdk.trigger({ function_id: 'chain::inner', payload: {} })
+      return sdk.call({ function_id: 'chain::inner', payload: {} })
     })
     sdk.registerFunction('chain::inner', async () => {
       seen.inner = sdk.currentInvocation()
@@ -254,7 +285,7 @@ describe('the invocation context and caller propagation', () => {
     socket.deliver(functionRegistered('chain::outer'))
     socket.deliver(functionRegistered('chain::inner'))
     expect(sdk.currentInvocation()).toBeUndefined()
-    await sdk.trigger({ function_id: 'chain::outer', payload: {} })
+    await sdk.call({ function_id: 'chain::outer', payload: {} })
     expect(seen.outer).toEqual({
       function_id: 'chain::outer',
       invocation_id: expect.any(String),
@@ -280,7 +311,7 @@ describe('the invocation context and caller propagation', () => {
     let seen: InvocationContext | undefined
     sdk.registerFunction('alerts::notify', async () => {
       seen = sdk.currentInvocation()
-      void sdk.trigger({ function_id: 'mail::send', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'mail::send', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.open()
@@ -316,13 +347,13 @@ describe('the invocation context and caller propagation', () => {
   it('omits observe_depth when 0, and caller outside any handler', async () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('a::b', async () => {
-      void sdk.trigger({ function_id: 'x::inner', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::inner', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.open()
     socket.deliver({ type: 'invokefunction', invocation_id: 'i-1', function_id: 'a::b', data: {} })
     await settle()
-    void sdk.trigger({ function_id: 'x::outer', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+    void sdk.call({ function_id: 'x::outer', payload: {}, timeoutMs: 20 }).catch(() => undefined)
     const inner = invokes(socket).find((f) => f.function_id === 'x::inner')
     const outer = invokes(socket).find((f) => f.function_id === 'x::outer')
     expect(inner?.caller).toEqual({ function_id: 'a::b', invocation_id: 'i-1' })
@@ -333,7 +364,7 @@ describe('the invocation context and caller propagation', () => {
   it('sends no caller to an engine without observe.v1', async () => {
     const { sdk, socket } = worker()
     sdk.registerFunction('a::b', async () => {
-      void sdk.trigger({ function_id: 'x::inner', payload: {}, timeoutMs: 20 }).catch(() => undefined)
+      void sdk.call({ function_id: 'x::inner', payload: {}, timeoutMs: 20 }).catch(() => undefined)
       return null
     })
     socket.open('legacy')
@@ -345,7 +376,7 @@ describe('the invocation context and caller propagation', () => {
   })
 })
 
-describe('auto delivery: local invocations are evaluated and reported (sdk.md §4.3)', () => {
+describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", () => {
   async function observed(observers: Record<string, unknown>[], reporter?: object) {
     fake.fakeClock()
     const { sdk, socket } = worker({ reporter })
@@ -370,8 +401,8 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
       observerInfo('out', 'audit::out', { filters: { $and: [{ 'output.charged': { $gt: 0 } }] }, capture: ['output'] }),
       observerInfo('errors', 'alerts::err', { on: 'error' }),
     ])
-    await sdk.trigger({ function_id: 'payments::charge', payload: { amount: 750 }, metadata: { tenant: 'acme' } })
-    await sdk.trigger({ function_id: 'payments::charge', payload: { amount: 0 } })
+    await sdk.call({ function_id: 'payments::charge', payload: { amount: 750 }, metadata: { tenant: 'acme' } })
+    await sdk.call({ function_id: 'payments::charge', payload: { amount: 0 } })
     await fake.elapse(10)
     const items = reportedItems(socket)
     expect(items).toHaveLength(1)
@@ -394,8 +425,8 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
       observerInfo('errors', 'alerts::err', { on: 'error', capture: ['input', 'error', 'caller'] }),
       observerInfo('all', 'audit::all', { on: 'complete', capture: [] }),
     ])
-    await sdk.trigger({ function_id: 'payments::charge', payload: { amount: 1, fail: true } }).catch(() => undefined)
-    await sdk.trigger({ function_id: 'payments::charge', payload: { amount: 2 } })
+    await sdk.call({ function_id: 'payments::charge', payload: { amount: 1, fail: true } }).catch(() => undefined)
+    await sdk.call({ function_id: 'payments::charge', payload: { amount: 2 } })
     await fake.elapse(10)
     const items = reportedItems(socket)
     expect(items.map((i) => i.matched)).toEqual([['errors', 'all'], ['all']])
@@ -403,17 +434,43 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
       status: 'error',
       input: { amount: 1, fail: true },
       error: { code: 'invocation_failed', message: 'card declined' },
-      caller: { worker_id: 'worker-1', worker_name: 'billing' },
     })
+    // made outside any handler: no caller (the engine stamps the worker)
+    expect(items[0]).not.toHaveProperty('caller')
     expect(items[1]).not.toHaveProperty('input')
     expect(items[1]).not.toHaveProperty('output')
+  })
+
+  it('the caller of a call made inside a handler: that invocation, never worker_id / worker_name', async () => {
+    const { sdk, socket } = await observed([observerInfo('all', 'audit::all', { capture: ['caller'] })])
+    sdk.registerFunction('checkout::confirm', async () =>
+      sdk.call({ function_id: 'payments::charge', payload: { amount: 5 } }),
+    )
+    socket.deliver(functionRegistered('checkout::confirm'))
+    await settle()
+    socket.deliver({
+      type: 'invokefunction',
+      invocation_id: 'inv-confirm',
+      function_id: 'checkout::confirm',
+      data: {},
+      caller: { worker_id: 'w-web', worker_name: 'web', function_id: 'web::submit', invocation_id: 'inv-web' },
+    })
+    await settle()
+    await fake.elapse(10)
+    expect(reportedItems(socket).map((i) => i.caller)).toEqual([
+      {
+        function_id: 'checkout::confirm',
+        invocation_id: 'inv-confirm',
+        parent: { worker_id: 'w-web', worker_name: 'web', function_id: 'web::submit', invocation_id: 'inv-web' },
+      },
+    ])
   })
 
   it('reports nothing for a call no filter matches, and nothing at all for an unobserved function', async () => {
     const { sdk, socket } = await observed([
       observerInfo('big', 'alerts::big', { filters: { $and: [{ 'input.amount': { $gte: 500 } }] } }),
     ])
-    for (let i = 0; i < 100; i++) await sdk.trigger({ function_id: 'payments::charge', payload: { amount: i } })
+    for (let i = 0; i < 100; i++) await sdk.call({ function_id: 'payments::charge', payload: { amount: i } })
     await fake.elapse(10)
     expect(socket.sent).toHaveLength(0)
   })
@@ -436,7 +493,7 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
     socket.clear()
     const payload = { n: 1 }
     const metadata = { tenant: 'acme' }
-    const call = sdk.trigger({ function_id: 'snap::fn', payload, metadata })
+    const call = sdk.call({ function_id: 'snap::fn', payload, metadata })
     await settle()
     payload.n = 99 // the caller changes its objects while the call runs
     metadata.tenant = 'other'
@@ -462,13 +519,13 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
     socket.deliver(functionRegistered('slow::op', [], { revision: 1 }))
     await settle()
     socket.clear()
-    const first = sdk.trigger({ function_id: 'slow::op', payload: 1 }) // starts unobserved
+    const first = sdk.call({ function_id: 'slow::op', payload: 1 }) // starts unobserved
     await settle()
     socket.deliver(fake.observerAdded('slow::op', 2, observerInfo('late', 'audit::late', { capture: ['input'] })))
     await settle()
     release()
     await first
-    await sdk.trigger({ function_id: 'slow::op', payload: 2 })
+    await sdk.call({ function_id: 'slow::op', payload: 2 })
     await fake.elapse(10)
     expect(reportedItems(socket).map((i) => i.input)).toEqual([2])
   })
@@ -486,7 +543,7 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
       socket.deliver(functionRegistered('hot::path'))
       await settle()
       socket.clear()
-      for (let i = 0; i < 1_000_000; i++) await sdk.trigger({ function_id: 'hot::path', payload: i })
+      for (let i = 0; i < 1_000_000; i++) await sdk.call({ function_id: 'hot::path', payload: i })
       await fake.elapse(10)
       expect(socket.frames().filter((f) => f.type !== 'localinvocationstats')).toEqual([])
       await fake.elapse(10_000)
@@ -497,7 +554,7 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
       socket.deliver(fake.observerAdded('hot::path', 1, observerInfo('watch', 'audit::hot', { capture: ['input'] })))
       await settle()
       socket.clear()
-      for (let i = 0; i < 10; i++) await sdk.trigger({ function_id: 'hot::path', payload: i })
+      for (let i = 0; i < 10; i++) await sdk.call({ function_id: 'hot::path', payload: i })
       await fake.elapse(10)
       expect(socket.framesOf('invocationsobserved').length).toBeGreaterThan(0)
       expect(reportedItems(socket)).toHaveLength(10)
@@ -516,8 +573,8 @@ describe('auto delivery: local invocations are evaluated and reported (sdk.md §
     socket.clear()
     await fake.elapse(20_000)
     expect(socket.framesOf('localinvocationstats')).toHaveLength(0)
-    await sdk.trigger({ function_id: 'math::inc', payload: 1 })
-    await sdk.trigger({ function_id: 'math::inc', payload: -1 }).catch(() => undefined)
+    await sdk.call({ function_id: 'math::inc', payload: 1 })
+    await sdk.call({ function_id: 'math::inc', payload: -1 }).catch(() => undefined)
     await fake.elapse(10_000)
     const stats = socket.framesOf('localinvocationstats')
     expect(stats).toHaveLength(1)
@@ -548,7 +605,7 @@ describe('the reporter against the socket and the function registry', () => {
     socket.clear()
     const blob = 'z'.repeat(2048)
     for (let i = 0; i < 500; i++) {
-      await sdk.trigger({ function_id: 'big::fn', payload: { blob, i } })
+      await sdk.call({ function_id: 'big::fn', payload: { blob, i } })
       if (i % 50 === 0) await fake.elapse(10)
     }
     await fake.elapse(500)
@@ -562,7 +619,7 @@ describe('the reporter against the socket and the function registry', () => {
   it('FUNCTION_NAMESPACE_CONFLICT and unregister() discard the function’s held reports as INACTIVE; others still go out', async () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
-    const fns: Record<string, ReturnType<ISdk['registerFunction']>> = {}
+    const fns: Record<string, FunctionRef> = {}
     for (const id of ['f::one', 'f::two', 'f::three']) {
       fns[id] = sdk.registerFunction(id, async (n: number) => n)
     }
@@ -573,7 +630,7 @@ describe('the reporter against the socket and the function registry', () => {
     await settle()
     socket.drop() // reports are held while disconnected
     for (const id of Object.keys(fns)) {
-      for (let i = 0; i < 3; i++) await sdk.trigger({ function_id: id, payload: i })
+      for (let i = 0; i < 3; i++) await sdk.call({ function_id: id, payload: i })
     }
     const reporter = (sdk as unknown as { reporter: { size: number; drops: Map<string, Map<string, number>> } })
       .reporter
@@ -619,7 +676,7 @@ describe('the reporter against the socket and the function registry', () => {
     socket.open()
     socket.deliver(functionRegistered('f::slow', [observerInfo('o', 'audit::any', { capture: ['input'] })]))
     await settle()
-    const call = sdk.trigger({ function_id: 'f::slow', payload: 1 }) // evaluated against the set at start
+    const call = sdk.call({ function_id: 'f::slow', payload: 1 }) // evaluated against the set at start
     await settle()
     socket.deliver({
       type: 'registrationrejected',
@@ -662,7 +719,7 @@ describe('the reporter against the socket and the function registry', () => {
     next.open() // the other owner left: the replayed registration is accepted
     next.deliver(functionRegistered('f::back', [observerInfo('o', 'audit::any', { capture: ['input'] })]))
     await settle()
-    await sdk.trigger({ function_id: 'f::back', payload: 7 })
+    await sdk.call({ function_id: 'f::back', payload: 7 })
     await fake.elapse(10)
     expect(reportedItems(next).map((i) => i.input)).toEqual([7])
   })
@@ -678,7 +735,7 @@ describe('the reporter against the socket and the function registry', () => {
     await settle()
     socket.deliver(functionRegistered('f::same', [observerInfo('o', 'audit::any', { capture: ['input'] })]))
     await settle()
-    await sdk.trigger({ function_id: 'f::same', payload: 3 })
+    await sdk.call({ function_id: 'f::same', payload: 3 })
     await fake.elapse(10)
     expect(reportedItems(socket).map((i) => i.input)).toEqual([3])
   })
@@ -696,7 +753,7 @@ describe('the reporter against the socket and the function registry', () => {
     socket.open()
     socket.deliver(functionRegistered('f::span', [observerInfo('o', 'audit::any', { capture: ['input'] })]))
     await settle()
-    const call = sdk.trigger({ function_id: 'f::span', payload: 1 })
+    const call = sdk.call({ function_id: 'f::span', payload: 1 })
     await settle()
     socket.deliver(conflict('f::span'))
     await settle()
@@ -726,7 +783,7 @@ describe('the reporter against the socket and the function registry', () => {
     socket.open()
     socket.deliver(functionRegistered('f::again', [observerInfo('o', 'audit::any', { capture: ['input'] })]))
     await settle()
-    const call = sdk.trigger({ function_id: 'f::again', payload: 2 })
+    const call = sdk.call({ function_id: 'f::again', payload: 2 })
     await settle()
     first.unregister()
     sdk.registerFunction('f::again', async (n: number) => n)
@@ -742,22 +799,20 @@ describe('the reporter against the socket and the function registry', () => {
     fake.fakeClock()
     const { sdk, socket } = worker()
     let release!: () => void
-    sdk.registerFunction('f::hooked', async (n: number) => n, {
-      observe: {
-        onObserverAdded: async (obs) => {
-          if (obs.id === 'slow') {
-            await new Promise<void>((r) => {
-              release = r
-            })
-          }
-        },
-      },
-    })
+    sdk
+      .registerFunction('f::hooked', async (n: number) => n)
+      .onObserverAdded(async (obs) => {
+        if (obs.id === 'slow') {
+          await new Promise<void>((r) => {
+            release = r
+          })
+        }
+      })
     socket.open()
     socket.deliver(functionRegistered('f::hooked', [observerInfo('a', 'audit::a', { capture: ['input'] })]))
     await settle()
     socket.drop()
-    for (let i = 0; i < 3; i++) await sdk.trigger({ function_id: 'f::hooked', payload: i }) // held: disconnected
+    for (let i = 0; i < 3; i++) await sdk.call({ function_id: 'f::hooked', payload: i }) // held: disconnected
     await fake.elapse(1500)
     const next = fake.lastSocket()
     next.open()
@@ -780,5 +835,190 @@ describe('the reporter against the socket and the function registry', () => {
       [1, ['a']],
       [2, ['a']],
     ])
+  })
+})
+
+describe('a handler that returns its input (output_is_input, decision 4)', () => {
+  it('a private event source reports its input once, with output_is_input', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    sdk.registerFunction('cron::on-tick', (tick: { n: number }) => tick, { private: true })
+    socket.open()
+    socket.deliver(functionRegistered('cron::on-tick', [observerInfo('o', 'audit::tick')]))
+    await settle()
+    socket.clear()
+    await sdk.call({ function_id: 'cron::on-tick', payload: { n: 1 } })
+    await fake.elapse(10)
+    const [item] = reportedItems(socket)
+    expect(item).toMatchObject({ input: { n: 1 }, output_is_input: true })
+    expect(item).not.toHaveProperty('output')
+  })
+
+  it.each([
+    ['the engine has no observe.v2', fake.ENGINE_FEATURES_V1, ['input', 'output']],
+    ['the observers do not capture the input', fake.ENGINE_FEATURES, ['output']],
+  ] as const)('carries output when %s', async (_name, features, capture) => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    // A primitive is its own copy: the handler returns the value the delivery sees.
+    sdk.registerFunction('math::same', (n: number) => n)
+    socket.open([...features])
+    socket.deliver(functionRegistered('math::same', [observerInfo('o', 'audit::same', { capture: [...capture] })]))
+    await settle()
+    socket.clear()
+    await sdk.call({ function_id: 'math::same', payload: 2 })
+    await fake.elapse(10)
+    const [item] = reportedItems(socket)
+    expect(item.output).toBe(2)
+    expect(item).not.toHaveProperty('output_is_input')
+  })
+
+  it('a non-private handler that returns its own input unchanged reports it once, with output_is_input', async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    sdk.registerFunction('echo::fn', (input: { n: number; tags: string[] }) => input)
+    socket.open()
+    socket.deliver(functionRegistered('echo::fn', [observerInfo('o', 'audit::echo')]))
+    await settle()
+    socket.clear()
+    const payload = { n: 3, tags: ['a'] }
+    const out = await sdk.call<typeof payload, typeof payload>({ function_id: 'echo::fn', payload })
+    expect(out).toEqual(payload)
+    expect(out).not.toBe(payload)
+    await fake.elapse(10)
+    const [item] = reportedItems(socket)
+    expect(item).toMatchObject({ input: { n: 3, tags: ['a'] }, output_is_input: true })
+    expect(item).not.toHaveProperty('output')
+  })
+
+  it.each([
+    [
+      'changes its input before returning it',
+      (input: { n: number }) => {
+        input.n += 1
+        return input
+      },
+      { n: 4 },
+    ],
+    ['returns an equal object of its own', (input: { n: number }) => ({ ...input }), { n: 3 }],
+  ] as const)('a non-private handler that %s reports both: the input as the call started', async (_name, handler, output) => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    sdk.registerFunction('echo::fn', handler)
+    socket.open()
+    socket.deliver(functionRegistered('echo::fn', [observerInfo('o', 'audit::echo')]))
+    await settle()
+    socket.clear()
+    await expect(sdk.call({ function_id: 'echo::fn', payload: { n: 3 } })).resolves.toEqual(output)
+    await fake.elapse(10)
+    const [item] = reportedItems(socket)
+    expect(item).toMatchObject({ input: { n: 3 }, output })
+    expect(item).not.toHaveProperty('output_is_input')
+  })
+
+  it('compares the two copies as JSON data in one walk; any other object, or one reached twice, counts as changed', () => {
+    expect(sameData({ a: [1, { b: null }], n: Number.NaN }, { n: Number.NaN, a: [1, { b: null }] })).toBe(true)
+    expect(sameData({ a: [1] }, { a: [1, 2] })).toBe(false)
+    expect(sameData({ a: 1 }, { a: 1, b: undefined })).toBe(false)
+    expect(sameData({ at: new Date(0) }, { at: new Date(0) })).toBe(false)
+    const cycle: Record<string, unknown> = {}
+    cycle.self = cycle
+    const other: Record<string, unknown> = {}
+    other.self = other
+    expect(sameData(cycle, other)).toBe(false)
+    const shared = { n: 1 }
+    expect(sameData({ x: shared, y: shared }, { x: { n: 1 }, y: { n: 1 } })).toBe(false)
+  })
+})
+
+describe('private functions: input and result by reference (v2 §6, decision 22)', () => {
+  const env = process.env.NODE_ENV
+  afterEach(() => {
+    process.env.NODE_ENV = env
+  })
+
+  async function source(nodeEnv: string) {
+    process.env.NODE_ENV = nodeEnv
+    const { sdk, socket } = worker()
+    const seen: { input?: unknown } = {}
+    const result = { list: [1] }
+    sdk.registerFunction(
+      'cron::on-tick',
+      (input: { list: number[] }) => {
+        seen.input = input
+        return result
+      },
+      { private: true },
+    )
+    socket.open()
+    socket.deliver(functionRegistered('cron::on-tick'))
+    await settle()
+    return { sdk, seen, result }
+  }
+
+  it('copies neither the input nor the result', async () => {
+    const { sdk, seen, result } = await source('production')
+    const payload = { list: [1, 2] }
+    const out = await sdk.call({ function_id: 'cron::on-tick', payload })
+    expect(seen.input).toBe(payload)
+    expect(out).toBe(result)
+    expect(Object.isFrozen(payload)).toBe(false)
+  })
+
+  it("never freezes them, also when NODE_ENV is 'development' (decision 22: only the Node SDK does)", async () => {
+    const { sdk, seen, result } = await source('development')
+    const payload = { list: [1, 2] }
+    const out = await sdk.call<typeof payload, { list: number[] }>({ function_id: 'cron::on-tick', payload })
+    expect(seen.input).toBe(payload)
+    expect(out).toBe(result)
+    expect(Object.isFrozen(payload)).toBe(false)
+    expect(Object.isFrozen(payload.list)).toBe(false)
+    expect(Object.isFrozen(out)).toBe(false)
+  })
+
+  it('a non-private function still copies both', async () => {
+    process.env.NODE_ENV = 'development'
+    const { sdk, socket } = worker()
+    const result = { list: [1] }
+    sdk.registerFunction('val::fn', (input: { list: number[] }) => {
+      input.list.push(9)
+      return result
+    })
+    socket.open()
+    socket.deliver(functionRegistered('val::fn'))
+    await settle()
+    const payload = { list: [1] }
+    const out = await sdk.call({ function_id: 'val::fn', payload })
+    expect(payload.list).toEqual([1])
+    expect(out).not.toBe(result)
+    expect(Object.isFrozen(out)).toBe(false)
+  })
+})
+
+describe('a deliver hook on the local path', () => {
+  it("the caller gets a copy of what the hook returns, and the hook sees the call's input as the caller passed it", async () => {
+    fake.fakeClock()
+    const { sdk, socket } = worker()
+    const answer = { status: 'accepted' }
+    let seenInput: unknown
+    sdk
+      .registerFunction('orders::submit', (order: { qty: number }) => {
+        order.qty = 0
+        return { id: 'o-1' }
+      })
+      .onObserverDeliver((call) => {
+        seenInput = call.input
+        return answer
+      })
+    socket.open()
+    socket.deliver(functionRegistered('orders::submit'))
+    await settle()
+    socket.clear()
+    const out = await sdk.call({ function_id: 'orders::submit', payload: { qty: 2 } })
+    expect(out).toEqual(answer)
+    expect(out).not.toBe(answer)
+    expect(seenInput).toEqual({ qty: 2 })
+    await fake.elapse(10)
+    expect(socket.sent).toHaveLength(0)
   })
 })

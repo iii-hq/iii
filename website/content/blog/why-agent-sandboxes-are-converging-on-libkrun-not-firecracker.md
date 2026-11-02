@@ -17,7 +17,7 @@ So the question for anyone building agent infra in 2026 is no longer "which micr
 
 It's libkrun. And the more interesting part of the answer isn't the VMM at all. It's what you put inside it.
 
-I've been working on iii-sandbox at iii for the past few months. iii-sandbox is the hardware-isolated execution layer for iii, an open-source engine where every primitive (an HTTP route, a queue, a cron, an agent, a sandbox) is the same thing: a worker that connects to the engine over WebSocket and registers functions and triggers. The sandbox is just one of those workers. This post is the deep dive on why we built it on libkrun, what's inside the guest, and what we learned about the actual hard parts.
+I've been working on iii-sandbox at iii for the past few months. iii-sandbox is the hardware-isolated execution layer for iii, an open-source engine where every primitive (an HTTP route, a queue, a cron, an agent, a sandbox) is the same thing: a worker that connects to the engine over WebSocket and registers functions. The sandbox is just one of those workers. This post is the deep dive on why we built it on libkrun, what's inside the guest, and what we learned about the actual hard parts.
 
 ## Recap: why a kernel boundary at all
 
@@ -53,7 +53,7 @@ The tradeoff is that virtio-fs has its own quirks (the root-directory `readdir` 
 
 ## iii-sandbox, at the level of one boot
 
-iii-sandbox is a worker like any other iii worker. It connects to the engine over WebSocket, registers fourteen functions (four lifecycle ops plus ten filesystem ops), and waits for `iii.trigger()` calls. Internally, it's a daemon that owns a registry of live microVMs and three things on disk: a rootfs cache (one extracted OCI image per image name), a per-sandbox overlay tree, and a Unix socket per sandbox for the shell channel.
+iii-sandbox is a worker like any other iii worker. It connects to the engine over WebSocket, registers fourteen functions (four lifecycle ops plus ten filesystem ops), and waits for `iii.call()` invocations. Internally, it's a daemon that owns a registry of live microVMs and three things on disk: a rootfs cache (one extracted OCI image per image name), a per-sandbox overlay tree, and a Unix socket per sandbox for the shell channel.
 
 When a caller fires `sandbox::create`, here is the actual sequence, with code references:
 
@@ -187,21 +187,21 @@ import { registerWorker } from 'iii-sdk'
 const iii = registerWorker('ws://127.0.0.1:49134')
 
 iii.registerFunction('agents::run-untrusted', async ({ code }) => {
-  const { sandbox_id } = await iii.trigger({
+  const { sandbox_id } = await iii.call({
     function_id: 'sandbox::create',
     payload: { image: 'python', cpus: 1, memory_mb: 512 },
     timeoutMs: 300_000,
   })
 
   try {
-    const out = await iii.trigger({
+    const out = await iii.call({
       function_id: 'sandbox::exec',
       payload: { sandbox_id, cmd: 'python3', args: ['-c', code] },
       timeoutMs: 35_000,
     })
     return { stdout: out.stdout, stderr: out.stderr, exit: out.exit_code }
   } finally {
-    await iii.trigger({
+    await iii.call({
       function_id: 'sandbox::stop',
       payload: { sandbox_id, wait: true },
     })
@@ -209,7 +209,7 @@ iii.registerFunction('agents::run-untrusted', async ({ code }) => {
 })
 ```
 
-There is no separate sandbox SDK. There is no separate identity surface. There is no "now connect your observability to the sandbox vendor's webhooks." The sandbox is reachable through the same `trigger()` call you use to enqueue a job or invoke any other worker function. When the agent worker fires `sandbox::exec`, the engine routes it to the sandbox worker the same way it would route a queue publish.
+There is no separate sandbox SDK. There is no separate identity surface. There is no "now connect your observability to the sandbox vendor's webhooks." The sandbox is reachable through the same `call()` you use to enqueue a job or invoke any other worker function. When the agent worker fires `sandbox::exec`, the engine routes it to the sandbox worker the same way it would route a queue publish.
 
 The thing this enables that's harder to do when the sandbox is a separate product: an agent worker can register a function that boots a sandbox, runs code, captures the output, and shuts down, and that whole composite is itself a function other workers can call. The sandbox isn't a layer you reach for at the edge of your system. It's a primitive you compose with everything else.
 

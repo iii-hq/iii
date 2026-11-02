@@ -330,7 +330,7 @@ mod tests {
         let warned = names.lock().unwrap();
         assert!(
             !warned.iter().any(|n| n.contains("BaggagePropagator")),
-            "empty baggage must not trigger BaggagePropagator warnings, got: {warned:?}"
+            "empty baggage must not cause BaggagePropagator warnings, got: {warned:?}"
         );
     }
 

@@ -175,39 +175,39 @@ test('on the SDK page a returned deprecated handle is a type, a deprecated input
 test('Client method headings carry the receiver and keep the canonical order', () => {
   const types = [
     type('Client', {
-      methods: [func('Address', [], ['string']), func('Trigger', [], ['error']), func('RegisterFunction', [], ['*Trigger', 'error'])],
+      methods: [func('Address', [], ['string']), func('Call', [], ['error']), func('RegisterFunction', [], ['*Call', 'error'])],
     }),
-    type('Trigger', { methods: [func('Unregister', [], ['error'])] }),
+    type('Call', { methods: [func('Matches', [], ['bool'])] }),
   ]
   const mdx = renderSdkMdx(parseGodoc(writeModule([pkg('', { importPath: 'example.com/m', name: 'm', types })])))
   const headings = [...mdx.matchAll(/^#{3,4} (.+)$/gm)].map(m => m[1])
   const methods = headings.slice(headings.indexOf('Client.RegisterFunction'), headings.indexOf('Client.Address') + 1)
-  assert.deepEqual(methods, ['Client.RegisterFunction', 'Client.Trigger', 'Client.Address'])
-  // The type keeps the bare name, so its anchor (#trigger) is its own.
+  assert.deepEqual(methods, ['Client.RegisterFunction', 'Client.Call', 'Client.Address'])
+  // The type keeps the bare name, so its anchor (#call) is its own.
   const slug = (h: string) => h.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-+|-+$/g, '')
-  assert.equal(headings.filter(h => slug(h) === 'trigger').length, 1)
-  assert.match(mdx, /\[`Trigger`\]\(#trigger\)/)
+  assert.equal(headings.filter(h => slug(h) === 'call').length, 1)
+  assert.match(mdx, /\[`Call`\]\(#call\)/)
 })
 
 test('anchors use the slug Mintlify gives a heading, and every link has exactly one target', () => {
   // Ids observed on the Mintlify preview: the dot of a qualified heading becomes a hyphen.
-  assert.equal(slugify('Client.RegisterTriggerType'), 'client-registertriggertype')
+  assert.equal(slugify('Client.OnObserverDeliverFor'), 'client-onobserverdeliverfor')
   assert.equal(slugify('filter.Compile'), 'filter-compile')
   assert.equal(slugify('iii/filter'), 'iii-filter')
   const types = [
     type('Client', {
-      methods: [func('Trigger', [], ['*Trigger', 'error']), func('ConnectionState', [], ['ConnectionState'])],
+      methods: [func('Call', [], ['*Call', 'error']), func('ConnectionState', [], ['ConnectionState'])],
     }),
-    type('Trigger', { methods: [func('Unregister', [], ['error'])] }),
+    type('Call', { methods: [func('Matches', [], ['bool'])] }),
     type('ConnectionState', { kind: 'named', decl: 'type ConnectionState string' }),
   ]
   const mdx = renderSdkMdx(parseGodoc(writeModule([pkg('', { importPath: 'example.com/m', name: 'm', types })])))
   const prose = mdx.replace(/```[\s\S]*?```/g, '')
   const slugs = [...prose.matchAll(/^#{1,6} (.+)$/gm)].map(m => slugify(m[1]))
   const links = [...new Set([...prose.matchAll(/\]\(#([^)]+)\)/g)].map(m => m[1]))]
-  assert.ok(links.includes('trigger') && links.includes('connectionstate'), links.join(' '))
+  assert.ok(links.includes('call') && links.includes('connectionstate'), links.join(' '))
   for (const link of links) {
     assert.equal(slugs.filter(s => s === link).length, 1, `#${link}`)
   }
-  assert.ok(slugs.includes('client-trigger') && slugs.includes('client-connectionstate'))
+  assert.ok(slugs.includes('client-call') && slugs.includes('client-connectionstate'))
 })

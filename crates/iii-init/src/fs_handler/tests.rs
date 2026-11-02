@@ -378,18 +378,18 @@ fn write_stream_early_channel_close_unlinks_temp() {
     assert!(leaks.is_empty(), "temp file leaked: {leaks:?}");
 }
 
-/// REGRESSION: when the host trigger handler stalls (e.g. the
+/// REGRESSION: when the host function handler stalls (e.g. the
 /// caller-side data channel was hard-terminated and the worker's
 /// `ChannelReader::next_binary()` hangs), no `FsChunk` or `FsEnd`
 /// ever arrives. The dispatcher's per-corr_id sender stays alive
 /// in `fs_writes` for the session lifetime, so a blocking `recv()`
 /// would wait forever — the temp file would leak and the host's
-/// SDK trigger eventually times out with no S-code.
+/// SDK call eventually times out with no S-code.
 ///
 /// fs-example.mjs's adversarial section repro:
 ///   abortCh.writer.stream.write(Buffer.from('partial bytes'))
 ///   abortCh.writer.stream.destroy(new Error('simulated caller abort'))
-///   await iii.trigger('sandbox::fs::write', { content: ref, ... })
+///   await iii.call('sandbox::fs::write', { content: ref, ... })
 ///     => Invocation timeout after 30000ms + temp file left behind
 ///
 /// Fix: `handle_write_start` now uses `recv_timeout(idle_timeout)`.

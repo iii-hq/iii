@@ -42,7 +42,7 @@ func TestWorkerRegistersWithGoRuntime(t *testing.T) {
 	}
 	settle()
 
-	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: iii.FnListWorkers,
 		Payload:    json.RawMessage(`{}`),
 	})

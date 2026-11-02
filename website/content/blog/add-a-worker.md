@@ -102,16 +102,16 @@ encapsulate everything else:
   (`cloudflare::workers::r2::get`, `azure::blob::get`, `agents::researcher`)
   that receives input, optionally returns output, and can live in any
   process in any language. Functions invoke other functions through
-  `trigger()`. The engine handles routing, serialization, and delivery.
-- A **Trigger** is what causes a function to run. You register a trigger to
-  bind any event source to any function: an HTTP endpoint, a cron schedule,
-  a queue subscription, a state change, a stream event. Triggers are
-  declarative. The function doesn't change when you add a new way to invoke
-  it.
+  `call()`. The engine handles routing, serialization, and delivery.
+- An **Observer** runs one function when another runs. An HTTP request, a
+  cron tick, a queue message, a state change, and a stream event are each a
+  call of a source function, so observing it binds that event to any
+  function. Observers are declarative. The function doesn't change when you
+  add a new way to invoke it.
 - A **Worker** is any process that connects to the engine and registers
-  functions and triggers.
+  functions.
 
-![One worker exposes functions; triggers chain those functions across other workers](../../assets/blog/add-a-worker/orders-worker-chain.png)
+![One worker exposes functions; observers chain those functions across other workers](../../assets/blog/add-a-worker/orders-worker-chain.png)
 
 The queue is a worker. Cron is a worker. The state store is a worker. The
 HTTP front door is a worker. The egress proxy is a worker. The tool
@@ -138,7 +138,7 @@ an entire product week around.
 
 An agent needs persistent state between reasoning steps. **Add a worker.**
 The state worker exposes scoped key-value operations. The agent writes
-progress through `trigger()`, reads it on re-entry, and continues from where
+progress through `call()`, reads it on re-entry, and continues from where
 it left off.
 
 An agent needs to run untrusted code in an isolated sandbox with its own
@@ -154,7 +154,7 @@ yet invented. These protocols all become workers and can all share the same
 single source of truth: iii. **Add a worker.**
 
 An agent needs to speak MCP to an external tool server. **Add a worker** that
-bridges MCP into `trigger()` calls. The bridge is a worker like any other.
+bridges MCP into `call()` invocations. The bridge is a worker like any other.
 
 An agent needs identity and authorization boundaries for sensitive actions.
 **Add a worker** that enforces the boundary, and scope access through the
@@ -165,8 +165,8 @@ An agent needs to call a payment service. **Add a worker.**
 An agent needs durable multi-step execution with retries, backoff, and
 dead-letter queues. **Add a worker.** We already ship a worker that does
 this. Configure retry policy, backoff, FIFO ordering, and DLQ per queue.
-Each step is a function. Chaining them is a `trigger()` call with an
-enqueue action.
+Each step is a function. Chaining them is a `call()` with an enqueue
+action.
 
 An agent needs to run on a different continent. **Add a worker** there. The
 code, the primitives, and the composition model don't change.
@@ -183,7 +183,7 @@ what already completed, and continues from there.
 
 The observability story is the part that genuinely changes compared to the
 cloud model. Every function invocation carries a trace ID. Every
-`trigger()` call propagates OpenTelemetry context across workers, across
+`call()` propagates OpenTelemetry context across workers, across
 queues, across language boundaries. Logs emitted through the iii Logger
 attach automatically to the active span. When an agent step enqueues the
 next step, which writes state, which fires a downstream worker in a
@@ -210,8 +210,8 @@ seamlessly pick and choose the best version of every category. iii asks
 whether the categories need to exist at all, or whether they're patterns
 that emerge from composing a small number of primitives. A payment
 integration is a worker. A zero-trust egress policy is a worker. An MCP
-bridge is a worker. Each is a pattern on top of the same workers, triggers,
-and functions.
+bridge is a worker. Each is a pattern on top of the same workers,
+functions, and observers.
 
 ## The bet
 

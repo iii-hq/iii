@@ -1,0 +1,21 @@
+{
+  "type": "invokefunction",
+  "invocation_id": "5d7f9b1c-3e5a-4c7e-9a1c-3e5f7b9d1f3a",
+  "function_id": "users::get",
+  "data": {
+    "method": "GET",
+    "route": "/users/:id",
+    "path": "/users/7",
+    "path_params": {
+      "id": "7"
+    }
+  },
+  "namespace": "acme",
+  "caller": {
+    "function_id": "http::on-request",
+    "invocation_id": "6e8a0c2d-4f6b-4d8f-8b2d-4f6a8c0e2b4d"
+  },
+  "activation": {
+    "observer_id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c"
+  }
+}
