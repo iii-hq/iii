@@ -423,8 +423,8 @@ for (const obs of feeds.observers()) {
 }
 ```
 
-`FunctionRef.observers()` (`observers()` in Python and Rust, `worker.Observers(id)` in Go) returns
-the active observers of the function.
+`FunctionRef.observers()` (`observers()` in Python and Rust, `Observers()` in Go, or
+`worker.Observers(id)` on the Go client) returns the active observers of the function.
 
 ## Choose who gets each call
 
@@ -1088,7 +1088,8 @@ for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
       })
       .onObserverRemoved(async (obs) => {
         const { db, table } = obs.args as RowChangedArgs;
-        await capture.release(db, table); // drops the database trigger with its last observer
+        // releases this worker's hold; the database triggers stay, since other processes may share them
+        await capture.release(db, table);
       })
       .onObserverMatch({
         observer: ({ args }) => {
@@ -1126,7 +1127,7 @@ for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
 
     @worker.on_observer_removed("database::on-row-changed")
     async def release(obs):
-        # drops the database trigger with its last observer
+        # releases this worker's hold; the database triggers stay, since other processes may share them
         await capture.release(obs.args["db"], obs.args.get("table"))
 
     worker.on_observer_match(
@@ -1233,7 +1234,7 @@ for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
     impl RemovedHook for NativeCapture {
         async fn on_removed(&self, obs: Observer) {
             if let Ok(args) = obs.args::<RowChangedArgs>() {
-                // drops the database trigger with its last observer
+                // releases this worker's hold; the database triggers stay, since other processes may share them
                 self.release(&args.db, args.table.as_deref()).await;
             }
         }
@@ -1297,7 +1298,8 @@ for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
     worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
         var args rowChangedArgs
         if obs.DecodeArgs(&args) == nil {
-            capture.Release(ctx, args.DB, args.Table) // drops the database trigger with its last observer
+            // releases this worker's hold; the database triggers stay, since other processes may share them
+            capture.Release(ctx, args.DB, args.Table)
         }
     })
     worker.OnObserverMatchFor("database::on-row-changed", iii.MatchKeys(
@@ -1844,7 +1846,7 @@ the message. Its args are `{ topic, max_retries?, backoff_ms?, queue_config?, gr
             // the subscriber's observer, matched by its key
             let Some(obs) = observers.first() else {
                 // an error retries the message, then dead-letters it
-                return Err(Error::Handler("subscriber removed".into()));
+                return Err(ObserveRejection::new("OBSERVER_NOT_ACTIVE", "subscriber removed").into());
             };
             if !obs.matches(&call) {
                 return Ok(Value::Null); // a filter miss acknowledges the message
@@ -1903,7 +1905,7 @@ the message. Its args are `{ topic, max_retries?, backoff_ms?, queue_config?, gr
     worker.OnObserverDeliverFor("queue::on-message", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
         if len(observers) == 0 {
             // an error retries the message, then dead-letters it
-            return nil, iii.ObserveRejection("OBSERVER_NOT_ACTIVE", "subscriber removed")
+            return nil, &iii.InvocationError{Code: "OBSERVER_NOT_ACTIVE", Message: "subscriber removed"}
         }
         obs := observers[0]
         if !obs.Matches(call) {
@@ -1956,5 +1958,6 @@ The SDK and the engine both advertise the `observe.v2` feature. Against an engin
 functions that declare `args_format`, `private: true` or `observable: false`, or that set
 `onObserverMatch` or `onObserverDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for
 each. The SDK registers them when the worker connects to an engine with `observe.v2`. Every other
-function and `call` work, and so does `observe` against a 0.25 engine (an older engine fails it with
-`UNSUPPORTED`). The engine evaluates the filters of routed calls.
+function and `call` work. `observe` works against a 0.25 engine, which advertises `observe.v1`.
+Against an engine older than 0.25, which has no observers, the observer turns `error` with
+`UNSUPPORTED`, and `ready()` fails with it. The engine evaluates the filters of routed calls.

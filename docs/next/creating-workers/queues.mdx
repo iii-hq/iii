@@ -274,21 +274,21 @@ iii call iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com",
 
 Each observer of `queue::on-message` is one subscriber. Its `args` choose what it consumes and how:
 
-| Arg            | Meaning                                                                                     |
-| -------------- | ------------------------------------------------------------------------------------------- |
-| `topic`        | The topic to consume. Required.                                                             |
-| `max_retries`  | Retries of a failed delivery before the message moves to the dead-letter queue (default 3). |
-| `backoff_ms`   | The first retry delay. Each later retry doubles it.                                         |
-| `queue_config` | Delivery settings for this subscriber, for example `{ type: "fifo" }`.                      |
-| `group`        | Subscribers that name the same group share one consumer, which handles each message once.   |
+| Arg            | Meaning                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------ |
+| `topic`        | The topic to consume. Required.                                                                        |
+| `max_retries`  | Deliveries of a message, the first one included, before it moves to the dead-letter queue (default 3). |
+| `backoff_ms`   | The first retry delay. Each later retry doubles it.                                                    |
+| `queue_config` | Delivery settings for this subscriber, for example `{ type: "fifo" }`.                                 |
+| `group`        | Subscribers that name the same group share one consumer, which handles each message once.              |
 
 Observer `filters` select messages by their `data` as `input`. A message the filters reject is
 acknowledged without running the target. See the
 [queue worker docs](https://workers.iii.dev/workers/queue) for every arg and the adapter-specific
 options.
 
-By default, a failed delivery is retried up to 3 times with exponential backoff (1 second, then 2,
-then 4), then the message moves to the dead-letter queue.
+By default, a message is delivered up to 3 times: a failed delivery is retried after 1 second, a
+second failure after 2 more seconds, and a third failure moves the message to the dead-letter queue.
 
 The engine bounds each delivery to a target by `observers.activation_timeout_ms` (30 seconds by
 default). A target that runs longer fails the delivery with `TIMEOUT`, which is retried like any
@@ -390,7 +390,7 @@ functions return empty until something fails.
 ### Forcing a message into the dead-letter queue
 
 To see the DLQ populated, make `email::send` fail by changing the handler to throw. Each message
-then fails its 3 delivery attempts (a few seconds with the exponential backoff) and dead-letters.
+then fails all 3 of its deliveries (about 3 seconds of backoff in between) and dead-letters.
 
 <Tabs>
   <Tab title="Node / TypeScript">

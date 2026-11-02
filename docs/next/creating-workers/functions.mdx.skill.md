@@ -171,12 +171,12 @@ the function. The schemas are stored with the function and surface in the iii co
     ```rust
     use iii_sdk::{InitOptions, RegisterFunction, register_worker};
     use schemars::JsonSchema;
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
 
     #[derive(Deserialize, JsonSchema)]
     struct AddInput { a: f64, b: f64 }
 
-    #[derive(serde::Serialize, JsonSchema)]
+    #[derive(Serialize, JsonSchema)]
     struct AddOutput { c: f64 }
 
     let url = std::env::var("III_URL").expect("III_URL must be set");
@@ -192,12 +192,12 @@ the function. The schemas are stored with the function and surface in the iii co
     // input and output types via `schemars::JsonSchema`. No builder methods
     // are needed — annotate your request/response structs and the SDK
     // generates the schemas automatically.
-    worker.register_function(RegisterFunction::new(
+    worker.register_function(
         "math::add",
-        |input: AddInput| -> Result<AddOutput, String> {
+        RegisterFunction::new(|input: AddInput| -> Result<AddOutput, iii_sdk::Error> {
             Ok(AddOutput { c: input.a + input.b })
-        },
-    ));
+        }),
+    );
     ```
 
   </Tab>
@@ -289,8 +289,8 @@ you gate access on the fields you define.
 ## Receive per-invocation metadata
 
 Distinct from the registration metadata above, each function can also receive optional
-per-invocation `metadata`: any JSON value. A caller sets it on the call, and an observer sets it once
-for every activation of its target, to give the receiving function execution context (see
+per-invocation `metadata`: any JSON value. A caller sets it on the call, and an observer sets it
+once for every activation of its target, to give the receiving function execution context (see
 [Policy and metadata](../using-iii/observers#policy-and-metadata)). A call through an observer takes
 no metadata of its own: its target receives the observer's.
 
