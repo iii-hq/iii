@@ -1282,6 +1282,16 @@ impl Engine {
             *state = NamespaceState::Draining(namespace.to_string(), queue);
         }
 
+        let pending = std::mem::take(
+            &mut *worker
+                .removed_messages_pending
+                .lock()
+                .expect("pending warnings poisoned"),
+        );
+        for (index, peer) in pending {
+            self.warn_removed_frame(worker, peer, index);
+        }
+
         tracing::debug!(
             worker_id = %worker.id,
             namespace = %namespace,
@@ -2619,7 +2629,9 @@ impl Engine {
             .get_handler(namespace, function_id)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
-                message: crate::legacy_worker_functions::migration_message(function_id)
+                message: Some(function_id)
+                    .filter(|id| self.functions.namespaces_for(id).is_empty())
+                    .and_then(crate::legacy_worker_functions::migration_message)
                     .unwrap_or_else(|| {
                         format!(
                             "Function {} not found in namespace {}",
@@ -2951,6 +2963,31 @@ impl Engine {
         }
     }
 
+    fn warn_removed_frame(&self, worker: &WorkerConnection, peer: SocketAddr, index: usize) {
+        let (removed, replacement) = REMOVED_MESSAGES[index];
+        // The connection's own clone is stale; the registry holds the metadata.
+        let (name, runtime, version) = self
+            .worker_registry
+            .workers
+            .get(&worker.id)
+            .map(|w| (w.name.clone(), w.runtime.clone(), w.version.clone()))
+            .unwrap_or_default();
+        let unknown = || "unknown".to_string();
+        let (name, runtime, version) = (
+            name.unwrap_or_else(unknown),
+            runtime.unwrap_or_else(unknown),
+            version.unwrap_or_else(unknown),
+        );
+        tracing::warn!(
+            worker_id = %worker.id,
+            peer = %peer,
+            message_type = %removed,
+            replacement = %replacement,
+            "dropping `{removed}` frames from worker {name} ({runtime} SDK {version}): \
+             this engine has no such message; run: iii worker update {name}"
+        );
+    }
+
     /// A frame that is not a valid `Message`. A removed message type (see
     /// [`REMOVED_MESSAGES`]) is dropped with one `warn` per connection and
     /// type, naming what replaces it. Anything else is logged, and answered
@@ -2972,34 +3009,28 @@ impl Engine {
             }
         };
         let message_type = frame.get("type").and_then(Value::as_str);
-        if let Some((index, (removed, replacement))) = message_type.and_then(|message_type| {
+        if let Some((index, _)) = message_type.and_then(|message_type| {
             REMOVED_MESSAGES
                 .iter()
                 .enumerate()
                 .find(|(_, (removed, _))| *removed == message_type)
         }) {
             if worker.first_removed_message(index) {
-                // The connection's own clone is stale; the registry holds the metadata.
-                let (name, runtime, version) = self
-                    .worker_registry
-                    .workers
-                    .get(&worker.id)
-                    .map(|w| (w.name.clone(), w.runtime.clone(), w.version.clone()))
-                    .unwrap_or_default();
-                let unknown = || "unknown".to_string();
-                let (name, runtime, version) = (
-                    name.unwrap_or_else(unknown),
-                    runtime.unwrap_or_else(unknown),
-                    version.unwrap_or_else(unknown),
-                );
-                tracing::warn!(
-                    worker_id = %worker.id,
-                    peer = %peer,
-                    message_type = %removed,
-                    replacement = %replacement,
-                    "dropping `{removed}` frames from worker {name} ({runtime} SDK {version}): \
-                     this engine has no such message; run: iii worker update {name}"
-                );
+                // Name and SDK reach the registry on a spawned task, usually
+                // after this frame is read: hold the warning until the
+                // namespace resolves. The guard serializes with that
+                // transition, so nothing is pushed after it drains.
+                let state = self.namespace_states.get(&worker.id);
+                if matches!(state.as_deref(), Some(NamespaceState::Pending(_))) {
+                    worker
+                        .removed_messages_pending
+                        .lock()
+                        .expect("pending warnings poisoned")
+                        .push((index, peer));
+                } else {
+                    drop(state);
+                    self.warn_removed_frame(worker, peer, index);
+                }
             }
             return;
         }
@@ -9018,6 +9049,8 @@ mod tests {
     #[tokio::test]
     async fn removed_frames_are_dropped_with_one_warning_per_type() {
         ensure_default_meter();
+        // A subscriber keeps the shared warn callsite enabled for the capturing tests.
+        let (_guard, _logs) = crate::deprecation::test_support::capture();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
@@ -9083,6 +9116,80 @@ mod tests {
             "{logs}"
         );
         assert!(logs.contains("run: iii worker update cron"), "{logs}");
+    }
+
+    /// The worker's name and SDK reach the registry after the removed frame is
+    /// read: the one warning waits for the namespace to resolve.
+    #[tokio::test(flavor = "current_thread")]
+    async fn removed_frame_warning_waits_for_worker_metadata() {
+        ensure_default_meter();
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+        let peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let frame = serde_json::json!({ "type": "registertrigger", "id": "t-1" }).to_string();
+        let error = serde_json::from_str::<Message>(&frame).expect_err("not a message");
+        for _ in 0..2 {
+            engine
+                .undecodable_frame(&worker, peer, frame.as_bytes(), &error)
+                .await;
+        }
+        assert!(logs.contents().is_empty(), "held back while pending");
+        engine.worker_registry.update_worker_metadata(
+            &worker.id,
+            "node".into(),
+            Some("0.25.4".into()),
+            Some("cron".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            engine
+                .resolve_connection_namespace(&worker, "default")
+                .await
+        );
+        let logs = logs.contents();
+        assert_eq!(logs.lines().count(), 1, "{logs}");
+        assert!(
+            logs.contains("from worker cron (node SDK 0.25.4)"),
+            "{logs}"
+        );
+        assert!(logs.contains("run: iii worker update cron"), "{logs}");
+        assert!(logs.contains("`registertrigger`"), "{logs}");
+        assert!(logs.contains("replacement="), "{logs}");
+    }
+
+    /// An in-process miss for an id registered in another namespace does not
+    /// claim the worker is not running.
+    #[tokio::test]
+    async fn in_process_miss_skips_migration_message_when_registered_elsewhere() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let function = crate::function::Function {
+            handler: Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Success(None) })),
+            _function_id: "stream::set".into(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function_ns("other", "stream::set".into(), function);
+        let Err(error) = engine.internal_function_handler("default", "stream::set") else {
+            panic!("expected a miss");
+        };
+        assert_eq!(
+            error.message,
+            "Function stream::set not found in namespace default"
+        );
     }
 
     /// A 0.25 SDK's `observe: { delivery: owner }` is refused with
