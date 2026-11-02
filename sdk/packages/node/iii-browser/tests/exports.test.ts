@@ -30,8 +30,8 @@ describe('Package Exports', () => {
       for (const method of [
         'onObserverAdded',
         'onObserverRemoved',
-        'onObserverMatch',
-        'onObserverDeliver',
+        'onObservationMatch',
+        'onObservationDeliver',
         'observers',
         'isObserved',
         'observe',

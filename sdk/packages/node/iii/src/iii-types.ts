@@ -46,7 +46,7 @@ export const FEATURE_OBSERVE_V1 = 'observe.v1'
 /**
  * The host delivers the calls of its functions (routed ones included), and
  * functions may set `args_format`, `private`, `observable: false` and
- * `onObserverDeliver`. Includes `observe.v1`.
+ * `onObservationDeliver`. Includes `observe.v1`.
  */
 export const FEATURE_OBSERVE_V2 = 'observe.v2'
 export const FEATURE_LOCAL_DISPATCH_V1 = 'local-dispatch.v1'
@@ -497,7 +497,7 @@ export type InvocationResultMessage = {
   baggage?: string
   /**
    * Host → engine (`observe.v2`): the observers the function's match hook
-   * (`onObserverMatch`) matched for this routed call, before their `on` and
+   * (`onObservationMatch`) matched for this routed call, before their `on` and
    * filters, which the engine evaluates; `[]` when it matched none. Left out
    * by a function without a match hook: the engine then evaluates every
    * active observer of the function.
@@ -505,7 +505,7 @@ export type InvocationResultMessage = {
   matched?: string[]
   /**
    * Host → engine (`observe.v2`): the function's deliver hook
-   * (`onObserverDeliver`) delivered this routed call, and the engine
+   * (`onObservationDeliver`) delivered this routed call, and the engine
    * activates no observer for it. Sent only as `true`, and without
    * `matched`.
    */

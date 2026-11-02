@@ -496,7 +496,7 @@ func TestHooksByIDSurviveUnregisterAndChain(t *testing.T) {
 	ref = registerHost(t, c, "re::fn", echoHandler)
 	waitUntil(t, "added again", func() bool { a, _ := l.snapshot(); return len(a) == 2 })
 
-	if ref.OnObserverAdded(nil).OnObserverRemoved(nil).OnObserverMatch(nil).OnObserverDeliver(nil) != ref {
+	if ref.OnObserverAdded(nil).OnObserverRemoved(nil).OnObservationMatch(nil).OnObservationDeliver(nil) != ref {
 		t.Fatal("the FunctionRef's hook methods return the handle")
 	}
 	c.mu.Lock()
@@ -600,7 +600,7 @@ func TestUnregisteredHookIDIsReportedOnce(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.newClient()
 	c.OnObserverAddedFor("orders::craete", func(context.Context, *Observer) error { return nil })
-	c.OnObserverDeliverFor("orders::create", nil)
+	c.OnObservationDeliverFor("orders::create", nil)
 	c.OnObserverRemovedFor("orders::create", func(context.Context, *Observer) {})
 	if _, err := c.RegisterFunction("orders::create", echoHandler); err != nil {
 		t.Fatal(err)
@@ -908,97 +908,6 @@ func TestFunctionRejectionIsNotFatal(t *testing.T) {
 	}
 }
 
-// Standby: on FUNCTION_NAMESPACE_CONFLICT the registration is sent again, about once
-// an interval, until the engine accepts it; the hooks then run for the current
-// observers. Without Standby there is no retry.
-func TestStandbyRegistersWhenTheIDIsFree(t *testing.T) {
-	logs := captureLog(t)
-	fe := newFakeEngine(t)
-	fe.setObservers("sb::fn", 1, observerInfo("o1", "x::y", "", ""))
-	fe.mu.Lock()
-	fe.conflicts["sb::fn"] = 2
-	fe.conflicts["nosb::fn"] = 1
-	fe.mu.Unlock()
-	c := fe.client()
-	c.standbyInterval = 20 * time.Millisecond
-	var l hookLog
-	recordHooks(c, "sb::fn", &l)
-	registerHost(t, c, "sb::fn", echoHandler, RegisterFunctionOptions{Standby: true})
-	if a := fe.waitAck("sb::fn", "o1", 1); a.Error != nil {
-		t.Fatalf("o1 %+v", a.Error)
-	}
-	if added, _ := l.snapshot(); !slices.Equal(added, []string{"o1"}) {
-		t.Errorf("added %v", added)
-	}
-	if n := countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "sb::fn"); n != 3 {
-		t.Errorf("%d registrations, want 3 (two refused, one accepted)", n)
-	}
-	if logs.count(`function "sb::fn" in namespace "default" is hosted by worker other-host; standing by`) != 1 {
-		t.Errorf("logs:\n%s", logs.String())
-	}
-
-	if _, err := c.RegisterFunction("nosb::fn", echoHandler); err != nil {
-		t.Fatal(err)
-	}
-	waitUntil(t, "refused", func() bool { return logs.count(`"nosb::fn" in namespace "default" already owned`) == 1 })
-	time.Sleep(80 * time.Millisecond)
-	if n := countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "nosb::fn"); n != 1 {
-		t.Errorf("%d registrations of a function without Standby, want 1", n)
-	}
-}
-
-// Standby retries every second ±20 %: the default interval is one second, every delay
-// falls within 0.8 to 1.2 of the interval, and the delays spread over that range.
-// Scaled down, the registrations the engine receives are spaced the same way.
-func TestStandbyRetriesEverySecondWithJitter(t *testing.T) {
-	if standbyRetryInterval != time.Second {
-		t.Errorf("standbyRetryInterval %s, want 1s", standbyRetryInterval)
-	}
-	c := New("ws://unused.invalid")
-	t.Cleanup(func() { _ = c.Close() })
-	lo, hi := time.Hour, time.Duration(0)
-	for range 2000 {
-		d := c.standbyDelay()
-		if d < 800*time.Millisecond || d > 1200*time.Millisecond {
-			t.Fatalf("delay %s outside 1s ±20 %%", d)
-		}
-		lo, hi = min(lo, d), max(hi, d)
-	}
-	if lo > 850*time.Millisecond || hi < 1150*time.Millisecond {
-		t.Errorf("delays span %s to %s, want them spread over 0.8s to 1.2s", lo, hi)
-	}
-
-	fe := newFakeEngine(t)
-	var mu sync.Mutex
-	var at []time.Time
-	fe.setOnFrame(func(msg map[string]json.RawMessage) {
-		if messageType(msg) == string(MsgRegisterFunction) && messageID(msg) == "jit::fn" {
-			mu.Lock()
-			at = append(at, time.Now())
-			mu.Unlock()
-		}
-	})
-	fe.mu.Lock()
-	fe.conflicts["jit::fn"] = 3
-	fe.mu.Unlock()
-	sb := fe.client()
-	const interval = 200 * time.Millisecond
-	sb.standbyInterval = interval
-	registerHost(t, sb, "jit::fn", echoHandler, RegisterFunctionOptions{Standby: true})
-	mu.Lock()
-	defer mu.Unlock()
-	if len(at) != 4 {
-		t.Fatalf("%d registrations, want 4 (three refused, one accepted)", len(at))
-	}
-	// the spacing is the delay plus a round trip: never under 0.8 of the interval, and
-	// over 1.2 of it only by that round trip
-	for i := 1; i < len(at); i++ {
-		if gap := at[i].Sub(at[i-1]); gap < interval*8/10 || gap > interval*12/10+100*time.Millisecond {
-			t.Errorf("retry %d after %s, want %s ±20 %%", i, gap, interval)
-		}
-	}
-}
-
 func TestOnObserverRemovedFailureIsLogged(t *testing.T) {
 	logs := captureLog(t)
 	fe := newFakeEngine(t)
@@ -1044,7 +953,7 @@ func TestRegisterFunctionOptionsValidation(t *testing.T) {
 	}{
 		{RegisterFunctionOptions{Observable: &open}, `{"id":"f"}`},
 		{RegisterFunctionOptions{Observable: &closed}, `{"id":"f","observable":false}`},
-		{RegisterFunctionOptions{Private: true, Standby: true}, `{"id":"f","private":true}`},
+		{RegisterFunctionOptions{Private: true}, `{"id":"f","private":true}`},
 		{RegisterFunctionOptions{ArgsFormat: json.RawMessage(`{"type":"object"}`)}, `{"id":"f","args_format":{"type":"object"}}`},
 	} {
 		msg, err := registerFunctionMessage("RegisterFunction", "f", tc.opts)
@@ -1105,8 +1014,8 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	c := fe.newClient()
 	closed := false
 	everyCall := MatchFunc(func(*Observer, *Call) bool { return true })
-	c.OnObserverDeliverFor("hooked::fn", handlerAnswer)
-	c.OnObserverMatchFor("matched::fn", everyCall)
+	c.OnObservationDeliverFor("hooked::fn", handlerAnswer)
+	c.OnObservationMatchFor("matched::fn", everyCall)
 	for id, opts := range map[string]RegisterFunctionOptions{
 		"args::fn":    {ArgsFormat: json.RawMessage(`{"type":"object"}`)},
 		"private::fn": {Private: true},
@@ -1131,9 +1040,9 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 		}
 		// the line names every reason, the match and deliver hooks among them
 		reasons := fmt.Sprintf(`UNSUPPORTED: function %q declares args_format, private or observable: false, `+
-			`or sets OnObserverMatch or OnObserverDeliver`, id)
+			`or sets OnObservationMatch or OnObservationDeliver`, id)
 		if logs.count(reasons) != 1 {
-			t.Errorf("%s: UNSUPPORTED line does not name OnObserverMatch and OnObserverDeliver", id)
+			t.Errorf("%s: UNSUPPORTED line does not name OnObservationMatch and OnObservationDeliver", id)
 		}
 	}
 	if countRegister(msgs, string(MsgRegisterFunction), "plain::fn") != 1 {
@@ -1145,21 +1054,21 @@ func TestFunctionsThatNeedObserveV2AreUnsupportedOnOlderEngines(t *testing.T) {
 	waitUntil(t, "later::fn UNSUPPORTED", func() bool { return logs.count(`UNSUPPORTED: function "later::fn"`) == 1 })
 
 	// a deliver hook set on a registered function: unregistered; removed: registered again
-	c.OnObserverDeliverFor("plain::fn", handlerAnswer)
+	c.OnObservationDeliverFor("plain::fn", handlerAnswer)
 	waitFrame(t, fe.m, MsgUnregisterFunction, "plain::fn")
 	if logs.count(`UNSUPPORTED: function "plain::fn"`) != 1 {
 		t.Error("no UNSUPPORTED for plain::fn")
 	}
-	c.OnObserverDeliverFor("plain::fn", nil)
+	c.OnObservationDeliverFor("plain::fn", nil)
 	waitUntil(t, "plain::fn registered again", func() bool {
 		return countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "plain::fn") == 2
 	})
 	// a match hook does the same
-	c.OnObserverMatchFor("plain::fn", everyCall)
+	c.OnObservationMatchFor("plain::fn", everyCall)
 	waitUntil(t, "plain::fn unregistered by its match hook", func() bool {
 		return countRegister(fe.m.receivedMessages(), string(MsgUnregisterFunction), "plain::fn") == 2
 	})
-	c.OnObserverMatchFor("plain::fn", nil)
+	c.OnObservationMatchFor("plain::fn", nil)
 	waitUntil(t, "plain::fn registered once its match hook is removed", func() bool {
 		return countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "plain::fn") == 3
 	})
@@ -1352,7 +1261,7 @@ func TestObserversOfAWithdrawnRegistrationAreIgnored(t *testing.T) {
 	fe.send(&ObserverAddedMessage{FunctionID: "wq::fn", Namespace: "default", Revision: 2, Observer: observerInfo("queued", "x::y", "", "")})
 	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "probe::fn"}))
 
-	ref.OnObserverMatch(MatchFunc(func(*Observer, *Call) bool { return true }))
+	ref.OnObservationMatch(MatchFunc(func(*Observer, *Call) bool { return true }))
 	waitFrame(t, fe.m, MsgUnregisterFunction, "wq::fn")
 	fe.send(&ObserverAddedMessage{FunctionID: "wq::fn", Namespace: "default", Revision: 3, Observer: observerInfo("after", "x::y", "", "")})
 	fe.send(&FunctionRegisteredMessage{ID: "wq::fn", Namespace: "default", Revision: 4, LocalDispatch: true,
@@ -1360,7 +1269,7 @@ func TestObserversOfAWithdrawnRegistrationAreIgnored(t *testing.T) {
 	fe.waitResult(fe.invoke(InvokeFunctionMessage{FunctionID: "probe::fn"}))
 	// registered again (the hook is removed) before the queued add runs: it stays not added
 	fe.setObservers("wq::fn", 5)
-	ref.OnObserverMatch(nil)
+	ref.OnObservationMatch(nil)
 	waitUntil(t, "wq::fn registered again", func() bool {
 		return countRegister(fe.m.receivedMessages(), string(MsgRegisterFunction), "wq::fn") == 2
 	})
@@ -1498,7 +1407,7 @@ func TestAReplayedViewIsFiledUnderItsKeys(t *testing.T) {
 	c := fe.client()
 	var l hookLog
 	recordHooks(c, "rk::fn", &l)
-	c.OnObserverMatchFor("rk::fn", MatchKeys(
+	c.OnObservationMatchFor("rk::fn", MatchKeys(
 		func(obs *Observer) []string { return []string{obs.Target} },
 		func(call *Call) []string {
 			var in struct {

@@ -511,7 +511,7 @@ describe('onObserverAdded / onObserverRemoved', () => {
     const ref = sdk
       .registerFunction('rk::f', (input: unknown) => input)
       .onObserverAdded(added)
-      .onObserverMatch({ observer: (obs) => obs.target, call: (call) => (call.input as { to: string }).to })
+      .onObservationMatch({ observer: (obs) => obs.target, call: (call) => (call.input as { to: string }).to })
     socket.open()
     socket.deliver(functionRegistered('rk::f', [observerInfo('a', 't::one')], { revision: 1 }))
     await settle()
@@ -669,7 +669,7 @@ describe('both levels: the worker hooks and the function hooks', () => {
       })
     sdk
       .registerFunction('b::by-keys', (e: unknown) => e)
-      .onObserverMatch({
+      .onObservationMatch({
         observer: (obs) => {
           if (typeof obs.args.key !== 'string') throw new Error('no key')
           return obs.args.key
@@ -906,14 +906,14 @@ describe('hooks by function id', () => {
     expect(() => sdk.onObserverAdded('a::b', 'nope' as never)).toThrow(TypeError)
     expect(() => (sdk.onObserverAdded as unknown as (id: string) => unknown)('a::b')).toThrow(TypeError)
     expect(() => sdk.onObserverRemoved({} as never)).toThrow(TypeError)
-    expect(() => sdk.onObserverDeliver('', () => null)).toThrow(TypeError)
+    expect(() => sdk.onObservationDeliver('', () => null)).toThrow(TypeError)
   })
 
   it('warns once, when the connection is registered, for each hook id the worker has not registered', () => {
     const { sdk, socket } = worker()
     const warn = warnings()
     sdk.onObserverAdded('db::on-row-chnaged', () => undefined)
-    sdk.onObserverDeliver('cron::on-tick', (call) => call.output)
+    sdk.onObservationDeliver('cron::on-tick', (call) => call.output)
     sdk.registerFunction('cron::on-tick', (e: unknown) => e)
     sdk.onObserverRemoved('gone::fn', () => undefined).onObserverRemoved('gone::fn', null)
     socket.open()
@@ -980,8 +980,8 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     sdk.registerFunction('b::args', (e: unknown) => e, { args_format: { type: 'object' } })
     sdk.registerFunction('c::private', (e: unknown) => e, { private: true })
     sdk.registerFunction('d::secret', async () => null, { observable: false })
-    sdk.registerFunction('e::routed', async () => null).onObserverDeliver((call) => call.output)
-    sdk.onObserverMatch('e::matched', () => true)
+    sdk.registerFunction('e::routed', async () => null).onObservationDeliver((call) => call.output)
+    sdk.onObservationMatch('e::matched', () => true)
     sdk.registerFunction('e::matched', async () => null)
   }
 
@@ -1020,7 +1020,7 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     ])
     // each line names every reason, the match and deliver hooks among them
     for (const line of unsupported()) {
-      expect(line).toContain('(args_format, private, observable: false, onObserverMatch or onObserverDeliver)')
+      expect(line).toContain('(args_format, private, observable: false, onObservationMatch or onObservationDeliver)')
     }
 
     socket.drop()
@@ -1046,8 +1046,8 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
   })
 
   const setHook = {
-    deliver: (ref: FunctionRef, set: boolean) => ref.onObserverDeliver(set ? (call) => call.output : null),
-    match: (ref: FunctionRef, set: boolean) => ref.onObserverMatch(set ? () => true : null),
+    deliver: (ref: FunctionRef, set: boolean) => ref.onObservationDeliver(set ? (call) => call.output : null),
+    match: (ref: FunctionRef, set: boolean) => ref.onObservationMatch(set ? () => true : null),
   }
 
   it.each([
@@ -1086,12 +1086,12 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     expect(ran).toEqual(['slow'])
     // queued behind the running hook, then the registration is withdrawn
     socket.deliver(observerAdded('w::f', 2, observerInfo('queued', 't::b')))
-    ref.onObserverMatch(() => true)
+    ref.onObservationMatch(() => true)
     expect(socket.framesOf('unregisterfunction').map((f) => f.id)).toEqual(['w::f'])
     // announced by the engine before it handled the unregistration
     socket.deliver(observerAdded('w::f', 3, observerInfo('after', 't::c')))
     // registered again (the hook is removed) before the queued add runs: it stays not added
-    ref.onObserverMatch(null)
+    ref.onObservationMatch(null)
     socket.deliver(functionRegistered('w::f', [], { revision: 4 }))
     gate.resolve()
     await settle()
@@ -1105,7 +1105,7 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     const { sdk, socket } = worker()
     const warn = warnings()
     socket.open(null)
-    const ref = sdk.registerFunction('a::plain', async () => 'here').onObserverDeliver((call) => call.output)
+    const ref = sdk.registerFunction('a::plain', async () => 'here').onObservationDeliver((call) => call.output)
     socket.deliver({ type: 'workerregistered', worker_id: 'w-1', features: fake.ENGINE_FEATURES_V1 })
     expect(
       socket
@@ -1179,56 +1179,6 @@ describe('registrations that need observe.v2 (decisions 18, 41)', () => {
     expect(sdk.getFatalError()).toBeUndefined()
     expect(sdk.isObserved('queue::on-message')).toBe(false)
     expect(errors.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('INVALID_ARGS_FORMAT'))).toHaveLength(1)
-  })
-})
-
-describe('standby (decision 21)', () => {
-  const conflict = (fn: string) => ({
-    type: 'registrationrejected',
-    code: 'FUNCTION_NAMESPACE_CONFLICT',
-    namespace: 'default',
-    function_id: fn,
-    owner_worker_id: 'host-1',
-  })
-
-  it('retries the registration every second (±20 %) until the engine accepts it; then the hooks run', async () => {
-    fake.fakeClock()
-    const { sdk, socket } = worker()
-    vi.spyOn(console, 'info').mockImplementation(() => undefined)
-    const added = vi.fn()
-    sdk.registerFunction('cron::on-tick', (t: unknown) => t, { private: true, standby: true }).onObserverAdded(added)
-    socket.open()
-    socket.deliver(conflict('cron::on-tick'))
-    socket.clear()
-    await fake.elapse(799)
-    expect(socket.framesOf('registerfunction')).toHaveLength(0)
-    await fake.elapse(401)
-    expect(socket.framesOf('registerfunction')).toHaveLength(1)
-    socket.deliver(conflict('cron::on-tick'))
-    await fake.elapse(1200)
-    expect(socket.framesOf('registerfunction')).toHaveLength(2)
-    socket.deliver(functionRegistered('cron::on-tick', [observerInfo('a', 't::a'), observerInfo('b', 't::b')]))
-    await settle()
-    expect(added).toHaveBeenCalledTimes(2)
-    await fake.elapse(5000)
-    expect(socket.framesOf('registerfunction')).toHaveLength(2)
-  })
-
-  it('stops when the function is unregistered; a function without standby only logs the conflict', async () => {
-    fake.fakeClock()
-    const { sdk, socket } = worker()
-    vi.spyOn(console, 'info').mockImplementation(() => undefined)
-    const warn = warnings()
-    const ref = sdk.registerFunction('cron::on-tick', (t: unknown) => t, { standby: true })
-    sdk.registerFunction('other::fn', async () => null)
-    socket.open()
-    socket.deliver(conflict('cron::on-tick'))
-    socket.deliver(conflict('other::fn'))
-    ref.unregister()
-    socket.clear()
-    await fake.elapse(5000)
-    expect(socket.framesOf('registerfunction')).toEqual([])
-    expect(warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('already exported'))).toHaveLength(1)
   })
 })
 

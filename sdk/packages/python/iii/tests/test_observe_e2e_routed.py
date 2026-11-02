@@ -271,7 +271,7 @@ def test_a_match_hook_names_a_routed_calls_observers_and_the_engine_applies_thei
     owner = worker("routed-match-owner")
     watcher = worker("routed-match-watcher")
     fn = fid("py-e2e::row-changed")
-    owner.on_observer_match(fn, observer=lambda obs: obs.args["table"], call=lambda call: call.input["table"])
+    owner.on_observation_match(fn, observer=lambda obs: obs.args["table"], call=lambda call: call.input["table"])
     owner.register_function(
         fn,
         lambda change: {"rows": change["rows"]},
@@ -312,7 +312,7 @@ def test_a_routed_call_its_deliver_hook_delivered_activates_no_observer(worker: 
     watcher = worker("routed-deliver-watcher")
     fn = fid("py-e2e::request")
 
-    @owner.on_observer_deliver(fn)
+    @owner.on_observation_deliver(fn)
     async def route(call: Any, observers: Any) -> Any:
         [obs] = observers
         return await owner.call_async({"observer": obs, "payload": {"routed": call.input}})

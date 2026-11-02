@@ -8,7 +8,6 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 )
 
 // The filter index of a function follows its active set through the engine's
@@ -121,25 +120,27 @@ func TestAChangedViewKeepsItsPlaceInTheReports(t *testing.T) {
 }
 
 // When the engine refuses a function its observers leave the index with the active
-// set; when it confirms the function again, a call reaches the observers of the new
-// confirmation only.
+// set; when it confirms the function again (the reconnect replays the registration),
+// a call reaches the observers of the new confirmation only.
 func TestALocalCallAfterARefusalAndANewConfirmation(t *testing.T) {
 	fe := newFakeEngine(t)
 	c := fe.client()
-	c.standbyInterval = 20 * time.Millisecond
 	const fn = "fx::release"
-	registerHost(t, c, fn, echoHandler, RegisterFunctionOptions{Standby: true})
+	registerHost(t, c, fn, echoHandler)
 	addObserver(t, fe, fn, observerInfo("a", "x::y", "", `{"input.k":{"$eq":1}}`))
 	addObserver(t, fe, fn, observerInfo("b", "x::y", "", `{"input.k":{"$eq":1}}`))
 	if got := reportedTo(t, fe, c, fn, `{"k":1,"n":1}`); !slices.Equal(got, []string{"a", "b"}) {
 		t.Fatalf("before the refusal: reported to %v, want [a b]", got)
 	}
 
-	// The confirmation the standby registration gets carries b and c.
+	fe.send(&RegistrationRejectedMessage{Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: fn, OwnerWorkerID: "other-host"})
+	waitUntil(t, "refused", func() bool { return !c.LocalDispatchActive(fn) && len(c.Observers(fn)) == 0 })
+
+	// The confirmation the replayed registration gets carries b and c.
 	fe.setObservers(fn, 3,
 		observerInfo("b", "x::y", "", `{"input.k":{"$eq":1}}`),
 		observerInfo("c", "x::y", "", `{"input.n":{"$gte":0}}`))
-	fe.send(&RegistrationRejectedMessage{Code: "FUNCTION_NAMESPACE_CONFLICT", Namespace: "default", FunctionID: fn, OwnerWorkerID: "other-host"})
+	fe.reconnect(c)
 	for _, id := range []string{"b", "c"} {
 		if a := fe.waitAck(fn, id, 3); a.Error != nil {
 			t.Fatalf("%s %+v", id, a.Error)
@@ -174,7 +175,7 @@ func TestMatchesOnAModifiedCopyOfTheCall(t *testing.T) {
 		got, want bool
 	}
 	results := make(chan []result, 1)
-	c.OnObserverDeliverFor(fn, func(_ context.Context, call *Call, obs []*Observer) (any, error) {
+	c.OnObservationDeliverFor(fn, func(_ context.Context, call *Call, obs []*Observer) (any, error) {
 		bare := func(call Call) *Call {
 			call.hook = nil
 			return &call
@@ -243,7 +244,7 @@ func TestMatchesFromConcurrentGoroutinesOfADeliverHook(t *testing.T) {
 	}
 	const goroutines = 8
 	mismatches := make(chan string, 64)
-	c.OnObserverDeliverFor(fn, func(_ context.Context, call *Call, obs []*Observer) (any, error) {
+	c.OnObservationDeliverFor(fn, func(_ context.Context, call *Call, obs []*Observer) (any, error) {
 		bare := *call
 		bare.hook = nil
 		want := make([]bool, len(obs))
@@ -298,7 +299,7 @@ func TestAHookCallMakesItsViewOnFirstUse(t *testing.T) {
 	c := fe.client()
 	type seen struct{ hooked, before, after bool }
 	got := make(chan seen, 1)
-	c.OnObserverDeliverFor("fx::lazy", func(_ context.Context, call *Call, obs []*Observer) (any, error) {
+	c.OnObservationDeliverFor("fx::lazy", func(_ context.Context, call *Call, obs []*Observer) (any, error) {
 		s := seen{hooked: call.hook != nil}
 		if s.hooked {
 			s.before = call.hook.view != nil

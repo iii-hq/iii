@@ -74,7 +74,7 @@ function typeToString(type: any): string {
     const decl = type.declaration
     if (decl?.signatures) {
       // An overloaded method shows its last overload, the most general one
-      // (`onObserverMatch(hook: MatchHook | null)`).
+      // (`onObservationMatch(hook: MatchHook | null)`).
       const sig = decl.signatures[decl.signatures.length - 1]
       const params =
         sig.parameters

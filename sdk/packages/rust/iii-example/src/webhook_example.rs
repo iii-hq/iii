@@ -65,7 +65,7 @@ pub fn setup(iii: &IIIClient) {
         }
     })
     // Each webhook goes to the observer of its URL.
-    .on_observer_match_for(
+    .on_observation_match_for(
         "example::on-webhook",
         Match::keys(
             |obs| obs.args_value()["url"].as_str().into(),
@@ -75,7 +75,7 @@ pub fn setup(iii: &IIIClient) {
     // The webhook's response is the result of its URL's handler, called
     // through the observer. The observer's filters decide whether it gets the
     // webhook at all.
-    .on_observer_deliver_for("example::on-webhook", {
+    .on_observation_deliver_for("example::on-webhook", {
         let iii = iii.clone();
         move |call: Call, observers: Vec<Observer>| {
             let iii = iii.clone();

@@ -94,7 +94,7 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
       .registerFunction(`e2e::ship-${RUN}`, async (input: { region: string; weight: number }) => input, {
         args_format: { type: 'object', properties: { region: { type: 'string' } } },
       })
-      .onObserverMatch({ observer: (obs) => obs.args.region as string, call: (call) => call.input.region })
+      .onObservationMatch({ observer: (obs) => obs.args.region as string, call: (call) => call.input.region })
     const eu = collector(watcher, `e2e::on-eu-${RUN}`)
     const heavy = collector(watcher, `e2e::on-eu-heavy-${RUN}`)
     const us = collector(watcher, `e2e::on-us-${RUN}`)
@@ -130,7 +130,7 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     const watcher = worker('routed-watcher')
     owner
       .registerFunction(`e2e::ask-${RUN}`, async (q: string) => q)
-      .onObserverDeliver(async (call, observers) => {
+      .onObservationDeliver(async (call, observers) => {
         const [obs] = observers
         if (!obs) return 'nobody'
         return owner.call({ observer: obs, payload: call.input })

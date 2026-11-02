@@ -295,7 +295,7 @@ func TestTooLargeAnswerActivatesNoObserver(t *testing.T) {
 
 	// end to end: a match hook that matched the observer, and an answer too large
 	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes) + `"`)
-	c.OnObserverMatchFor("big::matched", MatchFunc(func(*Observer, *Call) bool { return true }))
+	c.OnObservationMatchFor("big::matched", MatchFunc(func(*Observer, *Call) bool { return true }))
 	registerHost(t, c, "big::matched", func(context.Context, json.RawMessage) (any, error) { return huge, nil })
 	addObserver(t, fe, "big::matched", observerInfo("o-big", "x::y", "", ""))
 	waitUntil(t, "the match hook installed", func() bool { return c.functionObservers("big::matched").state.Load().match != nil })

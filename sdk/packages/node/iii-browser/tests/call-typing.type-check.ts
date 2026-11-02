@@ -67,28 +67,28 @@ async function callTypingAssertions() {
   type Click = { selector: string; x: number; y: number }
   const clicks: FunctionRef<Click, Click> = worker
     .registerFunction('ui::on-click', (click: Click) => click, { private: true })
-    .onObserverMatch({
+    .onObservationMatch({
       observer: (obs) => obs.args.selector as string,
       call: (call) => [call.input.selector, '*'],
     })
-    .onObserverMatch((obs, call) => obs.args.selector === call.input.selector)
+    .onObservationMatch((obs, call) => obs.args.selector === call.input.selector)
   clicks.isObserved({ input: { selector: '#buy', x: 0, y: 0 } })
   const keys: MatchHook<Click, Click> = { observer: () => 'k', call: () => ['k'] }
-  clicks.onObserverMatch(keys).onObserverMatch(null)
+  clicks.onObservationMatch(keys).onObservationMatch(null)
 
   // An async handler's resolved type is the output observers observe; the deliver hook's
   // return type is what the caller gets back.
   worker
     .registerFunction('orders::create', async (order: { qty: number }) => ({ id: 'o-1', qty: order.qty }))
-    .onObserverDeliver((call: Call<{ qty: number }, { id: string; qty: number }>, observers) =>
+    .onObservationDeliver((call: Call<{ qty: number }, { id: string; qty: number }>, observers) =>
       observers.length > 0 ? (call.output?.id ?? 'none') : 'unobserved',
     )
 
   // Untyped hooks by id read their call's input.
   worker
-    .onObserverMatch('ui::on-click', (obs, call) => obs.args.selector === call.input.selector)
-    .onObserverMatch('ui::on-key', { observer: (obs) => obs.id, call: (call) => call.input.key })
-    .onObserverDeliver('ui::on-command', async (call, [route]) => (route ? route.matches(call) : false))
+    .onObservationMatch('ui::on-click', (obs, call) => obs.args.selector === call.input.selector)
+    .onObservationMatch('ui::on-key', { observer: (obs) => obs.id, call: (call) => call.input.key })
+    .onObservationDeliver('ui::on-command', async (call, [route]) => (route ? route.matches(call) : false))
   worker.onObserverAdded(() => undefined).onObserverRemoved('ui::on-click', null)
   worker.observe('ui::on-click', 'ui::highlight')
 }
