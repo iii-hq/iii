@@ -252,7 +252,7 @@ pub fn validate_manifest_keys(
     Err(format!(
         "unknown key(s) in {}: [{}]. Supported fields are: name, description, \
          runtime.base_image, scripts.(setup|install|start), env, dependencies, \
-         resources.(cpus|memory), plus the registry publish metadata keys \
+         resources.(cpus|memory), min_iii_version, plus the registry publish metadata keys \
          (iii, deploy, manifest, tags, license) which the engine accepts and \
          ignores.",
         manifest_path.display(),
@@ -1042,6 +1042,12 @@ resources:
             !deprecated.iter().any(|d| d == "description"),
             "description must not be deprecated: {deprecated:?}"
         );
+    }
+
+    #[test]
+    fn validate_keys_supports_min_iii_version() {
+        let d = doc("name: w\nmin_iii_version: 0.26.0\n");
+        assert!(validate_manifest_keys(&d, &dummy_manifest_path()).is_ok());
     }
 
     #[test]

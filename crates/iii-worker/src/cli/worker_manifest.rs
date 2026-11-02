@@ -125,6 +125,11 @@ pub struct WorkerManifest {
     pub license: Option<String>,
 
     #[schemars(
+        description = "Optional minimum iii engine (MAJOR.MINOR.PATCH). Enforced: add/start refuse when the installed iii is older."
+    )]
+    pub min_iii_version: Option<String>,
+
+    #[schemars(
         with = "Option<JsonValue>",
         description = "DEPRECATED — set per-worker config directly in your project's config.yaml entry instead. Copied verbatim into config.yaml at add time."
     )]
@@ -271,6 +276,7 @@ fn shape_problems(doc: &YamlValue) -> Vec<String> {
         "deploy",
         "manifest",
         "license",
+        "min_iii_version",
     ] {
         if let Some(v) = present(doc.get(field))
             && v.as_str().is_none()
@@ -579,6 +585,15 @@ pub fn report_from_str(content: &str) -> ManifestReport {
         }
     };
 
+    if let Some(min) = manifest.min_iii_version.as_deref()
+        && !super::engine_compat::valid_min_iii_version(min)
+    {
+        report.errors.push(format!(
+            "`min_iii_version` must be MAJOR.MINOR.PATCH (e.g. `0.26.0`), got {:?}",
+            sanitize_key(min)
+        ));
+    }
+
     let (unknown, deprecated) = manifest.classify_keys();
     report.unknown_keys = unknown;
     report.deprecated_keys = deprecated;
@@ -734,6 +749,24 @@ mod tests {
             r.errors
                 .iter()
                 .any(|e| e.contains("`deploy` must be a string, got a mapping")),
+            "got: {r:?}"
+        );
+    }
+
+    #[test]
+    fn report_accepts_min_iii_version() {
+        let r = report("name: w\nmin_iii_version: 0.26.0\nscripts:\n  start: run\n");
+        assert!(r.valid, "min_iii_version must be accepted: {r:?}");
+        assert!(r.errors.is_empty(), "{r:?}");
+        assert!(r.unknown_keys.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn report_rejects_malformed_min_iii_version() {
+        let r = report("name: w\nmin_iii_version: \"0.26\"\nscripts:\n  start: run\n");
+        assert!(!r.valid, "{r:?}");
+        assert!(
+            r.errors.iter().any(|e| e.contains("min_iii_version")),
             "got: {r:?}"
         );
     }
