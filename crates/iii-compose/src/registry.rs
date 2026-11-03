@@ -886,19 +886,25 @@ async fn resolve_response(
     version_range: &str,
     candidates: &[&str],
 ) -> Result<ResolveResponse> {
-    let client = reqwest::Client::builder()
-        .timeout(RESOLVE_ATTEMPT_TIMEOUT)
+    let mut builder = reqwest::Client::builder().timeout(RESOLVE_ATTEMPT_TIMEOUT);
+    if let Some(version) = crate::host_version() {
+        builder = builder.user_agent(format!("iii/{version}"));
+    }
+    let client = builder
         .build()
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
     let endpoint = format!("{registry}/resolve");
     let mut index = 0;
     let response = loop {
-        let request = serde_json::json!({
+        let mut request = serde_json::json!({
             "worker": name,
             "version": version_range,
             "target": candidates[index],
         });
+        if let Some(version) = crate::host_version() {
+            request["iii_version"] = version.into();
+        }
         let response = send_resolve_request(&client, &endpoint, &request)
             .await
             .map_err(|err| registry_error(container, registry, &err.to_string()))?;
@@ -1089,8 +1095,12 @@ fn registry_message(status: u16, body: &str) -> String {
 
     let mut sentence = message;
     if let Some(fix) = text("fix") {
-        sentence.push(' ');
-        sentence.push_str(&fix);
+        // The registry sometimes already ends the message with the fix ("; run: iii update").
+        let needle = fix.trim().trim_end_matches(['.', '!']).to_lowercase();
+        if !needle.is_empty() && !sentence.to_lowercase().contains(&needle) {
+            sentence.push(' ');
+            sentence.push_str(&fix);
+        }
     }
 
     // `fix` usually recites the versions already ("request one of: ..."), so the
@@ -1795,6 +1805,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_sends_host_iii_version() {
+        crate::set_host_version("0.26.0");
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"iii_version": "0.26.0"}),
+            ))
+            .and(matchers::header("user-agent", "iii/0.26.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "state",
+                    "version": "1.0.0",
+                    "type": "binary",
+                    "binaries": {}
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "1.0.0",
+            &["x86_64-unknown-linux-gnu"],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn incompatible_engine_409_is_reported_with_registry_message() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "error": {
+                    "code": "incompatible_engine",
+                    "scope": "worker",
+                    "message": "state 1.0.0 requires iii >=0.26.0, running 0.25.0; run: iii update",
+                    "required_iii_engine_version": ">=0.26.0"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "1.0.0",
+            &["x86_64-unknown-linux-gnu"],
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            ComposeError::PackageNotResolved { message, .. } => {
+                assert!(message.contains("requires iii >=0.26.0, running 0.25.0; run: iii update"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn a_cached_install_is_reused_and_corruption_is_repaired() {
         let server = MockServer::start().await;
         let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
@@ -2146,6 +2224,18 @@ mod tests {
     }
 
     // The bodies below are what api.workers.iii.dev actually answers.
+
+    #[test]
+    fn a_fix_already_in_the_message_is_not_repeated() {
+        let body = r#"{"error":{"code":"incompatible_engine","message":"state requires iii >=0.26.0, running 0.25.0; run: iii update","fix":"Run: iii update"}}"#;
+        assert_eq!(
+            registry_message(409, body)
+                .to_lowercase()
+                .matches("iii update")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn an_unknown_worker_reads_as_a_sentence() {

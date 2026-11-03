@@ -25,6 +25,7 @@ pub mod dag;
 mod dependencies;
 pub mod edit;
 pub mod engine;
+pub mod engine_compat;
 pub mod error;
 pub mod hooks;
 pub mod interpolate;
