@@ -378,6 +378,9 @@ fn fields_added_in_1_2_read_as_absent_from_an_older_peer() {
     }))
     .unwrap();
     assert!(!logs.from_end);
+
+    let started: WorkerLogsResponse = from_value(json!({})).unwrap();
+    assert!(started.cursor.is_none());
 }
 
 #[test]

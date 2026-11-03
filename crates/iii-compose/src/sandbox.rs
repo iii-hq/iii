@@ -2057,7 +2057,7 @@ pub(crate) mod tests {
     /// that stays dead. Each answered or unanswered call but the SDK's own
     /// registration goes to the receiver as (function id, payload). A channel
     /// socket sends one line at cursor 12, none when the `worker::logs` before
-    /// it asked from there, then closes.
+    /// it asked from there or from the end, then closes.
     pub(crate) async fn fake_engine(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
@@ -2135,7 +2135,12 @@ pub(crate) mod tests {
                             continue;
                         }
                         if function.ends_with("::worker::logs") {
-                            *asked_from.lock().unwrap() = message["data"]["cursor"].as_u64();
+                            // From the end of a log whose last record is 12: nothing to send.
+                            *asked_from.lock().unwrap() = if message["data"]["from_end"] == true {
+                                Some(12)
+                            } else {
+                                message["data"]["cursor"].as_u64()
+                            };
                         }
                         let end = |direction| json!({"channel_id": "c", "access_key": "k", "direction": direction});
                         let mut reply = match function {

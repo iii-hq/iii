@@ -209,7 +209,7 @@ iii sandbox destroy
 
 #### `iii sandbox run`
 
-Boot this container's VM, or reattach to it, and stay with it until it exits. Stopping this command stops the VM
+Boot this container's VM, or reattach to it, and stay with it until it exits. Stopping this command stops the VM. Exits with the VM's code, 128+N when the VM ended on signal N, or 125 when `iii sandbox` itself failed
 
 ```text
 iii sandbox run [OPTIONS]

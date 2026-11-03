@@ -48,12 +48,12 @@
   "WorkerLogsRequest": {
     "auth": "tok",
     "vm_id": "vm-1",
-    "cursor": null,
+    "cursor": 7,
     "follow": true,
     "channel": { "channel_id": "ch-1", "access_key": "key", "direction": "write" },
     "from_end": true
   },
-  "WorkerLogsResponse": {},
+  "WorkerLogsResponse": { "cursor": 41 },
   "LogRecord": { "stream": "stderr", "line": "boom", "ts_ms": 1700000001000, "cursor": 8 },
   "LogStream": "stdout",
   "WorkerStopRequest": { "auth": "tok", "vm_id": "vm-1", "instance": 3, "grace_ms": 5000 },

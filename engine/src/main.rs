@@ -565,7 +565,8 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        // Its stdout and stderr are the guest's: nothing else may print there.
+        // Its stdout is the guest's alone; its stderr is the guest's plus its own
+        // `iii sandbox:` lines.
         Some(Commands::Sandbox(args)) => {
             std::process::exit(iii_compose::sandbox_cli::run(args.clone()).await)
         }

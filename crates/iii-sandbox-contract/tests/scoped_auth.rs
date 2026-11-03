@@ -50,6 +50,15 @@ fn a_scoped_token_matches_only_its_own_vm_and_project() {
     }
 }
 
+/// HMAC with an empty key is public, so an adapter without a project token accepts nothing.
+#[test]
+fn an_empty_project_token_or_state_key_never_matches() {
+    let forged = scoped_auth_token("", "9f2c1e");
+    assert!(!scoped_auth_matches("", "9f2c1e", &forged));
+    let unscoped = scoped_auth_token("tok", "");
+    assert!(!scoped_auth_matches("tok", "", &unscoped));
+}
+
 #[test]
 fn a_malformed_or_truncated_token_never_matches() {
     let vector = &vectors()[0];
