@@ -22,11 +22,10 @@ stack.
 
 iii reduces that quadratic effort to zero. Adding two workers or two hundred is the same operation.
 
-iii accomplishes this by organizing software around one primitive, the **Function**, and two
-operators: you **call** a function, or you **observe** it. Calling runs a function now. Observing
-runs a function each time another function has an event. Every capability in every system can be
-built from functions and these two operators: queues, cron, streaming, sandboxing, observability,
-agents, business logic, devices, even frontend browser UIs.
+iii accomplishes this by organizing software into three primitives: **Worker**, **Trigger**,
+**Function**. Something hosts work, something causes it, something does it. Every capability in
+every system can be built from these three things: queues, cron, streaming, sandboxing,
+observability, agents, business logic, devices, even frontend browser UIs.
 
 ## Have a Need? Add a Worker
 
@@ -40,7 +39,7 @@ available to every other worker in the system and recorded in `worker-compose.ya
 
 ## Same Contract, Both Sides
 
-Application teams register functions and call or observe them, focused entirely on business logic.
+Application teams register functions and declare triggers, focused entirely on business logic.
 Platform teams publish workers, focused entirely on the capabilities they provide. Both sides
 fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service API
 contracts. The work that used to live between teams disappears.
@@ -58,15 +57,15 @@ agentic. In iii an agent is a worker and can, with permission, act on every part
 through the shared system runtime.
 
 Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
-calls and observers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
+triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
 rest of the system. An agent that hits a task outside its current capabilities can register a worker
 at runtime, expose new functions, and extend the system it operates inside. That is what makes iii
 different.
 
 Humans and agents share one mental model. A new engineer is productive on day one because the mental
 model never changes from one capability to the next. AI agents can reliably reason about an entire
-system in a single context window because there is one primitive to learn and one always-accurate
-source of truth for what exists.
+system in a single context window because there is one set of primitives to learn and one
+always-accurate source of truth for what exists.
 
 As agents do more of the work of building and operating software, the size of that primitive set is
 what compounds: easier to onboard, cheaper to prompt, faster to extend, simpler to maintain.
