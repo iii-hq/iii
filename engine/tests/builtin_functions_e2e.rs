@@ -137,6 +137,10 @@ async fn the_trigger_builtins_are_not_registered() {
             .await
             .expect_err("no such function");
         assert_eq!(error.code, "function_not_found", "{id}: {error:?}");
+        assert!(
+            error.message.contains("was removed in iii 0.26"),
+            "{id}: {error:?}"
+        );
     }
 }
 

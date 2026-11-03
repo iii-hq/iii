@@ -38,18 +38,56 @@ fn stream_unavailable_message(function_id: &str) -> Option<String> {
 }
 
 /// Explain how to enable or migrate away from a deprecated `stream::*`
-/// function that is not running.
+/// function that is not running, or what replaces a removed trigger builtin.
 ///
 /// This module is compiled into both the engine library and the `iii` binary.
 /// Keeping the message here makes SDK invocation errors and dynamic CLI help
 /// point at the same replacement without exposing a new public API.
 pub(crate) fn migration_message(function_id: &str) -> Option<String> {
-    stream_unavailable_message(function_id)
+    if let Some(message) = stream_unavailable_message(function_id) {
+        return Some(message);
+    }
+
+    if matches!(
+        function_id,
+        "engine::register_trigger" | "engine::unregister_trigger"
+    ) || function_id.starts_with("engine::triggers::")
+        || function_id.starts_with("engine::registered-triggers::")
+    {
+        return Some(format!(
+            "`{function_id}` was removed in iii 0.26: use `observe` / \
+             `engine::observers::dispose`; update the worker"
+        ));
+    }
+
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_builtins_point_to_observe() {
+        for function_id in [
+            "engine::register_trigger",
+            "engine::unregister_trigger",
+            "engine::triggers::list",
+            "engine::registered-triggers::info",
+        ] {
+            assert_eq!(
+                migration_message(function_id).as_deref(),
+                Some(
+                    format!(
+                        "`{function_id}` was removed in iii 0.26: use `observe` / \
+                         `engine::observers::dispose`; update the worker"
+                    )
+                    .as_str()
+                )
+            );
+        }
+        assert!(migration_message("engine::observers::list").is_none());
+    }
 
     #[test]
     fn missing_stream_functions_explain_iii_stream_and_link_the_guide() {
