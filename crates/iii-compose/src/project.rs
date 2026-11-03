@@ -36,7 +36,7 @@ use crate::{
     config::{ComposeFile, RestartConfig},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::{self, Children, LifecycleCtx, OpResult},
+    lifecycle::{self, Child, Children, LifecycleCtx, OpResult},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     restart,
@@ -61,6 +61,9 @@ pub struct Project {
     post_runs: crate::hooks::PostRunSupervisor,
     logs: LogStore,
     store: StateStore,
+    /// `DaemonState::sandbox_token`, copied out so a lifecycle call needs no
+    /// state lock to read it.
+    sandbox_token: String,
     inner: Mutex<Inner>,
     shutdown: crate::shutdown::ShutdownController,
 }
@@ -193,11 +196,12 @@ impl Project {
     pub(crate) async fn open_with_shutdown(
         daemon_namespace: &str,
         project_namespace: String,
-        file: ComposeFile,
+        mut file: ComposeFile,
         engine: Arc<EngineClient>,
         engine_url: String,
         shutdown: crate::shutdown::ShutdownController,
     ) -> Result<Arc<Self>> {
+        crate::sandbox::wire_adapter(&mut file)?;
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
         let file_path = file.path.clone();
 
@@ -210,6 +214,11 @@ impl Project {
         let mut state =
             recovered.unwrap_or_else(|| DaemonState::new(&file.path, &project_namespace));
         state.namespace = project_namespace.clone();
+        // Saved by `reconcile_recovered` below, so a restart reuses it.
+        let sandbox_token = state
+            .sandbox_token
+            .get_or_insert_with(|| uuid::Uuid::new_v4().simple().to_string())
+            .clone();
         let log_dir = store.dir().join("logs");
         let logs = LogStore::open(log_dir.clone()).map_err(|source| ComposeError::Io {
             path: log_dir,
@@ -227,6 +236,7 @@ impl Project {
             post_runs: crate::hooks::PostRunSupervisor::default(),
             logs,
             store,
+            sandbox_token,
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
                 state,
@@ -244,6 +254,12 @@ impl Project {
         &self.file_path
     }
 
+    /// The file as held in memory, wiring included.
+    #[cfg(test)]
+    pub(crate) async fn held_file(&self) -> ComposeFile {
+        self.file.read().await.clone()
+    }
+
     /// Commits the package lock and refreshes the metadata used by future starts.
     /// Existing declarations and running child supervision stay unchanged.
     /// Cancellation while waiting for the metadata lock leaves disk untouched;
@@ -254,8 +270,18 @@ impl Project {
         prepared: &crate::lockfile::PreparedLock,
     ) -> Result<()> {
         let mut current = self.file.write().await;
-        prepared.write_if_changed()?;
-        for (key, container) in &mut current.containers {
+        // Built aside and swapped in, so a wiring cycle leaves both the lock and
+        // the held file as they were.
+        let mut next = current.clone();
+        // `up` may just have written the adapter into an already loaded project.
+        if let Some(key) =
+            crate::sandbox::adapter_key(resolved, crate::sandbox::adapter_name(resolved))?
+            && !next.containers.contains_key(&key)
+        {
+            next.containers
+                .insert(key.clone(), resolved.containers[&key].clone());
+        }
+        for (key, container) in &mut next.containers {
             let Some(source) = resolved.containers.get(key) else {
                 continue;
             };
@@ -263,6 +289,9 @@ impl Project {
                 container.resolved_package = source.resolved_package.clone();
             }
         }
+        crate::sandbox::wire_adapter(&mut next)?;
+        prepared.write_if_changed()?;
+        *current = next;
         Ok(())
     }
 
@@ -295,7 +324,12 @@ impl Project {
             inner
                 .children
                 .iter()
-                .filter(|(_, child)| matches!(child.poll(), crate::process::Outcome::Running))
+                .filter(|(_, child)| {
+                    matches!(
+                        child.poll(),
+                        crate::process::Outcome::Running | crate::process::Outcome::Unknown
+                    )
+                })
                 .map(|(key, _)| {
                     let budget = file
                         .containers
@@ -390,7 +424,8 @@ impl Project {
                 .iter()
                 .filter_map(|(key, child)| match child.poll() {
                     crate::process::Outcome::Exited(status) => Some((key.clone(), status)),
-                    crate::process::Outcome::Running => None,
+                    // An adapter that does not answer says nothing about its VM.
+                    crate::process::Outcome::Running | crate::process::Outcome::Unknown => None,
                 })
                 .collect()
         };
@@ -753,37 +788,98 @@ impl Project {
             .collect();
 
         for (key, record) in recorded {
-            match reconcile(&record) {
-                Reconciliation::Adopt => match Supervised::adopt(record.pid, &record.birth) {
-                    Some(child) if !owner_alive => left_behind.push((key.clone(), child)),
-                    Some(child) => {
-                        daemon_line(
-                            &self.project_namespace,
-                            &format!("{key} survived (pid {}), adopted", record.pid),
-                            Tone::Plain,
-                        );
-                        inner.children.insert(key.clone(), child);
+            // Only its adapter can answer for a VM that the record says may
+            // still run.
+            let vm = record
+                .vm
+                .clone()
+                .filter(|_| reconcile(&record) != Reconciliation::Stopped);
+            let verdict = match &vm {
+                Some(vm) => crate::sandbox::vm_reconciliation(
+                    owner_alive,
+                    crate::sandbox::worker_status(self.engine.client(), vm, &self.sandbox_token)
+                        .await,
+                ),
+                None => reconcile(&record),
+            };
+            match (verdict, record.pid, &record.birth, vm) {
+                // No log stream, like an adopted process.
+                (Reconciliation::Adopt, .., Some(vm)) => {
+                    daemon_line(
+                        &self.project_namespace,
+                        &format!(
+                            "{key} survived (VM {} instance {}), adopted",
+                            vm.vm_id, vm.instance
+                        ),
+                        Tone::Plain,
+                    );
+                    let vm = crate::sandbox::RemoteVm::spawn(
+                        self.engine.client().clone(),
+                        vm,
+                        self.sandbox_token.clone(),
+                        None,
+                    );
+                    inner.children.insert(key.clone(), Child::Vm(vm));
+                }
+                // The adapter's lifeline took it with the compose that is gone.
+                (Reconciliation::Stopped, .., Some(_)) => {
+                    if let Some(entry) = inner.state.containers.get_mut(&key) {
+                        entry.status = ChildStatus::Stopped;
                     }
-                    // `reconcile` verified the identity a moment ago, so this
-                    // means the process exited in between. Record it as gone
-                    // rather than claiming an adoption that did not happen.
-                    None => {
-                        daemon_line(
-                            &self.project_namespace,
-                            &format!("{key} exited while it was being adopted"),
-                            Tone::Warn,
-                        );
-                        if let Some(entry) = inner.state.containers.get_mut(&key) {
-                            entry.status = ChildStatus::Failed;
-                            entry.last_error =
-                                Some("exited while it was being adopted".to_string());
+                }
+                (Reconciliation::Adopt, Some(pid), Some(birth), None) => {
+                    match Supervised::adopt(pid, birth) {
+                        Some(child) if !owner_alive => left_behind.push((key.clone(), child)),
+                        Some(child) => {
+                            daemon_line(
+                                &self.project_namespace,
+                                &format!("{key} survived (pid {pid}), adopted"),
+                                Tone::Plain,
+                            );
+                            inner.children.insert(key.clone(), Child::Process(child));
+                        }
+                        // `reconcile` verified the identity a moment ago, so this
+                        // means the process exited in between. Record it as gone
+                        // rather than claiming an adoption that did not happen.
+                        None => {
+                            daemon_line(
+                                &self.project_namespace,
+                                &format!("{key} exited while it was being adopted"),
+                                Tone::Warn,
+                            );
+                            if let Some(entry) = inner.state.containers.get_mut(&key) {
+                                entry.status = ChildStatus::Failed;
+                                entry.last_error =
+                                    Some("exited while it was being adopted".to_string());
+                            }
                         }
                     }
-                },
-                // Stopped by this daemon and recorded as such: the expected
-                // state after `down`, not an anomaly worth a line.
-                Reconciliation::Stopped => {}
-                Reconciliation::Gone => {
+                }
+                // Stopped by this daemon, or failed with its last_error saved:
+                // the expected state after `down` or a failure, not an anomaly
+                // worth a line.
+                (Reconciliation::Stopped, ..) => {}
+                (Reconciliation::Unverifiable, Some(pid), ..) => {
+                    // Never signalled: the pid is alive but unproven.
+                    daemon_line(
+                        &self.project_namespace,
+                        &format!(
+                            "{key}: pid {pid} is alive but is not provably ours; left running \
+                             for manual cleanup"
+                        ),
+                        Tone::Warn,
+                    );
+                    if let Some(entry) = inner.state.containers.get_mut(&key) {
+                        entry.status = ChildStatus::Failed;
+                        entry.last_error = Some(format!("pid {pid} could not be verified"));
+                    }
+                }
+                // The rest is gone: a process that is not running, or a VM its
+                // adapter says has exited or no longer knows.
+                (
+                    Reconciliation::Gone | Reconciliation::Adopt | Reconciliation::Unverifiable,
+                    ..,
+                ) => {
                     daemon_line(
                         &self.project_namespace,
                         &format!("{key} exited while the daemon was away"),
@@ -792,23 +888,6 @@ impl Project {
                     if let Some(entry) = inner.state.containers.get_mut(&key) {
                         entry.status = ChildStatus::Failed;
                         entry.last_error = Some("exited while the daemon was away".to_string());
-                    }
-                }
-                Reconciliation::Unverifiable => {
-                    // Never signalled: the pid is alive but unproven.
-                    daemon_line(
-                        &self.project_namespace,
-                        &format!(
-                            "{key}: pid {} is alive but is not provably ours; left running \
-                             for manual cleanup",
-                            record.pid
-                        ),
-                        Tone::Warn,
-                    );
-                    if let Some(entry) = inner.state.containers.get_mut(&key) {
-                        entry.status = ChildStatus::Failed;
-                        entry.last_error =
-                            Some(format!("pid {} could not be verified", record.pid));
                     }
                 }
             }
@@ -849,13 +928,6 @@ impl Project {
         self.store.dir()
     }
 
-    /// Per-container VM state: rootfs, boot script, pid file. Keyed by project
-    /// rather than by worker name, so two projects using the same container key
-    /// stay apart.
-    fn vm_dir(&self) -> PathBuf {
-        self.store.dir().join("vm")
-    }
-
     /// Installed packages live at the root, not inside a daemon or a project:
     /// the same `state 0.21.4` serves every project on this machine, and
     /// deriving this by walking up from the state directory would silently
@@ -878,7 +950,6 @@ impl Project {
     ) -> Option<OpResult> {
         let shutdown = shutdown.or(self.shutdown.signal());
         let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = match shutdown.run(self.inner.lock()).await {
             Some(inner) => inner,
@@ -910,7 +981,8 @@ impl Project {
             engine_url: &self.engine_url,
             logs: &self.logs,
             package_cache: &package_cache,
-            vm_dir: &vm_dir,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
         };
 
@@ -942,7 +1014,6 @@ impl Project {
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult, bool) {
         let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(None);
@@ -965,7 +1036,8 @@ impl Project {
             engine_url: &self.engine_url,
             logs: &self.logs,
             package_cache: &package_cache,
-            vm_dir: &vm_dir,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
         };
 
@@ -1033,7 +1105,6 @@ impl Project {
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult) {
         let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(None);
@@ -1055,7 +1126,8 @@ impl Project {
                 engine_url: &self.engine_url,
                 logs: &self.logs,
                 package_cache: &package_cache,
-                vm_dir: &vm_dir,
+                state_dir: self.store.dir(),
+                sandbox_token: &self.sandbox_token,
                 empty_env_diagnostics: &empty_env_diagnostics,
             };
             let mut stopped = Vec::with_capacity(removed.len());
@@ -1090,7 +1162,8 @@ impl Project {
             engine_url: &self.engine_url,
             logs: &self.logs,
             package_cache: &package_cache,
-            vm_dir: &vm_dir,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
         };
         let up = lifecycle::up(
@@ -1133,7 +1206,6 @@ impl Project {
         supervised_attempt: Option<(u32, u32)>,
     ) -> OpResult {
         let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let Inner {
             children, state, ..
@@ -1149,7 +1221,8 @@ impl Project {
             engine_url: &self.engine_url,
             logs: &self.logs,
             package_cache: &package_cache,
-            vm_dir: &vm_dir,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
         };
 
@@ -1173,7 +1246,6 @@ impl Project {
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
         let package_cache = self.package_cache();
-        let vm_dir = self.vm_dir();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let mut inner = self.inner.lock().await;
         inner.restarts.operator_took_control(target);
@@ -1192,7 +1264,8 @@ impl Project {
             engine_url: &self.engine_url,
             logs: &self.logs,
             package_cache: &package_cache,
-            vm_dir: &vm_dir,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
         };
 
@@ -1223,7 +1296,10 @@ impl Project {
                     .or_else(|| stored.as_ref().and_then(|state| state.containers.get(key)));
                 let running = inner.as_ref().is_some_and(|inner| {
                     inner.children.get(key).is_some_and(|child| {
-                        matches!(child.poll(), crate::process::Outcome::Running)
+                        matches!(
+                            child.poll(),
+                            crate::process::Outcome::Running | crate::process::Outcome::Unknown
+                        )
                     })
                 });
                 let state = match (running, record.map(|record| record.status)) {
@@ -1238,7 +1314,7 @@ impl Project {
                         .containers
                         .get(key)
                         .and_then(|container| container.version_label()),
-                    pid: record.filter(|_| running).map(|record| record.pid),
+                    pid: record.filter(|_| running).and_then(|record| record.pid),
                     owned: inner
                         .as_ref()
                         .is_some_and(|inner| inner.children.contains_key(key)),
@@ -1409,7 +1485,9 @@ mod reconnect_shutdown_tests {
                 "worker".into(),
                 crate::state::ChildRecord::from_supervised(&child, ChildStatus::Ready),
             );
-            inner.children.insert("worker".into(), child);
+            inner
+                .children
+                .insert("worker".into(), Child::Process(child));
             project.store.save(&inner.state).unwrap();
         }
         let mut reconnect = Box::pin(project.reconcile_after_reconnect());
@@ -1427,6 +1505,44 @@ mod reconnect_shutdown_tests {
                 .await,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod sandbox_token_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_sandbox_token_is_minted_once_and_survives_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: sleep 60 }\n",
+        )
+        .unwrap();
+        let namespace = format!("token-{}", uuid::Uuid::new_v4());
+        let open = || async {
+            Project::open(
+                &namespace,
+                "default".into(),
+                ComposeFile::load(&path).unwrap(),
+                Arc::new(EngineClient::connect(
+                    "ws://127.0.0.1:1/ws",
+                    "compose",
+                    "token-test",
+                )),
+                "ws://127.0.0.1:1/ws".into(),
+            )
+            .await
+            .unwrap()
+        };
+
+        let first = open().await;
+        assert_eq!(first.sandbox_token.len(), 32);
+        let saved = first.store.load().unwrap().unwrap();
+        assert_eq!(saved.sandbox_token.as_deref(), Some(&*first.sandbox_token));
+        assert_eq!(open().await.sandbox_token, first.sandbox_token);
     }
 }
 

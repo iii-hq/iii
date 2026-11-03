@@ -380,7 +380,8 @@ fn reached_from(
 /// Every package moves to its latest release, except a generated dependency
 /// another declared package reaches: it follows that package's graph, so the
 /// update cannot pull it past a release its dependents accept. A generated
-/// container nothing reaches is selected like any other package.
+/// container nothing reaches is selected like any other package. An operator's
+/// sandbox adapter moves only within this engine's contract major.
 fn workers_to_update(
     compose: &crate::ComposeFile,
     workers: &[String],
@@ -394,7 +395,7 @@ fn workers_to_update(
             .collect();
     }
 
-    let followers = compose
+    let mut followers = compose
         .containers
         .iter()
         .filter(|(_, container)| {
@@ -406,6 +407,13 @@ fn workers_to_update(
         .flat_map(|(key, _)| reached_from(compose, graphs, key))
         .filter(|key| generated.contains(key))
         .collect::<BTreeSet<_>>();
+    // The sandbox step re-resolves a generated adapter within its contract major.
+    let adapter = crate::sandbox::adapter_key(compose, crate::sandbox::adapter_name(compose))?;
+    if let Some(adapter) = &adapter
+        && generated.contains(adapter)
+    {
+        followers.insert(adapter.clone());
+    }
 
     Ok(compose
         .containers
@@ -416,7 +424,11 @@ fn workers_to_update(
                 key: key.clone(),
                 source: crate::edit::Source::Package {
                     reference: reference.clone(),
-                    version: Some("latest".to_string()),
+                    version: Some(if adapter.as_ref() == Some(key) {
+                        crate::sandbox::ADAPTER_RANGE.to_string()
+                    } else {
+                        "latest".to_string()
+                    }),
                 },
                 start_after: container.start_after.clone(),
                 fields: serde_yaml::Mapping::new(),
@@ -719,17 +731,55 @@ impl Daemon {
         file: &Path,
         frozen: bool,
     ) -> Result<Arc<Project>> {
+        let text = std::fs::read_to_string(file).map_err(|source| ComposeError::Io {
+            path: file.to_path_buf(),
+            source,
+        })?;
         let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
         let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)?;
         let package_cache = crate::state::StateStore::package_cache()?;
+        let mut edited = text.clone();
         let prepared = if frozen {
-            crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?
+            let prepared = crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
+            crate::sandbox::require_declared_adapter(&compose, &namespace)?;
+            prepared
         } else {
-            crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?
+            let mut prepared =
+                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+            let path = compose.path.clone();
+            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
+                crate::sandbox::apply_adapter_change(
+                    &path,
+                    &mut edited,
+                    &mut compose,
+                    &namespace,
+                    &mut prepared,
+                    &mut BTreeSet::new(),
+                    &mut BTreeMap::new(),
+                    false,
+                    false,
+                )
+                .await?
+            {
+                prepared.install(&package_cache).await?;
+                let needs = crate::sandbox::needs(&compose, &namespace);
+                crate::report::daemon_line(
+                    &format!(
+                        "{}: sandbox adapter for: {}",
+                        adapter.key,
+                        crate::sandbox::needed_by(&needs).join(", ")
+                    ),
+                    false,
+                );
+            }
+            prepared
         };
         let project = self.project(file).await?;
+        if edited != text {
+            persist_mutation(file, &text, &edited, &prepared)?;
+        }
         project
             .commit_prepared_packages(&compose, &prepared)
             .await?;
@@ -950,10 +1000,28 @@ impl Daemon {
 
         let path = self.resolve_file(file)?;
         self.validate_engine_policy_file(path)?;
-        let asked = workers
+        let mut asked = workers
             .iter()
             .map(crate::edit::WorkerInput::parse)
             .collect::<Result<Vec<_>>>()?;
+        // The router is built into the engine: `iii-sandbox` asks for its adapter.
+        if asked.iter().any(crate::sandbox::is_iii_sandbox) {
+            let mut file = ComposeFile::load(path)?;
+            crate::lockfile::attach(&mut file)?;
+            let adapter = self
+                .prepare(&operation_id, crate::sandbox::iii_sandbox_request(&file))
+                .await??;
+            for worker in asked
+                .iter_mut()
+                .filter(|worker| crate::sandbox::is_iii_sandbox(worker))
+            {
+                *worker = crate::edit::NewContainer {
+                    start_after: std::mem::take(&mut worker.start_after),
+                    fields: std::mem::take(&mut worker.fields),
+                    ..adapter.clone()
+                };
+            }
+        }
         let declarations = coalesce_containers(asked.clone())?;
         let asked_keys: BTreeSet<String> = asked.iter().map(|worker| worker.key.clone()).collect();
         let operation = crate::operation::active(&operation_id);
@@ -1049,10 +1117,10 @@ impl Daemon {
             .collect::<Vec<_>>();
         let container = requested[0].clone();
 
-        let yaml_changed = !added.is_empty() || !replaced.is_empty();
         let mut current = crate::ComposeFile::parse(&edited, path)?;
         let package_cache = crate::state::StateStore::package_cache()?;
-        let force = selected_versions.keys().cloned().collect();
+        let mut selected_versions = selected_versions;
+        let mut force = selected_versions.keys().cloned().collect();
         let mut prepared = self
             .prepare(
                 &operation_id,
@@ -1064,6 +1132,28 @@ impl Daemon {
                 ),
             )
             .await??;
+        let namespace = self.project_namespace(&current);
+        let adapter = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::apply_adapter_change(
+                    path,
+                    &mut edited,
+                    &mut current,
+                    &namespace,
+                    &mut prepared,
+                    &mut force,
+                    &mut selected_versions,
+                    false,
+                    false,
+                ),
+            )
+            .await??;
+        if adapter.is_some() {
+            self.prepare(&operation_id, prepared.install(&package_cache))
+                .await??;
+        }
+        let yaml_changed = !added.is_empty() || !replaced.is_empty() || adapter.is_some();
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);
         }
@@ -1091,6 +1181,7 @@ impl Daemon {
         }
 
         self.prepare(&operation_id, std::future::ready(())).await?;
+        crate::sandbox::wire_adapter(&mut current)?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let project = self.project(path).await?;
@@ -1251,7 +1342,11 @@ impl Daemon {
             .iter()
             .map(|worker| worker.key.clone())
             .collect::<Vec<_>>();
-        if requested_names.is_empty() {
+        // `workers_to_update` leaves this to the sandbox step, which must still run.
+        let generated_adapter =
+            crate::sandbox::adapter_key(&compose, crate::sandbox::adapter_name(&compose))?
+                .filter(|key| generated.contains(key));
+        if requested_names.is_empty() && generated_adapter.is_none() {
             crate::report::daemon_line("Everything already up to date.", false);
             if let Some(operation) = crate::operation::active(&operation_id) {
                 operation
@@ -1271,7 +1366,7 @@ impl Daemon {
         let _overlay = UpdateOverlayGuard::new(path, &operation_id);
         let (roots, all_explicit_exact_unchanged) = update_roots(&compose, &asked)?;
 
-        if all_explicit_exact_unchanged {
+        if all_explicit_exact_unchanged && !roots.is_empty() {
             report_unchanged(path, &operation_id, &requested_names, UP_TO_DATE).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
@@ -1312,6 +1407,9 @@ impl Daemon {
         }
         let mut declared = compose.clone();
         crate::lockfile::attach(&mut declared)?;
+        let namespace = self.project_namespace(&declared);
+        // The generated adapter goes once this edit leaves no VM needing it.
+        let allow_remove = !crate::sandbox::needs(&declared, &namespace).is_empty();
         let plan = self
             .prepare(
                 &operation_id,
@@ -1340,16 +1438,19 @@ impl Daemon {
             .map(|container| container.key.clone())
             .collect::<BTreeSet<_>>();
         let UpdateEdit {
-            edited,
+            mut edited,
             yaml_changed,
-            selected_versions,
+            mut selected_versions,
             resolved_graphs,
         } = apply_update_plan(&text, &compose, &previous_graphs, &roots, plan)?;
         // A generated dependency no updated graph includes any more, but that
         // something else still starts after, is left as it is. Say so rather
         // than let it silently stop moving.
         if workers.is_empty() {
-            for key in generated.iter().filter(|key| !planned.contains(*key)) {
+            for key in generated
+                .iter()
+                .filter(|key| !planned.contains(*key) && generated_adapter.as_ref() != Some(*key))
+            {
                 if crate::edit::is_generated_container(&edited, key)? {
                     crate::report::daemon_line(
                         &format!(
@@ -1363,9 +1464,8 @@ impl Daemon {
         }
 
         let mut current = crate::ComposeFile::parse(&edited, path)?;
-        let topology_changed = runtime_topology_changed(&compose, &current);
         let package_cache = crate::state::StateStore::package_cache()?;
-        let force = selected_versions.keys().cloned().collect();
+        let mut force = selected_versions.keys().cloned().collect();
         let mut prepared = self
             .prepare(
                 &operation_id,
@@ -1376,6 +1476,24 @@ impl Daemon {
                 ),
             )
             .await??;
+        let adapter = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::apply_adapter_change(
+                    path,
+                    &mut edited,
+                    &mut current,
+                    &namespace,
+                    &mut prepared,
+                    &mut force,
+                    &mut selected_versions,
+                    true,
+                    allow_remove,
+                ),
+            )
+            .await??;
+        let yaml_changed = yaml_changed || adapter.is_some();
+        let topology_changed = runtime_topology_changed(&compose, &current);
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);
         }
@@ -1523,12 +1641,12 @@ impl Daemon {
         })?;
         self.validate_engine_policy_text(path, &text)?;
         let requested = workers.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        let removal_order = crate::ComposeFile::parse(&text, path)?
-            .start_order()?
-            .into_iter()
-            .rev()
-            .filter(|worker| requested.contains(worker.as_str()))
-            .collect::<Vec<_>>();
+        let mut before = crate::ComposeFile::parse(&text, path)?;
+        crate::lockfile::attach(&mut before)?;
+        // The generated adapter goes once this edit leaves no VM needing it.
+        let allow_remove =
+            !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
+        let mut removal_order = removal_order(&mut before, &requested)?;
         let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
@@ -1543,17 +1661,38 @@ impl Daemon {
         self.engine_policy.validate_project(&current)?;
         let namespace = self.project_namespace(&current);
         crate::manifest::validate_offline(&current, &namespace)?;
-        let prepared = self
+        let mut prepared = self
             .prepare(
                 &operation_id,
                 crate::lockfile::prepare_metadata(&mut current, &BTreeSet::new()),
             )
             .await??;
+        let adapter = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::apply_adapter_change(
+                    path,
+                    &mut edited,
+                    &mut current,
+                    &namespace,
+                    &mut prepared,
+                    &mut BTreeSet::new(),
+                    &mut BTreeMap::new(),
+                    false,
+                    allow_remove,
+                ),
+            )
+            .await??;
+        // Stopped after the VMs that went before it.
+        if let Some(crate::sandbox::AdapterChange::Remove(key)) = adapter {
+            removal_order.push(key);
+        }
 
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
         self.prepare(&operation_id, std::future::ready(())).await?;
+        crate::sandbox::wire_adapter(&mut current)?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
@@ -2036,6 +2175,11 @@ pub const DAEMON_WORKER_NAME: &str = "compose";
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
     use std::io::Write;
 
+    // A symlinked compose file keeps its link: the rename replaces the target.
+    let path = &std::fs::canonicalize(path).map_err(|source| ComposeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let permissions = std::fs::metadata(path)
         .map_err(|source| ComposeError::Io {
             path: path.to_path_buf(),
@@ -2072,11 +2216,24 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
     })
 }
 
+/// The `requested` workers of `file`, dependents first. `file` is wired to its
+/// adapter, so a VM goes before the adapter it boots through: removing the VM
+/// still finds the adapter running, never restarting one this removal took.
+fn removal_order(file: &mut crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
+    crate::sandbox::wire_adapter(file)?;
+    Ok(file
+        .start_order()?
+        .into_iter()
+        .rev()
+        .filter(|worker| requested.contains(worker.as_str()))
+        .collect())
+}
+
 /// Persists one compose mutation while keeping its YAML and lock consistent.
 ///
 /// The lock writer is atomic by itself. If it fails after the compose file was
 /// replaced, restore the previous compose text while the mutation lock is held.
-fn persist_mutation(
+pub(crate) fn persist_mutation(
     path: &Path,
     previous: &str,
     edited: &str,
@@ -3566,6 +3723,346 @@ containers:
         assert_eq!(daemon.engine_url, "ws://127.0.0.1:2/ws");
     }
 
+    /// A project whose `vm` container boots in a VM, beside its compose file.
+    fn vm_project(text: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("vm")).unwrap();
+        std::fs::write(
+            dir.path().join("vm/iii.worker.yaml"),
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        )
+        .unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path, text).unwrap();
+        (dir, path)
+    }
+
+    /// A `sandbox-libkrun` release whose binary exits at once.
+    fn adapter_archive() -> Vec<u8> {
+        let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        let script = b"#!/bin/sh\nexit 0\n";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(script.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(
+                &mut header,
+                format!("sandbox-libkrun{}", std::env::consts::EXE_SUFFIX),
+                &script[..],
+            )
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Spec 11: `up` writes the adapter a VM needs, locks and installs it, and
+    /// the project loaded before that edit holds it with the VM wired after it.
+    #[tokio::test]
+    async fn up_writes_installs_and_wires_the_adapter_a_vm_needs() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("up-adapter-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        // Whatever the start's outcome: no engine is listening.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            crate::registry::TEST_REGISTRY
+                .scope(server.uri(), daemon.up(Some(&path), None, "up".into())),
+        )
+        .await;
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let compose = ComposeFile::parse(&text, &path).unwrap();
+        assert_eq!(
+            compose.containers["sandbox-libkrun"].version.as_deref(),
+            Some("0.2.3"),
+            "{text}"
+        );
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+        let lock: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
+            Some("0.2.3"),
+            "{lock:?}"
+        );
+        let held = daemon.project(&path).await.unwrap().held_file().await;
+        assert!(held.containers.contains_key("sandbox-libkrun"));
+        assert_eq!(held.containers["vm"].start_after, ["sandbox-libkrun"]);
+        daemon.shutdown().await;
+    }
+
+    /// `build` runs outside the daemon's mutation lock: a file saved while it
+    /// prepared is refused, never overwritten from build's snapshot.
+    #[tokio::test]
+    async fn build_does_not_overwrite_an_edit_made_while_it_prepared() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        let saved = "containers:\n  vm:\n    worker: path://./vm\n    env: {SAVED: '1'}\n";
+        let (target, uri) = (path.clone(), server.uri());
+        let digest = hex::encode(sha2::Sha256::digest(&archive));
+        // The operator saves the file while build resolves the adapter.
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, saved).unwrap();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "sandbox-libkrun",
+                        "version": "0.2.3",
+                        "type": "binary",
+                        "binaries": { (crate::registry::host_targets()[0]): {
+                            "sha256": digest,
+                            "url": format!("{uri}/artifact"),
+                        }},
+                    }]
+                }))
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let error = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), crate::build::build(&path))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// A `--frozen` build writes nothing, so a file saved while it downloads
+    /// is kept and the build still succeeds.
+    #[tokio::test]
+    async fn a_frozen_build_keeps_an_edit_made_while_it_downloaded() {
+        use crate::state::TEST_PACKAGE_CACHE;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        // Two private caches: the frozen build starts cold, so it downloads.
+        let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        TEST_PACKAGE_CACHE
+            .scope(
+                warm.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
+            .await
+            .unwrap();
+        let saved = format!("{}# saved\n", std::fs::read_to_string(&path).unwrap());
+        let (target, edit) = (path.clone(), saved.clone());
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, &edit).unwrap();
+                ResponseTemplate::new(200).set_body_bytes(archive.clone())
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        TEST_PACKAGE_CACHE
+            .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// The generated adapter is appended after the VMs, with no edge in the
+    /// file: removed together, the VM still goes first, so its destroy never
+    /// restarts the adapter this same removal stopped.
+    #[test]
+    fn a_vm_is_removed_before_the_adapter_it_boots_through() {
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  vm:\n    worker: path://./vm\n",
+            &adapter,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let (_dir, path) = vm_project(&text);
+        let mut compose = ComposeFile::parse(&text, &path).unwrap();
+        let requested = BTreeSet::from(["vm", "sandbox-libkrun"]);
+        assert_eq!(
+            removal_order(&mut compose, &requested).unwrap(),
+            ["vm", "sandbox-libkrun"]
+        );
+    }
+
+    #[test]
+    fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  vm:\n    worker: path://./vm\n",
+            &adapter,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let (_dir, path) = vm_project(&text);
+        let compose = ComposeFile::parse(&text, &path).unwrap();
+        let generated = generated_dependencies(&text, &compose, &BTreeMap::new()).unwrap();
+        assert!(generated.contains("sandbox-libkrun"));
+        let asked = workers_to_update(&compose, &[], &generated, &BTreeMap::new()).unwrap();
+        assert!(
+            asked.iter().all(|worker| worker.key != "sandbox-libkrun"),
+            "{asked:?}"
+        );
+    }
+
+    /// The SANDBOX_CONFIG_MOVED replacement is an operator's adapter: update-all
+    /// keeps it within the contract major, never past it to `latest`.
+    #[test]
+    fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
+        let compose = ComposeFile::parse(
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.2'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            Path::new("worker-compose.yaml"),
+        )
+        .unwrap();
+        let asked = workers_to_update(&compose, &[], &BTreeSet::new(), &BTreeMap::new()).unwrap();
+        let versions: BTreeMap<&str, Option<&str>> = asked
+            .iter()
+            .map(|worker| match &worker.source {
+                crate::edit::Source::Package { version, .. } => {
+                    (worker.key.as_str(), version.as_deref())
+                }
+                crate::edit::Source::Path { .. } => panic!("{worker:?}"),
+            })
+            .collect();
+        assert_eq!(
+            versions,
+            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.2"))])
+        );
+    }
+
+    #[tokio::test]
+    async fn update_all_refreshes_a_generated_adapter_that_is_the_only_package() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.0").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  vm:\n    worker: path://./vm\n",
+            &adapter,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let (_dir, path) = vm_project(&text);
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("update-adapter-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        // Whatever the restart's outcome: no engine is listening.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                daemon.update(Some(&path), &[], "update".into()),
+            ),
+        )
+        .await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        let compose = ComposeFile::parse(&text, &path).unwrap();
+        assert_eq!(
+            compose.containers["sandbox-libkrun"].version.as_deref(),
+            Some("0.2.3"),
+            "{text}"
+        );
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_host_without_an_adapter_build_fails_unsupported_platform() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(
+                ResponseTemplate::new(422).set_body_json(serde_json::json!({ "error": {
+                    "code": "unsupported_platform",
+                    "message": "Worker 'sandbox-libkrun' does not support this platform.",
+                    "available": ["riscv64gc-unknown-linux-gnu"],
+                }})),
+            )
+            .mount(&server)
+            .await;
+        let text = "containers:\n  vm:\n    worker: path://./vm\n";
+        let (_dir, path) = vm_project(text);
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("unsupported-adapter-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let error = crate::registry::TEST_REGISTRY
+            .scope(
+                server.uri(),
+                daemon.up(Some(&path), None, "unsupported".into()),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), "UNSUPPORTED_PLATFORM");
+        assert!(error.to_string().contains("sandbox-libkrun"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn compose_add_iii_sandbox_keeps_the_adapter_without_a_vm() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+
+        // An empty `containers:` is not a project, so one container that is no VM.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("add-iii-sandbox-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        // Whatever the start's outcome: no engine is listening.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                daemon.add(Some(&path), &["iii-sandbox".into()], "add".into()),
+            ),
+        )
+        .await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        let compose = ComposeFile::parse(&text, &path).unwrap();
+        assert_eq!(
+            compose.containers["sandbox-libkrun"].version.as_deref(),
+            Some("0.2.3"),
+            "{text}"
+        );
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+        daemon.shutdown().await;
+    }
+
     #[test]
     fn identical_shared_dependencies_are_declared_once() {
         let state = crate::edit::parse_worker("state@1.0.0").unwrap();
@@ -3606,6 +4103,21 @@ containers:
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "after\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_through_a_symlink_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("shared.yaml");
+        let link = dir.path().join("worker-compose.yaml");
+        std::fs::write(&target, "before\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        write_atomically(&link, "after\n").unwrap();
+
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "after\n");
     }
 
     #[tokio::test]

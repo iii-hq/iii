@@ -636,6 +636,10 @@ severity:
 | `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions.                                                                               |
 | `INVALID_ARGS_FORMAT`         | `function_id`  | stays open           | Non-fatal. The function's `args_format` is not a valid JSON Schema; the function is not registered.                                                                           |
 | `UNSUPPORTED`                 | `function_id`  | stays open           | Non-fatal. A 0.25 SDK's [`observe` object](#registrations-from-older-sdks) asks for `delivery: "owner"`, or a value the engine does not know; the function is not registered. |
+| `NAMESPACE_FORBIDDEN`         | `worker_name`  | closed by the engine | Fatal. The session's auth scope does not permit the namespace the worker declared. `owner_worker_id` is empty.                                                                |
+
+A function id refused because it is [reserved](#reserved-ids) also arrives as
+`FUNCTION_NAMESPACE_CONFLICT`. No worker owns it, so `owner_worker_id` is `engine (reserved prefix)`.
 
 A function conflict has this format:
 
@@ -1297,6 +1301,10 @@ refused.
 
 The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
 The reserved-id check does not reject these functions.
+
+`sandbox::*` is reserved in `default` for the engine's sandbox router. A sandbox adapter registers
+its own `<adapter>::*` ids. A custom worker in `default` that tries to register a `sandbox::*`
+function id has that registration refused.
 
 ### Wire compatibility
 
