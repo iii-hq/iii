@@ -287,6 +287,7 @@ deliver the call yourself and return what the caller gets back.
         (obs) => obs.args.method === request.method && obs.args.path === request.path,
       );
       if (!route) return { status_code: 404 };
+      if (!route.matches(call)) return { status_code: 422 }; // the observer's `on` and filters
       return worker.call({ observer: route, payload: request });
     });
     ```
@@ -304,6 +305,8 @@ deliver the call yourself and return what the caller gets back.
         )
         if route is None:
             return {"status_code": 404}
+        if not route.matches(call):
+            return {"status_code": 422}  # the observer's `on` and filters
         return await worker.call_async({"observer": route, "payload": request})
     ```
 
@@ -325,6 +328,9 @@ deliver the call yourself and return what the caller gets back.
             let Some(route) = route else {
                 return Ok(json!({ "status_code": 404 }));
             };
+            if !route.matches(&call) {
+                return Ok(json!({ "status_code": 422 })); // the observer's `on` and filters
+            }
             worker.call(CallRequest::observer(&route, call.input)).await
         }
     });
@@ -345,6 +351,9 @@ deliver the call yourself and return what the caller gets back.
         }
         for _, obs := range observers {
             if obs.Args["method"] == request.Method && obs.Args["path"] == request.Path {
+                if !obs.Matches(call) {
+                    return map[string]int{"status_code": 422}, nil // the observer's `on` and filters
+                }
                 return worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
             }
         }
@@ -451,7 +460,7 @@ observers.
 
     // called for every tick of the price feed
     async function publishPrice(tick: Tick) {
-      if (!prices.isObserved()) return; // nobody observes: skip building the event
+      if (!prices.isObserved()) return; // no observers: skip building the event
 
       const change = toPriceChange(tick);
       await worker.call({ function_id: "prices::on-change", payload: change });
@@ -466,7 +475,7 @@ observers.
     # called for every tick of the price feed
     def publish_price(tick):
         if not prices.is_observed():
-            return  # nobody observes: skip building the event
+            return  # no observers: skip building the event
 
         change = to_price_change(tick)
         worker.call({"function_id": "prices::on-change", "payload": change})
@@ -483,7 +492,7 @@ observers.
     // called for every tick of the price feed
     async fn publish_price(worker: &IIIClient, prices: &FunctionRef, tick: Tick) -> Result<(), Error> {
         if !prices.is_observed() {
-            return Ok(()); // nobody observes: skip building the event
+            return Ok(()); // no observers: skip building the event
         }
 
         let change = to_price_change(&tick);
@@ -500,7 +509,7 @@ observers.
     // called for every tick of the price feed
     publishPrice := func(ctx context.Context, tick Tick) error {
         if !prices.IsObserved() {
-            return nil // nobody observes: skip building the event
+            return nil // no observers: skip building the event
         }
 
         change := toPriceChange(tick)
@@ -529,161 +538,157 @@ worker hosts, and both levels run:
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    // every function this worker hosts: keep the event stream open while anything is observed
+    import { Client } from "pg";
+
+    // every function this worker hosts: hold one LISTEN connection while anything is observed
+    let listener: Client | undefined;
+    let observed = 0;
+
     worker.onObserverAdded(async () => {
-      await events.retain();
+      if (observed++ > 0) return;
+      listener = new Client({ connectionString: process.env.PRIMARY_DATABASE_URL });
+      await listener.connect();
+      await listener.query("LISTEN iii_row_changed");
     });
+
     worker.onObserverRemoved(async () => {
-      await events.release();
+      if (--observed > 0) return;
+      await listener?.end();
+      listener = undefined;
     });
-
-    // one function, by id
-    worker.onObserverAdded("database::on-row-changed", async (obs) => {
-      await capture.install(obs.args.db as string, obs.args.table as string | undefined);
-    });
-
-    // one function, chained off its registration
-    worker
-      .registerFunction("database::on-row-changed", (change: RowChange) => change, {
-        private: true,
-        args_format: RowChangedArgsSchema,
-      })
-      .onObserverRemoved(async (obs) => {
-        await capture.release(obs.args.db as string, obs.args.table as string | undefined);
-      });
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    # every function this worker hosts: keep the event stream open while anything is observed
+    import os
+
+    import psycopg
+
+    # every function this worker hosts: hold one LISTEN connection while anything is observed
+    listener: psycopg.Connection | None = None
+    observed = 0
+
     @worker.on_observer_added
-    async def retain(obs):
-        await events.retain()
+    def open_listener(obs):
+        global listener, observed
+        observed += 1
+        if observed > 1:
+            return
+        listener = psycopg.connect(os.environ["PRIMARY_DATABASE_URL"], autocommit=True)
+        listener.execute("LISTEN iii_row_changed")
 
     @worker.on_observer_removed
-    async def release(obs):
-        await events.release()
-
-    # one function, by id: set before registering, so the hooks see every observer
-    @worker.on_observer_added("database::on-row-changed")
-    async def install(obs):
-        await capture.install(obs.args["db"], obs.args.get("table"))
-
-    @worker.on_observer_removed("database::on-row-changed")
-    async def uninstall(obs):
-        await capture.release(obs.args["db"], obs.args.get("table"))
-
-    worker.register_function(
-        "database::on-row-changed",
-        lambda change: change,
-        private=True,
-        args_format=ROW_CHANGED_ARGS_SCHEMA,
-    )
+    def close_listener(obs):
+        global listener, observed
+        observed -= 1
+        if observed > 0:
+            return
+        listener.close()
+        listener = None
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Error, Observer, RegisterFunction};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    // every function this worker hosts: keep the event stream open while anything is observed
-    let retain = events.clone();
+    use iii_sdk::{ObserveRejection, Observer};
+    use sqlx::postgres::PgListener;
+    use tokio::sync::Mutex;
+
+    // every function this worker hosts: hold one LISTEN connection while anything is observed
+    let listener: Arc<Mutex<Option<PgListener>>> = Arc::new(Mutex::new(None));
+    let observed = Arc::new(AtomicUsize::new(0));
+
+    let (slot, count) = (listener.clone(), observed.clone());
     worker.on_observer_added(move |_obs: Observer| {
-        let events = retain.clone();
+        let (slot, count) = (slot.clone(), count.clone());
         async move {
-            events.retain().await;
-            Ok(())
-        }
-    });
-    let release = events.clone();
-    worker.on_observer_removed(move |_obs: Observer| {
-        let events = release.clone();
-        async move { events.release().await }
-    });
-
-    // one function, by id: set before registering, so the hooks see every observer
-    let install = capture.clone();
-    worker.on_observer_added_for("database::on-row-changed", move |obs: Observer| {
-        let capture = install.clone();
-        async move {
-            let args: RowChangedArgs = obs.args()?;
-            capture.install(&args.db, args.table.as_deref()).await;
-            Ok(())
-        }
-    });
-    let uninstall = capture.clone();
-    worker.on_observer_removed_for("database::on-row-changed", move |obs: Observer| {
-        let capture = uninstall.clone();
-        async move {
-            if let Ok(args) = obs.args::<RowChangedArgs>() {
-                capture.release(&args.db, args.table.as_deref()).await;
+            if count.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(());
             }
+            let url = std::env::var("PRIMARY_DATABASE_URL").unwrap_or_default();
+            let mut conn = PgListener::connect(&url)
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            conn.listen("iii_row_changed")
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            *slot.lock().await = Some(conn);
+            Ok(())
         }
     });
 
-    worker.register_function(
-        "database::on-row-changed",
-        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change))
-            .args_format::<RowChangedArgs>()
-            .private(),
-    );
+    let (slot, count) = (listener.clone(), observed.clone());
+    worker.on_observer_removed(move |_obs: Observer| {
+        let (slot, count) = (slot.clone(), count.clone());
+        async move {
+            if count.fetch_sub(1, Ordering::SeqCst) > 1 {
+                return;
+            }
+            slot.lock().await.take();
+        }
+    });
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    // every function this worker hosts: keep the event stream open while anything is observed
+    import (
+        "os"
+        "sync"
+
+        "github.com/jackc/pgx/v5"
+    )
+
+    // every function this worker hosts: hold one LISTEN connection while anything is observed
+    var (
+        mu       sync.Mutex
+        listener *pgx.Conn
+        observed int
+    )
+
     worker.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error {
-        return events.Retain(ctx)
+        mu.Lock()
+        defer mu.Unlock()
+        observed++
+        if observed > 1 {
+            return nil
+        }
+        conn, err := pgx.Connect(ctx, os.Getenv("PRIMARY_DATABASE_URL"))
+        if err != nil {
+            return err
+        }
+        if _, err := conn.Exec(ctx, "LISTEN iii_row_changed"); err != nil {
+            return err
+        }
+        listener = conn
+        return nil
     })
+
     worker.OnObserverRemoved(func(ctx context.Context, obs *iii.Observer) {
-        events.Release(ctx)
+        mu.Lock()
+        defer mu.Unlock()
+        observed--
+        if observed > 0 {
+            return
+        }
+        listener.Close(ctx)
+        listener = nil
     })
-
-    // one function, by id: set before registering, so the hooks see every observer
-    worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
-        return capture.Install(ctx, obs.Args)
-    })
-    worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
-        capture.Release(ctx, obs.Args)
-    })
-
-    worker.RegisterFunction("database::on-row-changed", iii.Identity,
-        iii.FunctionOptions{ArgsFormat: rowChangedArgsSchema, Private: true})
     ```
 
   </Tab>
 </Tabs>
 
-The hook names in each SDK:
+A hook for one function is set by id (see [Hooks](#hooks)) or chained on the `FunctionRef` that
+`registerFunction` returns. Each method returns its receiver, so calls chain. Added, removed and
+deliver hooks can be sync or async. A match predicate and key functions are sync, since they run on
+every call.
 
-| Hook                    | Node / Browser                   | Python                             | Rust                                   | Go                                  |
-| ----------------------- | -------------------------------- | ---------------------------------- | -------------------------------------- | ----------------------------------- |
-| Added, every function   | `onObserverAdded(hook)`          | `on_observer_added(hook)`          | `on_observer_added(hook)`              | `OnObserverAdded(hook)`             |
-| Added, one function     | `onObserverAdded(id, hook)`      | `on_observer_added(id, hook)`      | `on_observer_added_for(id, hook)`      | `OnObserverAddedFor(id, hook)`      |
-| Removed, every function | `onObserverRemoved(hook)`        | `on_observer_removed(hook)`        | `on_observer_removed(hook)`            | `OnObserverRemoved(hook)`           |
-| Removed, one function   | `onObserverRemoved(id, hook)`    | `on_observer_removed(id, hook)`    | `on_observer_removed_for(id, hook)`    | `OnObserverRemovedFor(id, hook)`    |
-| Match, one function     | `onObservationMatch(id, hook)`   | `on_observation_match(id, hook)`   | `on_observation_match_for(id, rule)`   | `OnObservationMatchFor(id, rule)`   |
-| Deliver, one function   | `onObservationDeliver(id, hook)` | `on_observation_deliver(id, hook)` | `on_observation_deliver_for(id, hook)` | `OnObservationDeliverFor(id, hook)` |
-
-The `FunctionRef` has the same methods with the id filled in. Each method returns its receiver, so
-calls chain. Added, removed and deliver hooks can be sync or async. A match predicate and key
-functions are sync, since they run on every call.
-
-An observation match hook is a predicate or a pair of key functions (see
-[Match observers to calls](#match-observers-to-calls)):
-
-| SDK            | Predicate                                  | Keys                                           |
-| -------------- | ------------------------------------------ | ---------------------------------------------- |
-| Node / Browser | `onObservationMatch(id, (obs, call) => …)` | `onObservationMatch(id, { observer, call })`   |
-| Python         | `on_observation_match(id, predicate)`      | `on_observation_match(id, observer=…, call=…)` |
-| Rust           | `Match::predicate(f)`                      | `Match::keys(observer_keys, call_keys)`        |
-| Go             | `iii.MatchFunc(f)`                         | `iii.MatchKeys(observerKeys, callKeys)`        |
-
-Pass `null` to remove a hook.
-
-Removing a hook puts back what iii does by default (see [Hooks](#hooks)).
+Pass `null` to remove a hook: iii's default behaviour returns (see [Hooks](#hooks)).
 
 Hooks are stored by function id. They stay in place across `unregister()` and a later registration
 of the same id, and they can be set before the function is registered. Once the worker's connection
@@ -703,7 +708,7 @@ a mistyped id.
   disposes it, when `max_fires` or expiry ends it, when the observing worker disconnects, and on a
   late rejection with `obs.reject()`. For an observer that is never accepted, it runs only at the
   levels whose `onObserverAdded` resolved. No SDK runs it yet when the worker that hosts the
-  function shuts down. An error it throws is logged, and the observer is removed either way.
+  function shuts down.
 - **Away and back.** When the observing worker disconnects, its observers are `suspended` for
   `observers.observer_grace_ms` (30 s by default), and the worker that hosts the function runs
   `onObserverRemoved` for each. If the observing worker reconnects in that time, the host gets each
@@ -785,8 +790,7 @@ observers' args determine which calls they get. iii does everything else as usua
 `on`, filters, policy and `deliver` still apply.
 
 As a predicate, the hook takes one possible observation, the observer and the call, and returns
-whether it happens. Here each observer of `database::on-row-changed` names a database and a table in
-its args, and gets the changes of that table:
+whether it happens.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -839,8 +843,7 @@ observer, and the SDK logs it once per function.
 
 Keys suit a function with many observers. One key function gives the keys an observer listens for,
 the other gives the keys a call is, and an observer matches a call when they share a key. The SDK
-keeps an index from keys to observers, so a call costs one lookup per key. Here each observer of
-`prices::on-change` names a symbol:
+keeps an index from keys to observers, so a call costs one lookup per key.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -932,70 +935,6 @@ payload. An HTTP request goes to the most specific of the route patterns that fi
 route's path parameters go into the request its target receives, so `http::on-request` sets no match
 hook and its deliver hook receives every active observer.
 
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.onObservationDeliver("http::on-request", async (call) => {
-      const route = routes.match(call.input as HttpRequest);
-      if (!route) return { status_code: 404 };
-      if (!route.obs.matches(call)) return { status_code: 422 };
-      return worker.call({ observer: route.obs, payload: route.request });
-    });
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    @worker.on_observation_deliver("http::on-request")
-    async def route_request(call, observers):
-        route = routes.match(call.input)
-        if route is None:
-            return {"status_code": 404}
-        if not route.obs.matches(call):
-            return {"status_code": 422}
-        return await worker.call_async({"observer": route.obs, "payload": route.request})
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{Call, Observer};
-    use serde_json::json;
-
-    let (client, table) = (worker.clone(), routes.clone());
-    worker.on_observation_deliver_for("http::on-request", move |call: Call, _observers: Vec<Observer>| {
-        let (worker, routes) = (client.clone(), table.clone());
-        async move {
-            let Some(route) = routes.matches(&call.input) else {
-                return Ok(json!({ "status_code": 404 }));
-            };
-            if !route.obs.matches(&call) {
-                return Ok(json!({ "status_code": 422 }));
-            }
-            worker.call(CallRequest::observer(&route.obs, route.request)).await
-        }
-    });
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    worker.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
-        route := routes.Match(call.Input)
-        if route == nil {
-            return map[string]int{"status_code": 404}, nil
-        }
-        if !route.Obs.Matches(call) {
-            return map[string]int{"status_code": 422}, nil
-        }
-        return worker.Call(ctx, iii.CallRequest{Observer: route.Obs, Payload: route.Request})
-    })
-    ```
-
-  </Tab>
-</Tabs>
-
 The hook applies each observer's `on` and filters with `obs.matches(call)` and runs its target with
 a [call through the observer](#call-through-an-observer). With both hooks set, the deliver hook
 receives only the observers the match hook matched: [`queue::on-message`](#queue-messages) files
@@ -1086,8 +1025,7 @@ call. `accepted()` fails for an observer rejected first, such as one whose match
 throws, and the task then sends nothing.
 
 The target receives the payload as given, with the observer's registration metadata. Send what your
-function's targets expect. Here each observer of `tmux::on-changed` names a session in its args, and
-gets that session's current state when it is added:
+function's targets expect.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -1191,21 +1129,12 @@ These options of `registerFunction` describe the function to the engine:
 | `private`                 | `false` | Only this worker may call the function. Other workers may observe it. See [Private functions](#private-functions).                  |
 | `observable`              | `true`  | `false`: no worker may observe the function (`NOT_OBSERVABLE`).                                                                     |
 
-Each SDK spells them its own way:
-
-| SDK            | Options                                                                           |
-| -------------- | --------------------------------------------------------------------------------- |
-| Node / Browser | `registerFunction(id, handler, { args_format, private, observable })`             |
-| Python         | `register_function(id, handler, args_format=..., private=True, observable=False)` |
-| Rust           | `RegisterFunction::new(handler).args_format::<T>().private().observable(false)`   |
-| Go             | the `ArgsFormat`, `Private` and `Observable` fields of `iii.FunctionOptions`      |
-
 An `args_format` that is not a valid JSON Schema fails the registration with `INVALID_ARGS_FORMAT`.
 
 ### Private functions
 
 An event source is observed by everyone and called only by its own worker. A call from another
-worker would be a forged tick, request or row change carrying the source's identity. `private: true`
+worker would be a forged request or row change carrying the source's identity. `private: true`
 expresses that:
 
 - The engine accepts a call of a private function only from the connection that hosts it. Any other
@@ -1220,7 +1149,7 @@ expresses that:
 
 Any function can be private; event sources are the common case.
 
-### Functions nobody may observe
+### Functions no worker may observe
 
 Some functions must stay unobserved, for example because their input carries credentials. Register
 them with `observable: false`. Every `observe` of them fails with `NOT_OBSERVABLE`.
@@ -1998,12 +1927,7 @@ path.
 
 Every other event source is the same shape: a function whose handler returns the event, called when
 the event happens. A worker that should do work only while something is watching uses the
-worker-wide hooks:
-
-```typescript
-worker.onObserverAdded(() => cdp.retain());
-worker.onObserverRemoved(() => cdp.release());
-```
+worker-wide hooks (see [Set up and tear down per observer](#set-up-and-tear-down-per-observer)).
 
 ## Against an older engine
 
