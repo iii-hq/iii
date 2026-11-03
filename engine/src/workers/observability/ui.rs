@@ -6,7 +6,7 @@
 
 //! Built-in Console Injection assets for `iii-observability`.
 //!
-//! The Console hosts `console::ui::asset`, observed with args `{ kind, path }`
+//! The ADE hosts `ade::ui::asset`, observed with args `{ kind, path }`
 //! for each asset it injects, and calls through each observer to load it.
 //! The observability worker lives inside the engine rather than in a worker
 //! process, so its observers are the engine's own: one per asset in every
@@ -24,8 +24,8 @@ use crate::{
     protocol::{Deliver, ErrorBody},
 };
 
-/// The function the Console hosts for its injected UI assets.
-pub const CONSOLE_ASSET_FUNCTION_ID: &str = "console::ui::asset";
+/// The function the ADE hosts for its injected UI assets.
+pub const ADE_ASSET_FUNCTION_ID: &str = "ade::ui::asset";
 pub const CONTENT_FUNCTION_ID: &str = "iii-observability::ui-content";
 pub const PAGE_PATH: &str = "iii-observability/page.js";
 pub const STYLES_PATH: &str = "iii-observability/styles.css";
@@ -99,7 +99,7 @@ pub fn observe_console_assets(engine: &Arc<Engine>) {
     ] {
         engine.observers.observe_everywhere(StandingObserver {
             id: id.to_string(),
-            function_id: CONSOLE_ASSET_FUNCTION_ID.to_string(),
+            function_id: ADE_ASSET_FUNCTION_ID.to_string(),
             args: json!({ "kind": kind, "path": path }),
             target_id: CONTENT_FUNCTION_ID.to_string(),
             deliver: Deliver::Input,
@@ -160,7 +160,7 @@ mod tests {
         // The Console's function validates the args it is observed with.
         engine.observers.set_options(
             "harness-ns",
-            CONSOLE_ASSET_FUNCTION_ID,
+            ADE_ASSET_FUNCTION_ID,
             crate::observer::FunctionOptions {
                 args_format: Some(json!({ "type": "object" })),
                 ..crate::observer::FunctionOptions::private()
@@ -169,7 +169,7 @@ mod tests {
         engine.register_function_handler_ns(
             "harness-ns",
             RegisterFunctionRequest {
-                function_id: CONSOLE_ASSET_FUNCTION_ID.to_string(),
+                function_id: ADE_ASSET_FUNCTION_ID.to_string(),
                 description: None,
                 request_format: None,
                 response_format: None,
