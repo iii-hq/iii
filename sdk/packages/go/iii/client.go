@@ -126,6 +126,10 @@ type Client struct {
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
 	failOnce      sync.Once
 	superviseOnce sync.Once // ensures only one supervisor goroutine runs
+	// removeMarker deletes this worker's `iii ps` marker. terminate calls it, not the
+	// supervisor goroutine: main returning right after Close ends the process before
+	// that goroutine does. Guarded by mu.
+	removeMarker func()
 
 	// fatal is closed when the engine terminally rejects this worker's
 	// registration (e.g. a WORKER_NAMESPACE_CONFLICT). The supervisor observes it
@@ -994,12 +998,16 @@ func (c *Client) startSupervisor() {
 		c.started.Store(true)
 		c.startTelemetry() // otel_client.go: OpenTelemetry starts with the lifecycle
 		c.reporter.start()
-		// Lets `iii ps` find this worker until Close ends the supervisor.
-		remove := announceProcess(c.url, c.name, "")
-		go func() {
-			defer remove()
-			c.supervise()
-		}()
+		// Lets `iii ps` find this worker until Close. Checked under mu so a Close that
+		// already ran (it closes shutdown before taking mu) gets no marker written.
+		c.mu.Lock()
+		select {
+		case <-c.shutdown:
+		default:
+			c.removeMarker = announceProcess(c.url, c.name, "")
+		}
+		c.mu.Unlock()
+		go c.supervise()
 	})
 }
 
@@ -1887,8 +1895,13 @@ func (c *Client) terminate(ctx context.Context, graceful bool) error {
 		delete(c.pending, id)
 	}
 	conn, connCancel := c.conn, c.connCancel
+	removeMarker := c.removeMarker
+	c.removeMarker = nil
 	c.setStateLocked(StateDisconnected)
 	c.mu.Unlock()
+	if removeMarker != nil {
+		removeMarker()
+	}
 
 	if conn != nil {
 		if graceful && ctx.Err() == nil {

@@ -1,6 +1,7 @@
 package iii
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -74,4 +75,46 @@ func TestAnnounceProcessIgnoresAnUnwritableDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	announceProcess("ws://x", "y", filepath.Join(blocker, "run"))()
+}
+
+// markerHome points os.UserHomeDir at a temporary directory and returns the run
+// directory a started client announces itself in.
+func markerHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	return filepath.Join(home, ".iii", "run")
+}
+
+func TestStoppingTheClientRemovesTheWorkerMarker(t *testing.T) {
+	for name, stop := range map[string]func(*Client){
+		"Close":    func(c *Client) { _ = c.Close() },
+		"Shutdown": func(c *Client) { _ = c.Shutdown(context.Background()) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := markerHome(t)
+			// Nothing listens there: the marker must not wait for a connection.
+			c := RegisterWorker("ws://127.0.0.1:1", WithName("orders"))
+			if markers := readMarkers(t, dir); len(markers) != 1 {
+				t.Fatalf("expected one marker while running, got %v", markers)
+			}
+			// A short-lived main returns right after this, without waiting for the
+			// supervisor goroutine.
+			stop(c)
+			if markers := readMarkers(t, dir); len(markers) != 0 {
+				t.Fatalf("marker outlived %s: %v", name, markers)
+			}
+		})
+	}
+}
+
+func TestConnectAfterCloseWritesNoWorkerMarker(t *testing.T) {
+	dir := markerHome(t)
+	c := New("ws://127.0.0.1:1")
+	_ = c.Close()
+	_ = c.Connect(context.Background())
+	if markers := readMarkers(t, dir); len(markers) != 0 {
+		t.Fatalf("a closed client announced itself: %v", markers)
+	}
 }
