@@ -93,20 +93,7 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
         .map(str::trim)
         .filter(|image| !image.is_empty())
         .map(str::to_string);
-    let iii_engine_version = match raw.iii_engine_version {
-        None | Some(serde_yaml::Value::Null) => None,
-        Some(serde_yaml::Value::String(range))
-            if crate::engine_compat::valid_iii_engine_version(&range) =>
-        {
-            Some(range)
-        }
-        Some(other) => {
-            return Err(ComposeError::InvalidManifest {
-                path,
-                message: crate::engine_compat::malformed_iii_engine_version(other),
-            });
-        }
-    };
+    let iii_engine_version = engine_range(raw.iii_engine_version, &path)?;
 
     Ok(Some(Manifest {
         name: raw
@@ -139,6 +126,71 @@ fn check_engine(
             message,
         }
     })
+}
+
+/// The `iii_engine_version` value as a range in the supported grammar. Anything else is
+/// `INVALID_MANIFEST`, an unquoted `0.26` included: YAML reads it as a float.
+fn engine_range(value: Option<serde_yaml::Value>, path: &Path) -> Result<Option<String>> {
+    match value {
+        None | Some(serde_yaml::Value::Null) => Ok(None),
+        Some(serde_yaml::Value::String(range))
+            if crate::engine_compat::valid_iii_engine_version(&range) =>
+        {
+            Ok(Some(range))
+        }
+        Some(other) => Err(ComposeError::InvalidManifest {
+            path: path.to_path_buf(),
+            message: crate::engine_compat::malformed_iii_engine_version(other),
+        }),
+    }
+}
+
+/// Refuses a registry bundle whose own `iii_engine_version` excludes the running engine.
+/// The registry filters by `iii_version` when it resolves, but a bundle installed from
+/// `worker-compose.lock` (a frozen start) is never resolved, and the engine may have changed
+/// since the lock was written. [`crate::registry::install_resolved`] calls this for every
+/// bundle, cache hits included.
+pub(crate) fn check_bundle_engine(key: &str, install_dir: &Path) -> Result<()> {
+    bundle_engine(
+        key,
+        install_dir,
+        crate::engine_compat::running_engine_version().as_ref(),
+    )
+}
+
+/// Reads only the range: a bundle whose manifest Compose does not otherwise parse installs
+/// exactly as before, unless it declares a range this engine is outside of.
+fn bundle_engine(key: &str, install_dir: &Path, running: Option<&semver::Version>) -> Result<()> {
+    let Some(running) = running else {
+        return Ok(());
+    };
+    let path = install_dir.join(MANIFEST_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(ComposeError::Io { path, source }),
+    };
+    let declared: BundleRange =
+        serde_yaml::from_str(&text).map_err(|err| ComposeError::InvalidManifest {
+            path: path.clone(),
+            message: err.to_string(),
+        })?;
+    let Some(range) = engine_range(declared.iii_engine_version, &path)? else {
+        return Ok(());
+    };
+    crate::engine_compat::check_iii_engine_requirement(key, &range, running).map_err(|message| {
+        ComposeError::IncompatibleEngine {
+            container: key.to_string(),
+            message,
+        }
+    })
+}
+
+/// The one field of a bundle's manifest [`bundle_engine`] reads.
+#[derive(Deserialize)]
+struct BundleRange {
+    #[serde(default)]
+    iii_engine_version: Option<serde_yaml::Value>,
 }
 
 /// Resolves how a container starts.
@@ -428,5 +480,68 @@ mod tests {
         let ranged = manifest("iii_engine_version: \">=0.26.0\"\n").unwrap();
         assert!(check_engine("http", ranged.as_ref(), None).is_ok());
         assert!(check_engine("http", None, Some(&old)).is_ok());
+    }
+
+    fn bundle(yaml: Option<&str>) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        if let Some(yaml) = yaml {
+            std::fs::write(dir.path().join(MANIFEST_FILE), yaml).unwrap();
+        }
+        dir
+    }
+
+    fn version(text: &str) -> semver::Version {
+        semver::Version::parse(text).unwrap()
+    }
+
+    #[test]
+    fn a_locked_bundle_outside_its_range_is_refused() {
+        let dir = bundle(Some("name: onboarding\niii_engine_version: \">=0.27.0\"\n"));
+        let err = bundle_engine("onboarding", dir.path(), Some(&version("0.26.1"))).unwrap_err();
+        assert_eq!(err.code(), "INCOMPATIBLE_ENGINE");
+        assert_eq!(
+            err.to_string(),
+            "container 'onboarding': onboarding requires iii >=0.27.0, running 0.26.1; run: iii update"
+        );
+        let older = bundle(Some("iii_engine_version: \"^0.26.0\"\n"));
+        let err = bundle_engine("onboarding", older.path(), Some(&version("0.27.0"))).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("this iii is newer than onboarding supports"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_bundle_inside_its_range_or_without_one_installs() {
+        let running = version("0.26.0-rc.2");
+        let ranged = bundle(Some("iii_engine_version: \">=0.26.0\"\n"));
+        assert!(bundle_engine("b", ranged.path(), Some(&running)).is_ok());
+        let unranged = bundle(Some("name: b\n"));
+        assert!(bundle_engine("b", unranged.path(), Some(&running)).is_ok());
+        let no_manifest = bundle(None);
+        assert!(bundle_engine("b", no_manifest.path(), Some(&running)).is_ok());
+        let excluded = bundle(Some("iii_engine_version: \">=0.27.0\"\n"));
+        assert!(
+            bundle_engine("b", excluded.path(), None).is_ok(),
+            "outside an engine nothing is checked"
+        );
+    }
+
+    #[test]
+    fn a_bundle_is_read_for_its_range_only() {
+        // `read_manifest` refuses a non-string base image; the install check never reads it.
+        let dir = bundle(Some(
+            "runtime:\n  base_image: 5\niii_engine_version: \">=0.26.0\"\n",
+        ));
+        assert!(read_manifest(dir.path()).is_err());
+        assert!(bundle_engine("b", dir.path(), Some(&version("0.26.0"))).is_ok());
+    }
+
+    #[test]
+    fn a_bundle_with_a_malformed_range_is_an_invalid_manifest() {
+        let dir = bundle(Some("iii_engine_version: 0.26\n"));
+        let err = bundle_engine("b", dir.path(), Some(&version("0.26.0"))).unwrap_err();
+        assert_eq!(err.code(), "INVALID_MANIFEST");
     }
 }

@@ -441,6 +441,9 @@ pub async fn install_resolved(
         "bundle" => {
             let (install_dir, status) =
                 install_bundle(container, resolved, target, &cache_root).await?;
+            // The registry filters by `iii_version` when it resolves, but a bundle from
+            // `worker-compose.lock` is never resolved; cache hits come through here too.
+            crate::manifest::check_bundle_engine(container, &install_dir)?;
             (Payload::Bundle(install_dir), status)
         }
         // `engine` workers are compiled into the engine itself: there is no
