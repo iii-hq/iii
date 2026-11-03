@@ -45,6 +45,7 @@ pub mod remote;
 pub mod report;
 mod restart;
 pub mod sandbox;
+pub mod sandbox_cli;
 mod shutdown;
 pub mod spawn;
 pub mod state;

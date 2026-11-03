@@ -232,7 +232,7 @@ async fn engine_config_binds_the_mandatory_router_on_build() {
             .await
             .unwrap(),
         Some(
-            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 1}, "info": null})
+            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
         )
     );
     builder.destroy().await.unwrap();

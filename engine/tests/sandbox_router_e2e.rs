@@ -248,7 +248,7 @@ async fn unbound_router_answers_s303_but_info_never_errors() {
     assert_eq!(
         info.unwrap(),
         Some(
-            json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 1}, "info": null})
+            json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 2}, "info": null})
         )
     );
 }
@@ -284,7 +284,7 @@ async fn bound_router_without_adapter_answers_s301() {
     assert_eq!(
         info.unwrap(),
         Some(
-            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 1}, "info": null})
+            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
         )
     );
 }

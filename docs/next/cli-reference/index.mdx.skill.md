@@ -31,6 +31,7 @@ iii [OPTIONS] [COMMAND]
 | [`kill`](#iii-kill) | Stop iii processes by engine port, by compose project, or every orphaned worker |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`ps`](#iii-ps) | List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to |
+| [`sandbox`](#iii-sandbox) | Run one Compose container's VM through its sandbox adapter |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 
 ### `iii call`
@@ -187,6 +188,36 @@ iii ps [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `--json` | Print JSON instead of a table |
+
+### `iii sandbox`
+
+Run one Compose container's VM through its sandbox adapter.
+
+Compose starts `iii sandbox run` as the `scripts.run` of a container that lists the adapter in `start_after`; stopping it stops the VM.
+
+```text
+iii sandbox <COMMAND>
+```
+
+#### `iii sandbox destroy`
+
+Remove this container's VM state: its disk, installed dependencies included
+
+```text
+iii sandbox destroy
+```
+
+#### `iii sandbox run`
+
+Boot this container's VM, or reattach to it, and stay with it until it exits. Stopping this command stops the VM. Exits with the VM's code, 128+N when the VM ended on signal N, or 125 when `iii sandbox` itself failed
+
+```text
+iii sandbox run [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--command <COMMAND>` | Command to start in the guest instead of the manifest's `scripts.start`. Only for a `path://` worker: a registry bundle runs its own |
 
 ### `iii update`
 

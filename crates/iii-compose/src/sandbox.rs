@@ -666,6 +666,7 @@ async fn follow_logs(
             access_key: channel.writer_ref.access_key,
             direction: contract::ChannelDirection::Write,
         },
+        from_end: false,
     };
     let reply: std::result::Result<WorkerLogsResponse, _> = call(
         client,
@@ -811,6 +812,7 @@ pub(crate) async fn start_vm(
     let prepare = WorkerPrepareRequest {
         auth: request.auth.clone(),
         source: request.source.clone(),
+        state_key: None,
     };
     start_call::<WorkerPrepareResponse>(
         engine,
@@ -1123,7 +1125,7 @@ pub(crate) fn live_instance(error: &iii_sdk::Error) -> Option<WorkerStartRespons
 }
 
 /// The S-code an adapter answered with; `None` for anything else on the bus.
-fn sandbox_code(error: &iii_sdk::Error) -> Option<SandboxErrorCode> {
+pub(crate) fn sandbox_code(error: &iii_sdk::Error) -> Option<SandboxErrorCode> {
     match error {
         iii_sdk::Error::Remote { message, .. } => code_of(message),
         _ => None,
@@ -1160,7 +1162,7 @@ fn superseded_by(
 
 /// A VM's end as a process status, so the restart policy reads it unchanged.
 /// No code (a stop, a lost VM) reads as SIGKILL, so `code()` is `None`.
-fn vm_exit(code: Option<i32>, signal: Option<i32>) -> ExitStatus {
+pub(crate) fn vm_exit(code: Option<i32>, signal: Option<i32>) -> ExitStatus {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -1240,7 +1242,7 @@ async fn worker_start(
     started
 }
 
-async fn worker_stop(
+pub(crate) async fn worker_stop(
     client: &IIIClient,
     vm: &VmRecord,
     token: &str,
@@ -1266,7 +1268,7 @@ async fn worker_stop(
 /// `<adapter>::<suffix>` in the adapter's namespace. A reply that is not a `T`
 /// is a `Serde` error, and a call whose connection drops ends at once as
 /// `NotConnected`; `outcome_of` reads both as `Unknown`.
-async fn call<T: serde::de::DeserializeOwned>(
+pub(crate) async fn call<T: serde::de::DeserializeOwned>(
     client: &IIIClient,
     adapter: &str,
     namespace: &str,
@@ -1782,6 +1784,7 @@ pub(crate) mod tests {
             adapter: adapter.into(),
             adapter_version: "1.0.0".into(),
             contract: ContractVersion { major, minor: 0 },
+            features: Vec::new(),
         };
         assert!(
             check_info(
@@ -2054,8 +2057,8 @@ pub(crate) mod tests {
     /// that stays dead. Each answered or unanswered call but the SDK's own
     /// registration goes to the receiver as (function id, payload). A channel
     /// socket sends one line at cursor 12, none when the `worker::logs` before
-    /// it asked from there, then closes.
-    async fn fake_engine(
+    /// it asked from there or from the end, then closes.
+    pub(crate) async fn fake_engine(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
         IIIClient,
@@ -2132,7 +2135,12 @@ pub(crate) mod tests {
                             continue;
                         }
                         if function.ends_with("::worker::logs") {
-                            *asked_from.lock().unwrap() = message["data"]["cursor"].as_u64();
+                            // From the end of a log whose last record is 12: nothing to send.
+                            *asked_from.lock().unwrap() = if message["data"]["from_end"] == true {
+                                Some(12)
+                            } else {
+                                message["data"]["cursor"].as_u64()
+                            };
                         }
                         let end = |direction| json!({"channel_id": "c", "access_key": "k", "direction": direction});
                         let mut reply = match function {
@@ -2164,12 +2172,12 @@ pub(crate) mod tests {
         (format!("ws://{address}"), called)
     }
 
-    fn answered(result: impl serde::Serialize) -> serde_json::Value {
+    pub(crate) fn answered(result: impl serde::Serialize) -> serde_json::Value {
         serde_json::json!({ "result": result })
     }
 
     /// An S-code refusal whose `fix` names `instance` of VM `v`.
-    fn refused(code: SandboxErrorCode, instance: u64) -> serde_json::Value {
+    pub(crate) fn refused(code: SandboxErrorCode, instance: u64) -> serde_json::Value {
         let fix = serde_json::json!({ "vm_id": "v", "instance": instance });
         let message = wire_message(code, "refused", Some(fix));
         serde_json::json!({ "error": { "code": "invocation_failed", "message": message } })
@@ -2394,6 +2402,7 @@ pub(crate) mod tests {
                     major: CONTRACT_MAJOR,
                     minor: 0,
                 },
+                features: Vec::new(),
             }),
             "sandbox-libkrun::worker::prepare" => {
                 match prepares.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
@@ -2551,6 +2560,7 @@ pub(crate) mod tests {
                     major: CONTRACT_MAJOR,
                     minor: 0,
                 },
+                features: Vec::new(),
             }),
             "sandbox-libkrun::worker::prepare" => answered(serde_json::json!({})),
             // Still building the VM.
