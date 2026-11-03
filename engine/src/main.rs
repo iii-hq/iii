@@ -178,6 +178,12 @@ enum Commands {
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
 
+    /// Run one Compose container's VM through its sandbox adapter.
+    ///
+    /// Compose starts `iii sandbox run` as the `scripts.run` of a container
+    /// that lists the adapter in `start_after`; stopping it stops the VM.
+    Sandbox(iii_compose::sandbox_cli::SandboxCli),
+
     /// List iii processes on this machine: engines, compose daemons and
     /// workers, with the compose project each belongs to
     Ps {
@@ -245,6 +251,10 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),
+        },
+        Some(Commands::Sandbox(args)) => match &args.command {
+            iii_compose::sandbox_cli::SandboxCommand::Run(_) => "sandbox run".to_string(),
+            iii_compose::sandbox_cli::SandboxCommand::Destroy => "sandbox destroy".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Ps { .. }) => "ps".to_string(),
@@ -555,6 +565,10 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
+        // Its stdout and stderr are the guest's: nothing else may print there.
+        Some(Commands::Sandbox(args)) => {
+            std::process::exit(iii_compose::sandbox_cli::run(args.clone()).await)
+        }
         Some(Commands::Ps { json }) => cli::ps::ps(*json),
         Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
         // Handled before telemetry above.
@@ -724,6 +738,22 @@ mod tests {
             result.is_err(),
             "--use-default-config should no longer parse"
         );
+    }
+
+    #[test]
+    fn sandbox_run_parses_and_counts_as_its_own_command() {
+        let cli = Cli::try_parse_from(["iii", "sandbox", "run", "--command", "node app.js"])
+            .expect("should parse sandbox run");
+        assert_eq!(cli_usage_command_path(&cli), "sandbox run");
+        match cli.command {
+            Some(Commands::Sandbox(args)) => match args.command {
+                iii_compose::sandbox_cli::SandboxCommand::Run(run) => {
+                    assert_eq!(run.command.as_deref(), Some("node app.js"));
+                }
+                other => panic!("expected run, got {other:?}"),
+            },
+            _ => panic!("expected Sandbox subcommand"),
+        }
     }
 
     #[test]
