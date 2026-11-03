@@ -50,11 +50,10 @@ By default:
   `ready()` resolves once the observer is `active`. Calls that happen before then can be missed.
 - You call `observe` once at startup, like `registerFunction`. It returns immediately, even before
   the connection is up: the SDK sends the observer when it connects and replays it with the same id
-  after every reconnect. The browser SDK (`iii-browser-sdk`) has the same `observe` API as Node.
+  after every reconnect.
 
 Any worker can observe any function, private ones included, unless the function is registered with
-`observable: false` or RBAC restricts it (see [Authorization](#authorization)). A `private` function
-can be called only by its own worker and observed by any worker.
+`observable: false` or RBAC restricts it (see [Authorization](#authorization)).
 
 <Info title="Observing functions, not hosting them">
   This page is about running your function when another one runs. To decide what happens when the
@@ -65,8 +64,7 @@ can be called only by its own worker and observed by any worker.
 
 ## Observe a function
 
-The examples on this page build on each other. They all react to `orders::create`, a regular
-function registered by another worker.
+The examples on this page react to `orders::create`, a function that another worker registers.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -188,8 +186,11 @@ function registered by another worker.
 
 ## Args and filters
 
-An observer can carry `args` and `filters`. `args` are for the worker that hosts the function.
-`filters` are for iii.
+An observer can carry `args` and `filters`. `args` go to the worker that hosts the function, which
+reads them to set something up for the observer (a route, a schedule, a database trigger, a queue
+consumer) and to choose which calls reach it. `filters` go to iii, which applies them to each call
+the same way for every function. A cron expression is an arg: the cron worker starts a schedule for
+it. "Only ticks after 1 November" is a filter.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -248,24 +249,14 @@ An observer can carry `args` and `filters`. `args` are for the worker that hosts
   </Tab>
 </Tabs>
 
-- **`args`** go to the worker that hosts the function. That worker reads them to set something up
-  for the observer (a route, a schedule, a database trigger, a queue consumer) and to choose which
-  calls reach it. Each function documents its `args`.
-- **`filters`** go to iii. They select which calls reach the target, by anything in the call:
-  `input`, `output`, `error`, `caller`, and `metadata`. iii applies them the same way for every
-  function.
-
-A cron expression is an arg: the cron worker starts a schedule for it. "Only ticks after 1 November"
-is a filter.
-
 ### Args
 
 The engine checks `args` against the `args_format` of the function, a JSON Schema the function's
 worker declares when it registers the function. The observer fails with `INVALID_ARGS` when the
 `args` do not match, or when the function has no `args_format` and the `args` are not empty. The
 worker can also refuse an observer whose `args` it cannot serve, with a code of its own (for example
-`UNKNOWN_DB` or `HTTP_ROUTE_CONFLICT`). Each worker's page on
-[workers.iii.dev](https://workers.iii.dev) lists the `args` its functions take.
+`UNKNOWN_DB` or `HTTP_ROUTE_CONFLICT`). Each function documents its `args`: see its worker's page on
+[workers.iii.dev](https://workers.iii.dev).
 
 ### Filters
 
@@ -380,9 +371,7 @@ against the `request_format` and `response_format` of the function. If a closed 
 a path, the observer fails with `INVALID_FILTER_PATH`. If the function is not registered yet, the
 engine does this check when the function registers.
 
-A filter can read any field of the call, including the fields that `capture` leaves out. The engine
-and each SDK have their own filter implementation. All of them pass the same set of test cases, so a
-filter matches the same calls in all of them. See the
+A filter can read any field of the call, including the fields that `capture` leaves out. See the
 [filter language reference](../reference/filters) for the operators, the rules for absent and `null`
 values, and the limits.
 
@@ -392,9 +381,9 @@ values, and the limits.
 
 ### `deliver`
 
-`deliver` sets the target's first argument:
+`deliver` sets what the target receives:
 
-| `deliver`            | The target's first argument                                 |
+| `deliver`            | The target receives                                         |
 | -------------------- | ----------------------------------------------------------- |
 | `envelope` (default) | The `Observed` envelope of the call.                        |
 | `input`              | The input of the call alone.                                |
@@ -482,21 +471,14 @@ after a successful call.
 | `metadata`                     | The metadata of the observed call.                                               |
 | `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.                       |
 
-Some functions hand each call to one observer and use its target's result, for example
-[`http::on-request`](https://workers.iii.dev/workers/http), which answers the request with it. Their
-targets receive what the function documents (`http::on-request` targets receive the HTTP request).
-
 ### `capture`
 
 `capture` sets which parts of the call the envelope carries: any of `input`, `output`, `error`,
-`caller`, and `metadata`. The default is `["input", "output", "caller"]`. The ids, `status`, and the
-timings are always there.
+`caller`, and `metadata`. The default is `["input", "output", "caller"]`.
 
 An observer that only counts calls, or only notes that they failed (`on: "error"`), uses
-`capture: []`. Its envelope has the ids, `status`, and the timings, and no payload moves to its
-target.
+`capture: []`: no payload moves to its target.
 
-`capture` sets only what the target receives. A [filter](#filters) can read any field of the call.
 To keep observed calls small, capture only what the target reads. See
 [Observed call size](#observed-call-size).
 
@@ -562,16 +544,12 @@ The default `capture` does not include `error`. To give the target the error, ad
   </Tab>
 </Tabs>
 
-With `on: "complete"`, the target runs after each call, and the envelope's `status` is `success` or
-`error`.
-
 ### Metadata and the return value
 
-The observer's `metadata` option is the target's second argument (the `metadata` parameter in
-Python, `MetadataFromContext(ctx)` in Go), on every activation, including a call through the
-observer from a function's deliver hook. It is different from the `metadata` field of the envelope,
-which is the metadata of the observed call: the envelope carries it when `capture` includes
-`metadata`. See [Policy and metadata](#policy-and-metadata).
+The observer's `metadata` option, set in the [policy](#policy-and-metadata), reaches the target as
+its second argument on every activation (the `metadata` parameter in Python,
+`MetadataFromContext(ctx)` in Go). The envelope's `metadata` field is different: it is the metadata
+of the observed call, present when `capture` includes `metadata`.
 
 iii discards the target's return value, except for functions that use it:
 [`http::on-request`](https://workers.iii.dev/workers/http) answers the request with it, and
@@ -581,16 +559,16 @@ the target can see the return value as the `output` of the target's call. See
 
 ## Policy and metadata
 
-`observe` takes an optional third argument, the policy. The policy sets limits for the observer
-itself. An activation is one run of the target.
+An observer can carry a policy. The policy sets limits for the observer itself. An activation is one
+run of the target.
 
-| Option          | Default                                | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `id`            | a random UUID                          | The observer id. While a handle of this worker holds the id, an `observe` with it fails with `OBSERVER_ID_CONFLICT` and sends nothing; the id is free again once that handle's `dispose()` is called or the observer becomes `disposed`. An id that another worker's observer holds also fails with `OBSERVER_ID_CONFLICT`. With an id of your own, a restarted worker takes back its `suspended` observer (see [Observer states](#observer-states)). |
-| `max_fires`     | unlimited                              | The observer becomes `disposed` after this number of activations (reason `MAX_FIRES`).                                                                                                                                                                                                                                                                                                                                                                |
-| `expires_in_ms` | never                                  | The observer becomes `disposed` after this time (reason `EXPIRED`).                                                                                                                                                                                                                                                                                                                                                                                   |
-| `max_in_flight` | `observers.default_max_in_flight` (64) | The maximum number of activations that run at the same time. More activations wait in a queue of `observers.max_queue_per_observer` (1024). When the queue is full, or when the queues of all observers hold 64 MiB of observed calls, the engine drops new activations (`OVERFLOW`). With `1`, activations run in the order they arrive.                                                                                                             |
-| `metadata`      | none                                   | JSON that each activation gives to the target as its second argument. See [Metadata and the return value](#metadata-and-the-return-value).                                                                                                                                                                                                                                                                                                            |
+| Option          | Default                                | Meaning                                                                                                                                                                                                                                                                                                                                   |
+| --------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`            | a random UUID                          | The observer id. An `observe` with an id that a live handle of this worker, or another worker's observer, already holds fails with `OBSERVER_ID_CONFLICT`. The id is free again once that handle is disposed. With an id of your own, a restarted worker takes back its `suspended` observer (see [Observer states](#observer-states)).   |
+| `max_fires`     | unlimited                              | The observer becomes `disposed` after this number of activations (reason `MAX_FIRES`).                                                                                                                                                                                                                                                    |
+| `expires_in_ms` | never                                  | The observer becomes `disposed` after this time (reason `EXPIRED`).                                                                                                                                                                                                                                                                       |
+| `max_in_flight` | `observers.default_max_in_flight` (64) | The maximum number of activations that run at the same time. More activations wait in a queue of `observers.max_queue_per_observer` (1024). When the queue is full, or when the queues of all observers hold 64 MiB of observed calls, the engine drops new activations (`OVERFLOW`). With `1`, activations run in the order they arrive. |
+| `metadata`      | none                                   | JSON that each activation gives to the target as its second argument. See [Metadata and the return value](#metadata-and-the-return-value).                                                                                                                                                                                                |
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -657,10 +635,9 @@ itself. An activation is one run of the target.
   </Tab>
 </Tabs>
 
-Each call runs the target at most once. The engine does not retry, unless the function documents its
-own delivery (the [queue](https://workers.iii.dev/workers/queue) worker retries a message). A
-failure of the target does not change the observed call. The engine counts each dropped call in the
-`iii.observer.dropped.total` metric, by function and reason.
+The engine does not retry a failed activation, unless the function documents its own delivery (the
+[queue](https://workers.iii.dev/workers/queue) worker retries a message). It counts each dropped
+call in the `iii.observer.dropped.total` metric, by function and reason.
 
 ## Observer handle
 
@@ -992,9 +969,7 @@ previous step's return value.
 </Tabs>
 
 To add a step, observe the last function in the chain. To branch, add two observers to the same
-function. Each step adds 1 to the depth of the call. When the depth is more than
-`observers.max_observe_depth` (8 by default), the engine drops the activation with `LOOP_GUARD`. See
-[Loop guard](#loop-guard).
+function. Each step adds 1 to the depth of the call: see [Loop guard](#loop-guard).
 
 ## Inspect observers
 

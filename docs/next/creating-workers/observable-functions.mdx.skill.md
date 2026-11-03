@@ -7,10 +7,6 @@
   `observe`. To move a 0.25 worker, see [Upgrading from 0.25.x to 0.26.x](../upgrading/from-0-25-x).
 </Info>
 
-```typescript
-worker.observe("orders::create", "alerts::big-order");
-```
-
 An observer runs one function when another one completes. Every function a worker registers can be
 observed: a plain function, a cron tick, a row change, an HTTP request. What an observer sees is
 typically the function's return value, unless the worker that hosts the function overrides it. If
@@ -34,10 +30,6 @@ reaching, or being considered for, one observer:
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `onObservationMatch(obs, call)`         | every call is observed by every observer                                                                                                                       | decide, for one call, which observations happen: whether the observer `obs` gets `call`, from its args. A cron observer of `0 0 9 * * * *` gets that expression's ticks, an observer of the `orders` table gets that table's changes. A predicate, or keys that iii indexes. |
 | `onObservationDeliver(call, observers)` | carries out each observation: runs the target of every matched observer whose `on` and filters match the call, and gives the caller the handler's return value | carry out the call's observations yourself: hand the call to its observers and return what the caller gets back. Route an HTTP request to one observer and return its response, acknowledge a queue message with its subscriber's result.                                    |
-
-`onObserverAdded` and `onObserverRemoved` can be set for one function or for every function the
-worker hosts. `onObservationMatch` and `onObservationDeliver` are set for one function. A function
-can set both: its `onObservationDeliver` receives the observers that `onObservationMatch` matched.
 
 This page is for the worker that hosts a function. To observe a function, see
 [Observers](../using-iii/observers).
@@ -108,7 +100,7 @@ worker: other workers can observe the function, and only this worker can call it
   </Tab>
 </Tabs>
 
-A consumer observes it like any other function, for example with a filter on the path:
+A consumer observes it like any other function:
 
 ```typescript
 worker.observe(
@@ -212,9 +204,6 @@ worker hosts, and both levels run:
 
 - When an observer is added, the worker's `onObserverAdded` runs, then the function's.
 - When an observer is removed, the function's `onObserverRemoved` runs, then the worker's.
-
-A hook for one function can be set by function id on the client, or on the `FunctionRef` that
-`registerFunction` returns. Both forms store the hook under the function id.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -357,13 +346,14 @@ The hook names in each SDK:
 | Match, one function     | `onObservationMatch(id, hook)`   | `on_observation_match(id, hook)`   | `on_observation_match_for(id, rule)`   | `OnObservationMatchFor(id, rule)`   |
 | Deliver, one function   | `onObservationDeliver(id, hook)` | `on_observation_deliver(id, hook)` | `on_observation_deliver_for(id, hook)` | `OnObservationDeliverFor(id, hook)` |
 
-The `FunctionRef` has the same methods with the id filled in: `onObserverAdded(hook)` and its
-siblings in Node, Python and Rust (`on_observer_added(hook)`), and `OnObserverAdded(hook)` in Go. In
-Node, Rust and Go each method returns its receiver, so calls chain. In Python each returns the hook,
-so it also works as a decorator, and `on_observer_added("id")` without a hook is a decorator
-factory. Added, removed and deliver hooks may be sync or async in Node and Python. A match predicate
-and key functions are sync, since they run on every call. In Rust a hook is an async closure or a
-type that implements `AddedHook`, `RemovedHook` or `DeliverHook`.
+- The `FunctionRef` has the same methods with the id filled in.
+- In Node, Rust and Go each method returns its receiver, so calls chain. In Python each returns the
+  hook, so it also works as a decorator, and `on_observer_added("id")` without a hook is a decorator
+  factory.
+- Added, removed and deliver hooks can be sync or async in Node and Python. A match predicate and
+  key functions are sync, since they run on every call.
+- In Rust a hook is an async closure or a type that implements `AddedHook`, `RemovedHook` or
+  `DeliverHook`.
 
 An observation match hook is a predicate or a pair of key functions (see
 [Match observers to calls](#match-observers-to-calls)):
@@ -408,18 +398,13 @@ a mistyped id.
   `onObserverRemoved` for each. If the observing worker reconnects in that time, the host gets each
   observer again, in the order they were created, runs `onObserverAdded`, and the observer is
   `active` once it is accepted.
-- **Back on a new connection.** A restarted worker connects with no reattach token and observes
-  under the ids it used before. An observe of a `suspended` observer's id, from a connection under
-  the same worker name in the same namespace, replaces that observer. The two connections must also
-  be the same principal: both on ports without `rbac`, or both on RBAC ports where the auth function
-  gave them the same `context`, one that is not empty. A session with no `context` replaces nothing,
-  and a connection on a port without `rbac` and an RBAC session never replace each other's
-  observers. The host already ran `onObserverRemoved` for it when the worker left, and hears nothing
-  more about it. It gets the new observer like any other and runs `onObserverAdded`, so a resource
-  kept by `obs.id`, such as a queue subscriber's backlog, serves the new observer. From any other
-  worker the id stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends. The observing
-  worker needs a name that stays the same across restarts (`III_WORKER_NAME`, or the worker name
-  option of the SDK): under the default name, `hostname:pid`, a restarted worker is another worker.
+- **Back on a new connection.** A restarted observing worker observes under the ids it used before.
+  Under the same worker name, namespace and principal, its observe replaces the `suspended` observer
+  (see [Observer states](../using-iii/observers#observer-states)); from any other worker the id
+  stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends. The host already ran
+  `onObserverRemoved` for the old observer and hears nothing more about it. It gets the new observer
+  like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a queue
+  subscriber's backlog, serves the new observer.
 - **One at a time.** For each function, the SDK runs observer lifecycle hooks one at a time, in the
   order the engine announced the observers. Hooks of different functions run concurrently.
 - **Timeout.** An `onObserverAdded` that runs past 30 seconds (`observers.owner_ack_timeout_ms` in
@@ -479,10 +464,10 @@ iii's delivery:
    [loop guard](../using-iii/observers#loop-guard);
 3. gives the caller the handler's return value, or rethrows its error.
 
-It does not wait for targets. A call with no observers costs one atomic load, and the caller and the
-observers see the same value. The engine finds the observers whose filters hold an `$eq` or `$in` on
-a value of the call through an index, so a routed call costs about one lookup however many observers
-filter on their own value (see [Filters](../reference/filters#many-observers)).
+It does not wait for targets. The caller and the observers see the same value. The engine finds the
+observers whose filters hold an `$eq` or `$in` on a value of the call through an index, so a routed
+call costs about one lookup however many observers filter on their own value (see
+[Filters](../reference/filters#many-observers)).
 
 ### Match observers to calls
 
@@ -542,10 +527,10 @@ The SDK asks the predicate once per observation: for every call, once for each a
 before that observer's `on` and filters. A predicate that throws counts as no match for that
 observer, and the SDK logs it once per function.
 
-As keys, for a function with many observers. One key function gives the keys an observer listens
-for, the other gives the keys a call is, and an observer wants a call when they share a key. The SDK
-keeps an index from keys to observers, so a call costs one lookup per key, whatever the number of
-observers. Here each observer of `prices::on-change` names a symbol:
+Keys suit a function with many observers. One key function gives the keys an observer listens for,
+the other gives the keys a call is, and an observer wants a call when they share a key. The SDK
+keeps an index from keys to observers, so a call costs one lookup per key. Here each observer of
+`prices::on-change` names a symbol:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -612,8 +597,6 @@ observers. Here each observer of `prices::on-change` names a symbol:
 - The SDK computes a call's keys once per call. A call matches the observers filed under any of its
   keys, each once.
 - A match hook set while the function has active observers rebuilds the index from them.
-- Passing `null` (`None` in Python, `nil` in Go, `clear_observation_match` in Rust) removes the
-  match hook, predicate or keys: every observer gets every call again.
 
 Keys express wildcards by listing them. The [database example](#database-changes) files an observer
 of every table under `"primary|*|insert"`, and gives a change the keys `"primary|orders|insert"`,
@@ -621,11 +604,10 @@ of every table under `"primary|*|insert"`, and gives a change the keys `"primary
 observers. Keys suit sources whose observers each want a slice of many calls: row changes by table,
 frames by session, messages by subscriber.
 
-`isObserved(call)` answers whether a call would reach anyone, so a source can skip building an event
-nobody wants. Without a call, it is true when the function has any active observer: one atomic load.
-With a call, on a function matched by keys, it is true when an observer is filed under one of the
-call's keys: one hash lookup per key. On any other function, the call is ignored. Python takes the
-call as `is_observed(call)`, Rust as `is_observed_for(&call)`, and Go as `IsObservedFor(call)`.
+`isObserved(call)` (`is_observed(call)` in Python, `is_observed_for(&call)` in Rust,
+`IsObservedFor(call)` in Go) is true when an observer is filed under one of the call's keys: one
+hash lookup per key. A source uses it to skip building an event nobody wants. On a function without
+keys, the call is ignored.
 
 ### Deliver calls yourself
 
@@ -642,9 +624,6 @@ observers with each other or produces part of the payload. An HTTP request goes 
 of the route patterns that fit its path, and that route's path parameters go into the request its
 target receives, so `http::on-request` sets no match hook and its deliver hook receives every active
 observer.
-
-`http::on-request` answers the HTTP server with the route's response, while its observers observe
-the request:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -761,8 +740,6 @@ A call that names an observer runs that observer's target and resolves to the ta
   observer is active. Then it routes the call to the observer's stored target and applies the
   observer's policy (`max_fires`, expiry, `max_in_flight`), metadata, and loop guard, as for iii's
   delivery.
-- The call sends the payload as given. The deliver hook applies the observer's `on` and filters with
-  `obs.matches(call)` before it calls.
 - The call takes no metadata. The target's metadata argument is the observer's registration
   metadata, as on iii's delivery. `call` refuses a call through an observer that names metadata
   before sending anything, with the error "a call through an observer takes no metadata; its target
@@ -1881,9 +1858,7 @@ acknowledges the message. Its args are
   </Tab>
 </Tabs>
 
-Filters read the message as `input`. Each subscriber's target runs through its observer, and its
-result decides whether the message is acknowledged, retried or dead-lettered. A consumer subscribes
-to a topic:
+Filters read the message as `input`. A consumer subscribes to a topic:
 
 ```typescript
 worker.observe(
@@ -1915,4 +1890,4 @@ functions that declare `args_format`, `private: true` or `observable: false`, or
 once for each. The SDK registers them when the worker connects to an engine with `observe.v2`. Every
 other function and `call` work. `observe` works against a 0.25 engine, which advertises
 `observe.v1`. Against an engine older than 0.25, which has no observers, the observer turns `error`
-with `UNSUPPORTED`, and `ready()` fails with it. The engine evaluates the filters of routed calls.
+with `UNSUPPORTED`, and `ready()` fails with it.
