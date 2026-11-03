@@ -5,8 +5,8 @@
 // See LICENSE and PATENTS files for details.
 
 //! Observers the engine creates for its own modules: telemetry's queue topics
-//! (`queue::on-message`), the Console UI assets of `iii-observability`
-//! (`console::ui::asset`).
+//! (`queue::on-message`), the ADE UI assets of `iii-observability`
+//! (`ade::ui::asset`).
 //!
 //! - The engine is the observing party ([`ENGINE_CONNECTION`],
 //!   `worker_name: "iii-engine"`): such an observer never hears
