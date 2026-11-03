@@ -1022,7 +1022,9 @@ mod tests {
         async fn wait_for(lines: &mut Lines<BufReader<ChildStdout>>, wanted: &str) {
             let seen = tokio::time::timeout(Duration::from_secs(10), async {
                 while let Some(line) = lines.next_line().await.unwrap() {
-                    if line == wanted {
+                    // Single-threaded, libtest prints the test's name before its output on
+                    // the same line.
+                    if line.ends_with(wanted) {
                         return;
                     }
                 }
@@ -1064,10 +1066,16 @@ mod tests {
         let shutdown = Shutdown::signals().unwrap();
         println!("signals-ready");
         std::io::stdout().flush().unwrap();
-        let (number, _) = shutdown.requested().await;
+        // Run on its own (`--include-ignored`), nothing signals it: it ends instead of hanging.
+        let Ok((number, _)) =
+            tokio::time::timeout(Duration::from_secs(10), shutdown.requested()).await
+        else {
+            return;
+        };
         println!("stop-requested {number}");
         std::io::stdout().flush().unwrap();
-        std::future::pending::<()>().await;
+        // Alive long enough for the test to see a second signal absorbed.
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 
     #[tokio::test]
@@ -1205,13 +1213,14 @@ mod tests {
         .await;
         let shutdown = signal_after(Duration::from_millis(200), 15);
         let (printer, _) = captured();
-        let ctx = context_stopping_within("1000");
+        let ctx = context_stopping_within("2000");
         let status = run_vm(&ctx, &client, &shutdown, printer).await.unwrap();
         let (_, signalled_at) = shutdown.requested().await;
         let took = signalled_at.elapsed();
-        assert!(took < Duration::from_millis(1000), "the stop took {took:?}");
+        // The deadline is at 1800 ms: 200 ms of slack for the return path on a loaded runner.
+        assert!(took < Duration::from_millis(2000), "the stop took {took:?}");
         assert!(
-            took >= Duration::from_millis(850),
+            took >= Duration::from_millis(1750),
             "gave up early: {took:?}"
         );
         assert_eq!(exit_code(status), 128 + 9);
