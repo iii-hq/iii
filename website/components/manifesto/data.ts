@@ -34,11 +34,11 @@ export const statements: Statement[] = [
     ],
   },
   {
-    id: 'three-primitives',
-    accent: 'three primitives',
-    heavy: 'are enough.',
+    id: 'one-primitive',
+    accent: 'one primitive',
+    heavy: 'is enough.',
     body: [
-      'worker. trigger. function. a worker is any process that joins the system. a trigger is anything that causes work to run. a function is the unit of work. every capability (queues, cron, streaming, sandboxing, observability, agents, business logic, devices, UIs, and everything not yet imagined) is built from these three things. the primitives are small enough to hold in your head. everything else is a property of the engine, or a worker someone published.',
+      'a function. you call it, or you observe it. calling runs a function now. observing runs a function each time another function has an event. every capability (queues, cron, streaming, sandboxing, observability, agents, business logic, devices, UIs, and everything not yet imagined) is built from functions and these two operators. the primitive is small enough to hold in your head. everything else is a property of the engine, or a worker someone published.',
     ],
   },
   {
@@ -76,7 +76,7 @@ export const statements: Statement[] = [
     accent: 'same contract,',
     heavy: 'both sides of the house.',
     body: [
-      'application teams register functions and declare triggers, focused entirely on business logic. platform teams publish workers, focused entirely on the capabilities they provide. both sides fulfill the exact same contract. no bespoke SDKs. no internal client libraries. no per-service API contracts. no integration consulting. the work that used to live between teams disappears.',
+      'application teams register functions and call or observe them, focused entirely on business logic. platform teams publish workers, focused entirely on the capabilities they provide. both sides fulfill the exact same contract. no bespoke SDKs. no internal client libraries. no per-service API contracts. no integration consulting. the work that used to live between teams disappears.',
     ],
   },
   {

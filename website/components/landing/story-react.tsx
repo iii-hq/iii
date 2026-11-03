@@ -7,9 +7,9 @@ import { STORY_BEATS } from './story-model'
 import styles from './story-react.module.css'
 
 /**
- * Reactivity as triggers, drawn as one fan-out read top to bottom: a pull request opens, the github worker emits
- * `github::pr::event` into iii, iii delivers it to every subscriber at once, and each handler reacts on its own.
- * Then a fourth handler subscribes to the same event without anything upstream changing.
+ * Reactivity as observers, drawn as one fan-out read top to bottom: a pull request opens, the github worker emits
+ * `github::pr::event` into iii, iii delivers it to every observer at once, and each function reacts on its own.
+ * Then a fourth function observes the same event without anything upstream changing.
  */
 
 const HANDLERS = [
@@ -35,7 +35,7 @@ export function ReactPreview({ beat }: { beat: number }) {
         <span className={shared.activityIcon}>
           <IconGitHub className="size-4" />
         </span>
-        <span className={shared.activityLabel}>Triggers</span>
+        <span className={shared.activityLabel}>Observers</span>
         <code className={styles.fn}>github::pr::event</code>
       </figcaption>
 
