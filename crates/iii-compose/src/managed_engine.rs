@@ -720,7 +720,10 @@ impl RotatingLog {
     fn open(path: &Path, max_bytes: u64, archives: usize) -> std::io::Result<Self> {
         let max_bytes = max_bytes.max(1);
         let mut options = std::fs::OpenOptions::new();
-        options.create(true).read(true).append(true);
+        // Sanitization and rotation truncate this same handle. Windows denies
+        // truncation on an append-only handle; one writer owns the log, so a
+        // read/write handle positioned at its end preserves existing output.
+        options.create(true).read(true).write(true).truncate(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
@@ -742,6 +745,7 @@ impl RotatingLog {
                 size = clean.len() as u64;
             }
         }
+        file.seek(SeekFrom::End(0))?;
         let mut log = Self {
             path: path.to_path_buf(),
             file,
@@ -1246,6 +1250,70 @@ port: 60123
         let log = RotatingLog::open(&log, 0, 0).unwrap();
 
         assert_eq!(log.max_bytes, 1);
+    }
+
+    #[test]
+    fn rotating_log_appends_to_an_existing_clean_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("engine.log");
+        std::fs::write(&path, b"previous\n").unwrap();
+
+        let mut log = RotatingLog::open(&path, 64, 2).unwrap();
+        log.write_bounded(b"next\n").unwrap();
+        log.file.flush().unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous\nnext\n");
+    }
+
+    #[test]
+    fn rotating_log_sanitizes_and_appends_to_existing_logs() {
+        for existing in [b"previous\r\n".as_slice(), b"\x1b[31mprevious\x1b[0m\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("engine.log");
+            std::fs::write(&path, existing).unwrap();
+
+            let mut log = RotatingLog::open(&path, 64, 2).unwrap();
+            log.write_bounded(b"next\n").unwrap();
+            log.file.flush().unwrap();
+
+            assert_eq!(std::fs::read(&path).unwrap(), b"previous\nnext\n");
+        }
+    }
+
+    #[test]
+    fn rotating_log_archives_an_existing_log_at_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("engine.log");
+        std::fs::write(&path, b"previous").unwrap();
+
+        let mut log = RotatingLog::open(&path, 8, 2).unwrap();
+        log.write_bounded(b"next").unwrap();
+        log.file.flush().unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"next");
+        assert_eq!(std::fs::read(archive_path(&path, 1)).unwrap(), b"previous");
+    }
+
+    #[test]
+    fn rotating_log_rotates_during_writes_and_reopens_without_losing_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("engine.log");
+        {
+            let mut log = RotatingLog::open(&path, 4, 2).unwrap();
+            log.write_bounded(b"abcdefghijkl").unwrap();
+            log.file.flush().unwrap();
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"ijkl");
+        assert_eq!(std::fs::read(archive_path(&path, 1)).unwrap(), b"efgh");
+        assert_eq!(std::fs::read(archive_path(&path, 2)).unwrap(), b"abcd");
+
+        let mut reopened = RotatingLog::open(&path, 4, 2).unwrap();
+        reopened.write_bounded(b"mn").unwrap();
+        reopened.file.flush().unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"mn");
+        assert_eq!(std::fs::read(archive_path(&path, 1)).unwrap(), b"ijkl");
+        assert_eq!(std::fs::read(archive_path(&path, 2)).unwrap(), b"efgh");
     }
 
     #[cfg(unix)]
