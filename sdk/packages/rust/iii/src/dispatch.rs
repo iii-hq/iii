@@ -48,7 +48,7 @@ use serde_json::{Value, json, value::to_raw_value};
 use crate::{
     context::{Frame, InvocationCtx, local_depth, scope_frame, with_current},
     error::Error,
-    hooks::{Call, DeliverHook, same_json},
+    hooks::{Call, ErasedDeliverHook, same_json},
     iii::{
         DEFAULT_TIMEOUT_MS, IIIClient, PreparedEnvelope, inject_trace_headers, now_ms, parent_of,
     },
@@ -344,20 +344,20 @@ pub(crate) struct Answer {
 /// Runs a deliver hook inside the call's invocation context and span; a
 /// panic is an error.
 async fn run_deliver_hook(
-    hook: Arc<dyn DeliverHook>,
+    hook: Arc<dyn ErasedDeliverHook>,
     call: Call,
     observers: Vec<Observer>,
     frame: Arc<Frame>,
     otel_cx: &OtelContext,
 ) -> Result<Value, Error> {
     use iii_helpers::observability::opentelemetry::trace::FutureExt as OtelFutureExt;
-    let run = scope_frame(frame, async move { hook.on_deliver(call, observers).await });
+    let run = scope_frame(frame, async move { hook.deliver(call, observers).await });
     AssertUnwindSafe(run.with_context(otel_cx.clone()))
         .catch_unwind()
         .await
         .unwrap_or_else(|panic| {
             Err(Error::Handler(format!(
-                "on_observer_deliver panicked: {}",
+                "on_observation_deliver panicked: {}",
                 panic_message(&panic)
             )))
         })

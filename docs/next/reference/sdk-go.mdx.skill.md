@@ -111,9 +111,9 @@ defer client.Close()
 
 ### Client.RegisterFunction
 
-RegisterFunction registers a function this worker can handle and returns its handle; `FunctionRef.Unregister` removes it. It may be called before or after Connect; the registration is sent on the next (re)connect. As in the Node, Python and Rust SDKs, an empty id is refused ("id is required") and so is an id this client already registered ("function id already registered"): to replace a function, unregister it first. Pass a single `RegisterFunctionOptions` value for a description, request and response formats, metadata, args_format, private, observable, standby or the local dispatch setting.
+RegisterFunction registers a function this worker can handle and returns its handle; `FunctionRef.Unregister` removes it. It may be called before or after Connect; the registration is sent on the next (re)connect. As in the Node, Python and Rust SDKs, an empty id is refused ("id is required") and so is an id this client already registered ("function id already registered"): to replace a function, unregister it first. Pass a single `RegisterFunctionOptions` value for a description, request and response formats, metadata, args_format, private, observable or the local dispatch setting.
 
-The handler's return value is what observers observe. Every call of the function, local or routed, runs the handler and is then delivered to the observers that want it (`Client.OnObserverMatchFor`; by default all of them): by the function's deliver hook (`Client.OnObserverDeliverFor`), or by iii, to those whose on and filters match. Set hooks by id before registering: the SDK acks no observer before RegisterFunction returns, but a hook set on the returned handle can miss observers already accepted, and is caught up for them.
+The handler's return value is what observers observe. Every call of the function, local or routed, runs the handler and is then delivered to the observers that want it (`Client.OnObservationMatchFor`; by default all of them): by the function's deliver hook (`Client.OnObservationDeliverFor`), or by iii, to those whose on and filters match. Set hooks by id before registering: the SDK acks no observer before RegisterFunction returns, but a hook set on the returned handle can miss observers already accepted, and is caught up for them.
 
 Handlers read the optional per-invocation metadata sidecar from their ctx with `MetadataFromContext`.
 
@@ -158,9 +158,6 @@ func (c *Client) RegisterFunction(id string, handler Handler, opts ...RegisterFu
     </ParamField>
     <ParamField body="Observable" type="*bool">
       Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true.
-    </ParamField>
-    <ParamField body="Standby" type="bool">
-      Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -387,6 +384,39 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 
 ---
 
+### Client.AddConnectionStateListener
+
+AddConnectionStateListener calls listener with the current `ConnectionState`, then with every later change of state (`StateConnecting`, `StateConnected`, `StateReconnecting`, `StateDisconnected`, `StateFailed`), in the order the changes happen. Calls are made one at a time on a goroutine of the client's own, never on the subscribing goroutine or on the SDK's read loop, so a listener may call any Client method; it should return promptly, since later changes wait for it. A state is reported once per change: the same state is never delivered twice in a row. A listener that panics is logged and keeps its subscription.
+
+It returns the function that unsubscribes listener: changes not yet delivered when it returns are dropped for this listener (a call already under way completes). Calling it more than once does nothing. It mirrors addConnectionStateListener in the browser SDK and add_connection_state_listener in the Python SDK.
+
+**Signature**
+
+```go
+func (c *Client) AddConnectionStateListener(listener func(ConnectionState)) (unsubscribe func())
+```
+
+#### Parameters
+
+<ParamField body="listener" type="func(ConnectionState)" required>
+
+  <Expandable title="`ConnectionState` fields">
+    <ParamField body="StateDisconnected" type="'disconnected'" required>
+    </ParamField>
+    <ParamField body="StateConnecting" type="'connecting'" required>
+    </ParamField>
+    <ParamField body="StateConnected" type="'connected'" required>
+    </ParamField>
+    <ParamField body="StateReconnecting" type="'reconnecting'" required>
+    </ParamField>
+    <ParamField body="StateFailed" type="'failed'" required>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
 ### Client.Address
 
 Address returns the engine WebSocket base URL this client dials (e.g. "ws://127.0.0.1:49134"): the url given to `New` or `RegisterWorker`, else `EngineURLFromEnv`. Channel readers/writers build their own URLs from it.
@@ -433,7 +463,7 @@ func (c *Client) Connect(ctx context.Context) error
 
 ### Client.ConnectionState
 
-ConnectionState returns the current state of the connection to the engine. It mirrors getConnectionState in the Node SDK; `Client.OnConnectionStateChange` reports every change.
+ConnectionState returns the current state of the connection to the engine. It mirrors getConnectionState in the Node SDK; `Client.AddConnectionStateListener` reports every change.
 
 **Signature**
 
@@ -646,32 +676,92 @@ func (c *Client) Observers(functionID string) []*Observer
 
 ---
 
-### Client.OnConnectionStateChange
+### Client.OnObservationDeliverFor
 
-OnConnectionStateChange calls listener with the current `ConnectionState`, then with every later change of state (`StateConnecting`, `StateConnected`, `StateReconnecting`, `StateDisconnected`, `StateFailed`), in the order the changes happen. Calls are made one at a time on a goroutine of the client's own, never on the subscribing goroutine or on the SDK's read loop, so a listener may call any Client method; it should return promptly, since later changes wait for it. A state is reported once per change: the same state is never delivered twice in a row. A listener that panics is logged and keeps its subscription.
-
-It returns the function that unsubscribes listener: changes not yet delivered when it returns are dropped for this listener (a call already under way completes). Calling it more than once does nothing. It mirrors the Python SDK's add_connection_state_listener.
+OnObservationDeliverFor sets the hook that delivers each call of functionID itself; nil restores iii's delivery, which delivers each call to every matched observer whose on and filters accept it, and gives the caller the handler's result. It is stored by id, as `Client.OnObserverAddedFor` is. A function with a deliver hook needs an engine with observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED once. A deliver hook does not run for a function registered with `Client.RegisterHTTPFunction`: the engine delivers its calls. It returns the client, for chaining.
 
 **Signature**
 
 ```go
-func (c *Client) OnConnectionStateChange(listener func(ConnectionState)) (unsubscribe func())
+func (c *Client) OnObservationDeliverFor(functionID string, hook DeliverHook) *Client
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="functionID" type="string" required>
+</ParamField>
+
+<ParamField body="hook" type="DeliverHook" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+client := iii.RegisterWorker(iii.DefaultEngineURL)
+defer client.Close()
+
+commandOf := func(call *iii.Call) string {
+	var req struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(call.Input, &req)
+	return req.Command
+}
+client.OnObservationMatchFor("chat::on-command", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+	return obs.Args["command"] == commandOf(call)
+}))
+client.OnObservationDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+	if len(observers) == 0 {
+		return map[string]string{"reply": "unknown command /" + commandOf(call)}, nil
+	}
+	obs := observers[0]
+	if !obs.Matches(call) {
+		return map[string]string{"reply": "/" + commandOf(call) + " is not available"}, nil
+	}
+	// what this hook returns is what the caller gets back
+	return client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+})
+
+if _, err := client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{
+	ArgsFormat: json.RawMessage(`{"type":"object","required":["command"],"properties":{"command":{"type":"string"}}}`),
+	Private:    true,
+}); err != nil {
+	log.Fatal(err)
+}
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### Client.OnObservationMatchFor
+
+OnObservationMatchFor sets which observers want each call of functionID: `MatchFunc` or `MatchKeys`; nil restores the default, where every observer wants every call. It is stored by id, as `Client.OnObserverAddedFor` is. A match hook set on a registered function takes effect on the function's hook queue, after the hooks queued before it, and calls use the previous one until then. A hook by keys set while the function has active observers rebuilds the index from them; an observer whose keys panic is late-rejected with OBSERVE_REJECTED. A function with a match hook needs an engine with observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED once. It returns the client, for chaining.
+
+**Signature**
+
+```go
+func (c *Client) OnObservationMatchFor(functionID string, m *MatchHook) *Client
 ```
 
 #### Parameters
 
-<ParamField body="listener" type="func(ConnectionState)" required>
+<ParamField body="functionID" type="string" required>
+</ParamField>
 
-  <Expandable title="`ConnectionState` fields">
-    <ParamField body="StateDisconnected" type="'disconnected'" required>
+<ParamField body="m" type="*MatchHook" required>
+
+  <Expandable title="`MatchHook` fields">
+    <ParamField body="MatchFunc" type="func(predicate func(obs *Observer, call *Call) bool) *MatchHook" required>
+      MatchFunc is a match hook that asks predicate, once per active observer per call, whether the observer wants the call. A predicate that panics counts as no match, and the SDK logs it once per function. A nil predicate gives a nil MatchHook.
     </ParamField>
-    <ParamField body="StateConnecting" type="'connecting'" required>
-    </ParamField>
-    <ParamField body="StateConnected" type="'connected'" required>
-    </ParamField>
-    <ParamField body="StateReconnecting" type="'reconnecting'" required>
-    </ParamField>
-    <ParamField body="StateFailed" type="'failed'" required>
+    <ParamField body="MatchKeys" type="func(observerKeys func(obs *Observer) []string, callKeys func(call *Call) []string) *MatchHook" required>
+      MatchKeys is a match hook by keys: an observer wants a call when they share a key, and the SDK keeps an index of the active observers by key instead of asking each of them. observerKeys says what an observer listens for: the SDK computes it once, when the observer is accepted, files the observer under each key and unfiles it when it is removed. An observer whose observerKeys panics is rejected with OBSERVE_REJECTED. callKeys says what a call is: the call matches the observers filed under any of its keys, each once; a callKeys that panics matches nothing, and the SDK logs it once per function. Keys express wildcards by listing them: an observer of every table is filed under "primary|\*|insert", and a change matches "primary|orders|insert", "primary|orders|\*", "primary|\*|insert" and "primary|\*|\*". A nil function gives a nil MatchHook.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -715,99 +805,6 @@ func (c *Client) OnObserverAddedFor(functionID string, hook AddedHook) *Client
 </ParamField>
 
 <ParamField body="hook" type="AddedHook" required>
-</ParamField>
-
-
----
-
-### Client.OnObserverDeliverFor
-
-OnObserverDeliverFor sets the hook that delivers each call of functionID itself; nil restores iii's delivery, which delivers each call to every matched observer whose on and filters accept it, and gives the caller the handler's result. It is stored by id, as `Client.OnObserverAddedFor` is. A function with a deliver hook needs an engine with observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED once. A deliver hook does not run for a function registered with `Client.RegisterHTTPFunction`: the engine delivers its calls. It returns the client, for chaining.
-
-**Signature**
-
-```go
-func (c *Client) OnObserverDeliverFor(functionID string, hook DeliverHook) *Client
-```
-
-<Tabs>
-  <Tab title="Parameters">
-
-<ParamField body="functionID" type="string" required>
-</ParamField>
-
-<ParamField body="hook" type="DeliverHook" required>
-</ParamField>
-
-
-  </Tab>
-  <Tab title="Example">
-
-```go
-client := iii.RegisterWorker(iii.DefaultEngineURL)
-defer client.Close()
-
-commandOf := func(call *iii.Call) string {
-	var req struct {
-		Command string `json:"command"`
-	}
-	_ = json.Unmarshal(call.Input, &req)
-	return req.Command
-}
-client.OnObserverMatchFor("chat::on-command", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-	return obs.Args["command"] == commandOf(call)
-}))
-client.OnObserverDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
-	if len(observers) == 0 {
-		return map[string]string{"reply": "unknown command /" + commandOf(call)}, nil
-	}
-	obs := observers[0]
-	if !obs.Matches(call) {
-		return map[string]string{"reply": "/" + commandOf(call) + " is not available"}, nil
-	}
-	// what this hook returns is what the caller gets back
-	return client.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
-})
-
-if _, err := client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{
-	ArgsFormat: json.RawMessage(`{"type":"object","required":["command"],"properties":{"command":{"type":"string"}}}`),
-	Private:    true,
-}); err != nil {
-	log.Fatal(err)
-}
-```
-
-
-  </Tab>
-</Tabs>
-
----
-
-### Client.OnObserverMatchFor
-
-OnObserverMatchFor sets which observers want each call of functionID: `MatchFunc` or `MatchKeys`; nil restores the default, where every observer wants every call. It is stored by id, as `Client.OnObserverAddedFor` is. A match hook set on a registered function takes effect on the function's hook queue, after the hooks queued before it, and calls use the previous one until then. A hook by keys set while the function has active observers rebuilds the index from them; an observer whose keys panic is late-rejected with OBSERVE_REJECTED. A function with a match hook needs an engine with observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED once. It returns the client, for chaining.
-
-**Signature**
-
-```go
-func (c *Client) OnObserverMatchFor(functionID string, m *MatchHook) *Client
-```
-
-#### Parameters
-
-<ParamField body="functionID" type="string" required>
-</ParamField>
-
-<ParamField body="m" type="*MatchHook" required>
-
-  <Expandable title="`MatchHook` fields">
-    <ParamField body="MatchFunc" type="func(predicate func(obs *Observer, call *Call) bool) *MatchHook" required>
-      MatchFunc is a match hook that asks predicate, once per active observer per call, whether the observer wants the call. A predicate that panics counts as no match, and the SDK logs it once per function. A nil predicate gives a nil MatchHook.
-    </ParamField>
-    <ParamField body="MatchKeys" type="func(observerKeys func(obs *Observer) []string, callKeys func(call *Call) []string) *MatchHook" required>
-      MatchKeys is a match hook by keys: an observer wants a call when they share a key, and the SDK keeps an index of the active observers by key instead of asking each of them. observerKeys says what an observer listens for: the SDK computes it once, when the observer is accepted, files the observer under each key and unfiles it when it is removed. An observer whose observerKeys panics is rejected with OBSERVE_REJECTED. callKeys says what a call is: the call matches the observers filed under any of its keys, each once; a callKeys that panics matches nothing, and the SDK logs it once per function. Keys express wildcards by listing them: an observer of every table is filed under "primary|\*|insert", and a change matches "primary|orders|insert", "primary|orders|\*", "primary|\*|insert" and "primary|\*|\*". A nil function gives a nil MatchHook.
-    </ParamField>
-  </Expandable>
 </ParamField>
 
 
@@ -908,7 +905,7 @@ func (c *Client) OpenWriter(ref StreamChannelRef) *ChannelWriter
 
 ### Client.RegisterHTTPFunction
 
-RegisterHTTPFunction registers a function that has no handler in this process: the engine invokes it by sending an HTTP request as described by invocation, which travels as the registration's "invocation" field. invocation.URL is required; an empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid JSON; build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`. Pass at most one `RegisterFunctionOptions` for the description, formats, metadata, args_format, private, observable or standby; LocalDispatch does not apply, since there is nothing to run in-process. The engine delivers the function's calls itself, so a deliver hook does not run for it; the added and removed hooks do.
+RegisterHTTPFunction registers a function that has no handler in this process: the engine invokes it by sending an HTTP request as described by invocation, which travels as the registration's "invocation" field. invocation.URL is required; an empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid JSON; build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`. Pass at most one `RegisterFunctionOptions` for the description, formats, metadata, args_format, private or observable; LocalDispatch does not apply, since there is nothing to run in-process. The engine delivers the function's calls itself, so a deliver hook does not run for it; the added and removed hooks do.
 
 Like every registration it is kept in memory and sent again on each reconnect. An empty id, or one this client already registered, is refused as in `Client.RegisterFunction`; `FunctionRef.Unregister` on the returned handle removes it.
 
@@ -970,9 +967,6 @@ func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, o
     </ParamField>
     <ParamField body="Observable" type="*bool">
       Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true.
-    </ParamField>
-    <ParamField body="Standby" type="bool">
-      Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1330,7 +1324,7 @@ func MatchFunc(predicate func(obs *Observer, call *Call) bool) *MatchHook
       On selects the calls the observer receives by status.
     </ParamField>
     <ParamField body="Accepted" type="func(ctx context.Context) error" required>
-      Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once.
+      Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first (code OBSERVER_NOT_ACTIVE when it is removed, or its function released, first), and ctx's error when ctx is done first. Once accepted, it returns nil at once.
     </ParamField>
     <ParamField body="DecodeArgs" type="func(v any) error" required>
       DecodeArgs unmarshals the observer's args into v (a struct, typically).
@@ -1350,7 +1344,7 @@ func MatchFunc(predicate func(obs *Observer, call *Call) bool) *MatchHook
 
 ```go
 // an observer of expression X gets the ticks of expression X
-client.OnObserverMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+client.OnObservationMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 	var tick struct{ Expression string `json:"expression"` }
 	_ = json.Unmarshal(call.Input, &tick)
 	return obs.Args["expression"] == tick.Expression
@@ -1401,7 +1395,7 @@ func MatchKeys(observerKeys func(obs *Observer) []string, callKeys func(call *Ca
       On selects the calls the observer receives by status.
     </ParamField>
     <ParamField body="Accepted" type="func(ctx context.Context) error" required>
-      Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once.
+      Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first (code OBSERVER_NOT_ACTIVE when it is removed, or its function released, first), and ctx's error when ctx is done first. Once accepted, it returns nil at once.
     </ParamField>
     <ParamField body="DecodeArgs" type="func(v any) error" required>
       DecodeArgs unmarshals the observer's args into v (a struct, typically).
@@ -1499,7 +1493,7 @@ client.OnObserverRemovedFor("timer::on-tick", func(ctx context.Context, obs *iii
 		delete(stops, keyOf(args.EveryMs))
 	}
 })
-client.OnObserverMatchFor("timer::on-tick", iii.MatchKeys(
+client.OnObservationMatchFor("timer::on-tick", iii.MatchKeys(
 	func(obs *iii.Observer) []string { // what the observer listens for
 		var args timerArgs
 		_ = obs.DecodeArgs(&args)
@@ -1710,7 +1704,7 @@ RegisterFunctionTyped registers a function whose request and response schemas ar
 
 It returns the function's handle, as `Client.RegisterFunction` does.
 
-Use `Client.RegisterFunction` directly for schemaless functions. See `InferSchema` to obtain a type's schema on its own. Pass a single `RegisterFunctionOptions` value to attach a description, registration metadata, args_format, private, observable or standby; its RequestFormat and ResponseFormat, when set, replace the inferred schemas (that type is then not reflected). Its handle sets the function's hooks, as `Client.RegisterFunction`'s does.
+Use `Client.RegisterFunction` directly for schemaless functions. See `InferSchema` to obtain a type's schema on its own. Pass a single `RegisterFunctionOptions` value to attach a description, registration metadata, args_format, private or observable; its RequestFormat and ResponseFormat, when set, replace the inferred schemas (that type is then not reflected). Its handle sets the function's hooks, as `Client.RegisterFunction`'s does.
 
 **Signature**
 
@@ -1756,9 +1750,6 @@ func RegisterFunctionTyped[Req any, Resp any](c *Client, id string, handler Type
     </ParamField>
     <ParamField body="Observable" type="*bool">
       Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true.
-    </ParamField>
-    <ParamField body="Standby" type="bool">
-      Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -2562,9 +2553,9 @@ FunctionRef is the handle of a registered function, returned by `Client.Register
 | `IsObserved` | `func() bool` | Yes | IsObserved reports whether any observer is active on the function: one atomic load, so a source checks it before building an event nobody would receive. False for a handle that does not control the function's current registration. |
 | `IsObservedFor` | func(call *[`Call`](#call)) bool | Yes | IsObservedFor reports whether call would reach an observer, as `Client.IsObservedFor` does: on a function matched by keys (`MatchKeys`), whether an observer is filed under one of the call's keys; otherwise `FunctionRef.IsObserved`. False for a handle that does not control the function's current registration. |
 | `Observers` | func() []*[`Observer`](#observer) | Yes | Observers returns the active observers of the function, as its host sees them. Empty for a handle that does not control the function's current registration. |
+| `OnObservationDeliver` | func(hook [`DeliverHook`](#deliverhook)) *[`FunctionRef`](#functionref) | Yes | OnObservationDeliver sets the function's deliver hook, as `Client.OnObservationDeliverFor` does for its id, and returns the handle, for chaining. |
+| `OnObservationMatch` | func(m *[`MatchHook`](#matchhook)) *[`FunctionRef`](#functionref) | Yes | OnObservationMatch sets the function's match hook, as `Client.OnObservationMatchFor` does for its id, and returns the handle, for chaining. |
 | `OnObserverAdded` | func(hook [`AddedHook`](#addedhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverAdded sets the function's added hook, as `Client.OnObserverAddedFor` does for its id, and returns the handle, for chaining. |
-| `OnObserverDeliver` | func(hook [`DeliverHook`](#deliverhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverDeliver sets the function's deliver hook, as `Client.OnObserverDeliverFor` does for its id, and returns the handle, for chaining. |
-| `OnObserverMatch` | func(m *[`MatchHook`](#matchhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverMatch sets the function's match hook, as `Client.OnObserverMatchFor` does for its id, and returns the handle, for chaining. |
 | `OnObserverRemoved` | func(hook [`RemovedHook`](#removedhook)) *[`FunctionRef`](#functionref) | Yes | OnObserverRemoved sets the function's removed hook, as `Client.OnObserverRemovedFor` does for its id, and returns the handle, for chaining. |
 | `Unregister` | `func() error` | Yes | Unregister removes the function: the engine stops routing invocations to it, and a reconnect does not register it again. Its observe state is cleared as well: its observers are released (through the removed hooks), calls stop running in-process, and reports it still buffered are dropped. The hooks set for its id stay, for a later registration of the id. |
 
@@ -2973,7 +2964,7 @@ The engine may announce an observer again with the same args and other filters, 
 | `Target` | `string` | Yes | Target is the target function id. |
 | `Capture` | [][`Capture`](#capture) | No | - |
 | `On` | [`On`](#on) | Yes | On selects the calls the observer receives by status. |
-| `Accepted` | `func(ctx context.Context) error` | Yes | Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first, an error when it is removed first, and ctx's error when ctx is done first. Once accepted, it returns nil at once. |
+| `Accepted` | `func(ctx context.Context) error` | Yes | Accepted waits until the SDK has acked the observer as accepted, and returns nil. A call made after that reaches an active observer, since the engine handles a connection's frames in order: a host sends a new observer its initial state this way, with a call of its own function whose metadata is \{"for_observer": &lt;obs.ID&gt;\}. The function's `MatchHook` gives that call to this observer alone, and iii delivers it like every call. It returns an \*`ObserveRejectionError` when the observer is rejected first (code OBSERVER_NOT_ACTIVE when it is removed, or its function released, first), and ctx's error when ctx is done first. Once accepted, it returns nil at once. |
 | `DecodeArgs` | `func(v any) error` | Yes | DecodeArgs unmarshals the observer's args into v (a struct, typically). |
 | `Matches` | func(call *[`Call`](#call)) bool | Yes | Matches reports whether call reaches the observer: its on accepts the call's status and its filters match the call. A deliver hook that calls targets itself checks it before calling through the observer; iii's delivery applies it on its own. On a call the SDK hands a hook, the observers share the call's decoded document and its values at the paths of the function's filter index, so each costs its own filter, and an observer costs a comparison when the call fails the condition it is filed under. |
 | `Reject` | `func(code, message string)` | Yes | Reject sends a late rejection for this observer (e.g. after a config reload removed what it needs). It leaves the compiled set at once, so calls stop reaching it, and its removed hooks run next on the function's hook queue, connected or not; the engine's observerremoved that follows runs none again. The rejection is sent again when the engine replays the observer after a reconnect. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs. |
@@ -3243,7 +3234,6 @@ ArgsFormat, Private and Observable false need an engine with observe.v2, as a ma
 | `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the observers' args, sent as "args_format": the engine validates every observer's args against it (INVALID_ARGS), and refuses a schema that is not valid (INVALID_ARGS_FORMAT). It must be valid JSON; nil means the function takes no args. |
 | `Private` | `bool` | No | Private lets only this worker call the function (the engine answers anyone else with FORBIDDEN); other workers may observe it, and it cannot be an observer's target. A call this worker makes to it passes the input and the result by reference: the handler and the hooks treat both as read-only. |
 | `Observable` | `*bool` | No | Observable false refuses every observer of the function (NOT_OBSERVABLE), for a function whose payloads carry credentials. nil means true. |
-| `Standby` | `bool` | No | Standby makes this worker wait for the function when another connection already hosts its id (FUNCTION_NAMESPACE_CONFLICT): the SDK registers it again about once a second until the engine accepts it or it is unregistered, and its hooks run for the current observers then. It stays in the SDK. |
 
 ---
 

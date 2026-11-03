@@ -97,7 +97,7 @@ async fn a_key_miss_does_not_allocate() {
             ..InitOptions::default()
         },
     );
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "cron::on-tick",
         Match::keys(
             |obs| obs.args_value()["expression"].as_str().into(),

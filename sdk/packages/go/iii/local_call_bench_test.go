@@ -39,9 +39,9 @@ func BenchmarkLocalCall(b *testing.B) {
 	sizes["bench::paths"] = len(paths)
 	c := fe.client()
 	deliver := func(_ context.Context, call *Call, _ []*Observer) (any, error) { return call.Output, nil }
-	c.OnObserverDeliverFor("bench::deliver-none", deliver)
-	c.OnObserverDeliverFor("bench::deliver-unread", deliver)
-	c.OnObserverDeliverFor("bench::deliver-matches", func(_ context.Context, call *Call, observers []*Observer) (any, error) {
+	c.OnObservationDeliverFor("bench::deliver-none", deliver)
+	c.OnObservationDeliverFor("bench::deliver-unread", deliver)
+	c.OnObservationDeliverFor("bench::deliver-matches", func(_ context.Context, call *Call, observers []*Observer) (any, error) {
 		for _, obs := range observers {
 			obs.Matches(call)
 		}

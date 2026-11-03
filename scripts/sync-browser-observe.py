@@ -361,11 +361,11 @@ DELIVER = UNIT + [
         1,
     ),
     (
-        """      .onObserverDeliver(async (call) => {
+        """      .onObservationDeliver(async (call) => {
         await Promise.resolve()
         inHook = sdk.currentInvocation()
         void sdk.call({ function_id: 'audit::log', payload: {}, timeoutMs: 50 }).catch(() => undefined)""",
-        """      .onObserverDeliver(async (call) => {
+        """      .onObservationDeliver(async (call) => {
         // Browser SDK: the scope ends at the hook's first `await`. A call made
         // after it still has the invocation as its caller: the only one running,
         // and delivering.
@@ -604,12 +604,12 @@ E2E_ROUTED = E2E + [
     ),
 ]
 
-# Pending until hosted, host restart and standby takeover, against a real
+# Pending until hosted and host restart, against a real
 # engine: the browser's integration helpers and ids of its own.
 FAULT_TOLERANCE = [
     ("'../src/", "'../../src/", ANY),
     ('IIIClient', 'ISdk', ANY),
-    ('-node-${RUN}', '-browser-${RUN}', 4),
+    ('-node-${RUN}', '-browser-${RUN}', 3),
 ]
 
 TESTS = {

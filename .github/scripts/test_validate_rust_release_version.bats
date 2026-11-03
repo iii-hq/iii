@@ -13,7 +13,7 @@ setup() {
 }
 
 @test "accepts a package with a workspace-inherited version" {
-  run bash "$VALIDATE" "$ROOT/crates/iii-worker/Cargo.toml" "iii/v$VERSION" iii-worker
+  run bash "$VALIDATE" "$ROOT/crates/scaffolder-core/Cargo.toml" "iii/v$VERSION" scaffolder-core
 
   [ "$status" -eq 0 ]
 }

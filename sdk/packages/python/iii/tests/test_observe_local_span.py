@@ -84,7 +84,7 @@ def test_the_deliver_hook_runs_inside_the_functions_execute_span(
     client = connect(engine)
     seen: list[Any] = []
 
-    @client.on_observer_deliver("span::hooked")
+    @client.on_observation_deliver("span::hooked")
     def hook(call: Any, observers: Any) -> Any:
         seen.append(trace.get_current_span().get_span_context())
         return call.output

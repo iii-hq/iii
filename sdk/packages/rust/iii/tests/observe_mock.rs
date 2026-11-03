@@ -1,7 +1,7 @@
 //! observe against a fake engine: features, `observe()` replay, local
 //! dispatch, the current invocation, reports, hooks at both levels, deliver
 //! hooks and matching by keys, routed calls, calls through an observer,
-//! `private`, `standby` and reconnect, asserted on the frames the SDK puts on
+//! `private` and reconnect, asserted on the frames the SDK puts on
 //! the socket.
 //!
 //! No engine needed: the in-process mock plays the engine's part frame by
@@ -17,7 +17,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use common::mock_engine::{MockEngine, message_type};
@@ -1777,7 +1776,6 @@ struct Recorder {
     observers: Arc<Mutex<Vec<Observer>>>,
 }
 
-#[async_trait]
 impl AddedHook for Recorder {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         if let Some(delay) = obs.args_value().get("delay_ms").and_then(Value::as_u64) {
@@ -1814,7 +1812,6 @@ impl AddedHook for Recorder {
     }
 }
 
-#[async_trait]
 impl RemovedHook for Recorder {
     async fn on_removed(&self, obs: Observer) {
         self.events
@@ -2169,7 +2166,7 @@ async fn a_replay_with_the_same_args_runs_no_hook() {
 async fn kinds_setup(mock: &MockEngine, iii: &IIIClient) -> (FunctionRef, Recorder) {
     let recorder = Recorder::default();
     set_hooks(iii, "src::events", &recorder);
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "src::events",
         Match::predicate(|obs, call| obs.args_value()["kind"] == call.input["kind"]),
     );
@@ -2300,7 +2297,7 @@ async fn a_call_through_an_observer_is_the_fixture_frame() {
     connected(&mock, &iii, true).await;
     let recorder = Recorder::default();
     set_hooks(&iii, "http::on-request", &recorder);
-    iii.on_observer_deliver_for("http::on-request", {
+    iii.on_observation_deliver_for("http::on-request", {
         let iii = iii.clone();
         move |call: Call, observers: Vec<Observer>| {
             let iii = iii.clone();
@@ -2624,7 +2621,7 @@ fn for_observer(call: &Call) -> Option<&str> {
         .and_then(|m| m["for_observer"].as_str())
 }
 
-/// The two `onObserverMatch` forms that honor `for_observer`: a call for one
+/// The two `onObservationMatch` forms that honor `for_observer`: a call for one
 /// observer goes to it alone, any other call to the observers of its session.
 /// Each records the metadata of the calls it is asked about.
 fn session_match(keys: bool, seen: Arc<Mutex<Vec<Option<Value>>>>) -> Match {
@@ -2672,7 +2669,7 @@ async fn a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_
         connected(&mock, &iii, true).await;
         let seen: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
         let handled: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
-        iii.on_observer_match_for("tmux::on-changed", session_match(keys, seen.clone()));
+        iii.on_observation_match_for("tmux::on-changed", session_match(keys, seen.clone()));
         let watch = |id: &str| {
             json!({ "id": id, "args": { "session": "s1" }, "filters": {}, "target": format!("ui::{id}"),
                     "capture": ["input", "output", "metadata"], "on": "success" })
@@ -2751,7 +2748,7 @@ async fn an_accepted_observer_gets_its_initial_state() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "storefront");
     connected(&mock, &iii, true).await;
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "stock::on-changed",
         Match::predicate(|obs, call| for_observer(call).is_none_or(|id| id == obs.id())),
     );
@@ -3256,7 +3253,6 @@ struct HeldHook {
     release: Arc<tokio::sync::Notify>,
 }
 
-#[async_trait]
 impl AddedHook for HeldHook {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         *self.seen.lock().unwrap() = Some(obs);
@@ -3501,14 +3497,12 @@ struct HeldAndRemoved {
     removed: Arc<Mutex<Vec<String>>>,
 }
 
-#[async_trait]
 impl AddedHook for HeldAndRemoved {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         self.held.on_added(obs).await
     }
 }
 
-#[async_trait]
 impl RemovedHook for HeldAndRemoved {
     async fn on_removed(&self, obs: Observer) {
         self.removed.lock().unwrap().push(obs.id().to_string());
@@ -3860,7 +3854,7 @@ async fn the_key_index_follows_adds_and_removes() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "cron");
     connected(&mock, &iii, true).await;
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "cron::on-tick",
         Match::keys(
             |obs| {
@@ -4040,7 +4034,7 @@ async fn a_routed_answer_lists_what_the_match_hook_matched() {
     let expected = fixture("invocationresult-matched.json");
     let result = expected["result"].clone();
     let ids: Vec<String> = serde_json::from_value(expected["matched"].clone()).unwrap();
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "orders::create",
         Match::predicate(|obs, call| obs.args_value()["region"] == call.input["region"]),
     );
@@ -4101,7 +4095,7 @@ async fn a_routed_error_lists_what_the_match_hook_matched() {
     connected(&mock, &iii, true).await;
     let expected = fixture("invocationresult-matched-error.json");
     let on_error = fixture("observe-on-error.json");
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "payments::charge",
         Match::predicate(|obs, _call| obs.args_value()["page"] == true),
     );
@@ -4149,7 +4143,7 @@ async fn a_match_hook_without_observers_matches_none() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "cron");
     connected(&mock, &iii, true).await;
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "cron::empty",
         Match::keys(
             |obs| obs.args_value()["expression"].as_str().into(),
@@ -4219,7 +4213,7 @@ async fn a_routed_answer_says_the_deliver_hook_delivered() {
     connected(&mock, &iii, true).await;
     let expected = fixture("invocationresult-delivered.json");
     let result = expected["result"].clone();
-    iii.on_observer_deliver_for(
+    iii.on_observation_deliver_for(
         "approvals::request",
         move |_call: Call, _observers: Vec<Observer>| {
             let result = result.clone();
@@ -4246,7 +4240,7 @@ async fn a_routed_answer_says_the_deliver_hook_delivered() {
     assert_answer_is(&answer, &expected);
 
     // with a match hook too: `delivered` alone
-    iii.on_observer_match_for("approvals::request", Match::predicate(|_, _| true));
+    iii.on_observation_match_for("approvals::request", Match::predicate(|_, _| true));
     route_call(
         &mock,
         "approvals::request",
@@ -4271,7 +4265,7 @@ async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
     let iii = worker(&mock, "queue");
     connected(&mock, &iii, true).await;
     let got: Arc<Mutex<Vec<String>>> = Arc::default();
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "queue::on-message",
         Match::keys(
             |obs| obs.id().into(),
@@ -4283,7 +4277,7 @@ async fn a_deliver_hook_answers_routed_calls_and_iii_delivers_nothing() {
             },
         ),
     )
-    .on_observer_deliver_for("queue::on-message", {
+    .on_observation_deliver_for("queue::on-message", {
         let got = got.clone();
         move |call: Call, observers: Vec<Observer>| {
             let got = got.clone();
@@ -4365,7 +4359,7 @@ async fn a_deliver_hooks_rethrown_timeout_keeps_its_code() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "http");
     connected(&mock, &iii, true).await;
-    iii.on_observer_deliver_for("http::on-request", {
+    iii.on_observation_deliver_for("http::on-request", {
         let iii = iii.clone();
         move |call: Call, observers: Vec<Observer>| {
             let iii = iii.clone();
@@ -4418,7 +4412,7 @@ async fn a_match_hook_narrows_a_routed_calls_observers() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "cron");
     connected(&mock, &iii, true).await;
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "cron::routed",
         Match::predicate(|obs, call| obs.args_value()["expression"] == call.input["expression"]),
     );
@@ -4446,7 +4440,7 @@ async fn a_match_hook_narrows_a_routed_calls_observers() {
     iii.shutdown_async().await;
 }
 
-// ──────────────────── engines without observe.v2, private, standby ───────
+// ──────────────────── engines without observe.v2, private ────────────────
 
 /// A 0.25 engine: functions that need `observe.v2` stay unregistered, the
 /// engine evaluates routed calls, and a report of a source carries `output`.
@@ -4794,7 +4788,7 @@ async fn a_withdrawn_registration_is_released() {
     acked(&mock, &[("o", 1)]).await;
     until("observed", || function.is_observed()).await;
 
-    function.on_observer_deliver(|_call: Call, _observers: Vec<Observer>| async move {
+    function.on_observation_deliver(|_call: Call, _observers: Vec<Observer>| async move {
         Ok(json!("from the deliver hook"))
     });
     frame(&mock, |m| {
@@ -4866,73 +4860,9 @@ async fn a_withdrawn_registration_is_released() {
 
     // without the deliver hook it registers again, and the engine's answer
     // turns local dispatch back on
-    function.clear_observer_deliver();
+    function.clear_observation_deliver();
     frame(&mock, registered("wd::f")).await;
     confirm(&mock, "wd::f", 3, true, json!([]));
     until("local dispatch", || function.local_dispatch_active()).await;
-    iii.shutdown_async().await;
-}
-
-/// A standby registers again about every second while another host holds
-/// the id, and runs its hooks once the engine confirms it.
-#[tokio::test]
-async fn a_standby_takes_over_when_the_host_leaves() {
-    let mock = MockEngine::start().await;
-    let iii = worker(&mock, "cron-2");
-    connected(&mock, &iii, true).await;
-    let recorder = Recorder::default();
-    set_hooks(&iii, "solo::f", &recorder);
-    let function = iii.register_function("solo::f", echo().standby());
-    let plain = iii.register_function("solo::plain", echo());
-    frame(&mock, registered("solo::f")).await;
-    frame(&mock, registered("solo::plain")).await;
-    let conflict = |id: &str| {
-        json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
-                "namespace": "default", "function_id": id, "owner_worker_id": "w-host" })
-    };
-    mock.clear();
-    let started = Instant::now();
-    mock.send_to_client(conflict("solo::f"));
-    mock.send_to_client(conflict("solo::plain"));
-    frame(&mock, registered("solo::f")).await;
-    // 1 s ±20 % after the conflict reached the worker (the timing is pinned
-    // with a paused clock in the SDK's unit tests); the slack above is the
-    // round trip
-    let first = started.elapsed();
-    assert!(
-        first >= Duration::from_millis(800) && first < Duration::from_millis(2_000),
-        "about a second later: {first:?}"
-    );
-    mock.clear();
-    mock.send_to_client(conflict("solo::f"));
-    frame(&mock, registered("solo::f")).await;
-
-    // the host left: the engine accepts it, with the function's observers
-    confirm(
-        &mock,
-        "solo::f",
-        1,
-        true,
-        json!([view("kept", json!({}), json!(["input"]), "success")]),
-    );
-    acked(&mock, &[("kept", 1)]).await;
-    until("taken over", || function.local_dispatch_active()).await;
-    assert_eq!(*recorder.events.lock().unwrap(), vec!["add kept"]);
-    tokio::time::sleep(Duration::from_millis(1_500)).await;
-    assert_eq!(
-        frames(&mock, "registerfunction")
-            .iter()
-            .filter(|m| m["id"] == "solo::f")
-            .count(),
-        1,
-        "no retry once confirmed"
-    );
-    assert!(
-        frames(&mock, "registerfunction")
-            .iter()
-            .all(|m| m["id"] != "solo::plain"),
-        "only a standby registers again"
-    );
-    assert!(!plain.local_dispatch_active());
     iii.shutdown_async().await;
 }

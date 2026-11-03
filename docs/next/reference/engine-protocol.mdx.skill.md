@@ -161,8 +161,8 @@ Rules:
   `observe()` fails with `UNSUPPORTED`. An SDK runs one of its own functions in-process only after
   the engine confirmed that function with `FunctionRegistered { local_dispatch: true }`.
 - Against an engine that did not advertise `observe.v2`, an SDK leaves each function that declares
-  `args_format`, `private: true`, or `observable: false`, or that sets an `onObserverMatch` or
-  `onObserverDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
+  `args_format`, `private: true`, or `observable: false`, or that sets an `onObservationMatch` or
+  `onObservationDeliver` hook, unregistered, and logs `UNSUPPORTED` once for it. It holds that
   registration until the current connection's `WorkerRegistered` lists `observe.v2`, and decides
   again on every reconnect, including when it replays registrations. Every other function, `call`,
   and `observe` work: the SDK reports matches of local calls only, sends no `matched` and no
@@ -228,7 +228,7 @@ Every frame is a JSON object discriminated by `type` (the lowercased variant nam
 
 A field that is not set is left out, and so are `private: false` and `observable: true`. The engine
 leaves out `request_format` and `response_format` when it sends a registration that has none. The
-SDK's observer hooks and its `standby` option stay in the worker and never travel. See
+SDK's observer hooks stay in the worker and never travel. See
 [Observable functions](../creating-workers/observable-functions) for the provider side.
 
 An event source sets the v2 fields. This `cron::on-tick` validates its observers' `args`, may be
@@ -419,7 +419,7 @@ default) for an activation never answered. The observed `input` never contains t
 
 ### Calls through an observer
 
-A function's `onObserverDeliver` hook can run an observer's target itself with
+A function's `onObservationDeliver` hook can run an observer's target itself with
 `iii.call({ observer, payload })`, for example to route an HTTP request to one route's handler and
 return that handler's response. The SDK sends an `InvokeFunction` whose `function_id` is the
 observer's `target` and whose `activation` carries `observer_id` only, without `namespace` or
@@ -554,9 +554,9 @@ three things:
 
 | The answer carries | When                                                                                                                                                                                               | The engine                                                                                                               |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| nothing more       | The function has no `onObserverMatch` and no `onObserverDeliver` hook.                                                                                                                             | Evaluates `on` and filters of every active observer of the function.                                                     |
-| `matched`          | The function has an `onObserverMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
-| `delivered: true`  | The function's `onObserverDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
+| nothing more       | The function has no `onObservationMatch` and no `onObservationDeliver` hook.                                                                                                                             | Evaluates `on` and filters of every active observer of the function.                                                     |
+| `matched`          | The function has an `onObservationMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
+| `delivered: true`  | The function's `onObservationDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
 
 The answer for a function with a match hook:
 
@@ -634,6 +634,10 @@ severity:
 | `FUNCTION_NAMESPACE_CONFLICT` | `function_id`  | stays open           | Non-fatal. The engine refuses one function registration. The worker serves its other functions.                                                                               |
 | `INVALID_ARGS_FORMAT`         | `function_id`  | stays open           | Non-fatal. The function's `args_format` is not a valid JSON Schema; the function is not registered.                                                                           |
 | `UNSUPPORTED`                 | `function_id`  | stays open           | Non-fatal. A 0.25 SDK's [`observe` object](#registrations-from-older-sdks) asks for `delivery: "owner"`, or a value the engine does not know; the function is not registered. |
+| `NAMESPACE_FORBIDDEN`         | `worker_name`  | closed by the engine | Fatal. The session's auth scope does not permit the namespace the worker declared. `owner_worker_id` is empty.                                                                |
+
+A function id refused because it is [reserved](#reserved-ids) also arrives as
+`FUNCTION_NAMESPACE_CONFLICT`. No worker owns it, so `owner_worker_id` is `engine (reserved prefix)`.
 
 A function conflict has this format:
 
@@ -665,11 +669,9 @@ For a function ownership conflict, the engine:
 invocation of the same function id in the same namespace goes to the current host. It does not go to
 the worker whose registration was rejected.
 
-A function registered with the SDK's `standby` option waits: on `FUNCTION_NAMESPACE_CONFLICT` the
-SDK retries the registration every second (with 20 % jitter) until it succeeds or the function is
-unregistered. When the host disconnects, the function's observers go `pending`; the standby that
-registers next receives them in `FunctionRegistered`, runs its hooks for each, and they become
-active again.
+The SDK does not register a refused function again. When the host disconnects, the function's
+observers go `pending`; the worker that registers the function next receives them in
+`FunctionRegistered`, runs its hooks for each, and they become active again.
 
 <Warning>
   A connected worker does not confirm that all its functions are registered. The SDK reports a
@@ -754,8 +756,8 @@ function runs, the target runs. The **observing worker** is the connection that 
 
 The connection that hosts a function runs the function's hooks when it declared `observe.v2`. Its
 SDK runs the handler, then matches observers to the call: every active observer by default, or those
-the function's `onObserverMatch` hook selects by predicate or by keys. iii's delivery then selects
-the matching observers whose `on` and filters match the call. A function's `onObserverDeliver` hook
+the function's `onObservationMatch` hook selects by predicate or by keys. iii's delivery then selects
+the matching observers whose `on` and filters match the call. A function's `onObservationDeliver` hook
 takes delivery over: it receives the matching observers and calls through them itself. Where the
 filters run depends on the call:
 
@@ -912,7 +914,7 @@ States:
 
 | State       | Meaning                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by a standby.                                                                                                                                          |
+| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by another.                                                                                                                                          |
 | `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                                                               |
 | `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                                                           |
 | `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                                                      |
@@ -995,7 +997,7 @@ function's full current observer set and whether the SDK may run the function in
   message replaces the set of observers the host holds for the function. An entry already held with
   the same `args` is re-acked without running hooks; a new entry runs `onObserverAdded` and is acked
   once it resolves; an entry whose `args` changed counts as removed, then added; a held observer the
-  message does not list is removed. A standby that takes over the function holds none of its
+  message does not list is removed. A new host that takes over the function holds none of its
   observers, so it runs `onObserverAdded` for each entry and acks it the same way. Until it is acked
   an observer stays `pending`. When it is not acked within `observers.owner_ack_timeout_ms` (30 s by
   default) of the host moving on to it (the host runs a function's hooks one at a time, in
@@ -1297,6 +1299,10 @@ refused.
 
 The queue worker supplied with the engine registers its `engine::queue::*` functions in `default`.
 The reserved-id check does not reject these functions.
+
+`sandbox::*` is reserved in `default` for the engine's sandbox router. A sandbox adapter registers
+its own `<adapter>::*` ids. A custom worker in `default` that tries to register a `sandbox::*`
+function id has that registration refused.
 
 ### Wire compatibility
 

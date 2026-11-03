@@ -134,7 +134,7 @@ func (f *functionObservers) observerKeys(m *MatchHook, obs *Observer) (keys []st
 // matchPanicked logs a panic of the function's predicate or call keys, once.
 func (f *functionObservers) matchPanicked(r any) {
 	if f.matchPanicLogged.CompareAndSwap(false, true) {
-		log.Printf("iii: OnObserverMatch of %q panicked: %v; it counts as no match (logged once)", f.functionID, r)
+		log.Printf("iii: OnObservationMatch of %q panicked: %v; it counts as no match (logged once)", f.functionID, r)
 	}
 }
 

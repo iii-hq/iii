@@ -113,9 +113,6 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
     <ParamField body="response_format" type="fn(schema: Value) -> Self" required>
       Set the response format schema. Overrides any auto-extracted schema.
     </ParamField>
-    <ParamField body="standby" type="fn() -> Self" required>
-      When another connection already hosts the id (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the SDK registers the function again every second (±20 %) until the engine accepts it or it is unregistered. The hooks run for every observer once the engine confirms it.
-    </ParamField>
   </Expandable>
 </ParamField>
 
@@ -308,7 +305,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
     <ParamField body="args" type="fn(args: Value) -> Self" required>
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
-    <ParamField body="capture" type="fn(capture: impl IntoIterator) -> Self" required>
+    <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
       What travels to the target. Default `[input, output, caller]`.
     </ParamField>
     <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
@@ -386,6 +383,43 @@ async trigger(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Erro
 
 ---
 
+### clear_observation_deliver_for
+
+Removes the deliver hook of `function_id`: iii delivers its calls.
+
+**Signature**
+
+```rust
+clear_observation_deliver_for(function_id: &str) -> &Self
+```
+
+#### Parameters
+
+<ParamField body="function_id" type="&str" required>
+</ParamField>
+
+
+---
+
+### clear_observation_match_for
+
+Removes the match hook of `function_id`: every observer wants every
+call.
+
+**Signature**
+
+```rust
+clear_observation_match_for(function_id: &str) -> &Self
+```
+
+#### Parameters
+
+<ParamField body="function_id" type="&str" required>
+</ParamField>
+
+
+---
+
 ### clear_observer_added
 
 Removes the added hook set with `on_observer_added`.
@@ -406,43 +440,6 @@ Removes the added hook of `function_id`.
 
 ```rust
 clear_observer_added_for(function_id: &str) -> &Self
-```
-
-#### Parameters
-
-<ParamField body="function_id" type="&str" required>
-</ParamField>
-
-
----
-
-### clear_observer_deliver_for
-
-Removes the deliver hook of `function_id`: iii delivers its calls.
-
-**Signature**
-
-```rust
-clear_observer_deliver_for(function_id: &str) -> &Self
-```
-
-#### Parameters
-
-<ParamField body="function_id" type="&str" required>
-</ParamField>
-
-
----
-
-### clear_observer_match_for
-
-Removes the match hook of `function_id`: every observer wants every
-call.
-
-**Signature**
-
-```rust
-clear_observer_match_for(function_id: &str) -> &Self
 ```
 
 #### Parameters
@@ -656,7 +653,7 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
     <ParamField body="args" type="fn(args: Value) -> Self" required>
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
-    <ParamField body="capture" type="fn(capture: impl IntoIterator) -> Self" required>
+    <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
       What travels to the target. Default `[input, output, caller]`.
     </ParamField>
     <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
@@ -783,60 +780,7 @@ listener.unsubscribe();
 
 ---
 
-### on_observer_added
-
-Runs `hook` when an observer is added to any function this worker
-hosts, before the function's own added hook. Returns the client, for
-chaining.
-
-**Signature**
-
-```rust
-on_observer_added(hook: impl AddedHook) -> &Self
-```
-
-#### Parameters
-
-<ParamField body="hook" type="impl AddedHook" required>
-
-  <Expandable title="`AddedHook` fields">
-    <ParamField body="on_added" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
-    </ParamField>
-  </Expandable>
-</ParamField>
-
-
----
-
-### on_observer_added_for
-
-Runs `hook` when an observer is added to `function_id`, after the
-worker's added hook. Set it before registering the function: then it
-runs for every observer.
-
-**Signature**
-
-```rust
-on_observer_added_for(function_id: &str, hook: impl AddedHook) -> &Self
-```
-
-#### Parameters
-
-<ParamField body="function_id" type="&str" required>
-</ParamField>
-
-<ParamField body="hook" type="impl AddedHook" required>
-
-  <Expandable title="`AddedHook` fields">
-    <ParamField body="on_added" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
-    </ParamField>
-  </Expandable>
-</ParamField>
-
-
----
-
-### on_observer_deliver_for
+### on_observation_deliver_for
 
 Delivers each call of `function_id` with `hook`, which decides which
 observers get it and what its caller gets back; iii delivers nothing
@@ -849,7 +793,7 @@ logs `UNSUPPORTED` once.
 **Signature**
 
 ```rust
-on_observer_deliver_for(function_id: &str, hook: impl DeliverHook) -> &Self
+on_observation_deliver_for(function_id: &str, hook: impl DeliverHook) -> &Self
 ```
 
 #### Parameters
@@ -860,7 +804,7 @@ on_observer_deliver_for(function_id: &str, hook: impl DeliverHook) -> &Self
 <ParamField body="hook" type="impl DeliverHook" required>
 
   <Expandable title="`DeliverHook` fields">
-    <ParamField body="on_deliver" type="fn(call: Call, observers: Vec<Observer>) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_deliver" type="fn(call: Call, observers: Vec<Observer>) -> impl Future<Output = Result<Value, Error>> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -868,7 +812,7 @@ on_observer_deliver_for(function_id: &str, hook: impl DeliverHook) -> &Self
 
 ---
 
-### on_observer_match_for
+### on_observation_match_for
 
 Says which calls of `function_id` each observer wants; see `Match`.
 Set while observers are active, a key index is rebuilt from them.
@@ -880,7 +824,7 @@ logs `UNSUPPORTED` once.
 **Signature**
 
 ```rust
-on_observer_match_for(function_id: &str, rule: Match) -> &Self
+on_observation_match_for(function_id: &str, rule: Match) -> &Self
 ```
 
 #### Parameters
@@ -909,6 +853,59 @@ on_observer_match_for(function_id: &str, rule: Match) -> &Self
 
 ---
 
+### on_observer_added
+
+Runs `hook` when an observer is added to any function this worker
+hosts, before the function's own added hook. Returns the client, for
+chaining.
+
+**Signature**
+
+```rust
+on_observer_added(hook: impl AddedHook) -> &Self
+```
+
+#### Parameters
+
+<ParamField body="hook" type="impl AddedHook" required>
+
+  <Expandable title="`AddedHook` fields">
+    <ParamField body="on_added" type="fn(obs: Observer) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_" required>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
+### on_observer_added_for
+
+Runs `hook` when an observer is added to `function_id`, after the
+worker's added hook. Set it before registering the function: then it
+runs for every observer.
+
+**Signature**
+
+```rust
+on_observer_added_for(function_id: &str, hook: impl AddedHook) -> &Self
+```
+
+#### Parameters
+
+<ParamField body="function_id" type="&str" required>
+</ParamField>
+
+<ParamField body="hook" type="impl AddedHook" required>
+
+  <Expandable title="`AddedHook` fields">
+    <ParamField body="on_added" type="fn(obs: Observer) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_" required>
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+---
+
 ### on_observer_removed
 
 Runs `hook` when an observer of any function this worker hosts is
@@ -925,7 +922,7 @@ on_observer_removed(hook: impl RemovedHook) -> &Self
 <ParamField body="hook" type="impl RemovedHook" required>
 
   <Expandable title="`RemovedHook` fields">
-    <ParamField body="on_removed" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_removed" type="fn(obs: Observer) -> impl Future<Output = ()> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -952,7 +949,7 @@ on_observer_removed_for(function_id: &str, hook: impl RemovedHook) -> &Self
 <ParamField body="hook" type="impl RemovedHook" required>
 
   <Expandable title="`RemovedHook` fields">
-    <ParamField body="on_removed" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_removed" type="fn(obs: Observer) -> impl Future<Output = ()> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1078,7 +1075,7 @@ recursing through spawned tasks stays bounded.
 **Signature**
 
 ```rust
-scope(ctx: impl Into<Option<InvocationCtx>>, fut: F) -> impl Future
+scope(ctx: impl Into<Option<InvocationCtx>>, fut: F) -> impl Future<Output = Output>
 ```
 
 #### Parameters
@@ -1184,7 +1181,6 @@ Builder methods (all consume `self`):
 - `args_format`: the observers' args.
 - `private`: only this worker calls it.
 - `observable`: `false` refuses every observer.
-- `standby`: take over when another host leaves.
 - `local_dispatch`: opt out of in-process calls.
 
 The handler's return value is what observers observe. An event source's
@@ -1205,7 +1201,6 @@ the function is observed is set with hooks: see `hooks`.
 | `private` | `fn() -> Self` | Yes | Only this worker may call the function; any worker may observe it, and its observers receive every call this worker makes. The engine refuses a call from another connection (`FORBIDDEN`), and the function as an observer's target. For event sources, whose calls from anywhere else would be forged events. |
 | `request_format` | `fn(schema: Value) -> Self` | Yes | Set the request format schema. Overrides any auto-extracted schema. |
 | `response_format` | `fn(schema: Value) -> Self` | Yes | Set the response format schema. Overrides any auto-extracted schema. |
-| `standby` | `fn() -> Self` | Yes | When another connection already hosts the id (`FUNCTION_NAMESPACE_CONFLICT`), wait and take over when it leaves: the SDK registers the function again every second (±20 %) until the engine accepts it or it is unregistered. The hooks run for every observer once the engine confirms it. |
 
 ---
 
@@ -1388,10 +1383,13 @@ first call. Returning an error rejects the observer: an
 and a hook still running after 30 s is `OWNER_TIMEOUT`.
 
 Implemented for async closures taking the `Observer` by value.
+Implement with plain `async fn`, without `#[async_trait]`. The returned
+future is `Send` and may borrow `self` across `.await`. This trait is not
+dyn-compatible; pass a concrete hook to `IIIClient::on_observer_added`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_added` | fn(obs: [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | - |
+| `on_added` | fn(obs: [`Observer`](#observer)) -&gt; impl Future&lt;Output = Result&lt;(), [`ObserveRejection`](#observerejection)&gt;&gt; + Send + '_ | Yes | - |
 
 ---
 
@@ -1436,10 +1434,13 @@ of them), a snapshot taken when the call started. It applies their filters
 with `Observer::matches`.
 
 Implemented for async closures taking `(Call, Vec<Observer>)`.
+Implement with plain `async fn`, without `#[async_trait]`. The returned
+future is `Send` and may borrow `self` across `.await`. This trait is not
+dyn-compatible; pass a concrete hook to `IIIClient::on_observation_deliver_for`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_deliver` | fn(call: [`Call`](#call), observers: Vec&lt;[`Observer`](#observer)&gt;) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | - |
+| `on_deliver` | fn(call: [`Call`](#call), observers: Vec&lt;[`Observer`](#observer)&gt;) -&gt; impl Future&lt;Output = Result&lt;Value, [`Error`](#error)&gt;&gt; + Send + '_ | Yes | - |
 
 ---
 
@@ -1459,7 +1460,7 @@ cost no allocation.
 #### Match
 
 Which calls of a function each observer wants: the function's match hook
-(`IIIClient::on_observer_match_for`). A worker sets it when its
+(`IIIClient::on_observation_match_for`). A worker sets it when its
 observers' args say which calls they want; iii does everything else as
 usual: the observers' filters, `on`, policy and `deliver` still apply.
 
@@ -1486,10 +1487,13 @@ runs for an observer that was not accepted. A panic is logged; the
 observer is removed either way.
 
 Implemented for async closures taking the `Observer` by value.
+Implement with plain `async fn`, without `#[async_trait]`. The returned
+future is `Send` and may borrow `self` across `.await`. This trait is not
+dyn-compatible; pass a concrete hook to `IIIClient::on_observer_removed`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_removed` | fn(obs: [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | - |
+| `on_removed` | fn(obs: [`Observer`](#observer)) -&gt; impl Future&lt;Output = ()&gt; + Send + '_ | Yes | - |
 
 ### iii_sdk::observable
 
@@ -1651,7 +1655,7 @@ The left side of an observer: what is observed.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `args` | `fn(args: Value) -> Self` | Yes | Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean. |
-| `capture` | `fn(capture: impl IntoIterator) -> Self` | Yes | What travels to the target. Default `[input, output, caller]`. |
+| `capture` | fn(capture: impl IntoIterator&lt;Item = [`Capture`](#capture)&gt;) -&gt; Self | Yes | What travels to the target. Default `[input, output, caller]`. |
 | `deliver` | fn(deliver: [`Deliver`](#deliver)) -&gt; Self | Yes | What the target receives when iii delivers: the `Observed` envelope (default), or the observed input or output alone. A function whose deliver hook calls targets itself documents what they receive. |
 | `filters` | `fn(filters: Value) -> Self` | Yes | Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call. |
 | `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |
@@ -2102,17 +2106,17 @@ iii.register_function(
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `String` | Yes | - |
+| `clear_observation_deliver` | `fn() -> &Self` | Yes | `IIIClient::clear_observation_deliver_for` this function. |
+| `clear_observation_match` | `fn() -> &Self` | Yes | `IIIClient::clear_observation_match_for` this function. |
 | `clear_observer_added` | `fn() -> &Self` | Yes | `IIIClient::clear_observer_added_for` this function. |
-| `clear_observer_deliver` | `fn() -> &Self` | Yes | `IIIClient::clear_observer_deliver_for` this function. |
-| `clear_observer_match` | `fn() -> &Self` | Yes | `IIIClient::clear_observer_match_for` this function. |
 | `clear_observer_removed` | `fn() -> &Self` | Yes | `IIIClient::clear_observer_removed_for` this function. |
 | `is_observed` | `fn() -> bool` | Yes | Whether any observer is active on this function, in one atomic load and without allocating. Check it before building an event nobody would receive. |
 | `is_observed_for` | fn(call: &[`Call`](#call)) -&gt; bool | Yes | Whether `call` would reach anyone. Matched by `Match::keys`: an observer is filed under one of the call's keys, one hash lookup per key and no allocation for keys borrowed from the call. Otherwise the call is not looked at: as `is_observed`. |
 | `local_dispatch_active` | `fn() -> bool` | Yes | Whether calls to this function from this worker currently run in-process (the engine confirmed it with `local_dispatch: true`). |
 | `observers` | fn() -&gt; Vec&lt;[`Observer`](#observer)&gt; | Yes | The active observers, as the host sees them. |
+| `on_observation_deliver` | fn(hook: impl [`DeliverHook`](#deliverhook)) -&gt; &Self | Yes | `IIIClient::on_observation_deliver_for` this function. |
+| `on_observation_match` | fn(rule: [`Match`](#match)) -&gt; &Self | Yes | `IIIClient::on_observation_match_for` this function. |
 | `on_observer_added` | fn(hook: impl [`AddedHook`](#addedhook)) -&gt; &Self | Yes | `IIIClient::on_observer_added_for` this function. |
-| `on_observer_deliver` | fn(hook: impl [`DeliverHook`](#deliverhook)) -&gt; &Self | Yes | `IIIClient::on_observer_deliver_for` this function. |
-| `on_observer_match` | fn(rule: [`Match`](#match)) -&gt; &Self | Yes | `IIIClient::on_observer_match_for` this function. |
 | `on_observer_removed` | fn(hook: impl [`RemovedHook`](#removedhook)) -&gt; &Self | Yes | `IIIClient::on_observer_removed_for` this function. |
 | `unregister` | `fn()` | Yes | Unregisters the function. Its hooks stay set, for a later registration of the same id. |
 

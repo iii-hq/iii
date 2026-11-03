@@ -19,12 +19,12 @@ type: "reference"
     function the worker hosts. Both levels run, the worker's hook first when an observer is added
     and last when it is removed. Throwing `ObserveRejection` from `onObserverAdded` rejects the
     observer with your code.
-  - `onObserverMatch` says which observers want each call of one function: a predicate
+  - `onObservationMatch` says which observers want each call of one function: a predicate
     `(obs, call) => boolean`, or `{ observer, call }` keys that iii indexes, so a call finds its
     observers with one hash lookup per key, whatever the number of observers. iii's delivery then
     applies each matched observer's `on`, filters, policy, and `deliver`. `isObserved(call)` tells
     a source whether anyone would get a call before it builds the event.
-  - `onObserverDeliver(call, observers)` delivers each call of one function itself: it receives the
+  - `onObservationDeliver(call, observers)` delivers each call of one function itself: it receives the
     observers that matched, and what it returns or throws is what the caller gets back.
     `iii.call({ observer, payload })` runs one observer's target from the hook and resolves to the
     target's result, such as an HTTP route's response or a queue message's acknowledgement.
@@ -34,10 +34,10 @@ type: "reference"
     observer alone, so the target receives it in the shape of every call.
   - Hooks are methods on the client, by function id, and on the `FunctionRef` that
     `registerFunction` returns. Rust names the by-id forms with `_for` (`on_observer_added_for`,
-    `on_observer_match_for`) and builds a match hook with `Match::predicate` or `Match::keys`.
-    Python hooks also work as decorators, and `on_observer_match` takes a predicate or `observer=`
-    and `call=` key functions. Go has `OnObserverAddedFor`, `OnObserverMatchFor` (with
-    `iii.MatchFunc` or `iii.MatchKeys`), and `OnObserverDeliverFor`.
+    `on_observation_match_for`) and builds a match hook with `Match::predicate` or `Match::keys`.
+    Python hooks also work as decorators, and `on_observation_match` takes a predicate or `observer=`
+    and `call=` key functions. Go has `OnObserverAddedFor`, `OnObservationMatchFor` (with
+    `iii.MatchFunc` or `iii.MatchKeys`), and `OnObservationDeliverFor`.
   - `iii.observe("fn::id", target)` is the short form of
     `iii.observe({ function_id: "fn::id" }, target)`. Go adds `client.ObserveFunction`.
 
@@ -53,8 +53,6 @@ type: "reference"
     it. A private function cannot be an observer's target, and a worker's call to its own private
     function passes the input and the result by reference.
   - `observable: false` refuses every observer of the function with `NOT_OBSERVABLE`.
-  - `standby: true` makes a second instance wait while another connection hosts the function, then
-    take over the function and its observers when the host leaves.
 
   ## `call`
 
@@ -113,7 +111,7 @@ type: "reference"
   <Callout type="warning">
     A 0.25 worker that binds with `registerTrigger` receives no events on a 0.26 engine, and a 0.26
     SDK leaves functions that declare `args_format`, `private`, or `observable: false`, or set
-    `onObserverMatch` or `onObserverDeliver`, unregistered on a 0.25 engine. Upgrade the engine, the iii workers, and the
+    `onObservationMatch` or `onObservationDeliver`, unregistered on a 0.25 engine. Upgrade the engine, the iii workers, and the
     SDKs together. See [Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
   </Callout>
 </Update>

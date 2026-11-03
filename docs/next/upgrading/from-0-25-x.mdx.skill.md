@@ -11,8 +11,8 @@ request, a queue message, or a row change.
 - **`call` invokes a function**: `iii.call` in TypeScript, Python, and Rust (`call_async` in async
   Python), `client.Call` in Go, and `iii call` in the CLI.
 - **The worker that hosts a function changes its defaults with four hooks.** `onObserverAdded` and
-  `onObserverRemoved` (for one function or every function of the worker), `onObserverMatch` and
-  `onObserverDeliver` (for one function) take over from trigger handlers and from 0.25 owner
+  `onObserverRemoved` (for one function or every function of the worker), `onObservationMatch` and
+  `onObservationDeliver` (for one function) take over from trigger handlers and from 0.25 owner
   delivery (`delivery: "owner"`, `obs.emit`, `obs.call`).
 
 ## Before you upgrade
@@ -22,7 +22,7 @@ request, a queue message, or a row change.
 | SDK          | 0.25 engine                                                                                                                                                                                                                                                                                                          | 0.26 engine                                                                                                                                                                                                                                                                             |
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **0.25 SDK** | As shipped.                                                                                                                                                                                                                                                                                                          | Functions, `trigger`, and `observe` work. The engine drops trigger registrations and trigger type registrations, with one `warn` per connection and message type that names the replacement. A function registered with `observe: { delivery: "owner" }` is refused with `UNSUPPORTED`. |
-| **0.26 SDK** | Functions that declare `args_format`, `private`, or `observable: false`, or set `onObserverMatch` or `onObserverDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for each. The SDK registers them when it connects to an engine with `observe.v2`. Every other function, `call`, and `observe` work. | Everything works.                                                                                                                                                                                                                                                                       |
+| **0.26 SDK** | Functions that declare `args_format`, `private`, or `observable: false`, or set `onObservationMatch` or `onObservationDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for each. The SDK registers them when it connects to an engine with `observe.v2`. Every other function, `call`, and `observe` work. | Everything works.                                                                                                                                                                                                                                                                       |
 
 A worker that binds with `registerTrigger` receives no events on a 0.26 engine, and the 0.26
 releases of the http, cron, queue, state, and database workers need a 0.26 engine. Upgrade the
@@ -94,6 +94,58 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `TriggerTypeRef` (Node, browser, Python, Rust, and their `runtime` modules)       | `FunctionRef`, since a trigger type is a function                                                                                                                     |
 | Rust: `TriggerInfo`, the row of `engine::triggers::list`                          | `FunctionInfo`, the row of `engine::functions::list`; Rust has no typed row for `engine::observers::list`, so read its rows as `serde_json::Value`                    |
 
+### Implement Rust hooks with native async fn
+
+Implement `AddedHook`, `RemovedHook`, and `DeliverHook` with native `async fn`, without
+`#[async_trait]` or `#[async_trait::async_trait]` on their implementations. Their public traits use
+return-position `impl Trait` in traits (RPITIT) to require a `Send` future:
+
+```rust
+use std::future::Future;
+use iii_sdk::{Call, Error, ObserveRejection, Observer};
+use serde_json::Value;
+
+pub trait AddedHook: Send + Sync + 'static {
+    fn on_added(
+        &self,
+        obs: Observer,
+    ) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_;
+}
+
+pub trait RemovedHook: Send + Sync + 'static {
+    fn on_removed(&self, obs: Observer) -> impl Future<Output = ()> + Send + '_;
+}
+
+pub trait DeliverHook: Send + Sync + 'static {
+    fn on_deliver(
+        &self,
+        call: Call,
+        observers: Vec<Observer>,
+    ) -> impl Future<Output = Result<Value, Error>> + Send + '_;
+}
+```
+
+The hook receives `Observer`, `Call`, and `Vec<Observer>` by value. The returned future may borrow
+`self` across `.await`: its `+ '_` lifetime is tied to that call's `&self`, not required to be
+`'static`. The hook type itself still implements `Send + Sync + 'static`. Keep the future `Send`,
+including every value held across `.await`; for example, release a `std::sync::MutexGuard` before
+awaiting another operation.
+
+These public traits are not dyn-compatible. Pass a concrete implementation or an async closure to
+the hook registration methods, not `Box<dyn AddedHook>`, `Arc<dyn RemovedHook>`, or another hook
+trait object. Dynamic dispatch and `Box::pin(async move { hook_call.await })` belong only to the
+SDK's private adapters; hook implementations do not need to box their futures.
+
+Closures remain supported. For shared state, use a `Clone` struct containing an `Arc`, as in the
+`Timers` and `Commands` examples below, or a closure that captures an `Arc` and clones it into
+each `async move` block. There is no forwarding blanket implementation for `Arc<T>`, because it
+would overlap with the blanket implementations for `Fn` closures.
+
+This change applies only to the new observer hooks. The legacy `IStream` trait is unchanged and
+still uses `#[async_trait]`; keep that macro on its implementations. The Rust `iii-sdk` dependency
+on `async-trait` also remains. The macros in the **Before (0.25)** examples below describe the old
+APIs and are intentionally retained.
+
 ### Trigger types and their functions
 
 | Trigger type                                               | Observe                                                            | Args                                                          | Filter on                               |
@@ -126,30 +178,30 @@ README at [workers.iii.dev](https://workers.iii.dev).
 | `config.config`, `config.function_id`, `config.id`                                                                                      | `obs.args`, `obs.target`, `obs.id`                                                                                                                                                                             |
 | `trigger_request_format`                                                                                                                | `args_format`                                                                                                                                                                                                  |
 | `call_request_format`                                                                                                                   | `request_format`, and `response_format` for the handler's return value, which is what observers observe                                                                                                        |
-| firing `trigger({ function_id: binding.function_id, payload })` for each binding                                                        | one `iii.call({ function_id: "<worker>::on-<event>", payload: event })`; iii delivers it to the observers that `onObserverMatch` matches, or to every observer by default                                      |
+| firing `trigger({ function_id: binding.function_id, payload })` for each binding                                                        | one `iii.call({ function_id: "<worker>::on-<event>", payload: event })`; iii delivers it to the observers that `onObservationMatch` matches, or to every observer by default                                      |
 | `unregisterTriggerType(id)`                                                                                                             | `functionRef.unregister()`                                                                                                                                                                                     |
-| `registerFunction(id, handler, { observe: { delivery, args_format, onObserverAdded, onObserverRemoved, allow, legacy_trigger_type } })` | `registerFunction(id, handler, { args_format?, private?, observable?, standby? })`; hooks are methods on the client or on the returned `FunctionRef`                                                           |
-| `delivery: "auto" \| "owner"`                                                                                                           | one delivery path; a function can set `onObserverMatch` and `onObserverDeliver`                                                                                                                                |
+| `registerFunction(id, handler, { observe: { delivery, args_format, onObserverAdded, onObserverRemoved, allow, legacy_trigger_type } })` | `registerFunction(id, handler, { args_format?, private?, observable? })`; hooks are methods on the client or on the returned `FunctionRef`                                                           |
+| `delivery: "auto" \| "owner"`                                                                                                           | one delivery path; a function can set `onObservationMatch` and `onObservationDeliver`                                                                                                                                |
 | `args_format` only with `delivery: "owner"`                                                                                             | `args_format` on any function                                                                                                                                                                                  |
-| `obs.emit(event)` from an index of observers                                                                                            | call the function with the event; its `onObserverMatch` says which observers want it, by keys for an index of observers                                                                                        |
-| `obs.call(payload)`                                                                                                                     | `iii.call({ observer: obs, payload })` inside `onObserverDeliver`; check `obs.matches(call)` first; to send a new observer its initial state, a call of the function with `metadata: { for_observer: obs.id }` |
+| `obs.emit(event)` from an index of observers                                                                                            | call the function with the event; its `onObservationMatch` says which observers want it, by keys for an index of observers                                                                                        |
+| `obs.call(payload)`                                                                                                                     | `iii.call({ observer: obs, payload })` inside `onObservationDeliver`; check `obs.matches(call)` first; to send a new observer its initial state, a call of the function with `metadata: { for_observer: obs.id }` |
 | a handler that refuses calls from other workers                                                                                         | a handler that returns the event, and `private: true`                                                                                                                                                          |
 | `observe: { allow: false }`                                                                                                             | `observable: false`                                                                                                                                                                                            |
 | `obs.legacy`, `legacy_trigger_type`                                                                                                     | consumers observe the function                                                                                                                                                                                 |
-| several instances of a worker serving the same trigger type                                                                             | one host per function and namespace; other instances register with `standby: true` and take over when the host leaves                                                                                          |
+| several instances of a worker serving the same trigger type                                                                             | one host per function and namespace: another instance is refused the function (`FUNCTION_NAMESPACE_CONFLICT`); run one instance and let the platform restart it |
 | the engine evaluated routed calls, the host evaluated local calls                                                                       | the engine evaluates routed calls, among the observers a function's match hook names (none when its deliver hook delivered the call); the host evaluates its local calls                                       |
 
 Hooks and options in each SDK:
 
 |                                              | TypeScript                                                                                                                 | Python                                                                                                                        | Rust                                                                                                                                                    | Go                                                                                                                                 |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Options                                      | `{ args_format, private, observable, standby }`                                                                            | `args_format=`, `private=`, `observable=`, `standby=`                                                                         | `.args_format::<T>().private().observable(false).standby()`                                                                                             | `iii.FunctionOptions{ArgsFormat: …, Private: true}`                                                                                |
+| Options                                      | `{ args_format, private, observable }`                                                                            | `args_format=`, `private=`, `observable=`                                                                         | `.args_format::<T>().private().observable(false)`                                                                                             | `iii.FunctionOptions{ArgsFormat: …, Private: true, Observable: &off}`                                                                                |
 | Every function of the worker                 | `iii.onObserverAdded(hook)`                                                                                                | `@iii.on_observer_added`                                                                                                      | `iii.on_observer_added(hook)`                                                                                                                           | `client.OnObserverAdded(hook)`                                                                                                     |
 | One function, by id                          | `iii.onObserverAdded(id, hook)`                                                                                            | `@iii.on_observer_added(id)`                                                                                                  | `iii.on_observer_added_for(id, hook)`                                                                                                                   | `client.OnObserverAddedFor(id, hook)`                                                                                              |
 | One function, on its ref                     | `ref.onObserverAdded(hook)`                                                                                                | `@ref.on_observer_added`                                                                                                      | `function.on_observer_added(hook)`                                                                                                                      | `ref.OnObserverAdded(hook)`                                                                                                        |
 | Removal                                      | `onObserverRemoved`, same three forms                                                                                      | `on_observer_removed`, same three forms                                                                                       | `on_observer_removed`, `on_observer_removed_for`                                                                                                        | `OnObserverRemoved`, `OnObserverRemovedFor`                                                                                        |
-| Match, one function                          | `iii.onObserverMatch(id, hook)`, `ref.onObserverMatch(hook)`; the hook is `(obs, call) => boolean` or `{ observer, call }` | `iii.on_observer_match(id, predicate)`, `ref.on_observer_match(predicate)`, or `observer=…, call=…` in place of the predicate | `iii.on_observer_match_for(id, rule)`, `function.on_observer_match(rule)`; the rule is `Match::predicate(f)` or `Match::keys(observer_keys, call_keys)` | `client.OnObserverMatchFor(id, m)`, `ref.OnObserverMatch(m)`; `m` is `iii.MatchFunc(f)` or `iii.MatchKeys(observerKeys, callKeys)` |
-| Delivery, one function                       | `iii.onObserverDeliver(id, hook)`, `ref.onObserverDeliver(hook)`                                                           | `iii.on_observer_deliver(id, hook)`, `ref.on_observer_deliver(hook)`                                                          | `iii.on_observer_deliver_for(id, hook)`, `function.on_observer_deliver(hook)`                                                                           | `client.OnObserverDeliverFor(id, hook)`, `ref.OnObserverDeliver(hook)`                                                             |
+| Match, one function                          | `iii.onObservationMatch(id, hook)`, `ref.onObservationMatch(hook)`; the hook is `(obs, call) => boolean` or `{ observer, call }` | `iii.on_observation_match(id, predicate)`, `ref.on_observation_match(predicate)`, or `observer=…, call=…` in place of the predicate | `iii.on_observation_match_for(id, rule)`, `function.on_observation_match(rule)`; the rule is `Match::predicate(f)` or `Match::keys(observer_keys, call_keys)` | `client.OnObservationMatchFor(id, m)`, `ref.OnObservationMatch(m)`; `m` is `iii.MatchFunc(f)` or `iii.MatchKeys(observerKeys, callKeys)` |
+| Delivery, one function                       | `iii.onObservationDeliver(id, hook)`, `ref.onObservationDeliver(hook)`                                                           | `iii.on_observation_deliver(id, hook)`, `ref.on_observation_deliver(hook)`                                                          | `iii.on_observation_deliver_for(id, hook)`, `function.on_observation_deliver(hook)`                                                                           | `client.OnObservationDeliverFor(id, hook)`, `ref.OnObservationDeliver(hook)`                                                             |
 | Call through an observer (in a deliver hook) | `iii.call({ observer: obs, payload })`                                                                                     | `await iii.call_async({"observer": obs, "payload": payload})`                                                                 | `iii.call(CallRequest::observer(&obs, payload))`                                                                                                        | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})`                                                               |
 | Call for one observer                        | `iii.call({ function_id, payload, metadata: { for_observer: obs.id } })`                                                   | `await iii.call_async({"function_id": id, "payload": payload, "metadata": {"for_observer": obs.id}})`                         | `iii.call(CallRequest::new(id, payload).metadata(json!({ "for_observer": obs.id() })))`                                                                 | `client.Call(ctx, iii.CallRequest{FunctionID: id, Payload: payload, Metadata: meta})`                                              |
 | Hooks of 0.25                                | `observe: { onObserverAdded, onObserverRemoved }`                                                                          | an `ObserveHooks` subclass passed as `observe=`                                                                               | `Observe::owner()` or `Observe::auto()` with an `ObserveHandler`                                                                                        | `RegisterFunctionOptions{Observe: &iii.ObserveHooks{…}}`                                                                           |
@@ -191,6 +243,14 @@ function is observable, so it has no replacement. For the model, see
 | metric label `iii.observer.activations.total{delivery="auto" \| "owner"}`                                                       | `delivery="engine" \| "host" \| "observer_call"`                                                                                                                                                         |
 | telemetry fields `trigger_count`, `trigger_types`, `trigger_registrations`                                                      | `observer_count`, `observable_function_count`, `private_function_count`                                                                                                                                  |
 | `durable:subscriber` served by the engine's queue compatibility module                                                          | `queue::on-message`, served by the queue worker                                                                                                                                                          |
+| `iii-sandbox` under `engine.workers` in `worker-compose.yaml`                                                                   | `engine.sandbox`, and a `sandbox-libkrun` container whose `config_override` holds the settings                                                                                                           |
+| `iii-sandbox` in a `config.yaml` that no Compose file manages                                                                   | a top-level `sandbox:` section, with the `sandbox-libkrun` adapter running in its namespace                                                                                                              |
+| `iii-worker` and `iii-init` binaries                                                                                            | removed; the `sandbox-libkrun` worker runs sandboxes and VM workers                                                                                                                                      |
+
+A compose file that still lists `iii-sandbox` under `engine.workers` fails `iii compose --up` with
+`SANDBOX_CONFIG_MOVED`, and a `config.yaml` that lists it makes the engine refuse to start with
+`UNSUPPORTED_CONFIG_WORKERS`. [Upgrading to the sandbox worker](./sandbox-worker) covers the move,
+stored sandbox configuration, and the binaries and VM state that 0.25 left behind.
 
 An `rbac` config that sets `on_trigger_registration_function_id` without
 `on_observer_registration_function_id`, or `on_trigger_type_registration_function_id` without
@@ -565,13 +625,13 @@ args, applies their filters and policy, and replays them when the worker reconne
    `onObserverRemoved(obs)`. Read the config from `obs.args`.
 4. Replace the loop that fired each binding with one call of your function per event. If every
    observer wants every event, iii's default delivery is enough. If observers want different events
-   depending on their args, say which in `onObserverMatch`: a predicate, or keys when the function
+   depending on their args, say which in `onObservationMatch`: a predicate, or keys when the function
    has many observers.
 5. Stop registering the trigger type, and tell consumers the function id and its args.
 
 The example moves a `timer` trigger type, which calls each binding every `every_ms` milliseconds.
 After the move, the worker runs one timer per distinct interval, however many observers share it,
-and its `onObserverMatch` predicate gives each tick to the observers of its interval.
+and its `onObservationMatch` predicate gives each tick to the observers of its interval.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -647,7 +707,7 @@ and its `onObserverMatch` predicate gives each tick to the observers of its inte
           timers.delete(every_ms);
         }
       })
-      .onObserverMatch((obs, call) => (obs.args as TimerArgs).every_ms === call.input.every_ms);
+      .onObservationMatch((obs, call) => (obs.args as TimerArgs).every_ms === call.input.every_ms);
     ```
 
   </Tab>
@@ -732,7 +792,7 @@ and its `onObserverMatch` predicate gives each tick to the observers of its inte
         else:
             timers[every_ms] = (stop, count - 1)
 
-    iii.on_observer_match(
+    iii.on_observation_match(
         "timer::on-tick",
         lambda obs, call: obs.args["every_ms"] == call.input["every_ms"],
     )
@@ -838,7 +898,6 @@ and its `onObserverMatch` predicate gives each tick to the observers of its inte
         tasks: Arc<Mutex<HashMap<u64, (tokio::task::JoinHandle<()>, usize)>>>,
     }
 
-    #[async_trait::async_trait]
     impl AddedHook for Timers {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let TimerArgs { every_ms } = obs.args()?;
@@ -862,7 +921,6 @@ and its `onObserverMatch` predicate gives each tick to the observers of its inte
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for Timers {
         async fn on_removed(&self, obs: Observer) {
             let Ok(TimerArgs { every_ms }) = obs.args() else { return };
@@ -887,7 +945,7 @@ and its `onObserverMatch` predicate gives each tick to the observers of its inte
     // set the hooks by id before registering, so they run for every observer
     iii.on_observer_added_for("timer::on-tick", timers.clone());
     iii.on_observer_removed_for("timer::on-tick", timers);
-    iii.on_observer_match_for(
+    iii.on_observation_match_for(
         "timer::on-tick",
         Match::predicate(|obs, call| obs.args_value()["every_ms"] == call.input["every_ms"]),
     );
@@ -1017,7 +1075,7 @@ and its `onObserverMatch` predicate gives each tick to the observers of its inte
                 }
             }
         })
-        client.OnObserverMatchFor("timer::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+        client.OnObservationMatchFor("timer::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
             var args, tick timerArgs // the tick carries every_ms too
             obs.DecodeArgs(&args)
             json.Unmarshal(call.Input, &tick)
@@ -1062,15 +1120,15 @@ iii.observe(
 
 In 0.25, a function registered with `observe: { delivery: "owner" }` received its own calls, picked
 observers from its own index, and handed each event over with `obs.emit` or `obs.call`. In 0.26 the
-function's handler returns the call's value, `onObserverMatch` says which observers want each call,
-and `onObserverDeliver` hands a call to an observer whose answer goes back to the caller:
+function's handler returns the call's value, `onObservationMatch` says which observers want each call,
+and `onObservationDeliver` hands a call to an observer whose answer goes back to the caller:
 
 | 0.25                                                                                        | 0.26                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `obs.emit(event)` to the observers an index returns                                         | call the function with the event; its `onObserverMatch` keys keep the index, and iii delivers to the observers filed under the event's keys                   |
-| `obs.call(payload)` inside the handler, whose result was the function's result              | `iii.call({ observer: obs, payload })` inside `onObserverDeliver`, whose return value is what the caller gets back                                            |
-| `obs.call(payload)` to send a new observer its initial state                                | a call of the function with `metadata: { for_observer: obs.id }` once `obs.accepted()` resolves; its `onObserverMatch` gives that call to that observer alone |
-| the SDK applied the observer's filters in `obs.emit` and `obs.call` (`FILTERS_NOT_MATCHED`) | iii's delivery applies filters; an `onObserverDeliver` hook checks `obs.matches(call)` before it calls a target                                               |
+| `obs.emit(event)` to the observers an index returns                                         | call the function with the event; its `onObservationMatch` keys keep the index, and iii delivers to the observers filed under the event's keys                   |
+| `obs.call(payload)` inside the handler, whose result was the function's result              | `iii.call({ observer: obs, payload })` inside `onObservationDeliver`, whose return value is what the caller gets back                                            |
+| `obs.call(payload)` to send a new observer its initial state                                | a call of the function with `metadata: { for_observer: obs.id }` once `obs.accepted()` resolves; its `onObservationMatch` gives that call to that observer alone |
+| the SDK applied the observer's filters in `obs.emit` and `obs.call` (`FILTERS_NOT_MATCHED`) | iii's delivery applies filters; an `onObservationDeliver` hook checks `obs.matches(call)` before it calls a target                                               |
 | hooks in the `observe` descriptor                                                           | `onObserverAdded` and `onObserverRemoved` on the client or the `FunctionRef`                                                                                  |
 | only the owner may call the function                                                        | `private: true`                                                                                                                                               |
 
@@ -1153,7 +1211,7 @@ registered for it and returns that observer's reply. Each observer gives one com
         const command = obs.args.command as string;
         if (commands.get(command)?.id === obs.id) commands.delete(command);
       })
-      .onObserverDeliver(async (call) => {
+      .onObservationDeliver(async (call) => {
         const obs = commands.get(call.input.command);
         if (!obs) return { reply: `unknown command /${call.input.command}` };
         if (!obs.matches(call)) return { reply: `/${call.input.command} is not available` };
@@ -1228,7 +1286,7 @@ registered for it and returns that observer's reply. Each observer gives one com
         if command in commands and commands[command].id == obs.id:
             del commands[command]
 
-    @iii.on_observer_deliver("chat::on-command")
+    @iii.on_observation_deliver("chat::on-command")
     async def route(call, observers):
         command = call.input["command"]
         obs = commands.get(command)
@@ -1358,7 +1416,6 @@ registered for it and returns that observer's reply. Each observer gives one com
     #[derive(Clone, Default)]
     struct Commands(Arc<Mutex<HashMap<String, Observer>>>);
 
-    #[async_trait::async_trait]
     impl AddedHook for Commands {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let CommandArgs { command } = obs.args()?;
@@ -1374,7 +1431,6 @@ registered for it and returns that observer's reply. Each observer gives one com
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for Commands {
         async fn on_removed(&self, obs: Observer) {
             self.0.lock().unwrap().retain(|_, o| o.id() != obs.id());
@@ -1386,7 +1442,7 @@ registered for it and returns that observer's reply. Each observer gives one com
     // set the hooks by id before registering, so they run for every observer
     iii.on_observer_added_for("chat::on-command", commands.clone());
     iii.on_observer_removed_for("chat::on-command", commands.clone());
-    iii.on_observer_deliver_for("chat::on-command", {
+    iii.on_observation_deliver_for("chat::on-command", {
         let (iii, commands) = (iii.clone(), commands.clone());
         move |call: Call, _observers: Vec<Observer>| {
             let (iii, commands) = (iii.clone(), commands.clone());
@@ -1502,7 +1558,7 @@ registered for it and returns that observer's reply. Each observer gives one com
                 delete(commands, command)
             }
         })
-        client.OnObserverDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+        client.OnObservationDeliverFor("chat::on-command", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
             var req struct {
                 Command string `json:"command"`
             }
@@ -1561,7 +1617,7 @@ observed function may call through its observers.
 
 An owner-delivered function that handed events to observers chosen by their args with `obs.emit`
 moves the way the [timer above](#move-a-trigger-type-to-an-observable-function) does: call the
-function with the event, and say which observers want it with `onObserverMatch`. With many
+function with the event, and say which observers want it with `onObservationMatch`. With many
 observers, give it keys (`{ observer, call }`), and iii keeps the index.
 
 ## Checklist
@@ -1573,13 +1629,15 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
       `unregister()` with `dispose()`
 - [ ] Turn each `condition_function_id` into `filters`, or move the check into the target
 - [ ] Move your own trigger types to functions with `args_format`, `private: true`, and hooks
-- [ ] Move functions registered with `observe: { delivery: "owner" }` to `onObserverMatch`,
-      `onObserverDeliver`, and `iii.call({ observer, payload })`
+- [ ] Move functions registered with `observe: { delivery: "owner" }` to `onObservationMatch`,
+      `onObservationDeliver`, and `iii.call({ observer, payload })`
 - [ ] Replace `observe: { allow: false }` with `observable: false`
 - [ ] Remove the RBAC trigger keys from the engine config, and grant sessions the functions they
       observe
 - [ ] Replace `engine::triggers::*` and `engine::registered-triggers::*` in scripts and dashboards
       with `engine::functions::*` and `engine::observers::*`
+- [ ] Move `iii-sandbox` out of `engine.workers` and `config.yaml`, and remove `iii-worker` and
+      `iii-init`, as in [Upgrading to the sandbox worker](./sandbox-worker)
 
 <Note>
   For the observer model, see [Observers](../using-iii/observers). For the four hooks and private

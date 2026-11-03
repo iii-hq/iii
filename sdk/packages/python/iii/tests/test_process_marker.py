@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from iii.process_marker import announce_process
 
 
@@ -24,6 +26,17 @@ def test_each_client_in_a_process_has_its_own_marker(tmp_path: Path) -> None:
     orders()
     assert [json.loads(left.read_text())["name"] for left in tmp_path.iterdir()] == ["billing"]
     billing()
+
+
+def test_forked_child_keeps_its_parents_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    remove = announce_process("ws://127.0.0.1:49134", "orders", tmp_path)
+    [marker] = tmp_path.iterdir()
+    parent = os.getpid()
+    monkeypatch.setattr(os, "getpid", lambda: parent + 1)  # remove() as a forked child runs it at exit
+    remove()
+    assert marker.exists()
+    monkeypatch.undo()
+    marker.unlink()
 
 
 def test_unwritable_directory_is_not_an_error(tmp_path: Path) -> None:

@@ -2,26 +2,40 @@
 
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox`
-worker. Enable it in the managed Compose file before starting the engine:
+for agent tool-calls, REPLs, and one-off jobs. The engine's `iii-sandbox` router serves the
+`sandbox::*` functions and forwards each call to a sandbox adapter. The `sandbox-libkrun` worker is
+the adapter that runs the VMs, and Compose installs it from the registry when a project needs it:
+when the compose file sets `engine.sandbox` for its own namespace, when it declares a worker that
+runs in a VM (a bundle worker, or a `path://` worker with `runtime.base_image`), or when you run
+`iii call compose::add worker=iii-sandbox`. To change which images the adapter allows, set its
+configuration under `containers.sandbox-libkrun.config_override`:
 
 ```yaml worker-compose.yaml
 engine:
-  workers:
-    iii-sandbox:
-      auto_install: true
+  sandbox:
+    adapter: sandbox-libkrun
+containers:
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
+    version: "^0.2"
+    config_override:
       image_allowlist: [python, node]
 ```
 
+`image_allowlist` and `custom_images` set the images a sandbox can boot. An engine that no Compose
+file manages has no adapter bound, so its `sandbox::*` calls fail with [S303](#S303) until you set a
+top-level `sandbox:` section in its engine config. [Upgrading to the sandbox
+worker](../upgrading/sandbox-worker) covers that case and the move from the 0.25 setup.
+
 <Note>
-  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
-  [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+  This page is a quick tour of the sandbox functions. For the adapter's own documentation, see the
+  [sandbox-libkrun docs](https://workers.iii.dev/workers/sandbox-libkrun).
 </Note>
 
-You drive sandboxes by calling the worker's `sandbox::*` functions, the same way you call any
-function (see [Call a function](../using-iii/functions#call-a-function)). Images are catalog names
-such as `python` or `node`, not arbitrary OCI references. The examples below capture the new
-sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
+You drive sandboxes by calling the `sandbox::*` functions, the same way you call any function
+(see [Call a function](../using-iii/functions#call-a-function)). Images are catalog names such as
+`python` or `node`, not arbitrary OCI references. The examples below capture the new sandbox's id
+with `jq` and stop the sandbox when done so nothing keeps running.
 
 ## One-shot run
 
@@ -49,7 +63,7 @@ SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
 iii call sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
 
 # list the active sandbox ids
-iii call sandbox::list | jq -r '.[].sandbox_id'
+iii call sandbox::list | jq -r '.sandboxes[].sandbox_id'
 
 # stop when done
 iii call sandbox::stop sandbox_id=$SB
@@ -147,7 +161,7 @@ larger payloads when called through an SDK.
 A failed `sandbox::*` call returns the same error shape whichever sandbox adapter serves it: a stable
 `code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract,
 not to any one worker: they are part of the public `sandbox::*` API that every caller sees, the
-router returns S301-S303, and every adapter returns the rest. The `docs_url` in the error payload
+router returns S301-S304, and every adapter returns the rest. The `docs_url` in the error payload
 links to the matching entry below.
 
 - <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed sandbox_id)

@@ -228,9 +228,10 @@ iii call -n dev compose::update file=worker-compose.yaml worker=state
 iii call -n dev compose::down file=worker-compose.yaml
 ```
 
-`iii worker` and `worker::*` were removed. Use `engine::workers::list` for live registrations and
-`compose::status` for the supervisor's process state. Use `compose::logs` for raw worker stdout and
-stderr.
+Use `engine::workers::list` for live registrations and `compose::status` for the supervisor's
+process state. `<adapter>::worker::*` (for example `sandbox-libkrun::worker::*`) is the sandbox
+adapter's surface, and only Compose calls it. Use
+`compose::logs` for raw worker stdout and stderr.
 
 ## Discovery surface
 
@@ -266,6 +267,7 @@ view; consult both when diagnosing a declared container that did not register.
 ## Boundaries
 
 - Do not put project workers in `config.yaml`; use `worker-compose.yaml`.
-- Do not call removed `iii worker` commands or `worker::*` functions.
+- Do not call `<adapter>::worker::*` functions such as `sandbox-libkrun::worker::start`: they are the
+  sandbox adapter's surface, and only Compose calls them.
 - Do not add registry packages of kind `engine` as Compose roots; the engine supplies them.
 - Treat function ids, schemas, and `args_format` from the live engine as authoritative.

@@ -1466,20 +1466,26 @@ containers:
     )
     .await
     .expect("status after a contained failure");
-    let state = |key: &str| {
+    let container = |key: &str| {
         status["containers"]
             .as_array()
             .expect("containers")
             .iter()
             .find(|container| container["container"] == key)
-            .unwrap_or_else(|| panic!("missing {key}: {status}"))["state"]
+            .unwrap_or_else(|| panic!("missing {key}: {status}"))
             .clone()
     };
-    assert_eq!(state("api"), "ready", "dependent was rolled back: {status}");
-    assert_ne!(
-        state("mailer"),
+    assert_eq!(
+        container("api")["state"],
         "ready",
-        "the failed container must not report ready: {status}"
+        "dependent was rolled back: {status}"
+    );
+    // A start that never registered is a failure with a reason, not a stop.
+    assert_eq!(container("mailer")["state"], "failed", "{status}");
+    assert_eq!(
+        container("mailer")["last_error"],
+        "container 'mailer' was not ready after 2s",
+        "{status}"
     );
 
     api.shutdown_async().await;
@@ -2632,11 +2638,13 @@ async fn bridge_migration_uses_remote_authority_and_preserves_raw_cache() {
 }
 
 /// The bridge observes the remote engine's `configuration::on-updated`: a
-/// change made on the remote engine reaches the local listeners with its raw
-/// value.
+/// change made on the remote engine reaches the local listeners as an event
+/// that names the entry and carries no value, and the local worker's GET
+/// returns the new value, which the bridge reads from the remote engine.
 #[tokio::test(flavor = "multi_thread")]
 async fn bridge_relays_remote_configuration_changes_to_local_listeners() {
-    use iii::workers::configuration::structs::ConfigurationEventType;
+    use iii::function::FunctionResult;
+    use iii::workers::configuration::structs::{ConfigurationEventType, ConfigurationGetInput};
     use iii::workers::configuration::{ConfigurationWorker, adapters::bridge::BridgeAdapter};
     isolate_state();
     let port = spawn_engine().await;
@@ -2668,14 +2676,15 @@ async fn bridge_relays_remote_configuration_changes_to_local_listeners() {
     let local = ConfigurationWorker::for_test(local_engine, bridge);
     local.initialize().await.unwrap();
 
-    // The remote observer becomes active asynchronously: change the value
-    // until one change is relayed.
+    // The remote observer becomes active asynchronously: set the same value
+    // until one change is relayed. Every set is an update event, so whichever
+    // set's event arrives, the value it stands for is `{"n": 1}`.
     let mut relayed = None;
-    for n in 1..=40 {
+    for _ in 1..=40 {
         call(
             port,
             "configuration::set",
-            json!({"id": "relayed", "value": {"n": n}}),
+            json!({"id": "relayed", "value": {"n": 1}}),
         )
         .await
         .unwrap();
@@ -2686,7 +2695,20 @@ async fn bridge_relays_remote_configuration_changes_to_local_listeners() {
     }
     let event = relayed.expect("a remote change reaches the local listeners");
     assert_eq!(event.id, "relayed");
-    assert!(event.new_value.as_ref().is_some_and(|v| v["n"].is_u64()));
+    assert_eq!(event.event_type, ConfigurationEventType::Updated);
+    let wire = serde_json::to_value(&event).unwrap();
+    assert!(wire.get("old_value").is_none(), "{wire}");
+    assert!(wire.get("new_value").is_none(), "{wire}");
+    let FunctionResult::Success(got) = local
+        .get_fn(ConfigurationGetInput {
+            id: "relayed".into(),
+            raw: false,
+        })
+        .await
+    else {
+        panic!("local get failed")
+    };
+    assert_eq!(got.value, json!({ "n": 1 }));
     local.destroy().await.unwrap();
 }
 

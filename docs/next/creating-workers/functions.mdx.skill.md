@@ -376,7 +376,7 @@ observer's target or an observed function.
           url: "https://hooks.provider.example.com/notify",
           method: "POST",
           timeout_ms: 5000,
-          headers: { "X-Service": "iii-worker" },
+          headers: { "X-Service": "orders-worker" },
           auth: { type: "bearer", token_key: "PROVIDER_API_TOKEN" },
         },
         { description: "POST a notification to the provider webhook" },
@@ -400,7 +400,7 @@ observer's target or an observed function.
               url="https://hooks.provider.example.com/notify",
               method="POST",
               timeout_ms=5000,
-              headers={"X-Service": "iii-worker"},
+              headers={"X-Service": "orders-worker"},
               auth=HttpAuthBearer(token_key="PROVIDER_API_TOKEN"),
           ),
           description="POST a notification to the provider webhook",
@@ -425,7 +425,7 @@ observer's target or an observed function.
       );
 
       let mut headers = HashMap::new();
-      headers.insert("X-Service".into(), "iii-worker".into());
+      headers.insert("X-Service".into(), "orders-worker".into());
 
       worker.register_function((
           RegisterFunctionMessage::with_id("notifications::send".into())
@@ -509,8 +509,8 @@ return an `error`).
 
 When a function runs, iii runs the target of each observer whose filters match the call, and the
 function's return value is the `output` its observers see. The worker that hosts a function changes
-that default with four hooks (`onObserverAdded`, `onObserverRemoved`, `onObserverMatch` and
-`onObserverDeliver`) and describes the function to the engine with the `args_format`, `private` and
+that default with four hooks (`onObserverAdded`, `onObserverRemoved`, `onObservationMatch` and
+`onObservationDeliver`) and describes the function to the engine with the `args_format`, `private` and
 `observable` options. See [Observable functions](./observable-functions).
 
 ## Unregister a function

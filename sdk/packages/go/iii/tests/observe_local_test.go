@@ -243,7 +243,7 @@ func newCronSource(t *testing.T) *cronSource {
 		o.removed = append(o.removed, obs.ID)
 		o.mu.Unlock()
 	})
-	o.client.OnObserverMatchFor(o.fn, iii.MatchKeys(
+	o.client.OnObservationMatchFor(o.fn, iii.MatchKeys(
 		func(obs *iii.Observer) []string { return []string{expression(obs)} },
 		func(call *iii.Call) []string {
 			var tick struct {
@@ -444,7 +444,7 @@ func TestObserveCallThroughAnObserver(t *testing.T) {
 		delete(routes, pathOf(obs))
 		mu.Unlock()
 	})
-	host.OnObserverDeliverFor(onRequest, func(ctx context.Context, call *iii.Call, _ []*iii.Observer) (any, error) {
+	host.OnObservationDeliverFor(onRequest, func(ctx context.Context, call *iii.Call, _ []*iii.Observer) (any, error) {
 		var req struct {
 			Path string `json:"path"`
 		}
@@ -717,7 +717,7 @@ func TestObserveCallForOneObserver(t *testing.T) {
 					},
 				)
 			}
-			owner.OnObserverMatchFor(fn, match)
+			owner.OnObservationMatchFor(fn, match)
 			owner.OnObserverAddedFor(fn, func(_ context.Context, obs *iii.Observer) error {
 				// a new observer gets the state of its session once it is active
 				go func() {

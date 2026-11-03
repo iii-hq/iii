@@ -29,11 +29,10 @@ Only workers coupled to the engine lifecycle may be declared in this file:
 - `iii-worker-manager`
 - `iii-http-functions`
 - `iii-stream` (deprecated)
-- `iii-sandbox`
 
-The engine injects `iii-engine-functions`, `iii-telemetry`, and `iii-observability` automatically;
-do not declare them. Any other name makes initial startup or config reload fail with
-`UNSUPPORTED_CONFIG_WORKERS` and a link to the [manual migration
+The engine injects `iii-engine-functions`, `iii-telemetry`, `iii-observability`, and the
+`iii-sandbox` router automatically; do not declare them. Any other name makes initial startup or
+config reload fail with `UNSUPPORTED_CONFIG_WORKERS` and a link to the [manual migration
 guide](../upgrading/workers-to-compose).
 
 <Warning title="Deprecated">
@@ -65,12 +64,25 @@ workers:
 The engine watches this file. A valid change reloads the affected engine worker; an invalid change
 stops the engine so it cannot continue with a configuration different from the file on disk.
 
+A Compose-managed engine is bound to the `sandbox-libkrun` adapter for you. An engine that no
+Compose file manages sets the top-level `sandbox` section in this file instead, or its `sandbox::*`
+calls fail with S303:
+
+```yaml
+sandbox:
+  adapter: sandbox-libkrun
+  namespace: default
+```
+
+`adapter` is the adapter's function prefix, and `namespace` is the namespace it registers in
+(`default` when omitted). See [Sandboxes](../creating-workers/sandboxes).
+
 ## Project workers
 
 HTTP, cron, queue, state, pubsub, bridge, application workers, and other registry workers belong in
 `worker-compose.yaml`. The `pubsub` worker is deprecated; see
 [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams). For the normal managed
-lifecycle, move the five engine configs into its direct `engine.workers` map and start the single
+lifecycle, move the four engine configs into its direct `engine.workers` map and start the single
 file:
 
 ```bash

@@ -5,7 +5,7 @@
 //! observers (read with one atomic load on every call), its match and
 //! deliver hooks, and a hook task that applies the engine's announcements
 //! (`functionregistered`, `observeradded`, `observerremoved`) one at a time,
-//! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`]s set in
+//! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`](crate::RemovedHook)s set in
 //! [`hooks`](crate::hooks).
 
 use std::{
@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     error::Error,
-    hooks::{AddedSlot, Call, DeliverHook, Level, Match, Matcher, RemovedHook},
+    hooks::{AddedSlot, Call, ErasedDeliverHook, ErasedRemovedHook, Level, Match, Matcher},
     iii::{IIIClient, IIIInner},
     observer_set::ObserverSet,
     protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
@@ -368,7 +368,7 @@ impl Observer {
     ///     }
     /// });
     /// // a call for one observer goes to it alone; every other call to every observer
-    /// iii.on_observer_match_for(
+    /// iii.on_observation_match_for(
     ///     "stock::on-changed",
     ///     Match::predicate(|obs, call| {
     ///         let for_observer = call.metadata.as_ref().and_then(|m| m["for_observer"].as_str());
@@ -882,8 +882,6 @@ pub(crate) struct FunctionEntry {
     pub(crate) id: String,
     /// Declares `args_format`, `private` or `observable: false`.
     declares_v2: bool,
-    /// Registered with [`RegisterFunction::standby`](crate::RegisterFunction::standby).
-    pub(crate) standby: bool,
     /// Has a handler here and was not registered with `local_dispatch(false)`.
     wants_local: bool,
     /// The namespace the engine registered it in (`functionregistered`).
@@ -898,16 +896,13 @@ pub(crate) struct FunctionEntry {
     /// release (a conflict, a refused or withdrawn registration), until it
     /// confirms it again.
     revoked: AtomicBool,
-    /// A conflict was logged since the engine last confirmed the function:
-    /// a standby's later ones are logged at debug.
-    conflicted: AtomicBool,
     compiled: ArcSwap<CompiledSet>,
     /// The number of active observers, shifted left by one, with the low bit
     /// set while a deliver hook is: what a call reads first, in one atomic
     /// load.
     delivery: AtomicUsize,
     /// The function's deliver hook, mirrored from the hook store.
-    deliver: ArcSwapOption<Arc<dyn DeliverHook>>,
+    deliver: ArcSwapOption<Arc<dyn ErasedDeliverHook>>,
     /// The function's match hook, with its key index.
     matcher: ArcSwapOption<Matcher>,
     /// Held while an observer is activated or deactivated with its filing in
@@ -937,8 +932,7 @@ impl FunctionEntry {
         declares_v2: bool,
         has_handler: bool,
         local_option: bool,
-        standby: bool,
-        deliver: Option<Arc<dyn DeliverHook>>,
+        deliver: Option<Arc<dyn ErasedDeliverHook>>,
         matcher: Option<Matcher>,
     ) -> Self {
         let (registered, _) = watch::channel(false);
@@ -946,14 +940,12 @@ impl FunctionEntry {
         Self {
             id,
             declares_v2,
-            standby,
             wants_local: has_handler && local_option,
             namespace: ArcSwapOption::empty(),
             local_dispatch: AtomicBool::new(false),
             confirmed_epoch: AtomicU64::new(0),
             revocation: AtomicU64::new(0),
             revoked: AtomicBool::new(false),
-            conflicted: AtomicBool::new(false),
             compiled: ArcSwap::from_pointee(CompiledSet::default()),
             delivery: AtomicUsize::new(delivery),
             deliver: ArcSwapOption::new(deliver.map(Arc::new)),
@@ -1035,7 +1027,7 @@ impl FunctionEntry {
         self.indexing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub(crate) fn deliver_hook(&self) -> Option<Arc<dyn DeliverHook>> {
+    pub(crate) fn deliver_hook(&self) -> Option<Arc<dyn ErasedDeliverHook>> {
         self.deliver.load().as_deref().cloned()
     }
 
@@ -1043,7 +1035,7 @@ impl FunctionEntry {
         self.delivery.load(Ordering::Acquire) & 1 != 0
     }
 
-    pub(crate) fn set_deliver(&self, hook: Option<Arc<dyn DeliverHook>>) {
+    pub(crate) fn set_deliver(&self, hook: Option<Arc<dyn ErasedDeliverHook>>) {
         let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
         self.deliver.store(hook.map(Arc::new));
         self.refresh_delivery();
@@ -1140,12 +1132,6 @@ impl FunctionEntry {
 
     pub(crate) fn is_revoked(&self) -> bool {
         self.revoked.load(Ordering::Acquire)
-    }
-
-    /// Records a `FUNCTION_NAMESPACE_CONFLICT`: `true` for the first since
-    /// the engine last confirmed the function.
-    pub(crate) fn first_conflict(&self) -> bool {
-        !self.conflicted.swap(true, Ordering::AcqRel)
     }
 
     pub(crate) fn confirmed_on(&self, epoch: u64) -> bool {
@@ -1312,7 +1298,6 @@ async fn run_hooks(
                     continue;
                 }
                 entry.revoked.store(false, Ordering::Release);
-                entry.conflicted.store(false, Ordering::Release);
                 entry.namespace.store(Some(Arc::new(namespace.clone())));
                 entry
                     .local_dispatch
@@ -1622,7 +1607,7 @@ fn admit(
             return Admission::Refused {
                 error: ErrorBody::new(
                     observe_codes::OBSERVE_REJECTED,
-                    format!("on_observer_match key function panicked: {panic}"),
+                    format!("on_observation_match key function panicked: {panic}"),
                 ),
                 ack: true,
             };
@@ -1691,7 +1676,7 @@ async fn run_added(
     observer: &Observer,
     deadline: tokio::time::Instant,
 ) -> Result<(), ObserveRejection> {
-    let added = std::panic::AssertUnwindSafe(slot.hook.on_added(observer.clone())).catch_unwind();
+    let added = std::panic::AssertUnwindSafe(slot.hook.added(observer.clone())).catch_unwind();
     match tokio::time::timeout_at(deadline, added).await {
         Ok(Ok(result)) => result,
         Ok(Err(panic)) => Err(ObserveRejection::new(
@@ -1788,10 +1773,10 @@ async fn tear_down(
 async fn run_removed(
     iii: &IIIClient,
     entry: &FunctionEntry,
-    hook: &Arc<dyn RemovedHook>,
+    hook: &Arc<dyn ErasedRemovedHook>,
     observer: &Observer,
 ) {
-    let removed = std::panic::AssertUnwindSafe(hook.on_removed(observer.clone())).catch_unwind();
+    let removed = std::panic::AssertUnwindSafe(hook.removed(observer.clone())).catch_unwind();
     match tokio::time::timeout(iii.hook_timeout(), removed).await {
         Ok(Ok(())) => {}
         Ok(Err(panic)) => tracing::warn!(
@@ -1872,7 +1857,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallRequest, RegisterFunction,
+        CallRequest, RegisterFunction, RemovedHook,
         iii::{IIIConnectionState, MutexExt, Outbound},
     };
 
@@ -2004,9 +1989,9 @@ mod tests {
         let (iii, mut rx) = client();
         iii.register_function("o::private", echo().private());
         iii.register_function("o::plain", echo());
-        iii.on_observer_deliver_for("o::hooked", answer_with_count);
+        iii.on_observation_deliver_for("o::hooked", answer_with_count);
         iii.register_function("o::hooked", echo());
-        iii.on_observer_match_for("o::matched", kind_keys());
+        iii.on_observation_match_for("o::matched", kind_keys());
         iii.register_function("o::matched", echo());
         let registered = |frames: &[Value]| -> Vec<String> {
             frames
@@ -2038,7 +2023,7 @@ mod tests {
                     .iter()
                     .filter(|l| l.contains("UNSUPPORTED") && l.contains(&format!("{id} needs")))
                     // every reason is named, the match and deliver hooks among them
-                    .filter(|l| l.contains("on_observer_match or on_observer_deliver"))
+                    .filter(|l| l.contains("on_observation_match or on_observation_deliver"))
                     .count()
             };
             match (
@@ -2055,7 +2040,7 @@ mod tests {
         logs_assert(warned);
 
         // a plain function that gets a deliver hook is withdrawn
-        iii.on_observer_deliver_for("o::plain", answer_with_count);
+        iii.on_observation_deliver_for("o::plain", answer_with_count);
         let frames = sent(&mut rx);
         assert_eq!(frames.len(), 1);
         assert_eq!(
@@ -2063,17 +2048,17 @@ mod tests {
             json!({ "type": "unregisterfunction", "id": "o::plain" })
         );
         // and registered again once its deliver hook is removed
-        iii.clear_observer_deliver_for("o::plain");
+        iii.clear_observation_deliver_for("o::plain");
         assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
         // a match hook withdraws it too, until it is removed
-        iii.on_observer_match_for("o::plain", kind_keys());
+        iii.on_observation_match_for("o::plain", kind_keys());
         assert_eq!(
             sent(&mut rx),
             vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
         );
-        iii.clear_observer_match_for("o::plain");
+        iii.clear_observation_match_for("o::plain");
         assert_eq!(registered(&sent(&mut rx)), vec!["o::plain"]);
-        iii.on_observer_deliver_for("o::plain", answer_with_count);
+        iii.on_observation_deliver_for("o::plain", answer_with_count);
         assert_eq!(
             sent(&mut rx),
             vec![json!({ "type": "unregisterfunction", "id": "o::plain" })]
@@ -2271,11 +2256,11 @@ mod tests {
         let (iii, mut rx) = client();
         v2_hello(&iii);
         sent(&mut rx);
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             "self::f",
             crate::Match::predicate(|obs, call| obs.args_value()["kind"] == call.input["kind"]),
         );
-        iii.on_observer_deliver_for("self::f", answer_with_count);
+        iii.on_observation_deliver_for("self::f", answer_with_count);
         hosted(
             &iii,
             &mut rx,
@@ -2312,7 +2297,7 @@ mod tests {
         let _capture = tracing::subscriber::set_default(warnings.clone());
         let (iii, mut rx) = client();
         v2_hello(&iii);
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             "pp::f",
             crate::Match::predicate(|obs, _call| {
                 if obs.id() == "boom" {
@@ -2370,7 +2355,7 @@ mod tests {
                 |call| call.input["kind"].as_str().into(),
             )
         };
-        iii.on_observer_match_for("kp::f", keys());
+        iii.on_observation_match_for("kp::f", keys());
         let function = iii.register_function("kp::f", echo());
         feed(
             &iii,
@@ -2404,7 +2389,7 @@ mod tests {
             ]),
         )
         .await;
-        late.on_observer_match(keys());
+        late.on_observation_match(keys());
         let rejection = next_ack(&mut rx).await;
         assert_eq!(rejection["id"], "boom");
         assert_eq!(rejection["error"]["code"], "OBSERVE_REJECTED");
@@ -2468,7 +2453,7 @@ mod tests {
             std::future::pending::<()>().await;
             Ok(())
         });
-        function.on_observer_match(crate::Match::keys(
+        function.on_observation_match(crate::Match::keys(
             |obs| obs.args_value()["kind"].as_str().into(),
             |call| call.input["kind"].as_str().into(),
         ));
@@ -2497,7 +2482,7 @@ mod tests {
     async fn an_observer_under_several_keys_of_a_call_matches_once() {
         let (iii, mut rx) = client();
         v2_hello(&iii);
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             "mk::f",
             crate::Match::keys(
                 |obs| keys_at(obs.args_value(), "keys"),
@@ -2583,7 +2568,7 @@ mod tests {
         let computed = Arc::new(Mutex::new(Vec::<String>::new()));
         // a's key function announces a's removal and gives the hook task
         // 200 ms to run it before a is filed
-        function.on_observer_match(crate::Match::keys(
+        function.on_observation_match(crate::Match::keys(
             {
                 let (iii, removed, computed) = (iii.clone(), removed.clone(), computed.clone());
                 move |obs| {
@@ -2634,9 +2619,9 @@ mod tests {
                 }
             })
         };
-        iii.on_observer_match_for("kd::f", kind_keys());
-        iii.on_observer_match_for("kh::f", kind_keys());
-        iii.on_observer_deliver_for(
+        iii.on_observation_match_for("kd::f", kind_keys());
+        iii.on_observation_match_for("kh::f", kind_keys());
+        iii.on_observation_deliver_for(
             "kh::f",
             |_call: Call, observers: Vec<Observer>| async move {
                 Ok(json!(
@@ -2714,7 +2699,7 @@ mod tests {
             json!({ "type": "observeradded", "function_id": "wq::f", "revision": 2,
                     "observer": view_with_args("late", json!({})) }),
         );
-        iii.on_observer_deliver_for("wq::f", answer_with_count);
+        iii.on_observation_deliver_for("wq::f", answer_with_count);
         gate.notify_one();
         for _ in 0..100 {
             tokio::task::yield_now().await;
@@ -2743,7 +2728,6 @@ mod tests {
             false,
             true,
             true,
-            false,
             None,
             None,
         ));
@@ -2795,8 +2779,8 @@ mod tests {
             on_removed(obs);
             async {}
         })
-        .on_observer_match_for("rr::f", kind_keys())
-        .on_observer_deliver_for("rr::f", answer_with_count);
+        .on_observation_match_for("rr::f", kind_keys())
+        .on_observation_deliver_for("rr::f", answer_with_count);
         let events_now = || events.lock().unwrap().clone();
 
         let first = hosted(
@@ -2836,48 +2820,6 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert_eq!(events_now()[3], "removed b");
-    }
-
-    /// A standby warns once per wait for the host to leave: its later
-    /// conflicts are logged at debug until the engine confirms it.
-    #[tokio::test]
-    #[tracing_test::traced_test]
-    async fn a_standby_warns_once_per_wait() {
-        let (iii, _rx) = client();
-        let function = iii.register_function("sb::f", echo().standby());
-        let conflict = json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
-                               "namespace": "default", "function_id": "sb::f",
-                               "owner_worker_id": "w2" });
-        for _ in 0..3 {
-            feed(&iii, conflict.clone());
-        }
-        feed(
-            &iii,
-            json!({ "type": "functionregistered", "id": "sb::f", "revision": 1,
-                    "local_dispatch": true, "observers": [] }),
-        );
-        while !function.local_dispatch_active() {
-            tokio::task::yield_now().await;
-        }
-        feed(&iii, conflict);
-        logs_assert(|lines: &[&str]| {
-            let count = |level: &str, text: &str| {
-                lines
-                    .iter()
-                    .filter(|l| l.contains(level) && l.contains(text))
-                    .count()
-            };
-            match (
-                count("WARN", "the standby registers it again until it takes over"),
-                count(
-                    "DEBUG",
-                    "standby: another worker still hosts this function id",
-                ),
-            ) {
-                (2, 2) => Ok(()),
-                other => Err(format!("expected (warn, debug) = (2, 2), got {other:?}")),
-            }
-        });
     }
 
     /// A peer that stops reading: flushed frames wait in the outbound channel,
@@ -3106,8 +3048,8 @@ mod tests {
             .on_observer_added_for("cl::f", ran.added("function added"))
             .on_observer_removed(ran.removed("worker removed"))
             .on_observer_removed_for("cl::f", ran.removed("function removed"))
-            .on_observer_match_for("cl::f", kind_keys())
-            .on_observer_deliver_for("cl::f", answer_with_count);
+            .on_observation_match_for("cl::f", kind_keys())
+            .on_observation_deliver_for("cl::f", answer_with_count);
         hosted(
             &iii,
             &mut rx,
@@ -3167,7 +3109,7 @@ mod tests {
         assert_eq!(ran.now(), with_hooks, "no hook ran once cleared");
 
         // iii delivers: the match hook still picks the observers of kind b
-        iii.clear_observer_deliver_for("cl::f");
+        iii.clear_observation_deliver_for("cl::f");
         sent(&mut rx);
         routed(1, json!({ "kind": "b" }));
         let answer = next_frame(&mut rx, "invocationresult").await;
@@ -3178,7 +3120,7 @@ mod tests {
         assert_eq!(matched, vec!["b", "c"]);
 
         // every observer wants every call: the engine evaluates them all
-        iii.clear_observer_match_for("cl::f");
+        iii.clear_observation_match_for("cl::f");
         routed(2, json!({ "kind": "b" }));
         let answer = next_frame(&mut rx, "invocationresult").await;
         assert_eq!(answer["result"], json!({ "kind": "b" }));
@@ -3195,7 +3137,7 @@ mod tests {
         let (iii, mut rx) = client();
         v2_hello(&iii);
         let computed = Arc::new(AtomicUsize::new(0));
-        iii.on_observer_match_for(
+        iii.on_observation_match_for(
             "ck::f",
             crate::Match::keys(|obs| obs.args_value()["kind"].as_str().into(), {
                 let computed = computed.clone();
@@ -3242,52 +3184,6 @@ mod tests {
             2,
             "once for the local call"
         );
-    }
-
-    /// A standby registers again 1 s ±20 % after each conflict, and not once
-    /// it is unregistered.
-    #[tokio::test(start_paused = true)]
-    async fn a_standby_retries_every_second_until_unregistered() {
-        let (iii, mut rx) = client();
-        let function = iii.register_function("sb::retry", echo().standby());
-        sent(&mut rx);
-        let conflict = json!({ "type": "registrationrejected", "code": "FUNCTION_NAMESPACE_CONFLICT",
-                               "namespace": "default", "function_id": "sb::retry",
-                               "owner_worker_id": "w2" });
-        let registrations = |frames: Vec<Value>| {
-            frames
-                .iter()
-                .filter(|m| m["type"] == "registerfunction" && m["id"] == "sb::retry")
-                .count()
-        };
-        const STEP: Duration = Duration::from_millis(5);
-        let mut delays = Vec::new();
-        for _ in 0..40 {
-            feed(&iii, conflict.clone());
-            let started = tokio::time::Instant::now();
-            loop {
-                tokio::time::sleep(STEP).await;
-                match registrations(sent(&mut rx)) {
-                    0 => assert!(started.elapsed() < Duration::from_secs(2), "no retry"),
-                    1 => break,
-                    n => panic!("{n} registrations for one conflict"),
-                }
-            }
-            delays.push(started.elapsed());
-        }
-        let (fewest, most) = (*delays.iter().min().unwrap(), *delays.iter().max().unwrap());
-        assert!(fewest >= Duration::from_millis(800), "{delays:?}");
-        assert!(most <= Duration::from_millis(1_200) + STEP, "{delays:?}");
-        assert!(
-            fewest < Duration::from_secs(1) && most > Duration::from_secs(1),
-            "jittered both ways: {delays:?}"
-        );
-
-        // unregistered while it waits: no retry
-        feed(&iii, conflict);
-        function.unregister();
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        assert_eq!(registrations(sent(&mut rx)), 0);
     }
 
     #[tokio::test]
@@ -3395,7 +3291,7 @@ mod tests {
         async fn per_change(n: usize) -> f64 {
             let (iii, mut rx) = client();
             v2_hello(&iii);
-            iii.on_observer_match_for(
+            iii.on_observation_match_for(
                 "keyed::f",
                 crate::Match::keys(
                     |obs| obs.args_value()["key"].as_str().into(),
@@ -3545,5 +3441,230 @@ mod tests {
         );
         until_compiled(&iii, "needs::f", &["reads-too"]).await;
         assert_eq!(kept(&iii), (false, false));
+    }
+
+    mod native_hooks {
+        use std::{future::Future, panic::AssertUnwindSafe};
+
+        use super::*;
+        use crate::hooks::{AddedHook, DeliverHook, ErasedAddedHook, RemovedHook};
+
+        #[derive(Clone, Default)]
+        struct Native {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl AddedHook for Native {
+            async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+                let events = &self.events;
+                let id = obs.id();
+                tokio::task::yield_now().await;
+                events.lock().unwrap().push(format!("added {id}"));
+                Ok(())
+            }
+        }
+
+        impl RemovedHook for Native {
+            async fn on_removed(&self, obs: Observer) {
+                let events = &self.events;
+                let id = obs.id();
+                tokio::task::yield_now().await;
+                events.lock().unwrap().push(format!("removed {id}"));
+            }
+        }
+
+        impl DeliverHook for Native {
+            async fn on_deliver(
+                &self,
+                call: Call,
+                observers: Vec<Observer>,
+            ) -> Result<Value, Error> {
+                let events = &self.events;
+                let input = &call.input;
+                let id = observers[0].id();
+                tokio::task::yield_now().await;
+                events.lock().unwrap().push(format!("delivered {id}"));
+                Ok(input.clone())
+            }
+        }
+
+        #[test]
+        fn native_and_erased_futures_are_send() {
+            fn send(_: impl Send) {}
+            fn check<H: AddedHook + RemovedHook + DeliverHook>(hook: &H, obs: Observer) {
+                send(hook.on_added(obs.clone()));
+                send(hook.on_removed(obs.clone()));
+                send(hook.on_deliver(Call::default(), vec![obs.clone()]));
+                send((hook as &dyn ErasedAddedHook).added(obs.clone()));
+                send((hook as &dyn ErasedRemovedHook).removed(obs.clone()));
+                send((hook as &dyn ErasedDeliverHook).deliver(Call::default(), vec![obs]));
+            }
+            let _ = check::<Native>;
+        }
+
+        async fn observer() -> Observer {
+            let (iii, mut rx) = client();
+            let function = iii.register_function("h::f", echo());
+            feed(&iii, added(1, "native"));
+            tokio::time::timeout(Duration::from_secs(5), next_ack(&mut rx))
+                .await
+                .expect("observer was not accepted");
+            function.observers().remove(0)
+        }
+
+        #[tokio::test]
+        async fn stored_native_hooks_borrow_self_and_inputs_across_await() {
+            let (iii, _rx) = client();
+            let native = Native::default();
+            iii.on_observer_added(native.clone())
+                .on_observer_removed(native.clone())
+                .on_observation_deliver_for("h::f", native.clone());
+            let obs = observer().await;
+            let slot = iii.hooks().added("h::f")[0].clone().unwrap();
+            slot.hook.added(obs.clone()).await.unwrap();
+            let removed = iii.hooks().removed("h::f")[1].clone().unwrap();
+            removed.removed(obs.clone()).await;
+            let deliver = iii.hooks().lock().deliver("h::f").unwrap();
+            let call = Call {
+                input: json!(42),
+                ..Call::default()
+            };
+            assert_eq!(deliver.deliver(call, vec![obs]).await.unwrap(), json!(42));
+            assert_eq!(
+                *native.events.lock().unwrap(),
+                ["added native", "removed native", "delivered native"]
+            );
+        }
+
+        struct Eager;
+
+        impl AddedHook for Eager {
+            fn on_added(
+                &self,
+                obs: Observer,
+            ) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_ {
+                assert_ne!(obs.id(), "panics", "add construction panicked");
+                std::future::ready(Ok(()))
+            }
+        }
+
+        impl RemovedHook for Eager {
+            fn on_removed(&self, _obs: Observer) -> impl Future<Output = ()> + Send + '_ {
+                panic!("remove construction panicked");
+                #[allow(unreachable_code)]
+                std::future::ready(())
+            }
+        }
+
+        impl DeliverHook for Eager {
+            fn on_deliver(
+                &self,
+                _call: Call,
+                _observers: Vec<Observer>,
+            ) -> impl Future<Output = Result<Value, Error>> + Send + '_ {
+                panic!("deliver construction panicked");
+                #[allow(unreachable_code)]
+                std::future::ready(Ok(Value::Null))
+            }
+        }
+
+        #[tokio::test]
+        async fn eager_add_panic_is_rejected_and_the_next_observer_is_accepted() {
+            let (iii, mut rx) = client();
+            iii.on_observer_added_for("h::f", Eager);
+            iii.register_function("h::f", echo());
+            feed(&iii, added(1, "panics"));
+            let ack = tokio::time::timeout(Duration::from_secs(5), next_ack(&mut rx))
+                .await
+                .unwrap();
+            assert_eq!(ack["error"]["code"], "OBSERVE_REJECTED");
+            assert!(
+                ack["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("add construction panicked")
+            );
+            feed(&iii, added(2, "next"));
+            let ack = tokio::time::timeout(Duration::from_secs(5), next_ack(&mut rx))
+                .await
+                .unwrap();
+            assert_eq!(ack["id"], "next");
+            assert!(ack.get("error").is_none());
+        }
+
+        #[tokio::test]
+        async fn erased_remove_and_deliver_defer_eager_panics_until_polled() {
+            let obs = observer().await;
+            let removed: &dyn ErasedRemovedHook = &Eager;
+            let future = removed.removed(obs.clone());
+            assert!(AssertUnwindSafe(future).catch_unwind().await.is_err());
+            let deliver: &dyn ErasedDeliverHook = &Eager;
+            let future = deliver.deliver(Call::default(), vec![obs]);
+            assert!(AssertUnwindSafe(future).catch_unwind().await.is_err());
+        }
+
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        struct Stalls(Arc<AtomicBool>);
+
+        impl AddedHook for Stalls {
+            async fn on_added(&self, _obs: Observer) -> Result<(), ObserveRejection> {
+                let _guard = DropFlag(self.0.clone());
+                std::future::pending().await
+            }
+        }
+
+        impl RemovedHook for Stalls {
+            async fn on_removed(&self, _obs: Observer) {
+                let _guard = DropFlag(self.0.clone());
+                std::future::pending().await
+            }
+        }
+
+        impl DeliverHook for Stalls {
+            async fn on_deliver(
+                &self,
+                _call: Call,
+                _observers: Vec<Observer>,
+            ) -> Result<Value, Error> {
+                let _guard = DropFlag(self.0.clone());
+                std::future::pending().await
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn cancelling_erased_futures_drops_each_native_future() {
+            let obs = observer().await;
+            let dropped = Arc::new(AtomicBool::new(false));
+            let hook = Stalls(dropped.clone());
+            let budget = Duration::from_millis(1);
+            assert!(
+                tokio::time::timeout(budget, ErasedAddedHook::added(&hook, obs.clone()))
+                    .await
+                    .is_err()
+            );
+            assert!(dropped.swap(false, Ordering::SeqCst));
+            assert!(
+                tokio::time::timeout(budget, ErasedRemovedHook::removed(&hook, obs.clone()))
+                    .await
+                    .is_err()
+            );
+            assert!(dropped.swap(false, Ordering::SeqCst));
+            assert!(
+                tokio::time::timeout(
+                    budget,
+                    ErasedDeliverHook::deliver(&hook, Call::default(), vec![obs])
+                )
+                .await
+                .is_err()
+            );
+            assert!(dropped.load(Ordering::SeqCst));
+        }
     }
 }

@@ -20,13 +20,21 @@ describe('Package Exports', () => {
     for (const hook of [
       'onObserverAdded',
       'onObserverRemoved',
-      'onObserverMatch',
-      'onObserverDeliver',
+      'onObservationMatch',
+      'onObservationDeliver',
       'observers',
       'isObserved',
     ]) {
       expect(typeof (iii as unknown as Record<string, unknown>)[hook]).toBe('function')
     }
+    const legacy = iii as unknown as Record<string, (arg: unknown) => void>
+    expect(() => legacy.registerTrigger({ type: 'cron' })).toThrow(
+      'registerTrigger was removed in iii 0.26.0: bind functions with iii.observe(source, target)',
+    )
+    expect(() => legacy.registerTriggerType({ id: 'timer' })).toThrow(
+      'registerTriggerType was removed in iii 0.26.0: a trigger type is now a function',
+    )
+    expect(() => legacy.unregisterTriggerType({ id: 'timer' })).toThrow('functionRef.unregister()')
     void iii.shutdown()
   })
 

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from importlib.metadata import version
-from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, overload
+from typing import Any, Awaitable, Callable, Coroutine, NoReturn, TypeVar, cast, overload
 
 import websockets
 from iii_helpers.http import HttpInvocationConfig
@@ -210,7 +210,7 @@ def _handler_error_body(error: BaseException) -> dict[str, Any]:
 
 
 def _answer_error_body(error: BaseException) -> dict[str, Any]:
-    """The error a call answers with when its ``on_observer_deliver`` raised:
+    """The error a call answers with when its ``on_observation_deliver`` raised:
     an :class:`ObserveRejection` or :class:`InvocationError` keeps its code,
     anything else is ``invocation_failed``."""
     if isinstance(error, ObserveRejection):
@@ -506,6 +506,11 @@ class _ObserveHost:
         return self._client._delivers_v2()
 
 
+# The upgrade guide the removed 0.25 trigger APIs point to.
+_UPGRADE_GUIDE = "https://iii.dev/docs/upgrading/from-0-25-x"
+_TRIGGER_TYPE_SECTION = "#move-a-trigger-type-to-an-observable-function"
+
+
 class III:
     """WebSocket client for communication with the III Engine.
 
@@ -656,9 +661,6 @@ class III:
         self._hook_id_check_delay_s = 1.0
         self._hook_id_check: asyncio.TimerHandle | None = None
         self._unsupported_warned: set[str] = set()
-        # standby: functions waiting for their id to be free, and the retry period.
-        self._standing_by: set[str] = set()
-        self._standby_retry_s = 1.0
         # Tasks nobody awaits (local `void` calls, report frames): kept alive here.
         self._background: set[asyncio.Future[Any]] = set()
         # Bytes of frames handed to the socket and not written yet, and their writes.
@@ -1185,9 +1187,6 @@ class III:
                 # function stays unregistered.
                 log.debug("functionregistered for a withdrawn registration of %r ignored", registered.id)
                 return
-            if registered.id in self._standing_by:
-                self._standing_by.discard(registered.id)
-                log.info("Function %r is hosted by this worker now (standby)", registered.id)
             if state is not None:
                 state.on_function_registered(
                     registered.namespace,
@@ -1238,8 +1237,7 @@ class III:
         * ``FUNCTION_NAMESPACE_CONFLICT`` -- another live worker already exports
           this one function id. Only that registration is refused; the engine
           keeps the connection open and this worker keeps serving everything
-          else. Non-fatal: log and continue. A function registered with
-          ``standby=True`` retries every second (±20 %) until the id is free.
+          else. Non-fatal: log and continue.
         * ``INVALID_ARGS_FORMAT``, ``UNSUPPORTED`` -- the engine refused one
           function's registration (an ``args_format`` that is not a JSON
           Schema, an option it does not support). Non-fatal, like the above.
@@ -1252,22 +1250,10 @@ class III:
 
         if code in _FUNCTION_REJECTIONS and rejected.function_id:
             function_id = rejected.function_id
-            fn = self._functions.get(function_id)
             # The engine refused it: no local dispatch, no observers for it here.
             state = self._observe_state(function_id)
             if state is not None:
                 state.on_registration_rejected(self._connection_epoch)
-            if code == "FUNCTION_NAMESPACE_CONFLICT" and fn is not None and fn.standby:
-                if function_id not in self._standing_by:
-                    self._standing_by.add(function_id)
-                    log.info(
-                        "Function %r is hosted by worker %r; standing by to host it when that worker leaves",
-                        function_id,
-                        rejected.owner_worker_id,
-                    )
-                delay = self._standby_retry_s * random.uniform(0.8, 1.2)
-                self._loop.call_later(delay, self._retry_standby, fn, self._connection_epoch)
-                return
             if code == "FUNCTION_NAMESPACE_CONFLICT":
                 log.warning(
                     "Function registration rejected (%s): namespace=%r "
@@ -1429,7 +1415,7 @@ class III:
 
     def _needs_v2(self, function_id: str, data: RemoteFunctionData) -> bool:
         """``args_format``, ``private``, ``observable=False``, an
-        ``on_observer_match`` or an ``on_observer_deliver``: the function needs
+        ``on_observation_match`` or an ``on_observation_deliver``: the function needs
         an engine with ``observe.v2`` (decision 18)."""
         return data.needs_v2 or function_id in self._match_hooks or function_id in self._deliver_hooks
 
@@ -1460,28 +1446,19 @@ class III:
         if function_id not in self._unsupported_warned:
             self._unsupported_warned.add(function_id)
             log.error(
-                "Function %r needs observe.v2 (args_format, private, observable=False, on_observer_match or "
-                "on_observer_deliver), "
+                "Function %r needs observe.v2 (args_format, private, observable=False, on_observation_match or "
+                "on_observation_deliver), "
                 "which the engine does not support (UNSUPPORTED): it stays unregistered. Upgrade the engine to "
                 "0.26 or later.",
                 function_id,
             )
         if state.sent_epoch == epoch:
-            # Registered as a plain function before it set on_observer_match or on_observer_deliver.
+            # Registered as a plain function before it set on_observation_match or on_observation_deliver.
             self._send_frame(self._prepare_json(UnregisterFunctionMessage(id=function_id)))
         if state.released_epoch != epoch:
             # Unregistered on this connection: no local dispatch, no observers,
             # also when an earlier engine had registered it.
             state.on_registration_rejected(epoch)
-
-    def _retry_standby(self, data: RemoteFunctionData, epoch: int) -> None:
-        """SDK loop: a standby registration again, unless the function was
-        unregistered or the connection changed (its replay registers it)."""
-        function_id = data.message.id
-        if self._functions.get(function_id) is not data or epoch != self._connection_epoch:
-            return
-        log.debug("Retrying the standby registration of %r", function_id)
-        self._sync_registration(function_id)
 
     def _on_observe_result(self, observer_id: str, wire_state: str, error: dict[str, Any] | None) -> None:
         """SDK loop: an ``observeresult`` answers the oldest ``observe`` of the
@@ -1672,7 +1649,7 @@ class III:
 
     def _worker_name(self) -> str:
         # III_WORKER_NAME carries the orchestrator-assigned name (set by
-        # iii-worker for engine-managed workers). The engine matches live
+        # iii compose for the workers it starts). The engine matches live
         # registrations by name, so that identity must win over a name
         # embedded in worker code.
         return os.environ.get("III_WORKER_NAME") or self._options.worker_name or f"{platform.node()}:{os.getpid()}"
@@ -2084,7 +2061,7 @@ class III:
             failure = original_error(cast(BaseException, te.__cause__))
             own = delivery is not None and failure is delivery.handler_error
             if not own:
-                log.error("Error in on_observer_deliver of %s", path, exc_info=failure)
+                log.error("Error in on_observation_deliver of %s", path, exc_info=failure)
             answer = InvocationResultMessage(
                 invocation_id=invocation_id,
                 function_id=path,
@@ -2191,7 +2168,6 @@ class III:
         args_format: Any = None,
         private: bool = False,
         observable: bool = True,
-        standby: bool = False,
         local_dispatch: bool = True,
     ) -> FunctionRef:
         """Register a function with the engine.
@@ -2214,7 +2190,7 @@ class III:
         An event source's handler returns the event it is called with. What
         this worker does when the function is observed is set with the hook
         methods (``on_observer_added``, ``on_observer_removed``,
-        ``on_observer_match``, ``on_observer_deliver``) on the client by id or
+        ``on_observation_match``, ``on_observation_deliver``) on the client by id or
         on the returned ``FunctionRef``. Set ``on_observer_added`` and
         ``on_observer_removed`` by id before registering so they run for every
         observer: the engine may announce an observer before a hook set on the
@@ -2254,9 +2230,6 @@ class III:
             observable: ``False``: nobody may observe the function
                 (``NOT_OBSERVABLE``), for functions whose payloads carry
                 credentials.
-            standby: When another worker already hosts the id
-                (``FUNCTION_NAMESPACE_CONFLICT``), retry every second (±20 %)
-                and take the function over when that worker leaves.
             local_dispatch: Calls this worker makes to its own function run
                 in-process once the engine confirmed it (default ``True``).
                 Like a remote invocation, each local call to a sync handler
@@ -2267,8 +2240,8 @@ class III:
                 engine-side effects).
 
         A function that declares ``args_format``, ``private`` or
-        ``observable=False``, or has an ``on_observer_match`` or an
-        ``on_observer_deliver``, needs an engine with ``observe.v2``: against
+        ``observable=False``, or has an ``on_observation_match`` or an
+        ``on_observation_deliver``, needs an engine with ``observe.v2``: against
         an older engine it stays unregistered and ``UNSUPPORTED`` is logged
         once.
 
@@ -2328,8 +2301,8 @@ class III:
             response_format=response_format,
         )
         # Only what the engine reads travels: the defaults (`private: false`,
-        # `observable: true`) are left out, and hooks, `standby` and
-        # `local_dispatch` stay in this SDK.
+        # `observable: true`) are left out, and hooks and `local_dispatch`
+        # stay in this SDK.
         msg = RegisterFunctionMessage(
             id=func.id,
             invocation=handler_or_invocation if isinstance(handler_or_invocation, HttpInvocationConfig) else None,
@@ -2350,7 +2323,7 @@ class III:
             observe_state = FunctionObservers(
                 function_id, local_dispatch, False, self._observe_host, private=private
             )
-            data = RemoteFunctionData(message=msg, observe=observe_state, needs_v2=needs_v2, standby=standby)
+            data = RemoteFunctionData(message=msg, observe=observe_state, needs_v2=needs_v2)
         else:
             if not callable(handler_or_invocation):
                 actual_type = type(handler_or_invocation).__name__
@@ -2391,7 +2364,6 @@ class III:
                 observe=observe_state,
                 call_sync=None if is_async else _call_handler,
                 needs_v2=needs_v2,
-                standby=standby,
             )
         # Stored before it is sent: the engine's `functionregistered` must find it.
         self._functions[func.id] = data
@@ -2409,7 +2381,6 @@ class III:
         def unregister() -> None:
             if self._functions.get(func_id) is data:
                 del self._functions[func_id]
-            self._standing_by.discard(func_id)
             self._send_if_connected(UnregisterFunctionMessage(id=func_id))
             observe_state.dispose()
 
@@ -2517,23 +2488,23 @@ class III:
         return function_id_or_hook
 
     @overload
-    def on_observer_match(self, function_id: str) -> Callable[[MatchT], MatchT]: ...
+    def on_observation_match(self, function_id: str) -> Callable[[MatchT], MatchT]: ...
     @overload
-    def on_observer_match(self, function_id: str, hook: MatchT) -> MatchT: ...
+    def on_observation_match(self, function_id: str, hook: MatchT) -> MatchT: ...
     @overload
-    def on_observer_match(self, function_id: str, hook: MatchKeys) -> MatchKeys: ...
+    def on_observation_match(self, function_id: str, hook: MatchKeys) -> MatchKeys: ...
     @overload
-    def on_observer_match(self, function_id: str, hook: None) -> None: ...
+    def on_observation_match(self, function_id: str, hook: None) -> None: ...
     @overload
-    def on_observer_match(
+    def on_observation_match(
         self, function_id: str, *, observer: Callable[[Observer], Key], call: Callable[[Call[Any, Any]], Key]
     ) -> MatchKeys: ...
-    def on_observer_match(
+    def on_observation_match(
         self, function_id: str, hook: Any = _MISSING, *, observer: Any = None, call: Any = None
     ) -> Any:
         """Sets which observers want each call of one function. By default
         every observer wants every call; iii's delivery then applies their
-        ``on`` and filters, and an ``on_observer_deliver`` receives only the
+        ``on`` and filters, and an ``on_observation_deliver`` receives only the
         observers that matched.
 
         As a predicate, ``hook(obs, call) -> bool`` is asked once per active
@@ -2557,7 +2528,7 @@ class III:
         under ``f"for_observer:{obs.id}"`` and give such a call that one key.
 
         Works as a decorator for a predicate
-        (``@iii.on_observer_match("fn::id")``) and returns the hook (a
+        (``@iii.on_observation_match("fn::id")``) and returns the hook (a
         :class:`MatchKeys` for the keys form); ``None`` removes it. A match
         hook set while the function has active observers is applied to them
         on the SDK loop, which rebuilds the index from them. Predicates and
@@ -2566,22 +2537,22 @@ class III:
         it stays unregistered, and ``UNSUPPORTED`` is logged once.
 
         Examples:
-            >>> iii.on_observer_match(
+            >>> iii.on_observation_match(
             ...     "cron::on-tick", lambda obs, call: obs.args["expression"] == call.input["expression"]
             ... )
-            >>> iii.on_observer_match(
+            >>> iii.on_observation_match(
             ...     "database::on-row-changed",
             ...     observer=lambda obs: f"{obs.args['table']}|{obs.args['op']}",
             ...     call=lambda call: f"{call.input['table']}|{call.input['op']}",
             ... )
         """
         if not isinstance(function_id, str):
-            raise TypeError("on_observer_match takes a function id, and a predicate or observer= and call=")
+            raise TypeError("on_observation_match takes a function id, and a predicate or observer= and call=")
         if observer is not None or call is not None:
             if hook is not _MISSING:
-                raise TypeError("on_observer_match takes a predicate or observer= and call= key functions, not both")
+                raise TypeError("on_observation_match takes a predicate or observer= and call= key functions, not both")
             if observer is None or call is None:
-                raise TypeError("on_observer_match: keys take both observer= and call=")
+                raise TypeError("on_observation_match: keys take both observer= and call=")
             keys = MatchKeys(observer=observer, call=call)
             self._set_match_hook(function_id, keys)
             return keys
@@ -2596,20 +2567,20 @@ class III:
         return hook
 
     @overload
-    def on_observer_deliver(self, function_id: str) -> Callable[[DeliverT], DeliverT]: ...
+    def on_observation_deliver(self, function_id: str) -> Callable[[DeliverT], DeliverT]: ...
     @overload
-    def on_observer_deliver(self, function_id: str, hook: DeliverT) -> DeliverT: ...
+    def on_observation_deliver(self, function_id: str, hook: DeliverT) -> DeliverT: ...
     @overload
-    def on_observer_deliver(self, function_id: str, hook: None) -> None: ...
-    def on_observer_deliver(self, function_id: str, hook: Any = _MISSING) -> Any:
+    def on_observation_deliver(self, function_id: str, hook: None) -> None: ...
+    def on_observation_deliver(self, function_id: str, hook: Any = _MISSING) -> Any:
         """Delivers each call of one function itself: ``hook(call,
         observers)`` receives the :class:`Call` and the observers that matched
-        it (``on_observer_match``, or all of them), as a snapshot taken when
+        it (``on_observation_match``, or all of them), as a snapshot taken when
         the call started, and what it returns (or raises) is what the caller
         gets back. iii delivers nothing for that function: the hook calls
         through observers (``iii.call({"observer": obs, ...})``) and applies
         their ``on`` and filters with ``obs.matches(call)``. Works as a
-        decorator (``@iii.on_observer_deliver("fn::id")``) and returns the
+        decorator (``@iii.on_observation_deliver("fn::id")``) and returns the
         hook; ``None`` restores iii's delivery.
 
         The hook runs inside the function's invocation, so the calls it makes
@@ -2618,7 +2589,7 @@ class III:
         ``observe.v2``.
 
         Examples:
-            >>> @iii.on_observer_deliver("http::on-request")
+            >>> @iii.on_observation_deliver("http::on-request")
             ... async def route(call, observers):
             ...     obs = routes.match(call.input)
             ...     if obs is None:
@@ -2628,7 +2599,7 @@ class III:
             ...     return await iii.call_async({"observer": obs, "payload": call.input})
         """
         if not isinstance(function_id, str):
-            raise TypeError("on_observer_deliver takes a function id, and a hook")
+            raise TypeError("on_observation_deliver takes a function id, and a hook")
         if hook is _MISSING:
 
             def decorator(fn: DeliverT) -> DeliverT:
@@ -2679,13 +2650,15 @@ class III:
                 functions = (hook,)
             else:
                 raise TypeError(
-                    f"on_observer_match: the hook must be a predicate, MatchKeys or None, got {type(hook).__name__}"
+                    f"on_observation_match: the hook must be a predicate, MatchKeys or None, got {type(hook).__name__}"
                 )
             for fn in functions:
                 if not callable(fn):
-                    raise TypeError(f"on_observer_match: a key function must be callable, got {type(fn).__name__}")
+                    raise TypeError(f"on_observation_match: a key function must be callable, got {type(fn).__name__}")
                 if is_async_callable(fn):
-                    raise TypeError("on_observer_match: predicates and key functions are sync; they run on every call")
+                    raise TypeError(
+                        "on_observation_match: predicates and key functions are sync; they run on every call"
+                    )
             self._match_hooks[function_id] = hook
             self._hook_set_by_id()
         state = self._observe_state(function_id)
@@ -2696,7 +2669,7 @@ class III:
 
     def _set_deliver_hook(self, function_id: str, hook: DeliverHook | None) -> None:
         if hook is not None and not callable(hook):
-            raise TypeError(f"on_observer_deliver: the hook must be callable, got {type(hook).__name__}")
+            raise TypeError(f"on_observation_deliver: the hook must be callable, got {type(hook).__name__}")
         if hook is None:
             self._deliver_hooks.pop(function_id, None)
         else:
@@ -2723,7 +2696,7 @@ class III:
         Without ``call``: whether the function has any active observer (one
         load). With ``call`` (a :class:`Call` or a partial one,
         ``{"input": ...}``) on a function matched by keys
-        (``on_observer_match``): whether an observer is filed under one of
+        (``on_observation_match``): whether an observer is filed under one of
         the call's keys. On any other function the call is ignored.
 
         Examples:
@@ -2771,7 +2744,7 @@ class III:
         raises ``ValueError`` before anything is sent.
         The payload goes as given: filters are applied where the worker
         chooses observers: iii's delivery, or ``obs.matches(call)`` in an
-        ``on_observer_deliver``. A call through an observer belongs in that
+        ``on_observation_deliver``. A call through an observer belongs in that
         deliver hook; to send one observer something outside delivery (its
         initial state), call the function with ``"metadata": {"for_observer":
         obs.id}`` (see :meth:`Observer.accepted`).
@@ -2864,6 +2837,32 @@ class III:
             Use :meth:`call_async`.
         """
         return await self.call_async(request)
+
+    def register_trigger(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        """Removed in 0.26.0: raises an error that points to :meth:`observe`."""
+        raise RuntimeError(
+            "register_trigger was removed in iii 0.26.0: bind functions with iii.observe(source, target). "
+            'register_trigger({"type": "cron", "function_id": fn, "config": config}) becomes '
+            'iii.observe({"function_id": "cron::on-tick", "args": config}, fn). '
+            f"Every trigger type's function is in the migration guide: {_UPGRADE_GUIDE}"
+        )
+
+    def register_trigger_type(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        """Removed in 0.26.0: raises an error that points to :meth:`register_function` and the observer hooks."""
+        raise RuntimeError(
+            "register_trigger_type was removed in iii 0.26.0: a trigger type is now a function that consumers observe. "
+            'Register it with register_function("<worker>::on-<event>", lambda event: event, '
+            "args_format=..., private=True), move the TriggerHandler to on_observer_added and on_observer_removed, "
+            f"and call the function once per event. Migration guide: {_UPGRADE_GUIDE}{_TRIGGER_TYPE_SECTION}"
+        )
+
+    def unregister_trigger_type(self, *_args: Any, **_kwargs: Any) -> NoReturn:
+        """Removed in 0.26.0: raises an error that points to ``FunctionRef.unregister``."""
+        raise RuntimeError(
+            "unregister_trigger_type was removed in iii 0.26.0: a trigger type is now a function. "
+            "Unregister it with the FunctionRef that register_function returns: function_ref.unregister(). "
+            f"Migration guide: {_UPGRADE_GUIDE}{_TRIGGER_TYPE_SECTION}"
+        )
 
     def _prepare_call(self, request: "dict[str, Any] | CallRequest") -> _Request:
         """Normalizes a call request and picks the path (local or routed)."""
@@ -3321,7 +3320,7 @@ class III:
         (``input``, ``output`` or ``error``, ``caller``, ...);
         ``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
         value instead. The worker that hosts the source can decide otherwise
-        in its ``on_observer_deliver``.
+        in its ``on_observation_deliver``.
 
         Returns synchronously, also before the connection is up; the observer
         is replayed with the same id on every reconnect. The handle holds its
