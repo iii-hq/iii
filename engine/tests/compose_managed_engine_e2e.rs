@@ -447,6 +447,65 @@ fn compose_up_starts_logs_and_stops_the_engine_it_owns() {
     TcpListener::bind(("127.0.0.1", port)).expect("managed engine should be stopped");
 }
 
+// Unix only: `dirs` reads HOME there, while Windows ignores it.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(managed_engine_port)]
+fn engine_lifeline_exit_removes_its_markers() {
+    let project = tempfile::tempdir().unwrap();
+    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+    let config = project.path().join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "workers:\n  - name: iii-worker-manager\n    config:\n      host: 127.0.0.1\n      port: {port}\n"
+        ),
+    )
+    .unwrap();
+    let home = project.path().join("home");
+
+    let mut engine = iii_bin()
+        .current_dir(project.path())
+        .env("HOME", &home)
+        .env("III_COMPOSE_ENGINE_LIFELINE_STDIN", "1")
+        .args(["--config", config.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start engine");
+    let marker = home
+        .join(".iii/run")
+        .join(format!("engine-{}-{port}.json", engine.id()));
+    // Not wait_for_port: the listener accepts before the marker is written.
+    if !wait_for_file(&marker, Duration::from_secs(20)) {
+        let _ = engine.kill();
+        let _ = engine.wait();
+        panic!("engine never wrote {}", marker.display());
+    }
+    // One of the engine's own SDK clients (a bridge adapter), and another
+    // process whose pid starts with the engine's.
+    let run = home.join(".iii/run");
+    let own_worker = run.join(format!("worker-{}-1.json", engine.id()));
+    let other_worker = run.join(format!("worker-{}9-1.json", engine.id()));
+    std::fs::write(&own_worker, "{}").unwrap();
+    std::fs::write(&other_worker, "{}").unwrap();
+
+    // What the engine sees when compose dies.
+    drop(engine.stdin.take());
+    wait_for_exit(&mut engine, Duration::from_secs(20));
+    for gone in [&marker, &own_worker] {
+        assert!(
+            !gone.exists(),
+            "{} outlived the lifeline exit",
+            gone.display()
+        );
+    }
+    assert!(other_worker.exists(), "removed another process's marker");
+}
+
 #[test]
 #[serial_test::serial(managed_engine_port)]
 fn compose_without_engine_section_uses_and_preserves_an_external_engine() {

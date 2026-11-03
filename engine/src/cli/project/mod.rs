@@ -494,9 +494,13 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
         let _ = child.wait().await;
     }
 
-    // Aborted when compose exits, so the poll inside needs no deadline of its
+    // Stopped when compose exits, so the poll inside needs no deadline of its
     // own: the tour's life is the deadline.
-    let announcer = tokio::spawn(announce_console_when_ready(dir.join("worker-compose.yaml")));
+    let (stop_announcer, announcer_stopped) = tokio::sync::oneshot::channel();
+    let announcer = tokio::spawn(announce_console_when_ready(
+        dir.join("worker-compose.yaml"),
+        announcer_stopped,
+    ));
     CHILD_OWNS_TERMINAL.store(true, Ordering::Relaxed);
 
     let code = match tokio::process::Command::new(exe)
@@ -510,7 +514,8 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     };
 
     CHILD_OWNS_TERMINAL.store(false, Ordering::Relaxed);
-    announcer.abort();
+    let _ = stop_announcer.send(());
+    let _ = announcer.await;
     // The key reader may still be parked on stdin in cbreak mode; the shell
     // must not get its terminal back with ECHO off.
     restore_terminal_mode();
@@ -602,7 +607,10 @@ const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000
 /// repaints it, so a banner printed before then is overwritten and the user
 /// never sees it. A ready console has not necessarily bound its listener yet,
 /// so the port is checked too.
-async fn announce_console_when_ready(compose_path: PathBuf) {
+async fn announce_console_when_ready(
+    compose_path: PathBuf,
+    stopped: tokio::sync::oneshot::Receiver<()>,
+) {
     let Ok(file) = iii_compose::config::ComposeFile::load(&compose_path) else {
         return;
     };
@@ -617,41 +625,50 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     let client =
         iii_compose::engine::EngineClient::connect(&engine.url, "iii-cli:learn-iii", &namespace);
 
-    wait_until_settled(&client, &file.path, &namespace).await;
+    let announce = async {
+        wait_until_settled(&client, &file.path, &namespace).await;
 
-    let port = client
-        .fetch_config(CONSOLE_CONFIG)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|config| {
-            config
-                .get("http_port")
-                .and_then(|port| port.as_u64())
-                .and_then(|port| u16::try_from(port).ok())
-        })
-        .unwrap_or(DEFAULT_CONSOLE_PORT);
+        let port = client
+            .fetch_config(CONSOLE_CONFIG)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|config| {
+                config
+                    .get("http_port")
+                    .and_then(|port| port.as_u64())
+                    .and_then(|port| u16::try_from(port).ok())
+            })
+            .unwrap_or(DEFAULT_CONSOLE_PORT);
 
-    while tokio::net::TcpStream::connect(("127.0.0.1", port))
-        .await
-        .is_err()
-    {
-        tokio::time::sleep(READY_POLL_INTERVAL).await;
+        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(READY_POLL_INTERVAL).await;
+        }
+
+        let url = format!("http://127.0.0.1:{port}");
+        eprintln!();
+        eprintln!(
+            "  {} Open your browser to continue: {}",
+            "▶".green(),
+            url.bold()
+        );
+        eprintln!("    Press {} to open it here.", "b".bold());
+        eprintln!();
+
+        // A blocking read on its own thread, not a blocking task: the process
+        // must be free to exit with compose while this is still parked on stdin.
+        std::thread::spawn(move || open_console_on_request(&url));
+    };
+    tokio::select! {
+        () = announce => {}
+        _ = stopped => {}
     }
-
-    let url = format!("http://127.0.0.1:{port}");
-    eprintln!();
-    eprintln!(
-        "  {} Open your browser to continue: {}",
-        "▶".green(),
-        url.bold()
-    );
-    eprintln!("    Press {} to open it here.", "b".bold());
-    eprintln!();
-
-    // A blocking read on its own thread, not a blocking task: the process must
-    // be free to exit with compose while this is still parked on stdin.
-    std::thread::spawn(move || open_console_on_request(&url));
+    // `iii project` exits right after compose: a client it only drops leaves
+    // its `iii ps` marker behind.
+    client.shutdown().await;
 }
 
 /// Waits for the project to stop moving, then for compose's startup renderer
