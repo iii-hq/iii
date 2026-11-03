@@ -105,7 +105,9 @@ A queue delivers each message to one consumer. When several unrelated parts of t
 react to the same event, publish it on a **topic** instead. The `queue` worker serves topics too:
 `iii::durable::publish` sends a message to a topic, and each message on a topic is a call of
 `queue::on-message`. A function subscribes by observing `queue::on-message` with the topic in its
-`args`, and every subscriber receives its own copy of each message.
+`args`, and every subscriber receives its own copy of each message. Give each subscriber a stable
+`id` in its observe options: its copy waits in a queue named after the observer's id, so a
+restarted worker that observes under the same id picks up what arrived while it was down.
 
 <Info>
   Topic messages are durable: each subscriber's copy is kept until it is handled, retried when the
@@ -248,6 +250,7 @@ worker.registerFunction("link::on_link_updated", async (data: { code: string; ur
 worker.observe(
   { function_id: "queue::on-message", args: { topic: "link.updated" } },
   "link::on_link_updated",
+  { id: "link-cache-refresher" },
 );
 ```
 
@@ -362,6 +365,7 @@ worker.register_function("analytics::on_link_created", on_link_created)
 worker.observe(
     {"function_id": "queue::on-message", "args": {"topic": "link.created"}},
     "analytics::on_link_created",
+    {"id": "analytics-link-created"},
 )
 
 print("Analytics worker started")

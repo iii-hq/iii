@@ -407,14 +407,14 @@ Make redirects fast and add analytics.
   { code, url, created_at }, where created_at is the same timestamp it writes to the links row.
 - Add a second SQLite database named "analytics" for the analytics worker.
 - Create a Python analytics worker that subscribes to link.created by observing queue::on-message
-  with args { topic: "link.created" }, and keeps one row per link in a link_events table (code TEXT
+  with args { topic: "link.created" } under a stable observer id, and keeps one row per link in a link_events table (code TEXT
   PRIMARY KEY, day TEXT NOT NULL) in the analytics database. day is the UTC date (YYYY-MM-DD) of the
   event's created_at, not the delivery time. Write the row with a single INSERT ...
   ON CONFLICT(code) DO NOTHING: delivery is at least once, and a redelivered event must not count
   twice. Expose the per-day counts as a daily_link_counts view (SELECT day, COUNT(*) AS count FROM
   link_events GROUP BY day). Add the worker with compose.
 - Add link::update and a PUT /links/:code route, publish link.updated durably, and refresh the cache
-  from a subscriber that observes queue::on-message with args { topic: "link.updated" }.
+  from a subscriber that observes queue::on-message with args { topic: "link.updated" } under a stable observer id.
 
 Add the second database yourself first, then split the rest across two subagents that work on
 separate files at the same time:
