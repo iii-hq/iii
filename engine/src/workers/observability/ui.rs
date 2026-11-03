@@ -6,7 +6,7 @@
 
 //! Built-in Console Injection assets for `iii-observability`.
 //!
-//! The Console hosts `console::ui::asset`, observed with args `{ kind, path }`
+//! The Console hosts `ade::ui::asset`, observed with args `{ kind, path }`
 //! for each asset it injects, and calls through each observer to load it.
 //! The observability worker lives inside the engine rather than in a worker
 //! process, so its observers are the engine's own: one per asset in every
@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// The function the Console hosts for its injected UI assets.
-pub const CONSOLE_ASSET_FUNCTION_ID: &str = "console::ui::asset";
+pub const CONSOLE_ASSET_FUNCTION_ID: &str = "ade::ui::asset";
 pub const CONTENT_FUNCTION_ID: &str = "iii-observability::ui-content";
 pub const PAGE_PATH: &str = "iii-observability/page.js";
 pub const STYLES_PATH: &str = "iii-observability/styles.css";

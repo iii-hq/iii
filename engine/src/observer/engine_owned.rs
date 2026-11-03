@@ -6,7 +6,7 @@
 
 //! Observers the engine creates for its own modules: telemetry's queue topics
 //! (`queue::on-message`), the Console UI assets of `iii-observability`
-//! (`console::ui::asset`).
+//! (`ade::ui::asset`).
 //!
 //! - The engine is the observing party ([`ENGINE_CONNECTION`],
 //!   `worker_name: "iii-engine"`): such an observer never hears

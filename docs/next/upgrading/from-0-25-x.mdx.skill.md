@@ -117,7 +117,7 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `log`                                                      | `observability::on-log`                                            | none                                                          | `input.severity_number`                 |
 | `trace`                                                    | `observability::on-span`                                           | none                                                          |                                         |
 | `configuration`                                            | `configuration::on-updated`                                        | none                                                          | `input.id`, `input.event_type`          |
-| `console:script`, `console:style`, `console:module`        | `console::ui::asset`                                               | `{ kind: "script" \| "style" \| "module", path }`             |                                         |
+| `console:script`, `console:style`, `console:module`        | `ade::ui::asset`                                                   | `{ kind: "script" \| "style" \| "module", path }`             |                                         |
 | `engine::functions-available`, `engine::workers-available` | `engine::on-functions-changed`, `engine::on-workers-changed`       | none                                                          |                                         |
 | `stream`, `stream:join`, `stream:leave`                    | `stream::on-changed`, `stream::on-join`, `stream::on-leave`        | none                                                          | `input.stream_name`, `input.group_id`   |
 | `compose-operation`                                        | `compose::on-operation-progress`                                   | none                                                          | `input.operation_id`, `input.terminal`  |
@@ -128,9 +128,15 @@ other trigger type `T` of a worker `W` becomes a function `W::on-<event>`, liste
 README at [workers.iii.dev](https://workers.iii.dev).
 
 The console's asset types are the exception to that rule. A worker that injects console UI observes
-`console::ui::asset` once per asset, with the asset's `kind` and the trigger's `path` as `args` and
+`ade::ui::asset` once per asset, with the asset's `kind` and the trigger's `path` as `args` and
 its content function as the target. The console calls the target with `{ path }` and serves the
 `{ content, content_type? }` it returns. A later observer of the same path replaces the earlier one.
+
+The console worker is published as `ade`, and its functions use the `ade::` namespace: call
+`ade::status`, `ade::workspace::open` and the rest of what was `console::*` under the new name.
+The old IDs have no aliases, so update allowlists and agent tool lists with them. The
+`iii::console::*` stream topics, the `console` configuration entry and the `console/...` asset
+paths keep their names.
 
 ### Providing a source
 
@@ -378,7 +384,7 @@ observer stays `pending`.
 A trigger handed its target the event itself. When iii delivers a call, an observer's target
 receives the `Observed` envelope (`input`, `output`, `caller`, and so on) unless the observer sets
 `deliver: "input"`, so set it to keep a trigger's handler unchanged. A source that delivers its
-calls itself, such as `http::on-request` or `console::ui::asset`, decides what its targets receive.
+calls itself, such as `http::on-request` or `ade::ui::asset`, decides what its targets receive.
 
 This cron trigger runs `reports::daily-summary` every day at 09:00, with metadata for the target.
 With `deliver: "input"`, the target receives the tick itself:
@@ -564,7 +570,7 @@ iii.observe(
 
 // console:script, console:style: one observer per asset
 iii.observe(
-  { function_id: "console::ui::asset", args: { kind: "script", path: "my-worker/page.js" } },
+  { function_id: "ade::ui::asset", args: { kind: "script", path: "my-worker/page.js" } },
   "my-worker::ui-content",
 );
 
@@ -1649,7 +1655,7 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
 - [ ] Move each `configuration` trigger's `configuration_id` and `event_types` to filters on
       `input.id` and `input.event_type`
 - [ ] Move `console:script`, `console:style`, and `console:module` registrations to observers of
-      `console::ui::asset`
+      `ade::ui::asset`
 - [ ] Turn each `condition_function_id` into `filters`, or move the check into the target
 - [ ] Move your own trigger types to functions with `args_format`, `private: true`, and hooks
 - [ ] Run one instance of each worker that hosts a function, and let the platform restart it: a
