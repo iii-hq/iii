@@ -241,7 +241,7 @@ export const useCases = {
       label: 'iii compose',
       command: 'iii compose --up',
       engine: 'iii 0.24.6',
-      /* Registry names from workers.iii.dev. `harness` pulls in its dependencies, shown indented under it. */
+      /* Registry names from iii.dev/registry. `harness` pulls in its dependencies, shown indented under it. */
       workers: [
         { name: 'http', ms: 142 },
         { name: 'database', ms: 233 },
@@ -309,7 +309,7 @@ export const ownership = {
     { name: 'Self-hosted', where: 'your hardware' },
     { name: 'Cloud', where: 'your cloud' },
   ],
-  /* The app that moves between them: the engine plus registry workers (names from workers.iii.dev). */
+  /* The app that moves between them: the engine plus registry workers (names from iii.dev/registry). */
   app: { engine: 'iii engine', workers: ['http', 'database', 'state', 'harness'] },
   /*
    * Proof that people build on it, in the order the 2026-10-05 sync set: workers first, then contributors,
@@ -318,7 +318,7 @@ export const ownership = {
    * reader can check it themselves.
    */
   stats: [
-    { id: 'workers', label: 'Workers in the registry', source: 'workers.iii.dev', href: 'https://workers.iii.dev/' },
+    { id: 'workers', label: 'Workers in the registry', source: 'iii.dev/registry', href: 'https://iii.dev/registry' },
     {
       id: 'contributors',
       label: 'Contributors',

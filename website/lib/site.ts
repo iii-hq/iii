@@ -4,7 +4,7 @@ export const links = {
   /* Served by this app (app/(site)/manifesto, blog, roadmap, benchmarks, privacy-policy). */
   manifesto: '/manifesto',
   docs: 'https://iii.dev/docs',
-  registry: 'https://workers.iii.dev/',
+  registry: 'https://iii.dev/registry',
   blog: '/blog',
   roadmap: '/roadmap',
   benchmarks: '/benchmarks',

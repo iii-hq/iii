@@ -208,7 +208,7 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
 
 ## Optional
 
-- [Worker registry](https://workers.iii.dev) — published workers
+- [Worker registry](https://iii.dev/registry) — published workers
 
 ## Want to build on iii?
 

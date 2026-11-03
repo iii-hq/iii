@@ -60,7 +60,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <footer class="border-t">
   <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. Workers. Triggers. Functions.</p><p>Pronounced "three eye"</p></div>
   <nav aria-label="Footer">
-    <div><h3>Product</h3><ul><li><a href="https://iii.dev/docs">Docs</a></li><li><a href="/roadmap">Roadmap</a></li><li><a href="https://workers.iii.dev/" target="_blank">Worker registry<span class="sr-only">(opens in a new tab)</span></a></li></ul></div>
+    <div><h3>Product</h3><ul><li><a href="https://iii.dev/docs">Docs</a></li><li><a href="/roadmap">Roadmap</a></li><li><a href="https://iii.dev/registry">Worker registry</a></li></ul></div>
     <div><h3>Community</h3><ul><li><a href="https://github.com/iii-hq/iii">GitHub</a></li></ul></div>
     <div><h3>Ask about iii</h3><ul><li><a href="https://chatgpt.com/?q=x">ChatGPT</a></li></ul></div>
   </nav>
@@ -121,7 +121,7 @@ test("buildHomepageExtractFromHtml renders the final CTA and the footer as links
       [
         "### Footer / links",
         'A next-generation software system. Workers. Triggers. Functions. Pronounced "three eye"',
-        "- Product: [Docs](https://iii.dev/docs), [Roadmap](https://iii.dev/roadmap), [Worker registry](https://workers.iii.dev/)",
+        "- Product: [Docs](https://iii.dev/docs), [Roadmap](https://iii.dev/roadmap), [Worker registry](https://iii.dev/registry)",
         "- Community: [GitHub](https://github.com/iii-hq/iii)",
         "© 2026 Motia LLC",
         "",
