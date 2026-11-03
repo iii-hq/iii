@@ -14,11 +14,11 @@ type: "how-to"
 </Info>
 
 An observer runs one function when another one completes. Every function a worker registers can be
-observed: a plain function, a cron tick, a row change, an HTTP request. What an observer sees is
+observed: a plain function, a cron tick, a row change, an HTTP request. What an observer receives is
 typically the function's return value, unless the worker that hosts the function overrides it. If
 unsure, refer to that worker's documentation.
 
-The worker that hosts a function decides what observing it means with four hooks, in two pairs. Each
+The worker that hosts a function defines what observing it means with four hooks, in two pairs. Each
 one overrides something iii does by default.
 
 The **observer lifecycle** hooks run once per observer, when it starts and stops observing the
@@ -27,7 +27,7 @@ function:
 | Hook                     | What iii does by default                                                  | Override it to                                                                                                                                                                         |
 | ------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `onObserverAdded(obs)`   | accepts the observer: it becomes active and receives the function's calls | set something up from the observer's args before it is accepted: install a database trigger, start a cron job, add an HTTP route, open a queue consumer. Throw to reject the observer. |
-| `onObserverRemoved(obs)` | stops delivering to the observer and forgets it                           | tear down what `onObserverAdded` set up.                                                                                                                                               |
+| `onObserverRemoved(obs)` | stops delivering to the observer and removes it                           | tear down what `onObserverAdded` set up.                                                                                                                                               |
 
 The **observation lifecycle** hooks run per call. An observation is one call of the function
 reaching, or being considered for, one observer:
@@ -123,7 +123,7 @@ worker.observe(
 
 `FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `IsObserved()` in Go) returns true
 when the function has at least 1 active observer. It costs one atomic load, so call it before you
-build an event, and skip the event when nobody observes the function.
+build an event, and skip the event when the function has no observers.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -201,7 +201,7 @@ Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
 observer's filters match. On a function whose observers are
 [matched by keys](#match-observers-to-calls), `isObserved(call)` also answers whether one particular
-call would reach anyone.
+call would reach an observer.
 
 ## Set up and tear down per observer
 
@@ -389,7 +389,7 @@ a mistyped id.
 
 - **Accepted.** An observer is accepted when every `onObserverAdded` that applies to it has
   resolved. The SDK then acknowledges it to the engine, and the observer becomes `active`. So its
-  database trigger or cron job exists before the first call it should see.
+  database trigger or cron job exists before the first call it must receive.
 - **Rejected.** When an `onObserverAdded` throws, the observer is rejected. A thrown
   `ObserveRejection(code, message)` sets the code the consumer's `ready()` fails with; any other
   error is `OBSERVE_REJECTED`. The `onObserverRemoved` of each level whose `onObserverAdded` already
@@ -408,9 +408,9 @@ a mistyped id.
   Under the same worker name, namespace and principal, its observe replaces the `suspended` observer
   (see [Observer states](../using-iii/observers#observer-states)); from any other worker the id
   stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends. The host already ran
-  `onObserverRemoved` for the old observer and hears nothing more about it. It gets the new observer
-  like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a queue
-  subscriber's backlog, serves the new observer.
+  `onObserverRemoved` for the old observer and receives nothing more about it. It gets the new
+  observer like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a
+  queue subscriber's backlog, serves the new observer.
 - **One at a time.** For each function, the SDK runs observer lifecycle hooks one at a time, in the
   order the engine announced the observers. Hooks of different functions run concurrently.
 - **Timeout.** An `onObserverAdded` that runs past 30 seconds (`observers.owner_ack_timeout_ms` in
@@ -470,16 +470,16 @@ iii's delivery:
    [loop guard](../using-iii/observers#loop-guard);
 3. gives the caller the handler's return value, or rethrows its error.
 
-It does not wait for targets. The caller and the observers see the same value. The engine finds the
-observers whose filters hold an `$eq` or `$in` on a value of the call through an index, so a routed
-call costs about one lookup however many observers filter on their own value (see
+It does not wait for targets. The caller and the observers receive the same value. The engine finds
+the observers whose filters hold an `$eq` or `$in` on a value of the call through an index, so a
+routed call costs about one lookup however many observers filter on their own value (see
 [Filters](../reference/filters#many-observers)).
 
 ### Match observers to calls
 
-`onObservationMatch` decides, for each call, which observers get it. A function sets it when its
-observers' args say which calls they want. iii does everything else as usual: each observer's `on`,
-filters, policy and `deliver` still apply.
+`onObservationMatch` selects, for each call, which observers get it. A function sets it when its
+observers' args determine which calls they get. iii does everything else as usual: each observer's
+`on`, filters, policy and `deliver` still apply.
 
 As a predicate, the hook takes one possible observation, the observer and the call, and returns
 whether it happens. Here each observer of `cron::on-tick` names an expression in its args, and gets
@@ -529,12 +529,12 @@ the ticks of that expression:
   </Tab>
 </Tabs>
 
-The SDK asks the predicate once per observation: for every call, once for each active observer,
+The SDK calls the predicate once per observation: for every call, once for each active observer,
 before that observer's `on` and filters. A predicate that throws counts as no match for that
 observer, and the SDK logs it once per function.
 
 Keys suit a function with many observers. One key function gives the keys an observer listens for,
-the other gives the keys a call is, and an observer wants a call when they share a key. The SDK
+the other gives the keys a call is, and an observer matches a call when they share a key. The SDK
 keeps an index from keys to observers, so a call costs one lookup per key. Here each observer of
 `prices::on-change` names a symbol:
 
@@ -607,13 +607,13 @@ keeps an index from keys to observers, so a call costs one lookup per key. Here 
 Keys express wildcards by listing them. The [database example](#database-changes) files an observer
 of every table under `"primary|*|insert"`, and gives a change the keys `"primary|orders|insert"`,
 `"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four lookups, whatever the number of
-observers. Keys suit sources whose observers each want a slice of many calls: row changes by table,
+observers. Keys suit sources whose observers each get a slice of many calls: row changes by table,
 frames by session, messages by subscriber.
 
 `isObserved(call)` (`is_observed(call)` in Python, `is_observed_for(&call)` in Rust,
 `IsObservedFor(call)` in Go) is true when an observer is filed under one of the call's keys: one
-hash lookup per key. A source uses it to skip building an event nobody wants. On a function without
-keys, the call is ignored.
+hash lookup per key. A source uses it to skip building an event that no observer gets. On a function
+without keys, the call is ignored.
 
 ### Deliver calls yourself
 
@@ -760,7 +760,7 @@ A call through an observer fails with the target's own error, or with one of the
 | Code                  | When                                                                                                                   |
 | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `NOT_FUNCTION_OWNER`  | This worker does not host the observer's function.                                                                     |
-| `OBSERVER_NOT_FOUND`  | The engine does not know the observer.                                                                                 |
+| `OBSERVER_NOT_FOUND`  | The engine has no observer with this id.                                                                               |
 | `OBSERVER_NOT_ACTIVE` | The observer is not active yet (for example, inside `onObserverAdded`), or it was removed or rejected before the call. |
 | `LOOP_GUARD`          | The call is deeper than `observers.max_observe_depth`.                                                                 |
 | `OVERFLOW`            | The observer has `max_in_flight` calls running.                                                                        |
@@ -888,7 +888,7 @@ These options of `registerFunction` describe the function to the engine:
 | `response_format`         | none    | The JSON Schema of the handler's return value: what observers observe.                                                              |
 | `args_format`             | none    | The JSON Schema of observers' `args`. The engine validates `args` against it (`INVALID_ARGS`). A function without it takes no args. |
 | `private`                 | `false` | Only this worker may call the function. Other workers may observe it. See [Private functions](#private-functions).                  |
-| `observable`              | `true`  | `false`: nobody may observe the function (`NOT_OBSERVABLE`).                                                                        |
+| `observable`              | `true`  | `false`: no worker may observe the function (`NOT_OBSERVABLE`).                                                                     |
 
 Each SDK spells them its own way:
 
@@ -912,8 +912,8 @@ expresses that:
   worker's call, and an activation is the engine's.
 - A private function is observable, and its observers receive every call its worker makes.
 - A private function cannot be an observer's target (`FORBIDDEN` at `observe`).
-- A worker's call to its own private function passes the input and the result by reference. Nobody
-  else can see either value, so the SDK copies neither, and the handler and hooks treat both as
+- A worker's call to its own private function passes the input and the result by reference. No other
+  worker can read either value, so the SDK copies neither, and the handler and hooks treat both as
   read-only. With `NODE_ENV=development`, the Node SDK freezes them, so a write throws. An
   observer's target receives its own copy, serialized when the call matches.
 
@@ -958,7 +958,7 @@ that view (equal by id in Rust), and a value kept from before keeps the old view
 | `args`                  | The observer's args, already validated against `args_format` by the engine.                                                         |
 | `filters`               | The observer's filters in [normal form](../reference/filters#normal-form).                                                          |
 | `target`                | The target function id.                                                                                                             |
-| `on`, `capture`         | Which calls the observer wants (`success`, `error` or `complete`), and which parts of the call its envelope carries.                |
+| `on`, `capture`         | Which calls the observer gets (`success`, `error` or `complete`), and which parts of the call its envelope carries.                 |
 | `matches(call)`         | Evaluates the observer's `on` and filters on a call.                                                                                |
 | `accepted()`            | Resolves once the SDK has acknowledged the observer. See [Send an observer its initial state](#send-an-observer-its-initial-state). |
 | `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                    |

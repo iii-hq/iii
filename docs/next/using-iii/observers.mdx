@@ -167,7 +167,7 @@ hosts to expose something that happens, such as an HTTP request (`http::on-reque
 function. Any worker can observe any function, private ones included, unless the function is
 registered with `observable: false` or RBAC restricts it (see [Authorization](#authorization)).
 
-What an observer sees is typically the function's return value, unless the worker that hosts the
+What an observer receives is typically the function's return value, unless the worker that hosts the
 function overrides it. If unsure, refer to that worker's documentation.
 
 ### Defaults
@@ -375,9 +375,13 @@ by code point.
 
 ```json
 {
-  "input.total": { "$gte": 500 },
-  "input.currency": { "$in": ["EUR", "USD"] },
-  "caller.worker_name": { "$ne": "importer" }
+  "input.currency": { "$eq": "EUR" },
+  "caller.worker_name": { "$ne": "importer" },
+  "input.country": { "$in": ["DE", "FR"] },
+  "input.status": { "$nin": ["draft", "cancelled"] },
+  "input.total": { "$gt": 0, "$lte": 10000 },
+  "input.quantity": { "$gte": 2 },
+  "input.created_at": { "$lt": "2025-01-01" }
 }
 ```
 
@@ -388,7 +392,11 @@ by code point.
 a missing path. Only `$ne`, `$nin`, and `$exists: false` match a missing path.
 
 ```json
-{ "error": { "$exists": true } }
+{
+  "error": { "$exists": true },
+  "input.coupon": { "$exists": false },
+  "input.parent_id": { "$eq": null }
+}
 ```
 
 ##### Strings
@@ -401,12 +409,17 @@ a missing path. Only `$ne`, `$nin`, and `$exists: false` match a missing path.
 
 ##### Arrays
 
-`$any` matches an array with at least one element that matches. For scalar elements, pass an
-operator object. For object elements, pass a filter whose paths start at `@`, the current element.
-There is no implicit fan-out over arrays: `input.items.sku` on an array of items is absent.
+A path does not read inside an array. When `input.items` is an array of objects, the path
+`input.items.sku` is a missing path: it does not read the `sku` of each item. To match on the
+elements, use `$any`. It matches when at least one element matches its operand. For scalar elements,
+the operand is an operator object. For object elements, the operand is a filter whose paths start at
+`@`, the current element.
 
 ```json
-{ "input.items": { "$any": { "@.sku": { "$eq": "A-1" }, "@.qty": { "$gte": 10 } } } }
+{
+  "input.tags": { "$any": { "$eq": "vip" } },
+  "input.items": { "$any": { "@.sku": { "$eq": "A-1" }, "@.qty": { "$gte": 10 } } }
+}
 ```
 
 ##### Logical
@@ -415,7 +428,11 @@ There is no implicit fan-out over arrays: `input.items.sku` on an array of items
 filter, not operators on a path.
 
 ```json
-{ "$not": { "input.path": { "$prefix": "/health" } } }
+{
+  "$and": [{ "input.total": { "$gte": 500 } }, { "input.currency": { "$eq": "EUR" } }],
+  "$or": [{ "input.priority": { "$eq": "high" } }, { "input.total": { "$gte": 10000 } }],
+  "$not": { "input.path": { "$prefix": "/health" } }
+}
 ```
 
 #### Validation
@@ -441,6 +458,10 @@ engine does this check when the function registers.
 | `output`             | The output of the call (the function's return value) alone. |
 
 If the value is absent (for example, `output` after a failed call), the argument is `null`.
+
+There is no `deliver: "error"`. The error of a failed call reaches the target only in the envelope,
+as its `error` field (`{ code, message, stacktrace? }`). For that, the observer needs [`on`](#on)
+set to `error` or `complete`, and `error` in [`capture`](#capture).
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -527,7 +548,7 @@ after a successful call.
 `capture` sets which parts of the call the envelope carries: any of `input`, `output`, `error`,
 `caller`, and `metadata`. The default is `["input", "output", "caller"]`.
 
-An observer that only counts calls, or only notes that they failed (`on: "error"`), uses
+An observer that only counts calls, or only records that they failed (`on: "error"`), uses
 `capture: []`: no payload moves to its target.
 
 `capture` sets only what the target receives. A [filter](#filters) can read any field of the call,
@@ -608,7 +629,7 @@ of the observed call, present when `capture` includes `metadata`.
 iii discards the target's return value, except for functions that use it:
 [`http::on-request`](https://workers.iii.dev/workers/http) answers the request with it, and
 [`queue::on-message`](https://workers.iii.dev/workers/queue) acks the message with it. Observers of
-the target can see the return value as the `output` of the target's call. See
+the target receive the return value as the `output` of the target's call. See
 [Chain reactions](#chain-reactions).
 
 ## Policy and metadata
@@ -813,10 +834,10 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
   changes when the process restarts: the restarted worker's observe of the `id` then fails with
   `OBSERVER_ID_CONFLICT` until the grace period ends.
 - When a worker reconnects, its SDK sends each of its observers to the engine again, with the same
-  id. The engine remembers a `disposed` observer for `observers.disposed_retention_ms` (1 hour by
-  default). In this time, the engine does not create the observer again, and the handle becomes
-  `disposed`. So `max_fires` and `expires_in_ms` stay in effect after a reconnect. After this time,
-  the engine creates the observer again with new counters, as after an engine restart.
+  id. The engine keeps a record of a `disposed` observer for `observers.disposed_retention_ms` (1
+  hour by default). In this time, the engine does not create the observer again, and the handle
+  becomes `disposed`. So `max_fires` and `expires_in_ms` stay in effect after a reconnect. After
+  this time, the engine creates the observer again with new counters, as after an engine restart.
 - To know when an observer becomes `disposed`, and why, use `onStateChange` on its handle.
   `engine::observers::list` and `get` do not show disposed observers.
 - When the worker that hosts the observed function disconnects, its observers go back to `pending`
@@ -1035,8 +1056,8 @@ The engine lists observers through three built-in functions:
 | `engine::observers::get`     | `{ id }`                                | One observer, or `OBSERVER_NOT_FOUND`.                                                                                                                                    |
 | `engine::observers::dispose` | `{ id }`                                | Disposes an observer. Only the observing worker, or a caller without RBAC restrictions, may do it.                                                                        |
 
-The output does not include the observer's `metadata` option. With RBAC, a session sees only the
-observers of functions its grants cover.
+The output does not include the observer's `metadata` option. With RBAC, the output holds only the
+observers of functions the session's grants cover.
 
 ```bash
 iii call engine::observers::list function_id=orders::create
@@ -1051,7 +1072,7 @@ When an observer cannot be created, it becomes `error`, and `ready()` fails with
 
 | Code                   | When                                                                                                                                                                                                                    |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`          | The engine is older than 0.25 (the SDK gives this code), or `on`, `capture`, or `deliver` has a value that the engine does not know.                                                                                    |
+| `UNSUPPORTED`          | The engine is older than 0.25 (the SDK gives this code), or `on`, `capture`, or `deliver` has a value that the engine does not support.                                                                                 |
 | `INVALID_ARGS`         | `args` do not match the `args_format` of the function, or the function takes no `args`. Also: an empty or too-long observer id, an empty `function_id`, or `max_fires`, `expires_in_ms`, or `max_in_flight` set to `0`. |
 | `INVALID_FILTER`       | The filter is not valid, uses a literal value in place of an operator object, or is larger than a limit.                                                                                                                |
 | `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                                                                                                                                    |
@@ -1171,7 +1192,7 @@ A call runs locally when all of these hold:
    session must be allowed to call the function.
 3. The call resolves to the namespace the function is registered in.
 4. The action is `Void` or a normal call. An `Enqueue` call always goes through the engine.
-5. The call does not ask for the remote path.
+5. The call does not set `dispatch: "remote"`.
 6. The call is fewer than 64 local calls deep. Deeper calls go through the engine.
 
 A local call returns the same result, error shape, and timeout as a remote one. The differences are
