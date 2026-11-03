@@ -5,15 +5,16 @@
 
 Unix gave processes a single interface. React gave components a single interface. iii gives every
 category of software (queues, schedulers, agents, frontends, sandboxes, business logic, etc.) a
-single interface: **Workers** host work, **Functions** are the work, **Observers** run one Function
-when another Function runs, and the **Engine** routes between them. Once you have a mental model for
-those four pieces, everything else in iii is a variation on a theme.
+single interface: the **Function**. There is one primitive and two operators. You **call** a
+Function to run it now, or you **observe** a Function so that another Function runs when it runs.
+**Workers** host Functions, and the **Engine** routes between them. Once you have a mental model for
+that one primitive and its two operators, everything else in iii is a variation on a theme.
 
 <Note>This page uses the [Quickstart tutorial](../quickstart) as an example.</Note>
 
-## The four pieces
+## The pieces
 
-This is a brief recap of the four pieces; the sections below expand each one with the Quickstart as
+This is a brief recap of the pieces; the sections below expand each one with the Quickstart as
 an example. More details about their actual usage are in [Using iii / Workers](../using-iii/workers)
 and the rest of the "Using iii" section.
 
