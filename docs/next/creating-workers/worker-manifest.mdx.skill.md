@@ -210,7 +210,8 @@ Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
 Optional string: the semver range of iii engines the worker runs on, like the `engines` field of a
 Node `package.json`. Compose refuses to validate or start the worker (`INCOMPATIBLE_ENGINE`) when the
 running iii engine is outside the range, and registry installs only pick versions whose range
-includes it. The engine is compared by its `MAJOR.MINOR.PATCH`, so `0.26.0-rc.2` counts as `0.26.0`.
+includes it. A registry bundle is checked again each time it is installed, so one pinned in
+`worker-compose.lock` before an `iii update` is refused too. The engine is compared by its `MAJOR.MINOR.PATCH`, so `0.26.0-rc.2` counts as `0.26.0`.
 
 A range is one or more comparators (`>=`, `>`, `<=`, `<`, `=`, `^`, `~`, or none, followed by
 `MAJOR.MINOR.PATCH`). Comparators joined by spaces must all hold; sets joined by `||` may each
