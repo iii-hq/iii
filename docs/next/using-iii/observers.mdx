@@ -36,8 +36,8 @@ type: "how-to"
   </Tab>
 </Tabs>
 
-An observer connects two functions. After each successful call of the observed function (`a`), iii
-runs the target (`b`) with the call's input, its result and its caller.
+An observer connects two functions in one direction. After each successful call of the observed
+function (`a`), iii runs the target (`b`) with the call's input, its result and its caller.
 
 The examples on this page react to `orders::create`, a function that another worker registers.
 
@@ -195,9 +195,9 @@ function overrides it. If unsure, refer to that worker's documentation.
 
 An observer can carry `args` and `filters`. `args` go to the worker that hosts the function, which
 reads them to set something up for the observer (a route, a schedule, a database trigger, a queue
-consumer) and to choose which calls reach it. `filters` go to iii, which applies them to each call
-the same way for every function. A cron expression is an arg: the cron worker starts a schedule for
-it. "Only ticks after 1 November" is a filter.
+consumer) and to filter which calls the observer receives. This is custom logic: each function
+defines the `args` its use case needs. `filters` are standard: the iii engine applies them to each
+call, the same way for every function.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -361,8 +361,17 @@ A literal value such as `"EUR"` is not allowed.
   </Tab>
 </Tabs>
 
-The operators are `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`, `$prefix`,
-`$and`, `$or`, `$not`, and `$any`.
+#### Operators
+
+The operators of one operator object must all match:
+`{ "input.total": { "$gte": 100, "$lt": 500 } }` is a range. See the
+[filter language reference](../reference/filters) for the full rules and the limits.
+
+##### Comparison
+
+`$eq`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`. Equality is JSON deep equality, with no
+coercion between types. Ordering applies within one type only: numbers compare numerically, strings
+by code point.
 
 ```json
 {
@@ -372,15 +381,50 @@ The operators are `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$e
 }
 ```
 
+##### Existence and `null`
+
+`$exists` takes a boolean and matches on the presence of the path. `null` is a value:
+`{ "$exists": true }` matches `null`, and `{ "$eq": null }` matches only `null`, and will not match
+a missing path. Only `$ne`, `$nin`, and `$exists: false` match a missing path.
+
+```json
+{ "error": { "$exists": true } }
+```
+
+##### Strings
+
+`$prefix` matches a string that starts with the operand.
+
+```json
+{ "input.path": { "$prefix": "/api/" } }
+```
+
+##### Arrays
+
+`$any` matches an array with at least one element that matches. For scalar elements, pass an
+operator object. For object elements, pass a filter whose paths start at `@`, the current element.
+There is no implicit fan-out over arrays: `input.items.sku` on an array of items is absent.
+
+```json
+{ "input.items": { "$any": { "@.sku": { "$eq": "A-1" }, "@.qty": { "$gte": 10 } } } }
+```
+
+##### Logical
+
+`$and` and `$or` take a non-empty array of filters. `$not` takes one filter. They are clauses of a
+filter, not operators on a path.
+
+```json
+{ "$not": { "input.path": { "$prefix": "/health" } } }
+```
+
+#### Validation
+
 When the observer is created, the SDK and the engine check the filter. If it is not valid, the
 observer fails with `INVALID_FILTER`. The engine also checks the `input.*` and `output.*` paths
 against the `request_format` and `response_format` of the function. If a closed schema does not have
 a path, the observer fails with `INVALID_FILTER_PATH`. If the function is not registered yet, the
 engine does this check when the function registers.
-
-A filter can read any field of the call, including the fields that `capture` leaves out. See the
-[filter language reference](../reference/filters) for the operators, the rules for absent and `null`
-values, and the limits.
 
 ## Target arguments
 
@@ -485,6 +529,9 @@ after a successful call.
 
 An observer that only counts calls, or only notes that they failed (`on: "error"`), uses
 `capture: []`: no payload moves to its target.
+
+`capture` sets only what the target receives. A [filter](#filters) can read any field of the call,
+including the fields that `capture` leaves out.
 
 To keep observed calls small, capture only what the target reads. See
 [Observed call size](#observed-call-size).
