@@ -102,7 +102,7 @@ the call waits for the function to return its result, or for the configured time
     const result = await worker.call({
       function_id: "math::add",
       payload: { a: 2, b: 3 },
-      namespace: "default", // target a specific namespace
+      // namespace: "default", // target a specific namespace
       // action: CallAction.Void(), // fire-and-forget
       // action: CallAction.Enqueue({ queue: "math" }), // route through queue
     });
@@ -116,7 +116,7 @@ the call waits for the function to return its result, or for the configured time
     result = worker.call({
         "function_id": "math::add",
         "payload": {"a": 2, "b": 3},
-        "namespace": "default", # target a specific namespace
+        # "namespace": "default", # target a specific namespace
         # "action": CallAction.Void(), # fire-and-forget
         # "action": CallAction.Enqueue(queue="math"), # route through queue
     })
@@ -139,7 +139,7 @@ the call waits for the function to return its result, or for the configured time
             // action: Some(CallAction::Enqueue { queue: "math".to_string() }), // route through queue
             timeout_ms: None,
         }
-        .namespace("default"), // target a specific namespace
+        // .namespace("default"), // target a specific namespace
         )
         .await?;
     ```
@@ -150,7 +150,7 @@ the call waits for the function to return its result, or for the configured time
     result, err := client.Call(ctx, iii.CallRequest{
         FunctionID: "math::add",
         Payload:    json.RawMessage(`{"a":2,"b":3}`),
-        Namespace:  "default", // target a specific namespace
+        // Namespace:  "default", // target a specific namespace
         // Action: iii.VoidAction(),          // fire-and-forget
         // Action: iii.EnqueueAction("math"), // route through queue
     })
