@@ -420,8 +420,7 @@ the operand is an operator object. For object elements, the operand is a filter 
 
 ##### Logical
 
-`$and` and `$or` take a non-empty array of filters. `$not` takes one filter. They are clauses of a
-filter, not operators on a path.
+`$and` and `$or` take a non-empty array of filters. `$not` takes one filter.
 
 ```json
 {
@@ -430,6 +429,11 @@ filter, not operators on a path.
   "$not": { "input.path": { "$prefix": "/health" } }
 }
 ```
+
+<Note title="Clauses, not operators">
+  `$and`, `$or` and `$not` are clauses of a filter. They cannot go inside an operator object on a
+  path.
+</Note>
 
 #### Validation
 
@@ -615,18 +619,25 @@ The default `capture` does not include `error`. To give the target the error, ad
   </Tab>
 </Tabs>
 
-### Metadata and the return value
+### Metadata
 
-The observer's `metadata` option, set in the [policy](#policy-and-metadata), reaches the target as
-its second argument on every activation (the `metadata` parameter in Python,
-`MetadataFromContext(ctx)` in Go). The envelope's `metadata` field is different: it is the metadata
-of the observed call, present when `capture` includes `metadata`.
+The observer's `metadata` option, set in the [policy](#policy-and-metadata), reaches the target
+function as its second argument on every activation (the `metadata` parameter in Python,
+`MetadataFromContext(ctx)` in Go).
 
-iii discards the target's return value, except for functions that use it:
-[`http::on-request`](https://workers.iii.dev/workers/http) answers the request with it, and
-[`queue::on-message`](https://workers.iii.dev/workers/queue) acks the message with it. Observers of
-the target receive the return value as the `output` of the target's call. See
-[Chain reactions](#chain-reactions).
+<Note title="Two kinds of metadata">
+  The envelope's `metadata` field is the metadata of the observed call, present when `capture`
+  includes `metadata`. The observer's `metadata` option is the target function's second argument.
+</Note>
+
+### The target function's return value
+
+The iii engine does not use the return values of target functions. However, an observable function
+can use [`onObservationDeliver`](../creating-workers/observable-functions#deliver-calls-yourself) to
+get that return value from the target function and use it, for example to answer an HTTP request or
+to acknowledge a queue message. The function's documentation says what its target functions must
+return. Likewise, observers of a target function receive the return value as the `output` of its
+call. See [Chain reactions](#chain-reactions).
 
 ## Policy and metadata
 
@@ -639,7 +650,7 @@ run of the target.
 | `max_fires`     | unlimited                              | The observer becomes `disposed` after this number of activations (reason `MAX_FIRES`).                                                                                                                                                                                                                                                    |
 | `expires_in_ms` | never                                  | The observer becomes `disposed` after this time (reason `EXPIRED`).                                                                                                                                                                                                                                                                       |
 | `max_in_flight` | `observers.default_max_in_flight` (64) | The maximum number of activations that run at the same time. More activations wait in a queue of `observers.max_queue_per_observer` (1024). When the queue is full, or when the queues of all observers hold 64 MiB of observed calls, the engine drops new activations (`OVERFLOW`). With `1`, activations run in the order they arrive. |
-| `metadata`      | none                                   | JSON that each activation gives to the target as its second argument. See [Metadata and the return value](#metadata-and-the-return-value).                                                                                                                                                                                                |
+| `metadata`      | none                                   | JSON that each activation gives to the target as its second argument. See [Metadata](#metadata).                                                                                                                                                                                                                                          |
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -706,9 +717,9 @@ run of the target.
   </Tab>
 </Tabs>
 
-The engine does not retry a failed activation, unless the function documents its own delivery (the
-[queue](https://workers.iii.dev/workers/queue) worker retries a message). It counts each dropped
-call in the `iii.observer.dropped.total` metric, by function and reason.
+The engine does not retry a failed activation. A worker that delivers calls to the observers itself
+can retry on its own terms, which its documentation states. The engine counts each dropped call in
+the `iii.observer.dropped.total` metric, by function and reason.
 
 ## Observer handle
 
@@ -1100,14 +1111,17 @@ of about 80 MiB. The engine does not deliver an observed call in these cases:
 Each such call counts as a `TOO_LARGE` drop in the `iii.observer.dropped.total` metric. In the first
 two cases it also counts in the observer's `dropped` counts
 ([`engine::observers::list`](#inspect-observers)), and the engine logs a warning naming the
-observer, the function, the size, and the limit, at most once a minute per observer. `OVERFLOW` is
-different: the queues were full when the call arrived. A call of the same size can go through when
-the queues have space again.
+observer, the function, the size, and the limit, at most once a minute per observer.
 
 To keep observed calls small, capture only what the target reads, for example `capture: ["input"]`.
 With `deliver: "input"` or `deliver: "output"`, set a matching `capture` too: captured fields are
 kept even when the target receives one value. For payloads larger than these limits, pass a
 [channel](../creating-workers/channels) reference in place of the data.
+
+<Note title="TOO_LARGE and OVERFLOW">
+  `OVERFLOW` is a different drop: the queues were full when the call arrived. A call of the same
+  size can go through when the queues have space again.
+</Note>
 
 ## Caller and causality
 
