@@ -270,6 +270,8 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         if CHILD_OWNS_TERMINAL.load(Ordering::Relaxed) {
             return;
         }
+        // The tour's key reader may still hold stdin in cbreak mode.
+        restore_terminal_mode();
         std::process::exit(130);
     });
 
