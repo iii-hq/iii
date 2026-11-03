@@ -126,9 +126,9 @@ type Client struct {
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
 	failOnce      sync.Once
 	superviseOnce sync.Once // ensures only one supervisor goroutine runs
-	// removeMarker deletes this worker's `iii ps` marker. terminate calls it, not the
-	// supervisor goroutine: main returning right after Close ends the process before
-	// that goroutine does. Guarded by mu.
+	// removeMarker deletes this worker's `iii ps` marker. terminate calls it, not only
+	// the supervisor goroutine: main returning right after Close ends the process
+	// before that goroutine does. Guarded by mu.
 	removeMarker func()
 
 	// fatal is closed when the engine terminally rejects this worker's
@@ -998,8 +998,9 @@ func (c *Client) startSupervisor() {
 		c.started.Store(true)
 		c.startTelemetry() // otel_client.go: OpenTelemetry starts with the lifecycle
 		c.reporter.start()
-		// Lets `iii ps` find this worker until Close. Checked under mu so a Close that
-		// already ran (it closes shutdown before taking mu) gets no marker written.
+		// Lets `iii ps` find this worker until Close or the supervisor gives up. Checked
+		// under mu so a Close that already ran (it closes shutdown before taking mu)
+		// gets no marker written.
 		c.mu.Lock()
 		select {
 		case <-c.shutdown:
@@ -1007,7 +1008,18 @@ func (c *Client) startSupervisor() {
 			c.removeMarker = announceProcess(c.url, c.name, "")
 		}
 		c.mu.Unlock()
-		go c.supervise()
+		go func() {
+			c.supervise()
+			// A fatal rejection or MaxRetries also ends it, and the worker is no longer
+			// live. After Close there is nothing left: terminate already removed it.
+			c.mu.Lock()
+			removeMarker := c.removeMarker
+			c.removeMarker = nil
+			c.mu.Unlock()
+			if removeMarker != nil {
+				removeMarker()
+			}
+		}()
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func readMarkers(t *testing.T, dir string) map[string]map[string]any {
@@ -116,5 +117,20 @@ func TestConnectAfterCloseWritesNoWorkerMarker(t *testing.T) {
 	_ = c.Connect(context.Background())
 	if markers := readMarkers(t, dir); len(markers) != 0 {
 		t.Fatalf("a closed client announced itself: %v", markers)
+	}
+}
+
+func TestASupervisorThatGivesUpRemovesTheWorkerMarker(t *testing.T) {
+	dir := markerHome(t)
+	// Nothing listens there, and no retries: the supervisor gives up after one dial.
+	c := RegisterWorker("ws://127.0.0.1:1", WithName("orders"),
+		WithReconnectConfig(ReconnectConfig{MaxRetries: 0}))
+	defer c.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(readMarkers(t, dir)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the marker outlived a supervisor that gave up")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
