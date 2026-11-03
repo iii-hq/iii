@@ -11,9 +11,10 @@
 worker.observe("orders::create", "alerts::big-order");
 ```
 
-When `orders::create` runs, `alerts::big-order` runs. Every function a worker registers can be
-observed this way: a plain function, a cron tick, a row change, an HTTP request. What an observer
-observes is the function's return value.
+An observer runs one function when another one completes. Every function a worker registers can be
+observed: a plain function, a cron tick, a row change, an HTTP request. What an observer sees is
+typically the function's return value, unless the worker that hosts the function overrides it. If
+unsure, refer to that worker's documentation.
 
 The worker that hosts a function decides what observing it means with four hooks, in two pairs. Each
 one overrides something iii does by default.
@@ -345,8 +346,7 @@ A hook for one function can be set by function id on the client, or on the `Func
   </Tab>
 </Tabs>
 
-The hook names in each SDK. Added and removed are observer lifecycle hooks; match and deliver are
-observation lifecycle hooks:
+The hook names in each SDK:
 
 | Hook                    | Node / Browser                   | Python                             | Rust                                   | Go                                  |
 | ----------------------- | -------------------------------- | ---------------------------------- | -------------------------------------- | ----------------------------------- |
@@ -383,8 +383,6 @@ methods: `clear_observer_added()`, `clear_observer_removed()`, `clear_observatio
 `clear_observer_removed()` on the client for the worker-wide hooks.
 
 Removing a hook puts back what iii does by default (see the tables at the top of this page).
-Removing the match hook gives every call to every observer again. Removing the deliver hook hands
-delivery back to iii.
 
 Hooks are stored by function id. They stay in place across `unregister()` and a later registration
 of the same id, and they can be set before the function is registered. Once the worker's connection
@@ -477,7 +475,7 @@ iii's delivery:
    filters match the call. The engine does it for a call it routed to the worker, with the input it
    forwarded and the result the worker answers; the worker does it for a call it makes to its own
    function;
-2. the engine runs each target with the observer's `deliver` choice, policy, metadata, and
+2. runs each target with the observer's `deliver` choice, policy, metadata, and
    [loop guard](../using-iii/observers#loop-guard);
 3. gives the caller the handler's return value, or rethrows its error.
 
@@ -488,9 +486,9 @@ filter on their own value (see [Filters](../reference/filters#many-observers)).
 
 ### Match observers to calls
 
-`onObservationMatch` answers one question for each call: which observations happen, that is, which
-observers get this call? A function sets it when its observers' args say which calls they want. iii
-does everything else as usual: each observer's `on`, filters, policy and `deliver` still apply.
+`onObservationMatch` decides, for each call, which observers get it. A function sets it when its
+observers' args say which calls they want. iii does everything else as usual: each observer's `on`,
+filters, policy and `deliver` still apply.
 
 As a predicate, the hook takes one possible observation, the observer and the call, and returns
 whether it happens. Here each observer of `cron::on-tick` names an expression in its args, and gets
@@ -634,10 +632,9 @@ call as `is_observed(call)`, Rust as `is_observed_for(&call)`, and Go as `IsObse
 `onObservationDeliver` carries out a call's observations: it hands the call to its observers and
 returns their answer to the caller. It is for a function whose observers' answers matter, or whose
 calls each go to one observer. The hook receives the call and the observers that matched it (by
-`onObservationMatch`, or every active observer), as a snapshot taken when the call started. It
-delivers the call itself, and what it returns (or throws) is what the caller gets back. iii delivers
-nothing for that function. The hook runs inside the function's invocation, so calls it makes have
-that invocation as their caller.
+`onObservationMatch`, or every active observer), as a snapshot taken when the call started. What it
+returns (or throws) is what the caller gets back; iii delivers nothing for that function. The hook
+runs inside the function's invocation, so calls it makes have that invocation as their caller.
 
 Choose observers in `onObservationMatch` when an observer's args and the call settle it: a cron
 expression, a table, a subscriber id. Choose them in `onObservationDeliver` when choosing compares
@@ -713,11 +710,10 @@ the request:
   </Tab>
 </Tabs>
 
-The hook applies each observer's `on` and filters with `obs.matches(call)`, as above, and runs its
-target with a [call through the observer](#call-through-an-observer). A function can set both hooks:
-`queue::on-message` matches each message to its subscriber by key, so its deliver hook receives that
-one observer. The [HTTP](#http-routes) example shows a deliver hook, and the
-[queue](#queue-messages) example sets both hooks, in every SDK.
+The hook applies each observer's `on` and filters with `obs.matches(call)` and runs its target with
+a [call through the observer](#call-through-an-observer). With both hooks set, the deliver hook
+receives only the observers the match hook matched: [`queue::on-message`](#queue-messages) files
+each message under its subscriber's key, so its deliver hook receives that one observer.
 
 ### Call through an observer
 
