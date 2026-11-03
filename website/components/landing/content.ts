@@ -4,8 +4,6 @@
  */
 
 export const hero = {
-  /* The three-i glyph in the pill reads as the three primitives: everything in iii is one of these. */
-  eyebrow: 'Three primitives: Function, Trigger, Worker',
   /* Reviewer: "iii isn't just backend" → "More application. Less infrastructure." */
   headline: ['More application.', 'Less infrastructure.'],
   /* 2026-10-05 sync: the doc's subtitle is folded into the copy, one paragraph under the headline. The hero sets the
@@ -115,7 +113,7 @@ export const story = {
     name: 'Reactivity',
     title: 'One event. Many reactions.',
     description:
-      'Triggers make your system reactive. A pull request opens, and independent handlers review the code, notify the team, and run the tests.',
+      'Observers make your system reactive. A pull request opens, and independent functions review the code, notify the team, and run the tests.',
   },
   summary: {
     title: 'Built for C.O.D.E.R.',
@@ -164,7 +162,7 @@ export const useCases = {
     id: 'platform',
     label: 'App platform',
     solution:
-      'Build backends from functions running across languages, processes, and machines. A trigger starts the work, iii runs every call, and one trace follows it to the end.',
+      'Build backends from functions running across languages, processes, and machines. An event starts the work, iii runs every call, and one trace follows it to the end.',
     picker: 'Workload',
     /* Trigger types and registry function ids checked against iii-hq/workers (http, cron, queue, database, storage,
        state, llm-router). Functions under your own namespace (orders::, etl::, reports::, train::, payments::) are
