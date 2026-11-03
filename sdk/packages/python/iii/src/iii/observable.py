@@ -324,9 +324,9 @@ class Observer:
         """Blocks until the SDK has acked this observer: a call made
         afterwards reaches an active observer. Use it to send a new observer
         its initial state, outside its ``on_observer_added`` (which runs
-        before the ack): a call of the function with ``"metadata":
-        {"for_observer": obs.id}``, which the function's match hook gives to
-        this observer alone, delivered like every call. Use
+        before the ack): a call through it
+        (``{"observer": obs, "payload": ...}``), which runs its target alone
+        with the payload as given. Use
         :meth:`accepted_async` in async code.
 
         Example::
@@ -337,23 +337,14 @@ class Observer:
                 except ObserveRejection:
                     return  # a rejected observer gets nothing
                 await iii.call_async({
-                    "function_id": "tmux::on-changed",
+                    "observer": obs,
                     "payload": state_for(obs.args),
-                    "metadata": {"for_observer": obs.id},
                     "action": CallAction.Void(),
                 })
 
             @iii.on_observer_added("tmux::on-changed")
             async def on_added(obs):
                 asyncio.get_running_loop().create_task(send_state(obs))
-
-            def wants(obs, call):
-                for_observer = (call.metadata or {}).get("for_observer")
-                if for_observer:
-                    return for_observer == obs.id
-                return obs.args["session"] == call.input["session"]
-
-            iii.on_observation_match("tmux::on-changed", wants)
 
         Raises:
             ObserveRejection: The observer was rejected, or removed, first.

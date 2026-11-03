@@ -2507,9 +2507,10 @@ class III:
         ``on`` and filters, and an ``on_observation_deliver`` receives only the
         observers that matched.
 
-        As a predicate, ``hook(obs, call) -> bool`` is asked once per active
-        observer per call, before filters; a predicate that raises counts as
-        no match. As keys, ``observer=`` and ``call=`` key functions each
+        As a predicate, ``hook(obs, call) -> bool`` is asked once per
+        observation: for every call, once for each active observer, before
+        its filters; a predicate that raises counts as no match for that
+        observer. As keys, ``observer=`` and ``call=`` key functions each
         return a string or strings, and an observer wants a call when they
         share a key: the SDK computes an observer's keys once, when it is
         accepted, and files it under each, so a call costs one lookup per key
@@ -2521,15 +2522,10 @@ class III:
         ``"primary|orders|insert"``, ``"primary|orders|*"``,
         ``"primary|*|insert"`` and ``"primary|*|*"``.
 
-        A host that sends one observer something of its own (its initial
-        state) calls the function with ``"metadata": {"for_observer":
-        obs.id}``, and the hook gives such a call to that observer alone: a
-        predicate compares the ids, and key functions also file each observer
-        under ``f"for_observer:{obs.id}"`` and give such a call that one key.
-
         Works as a decorator for a predicate
         (``@iii.on_observation_match("fn::id")``) and returns the hook (a
-        :class:`MatchKeys` for the keys form); ``None`` removes it. A match
+        :class:`MatchKeys` for the keys form); ``None`` removes it, and every
+        observer gets every call again. A match
         hook set while the function has active observers is applied to them
         on the SDK loop, which rebuilds the index from them. Predicates and
         key functions are sync: they run on every call. A function with a
@@ -2744,10 +2740,9 @@ class III:
         raises ``ValueError`` before anything is sent.
         The payload goes as given: filters are applied where the worker
         chooses observers: iii's delivery, or ``obs.matches(call)`` in an
-        ``on_observation_deliver``. A call through an observer belongs in that
-        deliver hook; to send one observer something outside delivery (its
-        initial state), call the function with ``"metadata": {"for_observer":
-        obs.id}`` (see :meth:`Observer.accepted`).
+        ``on_observation_deliver``. A host also calls through an observer to
+        send it something of its own, such as its initial state once it is
+        accepted (see :meth:`Observer.accepted`).
 
         Args:
             request: A ``CallRequest`` or dict with ``function_id`` (or
@@ -2813,8 +2808,7 @@ class III:
         Examples:
             >>> result = await worker.call_async({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> await worker.call_async(
-            ...     {'function_id': 'stock::on-changed', 'payload': state,
-            ...      'metadata': {'for_observer': obs.id}, 'action': CallAction.Void()}
+            ...     {'observer': obs, 'payload': state, 'action': CallAction.Void()}
             ... )
         """
         req = self._prepare_call(request)

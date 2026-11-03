@@ -565,45 +565,23 @@ hosts the observer's function and that the observer is active (`NOT_FUNCTION_OWN
 metadata is the observer's, and `Call` refuses a request with `Metadata` before sending
 anything.
 
-To send one observer something of its own, such as its initial state, call the function
-with metadata `{"for_observer": <obs.ID>}` once `obs.Accepted` returns nil, and let the
-match hook give that call to that observer alone. iii delivers it like every call, so
-the target receives it in the shape it receives every call of the function:
+To send one observer something of its own, such as its initial state, call through that
+observer once `obs.Accepted` returns nil. The call runs that observer's target alone,
+with the payload as given:
 
 ```go
-forObserver := func(call *iii.Call) string {
-	var meta struct {
-		ForObserver string `json:"for_observer"`
-	}
-	_ = json.Unmarshal(call.Metadata, &meta)
-	return meta.ForObserver
-}
 client.OnObserverAddedFor("tmux::on-changed", func(_ context.Context, obs *iii.Observer) error {
 	go func() {
 		if obs.Accepted(context.Background()) != nil {
 			return
 		}
-		meta, _ := json.Marshal(map[string]string{"for_observer": obs.ID})
 		_, _ = client.Call(context.Background(), iii.CallRequest{
-			FunctionID: "tmux::on-changed", Payload: stateFor(obs.Args), Metadata: meta, Action: iii.VoidAction(),
+			Observer: obs, Payload: stateFor(obs.Args), Action: iii.VoidAction(),
 		})
 	}()
 	return nil
 })
-client.OnObservationMatchFor("tmux::on-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-	if id := forObserver(call); id != "" {
-		return id == obs.ID
-	}
-	var change struct {
-		Session string `json:"session"`
-	}
-	_ = json.Unmarshal(call.Input, &change)
-	return obs.Args["session"] == change.Session
-}))
 ```
-
-With `iii.MatchKeys`, file each observer under `"for_observer:" + obs.ID` as well, and
-give such a call that one key.
 
 Every call of a function, local or routed, is delivered by the worker that hosts it.
 iii's delivery reports a local call's matches in one batched report item and lists a
@@ -878,7 +856,7 @@ client.RegisterFunction("chat::on-command", iii.Identity, iii.FunctionOptions{Ar
 | 0.25 | 0.26 |
 | --- | --- |
 | an index from args to observers, and `obs.Emit(ctx, event)` | call the function with the event; `OnObservationMatchFor(id, iii.MatchKeys(observerKeys, callKeys))` or `iii.MatchFunc(predicate)` |
-| `obs.Call(ctx, payload)` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` in the deliver hook, after `obs.Matches(call)`; for initial state, a call of the function with metadata `{"for_observer": <obs.ID>}` |
+| `obs.Call(ctx, payload)` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` in the deliver hook, after `obs.Matches(call)`; for initial state, the same call once `obs.Accepted` returns nil |
 | `obs.Matches(iii.ObserveDoc{...})` | `obs.Matches(&iii.Call{...})`, which also applies `on` |
 | `obs.Legacy`, `LegacyTriggerType` | consumers observe the function |
 | a handler that refuses calls from other workers | `Private: true` |

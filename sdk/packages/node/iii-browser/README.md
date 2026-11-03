@@ -228,9 +228,8 @@ iii.onObservationDeliver('ui::on-command', async (call) => {
 ```
 
 `obs.accepted()` resolves once the SDK acked the observer; a call made then
-reaches it. A source sends a new observer its initial state as a call of the
-function with `metadata: { for_observer: obs.id }`, which the match hook gives
-to that observer alone, so the target receives it in the shape of every call:
+reaches it. A source sends a new observer its initial state by calling through
+that observer, which runs its target alone with the payload as given:
 
 ```typescript
 import { CallAction } from 'iii-browser-sdk'
@@ -240,9 +239,8 @@ iii.onObserverAdded('ui::on-click', (obs) => {
     .accepted()
     .then(() =>
       iii.call({
-        function_id: 'ui::on-click',
+        observer: obs,
         payload: lastClick(obs.args.selector as string),
-        metadata: { for_observer: obs.id },
         action: CallAction.Void(),
       }),
     )
@@ -250,13 +248,7 @@ iii.onObserverAdded('ui::on-click', (obs) => {
       // a rejected observer gets nothing
     })
 })
-iii.onObservationMatch('ui::on-click', (obs, call) =>
-  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.selector === call.input.selector,
-)
 ```
-
-With keys, file each observer under `for_observer:<id>` as well, and give such
-a call that one key.
 
 A function that sets `args_format`, `private: true`, `observable: false`, an
 `onObservationMatch` hook or an `onObservationDeliver` hook needs an engine that

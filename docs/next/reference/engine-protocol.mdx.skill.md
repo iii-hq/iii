@@ -494,10 +494,7 @@ as the reason, and logs it at `debug`:
 ```
 
 A host sends one observer something of its own, such as its initial state once `obs.accepted()`
-resolves, as a call of its own function with `metadata: { "for_observer": "<observer id>" }`. The
-function's match hook gives that call to that observer alone, and it reaches the engine as every
-call of the function does: an `InvocationsObserved` item for a local call, `matched` on the
-`InvocationResult` of a routed one. See
+resolves, as a call through that observer, as above. See
 [Send an observer its initial state](../creating-workers/observable-functions#send-an-observer-its-initial-state).
 
 ## `InvocationResult`
