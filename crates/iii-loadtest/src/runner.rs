@@ -243,6 +243,7 @@ pub async fn execute(args: &RunArgs) -> RunResult {
             // not hold the whole suite.
             let limit = Duration::from_secs(if args.settings.quick { 600 } else { 3600 });
             let run = tokio::time::timeout(limit, scenarios::run(&args.scenario, &env)).await;
+            scenarios::shutdown_all().await;
             result.steps = std::mem::take(&mut *env.steps.lock().unwrap());
             match run {
                 Ok(r) => r,
@@ -445,6 +446,10 @@ pub fn stop_children_on_signal() {
             let pgid = CHILD_PGID.load(std::sync::atomic::Ordering::SeqCst);
             if pgid > 0 {
                 libc::kill(-pgid, libc::SIGTERM);
+            }
+            // `exit` does not wait for the clients: shut them down first.
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() {
+                rt.block_on(crate::scenarios::shutdown_all());
             }
             std::process::exit(128 + sig);
         });

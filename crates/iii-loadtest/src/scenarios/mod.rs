@@ -337,6 +337,21 @@ pub async fn run(name: &str, env: &Env) -> Result<()> {
 
 // ─────────────────────────── shared pieces ───────────────────────────
 
+/// Every client `worker` connected, so a run that ends early (a `?`, the
+/// timeout, a signal) still shuts them down: one left running keeps its
+/// `iii ps` marker and reconnects to the next host scenario's engine.
+static CLIENTS: std::sync::Mutex<Vec<IIIClient>> = std::sync::Mutex::new(Vec::new());
+
+/// Shuts down every client `worker` connected so far.
+pub async fn shutdown_all() {
+    let clients = std::mem::take(
+        &mut *CLIENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    shutdown(clients).await;
+}
+
 /// An SDK worker connected to the engine, telemetry off.
 pub async fn worker(url: &str, name: &str) -> Result<IIIClient> {
     let iii = register_worker(
@@ -354,6 +369,10 @@ pub async fn worker(url: &str, name: &str) -> Result<IIIClient> {
             ..InitOptions::default()
         },
     );
+    CLIENTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(iii.clone());
     iii.wait_until_registered(Duration::from_secs(30))
         .await
         .with_context(|| format!("worker {name} did not register"))?;
