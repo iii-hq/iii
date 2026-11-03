@@ -1833,10 +1833,13 @@ dependencies = [
 name = "iii-sandbox-contract"
 version = "0.26.0"
 dependencies = [
+ "hex",
+ "hmac",
  "iii-sdk",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

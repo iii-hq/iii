@@ -666,6 +666,7 @@ async fn follow_logs(
             access_key: channel.writer_ref.access_key,
             direction: contract::ChannelDirection::Write,
         },
+        from_end: false,
     };
     let reply: std::result::Result<WorkerLogsResponse, _> = call(
         client,
@@ -811,6 +812,7 @@ pub(crate) async fn start_vm(
     let prepare = WorkerPrepareRequest {
         auth: request.auth.clone(),
         source: request.source.clone(),
+        state_key: None,
     };
     start_call::<WorkerPrepareResponse>(
         engine,
@@ -1782,6 +1784,7 @@ pub(crate) mod tests {
             adapter: adapter.into(),
             adapter_version: "1.0.0".into(),
             contract: ContractVersion { major, minor: 0 },
+            features: Vec::new(),
         };
         assert!(
             check_info(
@@ -2394,6 +2397,7 @@ pub(crate) mod tests {
                     major: CONTRACT_MAJOR,
                     minor: 0,
                 },
+                features: Vec::new(),
             }),
             "sandbox-libkrun::worker::prepare" => {
                 match prepares.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
@@ -2551,6 +2555,7 @@ pub(crate) mod tests {
                     major: CONTRACT_MAJOR,
                     minor: 0,
                 },
+                features: Vec::new(),
             }),
             "sandbox-libkrun::worker::prepare" => answered(serde_json::json!({})),
             // Still building the VM.

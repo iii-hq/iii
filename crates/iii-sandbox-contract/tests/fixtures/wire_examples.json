@@ -1,24 +1,27 @@
 {
-  "ContractVersion": { "major": 1, "minor": 1 },
+  "ContractVersion": { "major": 1, "minor": 2 },
   "AdapterInfoRequest": {},
   "AdapterInfo": {
     "adapter": "sandbox-libkrun",
     "adapter_version": "1.0.0",
-    "contract": { "major": 1, "minor": 1 }
+    "contract": { "major": 1, "minor": 2 },
+    "features": ["worker.scoped_auth", "worker.lease", "worker.logs_from_end"]
   },
   "RouterInfo": {
     "adapter": "sandbox-libkrun",
     "namespace": "sandbox-libkrun",
-    "contract": { "major": 1, "minor": 1 },
+    "contract": { "major": 1, "minor": 2 },
     "info": {
       "adapter": "sandbox-libkrun",
       "adapter_version": "1.0.0",
-      "contract": { "major": 1, "minor": 1 }
+      "contract": { "major": 1, "minor": 2 },
+      "features": ["worker.scoped_auth"]
     }
   },
   "WorkerPrepareRequest": {
     "auth": "tok",
-    "source": { "kind": "bundle", "package": "my-bundle", "host_path": "/cache/my-bundle" }
+    "source": { "kind": "bundle", "package": "my-bundle", "host_path": "/cache/my-bundle" },
+    "state_key": "9f2c1e"
   },
   "WorkerPrepareResponse": {},
   "WorkerStartRequest": {
@@ -45,9 +48,10 @@
   "WorkerLogsRequest": {
     "auth": "tok",
     "vm_id": "vm-1",
-    "cursor": 7,
+    "cursor": null,
     "follow": true,
-    "channel": { "channel_id": "ch-1", "access_key": "key", "direction": "write" }
+    "channel": { "channel_id": "ch-1", "access_key": "key", "direction": "write" },
+    "from_end": true
   },
   "WorkerLogsResponse": {},
   "LogRecord": { "stream": "stderr", "line": "boom", "ts_ms": 1700000001000, "cursor": 8 },

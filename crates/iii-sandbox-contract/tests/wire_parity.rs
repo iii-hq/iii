@@ -1,11 +1,12 @@
 use iii_sandbox_contract::{
     AdapterInfo, AdapterInfoRequest, CatalogListRequest, ChannelDirection, ContractVersion,
-    DOCS_BASE, EnvShape, ExecRequest, ExecResponse, GrepRequest, ListRequest, LogRecord, LogStream,
-    MkdirRequest, OPERATIONS, ReadResponse, RouterInfo, RunResponse, SandboxErrorCode, SedRequest,
-    State, StopRequest, StreamChannelRef, WorkerDestroyRequest, WorkerDestroyResponse,
-    WorkerLogsRequest, WorkerLogsResponse, WorkerPrepareRequest, WorkerPrepareResponse,
-    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStatusRequest,
-    WorkerStopRequest, WriteContent, WriteRequest, code_of, error_payload,
+    DOCS_BASE, EnvShape, ExecRequest, ExecResponse, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH,
+    GrepRequest, ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS, ReadResponse,
+    RouterInfo, RunResponse, SandboxErrorCode, SedRequest, State, StopRequest, StreamChannelRef,
+    WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
+    WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
+    WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest, WriteContent,
+    WriteRequest, code_of, error_payload,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, from_value, json, to_value};
@@ -345,8 +346,52 @@ fn router_info_unbound_json() {
     };
     assert_eq!(
         to_value(unbound).unwrap(),
-        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 1}, "info": null})
+        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 2}, "info": null})
     );
+}
+
+/// A 1.1 peer sends none of the 1.2 fields; each reads as "not there".
+#[test]
+fn fields_added_in_1_2_read_as_absent_from_an_older_peer() {
+    let info: AdapterInfo = from_value(json!({
+        "adapter": "sandbox-libkrun",
+        "adapter_version": "0.2.3",
+        "contract": {"major": 1, "minor": 1}
+    }))
+    .unwrap();
+    assert!(info.features.is_empty());
+    assert!(!info.supports(FEATURE_SCOPED_AUTH));
+
+    let prepare: WorkerPrepareRequest = from_value(json!({
+        "auth": "tok",
+        "source": {"kind": "bundle", "package": "b", "host_path": "/c"}
+    }))
+    .unwrap();
+    assert!(prepare.state_key.is_none());
+
+    let logs: WorkerLogsRequest = from_value(json!({
+        "auth": "tok",
+        "vm_id": "vm-1",
+        "cursor": null,
+        "follow": true,
+        "channel": {"channel_id": "ch", "access_key": "k", "direction": "write"}
+    }))
+    .unwrap();
+    assert!(!logs.from_end);
+}
+
+#[test]
+fn an_adapter_announces_what_it_supports() {
+    let info: AdapterInfo = from_value(json!({
+        "adapter": "sandbox-libkrun",
+        "adapter_version": "0.3.0",
+        "contract": {"major": 1, "minor": 2},
+        "features": [FEATURE_SCOPED_AUTH, FEATURE_LOGS_FROM_END]
+    }))
+    .unwrap();
+    assert!(info.supports(FEATURE_SCOPED_AUTH));
+    assert!(info.supports(FEATURE_LOGS_FROM_END));
+    assert!(!info.supports("worker.lease"));
 }
 
 #[test]
