@@ -67,12 +67,6 @@ const (
 	// FnOnConfigurationUpdate is called when a configuration entry is registered,
 	// updated or deleted.
 	FnOnConfigurationUpdate = "configuration::on-updated"
-	// FnOnStreamChanged is called on every change of a stream item (iii-stream).
-	FnOnStreamChanged = "stream::on-changed"
-	// FnOnStreamJoin is called when a client joins a stream group (iii-stream).
-	FnOnStreamJoin = "stream::on-join"
-	// FnOnStreamLeave is called when a client leaves a stream group (iii-stream).
-	FnOnStreamLeave = "stream::on-leave"
 )
 
 // EngineSources are the ids of the engine-hosted sources under the names every SDK
@@ -87,9 +81,6 @@ var EngineSources = struct {
 	Log                  string
 	Span                 string
 	ConfigurationUpdated string
-	StreamChanged        string
-	StreamJoin           string
-	StreamLeave          string
 }{
 	FunctionsChanged:     FnOnFunctionsChanged,
 	WorkersChanged:       FnOnWorkersChanged,
@@ -97,9 +88,6 @@ var EngineSources = struct {
 	Log:                  FnOnLog,
 	Span:                 FnOnSpan,
 	ConfigurationUpdated: FnOnConfigurationUpdate,
-	StreamChanged:        FnOnStreamChanged,
-	StreamJoin:           FnOnStreamJoin,
-	StreamLeave:          FnOnStreamLeave,
 }
 
 // Log function paths. Mirrors LogFunctions in the Node SDK. Call these with

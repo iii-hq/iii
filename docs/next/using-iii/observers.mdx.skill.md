@@ -208,8 +208,8 @@ are optional except `function_id`:
 | `deliver`     | `envelope`                                                                                        | What the target's first argument is: the `envelope`, or the observed `input` or `output` alone. See [`deliver`](#deliver).        |
 
 The target is the id of a registered function. It can be any function except the observed function
-itself and [private functions](#built-in-event-sources). To name a target in another namespace, pass
-`{ function_id, namespace }`.
+itself and private functions, which only the worker that registers them can call. To name a target
+in another namespace, pass `{ function_id, namespace }`.
 
 ## Args and filters
 
@@ -292,8 +292,8 @@ The engine checks `args` against the `args_format` of the function, a JSON Schem
 worker declares when it registers the function. The observer fails with `INVALID_ARGS` when the
 `args` do not match, or when the function has no `args_format` and the `args` are not empty. The
 worker can also refuse an observer whose `args` it cannot serve, with a code of its own (for example
-`UNKNOWN_DB` or `HTTP_ROUTE_CONFLICT`). [Built-in event sources](#built-in-event-sources) lists the
-`args` of the standard workers.
+`UNKNOWN_DB` or `HTTP_ROUTE_CONFLICT`). Each worker's page on
+[workers.iii.dev](https://workers.iii.dev) lists the `args` its functions take.
 
 ### Filters
 
@@ -519,8 +519,8 @@ after a successful call.
 | `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.                       |
 
 Some functions hand each call to one observer and use its target's result, for example
-[`http::on-request`](#http-routes), which answers the request with it. Their targets receive what
-the function documents (`http::on-request` targets receive the HTTP request).
+[`http::on-request`](https://workers.iii.dev/workers/http), which answers the request with it. Their
+targets receive what the function documents (`http::on-request` targets receive the HTTP request).
 
 ### `capture`
 
@@ -611,9 +611,10 @@ which is the metadata of the observed call: the envelope carries it when `captur
 `metadata`. See [Policy and metadata](#policy-and-metadata).
 
 iii discards the target's return value, except for functions that use it:
-[`http::on-request`](#http-routes) answers the request with it, and
-[`queue::on-message`](#queue-messages) acks the message with it. Observers of the target can see the
-return value as the `output` of the target's call. See [Chain reactions](#chain-reactions).
+[`http::on-request`](https://workers.iii.dev/workers/http) answers the request with it, and
+[`queue::on-message`](https://workers.iii.dev/workers/queue) acks the message with it. Observers of
+the target can see the return value as the `output` of the target's call. See
+[Chain reactions](#chain-reactions).
 
 ## Policy and metadata
 
@@ -698,9 +699,9 @@ amount of 500 or more. It runs at most 4 activations at the same time, and it gi
 </Tabs>
 
 Each call runs the target at most once. The engine does not retry, unless the function documents its
-own delivery (the [queue](#queue-messages) retries a message). A failure of the target does not
-change the observed call. The engine counts each dropped call in the `iii.observer.dropped.total`
-metric, by function and reason.
+own delivery (the [queue](https://workers.iii.dev/workers/queue) worker retries a message). A
+failure of the target does not change the observed call. The engine counts each dropped call in the
+`iii.observer.dropped.total` metric, by function and reason.
 
 ## Observer handle
 
@@ -831,477 +832,21 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
 - When the worker that hosts the observed function disconnects, its observers go back to `pending`
   and become `active` again when the function is registered again.
 
-## Built-in event sources
-
-The standard workers represent their events as functions: an HTTP request is a call of
-`http::on-request`, a cron tick is a call of `cron::on-tick`. Observe them like any function. Their
-`args` say what the worker sets up for the observer.
-
-| Function                   | Worker              | Runs when                                       | Args                                                          |
-| -------------------------- | ------------------- | ----------------------------------------------- | ------------------------------------------------------------- |
-| `http::on-request`         | http                | A request matches the observer's route.         | `{ method, path, middleware_function_ids?, public_webhook? }` |
-| `cron::on-tick`            | cron                | The observer's schedule fires.                  | `{ expression }`                                              |
-| `queue::on-message`        | queue               | A message is published to the observer's topic. | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` |
-| `state::on-changed`        | state               | A key is created, updated, or deleted.          | none; filter on `input.scope` and `input.key`                 |
-| `database::on-row-changed` | database            | A write commits.                                | `{ db, table?, ops? }`                                        |
-| `publish`                  | pubsub (deprecated) | A message is published.                         | none; filter on `input.topic`                                 |
-
-The other workers name their event functions `<worker>::on-<event>`, and each worker's page on
-[workers.iii.dev](https://workers.iii.dev) lists them with their `args` and events.
-
-Except `publish`, which publishers call, these functions are private: only the worker that hosts one
-can call it, and a call from any other worker fails with `FORBIDDEN`. Every worker can observe them.
-A private function cannot be an observer's target.
-
-One function can be the target of any number of observers, of any functions. The same report can run
-on a schedule and on an HTTP request, with one observer each.
-
-### HTTP routes
-
-Observe `http::on-request` with a method and a path to add a route. Each request that matches the
-route runs the observer's target. The target receives the request (`HttpRequest`: `method`, `path`,
-`path_params`, `query_params`, `headers`, `body`), and its return value is the response
-(`{ status_code, headers?, body? }`).
-
-| Arg                       | Required | Default | Meaning                                                        |
-| ------------------------- | -------- | ------- | -------------------------------------------------------------- |
-| `method`                  | yes      |         | The HTTP method to match, case insensitive.                    |
-| `path`                    | yes      |         | The route path, for example `/orders/:id`.                     |
-| `middleware_function_ids` | no       | `[]`    | Functions that run before the target, in this order.           |
-| `public_webhook`          | no       | `false` | Also serve the route on the http worker's restricted listener. |
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import type { HttpRequest } from "@iii-dev/helpers/http";
-
-    worker.registerFunction("orders::get", async (req: HttpRequest) => ({
-      status_code: 200,
-      body: { order_id: req.path_params.id },
-    }));
-
-    // When a GET request reaches /orders/:id, run orders::get. Its result is the response.
-    const route = worker.observe(
-      { function_id: "http::on-request", args: { method: "GET", path: "/orders/:id" } },
-      "orders::get",
-    );
-    await route.ready(); // fails with HTTP_ROUTE_CONFLICT when another observer has the route
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    def get_order(req: dict) -> dict:
-        return {"status_code": 200, "body": {"order_id": req["path_params"]["id"]}}
-
-    worker.register_function("orders::get", get_order)
-
-    # When a GET request reaches /orders/:id, run orders::get. Its result is the response.
-    route = worker.observe(
-        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/orders/:id"}},
-        "orders::get",
-    )
-    route.ready()  # raises ObserveRejection (HTTP_ROUTE_CONFLICT) when another observer has the route
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use std::collections::HashMap;
-
-    use iii_helpers::http::{HttpRequest, HttpResponse};
-    use iii_sdk::{Error, RegisterFunction, Source};
-    use serde_json::{Value, json};
-
-    worker.register_function(
-        "orders::get",
-        RegisterFunction::new(|req: HttpRequest<Value>| {
-            Ok::<_, Error>(HttpResponse {
-                status_code: 200,
-                headers: HashMap::new(),
-                body: json!({ "order_id": req.path_params.get("id") }),
-            })
-        }),
-    );
-
-    // When a GET request reaches /orders/:id, run orders::get. Its result is the response.
-    let route = worker.observe(
-        Source::function("http::on-request").args(json!({ "method": "GET", "path": "/orders/:id" })),
-        "orders::get",
-    );
-    route.ready().await?; // fails with HTTP_ROUTE_CONFLICT when another observer has the route
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import iiihttp "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http"
-
-    worker.RegisterFunction("orders::get", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var req iiihttp.Request[json.RawMessage]
-        if err := json.Unmarshal(data, &req); err != nil {
-            return nil, err
-        }
-        return iiihttp.Response[map[string]string]{
-            StatusCode: 200,
-            Body:       map[string]string{"order_id": req.PathParams["id"]},
-        }, nil
-    })
-
-    // When a GET request reaches /orders/:id, run orders::get. Its result is the response.
-    route, err := worker.Observe(iii.Source{
-        FunctionID: "http::on-request",
-        Args:       iii.Args{"method": "GET", "path": "/orders/:id"},
-    }, "orders::get")
-    if err != nil {
-        log.Fatal(err)
-    }
-    if err := route.Ready(ctx); err != nil {
-        log.Fatal(err) // HTTP_ROUTE_CONFLICT when another observer has the route
-    }
-    ```
-
-  </Tab>
-</Tabs>
-
-- Each request goes to the one observer whose route matches it.
-- The observer's filters read the request as `input`. A request that the filters reject gets a `422`
-  response, and the target does not run.
-- Two observers cannot hold the same method and path shape (`/a/:x` and `/a/:y` are one shape). The
-  second one fails with `HTTP_ROUTE_CONFLICT`.
-- `dispose()` removes the route.
-
-### Schedules
-
-Observe `cron::on-tick` with a cron `expression` to run a target on a schedule. The cron worker runs
-one schedule per distinct expression, and each tick is a call of `cron::on-tick` with
-`{ expression, scheduled_time, actual_time }`. A tick reaches the observers of its expression. A
-tick does not wait for the previous run: a target slower than its schedule runs again while the
-previous run continues, up to `max_in_flight`. Observe with `max_in_flight: 1` to run one tick at a
-time.
-
-| Arg          | Required | Meaning                                                                               |
-| ------------ | -------- | ------------------------------------------------------------------------------------- |
-| `expression` | yes      | A cron expression with seconds: `sec min hour day-of-month month day-of-week [year]`. |
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    type CronTick = { expression: string; scheduled_time: string; actual_time: string };
-
-    worker.registerFunction("reports::daily-summary", async (tick: CronTick) => {
-      await sendDailySummary(tick.scheduled_time);
-      return null;
-    });
-
-    // Every day at 09:00, run reports::daily-summary with the tick.
-    const daily = worker.observe(
-      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, deliver: "input" },
-      "reports::daily-summary",
-    );
-    await daily.ready(); // fails with INVALID_CRON_EXPRESSION for an expression that does not parse
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    def daily_summary(tick: dict) -> None:
-        send_daily_summary(tick["scheduled_time"])
-
-    worker.register_function("reports::daily-summary", daily_summary)
-
-    # Every day at 09:00, run reports::daily-summary with the tick.
-    worker.observe(
-        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "deliver": "input"},
-        "reports::daily-summary",
-    ).ready()
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{Deliver, Error, RegisterFunction, Source};
-    use schemars::JsonSchema;
-    use serde::Deserialize;
-    use serde_json::json;
-
-    #[derive(Debug, Deserialize, JsonSchema)]
-    struct CronTick {
-        expression: String,
-        scheduled_time: String,
-        actual_time: String,
-    }
-
-    worker.register_function(
-        "reports::daily-summary",
-        RegisterFunction::new(|tick: CronTick| {
-            send_daily_summary(&tick.scheduled_time);
-            Ok::<_, Error>(())
-        }),
-    );
-
-    // Every day at 09:00, run reports::daily-summary with the tick.
-    worker
-        .observe(
-            Source::function("cron::on-tick")
-                .args(json!({ "expression": "0 0 9 * * * *" }))
-                .deliver(Deliver::Input),
-            "reports::daily-summary",
-        )
-        .ready()
-        .await?;
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    worker.RegisterFunction("reports::daily-summary", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var tick struct {
-            ScheduledTime string `json:"scheduled_time"`
-        }
-        if err := json.Unmarshal(data, &tick); err != nil {
-            return nil, err
-        }
-        return nil, sendDailySummary(ctx, tick.ScheduledTime)
-    })
-
-    // Every day at 09:00, run reports::daily-summary with the tick.
-    daily, err := worker.Observe(iii.Source{
-        FunctionID: "cron::on-tick",
-        Args:       iii.Args{"expression": "0 0 9 * * * *"},
-        Deliver:    iii.DeliverInput,
-    }, "reports::daily-summary")
-    if err != nil {
-        log.Fatal(err)
-    }
-    if err := daily.Ready(ctx); err != nil {
-        log.Fatal(err) // INVALID_CRON_EXPRESSION for an expression that does not parse
-    }
-    ```
-
-  </Tab>
-</Tabs>
-
-- An expression that does not parse fails the observer with `INVALID_CRON_EXPRESSION`.
-- `dispose()` removes the observer. The cron worker stops a schedule with its last observer.
-- To skip some ticks, add a filter, for example
-  `{ "input.scheduled_time": { "$gte": "2026-11-01T00:00:00Z" } }`.
-
-### Queue messages
-
-Observe `queue::on-message` with a `topic` to consume it. Each observer is a subscriber of the
-topic, with its own consumer, retries, and dead-letter queue. The target receives each message that
-is published to the topic. Its result acks the message. An error retries the message with backoff,
-and after `max_retries` the message moves to the topic's dead-letter queue.
-
-| Arg            | Required | Default | Meaning                                                                                                                                  |
-| -------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `topic`        | yes      |         | The topic to consume.                                                                                                                    |
-| `max_retries`  | no       | `3`     | Retries of a failed delivery before the message moves to the dead-letter queue.                                                          |
-| `backoff_ms`   | no       | `1000`  | The base retry delay, in milliseconds. Retries back off exponentially.                                                                   |
-| `queue_config` | no       |         | More subscriber settings, such as `type` (`fifo` or `concurrent`) and `concurrency`. See [queue](https://workers.iii.dev/workers/queue). |
-| `group`        | no       |         | A consumer group. Observers with the same `group` share one consumer, so the group handles each message once.                            |
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.registerFunction("orders::fulfil", async (order: Order) => {
-      await fulfil(order); // returning acks the message; throwing retries it
-      return { ok: true };
-    });
-
-    // Each message on orders.created runs orders::fulfil, with up to 3 retries.
-    worker.observe(
-      {
-        function_id: "queue::on-message",
-        args: { topic: "orders.created", max_retries: 3, backoff_ms: 1000, group: "fulfilment" },
-      },
-      "orders::fulfil",
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    def fulfil_order(order: dict) -> dict:
-        fulfil(order)  # returning acks the message; raising retries it
-        return {"ok": True}
-
-    worker.register_function("orders::fulfil", fulfil_order)
-
-    # Each message on orders.created runs orders::fulfil, with up to 3 retries.
-    worker.observe(
-        {
-            "function_id": "queue::on-message",
-            "args": {"topic": "orders.created", "max_retries": 3, "backoff_ms": 1000, "group": "fulfilment"},
-        },
-        "orders::fulfil",
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{Error, RegisterFunction, Source};
-    use serde_json::json;
-
-    worker.register_function(
-        "orders::fulfil",
-        RegisterFunction::new(|order: Order| {
-            fulfil(&order)?; // Ok acks the message; an Err retries it
-            Ok::<_, Error>(json!({ "ok": true }))
-        }),
-    );
-
-    // Each message on orders.created runs orders::fulfil, with up to 3 retries.
-    worker.observe(
-        Source::function("queue::on-message").args(json!({
-            "topic": "orders.created",
-            "max_retries": 3,
-            "backoff_ms": 1000,
-            "group": "fulfilment",
-        })),
-        "orders::fulfil",
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    worker.RegisterFunction("orders::fulfil", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var order Order
-        if err := json.Unmarshal(data, &order); err != nil {
-            return nil, err
-        }
-        if err := fulfil(ctx, order); err != nil {
-            return nil, err // retried with backoff, then moved to the dead-letter queue
-        }
-        return map[string]bool{"ok": true}, nil // acks the message
-    })
-
-    // Each message on orders.created runs orders::fulfil, with up to 3 retries.
-    worker.Observe(iii.Source{
-        FunctionID: "queue::on-message",
-        Args: iii.Args{
-            "topic":       "orders.created",
-            "max_retries": 3,
-            "backoff_ms":  1000,
-            "group":       "fulfilment",
-        },
-    }, "orders::fulfil")
-    ```
-
-  </Tab>
-</Tabs>
-
-- Every subscriber of a topic receives every message. Observers that share a `group` share one
-  consumer.
-- The observer's filters read the message as `input`. A message that the filters reject is acked,
-  and the target does not run.
-- While the observer is `suspended`, its messages stay queued. A restarted worker that observes
-  under the same `id`, with the same worker name and, under RBAC, the same principal (see
-  [Observer states](#observer-states)), gets them from its observer.
-- `dispose()` stops the observer's consumer.
-
-### State changes
-
-Each create, update, and delete of a key in the state worker runs `state::on-changed` with the
-change: `{ event_type, scope, key, old_value, new_value }`. `event_type` is `state:created`,
-`state:updated`, or `state:deleted`. `old_value` is `null` for a created key, and `new_value` is
-`null` for a deleted key. `state::on-changed` takes no `args`: select the changes with filters on
-`input.scope`, `input.key`, and `input.event_type`.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    // When a key in the carts scope changes, run carts::recalculate with the change.
-    worker.observe(
-      {
-        function_id: "state::on-changed",
-        filters: { "input.scope": { $eq: "carts" } },
-        deliver: "input",
-      },
-      "carts::recalculate",
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    # When a key in the carts scope changes, run carts::recalculate with the change.
-    worker.observe(
-        {
-            "function_id": "state::on-changed",
-            "filters": {"input.scope": {"$eq": "carts"}},
-            "deliver": "input",
-        },
-        "carts::recalculate",
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{Deliver, Source};
-    use serde_json::json;
-
-    // When a key in the carts scope changes, run carts::recalculate with the change.
-    worker.observe(
-        Source::function("state::on-changed")
-            .filters(json!({ "input.scope": { "$eq": "carts" } }))
-            .deliver(Deliver::Input),
-        "carts::recalculate",
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    // When a key in the carts scope changes, run carts::recalculate with the change.
-    worker.Observe(iii.Source{
-        FunctionID: "state::on-changed",
-        Filters:    iii.Filters{"input.scope": iii.Op{"$eq": "carts"}},
-        Deliver:    iii.DeliverInput,
-    }, "carts::recalculate")
-    ```
-
-  </Tab>
-</Tabs>
-
-### Row changes
-
-Each committed write to a database of the database worker runs `database::on-row-changed` with the
-change: `{ db, schema, table, op, affected_rows, returning?, truncated?, at }`. `op` is `insert`,
-`update`, `delete`, or `other`. The example in [Args and filters](#args-and-filters) observes it.
-
-| Arg     | Required | Meaning                                                                                    |
-| ------- | -------- | ------------------------------------------------------------------------------------------ |
-| `db`    | yes      | A database connection of the database worker.                                              |
-| `table` | no       | The table, by its bare lowercase name (`orders`). Required on a `native` capture database. |
-| `ops`   | no       | The operations to deliver: any of `insert`, `update`, `delete`, `other`.                   |
-
-The database worker refuses an observer that it cannot serve, for example with `UNKNOWN_DB`. For
-writes made through the database worker, `caller.parent` names the worker that made the write, so a
-filter on `caller.parent.worker_name` can skip a worker's own writes. See
-[database](https://workers.iii.dev/workers/database) for the capture modes and every code.
-
 ## Engine-hosted event sources
 
 The engine hosts event sources as functions in the `default` namespace, and you observe them with
 filters on the event. A worker in any namespace observes `engine::*` and `configuration::*` sources
-without naming a namespace. For `observability::*` and `stream::*` sources, a worker in another
-namespace names `namespace: "default"`.
+without naming a namespace. For `observability::*` sources, a worker in another namespace names
+`namespace: "default"`.
 
-| Function                              | Event                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::on-functions-changed`        | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`. `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
-| `engine::on-workers-changed`          | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                                                                                                                                                 |
-| `engine::on-observers-changed`        | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                                                                                                                                     |
-| `configuration::on-updated`           | `{ type: "configuration", event_type, id, name, description, schema, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. The event carries no value: read it with `configuration::get`.                                                                          |
-| `observability::on-log`               | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                                                                                                                                        |
-| `observability::on-span`              | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
-| `stream::on-changed`                  | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id?, event }`, `event_type` one of `create`, `update`, `delete`, `sync`.                                                                                                                                                                          |
-| `stream::on-join`, `stream::on-leave` | iii-stream (deprecated): `{ event_type, timestamp, stream_name, group_id, id? }`.                                                                                                                                                                                                                                           |
+| Function                       | Event                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::on-functions-changed` | `{ event: "functions_changed", functions: [{ function_id, namespace, worker_name, description?, metadata?, args_format?, private?, observable?, observer_count }] }`. `args_format`, `private: true`, and `observable: false` appear when the function sets them. Changes within about 100 ms are coalesced into one event. |
+| `engine::on-workers-changed`   | `{ event, worker_id }`, `event` one of `worker_connected`, `worker_disconnected`, `worker_metadata_updated`                                                                                                                                                                                                                 |
+| `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one event for each state change of an observer.                                                                                                                                                                                                                     |
+| `configuration::on-updated`    | `{ type: "configuration", event_type, id, name, description, schema, metadata? }`. `event_type` is `configuration:registered`, `configuration:updated`, or `configuration:deleted`. The event carries no value: read it with `configuration::get`.                                                                          |
+| `observability::on-log`        | One log record: `severity_text`, `severity_number`, `body`, `attributes`, `service_name`, `trace_id`, `span_id`, ...                                                                                                                                                                                                        |
+| `observability::on-span`       | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
 
 Each of them is a private function whose handler returns the event. So `input` and `output` are both
 the event, and `deliver: "input"` and `deliver: "output"` both give the target the event. Their
@@ -1314,17 +859,17 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    // Reload the stream worker's settings when its configuration entry changes.
+    // Reload the billing worker's settings when its configuration entry changes.
     worker.observe(
       {
         function_id: "configuration::on-updated",
         deliver: "input",
         filters: {
-          "input.id": { $eq: "iii-stream" },
+          "input.id": { $eq: "billing" },
           "input.event_type": { $eq: "configuration:updated" },
         },
       },
-      "stream::reload",
+      "billing::reload",
     );
 
     // Alert on error logs.
@@ -1350,11 +895,11 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
             "function_id": "configuration::on-updated",
             "deliver": "input",
             "filters": {
-                "input.id": {"$eq": "iii-stream"},
+                "input.id": {"$eq": "billing"},
                 "input.event_type": {"$eq": "configuration:updated"},
             },
         },
-        "stream::reload",
+        "billing::reload",
     )
 
     # Alert on error logs.
@@ -1379,10 +924,10 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
         Source::function("configuration::on-updated")
             .deliver(Deliver::Input)
             .filters(json!({
-                "input.id": { "$eq": "iii-stream" },
+                "input.id": { "$eq": "billing" },
                 "input.event_type": { "$eq": "configuration:updated" },
             })),
-        "stream::reload",
+        "billing::reload",
     );
 
     // Alert on error logs.
@@ -1402,10 +947,10 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
         FunctionID: "configuration::on-updated",
         Deliver:    iii.DeliverInput,
         Filters: iii.Filters{
-            "input.id":         iii.Op{"$eq": "iii-stream"},
+            "input.id":         iii.Op{"$eq": "billing"},
             "input.event_type": iii.Op{"$eq": "configuration:updated"},
         },
-    }, "stream::reload")
+    }, "billing::reload")
 
     // Alert on error logs.
     worker.Observe(iii.Source{
@@ -1798,8 +1343,8 @@ To change or deny observers in the RBAC configuration, see
 - With an engine older than 0.25, `observe` fails with `UNSUPPORTED`.
 - With a 0.25 engine, observers work. A function registered with `args_format`, `private: true`, or
   `observable: false`, or that sets `onObservationMatch` or `onObservationDeliver`, needs a 0.26
-  engine: the SDK does not register it on a 0.25 engine, so its observers stay `pending`. The
-  [built-in event sources](#built-in-event-sources) are such functions.
+  engine: the SDK does not register it on a 0.25 engine, so its observers stay `pending`. The event
+  functions of workers such as `http`, `cron` and `queue` are such functions.
 - Functions hosted by workers on older SDKs are observable. The engine evaluates the filters of
   every routed call, whichever SDK hosts the function, and the hosting SDK reports its own local
   calls.

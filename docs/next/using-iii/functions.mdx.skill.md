@@ -273,7 +273,7 @@ function that represents it:
   </Tab>
 </Tabs>
 
-See [Observers](./observers) and [Built-in event sources](./observers#built-in-event-sources).
+See [Observers](./observers).
 
 ### Every function is observable
 
@@ -352,9 +352,9 @@ behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.
 </Warning>
 
 - **HTTP**: Serves HTTP routes. Observe `http::on-request` with a method and a path to add a route.
-  See [HTTP routes](./observers#http-routes) and [http](https://workers.iii.dev/workers/http).
+  See [http](https://workers.iii.dev/workers/http).
 - **Cron**: Runs functions on a schedule. Observe `cron::on-tick` with an expression. See
-  [Schedules](./observers#schedules) and [cron](https://workers.iii.dev/workers/cron).
+  [cron](https://workers.iii.dev/workers/cron).
 - **State**: KV-style state with scoped key namespaces (distinct from
   [routing namespaces](../understanding-iii/namespaces)). Each create, update, and delete runs
   `state::on-changed`, which you observe. See [state](https://workers.iii.dev/workers/state).

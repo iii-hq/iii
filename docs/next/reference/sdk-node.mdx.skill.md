@@ -1190,9 +1190,6 @@ None takes args; filter on the event (`input`) instead.
 | `LOG` | `"observability::on-log"` | Yes | A log record. |
 | `OBSERVERS_CHANGED` | `"engine::on-observers-changed"` | Yes | An observer changed state: `{ observer_id, function_id, target, state, reason? }`. |
 | `SPAN` | `"observability::on-span"` | Yes | A finished span. |
-| `STREAM_CHANGED` | `"stream::on-changed"` | Yes | A stream item changed; filter on `input.stream_name`, `input.group_id`. |
-| `STREAM_JOIN` | `"stream::on-join"` | Yes | A client joined a stream group. |
-| `STREAM_LEAVE` | `"stream::on-leave"` | Yes | A client left a stream group. |
 | `WORKERS_CHANGED` | `"engine::on-workers-changed"` | Yes | A worker connected or left. |
 
 ---
