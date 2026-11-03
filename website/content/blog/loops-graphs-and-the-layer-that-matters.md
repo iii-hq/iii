@@ -79,7 +79,7 @@ system that you can deploy later.
 Every step of that session is contained inside what we call the engine. Every
 function call the agent makes is a span on one trace. Every tool it touches
 is a worker (aka service) in the open source catalog at
-[workers.iii.dev](https://workers.iii.dev). The session chat is the design
+[iii.dev/registry](https://iii.dev/registry). The session chat is the design
 conversation and the trace is the execution record, and they are all unified
 over the same base system.
 
@@ -155,7 +155,7 @@ If you've made it this far, be sure to explore our earlier posts at
 iii is open source. The engine is at
 [github.com/iii-hq/iii](https://github.com/iii-hq/iii). The harness workers
 are at [github.com/iii-hq/workers](https://github.com/iii-hq/workers). The
-registry is at [workers.iii.dev](https://workers.iii.dev). The docs are at
+registry is at [iii.dev/registry](https://iii.dev/registry). The docs are at
 [iii.dev/docs](https://iii.dev/docs). Come find the team in Discord at
 [discord.gg/iiidev](https://discord.gg/iiidev).
 

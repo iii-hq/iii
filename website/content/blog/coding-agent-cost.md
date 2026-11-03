@@ -219,7 +219,7 @@ Per-task worksheet using our lowest-cost run (DeepSeek V4.1 Flash, low thinking,
 
 We provide the AI Agent Harness; you choose the model provider and pay for its usage separately.
 
-You can bring a subscription, a DeepSeek, OpenAI, Anthropic, or OpenCode Go API key, or run a local model through the [llama.cpp provider](https://workers.iii.dev/workers/provider-llamacpp). The engine routes your requests through whichever provider you've added and we support all the major providers.
+You can bring a subscription, a DeepSeek, OpenAI, Anthropic, or OpenCode Go API key, or run a local model through the [llama.cpp provider](https://iii.dev/registry/workers/provider-llamacpp). The engine routes your requests through whichever provider you've added and we support all the major providers.
 
 The `harness::metrics` output reports turns, Function calls, tokens, and estimated cost across a session tree, with child sessions already included.
 

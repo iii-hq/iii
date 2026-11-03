@@ -25,7 +25,7 @@ export function Footer({ container }: { container?: string } = {}) {
       items: [
         { label: 'Docs', href: links.docs },
         { label: 'Quickstart', href: links.quickstart },
-        { label: 'Worker registry', href: links.registry, external: true },
+        { label: 'Worker registry', href: links.registry },
         { label: 'Roadmap', href: links.roadmap },
         { label: 'Benchmarks', href: links.benchmarks },
         { label: 'Manifesto', href: links.manifesto },

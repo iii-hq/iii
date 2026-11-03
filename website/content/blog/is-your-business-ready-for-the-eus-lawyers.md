@@ -152,6 +152,6 @@ You have until December 2, 2027 to be able to answer. You have until roughly now
 
 If you want to try using iii for your next or current project then visit our install guide to get started: [iii.dev/docs/install](https://iii.dev/docs/install). We've also got a Discord where someone is always around to help out: [discord.gg/iiidev](https://discord.gg/iiidev).
 
-Website: [iii.dev](https://iii.dev). Github: [github.com/iii-hq/iii](https://github.com/iii-hq/iii). Worker registry: [workers.iii.dev](https://workers.iii.dev/). Docs: [iii.dev/docs](https://iii.dev/docs).
+Website: [iii.dev](https://iii.dev). Github: [github.com/iii-hq/iii](https://github.com/iii-hq/iii). Worker registry: [iii.dev/registry](https://iii.dev/registry). Docs: [iii.dev/docs](https://iii.dev/docs).
 
 Mike Piccolo, Founder & CEO [@iiidevs](https://x.com/iiidevs)

@@ -39,7 +39,7 @@ If you strip a production agent harness back to its responsibilities, you get a 
 
 Every serious agent harnesses most of these. The expensive ones do all of them. The cheap ones cut corners and rebuild the corners later when they hit production. The frameworks bundle them into a monolith and ship one version of each. That last part is the part that costs you, because a year in, you find out that the policy engine you want is not the policy engine the framework ships, and replacing it means replacing the harness.
 
-The iii harness ships every one of those thirteen jobs as a separate worker on the [workers.iii.dev](https://workers.iii.dev/) registry. Each speaks the same WebSocket protocol. Each registers functions and triggers on the same engine bus. Each is `iii worker add`\-able, swappable, and writable in any language with an SDK.
+The iii harness ships every one of those thirteen jobs as a separate worker on the [iii.dev/registry](https://iii.dev/registry) worker registry. Each speaks the same WebSocket protocol. Each registers functions and triggers on the same engine bus. Each is `iii worker add`\-able, swappable, and writable in any language with an SDK.
 
 ## **The stack, by worker**
 
@@ -151,7 +151,7 @@ If you've been running an agent on top of a framework and feeling the same bound
 
 The fastest way to feel the argument is to clone [github.com/iii-hq/workers](https://github.com/iii-hq/workers), `pnpm install`, `pnpm build`, and run the composite entry point. You'll get the full fourteen-worker harness pointed at an iii engine. You can disable any worker by removing its entry from the boot list. You can swap any worker by writing a replacement that registers the same function ids. You can extend any worker by adding a subscriber to its hook topics. `hook-fanout::publish_collect` is the generic every iii hook builds on.
 
-The docs live at [iii.dev/docs](https://iii.dev/docs). The engine is at [github.com/iii-hq/iii](https://github.com/iii-hq/iii). The worker registry is at [workers.iii.dev](https://workers.iii.dev). The harness bundle is at [github.com/iii-hq/workers/harness](https://github.com/iii-hq/workers/tree/main/harness).
+The docs live at [iii.dev/docs](https://iii.dev/docs). The engine is at [github.com/iii-hq/iii](https://github.com/iii-hq/iii). The worker registry is at [iii.dev/registry](https://iii.dev/registry). The harness bundle is at [github.com/iii-hq/workers/harness](https://github.com/iii-hq/workers/tree/main/harness).
 
 ## **The bet**
 

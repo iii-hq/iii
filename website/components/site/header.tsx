@@ -46,7 +46,7 @@ const plainLinks = [
   { label: 'Docs', href: links.docs, icon: IconDocument, external: false },
   { label: 'Blog', href: links.blog, icon: IconPaper, external: false },
   { label: 'Roadmap', href: links.roadmap, icon: IconDiscovery, external: false },
-  { label: 'Worker registry', href: links.registry, icon: IconPackage, external: true },
+  { label: 'Worker registry', href: links.registry, icon: IconPackage, external: false },
 ]
 
 const focusRing = 'outline-none focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-2'
