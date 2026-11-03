@@ -53,14 +53,16 @@ export function collector(sdk: IIIClient, functionId: string): Activation[] {
   return got
 }
 
-/** Counts every frame the worker sends (all of them go through `sendMessageRaw`). */
-export function frameCounter(sdk: IIIClient): { count: number; types: string[] } {
-  const counter = { count: 0, types: [] as string[] }
+/** Records every frame the worker sends (all of them go through `sendMessageRaw`). */
+export function frameCounter(sdk: IIIClient): { count: number; types: string[]; frames: Record<string, unknown>[] } {
+  const counter = { count: 0, types: [] as string[], frames: [] as Record<string, unknown>[] }
   const internal = sdk as unknown as { sendMessageRaw(data: string): void }
   const send = internal.sendMessageRaw.bind(internal)
   internal.sendMessageRaw = (data: string) => {
+    const frame = JSON.parse(data) as Record<string, unknown>
     counter.count++
-    counter.types.push(String(JSON.parse(data).type))
+    counter.types.push(String(frame.type))
+    counter.frames.push(frame)
     send(data)
   }
   return counter

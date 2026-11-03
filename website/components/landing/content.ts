@@ -5,7 +5,7 @@
 
 export const hero = {
   /* The three-i glyph in the pill reads as the three primitives: everything in iii is one of these. */
-  eyebrow: 'Three primitives: Function, Trigger, Worker',
+  eyebrow: 'Three primitives: Worker, Function, Observer',
   /* Reviewer: "iii isn't just backend" → "More application. Less infrastructure." */
   headline: ['More application.', 'Less infrastructure.'],
   /* 2026-10-05 sync: the doc's subtitle is folded into the copy, one paragraph under the headline. The hero sets the
@@ -115,7 +115,7 @@ export const story = {
     name: 'Reactivity',
     title: 'One event. Many reactions.',
     description:
-      'Triggers make your system reactive. A pull request opens, and independent handlers review the code, notify the team, and run the tests.',
+      'Observers make your system reactive. A pull request opens, and independent handlers review the code, notify the team, and run the tests.',
   },
   summary: {
     title: 'Built for C.O.D.E.R.',
@@ -164,17 +164,17 @@ export const useCases = {
     id: 'platform',
     label: 'App platform',
     solution:
-      'Build backends from functions running across languages, processes, and machines. A trigger starts the work, iii runs every call, and one trace follows it to the end.',
+      'Build backends from functions running across languages, processes, and machines. An event starts the work, iii runs every call, and one trace follows it to the end.',
     picker: 'Workload',
-    /* Trigger types and registry function ids checked against iii-hq/workers (http, cron, queue, database, storage,
-       state, llm-router). Functions under your own namespace (orders::, etl::, reports::, train::, payments::) are
-       the code you write. */
+    /* Source functions and registry function ids checked against iii-hq/workers (http, cron, queue, database,
+       storage, state, llm-router). Each workload's `source` is the function its first call observes. Functions under
+       your own namespace (orders::, etl::, reports::, train::, payments::) are the code you write. */
     workloads: [
       {
         id: 'api',
         label: 'API backend',
         detail: 'HTTP routes to functions in any language.',
-        trigger: { type: 'http', detail: 'POST /orders' },
+        source: { fn: 'http::on-request', detail: 'POST /orders' },
         calls: [
           { fn: 'orders::create', worker: 'api · Python', detail: 'your code', ms: 92 },
           { fn: 'database::execute', worker: 'database · Rust', detail: '1 row written', ms: 14 },
@@ -186,7 +186,7 @@ export const useCases = {
         id: 'pipeline',
         label: 'Data pipeline',
         detail: 'Durable queues feeding transforms and storage.',
-        trigger: { type: 'durable:subscriber', detail: 'queue=ingest' },
+        source: { fn: 'queue::on-message', detail: 'topic=ingest' },
         calls: [
           { fn: 'etl::transform', worker: 'etl · Python', detail: '2,400 records', ms: 318 },
           { fn: 'database::execute', worker: 'database · Rust', detail: '2,400 rows written', ms: 41 },
@@ -198,7 +198,7 @@ export const useCases = {
         id: 'scheduled',
         label: 'Scheduled jobs',
         detail: 'Cron expressions that call functions on time.',
-        trigger: { type: 'cron', detail: '0 0 9 * * * *' },
+        source: { fn: 'cron::on-tick', detail: '0 0 9 * * * *' },
         calls: [
           { fn: 'reports::daily-summary', worker: 'reports · TypeScript', detail: 'your code', ms: 48 },
           { fn: 'database::query', worker: 'database · Rust', detail: "yesterday's orders", ms: 22 },
@@ -211,7 +211,7 @@ export const useCases = {
         id: 'training',
         label: 'Training job',
         detail: 'Long-running work on the machines that have the hardware.',
-        trigger: { type: 'durable:subscriber', detail: 'queue=training' },
+        source: { fn: 'queue::on-message', detail: 'topic=training' },
         calls: [
           { fn: 'train::epoch', worker: 'train · Python · GPU host', detail: 'epoch 12 of 50', ms: 184_000 },
           { fn: 'storage::put', worker: 'storage · Rust', detail: 'checkpoint-12.pt', ms: 2_140 },
@@ -223,11 +223,11 @@ export const useCases = {
         id: 'webhooks',
         label: 'Webhooks',
         detail: 'Receive an event, record it, and fan it out.',
-        trigger: { type: 'http', detail: 'POST /webhooks/payments' },
+        source: { fn: 'http::on-request', detail: 'POST /webhooks/payments' },
         calls: [
           { fn: 'payments::record', worker: 'payments · TypeScript', detail: 'your code', ms: 31 },
           { fn: 'database::execute', worker: 'database · Rust', detail: 'payment stored', ms: 12 },
-          { fn: 'iii::durable::publish', worker: 'queue · Rust', detail: 'queue=notify', ms: 4 },
+          { fn: 'iii::durable::publish', worker: 'queue · Rust', detail: 'topic=notify', ms: 4 },
         ],
         result: 'Payment recorded. Downstream consumers pick it up from the queue.',
       },
@@ -282,10 +282,10 @@ export const numbers = {
     },
     { id: 'concurrent', value: '2.8', unit: 'µs', label: 'per call, 128 at once', detail: '354 µs for all 128 calls' },
     {
-      id: 'triggers',
+      id: 'observers',
       value: '3.9',
       unit: 'µs',
-      label: 'per event, 128 triggers at once',
+      label: 'per event, 128 observers at once',
       detail: '500 µs for all 128 events',
     },
     { id: 'kv-read', value: '0.378', unit: 'µs', label: 'KV cache read', detail: '2.6M reads per second' },

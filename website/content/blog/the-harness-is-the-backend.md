@@ -48,7 +48,7 @@ true adoption and acceptance of agentic infrastructure into "the backend".
 Here's how most agentic architectures work. The harness is a Python process
 (or TypeScript, or a managed framework) that wraps the model. When the agent
 decides to act, the harness translates a tool call into an HTTP request which
-in turn triggers something to happen on the backend like a queue publish or a
+in turn causes something to happen on the backend like a queue publish or a
 database write. The backend is its own world that is kept separate from the
 agents.
 
@@ -90,8 +90,8 @@ Eventually I realized that I was approaching this solution from the top down
 instead of bottom up. Once I realized that, the backend became very simple:
 
 > A backend is composed of three essential elements: **workers** that
-> orchestrate work, **triggers** that invoke these services, and **functions**
-> within the services that do the actual work.
+> orchestrate work, **functions** within the services that do the actual work,
+> and **observers** that run one function when another runs.
 
 ## Abstracting the Backend
 
@@ -105,16 +105,15 @@ everyone.
 iii works just like my description above:
 
 - A **Function** is a unit of work with a stable identifier (e.g. `orders::validate`) that receives input and optionally returns output. It can live in any process, in any language.
-- A **Trigger** is what causes a function to run — a direct call, an HTTP endpoint, a cron schedule, a queue subscription, a state change, a stream event, or anything else. Triggers are declarative: the worker says "this function runs when this thing happens," and iii handles routing, serialization, and delivery.
-- A **Worker** is any process that connects to the engine and registers functions and triggers.
+- An **Observer** connects two functions: when the source runs, the target runs. An HTTP request, a cron tick, a queue message, and a state change are each a call of a source function (`http::on-request`, `cron::on-tick`, `queue::on-message`, `state::on-changed`). Observers are declarative: the worker says "this function runs when that one runs," and iii handles routing, serialization, and delivery.
+- A **Worker** is any process that connects to the engine, registers functions, and calls them.
 
 A TypeScript API service is a worker. A Python ML pipeline is a worker. A Rust
 microservice is a worker. And an agent is a worker.
 
 This is the idea that changes everything. An agent connects to the engine,
-registers functions and triggers, persists context through `state::set`,
-hands off work through queue-backed triggers, and broadcasts results via
-pub/sub. It doesn't call "the backend" through a separate integration layer.
+registers functions and observers, persists context through `state::set`,
+hands off work through queues, and broadcasts results via pub/sub. It doesn't call "the backend" through a separate integration layer.
 It participates in the same system, with the same primitives, as everything
 else.
 
@@ -123,56 +122,60 @@ const iii = registerWorker('ws://localhost:49134', { workerName: 'agentic-backen
 
 iii.registerFunction('agents::researcher', async (data) => { // the unit of work
   // Python Worker: requests + duckduckgo-search
-  const sources = await iii.trigger({
+  const sources = await iii.call({
     function_id: 'web::search',
     payload: { query: data.topic, limit: 10 }
   })
   // Rust Worker: scraper + tokio, fetched in parallel
-  const pages = await iii.trigger({
+  const pages = await iii.call({
     function_id: 'web::scrape',
     payload: { urls: sources.map(s => s.url) }
   })
   // TypeScript Worker: wraps the OpenAI SDK
-  const findings = await iii.trigger({
+  const findings = await iii.call({
     function_id: 'llm::summarize',
     payload: { topic: data.topic, documents: pages }
   })
-  await iii.trigger({ // Rust Worker: persist to shared state
+  await iii.call({ // Rust Worker: persist to shared state
     function_id: 'state::set',
     payload: { scope: 'research-tasks', key: data.task_id, value: findings }
   })
-  iii.trigger({ // TypeScript Worker: hand off to the critic
+  iii.call({ // TypeScript Worker: hand off to the critic
     function_id: 'agents::critic',
     payload: { task_id: data.task_id },
-    action: TriggerAction.Enqueue({ queue: 'agent-tasks' }) // run in the queue
+    action: CallAction.Enqueue({ queue: 'agent-tasks' }) // run in the queue
   })
   return findings
 })
 
-iii.registerTrigger({ // HTTP entrypoint
-  type: 'http',
-  function_id: 'agents::researcher',
-  config: { api_path: '/agents/research', http_method: 'POST' }
-})
+iii.observe( // HTTP entrypoint
+  { function_id: 'http::on-request', args: { method: 'POST', path: '/agents/research' } },
+  'agents::researcher'
+)
 
-iii.registerTrigger({ // also runs on a pending state row
-  type: 'state',
-  function_id: 'agents::researcher',
-  config: { scope: 'research-tasks', condition: 'status == "pending"' }
-})
+iii.observe( // also runs on a pending state row
+  {
+    function_id: 'state::on-changed',
+    filters: {
+      'input.scope': { $eq: 'research-tasks' },
+      'input.new_value.status': { $eq: 'pending' }
+    }
+  },
+  'agents::researcher'
+)
 ```
 
-Three calls. `registerFunction` defines the work. `registerTrigger` binds it
-to the world — in this case an HTTP endpoint and a state change reaction, for
-the same function. The researcher is now callable via a POST request and
-automatically fires whenever a research task enters a pending state. Add
-another trigger and it also runs on a cron schedule. The function doesn't
-change. The triggers compose.
+Three calls. `registerFunction` defines the work. `observe` binds it to the
+world: in this case an HTTP route and a state change, for the same function.
+The researcher is now callable via a POST request and automatically runs
+whenever a research task enters a pending state. Observe `cron::on-tick` as
+well and it also runs on a schedule. The function doesn't change. The
+observers compose.
 
-The agent stores state with the same `trigger()` call a payment service would
+The agent stores state with the same `call()` a payment service would
 use. It hands off to the critic through the same queue mechanism an order
 pipeline would use. The agent's "tools" are functions. Its "memory" is state.
-Its "orchestration" is triggers and composition. There is no special agent
+Its "orchestration" is observers and composition. There is no special agent
 infrastructure because there doesn't need to be.
 
 **The harness is the backend.**
@@ -189,7 +192,7 @@ Another. Each has its own internals, its own lifecycle, its own integration
 story. The platform is a catalog. Your job is to shop it and assemble it.
 
 In iii, the answer to almost any question is the same: add a worker, which in
-turn registers triggers and functions.
+turn registers functions.
 
 I want sandboxing. Add a worker. I want an agent that researches topics. Add
 a worker. I want real-time streaming. Add a worker. I want go-to-market
@@ -207,7 +210,7 @@ This is not just architectural uniformity. It's a collapse of categories. In
 traditional systems, every capability lives in its own ontology. Queues have
 broker semantics, HTTP has routing semantics, cron has scheduling semantics,
 agents have orchestration semantics. In iii, they are all the same thing: a
-process that registers functions and triggers. The semantics live in the
+process that registers functions. The semantics live in the
 functions, not in the infrastructure.
 
 Paradigm shifts in software don't add features. They collapse categories.
@@ -239,7 +242,7 @@ functions distribute across the system, and any agent can use them at will;
 or even extend the system with their own workers.
 
 **Live observability.** iii's observability is built on OpenTelemetry. Every
-function invocation carries a trace ID. Every `trigger()` call propagates it
+function invocation carries a trace ID. Every `call()` propagates it
 across workers, across languages, across queue handoffs. Every log emitted
 through the iii Logger is automatically correlated to the active trace and
 span, emitted as structured OpenTelemetry LogRecords, and routed to whichever
@@ -248,7 +251,7 @@ separate component to install and integrate, it's just another worker.
 Traces, metrics, and structured logs are produced by the engine itself, not
 by application-level middleware.
 
-When an agent calls a tool that enqueues a message that triggers a downstream
+When an agent calls a tool that enqueues a message that runs a downstream
 function that writes to state, the entire chain is one trace. Not three
 separate systems connected with timestamp correlation or manually tracked
 trace ids. One trace, across languages, across workers, across the
@@ -262,14 +265,14 @@ Here is where the model gets truly recursive.
 iii supports hardware-isolated microVM workers. The sandbox functionality
 itself is a worker with its own filesystem, network stack, and process tree.
 You create a worker with a single command: `iii worker add ./my-worker`. The
-sandbox worker connects to the engine, registers functions and triggers, and
+sandbox worker connects to the engine, registers functions, and
 participates in the system exactly like every other worker.
 
 Now consider what happens when an agent can do this.
 
 An agent worker can also spin up a new sandbox worker at runtime. That
-sandbox gets its own isolated environment. It registers its own functions and
-triggers. Those functions immediately appear in the live catalog. Other
+sandbox gets its own isolated environment. It registers its own functions.
+Those functions immediately appear in the live catalog. Other
 agents and services can invoke them. When the sandbox is no longer needed, it
 disconnects and its functions unregister.
 
@@ -294,7 +297,7 @@ space, not about the design space itself.
 
 When agents are workers, thin versus thick is just a question of how many
 functions you register and how you compose them. A thin harness is an agent
-worker with a few functions that lets the model decide what to `trigger()`
+worker with a few functions that lets the model decide what to `call()`
 next. A thick harness is an agent worker with more functions, explicit
 approval gates, and conditional logic before enqueuing the next step. It's
 the same primitives and system, but a different pattern.
@@ -319,7 +322,7 @@ or what language it's written in.
 iii ships SDKs for TypeScript, Python, and Rust. But those aren't the
 boundaries of the system. They're three implementations of an open wire
 protocol: JSON over WebSocket. The engine doesn't know what language is on
-the other end of the connection. It sees functions, triggers, and a
+the other end of the connection. It sees functions, observers, and a
 connection. If your team writes Go, or Java, or Swift, or Zig, you write a
 small SDK that speaks the protocol and you're a first-class participant. The
 primitives interface is the contract. Everything else is a design pattern.
@@ -337,7 +340,7 @@ function, does work, and disconnects is a worker. The engine doesn't
 distinguish between these. Every new language, every new device, every new
 runtime that implements the primitives interface gets the full system for
 free: live discovery, live extensibility, live observability, durable
-triggers, cross-everything invocation. Not because we built a special
+queues, cross-everything invocation. Not because we built a special
 integration for each one, but because the primitive allows this composition.
 
 ## The bet
@@ -347,8 +350,8 @@ debate matters, but it takes for granted that the harness is its own world,
 separate from the backend and separate from the infrastructure that actually
 runs when a tool fires.
 
-iii makes a different bet: that the right primitives — worker, trigger,
-function — are small enough and universal enough that the question "what can
+iii makes a different bet: that the right primitives (worker, function,
+observer) are small enough and universal enough that the question "what can
 participate in this system?" has the answer: anything. A cloud service. An
 agent. A browser. A microcontroller. A sandbox an agent just spun up. They
 all compose the same way. They all discover each other. They all trace the

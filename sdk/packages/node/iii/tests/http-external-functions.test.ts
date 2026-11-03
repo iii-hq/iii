@@ -76,7 +76,7 @@ class WebhookProbe {
     }
 
     await new Promise<void>((resolve, reject) => {
-      this.server.close(error => {
+      this.server.close((error) => {
         if (error) {
           reject(error)
           return
@@ -130,7 +130,7 @@ function uniqueFunctionId(prefix: string): string {
 describe('HTTP external functions', () => {
   it('delivers events to an externally registered HTTP function', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -144,17 +144,14 @@ describe('HTTP external functions', () => {
     let httpFn: { unregister(): void } | undefined
 
     try {
-      httpFn = iii.registerFunction(
-        functionId,
-        {
-          url: webhookProbe.url(),
-          method: 'POST',
-          timeout_ms: 3000,
-        },
-      )
+      httpFn = iii.registerFunction(functionId, {
+        url: webhookProbe.url(),
+        method: 'POST',
+        timeout_ms: 3000,
+      })
       await sleep(300)
 
-      await execute(async () => iii.trigger({ function_id: functionId, payload }))
+      await execute(async () => iii.call({ function_id: functionId, payload }))
 
       const webhook = await webhookProbe.waitForWebhook(7000)
 
@@ -169,7 +166,7 @@ describe('HTTP external functions', () => {
 
   it('registers and unregisters an HTTP function', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -182,23 +179,20 @@ describe('HTTP external functions', () => {
     let httpFn: { id: string; unregister(): void } | undefined
 
     try {
-      httpFn = iii.registerFunction(
-        functionId,
-        {
-          url: webhookProbe.url(),
-          method: 'POST',
-          timeout_ms: 3000,
-        },
-      )
+      httpFn = iii.registerFunction(functionId, {
+        url: webhookProbe.url(),
+        method: 'POST',
+        timeout_ms: 3000,
+      })
       await sleep(300)
 
       const afterRegister = await execute(async () =>
-        iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+        iii.call<Record<string, never>, { functions: FunctionRow[] }>({
           function_id: EngineFunctions.LIST_FUNCTIONS,
           payload: {},
         }),
       )
-      const registered = afterRegister.functions.find(f => f.function_id === functionId)
+      const registered = afterRegister.functions.find((f) => f.function_id === functionId)
       expect(registered).toBeDefined()
 
       httpFn.unregister()
@@ -206,12 +200,12 @@ describe('HTTP external functions', () => {
       await sleep(300)
 
       const afterUnregister = await execute(async () =>
-        iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+        iii.call<Record<string, never>, { functions: FunctionRow[] }>({
           function_id: EngineFunctions.LIST_FUNCTIONS,
           payload: {},
         }),
       )
-      const unregistered = afterUnregister.functions.find(f => f.function_id === functionId)
+      const unregistered = afterUnregister.functions.find((f) => f.function_id === functionId)
       expect(unregistered).toBeUndefined()
     } finally {
       httpFn?.unregister()
@@ -221,7 +215,7 @@ describe('HTTP external functions', () => {
 
   it('delivers events with custom headers to the webhook', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -235,21 +229,18 @@ describe('HTTP external functions', () => {
     let httpFn: { unregister(): void } | undefined
 
     try {
-      httpFn = iii.registerFunction(
-        functionId,
-        {
-          url: webhookProbe.url(),
-          method: 'POST',
-          timeout_ms: 3000,
-          headers: {
-            'X-Custom-Header': 'test-value',
-            'X-Another': '123',
-          },
+      httpFn = iii.registerFunction(functionId, {
+        url: webhookProbe.url(),
+        method: 'POST',
+        timeout_ms: 3000,
+        headers: {
+          'X-Custom-Header': 'test-value',
+          'X-Another': '123',
         },
-      )
+      })
       await sleep(300)
 
-      await execute(async () => iii.trigger({ function_id: functionId, payload }))
+      await execute(async () => iii.call({ function_id: functionId, payload }))
 
       const webhook = await webhookProbe.waitForWebhook(7000)
 
@@ -265,7 +256,7 @@ describe('HTTP external functions', () => {
 
   it('delivers events to multiple external functions', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -285,27 +276,21 @@ describe('HTTP external functions', () => {
     let httpFnB: { unregister(): void } | undefined
 
     try {
-      httpFnA = iii.registerFunction(
-        functionIdA,
-        {
-          url: webhookProbeA.url(),
-          method: 'POST',
-          timeout_ms: 3000,
-        },
-      )
+      httpFnA = iii.registerFunction(functionIdA, {
+        url: webhookProbeA.url(),
+        method: 'POST',
+        timeout_ms: 3000,
+      })
 
-      httpFnB = iii.registerFunction(
-        functionIdB,
-        {
-          url: webhookProbeB.url(),
-          method: 'POST',
-          timeout_ms: 3000,
-        },
-      )
+      httpFnB = iii.registerFunction(functionIdB, {
+        url: webhookProbeB.url(),
+        method: 'POST',
+        timeout_ms: 3000,
+      })
       await sleep(300)
 
-      await execute(async () => iii.trigger({ function_id: functionIdA, payload: payloadA }))
-      await execute(async () => iii.trigger({ function_id: functionIdB, payload: payloadB }))
+      await execute(async () => iii.call({ function_id: functionIdA, payload: payloadA }))
+      await execute(async () => iii.call({ function_id: functionIdB, payload: payloadB }))
 
       const webhookA = await webhookProbeA.waitForWebhook(7000)
       const webhookB = await webhookProbeB.waitForWebhook(7000)
@@ -325,7 +310,7 @@ describe('HTTP external functions', () => {
 
   it('stops delivering events after unregister', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -340,17 +325,14 @@ describe('HTTP external functions', () => {
     let httpFn: { unregister(): void } | undefined
 
     try {
-      httpFn = iii.registerFunction(
-        functionId,
-        {
-          url: webhookProbe.url(),
-          method: 'POST',
-          timeout_ms: 3000,
-        },
-      )
+      httpFn = iii.registerFunction(functionId, {
+        url: webhookProbe.url(),
+        method: 'POST',
+        timeout_ms: 3000,
+      })
       await sleep(300)
 
-      await execute(async () => iii.trigger({ function_id: functionId, payload: payloadBefore }))
+      await execute(async () => iii.call({ function_id: functionId, payload: payloadBefore }))
 
       const webhookBefore = await webhookProbe.waitForWebhook(7000)
       expect(webhookBefore.body).toMatchObject(payloadBefore)
@@ -359,12 +341,12 @@ describe('HTTP external functions', () => {
       httpFn = undefined
       await sleep(500)
 
-      // The function is gone, so a direct trigger rejects. Don't use `execute`
+      // The function is gone, so a direct call rejects. Don't use `execute`
       // here — it would retry the rejection until the retry limit.
       try {
-        await iii.trigger({ function_id: functionId, payload: payloadAfter })
+        await iii.call({ function_id: functionId, payload: payloadAfter })
       } catch {
-        // Expected: triggering an unregistered function is rejected.
+        // Expected: calling an unregistered function is rejected.
       }
 
       let receivedAfterUnregister = false
@@ -384,7 +366,7 @@ describe('HTTP external functions', () => {
 
   it('delivers events using PUT method', async () => {
     await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -398,17 +380,14 @@ describe('HTTP external functions', () => {
     let httpFn: { unregister(): void } | undefined
 
     try {
-      httpFn = iii.registerFunction(
-        functionId,
-        {
-          url: webhookProbe.url(),
-          method: 'PUT',
-          timeout_ms: 3000,
-        },
-      )
+      httpFn = iii.registerFunction(functionId, {
+        url: webhookProbe.url(),
+        method: 'PUT',
+        timeout_ms: 3000,
+      })
       await sleep(300)
 
-      await execute(async () => iii.trigger({ function_id: functionId, payload }))
+      await execute(async () => iii.call({ function_id: functionId, payload }))
 
       const webhook = await webhookProbe.waitForWebhook(7000)
 

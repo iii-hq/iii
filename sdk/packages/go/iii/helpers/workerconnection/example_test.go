@@ -40,7 +40,7 @@ func ExampleAuthResult() {
 	out, _ := json.Marshal(res)
 	fmt.Println(string(out))
 	// Output:
-	// {"namespaces":{"orders":["orders::*"]},"forbidden_functions":["orders::admin"],"allowed_trigger_types":null,"allow_function_registration":false,"context":{"source":"browser"}}
+	// {"namespaces":{"orders":["orders::*"]},"forbidden_functions":["orders::admin"],"allow_function_registration":false,"context":{"source":"browser"}}
 }
 
 // ExampleOnFunctionRegistrationResult registers the auth function and an

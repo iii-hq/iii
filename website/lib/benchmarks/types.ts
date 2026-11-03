@@ -2,9 +2,10 @@
  * The data behind /benchmarks. Two sources, both published to the gh-pages branch by CI and read when the site
  * builds (scripts/generate-benchmarks.ts):
  *
- * - Load benchmarks (crates/iii-loadtest, .github/workflows/loadtest.yml): the engine alone in microVMs of
+ * - Load benchmarks (workers repo: sandbox-libkrun/crates/iii-loadtest, .github/workflows/loadtest.yml): the engine
+ *   alone in microVMs of
  *   fixed size, driven by real SDK workers. `loadtest/index.json` lists every run with its highlights;
- *   `loadtest/runs/<id>.json` is one run in full. The shapes mirror `crates/iii-loadtest/src/export.rs`.
+ *   `loadtest/runs/<id>.json` is one run in full. The shapes mirror the workers repo's `sandbox-libkrun/crates/iii-loadtest/src/export.rs`.
  * - Micro-benchmarks (engine/benches, .github/workflows/bench-release.yml): criterion timings of single code
  *   paths, one entry per release in `dev/bench/data.js`.
  */

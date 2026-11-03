@@ -44,7 +44,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <main>
 <section id="hero" aria-labelledby="hero-title">
   <div aria-hidden="true"><video></video><p>decorative caption</p></div>
-  <div><span class="rounded-full">Three primitives: Function, Trigger, Worker</span>
+  <div><span class="rounded-full">Three primitives: Worker, Function, Observer</span>
     <h1 id="hero-title"><span class="print block"><span class="block">More application.</span><span class="block">Less infrastructure.</span></span></h1>
     <p><span class="text-foreground">The convenience of a platform, without the lock-in.</span> Connect any functions into one live system.</p>
     <div role="tablist"><button type="button">curl</button></div><p>Install the engine.</p><pre><code>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</code></pre>
@@ -58,7 +58,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <section id="final-cta" aria-labelledby="final-cta-title"><div><h2 id="final-cta-title">Make anything callable.</h2><p>Start building your iii system.</p><div><button type="button">curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</button></div></div></section>
 </main>
 <footer class="border-t">
-  <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. Workers. Triggers. Functions.</p><p>Pronounced "three eye"</p></div>
+  <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. Workers. Functions. Observers.</p><p>Pronounced "three eye"</p></div>
   <nav aria-label="Footer">
     <div><h3>Product</h3><ul><li><a href="https://iii.dev/docs">Docs</a></li><li><a href="/roadmap">Roadmap</a></li><li><a href="https://workers.iii.dev/" target="_blank">Worker registry<span class="sr-only">(opens in a new tab)</span></a></li></ul></div>
     <div><h3>Community</h3><ul><li><a href="https://github.com/iii-hq/iii">GitHub</a></li></ul></div>
@@ -120,7 +120,7 @@ test("buildHomepageExtractFromHtml renders the final CTA and the footer as links
     text.endsWith(
       [
         "### Footer / links",
-        'A next-generation software system. Workers. Triggers. Functions. Pronounced "three eye"',
+        'A next-generation software system. Workers. Functions. Observers. Pronounced "three eye"',
         "- Product: [Docs](https://iii.dev/docs), [Roadmap](https://iii.dev/roadmap), [Worker registry](https://workers.iii.dev/)",
         "- Community: [GitHub](https://github.com/iii-hq/iii)",
         "© 2026 Motia LLC",

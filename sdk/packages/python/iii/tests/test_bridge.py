@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from iii import TriggerAction
+from iii import CallAction
 from iii.iii import III
 
 
@@ -21,7 +21,7 @@ async def wait_for(condition, timeout=5.0, interval=0.1):
 @pytest.mark.asyncio
 async def test_connect_successfully(iii_client: III):
     """SDK connects to the engine and can list functions."""
-    result = iii_client.trigger({"function_id": "engine::functions::list", "payload": {}})
+    result = iii_client.call({"function_id": "engine::functions::list", "payload": {}})
     functions = result.get("functions", [])
     assert isinstance(functions, list)
 
@@ -39,7 +39,7 @@ async def test_register_and_invoke_function(iii_client: III):
     await asyncio.sleep(0.3)
 
     try:
-        result = iii_client.trigger(
+        result = iii_client.call(
             {
                 "function_id": "test.bridge.py.echo",
                 "payload": {"message": "hello"},
@@ -66,7 +66,7 @@ async def test_non_ascii_payload_round_trips_through_the_engine_at_its_utf8_size
 
     try:
         text = "😀" * (30 * 1024 * 1024 // 4)
-        result = iii_client.trigger({"function_id": "test.bridge.py.echo-utf8", "payload": text, "timeout_ms": 60_000})
+        result = iii_client.call({"function_id": "test.bridge.py.echo-utf8", "payload": text, "timeout_ms": 60_000})
         assert result == text
     finally:
         fn.unregister()
@@ -74,7 +74,7 @@ async def test_non_ascii_payload_round_trips_through_the_engine_at_its_utf8_size
 
 @pytest.mark.asyncio
 async def test_invoke_function_fire_and_forget(iii_client: III):
-    """Void trigger fires without waiting for the result."""
+    """A void call fires without waiting for the result."""
     received = []
     received_event = asyncio.Event()
 
@@ -87,11 +87,11 @@ async def test_invoke_function_fire_and_forget(iii_client: III):
     await asyncio.sleep(0.3)
 
     try:
-        result = iii_client.trigger(
+        result = iii_client.call(
             {
                 "function_id": "test.bridge.py.receiver",
                 "payload": {"value": 42},
-                "action": TriggerAction.Void(),
+                "action": CallAction.Void(),
             }
         )
 
@@ -111,7 +111,7 @@ async def test_list_registered_functions(iii_client: III):
     await asyncio.sleep(0.3)
 
     try:
-        result = iii_client.trigger({"function_id": "engine::functions::list", "payload": {}})
+        result = iii_client.call({"function_id": "engine::functions::list", "payload": {}})
         functions = result.get("functions", [])
         function_ids = [f["function_id"] for f in functions]
 
@@ -124,9 +124,9 @@ async def test_list_registered_functions(iii_client: III):
 
 @pytest.mark.asyncio
 async def test_reject_non_existent_function(iii_client: III):
-    """Triggering a non-existent function raises an error."""
+    """Calling a non-existent function raises an error."""
     with pytest.raises(Exception):
-        iii_client.trigger(
+        iii_client.call(
             {
                 "function_id": "nonexistent.function.py",
                 "payload": {},

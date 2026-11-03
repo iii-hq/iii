@@ -113,8 +113,8 @@ TypeScript source directly and reloads the worker whenever you save a change.
     "start": "tsx watch src/index.ts"
   },
   "dependencies": {
-    "iii-sdk": "0.23.0",
-    "@iii-dev/helpers": "0.23.0",
+    "iii-sdk": "0.26.0",
+    "@iii-dev/helpers": "0.26.0",
     "tsx": "^4.22.3"
   },
   "devDependencies": {
@@ -161,9 +161,9 @@ function makeCode(): string {
 #### Add `link::create`
 
 `registerFunction` publishes a function under a name like `link::create` that anything else on the
-engine can call. This one stores the mapping by calling `state::set` on the `state` worker through
-`worker.trigger`. Worker-to-worker calls always flow through the engine, so the `link` worker
-doesn't import anything from `state`; it knows the function name. Append it:
+engine can call. This one stores the mapping by calling `state::set` on the `state` worker with
+`worker.call`. Worker-to-worker calls always flow through the engine, so the `link` worker doesn't
+import anything from `state`; it knows the function name. Append it:
 
 ```typescript src/index.ts
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -171,9 +171,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
   // resolved relative to /s/:code.
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
   const taken = async (c: string) =>
-    Boolean(
-      await worker.trigger({ function_id: "state::get", payload: { scope: "links", key: c } }),
-    );
+    Boolean(await worker.call({ function_id: "state::get", payload: { scope: "links", key: c } }));
   let code = payload.code;
   if (code) {
     // A requested code must be free; creating never overwrites an existing link.
@@ -184,7 +182,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
       code = makeCode();
     } while (await taken(code));
   }
-  await worker.trigger({
+  await worker.call({
     function_id: "state::set",
     payload: { scope: "links", key: code, value: { url } },
   });
@@ -200,7 +198,7 @@ code is unknown. Append it, with a final log line so you can see the worker come
 
 ```typescript src/index.ts
 worker.registerFunction("link::resolve", async (payload: { code: string }) => {
-  const stored = await worker.trigger<{ scope: string; key: string }, { url: string } | null>({
+  const stored = await worker.call<{ scope: string; key: string }, { url: string } | null>({
     function_id: "state::get",
     payload: { scope: "links", key: payload.code },
   });
@@ -254,10 +252,10 @@ The output will look something like this:
 
 ## Call the functions
 
-`iii trigger` invokes a function on the running engine. Create a link with a custom code:
+`iii call` invokes a function on the running engine. Create a link with a custom code:
 
 ```bash
-iii trigger link::create url=https://iii.dev code=iii
+iii call link::create url=https://iii.dev code=iii
 ```
 
 ```json
@@ -270,7 +268,7 @@ iii trigger link::create url=https://iii.dev code=iii
 Resolve it back:
 
 ```bash
-iii trigger link::resolve code=iii
+iii call link::resolve code=iii
 ```
 
 ```json
@@ -282,7 +280,7 @@ iii trigger link::resolve code=iii
 An unknown code resolves to `null`:
 
 ```bash
-iii trigger link::resolve code=nope
+iii call link::resolve code=nope
 ```
 
 ```json
@@ -303,19 +301,22 @@ iii trigger link::resolve code=nope
 
 ## Expose your functions over HTTP
 
-A function becomes an HTTP endpoint when you bind it to an `http` trigger. That trigger type is
-served by the `http` worker you added at the start of the chapter.
+The `http` worker you added at the start of the chapter serves HTTP through one function,
+`http::on-request`: every request it receives is a call of that function. To serve a route, observe
+`http::on-request` with the route in `args` and name the function that handles it as the target. The
+`http` worker runs the target for each request on that route and sends back its return value as the
+response.
 
 ### Create a function to handle new links
 
 Add `http::create` to `link/src/index.ts`. It answers `400` when the request body has no `url`,
-calls `link::create` through the engine with `worker.trigger`, and returns the new link with `201`,
-or `409` when the requested code is already taken.
+calls `link::create` through the engine with `worker.call`, and returns the new link with `201`, or
+`409` when the requested code is already taken.
 
 An error thrown by `link::create` reaches `http::create` as an `InvocationError` from `iii-sdk`. Its
 `code` is `invocation_failed`, and its `message` is that code, a colon, and the message
-`link::create` threw. The handler cuts the prefix off, so the response carries `link::create`'s exact
-words. Add `InvocationError` to the `iii-sdk` import at the top of the file:
+`link::create` threw. The handler cuts the prefix off, so the response carries `link::create`'s
+exact words. Add `InvocationError` to the `iii-sdk` import at the top of the file:
 
 ```typescript {1} src/index.ts
 import { InvocationError, registerWorker } from "iii-sdk";
@@ -334,10 +335,7 @@ worker.registerFunction("http::create", async (req) => {
     };
   }
   try {
-    const link = await worker.trigger<
-      { url: string; code?: string },
-      { code: string; url: string }
-    >({
+    const link = await worker.call<{ url: string; code?: string }, { code: string; url: string }>({
       function_id: "link::create",
       payload: { url, code },
     });
@@ -370,39 +368,39 @@ worker.registerFunction("http::create", async (req) => {
 });
 ```
 
-`link::create` always ends its message for a taken code with `is already taken`, so that message, and
-nothing else, decides `409`; any other failure, such as a worker that does not answer, is logged and
-answers `500`.
+`link::create` always ends its message for a taken code with `is already taken`, so that message,
+and nothing else, decides `409`; any other failure, such as a worker that does not answer, is logged
+and answers `500`.
 
-### Bind your create function to a Trigger
+### Route `POST /links` to your create function
 
-In the same file (`link/src/index.ts`) at the end bind `http::create` to `POST /links` with a new
-trigger. This Trigger has the `http` worker listen for `POST` requests to `/links` and when it
-receives one it will run the function specified by `function_id`.
+At the end of the same file (`link/src/index.ts`), observe `http::on-request` for `POST /links`. The
+`http` worker reads the `args` and adds the route; for each `POST` request to `/links` it runs the
+target, `http::create`, with the request.
 
 ```typescript src/index.ts
-worker.registerTrigger({
-  type: "http",
-  function_id: "http::create",
-  config: { api_path: "/links", http_method: "POST" },
-});
+worker.observe(
+  { function_id: "http::on-request", args: { method: "POST", path: "/links" } },
+  "http::create",
+);
 ```
 
 <Check>
-  This is the first Trigger you've registered yourself. In iii, Triggers control what causes
-  something to happen. In this case an http request causes a function to run. Learn more about
-  [Using iii / Triggers](/using-iii/triggers).
+  This is the first observer you've added yourself. In iii every function is observable, and
+  `worker.observe(a, b)` means that when `a` runs, `b` runs. Here `a` is `http::on-request`, which
+  runs once per HTTP request, and its `args` tell the `http` worker which requests are yours. Learn
+  more about [Observers](/using-iii/observers).
 </Check>
 
 <Info>
-  Every function registered comes with its own Trigger which is why `worker.trigger` worked earlier
-  without a declaration.
+  `worker.call` and `worker.observe` are the two ways functions work together: a call runs a
+  function now and returns its result, and an observer runs a function each time another one runs.
 </Info>
 
 ### Mint a link over HTTP
 
 Save the file and the worker reloads with the new route registered. The `http` container listens on
-`127.0.0.1:3111` and owns the route below. Now try out your new Trigger:
+`127.0.0.1:3111` and serves the route below. Now try out your new route:
 
 ```bash
 curl -i -X POST http://127.0.0.1:3111/links \
@@ -441,7 +439,7 @@ Add `http::redirect` to the bottom of `link/src/index.ts`. It looks up the short
 ```typescript src/index.ts
 worker.registerFunction("http::redirect", async (req) => {
   const code = req.path_params.code;
-  const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
+  const { url } = await worker.call<{ code: string }, { url: string | null }>({
     function_id: "link::resolve",
     payload: { code },
   });
@@ -456,16 +454,18 @@ worker.registerFunction("http::redirect", async (req) => {
 });
 ```
 
-### Bind your redirect function to a Trigger
+`req.path_params` holds the segments of the route's path that start with `:`, so `/s/abc` arrives
+with `path_params.code` set to `abc`.
 
-Like before, bind `http::redirect` to `GET /s/:code` with a new Trigger:
+### Route `GET /s/:code` to your redirect function
+
+Like before, observe `http::on-request`, this time for `GET /s/:code`:
 
 ```typescript src/index.ts
-worker.registerTrigger({
-  type: "http",
-  function_id: "http::redirect",
-  config: { api_path: "/s/:code", http_method: "GET" },
-});
+worker.observe(
+  { function_id: "http::on-request", args: { method: "GET", path: "/s/:code" } },
+  "http::redirect",
+);
 ```
 
 ### Follow the short code

@@ -1,9 +1,10 @@
-"""``iii.observe`` and its handle (sdk.md §2, §4.5), against a fake engine."""
+"""``iii.observe`` and its handle, against a fake engine."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from typing import Any
 
 import pytest
@@ -19,6 +20,11 @@ def _state(engine: FakeEngine, observer_id: str, state: str, reason: dict[str, s
     if reason is not None:
         frame["reason"] = reason
     engine.deliver(frame)
+
+
+def _answer(engine: FakeEngine, observer_id: str, state: str = "pending") -> None:
+    """The engine's ``observeresult``: it answers every ``observe`` before any state change."""
+    engine.deliver({"type": "observeresult", "id": observer_id, "state": state})
 
 
 def test_returns_a_pending_handle_synchronously_and_sends_it_after_workerregistered(
@@ -214,6 +220,7 @@ def test_forgets_an_observer_the_engine_disposed(engine: FakeEngine, connect: An
     handle = client.observe({"function_id": "f::a"}, "t::a", {"max_fires": 1})
     [frame] = engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
     assert frame["max_fires"] == 1
+    _answer(engine, handle.id, "active")
     _state(engine, handle.id, "disposed", {"code": "MAX_FIRES", "message": "fired 1 time"})
     wait_until(lambda: handle.state == "disposed", what="disposed")
     assert handle.reason == {"code": "MAX_FIRES", "message": "fired 1 time"}
@@ -224,11 +231,42 @@ def test_forgets_an_observer_the_engine_disposed(engine: FakeEngine, connect: An
     assert engine.frames_of("observe", 1) == []
 
 
-def test_refuses_a_reused_id_and_a_missing_source_or_target(engine: FakeEngine, connect: Any) -> None:
+def test_the_source_is_a_function_id_or_a_dict(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
-    client.observe({"function_id": "f::a"}, "t::a", {"id": "fixed"})
-    with pytest.raises(ValueError):
-        client.observe({"function_id": "f::a"}, "t::a", {"id": "fixed"})
+    client.observe("orders::create", "alerts::big-order", {"id": "short"})
+    client.observe({"function_id": "orders::create"}, "alerts::big-order", {"id": "long"})
+    short, long = engine.wait_for(
+        lambda: len(engine.frames_of("observe")) == 2 and engine.frames_of("observe"), what="both frames"
+    )
+    assert {**short, "id": "long"} == long
+    with pytest.raises(TypeError):
+        client.observe(["orders::create"], "alerts::big-order")  # type: ignore[arg-type]
+
+
+def test_refuses_a_held_id_and_a_missing_source_or_target(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    holder = client.observe({"function_id": "f::a"}, "t::a", {"id": "fixed"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    for state in ("pending", "error"):  # held in any state, until disposed
+        if state == "error":
+            engine.deliver(
+                {
+                    "type": "observeresult",
+                    "id": "fixed",
+                    "state": "error",
+                    "error": {"code": "INVALID_ARGS", "message": "x"},
+                }
+            )
+            wait_until(lambda: holder.state == "error", what="error")
+        with pytest.raises(ObserveRejection) as raised:
+            client.observe({"function_id": "f::b"}, "t::b", {"id": "fixed"})
+        assert (raised.value.code, raised.value.message) == (
+            "OBSERVER_ID_CONFLICT",
+            "observe: observer id already in use: fixed",
+        )
+        assert client._observers["fixed"] is holder
+    settle(client, engine)
+    assert len(engine.frames_of("observe")) == 1  # the refused observe sent nothing
     with pytest.raises(ValueError):
         client.observe({"function_id": ""}, "t::a")
     with pytest.raises(ValueError):
@@ -237,6 +275,42 @@ def test_refuses_a_reused_id_and_a_missing_source_or_target(engine: FakeEngine, 
         client.observe({"function_id": "f::a"}, {"namespace": "x"})  # type: ignore[typeddict-item]
     with pytest.raises(TypeError):
         client.observe({"function_id": "f::a", "filters": {"input.when": {"$eq": object()}}}, "t::a")
+
+
+def test_concurrent_observe_with_the_same_id_lets_exactly_one_win(
+    engine: FakeEngine, connect: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = connect(engine)
+    import iii.iii as iii_module
+
+    real = iii_module.build_observe_message
+    gate = threading.Barrier(2, timeout=0.5)
+
+    def slow_build(*args: Any, **kwargs: Any) -> Any:
+        try:
+            gate.wait()  # both threads are past the duplicate check
+        except threading.BrokenBarrierError:
+            pass  # one thread did not reach the barrier in time
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(iii_module, "build_observe_message", slow_build)
+    results: list[object] = []
+
+    def call() -> None:
+        try:
+            results.append(client.observe({"function_id": "f::a"}, "t::a", {"id": "dup"}))
+        except ObserveRejection as exc:
+            results.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(isinstance(r, ObserveRejection) for r in results) == 1
+    assert len(client._observers) == 1
+    settle(client, engine)
+    assert len(engine.frames_of("observe")) == 1
 
 
 def test_a_state_listener_that_raises_does_not_stop_the_others(engine: FakeEngine, connect: Any) -> None:
@@ -250,6 +324,7 @@ def test_a_state_listener_that_raises_does_not_stop_the_others(engine: FakeEngin
     handle.on_state_change(bad)
     handle.on_state_change(lambda state, reason: seen.append(state))
     engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, handle.id)
     _state(engine, handle.id, "active")
     wait_until(lambda: seen == ["active"], what="the second listener")
 
@@ -280,6 +355,7 @@ def test_state_listeners_run_off_the_event_loop_in_order_and_may_call_the_sync_a
 
     handle.on_state_change(listener)
     engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, handle.id)
     for state in ("active", "suspended", "active"):
         _state(engine, handle.id, state)
     wait_until(lambda: len(seen) == 3, what="three deliveries")
@@ -291,7 +367,491 @@ def test_state_listeners_run_off_the_event_loop_in_order_and_may_call_the_sync_a
     wait_until(lambda: client._functions["local::fn"].observe.local_dispatch, what="local dispatch")
     results: list[Any] = []
     handle.on_state_change(
-        lambda state, reason: results.append(client.trigger({"function_id": "local::fn", "payload": {}}))
+        lambda state, reason: results.append(client.call({"function_id": "local::fn", "payload": {}}))
     )
     _state(engine, handle.id, "suspended")
     wait_until(lambda: results == ["called"], what="a sync call from a listener")
+
+
+# observer ids (decision 56): the engine's answers are attributed by frame order
+
+
+def _types_and_ids(engine: FakeEngine, connection: int | None = None) -> list[tuple[str, Any]]:
+    return [(f["type"], f.get("id")) for f in engine.frames(connection) if f["type"] in ("observe", "unobserve")]
+
+
+@pytest.mark.parametrize("answered_first", [True, False], ids=["answered", "unanswered"])
+def test_an_id_is_free_at_once_after_dispose_and_the_late_disposed_reaches_the_earlier_handle(
+    engine: FakeEngine, connect: Any, answered_first: bool
+) -> None:
+    client = connect(engine)
+    first = client.observe({"function_id": "f::a"}, "t::a", {"id": "queue-consumer"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the first observe")
+    if answered_first:
+        _answer(engine, "queue-consumer", "active")
+        wait_until(lambda: first.state == "active", what="active")
+    first.dispose()
+    second = client.observe({"function_id": "f::a"}, "t::a", {"id": "queue-consumer"})
+    assert client._observers["queue-consumer"] is second
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="the second observe")
+    assert _types_and_ids(engine) == [
+        ("observe", "queue-consumer"),
+        ("unobserve", "queue-consumer"),
+        ("observe", "queue-consumer"),
+    ]
+    # what the engine sends, in the order it read the frames
+    if not answered_first:
+        _answer(engine, "queue-consumer", "active")
+    _state(engine, "queue-consumer", "disposed", {"code": "UNOBSERVED", "message": "unobserved"})
+    _answer(engine, "queue-consumer", "active")
+    wait_until(lambda: second.state == "active", what="the second observer active")
+    settle(client, engine)
+    assert second.state == "active"
+    assert client._observers["queue-consumer"] is second
+    assert client._observe_sent["queue-consumer"] == [second]
+    assert first.reason == {"code": "UNOBSERVED", "message": "disposed by the observing worker"}
+    second.dispose()
+    engine.wait_for(lambda: len(engine.frames_of("unobserve")) == 2, what="the second unobserve")
+
+
+def test_a_state_change_before_any_answer_is_dropped(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    wait_until(lambda: handle.state == "active", what="active")
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    # a reattached connection hears its observer resume before the replay's answer
+    _state(engine, "x", "disposed", {"code": "MAX_FIRES", "message": "fired 1 time"})
+    settle(client, engine)
+    assert handle.state == "active"
+    assert client._observers["x"] is handle
+    _answer(engine, "x", "suspended")  # the replay's answer carries the current state
+    wait_until(lambda: handle.state == "suspended", what="the replay's answer")
+    _state(engine, "x", "active")
+    wait_until(lambda: handle.state == "active", what="the state change after the answer")
+
+
+def test_an_answer_with_no_observe_waiting_for_it_is_dropped(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    _answer(engine, "x", "error")  # a second answer: no observe of the id waits for one
+    _answer(engine, "other", "active")  # an id this client never sent
+    settle(client, engine)
+    assert handle.state == "active"
+
+
+def test_queued_unobserves_go_out_before_the_replays(engine_factory: Any, connect: Any) -> None:
+    engine = engine_factory()
+    client = connect(
+        engine, reconnection_config=ReconnectionConfig(initial_delay_ms=400, max_delay_ms=400, jitter_factor=0.0)
+    )
+    first = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    kept = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    client._run_on_loop(_close(client))
+    wait_until(lambda: client.get_connection_state() != "connected", what="the disconnect")
+    first.dispose()
+    second = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: len(engine.frames_of("observe", 1)) == 2, what="the replays")
+    settle(client, engine)
+    sent = _types_and_ids(engine, 1)
+    assert sent[0] == ("unobserve", "x")
+    assert sorted(sent[1:]) == [("observe", "x"), ("observe", "y")]
+    assert client._observers == {"y": kept, "x": second}
+
+
+def test_a_handle_is_sent_once_per_connection(engine_factory: Any, connect: Any) -> None:
+    engine = engine_factory("silent")
+    client = connect(engine, wait_registered=False)
+    handles = [client.observe({"function_id": "f::a"}, "t::a") for _ in range(20)]
+    engine.deliver({"type": "workerregistered", "worker_id": "w-1", "features": ["observe.v1"]})
+    handles += [client.observe({"function_id": "f::a"}, "t::a") for _ in range(20)]
+    engine.wait_for(lambda: len(engine.frames_of("observe")) >= 40, what="every observe")
+    settle(client, engine)
+    assert sorted(f["id"] for f in engine.frames_of("observe")) == sorted(h.id for h in handles)
+
+
+#: Rounds of the dispose race: enough to hit the window most runs at a 1 µs
+#: switch interval (about 2 s).
+RACE_ROUNDS = 2000
+
+
+def test_dispose_racing_the_engines_disposed_never_raises(engine: FakeEngine, connect: Any) -> None:
+    import json
+    import sys
+
+    client = connect(engine)
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    errors: list[BaseException] = []
+    try:
+        for round_ in range(RACE_ROUNDS):
+            observer_id = f"race-{round_}"
+            handle = client.observe({"function_id": "f::a"}, "t::a", {"id": observer_id})
+            loop_barrier(client)  # sent
+            gate = threading.Barrier(2, timeout=5)
+            answer = json.dumps({"type": "observeresult", "id": observer_id, "state": "active"})
+            disposed = json.dumps(
+                {
+                    "type": "observerstatechanged",
+                    "id": observer_id,
+                    "state": "disposed",
+                    "fires": 1,
+                    "reason": {"code": "MAX_FIRES", "message": "fired 1 time"},
+                }
+            )
+
+            async def engine_side(g: threading.Barrier = gate, a: str = answer, d: str = disposed) -> None:
+                await client._handle_message(a)
+                g.wait()
+                await client._handle_message(d)
+
+            def user_side(h: Any = handle, g: threading.Barrier = gate) -> None:
+                g.wait()
+                try:
+                    h.dispose()
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(error)
+
+            done = asyncio.run_coroutine_threadsafe(engine_side(), client._loop)
+            user = threading.Thread(target=user_side)
+            user.start()
+            user.join(5)
+            done.result(5)
+            assert handle.state == "disposed"
+            assert observer_id not in client._observers
+    finally:
+        sys.setswitchinterval(interval)
+    assert errors == []
+
+
+# a refused observe: the engine's refusal is the handle's final answer
+
+
+#: Well under any wait for the engine: a dispose() that sends nothing, or
+#: whose unobserve is already on the wire, returns at once.
+DISPOSE_RETURNS_WITHIN_S = 0.5
+
+
+def _refuse(engine: FakeEngine, observer_id: str, code: str = "FORBIDDEN") -> None:
+    """The engine's ``observeresult`` for an ``observe`` it refused (it stores nothing)."""
+    engine.deliver(
+        {"type": "observeresult", "id": observer_id, "state": "error", "error": {"code": code, "message": "refused"}}
+    )
+
+
+def _timed_dispose(handle: Any) -> float:
+    started = time.monotonic()
+    handle.dispose()
+    return time.monotonic() - started
+
+
+@pytest.mark.parametrize("code", ["FORBIDDEN", "INVALID_ARGS", "OBSERVER_ID_CONFLICT", "LIMIT_EXCEEDED"])
+def test_a_refusal_is_final_and_a_dispose_after_it_sends_nothing(engine: FakeEngine, connect: Any, code: str) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _refuse(engine, "x", code)
+    wait_until(lambda: handle.state == "error", what="the refusal")
+    with pytest.raises(ObserveRejection) as raised:
+        handle.ready(timeout=1)
+    assert raised.value.code == code
+    assert "x" not in client._observe_sent  # it left the id's list
+    assert client._observers["x"] is handle  # and holds the id until its dispose()
+    with pytest.raises(ObserveRejection) as conflict:
+        client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    assert conflict.value.code == "OBSERVER_ID_CONFLICT"
+    _state(engine, "x", "active")  # nothing the engine says about the id reaches it
+    settle(client, engine)
+    assert handle.state == "error"
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    settle(client, engine)
+    assert engine.frames_of("unobserve") == []
+    assert handle.state == "disposed"
+    assert "x" not in client._observers
+
+
+def test_a_dispose_sent_before_the_refusal_returns_at_once_and_the_refusal_answers_it(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    engine.wait_for(lambda: engine.frames_of("unobserve"), what="the unobserve")
+    assert client._observe_sent["x"] == [handle]  # listed until its answer
+    _refuse(engine, "x")  # the engine ignores the unobserve: it holds nothing for x
+    wait_until(lambda: "x" not in client._observe_sent, what="the refusal")
+    settle(client, engine)
+    assert handle.state == "disposed"
+    assert handle.reason == {"code": "UNOBSERVED", "message": "disposed by the observing worker"}
+    assert _types_and_ids(engine) == [("observe", "x"), ("unobserve", "x")]
+    handle.dispose()  # again: nothing
+    settle(client, engine)
+    assert len(engine.frames_of("unobserve")) == 1
+
+
+def test_after_a_refusal_and_dispose_a_new_observe_of_the_id_works(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    refused = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    kept = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    _refuse(engine, "x")
+    wait_until(lambda: refused.state == "error", what="the refusal")
+    refused.dispose()
+    second = client.observe({"function_id": "f::a", "args": {"fixed": True}}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 3, what="the second observe")
+    assert _types_and_ids(engine) == [("observe", "x"), ("observe", "y"), ("observe", "x")]
+    _answer(engine, "x", "pending")
+    _state(engine, "x", "active")
+    wait_until(lambda: second.state == "active", what="the second observer active")
+    assert refused.state == "disposed"
+    assert client._observe_sent["x"] == [second]
+    engine.drop()  # the replay: the observers that hold their ids
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: len(engine.frames_of("observe", 1)) == 2, what="the replays")
+    settle(client, engine)
+    replays = {f["id"]: f for f in engine.frames_of("observe", 1)}
+    assert sorted(replays) == ["x", "y"]
+    assert replays["x"]["source"]["args"] == {"fixed": True}  # the second's
+    assert client._observers == {"y": kept, "x": second}
+    second.dispose()
+    engine.wait_for(lambda: engine.frames_of("unobserve", 1), what="the second observer's unobserve")
+
+
+def test_a_refusal_answers_the_older_handle_while_a_newer_one_of_the_id_is_pending(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    first = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the first observe")
+    assert _timed_dispose(first) < DISPOSE_RETURNS_WITHIN_S
+    second = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="the second observe")
+    assert _types_and_ids(engine) == [("observe", "x"), ("unobserve", "x"), ("observe", "x")]
+    # the engine refuses the first, ignores the unobserve and accepts the second
+    _refuse(engine, "x")
+    wait_until(lambda: client._observe_sent.get("x") == [second], what="the refusal")
+    _state(engine, "x", "active")  # before the second's answer: dropped
+    settle(client, engine)
+    assert second.state == "pending"
+    assert first.reason == {"code": "UNOBSERVED", "message": "disposed by the observing worker"}
+    _answer(engine, "x", "active")
+    wait_until(lambda: second.state == "active", what="the second observer's answer")
+    second.ready(timeout=1)
+    _state(engine, "x", "suspended")
+    wait_until(lambda: second.state == "suspended", what="a state change after the answer")
+    assert client._observe_sent["x"] == [second]
+
+
+def test_a_refusal_of_the_newer_handle_after_the_older_ones_disposed(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    first = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the first observe")
+    _answer(engine, "x", "active")
+    wait_until(lambda: first.state == "active", what="active")
+    first.dispose()
+    second = client.observe({"function_id": "f::a", "args": {"bad": True}}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="the second observe")
+    _state(engine, "x", "disposed", {"code": "UNOBSERVED", "message": "unobserved"})  # the first's
+    _refuse(engine, "x", "INVALID_ARGS")  # the second's
+    wait_until(lambda: second.state == "error", what="the refusal")
+    assert second.reason == {"code": "INVALID_ARGS", "message": "refused"}
+    assert "x" not in client._observe_sent
+    assert _timed_dispose(second) < DISPOSE_RETURNS_WITHIN_S
+    settle(client, engine)
+    assert len(engine.frames_of("unobserve")) == 1  # the first's only
+
+
+def test_a_refused_observe_is_not_replayed(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    refused = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    kept = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    _refuse(engine, "x")
+    wait_until(lambda: refused.state == "error", what="the refusal")
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    settle(client, engine)
+    assert [f["id"] for f in engine.frames_of("observe", 1)] == ["y"]
+    assert refused.reason == {"code": "FORBIDDEN", "message": "refused"}
+    assert client._observers == {"x": refused, "y": kept}
+    refused.dispose()
+    settle(client, engine)
+    assert engine.frames_of("unobserve") == []
+
+
+def test_a_state_change_to_error_keeps_the_handle_held_and_its_dispose_unobserves_it(
+    engine: FakeEngine, connect: Any
+) -> None:
+    """An ``observerstatechanged`` to ``error`` (the owner rejected an observer
+    the engine created) is not a refusal: the engine holds the observer."""
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    _state(engine, "x", "error", {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"})
+    wait_until(lambda: handle.state == "error", what="the owner's rejection")
+    assert client._observe_sent["x"] == [handle]
+    assert not handle._refused
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    engine.wait_for(lambda: engine.frames_of("unobserve"), what="the unobserve")
+    assert _types_and_ids(engine) == [("observe", "x"), ("unobserve", "x")]
+
+
+def test_an_error_answer_to_the_replay_of_an_observer_in_error_is_a_refusal(engine: FakeEngine, connect: Any) -> None:
+    """The engine disposes an observer it holds in ``error`` as it answers its
+    replay with that error: the handle is refused there, final, and its
+    dispose() sends nothing."""
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "pending")
+    rejected = {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"}
+    _state(engine, "x", "error", rejected)
+    wait_until(lambda: handle.state == "error", what="the owner's rejection")
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    engine.deliver({"type": "observeresult", "id": "x", "state": "error", "error": rejected})
+    wait_until(lambda: "x" not in client._observe_sent, what="the refusal")
+    assert handle._refused and handle.state == "error" and handle.reason == rejected
+    assert client._observers["x"] is handle  # holds the id until its dispose()
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the second reconnect")
+    settle(client, engine)
+    assert engine.frames_of("observe", 2) == []  # not replayed
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    settle(client, engine)
+    assert engine.frames_of("unobserve") == engine.frames_of("unobserve", 1) == engine.frames_of("unobserve", 2) == []
+    assert handle.state == "disposed" and "x" not in client._observers
+
+
+def test_an_error_answer_to_a_replay_whose_first_answer_was_lost_is_a_refusal(engine: FakeEngine, connect: Any) -> None:
+    """The connection dropped before any answer for the handle reached the
+    SDK. The reattached connection's replay is answered ``error``: a refusal,
+    so the handle is not replayed again and its dispose() sends nothing."""
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    engine.drop()  # no answer for x reached the SDK
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    rejected = {"code": "OBSERVE_REJECTED", "message": "the owner rejected it"}
+    engine.deliver({"type": "observeresult", "id": "x", "state": "error", "error": rejected})
+    wait_until(lambda: handle.state == "error", what="the replay's answer")
+    assert handle.reason == rejected
+    assert "x" not in client._observe_sent
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 3 and client._registered_on_connection, what="the second reconnect")
+    settle(client, engine)
+    assert engine.frames_of("observe", 2) == []
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    settle(client, engine)
+    assert _types_and_ids(engine) == [("observe", "x"), ("observe", "x")]
+
+
+def test_a_dispose_sent_before_the_replays_refusal_returns_at_once_and_the_refusal_answers_it(
+    engine: FakeEngine, connect: Any
+) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    wait_until(lambda: handle.state == "active", what="active")
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2 and client._registered_on_connection, what="the reconnect")
+    engine.wait_for(lambda: engine.frames_of("observe", 1), what="the replay")
+    assert _timed_dispose(handle) < DISPOSE_RETURNS_WITHIN_S
+    engine.wait_for(lambda: engine.frames_of("unobserve", 1), what="the unobserve")
+    assert client._observe_sent["x"] == [handle]  # listed until the replay's answer
+    _refuse(engine, "x", "OBSERVE_REJECTED")  # the engine ignores the unobserve: it holds nothing for x
+    wait_until(lambda: "x" not in client._observe_sent, what="the refusal")
+    settle(client, engine)
+    assert handle.state == "disposed"
+    assert handle.reason == {"code": "UNOBSERVED", "message": "disposed by the observing worker"}
+    handle.dispose()  # again: nothing
+    settle(client, engine)
+    assert len(engine.frames_of("unobserve", 1)) == 1
+
+
+def test_a_refused_handle_keeps_its_refusal_against_an_engine_without_observe(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    refused = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    kept = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    _refuse(engine, "x", "INVALID_ARGS")
+    _answer(engine, "y", "active")
+    wait_until(lambda: refused.state == "error" and kept.state == "active", what="both answers")
+    engine.features = "legacy"  # the engine comes back without observe
+    engine.drop()
+    wait_until(lambda: len(engine.connections) == 2, what="the reconnect")
+    wait_until(lambda: kept.state == "error", what="the held observer's UNSUPPORTED")
+    settle(client, engine)
+    assert kept.reason is not None and kept.reason["code"] == "UNSUPPORTED"
+    assert refused.reason == {"code": "INVALID_ARGS", "message": "refused"}
+    assert engine.frames_of("observe", 1) == []
+    refused.dispose()
+    settle(client, engine)
+    assert engine.frames_of("unobserve") == []
+
+
+#: Rounds of the refusal race (about 0.5 s at a 1 µs switch interval).
+REFUSAL_RACE_ROUNDS = 500
+
+
+def test_dispose_racing_the_refusal_leaves_nothing_listed_or_held(engine: FakeEngine, connect: Any) -> None:
+    import json
+    import sys
+
+    client = connect(engine)
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    errors: list[BaseException] = []
+    try:
+        for round_ in range(REFUSAL_RACE_ROUNDS):
+            observer_id = f"refused-{round_}"
+            handle = client.observe({"function_id": "f::a"}, "t::a", {"id": observer_id})
+            loop_barrier(client)  # sent
+            gate = threading.Barrier(2, timeout=5)
+            refusal = json.dumps(
+                {
+                    "type": "observeresult",
+                    "id": observer_id,
+                    "state": "error",
+                    "error": {"code": "FORBIDDEN", "message": "refused"},
+                }
+            )
+
+            async def engine_side(g: threading.Barrier = gate, r: str = refusal) -> None:
+                g.wait()
+                await client._handle_message(r)
+
+            def user_side(h: Any = handle, g: threading.Barrier = gate) -> None:
+                g.wait()
+                try:
+                    h.dispose()
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(error)
+
+            done = asyncio.run_coroutine_threadsafe(engine_side(), client._loop)
+            user = threading.Thread(target=user_side)
+            user.start()
+            user.join(5)
+            done.result(5)
+            loop_barrier(client)
+            assert handle.state == "disposed"
+            assert observer_id not in client._observers
+            assert observer_id not in client._observe_sent
+    finally:
+        sys.setswitchinterval(interval)
+    assert errors == []
+    settle(client, engine)
+    assert len(engine.frames_of("unobserve")) <= REFUSAL_RACE_ROUNDS

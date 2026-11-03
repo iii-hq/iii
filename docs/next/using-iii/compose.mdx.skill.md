@@ -8,14 +8,14 @@ supervises running workers.
 ## The daemon
 
 The daemon is itself a worker. It registers under the name `compose` and exposes the `compose::*`
-functions, so every project operation is a standard [trigger](./triggers).
+functions, so every project operation is a standard [function call](./functions#call-a-function).
 
 Bare `iii compose` is the command to start the compose worker/daemon. It reads `worker-compose.yaml`
 in the working directory and starts only the compose worker.
 
 `iii compose --up` is provided as a convenience. It starts the compose worker, the iii engine, and
 the workers specified in `worker-compose.yaml`. It is approximately the equivalent of running `iii`,
-`iii compose`, and `iii trigger compose::up` as separate commands.
+`iii compose`, and `iii call compose::up` as separate commands.
 
 `iii compose --up` combines engine and project startup for development. Independent `iii` and
 `iii compose` daemons provide separate lifecycle control for production deployments.
@@ -176,18 +176,18 @@ considered relative to the daemon's directory, not the caller's working director
 absolute path as well.
 
 ```bash
-iii trigger compose::up      --namespace dev file=./worker-compose.yaml
-iii trigger compose::up      --namespace dev file=./worker-compose.yaml frozen=true
-iii trigger compose::up      --namespace dev file=./worker-compose.yaml container=api
-iii trigger compose::status  --namespace dev file=./worker-compose.yaml
-iii trigger compose::logs    --namespace dev file=./worker-compose.yaml worker=api tail=100
-iii trigger compose::down    --namespace dev file=./worker-compose.yaml
-iii trigger compose::list    --namespace dev
-iii trigger compose::add     --namespace dev file=./worker-compose.yaml worker=database worker=web
-iii trigger compose::remove  --namespace dev file=./worker-compose.yaml worker=state
-iii trigger compose::restart --namespace dev file=./worker-compose.yaml
-iii trigger compose::schema  --namespace dev function_id=compose::up
-iii trigger compose::stop    --namespace dev
+iii call compose::up      --namespace dev file=./worker-compose.yaml
+iii call compose::up      --namespace dev file=./worker-compose.yaml frozen=true
+iii call compose::up      --namespace dev file=./worker-compose.yaml container=api
+iii call compose::status  --namespace dev file=./worker-compose.yaml
+iii call compose::logs    --namespace dev file=./worker-compose.yaml worker=api tail=100
+iii call compose::down    --namespace dev file=./worker-compose.yaml
+iii call compose::list    --namespace dev
+iii call compose::add     --namespace dev file=./worker-compose.yaml worker=database worker=web
+iii call compose::remove  --namespace dev file=./worker-compose.yaml worker=state
+iii call compose::restart --namespace dev file=./worker-compose.yaml
+iii call compose::schema  --namespace dev function_id=compose::up
+iii call compose::stop    --namespace dev
 ```
 
 ### Starting a project
@@ -308,7 +308,7 @@ the container fields from `worker-compose.yaml`. The container key comes from th
 the worker name or directory path.
 
 ```bash
-iii trigger compose::add --namespace dev file=./worker-compose.yaml --json '{
+iii call compose::add --namespace dev file=./worker-compose.yaml --json '{
   "workers": [
     "database",
     {
@@ -425,10 +425,13 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 
 `compose::update` without `worker` or `workers` updates every declared `package://` worker to its
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
+The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
+names) moves only to the newest release in the range that implements the engine's sandbox contract
+major (`^0.2` for contract 1).
 
 ```bash
-iii trigger compose::update
-iii trigger compose::update file=worker-compose.yaml
+iii call compose::update
+iii call compose::update file=worker-compose.yaml
 ```
 
 `compose::update worker=state` resolves the selector already in the compose file. A tag such as
@@ -530,7 +533,7 @@ install. Both fields are absent when iii has no target triple for the platform i
 | `starting`   | Spawned. The engine has not registered it yet.                                                |
 | `ready`      | Registered in the engine under `(namespace, container)`.                                      |
 | `restarting` | Waiting for the next configured retry. No process or PID is active.                           |
-| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
+| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, failed to start during `up` or a restart before it registered (a failed `pre_run` hook included), or did not register again within its `startup_timeout` after an engine reconnect and was stopped. After a daemon restart, also a worker that exited while the daemon was away or while it was being adopted, or whose live PID Compose cannot prove is the one it started. That process is left running and never signalled. `last_error` says why. |
 | `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                    |
 
 ### Listing processes
@@ -542,7 +545,7 @@ container key), `ports`, `compose_file`, `orphan`, `started_at` (seconds since t
 `command`. `orphan` is `true` for a worker of the project that no Compose daemon supervises.
 
 ```bash
-iii trigger compose::ps --namespace dev file=./worker-compose.yaml
+iii call compose::ps --namespace dev file=./worker-compose.yaml
 ```
 
 To see every iii process on the machine, including other projects, use [`iii ps`](#finding-and-stopping-iii-processes).
@@ -565,8 +568,8 @@ entry in `entries` has `stream` and `message`. A `cursor` has `generation` and `
 is `true` when the cursor sent is older than the retained archives.
 
 ```bash
-iii trigger compose::logs --namespace dev worker=api tail=200
-iii trigger compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
+iii call compose::logs --namespace dev worker=api tail=200
+iii call compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
 ```
 
 ### Listing projects
@@ -611,16 +614,17 @@ Each entry holds `function_id`, `description`, `request`, `response`, `default_t
 `engine::functions::info`.
 
 ```bash
-iii trigger compose::schema --namespace dev
-iii trigger compose::schema --namespace dev function_id=compose::up
-iii trigger compose::schema --namespace dev function_id=worker-compose.yaml
+iii call compose::schema --namespace dev
+iii call compose::schema --namespace dev function_id=compose::up
+iii call compose::schema --namespace dev function_id=worker-compose.yaml
 ```
 
 ## Configure a namespace
 
 Set the namespace in `worker-compose.yaml` or pass `--namespace` when starting Compose. Use the same
-namespace in Trigger and Function calls that target the project's workers. For the daemon namespace,
-project namespace, and routing model, see [Compose architecture](../understanding-iii/compose).
+namespace in function calls and observers that target the project's workers. For the daemon
+namespace, project namespace, and routing model, see
+[Compose architecture](../understanding-iii/compose).
 
 ### Precedence
 
@@ -711,13 +715,21 @@ containers:
 | `registration_namespace_grace_ms` | integer | engine default         | Namespace-registration grace passed to the engine.                                       |
 | `observers`                       | map     | engine defaults        | Observer limits and timeouts passed to the engine as written. See [Observers](./configuration#observers). |
 | `workers`                         | map     | empty                  | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
+| `sandbox`                         | map     | absent                 | Binds the engine's `sandbox::*` router to an adapter. See below.                         |
 
-Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`
-(deprecated; still accepted),
-and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, and
+`iii-stream` (deprecated; still accepted). Use `#instance` for another instance of an allowed type, for example
 `iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
-usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare
-these workers.
+usage analytics, `iii-observability` for OpenTelemetry traces, metrics, and logs, and the
+`iii-sandbox` router. Do not declare these workers. A file that declares `iii-sandbox` under
+`engine.workers` fails with `SANDBOX_CONFIG_MOVED`, which prints the replacement; see [Upgrading to
+the sandbox worker](../upgrading/sandbox-worker).
+
+`engine.sandbox` takes `adapter`, the adapter's function prefix (`sandbox-libkrun` by default), and
+`namespace`, where the adapter runs (this project's namespace by default). A managed engine is
+bound to an adapter whether or not the section is present. Setting the section, with `namespace`
+unset or this project's, also makes Compose install that adapter, as does a bundle or `runtime.base_image` worker, or
+`iii call compose::add worker=iii-sandbox`. See [Sandboxes](../creating-workers/sandboxes).
 
 <Warning title="Deprecated">
   `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
@@ -779,13 +791,12 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
 | `path`   | A path to a worker stored locally on disk.                                      |
 
-A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii`. Native
-`iii-worker` artifacts are published for glibc and musl Linux on both x86_64 and aarch64, so Alpine
-and other musl distributions are supported alongside standard glibc ones. The shell installer and
-`iii update iii-worker` pick the right build automatically by looking for the host's musl loader,
-independent of which engine build target is installed. Compose runs `iii-worker` as a process rather
-than linking it, so the engine stays portable; a bundle worker on a machine without `iii-worker`
-fails saying so, and every other worker kind is unaffected.
+A bundle's VM, like a `path://` worker with `runtime.base_image`, runs in the `sandbox-libkrun`
+worker, which Compose installs from the registry when the project has such a worker. The adapter is
+built for three targets only: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu`. On a musl Linux or Intel Mac host Compose fails with
+`UNSUPPORTED_PLATFORM`. On Linux the user running Compose needs read and write access to `/dev/kvm`,
+and `libcap-ng0` must be installed. Every other worker kind is unaffected.
 
 Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
 anything is downloaded. Run compose under WSL, where the VM still needs `/dev/kvm` and a guest
@@ -1006,7 +1017,9 @@ directory or follows a symbolic link. `<namespace>` is the daemon's namespace.
 | `state.json`         | Child process records for the project. Owner-only.                                             |
 | `config/`            | Resolved worker configuration files.                                                          |
 | `logs/`              | Rotating stdout and stderr for project workers.                                                |
-| `vm/`                | VM state for bundle and local-image workers, including rootfs, boot scripts and guest configs. |
+
+VM workers keep their state outside this directory: the sandbox adapter stores it in
+`~/.iii/sandbox/workers/<vm_id>/`, and Compose deletes it when you remove the container.
 
 Two projects can use `default` with separate engines on different ports. Starting the same project
 and namespace twice is refused. Two daemons on the same engine must use different namespaces.
@@ -1024,7 +1037,7 @@ Add `**/.iii/compose/` to the repository's `.gitignore` to exclude generated sta
 from nested projects, from version control.
 
 ```bash
-iii trigger compose::status --namespace dev file=./worker-compose.yaml
+iii call compose::status --namespace dev file=./worker-compose.yaml
 # ... "state_dir": "/home/you/shop/.iii/compose/dev"
 ls /home/you/shop/.iii/compose/dev/logs/
 ```
@@ -1087,7 +1100,7 @@ Compose can output the following error codes:
 These are literal diagnostic identifiers emitted by Compose, not worker categories.
 `ENGINE_WORKER_IS_BUILTIN` reports that a worker declared under `containers` is already supplied
 by the engine. Its name is retained for compatibility; it does not define a separate worker type.
-All workers follow the same Function/Trigger/Worker model.
+All workers follow the same model of workers, functions, and observers.
 
 ## Related
 

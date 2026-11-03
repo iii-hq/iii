@@ -8,7 +8,7 @@
 //!
 //! Bare `iii compose` connects to an existing engine and serves `compose::*`
 //! in the foreground; everything an operator does to a project goes through
-//! `iii trigger` from there, naming the project with `file=`.
+//! `iii call` from there, naming the project with `file=`.
 //!
 //! `iii compose --up` is the same daemon with the first call already made. The
 //! compose file is still read without `--up` when it exists, so its engine URL
@@ -52,7 +52,7 @@ pub struct ComposeCli {
     /// tells them apart.
     ///
     /// It is the address an operator reaches exactly one of them with:
-    /// `iii trigger compose::up --namespace <NS> file=<PATH>`. With `--up`, an
+    /// `iii call compose::up --namespace <NS> file=<PATH>`. With `--up`, an
     /// omitted value inherits the initial compose file namespace. Without an
     /// initial namespace, the daemon uses `default`.
     ///

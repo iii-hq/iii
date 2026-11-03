@@ -19,20 +19,22 @@ invocations between them.
 
 The Engine's responsibilities cover three concerns at runtime. First, it accepts WebSocket
 connections from Workers and maintains the live registry of which Workers are currently connected.
-Second, it tracks the Functions and Triggers each connected Worker has registered, exposing them as
-a unified system-wide surface. Third, it routes invocations: when a Trigger fires or a Function is
-called, the Engine finds a Worker that provides the target Function and dispatches the call.
+Second, it tracks the Functions each connected Worker has registered and the observers each Worker
+has created, exposing them as a unified system-wide surface. Third, it routes invocations: when a
+Function is called, or an observer runs its target, the Engine finds a Worker that provides the
+Function and dispatches the call.
 
 ## Worker disconnect cleanup
 
 When a Worker disconnects, the Engine cleans up the Worker's footprint in the live registry: its
-Functions and Triggers are removed, in-flight invocations of those Functions are cancelled, and the
-rest of the system keeps serving.
+Functions are removed, in-flight invocations of those Functions are cancelled, the observers it
+created wait as `suspended`, the observers of its Functions wait as `pending` until a Worker
+registers those Functions again, and the rest of the system keeps serving.
 
 <Note>
   See [Creating Workers / Workers / Handling Worker
-  disconnects](../creating-workers/workers#handling-worker-disconnects) for the cancellation error code
-  and the discovery events that fire (with their consistency semantics).
+  disconnects](../creating-workers/workers#handling-worker-disconnects) for the cancellation error
+  code and the discovery events that fire (with their consistency semantics).
 </Note>
 
 ## Config hot-reload
@@ -42,7 +44,7 @@ commits the new config. Workers that did not change in the diff stay running thr
 only added, removed, or changed Workers are restarted. An invalid `config.yaml` (parse error or
 validation failure) causes the Engine to exit rather than enter an indeterminate state.
 
-Worker *settings* are a separate layer. A Worker that registers a configuration schema reads its
+Worker _settings_ are a separate layer. A Worker that registers a configuration schema reads its
 `config:` block once, at first boot, to bootstrap its entry in the
 [configuration worker](../using-iii/configuration); from then on its settings are managed there and
 updated dynamically, without an engine reload. Settings changes are validated against the Worker's
@@ -53,20 +55,21 @@ never takes the Engine down.
 
 Routing is independent of language, runtime, and location. The Engine applies the same routing path
 whether a Function is hosted by a Python Agent on a laptop, a TypeScript Worker in a browser tab, a
-Rust binary in a microVM, or an OCI image on Kubernetes. This is what
-makes "any language, any runtime" a concrete property of iii rather than an aspiration.
+Rust binary in a microVM, or an OCI image on Kubernetes. This is what makes "any language, any
+runtime" a concrete property of iii rather than an aspiration.
 
 ## Discovery and the live registry
 
 The Engine maintains a registry of every connected Worker, the Functions each Worker has registered,
-and the Triggers bound to those Functions. Other Workers and tooling can read the registry on demand
-or subscribe to changes as it evolves.
+and the observers of those Functions. Other Workers and tooling can read the registry on demand or
+observe its changes as it evolves.
 
 <Note>
   See [Creating Workers / Workers / Inspecting the live
-  registry](../creating-workers/workers#inspecting-the-live-registry) for the concrete `engine::*::list`
-  snapshot calls and the `engine::workers-available` / `engine::functions-available` subscription
-  events.
+  registry](../creating-workers/workers#inspecting-the-live-registry) for the concrete
+  `engine::*::list` snapshot calls and the `engine::on-workers-changed`,
+  `engine::on-functions-changed`, and `engine::on-observers-changed` Functions that Workers observe
+  for changes.
 </Note>
 
 <Note>Querying traces, logs, and metrics is documented with the iii-observability Worker.</Note>

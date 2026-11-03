@@ -33,7 +33,7 @@ Per Addy Osmani and LangChain's own writing, a production loop has four levels:
 
 - **The agent loop:** a model calling tools repeatedly until a task completes.
 - **A verification loop:** a grader checks output against a rubric and retries on failure.
-- **An event-driven loop:** cron schedules or webhooks trigger agent runs automatically.
+- **An event-driven loop:** cron schedules or webhooks start agent runs automatically.
 - **A hill-climbing loop:** production traces feed an analysis agent that rewrites the harness configuration.
 
 Surrounding everything: memory -- "a markdown file, or a Linear board, anything
@@ -48,7 +48,7 @@ Let me translate the terminology:
 
 | Loop Engineering Primitive | What It Actually Is |
 | --- | --- |
-| "Automations that run on a schedule" | Cron trigger |
+| "Automations that run on a schedule" | Cron job |
 | "Memory that lives outside the conversation" | Key-value store |
 | "Sub-agents that don't step on each other" | Isolated workers consuming from a message queue |
 | "Verifier checks the maker's work" | Pub/sub consumer with retry logic |
@@ -132,7 +132,7 @@ The harness exposes five synchronous hook points:
 This is a middleware chain. It's Express.js `app.use()`. It's Django middleware.
 It's the same interceptor pattern that's been in web frameworks since the early
 2000s, applied to the agent turn lifecycle. Loop engineering calls this "human
-oversight points." The harness calls it a hook trigger with `priority`,
+oversight points." The harness registers each hook with a `priority`,
 `timeout_ms`, and an `on_error` fail policy.
 
 `harness::send` takes an `idempotency_key` field. The description is "webhook
@@ -157,7 +157,7 @@ At this point the translation table writes itself:
 | `iii-observability` (auto-tracing) | "Traces for the hill-climbing loop" | OpenTelemetry distributed tracing |
 | `harness::hook::pre/post-trigger` | "Human oversight + verification" | Middleware interceptor chain |
 | `idempotency_key` on `harness::send` | "Connectors to your real tools" | Idempotent message delivery |
-| `harness::turn-completed` trigger | "Results land in your triage inbox" | Event emission on job completion |
+| `harness::on-turn-completed` observers | "Results land in your triage inbox" | Event emission on job completion |
 | `max_turns`, `max_depth`, `max_children` | "Loop has a stopping condition" | Resource budget / backpressure |
 
 The harness worker is loop engineering. It is also, in every functional detail,
@@ -169,7 +169,7 @@ browser tab as a first-class participant? Add a worker." And: "Unix won on
 'everything is a file.' React won on 'everything is a component.' iii makes that
 bet for the entire software stack." The bet is not that agents are different from
 traditional software. The bet is the opposite: that the same three primitives --
-Worker, Trigger, Function -- that model a message queue also model an agent loop,
+Worker, Function, Observer -- that model a message queue also model an agent loop,
 a cron job, a pub/sub subscriber, and a sub-agent orchestrator. The harness
 worker is those primitives, composed.
 
@@ -191,8 +191,8 @@ scheduler that prevents it from wedging forever, a key-value store that holds
 session state across restarts, distributed tracing across every tool call and
 sub-agent spawn automatic by default, a middleware chain for verification and
 approval gates and result rewriting, scoped child sessions for sub-agents that
-enforce permission boundaries, and idempotent delivery so your webhook triggers
-do not double-fire. One command: `iii worker add harness`.
+enforce permission boundaries, and idempotent delivery so your webhooks do
+not double-fire. One command: `iii worker add harness`.
 
 ## Try It Out
 
@@ -224,7 +224,7 @@ send.
 The infrastructure is not innovation. The insight is that all of it -- the queue,
 the store, the cron, the traces, the hooks -- uses the same three primitives as
 the rest of the system. The agent is a Worker. Its memory is state. Its
-orchestration is triggers. Its durable execution loop is a queue consumer.
+orchestration is observers. Its durable execution loop is a queue consumer.
 
 The harness worker and its full dependency chain are at
 [workers.iii.dev](https://workers.iii.dev). The complete tutorial showing queues,

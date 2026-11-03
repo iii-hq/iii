@@ -1107,7 +1107,7 @@ function ObservabilityConfigPage({ healthCheck, ...props }) {
   ] });
 }
 function setup(host) {
-  const healthCheck = () => host.iii.trigger("engine::health::check", {});
+  const healthCheck = () => host.iii.call("engine::health::check", {});
   const RegisteredForm = (props) => /* @__PURE__ */ jsx(
     ObservabilityConfigPage,
     {

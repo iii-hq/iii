@@ -13,7 +13,7 @@ Most agent teams don't build a harness. They adopt one. LangChain, LangGraph, Op
 
 I think that shape is **wrong**, and it's the reason every long-running agent team eventually ends up rewriting its harness from scratch. The harness isn't one thing. It's ten or twelve different things bundled together because the surrounding ecosystem doesn't give you a way to compose them. [**Pi agent**](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) **packages** are on the right track, but they are still in the paradigm of “Add another service and integrate it with all others” The iii engine treats all workers the same and removes the integration logic completely. The **provider router, the credential vault, the policy engine, the approval gate, the model catalog, the session storage, the budget tracker, the after-call hook fanout, the durable turn loop** are independent concerns. These are all interoperable with your queue, http/api server, streaming, even browser workers. A framework that ships them as one block is selling you a tradeoff you didn't have to make.
 
-The bet underneath [iii](https://iii.dev/) is that they shouldn't be one block. There should be a set of workers on a shared engine, each replaceable, each versioned independently, each connected by a single primitive: **a trigger (`iii.trigger()`)** that every other worker also uses. The harness becomes a stack of installable workers, and "**build your own**" stops meaning "**fork a framework.**" It means "**swap a few workers.**"
+The bet underneath [iii](https://iii.dev/) is that they shouldn't be one block. There should be a set of workers on a shared engine, each replaceable, each versioned independently, each connected by a single primitive: **a function call (`iii.call()`)** that every other worker also uses. The harness becomes a stack of installable workers, and "**build your own**" stops meaning "**fork a framework.**" It means "**swap a few workers.**"
 
 This post walks through what that actually looks like. The complete stack that drives an iii agent turn today, why each layer is its own worker, and how you replace any of them.
 
@@ -39,7 +39,7 @@ If you strip a production agent harness back to its responsibilities, you get a 
 
 Every serious agent harnesses most of these. The expensive ones do all of them. The cheap ones cut corners and rebuild the corners later when they hit production. The frameworks bundle them into a monolith and ship one version of each. That last part is the part that costs you, because a year in, you find out that the policy engine you want is not the policy engine the framework ships, and replacing it means replacing the harness.
 
-The iii harness ships every one of those thirteen jobs as a separate worker on the [workers.iii.dev](https://workers.iii.dev/) registry. Each speaks the same WebSocket protocol. Each registers functions and triggers on the same engine bus. Each is `iii worker add`\-able, swappable, and writable in any language with an SDK.
+The iii harness ships every one of those thirteen jobs as a separate worker on the [workers.iii.dev](https://workers.iii.dev/) registry. Each speaks the same WebSocket protocol. Each registers functions and observers on the same engine bus. Each is `iii worker add`\-able, swappable, and writable in any language with an SDK.
 
 ## **The stack, by worker**
 
@@ -70,7 +70,7 @@ The reason this matters: every box in that table is a place where someone can ha
 
 The shape of one turn looks like this, walking through the workers in the order they fire.
 
-A browser/cli/chat POSTs a turn through `harness::trigger` with `{session_id, message_id, payload}`. The harness meta-worker forwards `payload` to `run::start`. That hop exists so the OpenTelemetry span wrapper can seed the session and message IDs as baggage, which propagates to every nested `iii.trigger` call across every worker in the stack. The trace tree on the other side is one connected graph.
+A browser/cli/chat POSTs a turn through `harness::trigger` with `{session_id, message_id, payload}`. The harness meta-worker forwards `payload` to `run::start`. That hop exists so the OpenTelemetry span wrapper can seed the session and message IDs as baggage, which propagates to every nested `iii.call` across every worker in the stack. The trace tree on the other side is one connected graph.
 
 `run::start` lands on the turn-orchestrator. It persists the run request, seeds the initial `TurnStateRecord` in iii state at `session/<sid>/turn_state`, and returns immediately. The actual work happens inside the durable per-state machine, woken by publishes to the `turn-step` FIFO.
 
@@ -82,15 +82,15 @@ The two terminal states are `stopped` (clean exit via `finishSession()`) and `fa
 
 When the assistant returns tool calls, the FSM enters `function_execute`. Every tool call passes through `dispatchWithHook`, the single chokepoint in the orchestrator. `consultBefore` calls `policy::check_permissions` directly with a 5-second timeout. The policy worker (the harness meta-worker, in the default stack) reads `iii-permissions.yaml`, matches the call's `function_id` against the rule set, and returns one of three outcomes:
 
-* `allow:` dispatch proceeds; the orchestrator triggers the target function and writes the result  
+* `allow:` dispatch proceeds; the orchestrator calls the target function and writes the result  
 * `deny:` dispatch short-circuits with a DenialEnvelope, the result becomes a denial record  
 * `needs_approval:` the individual call parks into the turn's awaiting\_approval list. The rest of the batch keeps dispatching. The turn transitions to function\_awaiting\_approval only when one or more entries are pending.
 
-The approval wake is reactive and shared. The orchestrator registers exactly one `turn::on_approval` state trigger on scope `approvals`. When the console calls `approval::resolve`, the approval-gate worker writes `approvals/<sid>/<cid> = {decision, reason}` to iii state. That write fires `turn::on_approval`, which advances the affected session. `function_awaiting_approval` reads only the decisions that just landed, dispatches each one as it arrives (`allow` becomes a pre-approved dispatch, `deny` or `aborted` becomes a synthetic denial), and advances when `awaiting_approval[]` is empty. No per-call resume functions to register. No startup re-scan to recover pending approvals. One trigger covers every session.
+The approval wake is reactive and shared. The orchestrator registers exactly one observer of `state::on-changed`, filtered to scope `approvals`, with `turn::on_approval` as its target. When the console calls `approval::resolve`, the approval-gate worker writes `approvals/<sid>/<cid> = {decision, reason}` to iii state. That write runs `turn::on_approval`, which advances the affected session. `function_awaiting_approval` reads only the decisions that just landed, dispatches each one as it arrives (`allow` becomes a pre-approved dispatch, `deny` or `aborted` becomes a synthetic denial), and advances when `awaiting_approval[]` is empty. No per-call resume functions to register. No startup re-scan to recover pending approvals. One observer covers every session.
 
 Fail-closed by construction: if the policy worker is unreachable or the 5-second timeout fires, `consultBefore` denies the call with a `gate_unavailable` envelope. If `iii::durable::publish` itself errored, the hook fanout returns `publish_failed: true` and the orchestrator treats it as a deny.
 
-A few latency wins fall out of this shape. The after-function-call hook short-circuits `publish_collect` via a subscriber-presence cache when no durable subscriber is registered for the topic, removing roughly 500ms per executed function call. `tearing_down` is inlined into `finishSession()`, removing one durable queue hop per turn. `context-compaction` subscribes to a dedicated `agent::turn_end` stream the orchestrator emits at turn boundaries, so compactor wakeups are per-turn instead of per-event. The session-create fanout state trigger gates by scope alone and matches in-process, so the previous per-write `harness::session::is_create_event` RPC is gone.
+A few latency wins fall out of this shape. The after-function-call hook short-circuits `publish_collect` via a subscriber-presence cache when no durable subscriber is registered for the topic, removing roughly 500ms per executed function call. `tearing_down` is inlined into `finishSession()`, removing one durable queue hop per turn. `context-compaction` subscribes to a dedicated `agent::turn_end` stream the orchestrator emits at turn boundaries, so compactor wakeups are per-turn instead of per-event. The session-create fanout observer of `state::on-changed` filters by scope alone and matches in-process, so the previous per-write `harness::session::is_create_event` RPC is gone.
 
 After the batch completes, `steering_check` decides whether to continue, stop, or hit `max_turns`. If continue, loop back to `assistant_streaming`. If stop or max, `finishSession()` runs inline: emit `agent_end`, free the sandbox, transition to `stopped`.
 
@@ -98,7 +98,7 @@ Throughout the whole run, every worker that participates emits OTel spans tagged
 
 ## **Build your own**
 
-The interesting part is that none of the workers above are special. Each one is a process that opens a WebSocket to the engine, registers some functions and triggers, and runs. The contract is the same as the contract every application worker uses. The harness is built on the same primitive your business logic is built on.
+The interesting part is that none of the workers above are special. Each one is a process that opens a WebSocket to the engine, registers some functions and observers, and runs. The contract is the same as the contract every application worker uses. The harness is built on the same primitive your business logic is built on.
 
 Which means "build your own harness" decomposes into the same operation as "write any worker." You pick the layer you want to replace, you write a worker that registers the same functions on the bus, you `iii worker add` it, and the rest of the stack starts using your worker.
 
@@ -106,7 +106,7 @@ Two layers don't show up in the worker table above but matter for how the harnes
 
 Five concrete examples.
 
-**Replace the model catalogue with a live API.** Write a worker that registers `models::list`, `models::get`, `models::supports`. Have it fetch from your provider's catalog endpoint every N minutes and cache. Publish it. `iii worker add your-org/dynamic-models-catalog`. Stop the static models-catalog worker. The turn-orchestrator never knows the difference. It calls `iii.trigger('models::list')` and the engine routes to whichever worker registered that function id most recently.
+**Replace the model catalogue with a live API.** Write a worker that registers `models::list`, `models::get`, `models::supports`. Have it fetch from your provider's catalog endpoint every N minutes and cache. Publish it. `iii worker add your-org/dynamic-models-catalog`. Stop the static models-catalog worker. The turn-orchestrator never knows the difference. It calls `iii.call({ function_id: 'models::list', payload: {} })` and the engine routes to whichever worker registered that function id most recently.
 
 **Add a new provider.** The shape is `provider-kimi` and `provider-lmstudio` already prove out. Each is one worker that registers `provider::<name>::stream` and `provider::<name>::complete`, drains an SSE stream from the upstream API into an iii channel, and writes its model usage to llm-budget via `budget::record`. Adding a fifth provider is writing one folder with one `iii.worker.yaml` and one `register.ts`. Publish to the registry, or keep it local. The turn-orchestrator picks the provider by the run's `provider` field; new providers become available the instant the worker connects.
 
@@ -117,15 +117,18 @@ Five concrete examples.
 **Replace the approval gate UI surface.** The default `approval-gate` worker registers `approval::resolve`. The wire schema is one function call:
 
 ```ts
-iii.trigger('approval::resolve', {
-  session_id: '...',
-  function_call_id: '...',
-  decision: 'allow' | 'deny' | 'aborted',
-  reason: 'optional human text',
+iii.call({
+  function_id: 'approval::resolve',
+  payload: {
+    session_id: '...',
+    function_call_id: '...',
+    decision: 'allow' | 'deny' | 'aborted',
+    reason: 'optional human text',
+  },
 })
 ```
 
-The handler persists `approvals/<sid>/<cid> = {decision, reason}` to iii state. The orchestrator's single `turn::on_approval` state trigger picks that write up and wakes the right session. If you want to drive approvals from Slack instead of the console, write a Slack worker that listens for `/approve <id>` and `/deny <id>` slash commands, then calls `approval::resolve` with the right payload. The orchestrator never knows the difference. The whole approval-gate worker stays untouched. You added a new worker; you didn't replace the existing one.
+The handler persists `approvals/<sid>/<cid> = {decision, reason}` to iii state. The orchestrator's single observer of the `approvals` scope picks that write up and runs `turn::on_approval`, which wakes the right session. If you want to drive approvals from Slack instead of the console, write a Slack worker that listens for `/approve <id>` and `/deny <id>` slash commands, then calls `approval::resolve` with the right payload. The orchestrator never knows the difference. The whole approval-gate worker stays untouched. You added a new worker; you didn't replace the existing one.
 
 If you want a different policy engine (OPA, Cedar, your own DSL), write a worker that registers `policy::check_permissions` and returns `{ decision, rule_id?, matched_constraint? }`. Disconnect the default policy worker (which is wrapped inside the harness meta-worker, so you'd disable that handler or run a stripped-down meta-worker). The turn-orchestrator's `consultBefore` doesn't know the difference. Same 5-second timeout, same fail-closed semantics, same wire shape.
 
@@ -141,7 +144,7 @@ A thick harness is all thirteen workers plus `context-compaction` plus a custom 
 
 The architectural distance between thin and thick isn't a rewrite. It's a config change. Same primitives, same wire protocol, same trace shape, same observability story. The slider moves by adding and removing workers from your `config.yaml`. Everything else holds.
 
-It applies inside a single worker too. The turn-orchestrator just shipped a refactor that collapsed its FSM from eleven states to seven, deleted the per-call `turn::approval_resume::<sid>/<cid>` mechanism in favour of one reactive `turn::on_approval` state trigger on scope `approvals`, and inlined `tearing_down` into a `finishSession()` port. Every other worker in the stack (approval-gate, session, llm-budget, providers, models-catalog, auth-credentials, hook-fanout, context-compaction) stayed unchanged. The `approval::resolve` wire shape didn't move. The contracts held. That's the property the composition gives you: a major internal rewrite of one worker is a self-contained change because every neighbour talks to it through bus-level function ids.
+It applies inside a single worker too. The turn-orchestrator just shipped a refactor that collapsed its FSM from eleven states to seven, deleted the per-call `turn::approval_resume::<sid>/<cid>` mechanism in favour of one reactive observer of scope `approvals` that runs `turn::on_approval`, and inlined `tearing_down` into a `finishSession()` port. Every other worker in the stack (approval-gate, session, llm-budget, providers, models-catalog, auth-credentials, hook-fanout, context-compaction) stayed unchanged. The `approval::resolve` wire shape didn't move. The contracts held. That's the property the composition gives you: a major internal rewrite of one worker is a self-contained change because every neighbour talks to it through bus-level function ids.
 
 This is the part the framework model can't give you. A framework picks a position on the slider for you and locks you in. The worker model leaves the slider in your hand.
 
@@ -157,7 +160,7 @@ The docs live at [iii.dev/docs](https://iii.dev/docs). The engine is at [github.
 
 A harness is not a thing you install. A harness is a set of jobs your system has to do for an agent to run durably, safely and observably. The framework era bundled those jobs together because nothing underneath gave you a way to compose them.
 
-iii's bet is that one primitive: **a worker** that connects to the engine over WebSocket and registers functions and triggers is small enough to absorb every one of those jobs separately, and that the resulting stack is more useful than any framework because every layer is independently replaceable.
+iii's bet is that one primitive: **a worker** that connects to the engine over WebSocket and registers functions is small enough to absorb every one of those jobs separately, and that the resulting stack is more useful than any framework because every layer is independently replaceable.
 
 You don't adopt the iii harness. You install the workers you want, write the ones you need, and end up with a harness shaped exactly like your system. Same protocol on every layer. Same trace across every call. Same `iii worker add` for the parts you take from the registry as for the parts you publish yourself.
 

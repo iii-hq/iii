@@ -1,6 +1,6 @@
 ---
 title: 'Loop Engineering Is a Pattern, Not a Feature'
-description: 'Loop engineering is being sold as a product category, but an agentic loop is just a while statement. iii shows how to implement it as a pattern: triggers and functions handle the orchestration, and an LLM is used only where real judgment is required.'
+description: 'Loop engineering is being sold as a product category, but an agentic loop is just a while statement. iii shows how to implement it as a pattern: functions and observers handle the orchestration, and an LLM is used only where real judgment is required.'
 pubDate: 2026-07-29
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'harness', 'loops', 'workers', 'orchestration']
@@ -83,11 +83,11 @@ identical -- most programming languages already have a suitable pattern in
 their standard library. Sort and compare. One or two function calls,
 superfast, basically free, and correct every time.
 
-## Orchestrating a turn with triggers and functions in iii
+## Orchestrating a turn with functions and observers in iii
 
 For the readers new to iii: it is an unreasonably simple approach to
-software engineering. In iii, [everything is a Worker, a Function, or a
-Trigger](https://iii.dev/docs/understanding-iii).
+software engineering. In iii, [everything is a Worker, a Function, or an
+Observer](https://iii.dev/docs/understanding-iii).
 
 I used the iii harness, which works directly with these iii primitives, to
 set up a workflow that scans a GitHub repository for security
@@ -134,16 +134,16 @@ The harness then created the table to keep the discovered vulnerabilities,
 and kicked off work to create and serve a web interface over HTTP.
 
 Now to the scheduling: in the prompt, I specifically asked for the
-scheduling to be handled by triggers and functions rather than the LLM-level
-orchestration. The harness registered relevant triggers and achieved
+scheduling to be handled by functions and observers rather than the LLM-level
+orchestration. The harness registered the relevant observers and achieved
 seamless, fast and cheap flow control.
 
-![Registering a reactive join trigger on state -- it fires on file-result writes and waits for all seven results to arrive before continuing, no LLM turn required.](../../assets/blog/loop-engineering-is-a-pattern-not-a-feature/trigger-registered-join.png)
+![Registering a reactive join on state: it runs on file-result writes and waits for all seven results to arrive before continuing, no LLM turn required.](../../assets/blog/loop-engineering-is-a-pattern-not-a-feature/trigger-registered-join.png)
 
 You can see the reactions being logged in the main conversation as they
 happen:
 
-![Reactive triggers firing and the join condition counting arrivals -- 1/7, then 2/7 -- as each batch of files finishes scanning.](../../assets/blog/loop-engineering-is-a-pattern-not-a-feature/trigger-reactions-log.png)
+![Reactions firing and the join condition counting arrivals (1/7, then 2/7) as each batch of files finishes scanning.](../../assets/blog/loop-engineering-is-a-pattern-not-a-feature/trigger-reactions-log.png)
 
 The harness then analyzed all the files, with a sub-agent taking a batch of
 a few files, and inserted the results into the database I added earlier,
@@ -225,7 +225,7 @@ structural.
 
 The walk down the stack only works if the LLM version of a step and the code
 version of a step are *interchangeable*. On iii, they are, by construction:
-both are Functions, invoked by Triggers, hosted in Workers. When a
+both are Functions, run by calls and observers, hosted in Workers. When a
 `vulnscan::fetch-batch` call stops being a Sonnet 5 call and becomes a
 database query, nothing that calls it changes.
 
@@ -236,7 +236,7 @@ what exists, and function IDs that mean what they say. The same minimalism
 that lets you walk logic out of the LLM lets the LLM operate what remains.
 
 So the loop-engineering picture on iii ends up looking like this: a loop
-whose turns are controlled by triggers, whose validators are unit-tested
+whose turns are controlled by observers, whose validators are unit-tested
 functions, whose LLM calls are confined to the smallest parts that genuinely
 need judgment, and whose every component can be observed, tested, and
 swapped independently.

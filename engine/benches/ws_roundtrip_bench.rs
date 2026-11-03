@@ -4,7 +4,7 @@ use std::{net::TcpListener as StdTcpListener, time::Duration};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
-use iii::{EngineBuilder, protocol::Message, protocol::TriggerAction};
+use iii::{EngineBuilder, protocol::CallAction, protocol::Message};
 use serde_json::json;
 use tokio::{runtime::Runtime, task::JoinHandle, time, time::sleep};
 use tokio_tungstenite::{
@@ -202,7 +202,7 @@ async fn run_service_worker(ws_url: String) {
                 }),
                 traceparent: None,
                 baggage: None,
-                action: Some(TriggerAction::Void),
+                action: Some(CallAction::Void),
                 metadata: None,
                 namespace: None,
                 caller: None,
@@ -225,6 +225,9 @@ async fn run_service_worker(ws_url: String) {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                args_format: None,
+                private: false,
+                observable: true,
                 observe: None,
             })
             .expect("serialize RegisterFunction")
@@ -267,6 +270,8 @@ async fn run_service_worker(ws_url: String) {
                             error: None,
                             traceparent,
                             baggage,
+                            matched: None,
+                            delivered: false,
                         };
                         socket
                             .send(WsMessage::Text(

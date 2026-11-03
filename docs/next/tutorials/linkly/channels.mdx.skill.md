@@ -22,7 +22,7 @@ bulk-importer:
 ## Import a CSV over a channel
 
 The `bulk-importer` worker exposes one function that receives the read end of a channel, streams the
-CSV in, and triggers `link::create` from the `link` worker for each row. Create
+CSV in, and calls `link::create` from the `link` worker for each row. Create
 `bulk-importer/src/index.ts`:
 
 ```typescript bulk-importer/src/index.ts
@@ -52,7 +52,7 @@ worker.registerFunction("bulk-importer::import_csv", async (input) => {
     const url = row.slice(comma + 1).trim();
     if (!url) continue;
     try {
-      await worker.trigger({
+      await worker.call({
         function_id: "link::create",
         payload: { code, url },
       });
@@ -77,7 +77,7 @@ logger.info("bulk-importer ready");
 Restart Compose so it picks up the change:
 
 ```bash
-iii trigger compose::restart
+iii call compose::restart
 ```
 
 ## See it work
@@ -94,9 +94,8 @@ With the engine running, let's bulk-load some links.
 
 The uploader is a small standalone script that creates the channel, writes the CSV to the writer
 end, and hands the reader end to `bulk-importer::import_csv`. `createChannel` (from
-`iii-sdk/helpers`) returns serializable `readerRef`/`writerRef` handles you can pass through a
-normal trigger payload. It is not a worker, so `channel-client/` holds it, outside
-`worker-compose.yaml`:
+`iii-sdk/helpers`) returns serializable `readerRef`/`writerRef` handles you can pass in a normal
+call payload. It is not a worker, so `channel-client/` holds it, outside `worker-compose.yaml`:
 
 ```bash
 cd channel-client && npm install
@@ -120,7 +119,7 @@ const channel = await createChannel(worker);
 channel.writer.stream.write(Buffer.from(csv));
 channel.writer.stream.end();
 
-const result = await worker.trigger({
+const result = await worker.call({
   function_id: "bulk-importer::import_csv",
   payload: { reader: channel.readerRef },
 });
@@ -148,8 +147,8 @@ controls, not the database's wording.
 Both new links resolve immediately:
 
 ```bash
-iii trigger link::resolve code=mylink
-iii trigger link::resolve code=mydocslink
+iii call link::resolve code=mylink
+iii call link::resolve code=mydocslink
 ```
 
 ```json

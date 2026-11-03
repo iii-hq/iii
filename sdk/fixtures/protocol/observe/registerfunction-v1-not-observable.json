@@ -1,0 +1,20 @@
+{
+  "type": "registerfunction",
+  "id": "vault::read-secret",
+  "description": "Reads a secret. Not observable: its input and output must not leave the call.",
+  "request_format": {
+    "type": "object",
+    "required": [
+      "name"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      }
+    }
+  },
+  "observe": {
+    "delivery": "auto",
+    "allow": false
+  }
+}

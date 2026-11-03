@@ -1,0 +1,521 @@
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { pipeline } from 'node:stream/promises'
+import { fileURLToPath } from 'node:url'
+import { type HttpRequest, type HttpResponse, http } from '@iii-dev/helpers/http'
+import { describe, expect, it } from 'vitest'
+import type { StreamResponse } from '../src/types'
+import { engineHttpUrl, execute, httpRequest, iii, sleep } from './utils'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const pdfPath = path.join(__dirname, '..', '..', '..', '..', 'test-assets', 'handbook.pdf')
+// The standalone HTTP worker accepts request bodies up to 16 MiB. Keep upload
+// fixtures below that limit, including multipart framing overhead.
+const uploadFixtureBytes = 8 * 1024 * 1024
+
+describe('HTTP routes: observers of http::on-request', () => {
+  it('should register GET endpoint', async () => {
+    const fn = iii.registerFunction(
+      'test.api.get',
+      async (_req: HttpRequest): Promise<HttpResponse> => ({
+        status_code: 200,
+        body: { message: 'Hello from GET' },
+      }),
+    )
+
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/test/hello' } }, fn.id)
+
+    await sleep(300)
+
+    const response = await execute(async () => httpRequest('GET', '/test/hello'))
+
+    expect(response.status).toBe(200)
+    expect(response.data).toEqual({ message: 'Hello from GET' })
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should register POST endpoint with body', async () => {
+    const fn = iii.registerFunction('test.api.post', async (req: HttpRequest): Promise<HttpResponse> => {
+      const body = (req.body as Record<string, unknown>) ?? {}
+      return {
+        status_code: 201,
+        body: { received: body, created: true },
+      }
+    })
+
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'POST', path: '/test/items' } }, fn.id)
+
+    await sleep(300)
+
+    const response = await httpRequest('POST', '/test/items', { name: 'test item', value: 123 })
+
+    expect(response.status).toBe(201)
+    expect(response.data.created).toBe(true)
+    expect(response.data.received).toHaveProperty('name', 'test item')
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should expose raw JSON request body through request_body', async () => {
+    const rawJson = '{"z":2, "a":1}'
+
+    const fn = iii.registerFunction(
+      'test::api::json::raw',
+      http(async (req: HttpRequest, response: StreamResponse) => {
+        const rawBody = await req.request_body.readAll()
+
+        response.status(200)
+        response.headers({ 'content-type': 'application/json' })
+        response.stream.end(
+          Buffer.from(
+            JSON.stringify({
+              parsed_body: req.body,
+              raw_body: rawBody.toString('utf-8'),
+            }),
+          ),
+        )
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/json/raw' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/json/raw`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: rawJson,
+    })
+
+    expect(response.status).toBe(200)
+    const data = (await response.json()) as Record<string, unknown>
+
+    expect(data.parsed_body).toEqual({ z: 2, a: 1 })
+    expect(data.raw_body).toBe(rawJson)
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should handle path parameters', async () => {
+    const fn = iii.registerFunction(
+      'test.api.getById',
+      async (req: HttpRequest): Promise<HttpResponse> => ({
+        status_code: 200,
+        body: { id: req.path_params?.id },
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/items/:id' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const response = await execute(async () => httpRequest('GET', '/test/items/abc123'))
+
+    expect(response.status).toBe(200)
+    expect(response.data).toEqual({ id: 'abc123' })
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should handle query parameters', async () => {
+    const fn = iii.registerFunction('test.api.search', async (req: HttpRequest): Promise<HttpResponse> => {
+      const q = req.query_params?.q
+      const limit = req.query_params?.limit
+      const qVal = Array.isArray(q) ? q[0] : q
+      const limitVal = Array.isArray(limit) ? limit[0] : limit
+      return {
+        status_code: 200,
+        body: { query: qVal, limit: limitVal },
+      }
+    })
+
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/test/search' } }, fn.id)
+
+    await sleep(300)
+
+    const response = await execute(async () => httpRequest('GET', '/test/search?q=hello&limit=10'))
+
+    expect(response.status).toBe(200)
+    expect(response.data.query).toBe('hello')
+    expect(response.data.limit).toBe('10')
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should return custom status code', async () => {
+    const fn = iii.registerFunction(
+      'test.api.notfound',
+      async (_req: HttpRequest): Promise<HttpResponse<404>> => ({
+        status_code: 404,
+        body: { error: 'Not found' },
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/missing' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const response = await httpRequest('GET', '/test/missing')
+
+    expect(response.status).toBe(404)
+    expect(response.data).toEqual({ error: 'Not found' })
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should honor Content-Type header when returning HttpResponse with string body', async () => {
+    const xmlBody = '<?xml version="1.0" encoding="UTF-8"?><note><to>user</to><body>hello</body></note>'
+    const fn = iii.registerFunction(
+      'test.api.xml.return',
+      async (_req: HttpRequest): Promise<HttpResponse> => ({
+        status_code: 200,
+        headers: { 'Content-Type': 'text/xml' },
+        body: xmlBody,
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/xml-return' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/xml-return`, { method: 'POST' })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/xml')
+    expect(await response.text()).toBe(xmlBody)
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should download a PDF file via streaming response', async () => {
+    const originalPdf = fs.readFileSync(pdfPath)
+    const fn = iii.registerFunction(
+      'test.api.download.pdf',
+      http(async (_req: HttpRequest, response: StreamResponse) => {
+        const fileStream = fs.createReadStream(pdfPath)
+
+        response.status(200)
+        response.headers({ 'content-type': 'application/pdf' })
+
+        await pipeline(fileStream, response.stream)
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/download/pdf' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/download/pdf`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/pdf')
+
+    const downloadedBuffer = Buffer.from(await response.arrayBuffer())
+    expect(downloadedBuffer.length).toBe(originalPdf.length)
+    expect(downloadedBuffer.equals(originalPdf)).toBe(true)
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should upload a PDF file via streaming request', async () => {
+    const originalPdf = fs.readFileSync(pdfPath).subarray(0, uploadFixtureBytes)
+
+    let receivedBuffer: Buffer = null as never
+
+    const fn = iii.registerFunction(
+      'test.api.upload.pdf',
+      http(async (req: HttpRequest, response: StreamResponse) => {
+        const chunks: Buffer[] = []
+
+        response.status(200)
+        response.headers({ 'content-type': 'application/json' })
+
+        for await (const chunk of req.request_body.stream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+
+        receivedBuffer = Buffer.concat(chunks)
+
+        response.stream.end(Buffer.from(JSON.stringify({ received_size: receivedBuffer.length })))
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/upload/pdf' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/upload/pdf`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: originalPdf,
+    })
+
+    expect(response.status).toBe(200)
+
+    const data = (await response.json()) as Record<string, unknown>
+
+    expect(data.received_size).toBe(originalPdf.length)
+    expect(receivedBuffer).not.toBeNull()
+    expect(receivedBuffer.equals(originalPdf)).toBe(true)
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should stream SSE events', async () => {
+    const events = [
+      { id: '1', type: 'message', data: 'Hello, world!' },
+      { id: '2', type: 'update', data: JSON.stringify({ count: 42 }) },
+      { id: '3', type: 'message', data: 'line one\nline two' },
+      { id: '4', type: 'done', data: 'goodbye' },
+    ]
+
+    const fn = iii.registerFunction(
+      'test.api.sse',
+      http(async (_req: HttpRequest, response: StreamResponse) => {
+        response.status(200)
+        response.headers({
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        })
+
+        for (const event of events) {
+          let frame = ''
+          frame += `id: ${event.id}\n`
+          frame += `event: ${event.type}\n`
+          for (const line of event.data.split('\n')) {
+            frame += `data: ${line}\n`
+          }
+          frame += '\n'
+
+          response.stream.write(Buffer.from(frame))
+          await sleep(50)
+        }
+
+        response.stream.end()
+      }),
+    )
+
+    const route = iii.observe({ function_id: 'http::on-request', args: { method: 'GET', path: '/test/sse' } }, fn.id)
+
+    await sleep(300)
+
+    const response = await fetch(`${engineHttpUrl}/test/sse`)
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('text/event-stream')
+
+    const body = await response.text()
+    const receivedEvents: { id: string; type: string; data: string }[] = []
+
+    for (const block of body.split('\n\n').filter(Boolean)) {
+      const lines = block.split('\n')
+      const ev: Record<string, string> = {}
+      const dataLines: string[] = []
+
+      for (const line of lines) {
+        if (line.startsWith('id: ')) ev.id = line.slice(4)
+        else if (line.startsWith('event: ')) ev.type = line.slice(7)
+        else if (line.startsWith('data: ')) dataLines.push(line.slice(6))
+      }
+
+      ev.data = dataLines.join('\n')
+      receivedEvents.push(ev as { id: string; type: string; data: string })
+    }
+
+    expect(receivedEvents).toHaveLength(events.length)
+
+    for (let i = 0; i < events.length; i++) {
+      expect(receivedEvents[i].id).toBe(events[i].id)
+      expect(receivedEvents[i].type).toBe(events[i].type)
+      expect(receivedEvents[i].data).toBe(events[i].data)
+    }
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should handle application/x-www-form-urlencoded request', async () => {
+    const fn = iii.registerFunction(
+      'test.api.form.urlencoded',
+      http(async (req: HttpRequest, response: StreamResponse) => {
+        const chunks: Buffer[] = []
+
+        for await (const chunk of req.request_body.stream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+
+        const body = Buffer.concat(chunks).toString('utf-8')
+        const params = new URLSearchParams(body)
+
+        response.status(200)
+        response.headers({ 'content-type': 'application/json' })
+        response.stream.end(
+          Buffer.from(
+            JSON.stringify({
+              name: params.get('name'),
+              email: params.get('email'),
+              age: params.get('age'),
+            }),
+          ),
+        )
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/form/urlencoded' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const formBody = new URLSearchParams({
+      name: 'John Doe',
+      email: 'john@example.com',
+      age: '30',
+    })
+
+    const response = await fetch(`${engineHttpUrl}/test/form/urlencoded`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: formBody.toString(),
+    })
+
+    expect(response.status).toBe(200)
+    const data = (await response.json()) as Record<string, unknown>
+
+    expect(data.name).toBe('John Doe')
+    expect(data.email).toBe('john@example.com')
+    expect(data.age).toBe('30')
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('should handle multipart/form-data with file upload', async () => {
+    const originalPdf = fs.readFileSync(pdfPath).subarray(0, uploadFixtureBytes)
+
+    const fn = iii.registerFunction(
+      'test.api.form.multipart',
+      http(async (req: HttpRequest, response: StreamResponse) => {
+        const chunks: Buffer[] = []
+
+        for await (const chunk of req.request_body.stream) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        }
+
+        const rawBody = Buffer.concat(chunks)
+        const contentType = (req.headers?.['content-type'] as string) ?? ''
+        const boundaryMatch = contentType.match(/boundary=([^\s;]+)/)
+        const boundary = boundaryMatch?.[1] ?? ''
+
+        const bodyText = rawBody.toString()
+        const hasTitle = bodyText.includes('Test Document')
+        const hasDescription = bodyText.includes('A test upload')
+        const hasFilename = bodyText.includes('filename="handbook.pdf"')
+
+        response.status(200)
+        response.headers({ 'content-type': 'application/json' })
+        response.stream.end(
+          Buffer.from(
+            JSON.stringify({
+              has_boundary: boundary.length > 0,
+              has_title: hasTitle,
+              has_description: hasDescription,
+              has_filename: hasFilename,
+              body_size: rawBody.length,
+            }),
+          ),
+        )
+      }),
+    )
+
+    const route = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'POST', path: '/test/form/multipart' } },
+      fn.id,
+    )
+
+    await sleep(300)
+
+    const formData = new FormData()
+    formData.append('title', 'Test Document')
+    formData.append('description', 'A test upload')
+    formData.append('file', new Blob([originalPdf]), 'handbook.pdf')
+
+    const response = await fetch(`${engineHttpUrl}/test/form/multipart`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    expect(response.status).toBe(200)
+    const data = (await response.json()) as Record<string, unknown>
+
+    expect(data.has_boundary).toBe(true)
+    expect(data.has_title).toBe(true)
+    expect(data.has_description).toBe(true)
+    expect(data.has_filename).toBe(true)
+    expect(data.body_size).toBeGreaterThan(originalPdf.length)
+
+    fn.unregister()
+    await route.dispose()
+  })
+
+  it('rejects a conflicting route (HTTP_ROUTE_CONFLICT) without crashing the engine', async () => {
+    const handler = async (_req: HttpRequest): Promise<HttpResponse> => ({
+      status_code: 200,
+      body: { ok: true },
+    })
+
+    // First route registers normally.
+    const fnA = iii.registerFunction('test.api.conflict.a', handler)
+    const routeA = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/node/conflict/:listId/:userId' } },
+      fnA.id,
+    )
+    await routeA.ready()
+
+    // Second route has the same axum shape with swapped param names -> conflict.
+    const fnB = iii.registerFunction('test.api.conflict.b', handler)
+    const routeB = iii.observe(
+      { function_id: 'http::on-request', args: { method: 'GET', path: '/test/node/conflict/:userId/:listId' } },
+      fnB.id,
+    )
+    await expect(routeB.ready()).rejects.toMatchObject({ code: 'HTTP_ROUTE_CONFLICT' })
+
+    // Engine stayed alive and the first route still serves — no panic.
+    const response = await execute(async () => httpRequest('GET', '/test/node/conflict/list1/user1'))
+    expect(response.status).toBe(200)
+    expect(response.data).toEqual({ ok: true })
+
+    fnA.unregister()
+    await routeA.dispose()
+    fnB.unregister()
+    await routeB.dispose()
+  })
+})

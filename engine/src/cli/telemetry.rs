@@ -604,13 +604,13 @@ mod tests {
         take_cli_commands();
 
         record_cli_usage("project init");
-        record_cli_usage("trigger");
-        record_cli_usage("trigger");
+        record_cli_usage("call");
+        record_cli_usage("call");
         record_cli_usage("   ");
 
         let counts = take_cli_commands();
         assert_eq!(counts.get("project init"), Some(&1));
-        assert_eq!(counts.get("trigger"), Some(&2));
+        assert_eq!(counts.get("call"), Some(&2));
         assert_eq!(counts.len(), 2, "an empty command path records nothing");
     }
 
@@ -624,7 +624,7 @@ mod tests {
             std::env::set_var("III_TELEMETRY_ENABLED", "false");
         }
 
-        record_cli_usage("trigger");
+        record_cli_usage("call");
         assert!(take_cli_commands().is_empty());
 
         unsafe {

@@ -8,8 +8,7 @@
 //!
 //! Compose reads only `scripts.start` and `runtime.base_image`. The manifest is
 //! another tool's file, so unknown keys are tolerated here — the opposite of
-//! the compose file's strictness. This parser is deliberately independent from
-//! `crates/iii-worker`: compose must not inherit the legacy lifecycle system.
+//! the compose file's strictness.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +29,7 @@ pub enum StartSpec {
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
     /// A worker started in a VM. The source decides which validation and
-    /// workspace rules `iii-worker` applies before it builds the boot command.
+    /// workspace rules the sandbox adapter applies before it boots the VM.
     Vm(VmSpec),
 }
 
@@ -38,7 +37,12 @@ pub enum StartSpec {
 pub enum VmSpec {
     /// An installed registry bundle. Its manifest command is publisher-owned
     /// and is always read and run inside the guest.
-    Bundle { install_dir: PathBuf },
+    Bundle {
+        /// The bundle manifest's name, which for an alias is the package it
+        /// stands for, not the container key.
+        package: String,
+        install_dir: PathBuf,
+    },
     /// A local project whose manifest selected an OCI rootfs. The compose
     /// command may replace the manifest's `scripts.start`, but still runs in
     /// the guest.
@@ -50,8 +54,13 @@ pub enum VmSpec {
 
 #[derive(Debug, Clone)]
 pub struct Manifest {
+    /// The worker's own name, when it is a string. Only the sandbox adapter
+    /// lookup reads it: a container is still known by its compose key.
+    pub name: Option<String>,
     pub start: Option<String>,
     pub base_image: Option<String>,
+    /// The `iii_engine_version` range, already checked against the grammar.
+    pub iii_engine_version: Option<String>,
 }
 
 /// Reads the manifest in `dir`, if there is one. A missing manifest is not an
@@ -84,11 +93,52 @@ pub fn read_manifest(dir: &Path) -> Result<Option<Manifest>> {
         .map(str::trim)
         .filter(|image| !image.is_empty())
         .map(str::to_string);
+    let iii_engine_version = match raw.iii_engine_version {
+        None | Some(serde_yaml::Value::Null) => None,
+        Some(serde_yaml::Value::String(range))
+            if crate::engine_compat::valid_iii_engine_version(&range) =>
+        {
+            Some(range)
+        }
+        Some(other) => {
+            return Err(ComposeError::InvalidManifest {
+                path,
+                message: crate::engine_compat::malformed_iii_engine_version(other),
+            });
+        }
+    };
 
     Ok(Some(Manifest {
+        name: raw
+            .name
+            .as_ref()
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string),
         start: raw.scripts.and_then(|scripts| scripts.start),
         base_image,
+        iii_engine_version,
     }))
+}
+
+/// Refuses a manifest whose `iii_engine_version` excludes `running`. Without a
+/// known engine version (Compose outside an engine) nothing is checked.
+fn check_engine(
+    key: &str,
+    manifest: Option<&Manifest>,
+    running: Option<&semver::Version>,
+) -> Result<()> {
+    let (Some(range), Some(running)) = (
+        manifest.and_then(|manifest| manifest.iii_engine_version.as_deref()),
+        running,
+    ) else {
+        return Ok(());
+    };
+    crate::engine_compat::check_iii_engine_requirement(key, range, running).map_err(|message| {
+        ComposeError::IncompatibleEngine {
+            container: key.to_string(),
+            message,
+        }
+    })
 }
 
 /// Resolves how a container starts.
@@ -129,6 +179,11 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
     }
 
     let manifest = read_manifest(dir)?;
+    check_engine(
+        key,
+        manifest.as_ref(),
+        crate::engine_compat::running_engine_version().as_ref(),
+    )?;
     let run_override = container.scripts.run.clone();
     let Some(start) = run_override.clone().or_else(|| {
         manifest
@@ -296,19 +351,82 @@ fn check_env_files(key: &str, container: &Container) -> Result<()> {
 
 #[derive(Debug, Deserialize)]
 struct RawManifest {
-    // `name` is deliberately absent: the manifest may carry one and compose
-    // does not read it. Unknown keys are tolerated here, so it is ignored
-    // rather than rejected.
+    /// Kept as a value so a name that is not a string stays ignored, as every
+    /// key compose does not need is.
+    #[serde(default)]
+    name: Option<serde_yaml::Value>,
     #[serde(default)]
     scripts: Option<RawManifestScripts>,
     /// Kept as a value so legacy scalar forms remain ignored. Compose only
     /// consults the `base_image` key when `runtime` is a mapping.
     #[serde(default)]
     runtime: Option<serde_yaml::Value>,
+    /// Kept as a value so a non-string (an unquoted `0.26` reads as a float)
+    /// gets the range-grammar message instead of a serde type error.
+    #[serde(default)]
+    iii_engine_version: Option<serde_yaml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RawManifestScripts {
     #[serde(default)]
     start: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(yaml: &str) -> Result<Option<Manifest>> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MANIFEST_FILE), yaml).unwrap();
+        read_manifest(dir.path())
+    }
+
+    #[test]
+    fn reads_a_valid_iii_engine_version() {
+        let m = manifest("name: http\niii_engine_version: \">=0.26.0\"\n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.iii_engine_version.as_deref(), Some(">=0.26.0"));
+        let m = manifest("name: http\n").unwrap().unwrap();
+        assert_eq!(m.iii_engine_version, None);
+    }
+
+    #[test]
+    fn refuses_a_malformed_iii_engine_version() {
+        for bad in ["\"0.26\"", "\"v0.26.0\"", "0.26", "\">=0.26.0-rc.1\""] {
+            let err = manifest(&format!("name: http\niii_engine_version: {bad}\n")).unwrap_err();
+            assert_eq!(err.code(), "INVALID_MANIFEST", "{bad}");
+            assert!(
+                err.to_string()
+                    .contains("iii_engine_version must be a semver range"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn check_engine_refuses_an_excluded_engine() {
+        let m = manifest("iii_engine_version: \">=0.26.0\"\n").unwrap();
+        let old = semver::Version::parse("0.25.9").unwrap();
+        let err = check_engine("http", m.as_ref(), Some(&old)).unwrap_err();
+        assert_eq!(err.code(), "INCOMPATIBLE_ENGINE");
+        assert_eq!(
+            err.to_string(),
+            "container 'http': http requires iii >=0.26.0, running 0.25.9; run: iii update"
+        );
+        let rc = semver::Version::parse("0.26.0-rc.2").unwrap();
+        assert!(check_engine("http", m.as_ref(), Some(&rc)).is_ok());
+    }
+
+    #[test]
+    fn check_engine_skips_without_a_range_or_an_engine() {
+        let old = semver::Version::parse("0.25.9").unwrap();
+        let none = manifest("name: http\n").unwrap();
+        assert!(check_engine("http", none.as_ref(), Some(&old)).is_ok());
+        let ranged = manifest("iii_engine_version: \">=0.26.0\"\n").unwrap();
+        assert!(check_engine("http", ranged.as_ref(), None).is_ok());
+        assert!(check_engine("http", None, Some(&old)).is_ok());
+    }
 }

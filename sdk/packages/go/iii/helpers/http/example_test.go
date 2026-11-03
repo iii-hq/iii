@@ -42,7 +42,7 @@ func ExampleWrap() {
 }
 
 // ExampleWrap_buffered answers without streaming by returning a Response. The handler is
-// called here with a plain payload, as a direct trigger would send it.
+// called here with a plain payload, as a direct call would send it.
 func ExampleWrap_buffered() {
 	client := iii.New(iii.DefaultEngineURL)
 	defer client.Close()

@@ -48,7 +48,6 @@ pub struct EventData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum StreamOutboundMessage {
-    Unauthorized {},
     Sync { data: Value },
     Create { data: Value },
     Update { data: Value },
@@ -169,20 +168,6 @@ pub struct StreamAuthContext {
     pub context: Option<Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamJoinLeaveEvent {
-    pub subscription_id: String,
-    pub stream_name: String,
-    pub group_id: String,
-    pub id: Option<String>,
-    pub context: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamJoinResult {
-    pub unauthorized: bool,
-}
-
 /// Input for atomic stream update operations
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StreamUpdateInput {
@@ -294,7 +279,6 @@ mod tests {
     #[test]
     fn stream_outbound_message_variants() {
         let cases = vec![
-            json!({"type": "unauthorized"}),
             json!({"type": "sync", "data": 1}),
             json!({"type": "create", "data": "x"}),
             json!({"type": "update", "data": null}),

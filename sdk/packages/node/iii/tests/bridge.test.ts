@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { TriggerAction } from '../src/iii'
+import { CallAction } from '../src/iii'
 import { EngineFunctions } from '../src/iii-constants'
 import { execute, iii, sleep } from './utils'
 
@@ -9,7 +9,7 @@ describe('Bridge Operations', () => {
   it('should connect successfully', async () => {
     expect(iii).toBeDefined()
     const result = await execute(async () =>
-      iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      iii.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       }),
@@ -27,7 +27,7 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const result = await iii.trigger<Record<string, unknown>, { echoed: Record<string, unknown> }>({
+    const result = await iii.call<Record<string, unknown>, { echoed: Record<string, unknown> }>({
       function_id: 'test.echo',
       payload: { message: 'hello' },
     })
@@ -42,22 +42,19 @@ describe('Bridge Operations', () => {
   it('should invoke function fire-and-forget', async () => {
     let receivedData: Record<string, unknown> | undefined
     let resolveReceived: () => void
-    const received = new Promise<void>(r => {
+    const received = new Promise<void>((r) => {
       resolveReceived = r
     })
 
-    const fn = iii.registerFunction(
-      'test.receiver',
-      async (data: Record<string, unknown>) => {
-        receivedData = data
-        resolveReceived?.()
-        return {}
-      },
-    )
+    const fn = iii.registerFunction('test.receiver', async (data: Record<string, unknown>) => {
+      receivedData = data
+      resolveReceived?.()
+      return {}
+    })
 
     await sleep(300)
 
-    iii.trigger({ function_id: 'test.receiver', payload: { value: 42 }, action: TriggerAction.Void() })
+    iii.call({ function_id: 'test.receiver', payload: { value: 42 }, action: CallAction.Void() })
 
     await Promise.race([
       received,
@@ -77,11 +74,11 @@ describe('Bridge Operations', () => {
 
     await sleep(300)
 
-    const result = await iii.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+    const result = await iii.call<Record<string, never>, { functions: FunctionRow[] }>({
       function_id: EngineFunctions.LIST_FUNCTIONS,
       payload: {},
     })
-    const functionIds = result.functions.map(f => f.function_id)
+    const functionIds = result.functions.map((f) => f.function_id)
 
     expect(functionIds).toContain('test.list.func1')
     expect(functionIds).toContain('test.list.func2')
@@ -91,6 +88,6 @@ describe('Bridge Operations', () => {
   })
 
   it('should reject when invoking non-existent function', async () => {
-    await expect(iii.trigger({ function_id: 'nonexistent.function', payload: {}, timeoutMs: 2000 })).rejects.toThrow()
+    await expect(iii.call({ function_id: 'nonexistent.function', payload: {}, timeoutMs: 2000 })).rejects.toThrow()
   })
 })

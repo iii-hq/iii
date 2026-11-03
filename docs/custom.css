@@ -493,7 +493,7 @@ body,
    Install-page quickstart panel (`.iii-qs`).
 
    A terminal-style recipe whose llm-provider pills swap two slots in place:
-   the provider setup lines at the top and the `iii worker add` line near the
+   the provider setup lines at the top and one command line near the
    bottom. Every variant ships in the markup; a hidden radio group plus
    `:has(:checked)` decides which one is displayed, so the picker needs no
    javascript and keeps working with keyboard and screen readers (the pills

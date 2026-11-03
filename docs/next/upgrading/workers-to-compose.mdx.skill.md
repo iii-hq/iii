@@ -23,12 +23,12 @@ Before changing anything:
 2. Make sure this project is not already supervised separately (ex. systemd, Kubernetes). If the repository does not make this clear, ask me before writing the file.
 
 Write worker-compose.yaml:
-- Move configuration, iii-worker-manager, iii-http-functions, iii-stream, and iii-sandbox into the engine.workers map. The map value is the worker config itself; drop the old nested config: key. Multiple instances use a #instance suffix.
-- Do not declare iii-engine-functions, iii-telemetry, or iii-observability. The engine injects them.
+- Move configuration, iii-worker-manager, iii-http-functions, and iii-stream into the engine.workers map. The map value is the worker config itself; drop the old nested config: key. Multiple instances use a #instance suffix.
+- Do not declare iii-engine-functions, iii-telemetry, iii-observability, or iii-sandbox. The engine injects them. Read https://iii.dev/docs/upgrading/sandbox-worker for an old iii-sandbox entry.
 - Move every other worker under containers:. Rename it per the table on the page (iii-state or state becomes state, iii-http or http becomes http, and so on). Registry workers use package://api.workers.iii.dev/<name> with an explicit version; local workers use path://. Copy each old config: value to config_override and keep every storage path unchanged.
 - Translate iii-exec commands into scripts.pre_run, scripts.run, and scripts.post_run.
 - Pin versions from iii.lock or the registry. Never invent a version number.
-- For a separately supervised engine, keep only the five engine-owned workers in the list-shaped config.yaml and omit engine: from the Compose file.
+- For a separately supervised engine, keep only the four engine-owned workers in the list-shaped config.yaml, add a top-level sandbox: {adapter, namespace} section if anything calls sandbox::* (without it those calls get S303), and omit engine: from the Compose file.
 
 Stored configuration: for every worker whose configuration id changed (for example iii-state to state), read the old value with configuration::get and raw: true so ${VAR} templates are copied as templates rather than expanded values, put it under config_override or write it to the new id with configuration::set, and verify the new worker before removing the old entry. Do not rename YAML files as a shortcut.
 
@@ -39,10 +39,10 @@ Start the project. iii compose stays in the foreground, so run it in a second te
   (for a separately supervised engine: start the engine with iii --config config.yaml under its own supervisor, then iii compose --namespace dev --engine <that engine's ws:// URL> --up --file worker-compose.yaml)
 
 With the daemon running, show me the output of:
-  iii trigger -n dev compose::status file=worker-compose.yaml
-  iii trigger engine::workers::list
-  iii trigger engine::triggers::list
-If the engine is not on localhost port 49134, add --address <host> and --port <port> to each iii trigger command.
+  iii call -n dev compose::status file=worker-compose.yaml
+  iii call engine::workers::list
+  iii call engine::functions::list
+If the engine is not on localhost port 49134, add --address <host> and --port <port> to each iii call command.
 
 If startup reports UNSUPPORTED_CONFIG_WORKERS, UNSUPPORTED_ENGINE_WORKER, ENGINE_WORKER_IS_INJECTED, or any other error from the Common errors list on the page, fix the cause and rerun. Do not work around an error by deleting a worker.
 
@@ -64,25 +64,28 @@ project-worker declarations.
 
 ## Build the new engine section
 
-Move these five engine-owned worker configs from list entries in `config.yaml` to the direct
+Move these four engine-owned worker configs from list entries in `config.yaml` to the direct
 `engine.workers` map:
 
-| Worker | Why it remains engine-owned |
-| --- | --- |
-| `configuration` | Owns schemas, values, and change notifications used by engine and project workers. |
-| `iii-worker-manager` | Owns engine WebSocket and RBAC listeners. |
-| `iii-http-functions` | Provides outbound HTTP functions inside the engine process. |
-| `iii-stream` | Uses engine internals and engine-owned adapters. Deprecated. |
-| `iii-sandbox` | Owns the builtin sandbox lifecycle. |
+| Worker               | Why it remains engine-owned                                                        |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `configuration`      | Owns schemas, values, and change notifications used by engine and project workers. |
+| `iii-worker-manager` | Owns engine WebSocket and RBAC listeners.                                          |
+| `iii-http-functions` | Provides outbound HTTP functions inside the engine process.                        |
+| `iii-stream`         | Uses engine internals and engine-owned adapters. Deprecated.                       |
 
 <Warning title="Deprecated">
-  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
-  Behavior is unchanged for now, so move its configuration as shown. Plan the migration with
-  [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+  `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is
+  unchanged for now, so move its configuration as shown. Plan the migration with [Migrate from
+  iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>
 
 The map value is the worker config itself; do not keep the old nested `config:` key. Multiple
 instances use a `#instance` suffix, such as `iii-worker-manager#rbac`.
+
+`iii-sandbox` is not in this list. The engine injects the `iii-sandbox` router, and the
+`sandbox-libkrun` worker runs the VMs; see [Upgrading to the sandbox worker](./sandbox-worker) for
+an existing `iii-sandbox` entry.
 
 ```yaml worker-compose.yaml
 # namespace: default
@@ -102,38 +105,36 @@ engine:
     iii-stream:
       host: 127.0.0.1
       port: 3112
-    iii-sandbox:
-      auto_install: true
 ```
 
 `engine.url` defaults to `ws://127.0.0.1:49134`. Compose writes the engine-only representation to
-`<project-dir>/.iii/compose/<daemon-namespace>/engine-config.yaml` by default. When `III_COMPOSE_STATE_DIR`
-is set, the path is `$III_COMPOSE_STATE_DIR/<project-slug>/<daemon-namespace>/engine-config.yaml`.
-Compose writes the file with owner-only permissions and starts the engine from it. Do not edit
-that generated file.
+`<project-dir>/.iii/compose/<daemon-namespace>/engine-config.yaml` by default. When
+`III_COMPOSE_STATE_DIR` is set, the path is
+`$III_COMPOSE_STATE_DIR/<project-slug>/<daemon-namespace>/engine-config.yaml`. Compose writes the
+file with owner-only permissions and starts the engine from it. Do not edit that generated file.
 
-Remove explicit `iii-engine-functions`, `iii-telemetry`, and `iii-observability` entries. The
-engine injects them automatically, and declaring one under `engine.workers` fails.
+Remove explicit `iii-engine-functions`, `iii-telemetry`, and `iii-observability` entries. The engine
+injects them automatically, and declaring one under `engine.workers` fails.
 
 ## Move project workers to containers
 
-| Old name | Compose package/configuration id |
-| --- | --- |
-| `iii-http` or `http` | `http` |
-| `iii-cron` or `cron` | `cron` |
-| `iii-queue` or `queue` | `queue` |
-| `iii-state` or `state` | `state` |
-| `iii-pubsub` or `pubsub` | `pubsub` (deprecated) |
-| `iii-bridge` | `bridge` |
-| `iii-exec` | no package; use Compose `scripts` |
+| Old name                 | Compose package/configuration id  |
+| ------------------------ | --------------------------------- |
+| `iii-http` or `http`     | `http`                            |
+| `iii-cron` or `cron`     | `cron`                            |
+| `iii-queue` or `queue`   | `queue`                           |
+| `iii-state` or `state`   | `state`                           |
+| `iii-pubsub` or `pubsub` | `pubsub` (deprecated)             |
+| `iii-bridge`             | `bridge`                          |
+| `iii-exec`               | no package; use Compose `scripts` |
 
 <Warning title="Deprecated">
-  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is
-  unchanged for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
+  `pubsub` is deprecated (pubsub) and will be removed in an upcoming release. Behavior is unchanged
+  for now. See [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
 </Warning>
 
-Copy each old project worker's `config:` value to `config_override`, preserve its storage paths,
-and pin the package version.
+Copy each old project worker's `config:` value to `config_override`, preserve its storage paths, and
+pin the package version.
 
 ```yaml worker-compose.yaml
 containers:
@@ -169,8 +170,8 @@ Translate `iii-exec` commands into `pre_run`, `run`, and `post_run`. Custom loca
 You can also add a registry worker after the managed daemon is running:
 
 ```bash
-iii trigger -n dev compose::add worker=http
-iii trigger -n dev compose::add worker=state
+iii call -n dev compose::add worker=http
+iii call -n dev compose::add worker=state
 ```
 
 `compose::add` writes `containers:` and restarts affected containers. It never edits `engine:` or
@@ -179,8 +180,8 @@ restarts the engine. A registry root of kind `engine` is rejected and points to
 
 ## Preserve stored configuration
 
-Standalone packages use unprefixed configuration ids. A value stored as `iii-state` is not copied
-to `state` automatically.
+Standalone packages use unprefixed configuration ids. A value stored as `iii-state` is not copied to
+`state` automatically.
 
 1. Before upgrading, read the old value with `configuration::get`.
 2. Put it under `config_override`, or write it to the new id with `configuration::set`.
@@ -196,13 +197,14 @@ For a managed engine, the file owns both lifecycles:
 iii compose --namespace dev --up --file worker-compose.yaml
 ```
 
-The explicit namespace (`dev`) addresses `compose::*` and overrides the file's `namespace:` for
-its containers. Changing `engine:` while the daemon runs returns `ENGINE_RESTART_REQUIRED`; stop
-and restart that Compose invocation. A second file with `engine:` returns `ENGINE_ALREADY_OWNED`.
+The explicit namespace (`dev`) addresses `compose::*` and overrides the file's `namespace:` for its
+containers. Changing `engine:` while the daemon runs returns `ENGINE_RESTART_REQUIRED`; stop and
+restart that Compose invocation. A second file with `engine:` returns `ENGINE_ALREADY_OWNED`.
 
-For an engine supervised separately by systemd or Kubernetes, keep its five allowed workers in
-the list-shaped `config.yaml`, start it directly, omit `engine:` from the Compose file, and supply
-the existing URL:
+For an engine supervised separately by systemd or Kubernetes, keep its four allowed workers in
+the list-shaped `config.yaml`, add a top-level `sandbox:` section if anything calls `sandbox::*`
+(see [Upgrading to the sandbox worker](./sandbox-worker)), start it directly, omit `engine:` from
+the Compose file, and supply the existing URL:
 
 ```bash
 iii --config config.yaml
@@ -216,9 +218,9 @@ defaults to `ws://127.0.0.1:49134`.
 Verify the migration:
 
 ```bash
-iii trigger -n dev compose::status file=worker-compose.yaml
-iii trigger engine::workers::list
-iii trigger engine::triggers::list
+iii call -n dev compose::status file=worker-compose.yaml
+iii call engine::workers::list
+iii call engine::functions::list
 ```
 
 ## Common errors

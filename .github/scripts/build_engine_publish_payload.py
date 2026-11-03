@@ -56,15 +56,27 @@ def _string_or_empty(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _normalize_registry_trigger_type(trigger_type: dict[str, Any]) -> dict[str, Any]:
-    # Field renames vs the pre-rework engine: `trigger_request_format` is now
-    # `configuration_schema`; `call_request_format` is now `request_schema`.
+def _args_format_or_none(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    raise ValueError("function args_format must be an object or null")
+
+
+def _observe_fields(function: dict[str, Any]) -> dict[str, Any]:
+    """What a function row says about observing the function.
+
+    `args_format` is the JSON Schema of observers' `args` (`None` when the
+    function takes no args), `private` is true when only the hosting worker
+    calls it (an event source), and `observable` is false when nobody may
+    observe it. The engine leaves the defaults out of its rows
+    (`private: false`, `observable: true`); the Registry row states all three.
+    """
     return {
-        "name": _string_or_empty(trigger_type.get("id")),
-        "description": _string_or_empty(trigger_type.get("description")),
-        "invocation_schema": _schema_or_empty(trigger_type.get("configuration_schema")),
-        "return_schema": _schema_or_empty(trigger_type.get("request_schema")),
-        "metadata": {},
+        "args_format": _args_format_or_none(function.get("args_format")),
+        "private": function.get("private") is True,
+        "observable": function.get("observable") is not False,
     }
 
 
@@ -73,31 +85,18 @@ def normalize_worker_interface(
     worker_name: str,
     worker_info: dict[str, Any],
     function_details: list[dict[str, Any]],
-    trigger_type_details: list[dict[str, Any]],
-    baseline_trigger_type_ids: list[str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Normalize the engine's enriched worker surface into the registry shape.
+    """Normalize the engine's worker surface into the Registry shape.
 
-    The shape change vs the pre-rework engine:
-
-    - `engine::workers::list` no longer carries per-worker `functions[]`; the
-      detail envelope from `engine::workers::info` is the source of truth.
-    - `engine::functions::list` is lean (no schemas / metadata); the caller
-      must fetch `engine::functions::info` per function for `request_schema`,
-      `response_schema`, `metadata`.
-    - `engine::trigger-types::list` was retired in favor of
-      `engine::triggers::list` (types) + `engine::triggers::info` (schemas).
+    The worker's interface is its functions. An event source is a function
+    row with `private: true` (and `args_format` when observers pass args).
 
     Args:
         worker_name: Sanity check that the info envelope is the right worker.
         worker_info: Response from `engine::workers::info { name }`.
-        function_details: List of `engine::functions::info` responses, one
-            per function id reported by `worker_info`.
-        trigger_type_details: List of `engine::triggers::info` responses,
-            one per trigger type reported by `worker_info`.
-        baseline_trigger_type_ids: Trigger type ids present in the engine
-            BEFORE the target worker was reloaded — used to subtract
-            mandatory-worker types (e.g. iii-observability's `log`).
+        function_details: `engine::functions::info` details, one per function
+            id `worker_info` lists. Each carries the schemas, the metadata and
+            the observe fields (`args_format`, `private`, `observable`).
     """
     worker = worker_info.get("worker") or {}
     if not isinstance(worker, dict):
@@ -122,23 +121,11 @@ def normalize_worker_interface(
                 "description": _string_or_empty(details.get("description")),
                 "request_schema": _schema_or_empty(details.get("request_schema")),
                 "response_schema": _schema_or_empty(details.get("response_schema")),
+                **_observe_fields(details),
                 "metadata": _metadata_or_empty(metadata),
             }
         )
-
-    baseline_ids = set(baseline_trigger_type_ids or [])
-
-    triggers = []
-    for trigger_type in trigger_type_details:
-        if not isinstance(trigger_type, dict):
-            continue
-        tt_id = trigger_type.get("id")
-        if not isinstance(tt_id, str) or tt_id.startswith("engine::"):
-            continue
-        if tt_id in baseline_ids:
-            continue
-        triggers.append(_normalize_registry_trigger_type(trigger_type))
-    return {"functions": functions, "triggers": triggers}
+    return {"functions": functions}
 
 
 def build_payload(
@@ -193,7 +180,6 @@ def build_payload(
         "dependencies": normalize_dependencies(meta.get("dependencies")),
         "config": meta.get("config") or {},
         "functions": interface.get("functions") or [],
-        "triggers": interface.get("triggers") or [],
     }
 
 

@@ -46,7 +46,7 @@ func ExampleMiddlewareFunctionInput_forward() {
 			if namespace == "" {
 				namespace = "default" // absent means the engine's default namespace
 			}
-			return client.Trigger(ctx, iii.TriggerRequest{
+			return client.Call(ctx, iii.CallRequest{
 				FunctionID: in.FunctionID,
 				Payload:    data,
 				Action:     in.Action,

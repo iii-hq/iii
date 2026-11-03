@@ -24,6 +24,8 @@ colored = { workspace = true }
 console = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
+# The router's default adapter name is the contract's, so both sides agree on it.
+iii-sandbox-contract = { path = "../iii-sandbox-contract" }
 # Registry resolution and artefact download.
 reqwest = { workspace = true }
 url = { workspace = true }

@@ -223,6 +223,9 @@ impl Worker for WorkerManager {
     }
 
     async fn create(engine: Arc<Engine>, config: Option<Value>) -> anyhow::Result<Box<dyn Worker>> {
+        if let Some(rbac) = config.as_ref().and_then(|config| config.get("rbac")) {
+            rbac_config::warn_removed_keys(rbac)?;
+        }
         let config: WorkerManagerConfig = config
             .map(serde_json::from_value)
             .transpose()?
@@ -527,6 +530,7 @@ crate::register_worker!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Serves the real worker router on an ephemeral port. Uses `axum::serve`,
     /// not the production hyper loop: `accept_worker_connection` (the
@@ -557,6 +561,37 @@ mod tests {
         headers
             .get(ENGINE_CAPABILITIES_HEADER)
             .and_then(|value| value.to_str().ok())
+    }
+
+    /// A 0.25 config that sets a removed hook key without its replacement
+    /// would boot with the gate off: creation refuses instead. With the
+    /// replacement set, the removed key is only a warning.
+    #[tokio::test]
+    async fn removed_rbac_hook_keys_without_their_replacement_fail_creation() {
+        crate::workers::observability::metrics::ensure_default_meter();
+        for (removed, replacement) in [
+            (
+                "on_trigger_registration_function_id",
+                "on_observer_registration_function_id",
+            ),
+            (
+                "on_trigger_type_registration_function_id",
+                "on_function_registration_function_id",
+            ),
+        ] {
+            let engine = Arc::new(Engine::new());
+            let Err(err) = WorkerManager::create(
+                engine.clone(),
+                Some(json!({ "rbac": { (removed): "hook::x" } })),
+            )
+            .await
+            else {
+                panic!("{removed} alone must fail");
+            };
+            assert!(err.to_string().contains(replacement), "{err}");
+            let config = json!({ "rbac": { (removed): "hook::x", (replacement): "hook::y" } });
+            assert!(WorkerManager::create(engine, Some(config)).await.is_ok());
+        }
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use iii_filter::{Filter, normalize};
+use iii_filter::{Doc, Filter, FilterIndex, normalize};
 use serde_json::Value;
 
 fn fixtures() -> PathBuf {
@@ -111,6 +111,91 @@ fn valid_vectors() {
         failures.join("\n")
     );
     assert!(total >= 500, "only {total} cases");
+}
+
+/// Every valid vector's filter in one [`FilterIndex`], each document of
+/// every file matched against all of them: the index yields exactly the
+/// filters that match it (its own vector's `expect` among them), in key
+/// order, whatever the other filters filed beside it.
+#[test]
+fn valid_vectors_through_one_index() {
+    let mut index = FilterIndex::new();
+    let mut filters: Vec<Filter> = Vec::new();
+    let mut docs: Vec<(String, Value)> = Vec::new();
+    for path in json_files(&fixtures()) {
+        let (name, file) = load(&path);
+        let filter = Filter::parse(field(&file, "filters", &name)).expect("a valid vector");
+        let key = filters.len();
+        index.insert(key, &filter, key);
+        filters.push(filter);
+        for (i, case) in cases(&name, &file).iter().enumerate() {
+            docs.push((format!("{name} case {i}"), case["doc"].clone()));
+        }
+    }
+    let mut failures = Vec::new();
+    for (context, doc) in &docs {
+        let doc_view = Doc::from_value(doc);
+        let scanned: Vec<usize> = (0..filters.len())
+            .filter(|key| filters[*key].matches(&doc_view))
+            .collect();
+        let got: Vec<usize> = index.matches(&doc_view).map(|(key, _)| *key).collect();
+        if got != scanned {
+            failures.push(format!(
+                "{context}: scan {scanned:?}, index {got:?} (doc {doc})"
+            ));
+        }
+    }
+    // Each vector's own expectation, read through the index.
+    for (key, path) in json_files(&fixtures()).into_iter().enumerate() {
+        let (name, file) = load(&path);
+        for (i, case) in cases(&name, &file).iter().enumerate() {
+            let expect = case["expect"].as_bool().expect("a boolean `expect`");
+            let doc_view = Doc::from_value(&case["doc"]);
+            let got = index.matches(&doc_view).any(|(k, _)| *k == key);
+            if got != expect {
+                failures.push(format!(
+                    "{name} case {i}: through the index {got}, expected {expect}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The differential corpus (`diff/corpus.json`) through one index per run:
+/// each document matched against every filter of its run. (Its `expect`
+/// values are checked by the other implementations; serde_json reads a few of
+/// its float literals one ulp off, so this compares with a scan of the same
+/// parsed filters.)
+#[test]
+fn the_diff_corpus_through_one_index_per_run() {
+    let (_, corpus) = load(&fixtures().join("diff/corpus.json"));
+    let mut checked = 0;
+    for run in corpus["runs"].as_array().expect("runs") {
+        let cases = run["cases"].as_array().expect("cases");
+        let mut index = FilterIndex::new();
+        let mut filters = Vec::new();
+        for (key, case) in cases.iter().enumerate() {
+            let filter = Filter::parse(&case["filters"]).expect("a corpus filter");
+            index.insert(key, &filter, key);
+            filters.push(filter);
+        }
+        for (at, case) in cases.iter().enumerate() {
+            let doc = Doc::from_value(&case["doc"]);
+            let scanned: Vec<usize> = (0..filters.len())
+                .filter(|key| filters[*key].matches(&doc))
+                .collect();
+            let got: Vec<usize> = index.matches(&doc).map(|(key, _)| *key).collect();
+            assert_eq!(got, scanned, "run {} case {at}", run["seed"]);
+            checked += 1;
+        }
+    }
+    assert!(checked >= 1_500, "only {checked} cases");
 }
 
 #[test]
