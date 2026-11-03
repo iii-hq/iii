@@ -584,7 +584,9 @@ use crate::{
     context::{InvocationCtx, with_current},
     dispatch::{Hosted, Route, run_reporter},
     error::Error,
-    hooks::{AddedHook, Call, DeliverHook, HookStore, Match, Matcher, RemovedHook},
+    hooks::{
+        AddedHook, Call, DeliverHook, ErasedDeliverHook, HookStore, Match, Matcher, RemovedHook,
+    },
     observable::{FunctionEntry, HookOp, Observer},
     observe::{ObserverEntry, ObserverReason},
     protocol::{
@@ -2379,7 +2381,7 @@ impl IIIClient {
         if id.trim().is_empty() {
             panic!("id is required");
         }
-        let new_entry = |deliver: Option<Arc<dyn DeliverHook>>, matching: Option<Match>| {
+        let new_entry = |deliver: Option<Arc<dyn ErasedDeliverHook>>, matching: Option<Match>| {
             Arc::new(FunctionEntry::new(
                 id.clone(),
                 message.declares_v2(),

@@ -334,7 +334,13 @@ Node, Rust and Go each method returns its receiver, so calls chain. In Python ea
 so it also works as a decorator, and `on_observer_added("id")` without a hook is a decorator
 factory. Added, removed and deliver hooks may be sync or async in Node and Python. A match predicate
 and key functions are sync, since they run on every call. In Rust a hook is an async closure or a
-type that implements `AddedHook`, `RemovedHook` or `DeliverHook`.
+type that implements `AddedHook`, `RemovedHook` or `DeliverHook`. Implement these traits with native
+`async fn`, without `#[async_trait]`. Their futures must be `Send` and may borrow `self` across
+`.await`. Pass a concrete hook or a closure, not `dyn AddedHook`, `dyn RemovedHook` or
+`dyn DeliverHook`. To share state, use a `Clone` struct containing an `Arc`, or a closure that
+captures an `Arc`; `Arc<T>` does not forward hook methods through a blanket implementation. See
+[Implement Rust hooks with native async fn](../upgrading/from-0-25-x#implement-rust-hooks-with-native-async-fn)
+for the signatures and the unchanged legacy `IStream` API.
 
 A match hook is a predicate or a pair of key functions (see
 [Match observers to calls](#match-observers-to-calls)):
@@ -1210,7 +1216,6 @@ for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
     #[derive(Clone)]
     struct NativeCapture { /* ... */ }
 
-    #[async_trait::async_trait]
     impl AddedHook for NativeCapture {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let args: RowChangedArgs = obs.args()?;
@@ -1225,7 +1230,6 @@ for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for NativeCapture {
         async fn on_removed(&self, obs: Observer) {
             if let Ok(args) = obs.args::<RowChangedArgs>() {
@@ -1619,21 +1623,18 @@ request. Its args are `{ method, path, middleware_function_ids?, public_webhook?
     #[derive(Clone)]
     struct Routes { /* table, worker: IIIClient */ }
 
-    #[async_trait::async_trait]
     impl AddedHook for Routes {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             self.add(obs) // HTTP_ROUTE_CONFLICT
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for Routes {
         async fn on_removed(&self, obs: Observer) {
             self.remove(obs.id());
         }
     }
 
-    #[async_trait::async_trait]
     impl DeliverHook for Routes {
         async fn on_deliver(&self, call: Call, _observers: Vec<Observer>) -> Result<Value, Error> {
             let request: HttpRequest = serde_json::from_value(call.input.clone())
@@ -1820,21 +1821,18 @@ the message. Its args are `{ topic, max_retries?, backoff_ms?, queue_config?, gr
     #[derive(Clone)]
     struct Subscribers { /* consumers, worker: IIIClient */ }
 
-    #[async_trait::async_trait]
     impl AddedHook for Subscribers {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             self.consumers.start(obs.id(), obs.args()?).await // INVALID_ARGS, OBSERVER_ID_CONFLICT
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for Subscribers {
         async fn on_removed(&self, obs: Observer) {
             self.consumers.stop(obs.id()).await;
         }
     }
 
-    #[async_trait::async_trait]
     impl DeliverHook for Subscribers {
         async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
             // the subscriber's observer, matched by its key

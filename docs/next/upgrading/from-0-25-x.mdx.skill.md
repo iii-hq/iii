@@ -94,6 +94,58 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `TriggerTypeRef` (Node, browser, Python, Rust, and their `runtime` modules)       | `FunctionRef`, since a trigger type is a function                                                                                                                     |
 | Rust: `TriggerInfo`, the row of `engine::triggers::list`                          | `FunctionInfo`, the row of `engine::functions::list`; Rust has no typed row for `engine::observers::list`, so read its rows as `serde_json::Value`                    |
 
+### Implement Rust hooks with native async fn
+
+Implement `AddedHook`, `RemovedHook`, and `DeliverHook` with native `async fn`, without
+`#[async_trait]` or `#[async_trait::async_trait]` on their implementations. Their public traits use
+return-position `impl Trait` in traits (RPITIT) to require a `Send` future:
+
+```rust
+use std::future::Future;
+use iii_sdk::{Call, Error, ObserveRejection, Observer};
+use serde_json::Value;
+
+pub trait AddedHook: Send + Sync + 'static {
+    fn on_added(
+        &self,
+        obs: Observer,
+    ) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_;
+}
+
+pub trait RemovedHook: Send + Sync + 'static {
+    fn on_removed(&self, obs: Observer) -> impl Future<Output = ()> + Send + '_;
+}
+
+pub trait DeliverHook: Send + Sync + 'static {
+    fn on_deliver(
+        &self,
+        call: Call,
+        observers: Vec<Observer>,
+    ) -> impl Future<Output = Result<Value, Error>> + Send + '_;
+}
+```
+
+The hook receives `Observer`, `Call`, and `Vec<Observer>` by value. The returned future may borrow
+`self` across `.await`: its `+ '_` lifetime is tied to that call's `&self`, not required to be
+`'static`. The hook type itself still implements `Send + Sync + 'static`. Keep the future `Send`,
+including every value held across `.await`; for example, release a `std::sync::MutexGuard` before
+awaiting another operation.
+
+These public traits are not dyn-compatible. Pass a concrete implementation or an async closure to
+the hook registration methods, not `Box<dyn AddedHook>`, `Arc<dyn RemovedHook>`, or another hook
+trait object. Dynamic dispatch and `Box::pin(async move { hook_call.await })` belong only to the
+SDK's private adapters; hook implementations do not need to box their futures.
+
+Closures remain supported. For shared state, use a `Clone` struct containing an `Arc`, as in the
+`Timers` and `Commands` examples below, or a closure that captures an `Arc` and clones it into
+each `async move` block. There is no forwarding blanket implementation for `Arc<T>`, because it
+would overlap with the blanket implementations for `Fn` closures.
+
+This change applies only to the new observer hooks. The legacy `IStream` trait is unchanged and
+still uses `#[async_trait]`; keep that macro on its implementations. The Rust `iii-sdk` dependency
+on `async-trait` also remains. The macros in the **Before (0.25)** examples below describe the old
+APIs and are intentionally retained.
+
 ### Trigger types and their functions
 
 | Trigger type                                               | Observe                                                            | Args                                                          | Filter on                               |
@@ -838,7 +890,6 @@ and its `onObservationMatch` predicate gives each tick to the observers of its i
         tasks: Arc<Mutex<HashMap<u64, (tokio::task::JoinHandle<()>, usize)>>>,
     }
 
-    #[async_trait::async_trait]
     impl AddedHook for Timers {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let TimerArgs { every_ms } = obs.args()?;
@@ -862,7 +913,6 @@ and its `onObservationMatch` predicate gives each tick to the observers of its i
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for Timers {
         async fn on_removed(&self, obs: Observer) {
             let Ok(TimerArgs { every_ms }) = obs.args() else { return };
@@ -1358,7 +1408,6 @@ registered for it and returns that observer's reply. Each observer gives one com
     #[derive(Clone, Default)]
     struct Commands(Arc<Mutex<HashMap<String, Observer>>>);
 
-    #[async_trait::async_trait]
     impl AddedHook for Commands {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let CommandArgs { command } = obs.args()?;
@@ -1374,7 +1423,6 @@ registered for it and returns that observer's reply. Each observer gives one com
         }
     }
 
-    #[async_trait::async_trait]
     impl RemovedHook for Commands {
         async fn on_removed(&self, obs: Observer) {
             self.0.lock().unwrap().retain(|_, o| o.id() != obs.id());

@@ -5,7 +5,7 @@
 //! observers (read with one atomic load on every call), its match and
 //! deliver hooks, and a hook task that applies the engine's announcements
 //! (`functionregistered`, `observeradded`, `observerremoved`) one at a time,
-//! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`]s set in
+//! running the [`AddedHook`](crate::AddedHook)s and [`RemovedHook`](crate::RemovedHook)s set in
 //! [`hooks`](crate::hooks).
 
 use std::{
@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     error::Error,
-    hooks::{AddedSlot, Call, DeliverHook, Level, Match, Matcher, RemovedHook},
+    hooks::{AddedSlot, Call, ErasedDeliverHook, ErasedRemovedHook, Level, Match, Matcher},
     iii::{IIIClient, IIIInner},
     observer_set::ObserverSet,
     protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
@@ -902,7 +902,7 @@ pub(crate) struct FunctionEntry {
     /// load.
     delivery: AtomicUsize,
     /// The function's deliver hook, mirrored from the hook store.
-    deliver: ArcSwapOption<Arc<dyn DeliverHook>>,
+    deliver: ArcSwapOption<Arc<dyn ErasedDeliverHook>>,
     /// The function's match hook, with its key index.
     matcher: ArcSwapOption<Matcher>,
     /// Held while an observer is activated or deactivated with its filing in
@@ -932,7 +932,7 @@ impl FunctionEntry {
         declares_v2: bool,
         has_handler: bool,
         local_option: bool,
-        deliver: Option<Arc<dyn DeliverHook>>,
+        deliver: Option<Arc<dyn ErasedDeliverHook>>,
         matcher: Option<Matcher>,
     ) -> Self {
         let (registered, _) = watch::channel(false);
@@ -1027,7 +1027,7 @@ impl FunctionEntry {
         self.indexing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub(crate) fn deliver_hook(&self) -> Option<Arc<dyn DeliverHook>> {
+    pub(crate) fn deliver_hook(&self) -> Option<Arc<dyn ErasedDeliverHook>> {
         self.deliver.load().as_deref().cloned()
     }
 
@@ -1035,7 +1035,7 @@ impl FunctionEntry {
         self.delivery.load(Ordering::Acquire) & 1 != 0
     }
 
-    pub(crate) fn set_deliver(&self, hook: Option<Arc<dyn DeliverHook>>) {
+    pub(crate) fn set_deliver(&self, hook: Option<Arc<dyn ErasedDeliverHook>>) {
         let _serialized = self.publishing.lock().unwrap_or_else(|e| e.into_inner());
         self.deliver.store(hook.map(Arc::new));
         self.refresh_delivery();
@@ -1676,7 +1676,7 @@ async fn run_added(
     observer: &Observer,
     deadline: tokio::time::Instant,
 ) -> Result<(), ObserveRejection> {
-    let added = std::panic::AssertUnwindSafe(slot.hook.on_added(observer.clone())).catch_unwind();
+    let added = std::panic::AssertUnwindSafe(slot.hook.added(observer.clone())).catch_unwind();
     match tokio::time::timeout_at(deadline, added).await {
         Ok(Ok(result)) => result,
         Ok(Err(panic)) => Err(ObserveRejection::new(
@@ -1773,10 +1773,10 @@ async fn tear_down(
 async fn run_removed(
     iii: &IIIClient,
     entry: &FunctionEntry,
-    hook: &Arc<dyn RemovedHook>,
+    hook: &Arc<dyn ErasedRemovedHook>,
     observer: &Observer,
 ) {
-    let removed = std::panic::AssertUnwindSafe(hook.on_removed(observer.clone())).catch_unwind();
+    let removed = std::panic::AssertUnwindSafe(hook.removed(observer.clone())).catch_unwind();
     match tokio::time::timeout(iii.hook_timeout(), removed).await {
         Ok(Ok(())) => {}
         Ok(Err(panic)) => tracing::warn!(
@@ -1857,7 +1857,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        CallRequest, RegisterFunction,
+        CallRequest, RegisterFunction, RemovedHook,
         iii::{IIIConnectionState, MutexExt, Outbound},
     };
 
@@ -3441,5 +3441,230 @@ mod tests {
         );
         until_compiled(&iii, "needs::f", &["reads-too"]).await;
         assert_eq!(kept(&iii), (false, false));
+    }
+
+    mod native_hooks {
+        use std::{future::Future, panic::AssertUnwindSafe};
+
+        use super::*;
+        use crate::hooks::{AddedHook, DeliverHook, ErasedAddedHook, RemovedHook};
+
+        #[derive(Clone, Default)]
+        struct Native {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl AddedHook for Native {
+            async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+                let events = &self.events;
+                let id = obs.id();
+                tokio::task::yield_now().await;
+                events.lock().unwrap().push(format!("added {id}"));
+                Ok(())
+            }
+        }
+
+        impl RemovedHook for Native {
+            async fn on_removed(&self, obs: Observer) {
+                let events = &self.events;
+                let id = obs.id();
+                tokio::task::yield_now().await;
+                events.lock().unwrap().push(format!("removed {id}"));
+            }
+        }
+
+        impl DeliverHook for Native {
+            async fn on_deliver(
+                &self,
+                call: Call,
+                observers: Vec<Observer>,
+            ) -> Result<Value, Error> {
+                let events = &self.events;
+                let input = &call.input;
+                let id = observers[0].id();
+                tokio::task::yield_now().await;
+                events.lock().unwrap().push(format!("delivered {id}"));
+                Ok(input.clone())
+            }
+        }
+
+        #[test]
+        fn native_and_erased_futures_are_send() {
+            fn send(_: impl Send) {}
+            fn check<H: AddedHook + RemovedHook + DeliverHook>(hook: &H, obs: Observer) {
+                send(hook.on_added(obs.clone()));
+                send(hook.on_removed(obs.clone()));
+                send(hook.on_deliver(Call::default(), vec![obs.clone()]));
+                send((hook as &dyn ErasedAddedHook).added(obs.clone()));
+                send((hook as &dyn ErasedRemovedHook).removed(obs.clone()));
+                send((hook as &dyn ErasedDeliverHook).deliver(Call::default(), vec![obs]));
+            }
+            let _ = check::<Native>;
+        }
+
+        async fn observer() -> Observer {
+            let (iii, mut rx) = client();
+            let function = iii.register_function("h::f", echo());
+            feed(&iii, added(1, "native"));
+            tokio::time::timeout(Duration::from_secs(5), next_ack(&mut rx))
+                .await
+                .expect("observer was not accepted");
+            function.observers().remove(0)
+        }
+
+        #[tokio::test]
+        async fn stored_native_hooks_borrow_self_and_inputs_across_await() {
+            let (iii, _rx) = client();
+            let native = Native::default();
+            iii.on_observer_added(native.clone())
+                .on_observer_removed(native.clone())
+                .on_observation_deliver_for("h::f", native.clone());
+            let obs = observer().await;
+            let slot = iii.hooks().added("h::f")[0].clone().unwrap();
+            slot.hook.added(obs.clone()).await.unwrap();
+            let removed = iii.hooks().removed("h::f")[1].clone().unwrap();
+            removed.removed(obs.clone()).await;
+            let deliver = iii.hooks().lock().deliver("h::f").unwrap();
+            let call = Call {
+                input: json!(42),
+                ..Call::default()
+            };
+            assert_eq!(deliver.deliver(call, vec![obs]).await.unwrap(), json!(42));
+            assert_eq!(
+                *native.events.lock().unwrap(),
+                ["added native", "removed native", "delivered native"]
+            );
+        }
+
+        struct Eager;
+
+        impl AddedHook for Eager {
+            fn on_added(
+                &self,
+                obs: Observer,
+            ) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_ {
+                assert_ne!(obs.id(), "panics", "add construction panicked");
+                std::future::ready(Ok(()))
+            }
+        }
+
+        impl RemovedHook for Eager {
+            fn on_removed(&self, _obs: Observer) -> impl Future<Output = ()> + Send + '_ {
+                panic!("remove construction panicked");
+                #[allow(unreachable_code)]
+                std::future::ready(())
+            }
+        }
+
+        impl DeliverHook for Eager {
+            fn on_deliver(
+                &self,
+                _call: Call,
+                _observers: Vec<Observer>,
+            ) -> impl Future<Output = Result<Value, Error>> + Send + '_ {
+                panic!("deliver construction panicked");
+                #[allow(unreachable_code)]
+                std::future::ready(Ok(Value::Null))
+            }
+        }
+
+        #[tokio::test]
+        async fn eager_add_panic_is_rejected_and_the_next_observer_is_accepted() {
+            let (iii, mut rx) = client();
+            iii.on_observer_added_for("h::f", Eager);
+            iii.register_function("h::f", echo());
+            feed(&iii, added(1, "panics"));
+            let ack = tokio::time::timeout(Duration::from_secs(5), next_ack(&mut rx))
+                .await
+                .unwrap();
+            assert_eq!(ack["error"]["code"], "OBSERVE_REJECTED");
+            assert!(
+                ack["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("add construction panicked")
+            );
+            feed(&iii, added(2, "next"));
+            let ack = tokio::time::timeout(Duration::from_secs(5), next_ack(&mut rx))
+                .await
+                .unwrap();
+            assert_eq!(ack["id"], "next");
+            assert!(ack.get("error").is_none());
+        }
+
+        #[tokio::test]
+        async fn erased_remove_and_deliver_defer_eager_panics_until_polled() {
+            let obs = observer().await;
+            let removed: &dyn ErasedRemovedHook = &Eager;
+            let future = removed.removed(obs.clone());
+            assert!(AssertUnwindSafe(future).catch_unwind().await.is_err());
+            let deliver: &dyn ErasedDeliverHook = &Eager;
+            let future = deliver.deliver(Call::default(), vec![obs]);
+            assert!(AssertUnwindSafe(future).catch_unwind().await.is_err());
+        }
+
+        struct DropFlag(Arc<AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        struct Stalls(Arc<AtomicBool>);
+
+        impl AddedHook for Stalls {
+            async fn on_added(&self, _obs: Observer) -> Result<(), ObserveRejection> {
+                let _guard = DropFlag(self.0.clone());
+                std::future::pending().await
+            }
+        }
+
+        impl RemovedHook for Stalls {
+            async fn on_removed(&self, _obs: Observer) {
+                let _guard = DropFlag(self.0.clone());
+                std::future::pending().await
+            }
+        }
+
+        impl DeliverHook for Stalls {
+            async fn on_deliver(
+                &self,
+                _call: Call,
+                _observers: Vec<Observer>,
+            ) -> Result<Value, Error> {
+                let _guard = DropFlag(self.0.clone());
+                std::future::pending().await
+            }
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn cancelling_erased_futures_drops_each_native_future() {
+            let obs = observer().await;
+            let dropped = Arc::new(AtomicBool::new(false));
+            let hook = Stalls(dropped.clone());
+            let budget = Duration::from_millis(1);
+            assert!(
+                tokio::time::timeout(budget, ErasedAddedHook::added(&hook, obs.clone()))
+                    .await
+                    .is_err()
+            );
+            assert!(dropped.swap(false, Ordering::SeqCst));
+            assert!(
+                tokio::time::timeout(budget, ErasedRemovedHook::removed(&hook, obs.clone()))
+                    .await
+                    .is_err()
+            );
+            assert!(dropped.swap(false, Ordering::SeqCst));
+            assert!(
+                tokio::time::timeout(
+                    budget,
+                    ErasedDeliverHook::deliver(&hook, Call::default(), vec![obs])
+                )
+                .await
+                .is_err()
+            );
+            assert!(dropped.load(Ordering::SeqCst));
+        }
     }
 }

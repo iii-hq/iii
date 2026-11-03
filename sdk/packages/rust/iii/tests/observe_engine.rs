@@ -11,7 +11,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use common::{engine_ws_url, proxy::CountingProxy};
@@ -934,7 +933,6 @@ struct TopicArgs {
     topic: String,
 }
 
-#[async_trait]
 impl AddedHook for Topics {
     async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
         self.added.lock().unwrap().push(obs.args_value().clone());
@@ -946,7 +944,6 @@ impl AddedHook for Topics {
     }
 }
 
-#[async_trait]
 impl RemovedHook for Topics {
     async fn on_removed(&self, obs: Observer) {
         self.removed.lock().unwrap().push(obs.id().to_string());
