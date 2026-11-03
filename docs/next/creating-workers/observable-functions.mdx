@@ -13,32 +13,353 @@ type: "how-to"
   `observe`. To move a 0.25 worker, see [Upgrading from 0.25.x to 0.26.x](../upgrading/from-0-25-x).
 </Info>
 
-An observer runs one function when another one completes. Every function a worker registers can be
-observed: a plain function, a cron tick, a row change, an HTTP request. What an observer receives is
-typically the function's return value, unless the worker that hosts the function overrides it. If
-unsure, refer to that worker's documentation.
-
-The worker that hosts a function defines what observing it means with four hooks, in two pairs. Each
-one overrides something iii does by default.
-
-The **observer lifecycle** hooks run once per observer, when it starts and stops observing the
-function:
-
-| Hook                     | What iii does by default                                                  | Override it to                                                                                                                                                                         |
-| ------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `onObserverAdded(obs)`   | accepts the observer: it becomes active and receives the function's calls | set something up from the observer's args before it is accepted: install a database trigger, start a cron job, add an HTTP route, open a queue consumer. Throw to reject the observer. |
-| `onObserverRemoved(obs)` | stops delivering to the observer and removes it                           | tear down what `onObserverAdded` set up.                                                                                                                                               |
-
-The **observation lifecycle** hooks run per call. An observation is one call of the function
-reaching, or being considered for, one observer:
-
-| Hook                                    | What iii does by default                                                                                                                                       | Override it to                                                                                                                                                                                                                                                               |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `onObservationMatch(obs, call)`         | every call is observed by every observer                                                                                                                       | decide, for one call, which observations happen: whether the observer `obs` gets `call`, from its args. A cron observer of `0 0 9 * * * *` gets that expression's ticks, an observer of the `orders` table gets that table's changes. A predicate, or keys that iii indexes. |
-| `onObservationDeliver(call, observers)` | carries out each observation: runs the target of every matched observer whose `on` and filters match the call, and gives the caller the handler's return value | carry out the call's observations yourself: hand the call to its observers and return what the caller gets back. Route an HTTP request to one observer and return its response, acknowledge a queue message with its subscriber's result.                                    |
-
-This page is for the worker that hosts a function. To observe a function, see
+Every function your worker registers can be observed unless you specify otherwise (see
+[Registration options](#registration-options)). By default, iii runs each observer's target after
+each call of the function, with the call's input and the handler's return value. This page is how
+your worker changes that: what the observers of its functions receive, which calls reach which
+observer, what each observer sets up, and what the caller gets back. To observe a function, see
 [Observers](../using-iii/observers).
+
+## Hooks
+
+Your worker defines what observing a function means with four hooks, in two pairs. The observer
+lifecycle hooks add your own set-up and teardown per observer. The observation lifecycle hooks
+replace how iii matches and delivers calls.
+
+### Observer lifecycle
+
+These hooks run once per observer, when it starts and stops observing the function.
+
+#### `onObserverAdded(obs)`
+
+Runs before the observer is accepted. Use it to set something up from the observer's args. When it
+returns, the observer becomes active and receives the function's calls. Throw to reject the observer
+instead.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { ObserveRejection } from "iii-sdk";
+    import { Pool } from "pg";
+
+    const pools = new Map([["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })]]);
+
+    worker.onObserverAdded("database::on-row-changed", async (obs) => {
+      const { db, table } = obs.args as { db: string; table: string };
+      const pool = pools.get(db);
+      if (!pool) throw new ObserveRejection("UNKNOWN_DB", `no database '${db}'`);
+      await pool.query(
+        `CREATE OR REPLACE TRIGGER iii_${table}_changed AFTER INSERT OR UPDATE OR DELETE ON ${table}
+         FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()`,
+      );
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import ObserveRejection
+    from psycopg_pool import ConnectionPool
+
+    pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
+
+    @worker.on_observer_added("database::on-row-changed")
+    def install_trigger(obs):
+        db, table = obs.args["db"], obs.args["table"]
+        pool = pools.get(db)
+        if pool is None:
+            raise ObserveRejection("UNKNOWN_DB", f"no database '{db}'")
+        with pool.connection() as conn:
+            conn.execute(
+                f"CREATE OR REPLACE TRIGGER iii_{table}_changed AFTER INSERT OR UPDATE OR DELETE ON {table} "
+                "FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()"
+            )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use iii_sdk::{ObserveRejection, Observer};
+    use serde::Deserialize;
+    use sqlx::PgPool;
+
+    #[derive(Deserialize)]
+    struct RowChangedArgs {
+        db: String,
+        table: String,
+    }
+
+    let pools: Arc<HashMap<String, PgPool>> = Arc::new(HashMap::from([(
+        "primary".to_string(),
+        PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
+    )]));
+
+    worker.on_observer_added_for("database::on-row-changed", move |obs: Observer| {
+        let pools = pools.clone();
+        async move {
+            let args: RowChangedArgs = obs.args()?;
+            let Some(pool) = pools.get(&args.db) else {
+                return Err(ObserveRejection::new("UNKNOWN_DB", format!("no database '{}'", args.db)));
+            };
+            sqlx::query(&format!(
+                "CREATE OR REPLACE TRIGGER iii_{0}_changed AFTER INSERT OR UPDATE OR DELETE ON {0} \
+                 FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()",
+                args.table
+            ))
+            .execute(pool)
+            .await
+            .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            Ok(())
+        }
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+        "database/sql"
+        "fmt"
+        "os"
+    )
+
+    primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
+    pools := map[string]*sql.DB{"primary": primary}
+
+    type rowChangedArgs struct {
+        DB    string `json:"db"`
+        Table string `json:"table"`
+    }
+
+    worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+        var args rowChangedArgs
+        if err := obs.DecodeArgs(&args); err != nil {
+            return err
+        }
+        pool, ok := pools[args.DB]
+        if !ok {
+            return iii.ObserveRejection("UNKNOWN_DB", "no database '"+args.DB+"'")
+        }
+        _, err := pool.ExecContext(ctx, fmt.Sprintf(
+            "CREATE OR REPLACE TRIGGER iii_%[1]s_changed AFTER INSERT OR UPDATE OR DELETE ON %[1]s "+
+                "FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()", args.Table))
+        return err
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+#### `onObserverRemoved(obs)`
+
+Runs after the engine has removed the observer and delivery to it has stopped. Use it to perform
+your own teardown. An error it throws is logged, and the observer is still removed.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.onObserverRemoved("database::on-row-changed", async (obs) => {
+      const { db, table } = obs.args as { db: string; table: string };
+      await pools.get(db)?.query(`DROP TRIGGER IF EXISTS iii_${table}_changed ON ${table}`);
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    @worker.on_observer_removed("database::on-row-changed")
+    def drop_trigger(obs):
+        db, table = obs.args["db"], obs.args["table"]
+        pool = pools.get(db)
+        if pool is None:
+            return
+        with pool.connection() as conn:
+            conn.execute(f"DROP TRIGGER IF EXISTS iii_{table}_changed ON {table}")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    let pools = pools.clone();
+    worker.on_observer_removed_for("database::on-row-changed", move |obs: Observer| {
+        let pools = pools.clone();
+        async move {
+            let Ok(args) = obs.args::<RowChangedArgs>() else { return };
+            if let Some(pool) = pools.get(&args.db) {
+                let _ = sqlx::query(&format!("DROP TRIGGER IF EXISTS iii_{0}_changed ON {0}", args.table))
+                    .execute(pool)
+                    .await;
+            }
+        }
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
+        var args rowChangedArgs
+        if obs.DecodeArgs(&args) != nil {
+            return
+        }
+        if pool, ok := pools[args.DB]; ok {
+            pool.ExecContext(ctx, fmt.Sprintf("DROP TRIGGER IF EXISTS iii_%[1]s_changed ON %[1]s", args.Table))
+        }
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+### Observation lifecycle
+
+These hooks run per call. An observation is one call of the function reaching, or being considered
+for, one observer.
+
+#### `onObservationMatch(obs, call)`
+
+By default, every call is observed by every observer. Override it to select, for one call, which
+observers get it, from their args: a predicate, or keys that iii indexes.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.onObservationMatch(
+      "database::on-row-changed",
+      (obs, call) => obs.args.db === call.input.db && obs.args.table === call.input.table,
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.on_observation_match(
+        "database::on-row-changed",
+        lambda obs, call: obs.args["db"] == call.input["db"] and obs.args["table"] == call.input["table"],
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Match;
+
+    worker.on_observation_match_for(
+        "database::on-row-changed",
+        Match::predicate(|obs, call| {
+            let args = obs.args_value();
+            args["db"] == call.input["db"] && args["table"] == call.input["table"]
+        }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type rowChange struct {
+        DB    string `json:"db"`
+        Table string `json:"table"`
+    }
+
+    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+        var change rowChange
+        _ = json.Unmarshal(call.Input, &change)
+        return obs.Args["db"] == change.DB && obs.Args["table"] == change.Table
+    }))
+    ```
+
+  </Tab>
+</Tabs>
+
+#### `onObservationDeliver(call, observers)`
+
+By default, iii carries out each observation: it runs the target of every matched observer whose
+`on` and filters match the call, and gives the caller the handler's return value. Override it to
+deliver the call yourself and return what the caller gets back.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    type HttpRequest = { method: string; path: string };
+
+    worker.onObservationDeliver("http::on-request", async (call, observers) => {
+      const request = call.input as HttpRequest;
+      const route = observers.find(
+        (obs) => obs.args.method === request.method && obs.args.path === request.path,
+      );
+      if (!route) return { status_code: 404 };
+      return worker.call({ observer: route, payload: request });
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    @worker.on_observation_deliver("http::on-request")
+    async def deliver(call, observers):
+        request = call.input
+        route = next(
+            (obs for obs in observers
+             if obs.args["method"] == request["method"] and obs.args["path"] == request["path"]),
+            None,
+        )
+        if route is None:
+            return {"status_code": 404}
+        return await worker.call_async({"observer": route, "payload": request})
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::CallRequest;
+    use iii_sdk::{Call, Observer};
+    use serde_json::json;
+
+    let client = worker.clone();
+    worker.on_observation_deliver_for("http::on-request", move |call: Call, observers: Vec<Observer>| {
+        let worker = client.clone();
+        async move {
+            let route = observers.into_iter().find(|obs| {
+                let args = obs.args_value();
+                args["method"] == call.input["method"] && args["path"] == call.input["path"]
+            });
+            let Some(route) = route else {
+                return Ok(json!({ "status_code": 404 }));
+            };
+            worker.call(CallRequest::observer(&route, call.input)).await
+        }
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type httpRequest struct {
+        Method string `json:"method"`
+        Path   string `json:"path"`
+    }
+
+    worker.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+        var request httpRequest
+        if err := json.Unmarshal(call.Input, &request); err != nil {
+            return nil, err
+        }
+        for _, obs := range observers {
+            if obs.Args["method"] == request.Method && obs.Args["path"] == request.Path {
+                return worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+            }
+        }
+        return map[string]int{"status_code": 404}, nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
 
 ## Publish events
 
@@ -368,7 +689,7 @@ An observation match hook is a predicate or a pair of key functions (see
 
 Pass `null` to remove a hook.
 
-Removing a hook puts back what iii does by default (see the tables at the top of this page).
+Removing a hook puts back what iii does by default (see [Hooks](#hooks)).
 
 Hooks are stored by function id. They stay in place across `unregister()` and a later registration
 of the same id, and they can be set before the function is registered. Once the worker's connection
@@ -379,7 +700,7 @@ a mistyped id.
 
 - **Accepted.** An observer is accepted when every `onObserverAdded` that applies to it has
   resolved. The SDK then acknowledges it to the engine, and the observer becomes `active`. So its
-  database trigger or cron job exists before the first call it must receive.
+  database trigger exists before the first call it must receive.
 - **Rejected.** When an `onObserverAdded` throws, the observer is rejected. A thrown
   `ObserveRejection(code, message)` sets the code the consumer's `ready()` fails with; any other
   error is `OBSERVE_REJECTED`. The `onObserverRemoved` of each level whose `onObserverAdded` already
@@ -470,15 +791,15 @@ observers' args determine which calls they get. iii does everything else as usua
 `on`, filters, policy and `deliver` still apply.
 
 As a predicate, the hook takes one possible observation, the observer and the call, and returns
-whether it happens. Here each observer of `cron::on-tick` names an expression in its args, and gets
-the ticks of that expression:
+whether it happens. Here each observer of `database::on-row-changed` names a database and a table in
+its args, and gets the changes of that table:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
     worker.onObservationMatch(
-      "cron::on-tick",
-      (obs, call) => obs.args.expression === call.input.expression,
+      "database::on-row-changed",
+      (obs, call) => obs.args.db === call.input.db && obs.args.table === call.input.table,
     );
     ```
 
@@ -486,8 +807,8 @@ the ticks of that expression:
   <Tab title="Python">
     ```python
     worker.on_observation_match(
-        "cron::on-tick",
-        lambda obs, call: obs.args["expression"] == call.input["expression"],
+        "database::on-row-changed",
+        lambda obs, call: obs.args["db"] == call.input["db"] and obs.args["table"] == call.input["table"],
     )
     ```
 
@@ -497,20 +818,21 @@ the ticks of that expression:
     use iii_sdk::Match;
 
     worker.on_observation_match_for(
-        "cron::on-tick",
-        Match::predicate(|obs, call| obs.args_value()["expression"] == call.input["expression"]),
+        "database::on-row-changed",
+        Match::predicate(|obs, call| {
+            let args = obs.args_value();
+            args["db"] == call.input["db"] && args["table"] == call.input["table"]
+        }),
     );
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    worker.OnObservationMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-        var tick struct {
-            Expression string `json:"expression"`
-        }
-        _ = json.Unmarshal(call.Input, &tick)
-        return obs.Args["expression"] == tick.Expression
+    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+        var change rowChange
+        _ = json.Unmarshal(call.Input, &change)
+        return obs.Args["db"] == change.DB && obs.Args["table"] == change.Table
     }))
     ```
 
@@ -595,8 +917,7 @@ keeps an index from keys to observers, so a call costs one lookup per key. Here 
 Keys express wildcards by listing them. The [database example](#database-changes) files an observer
 of every table under `"primary|*|insert"`, and gives a change the keys `"primary|orders|insert"`,
 `"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four lookups, whatever the number of
-observers. Keys suit sources whose observers each get a slice of many calls: row changes by table,
-frames by session, messages by subscriber.
+observers. Keys suit sources whose observers each get a slice of many calls.
 
 `isObserved(call)` is true when an observer is filed under one of the call's keys: one hash lookup
 per key. A source uses it to skip building an event that no observer gets. On a function without
@@ -611,12 +932,11 @@ calls each go to one observer. The hook receives the call and the observers that
 returns (or throws) is what the caller gets back; iii delivers nothing for that function. The hook
 runs inside the function's invocation, so calls it makes have that invocation as their caller.
 
-Choose observers in `onObservationMatch` when an observer's args and the call settle it: a cron
-expression, a table, a subscriber id. Choose them in `onObservationDeliver` when choosing compares
-observers with each other or produces part of the payload. An HTTP request goes to the most specific
-of the route patterns that fit its path, and that route's path parameters go into the request its
-target receives, so `http::on-request` sets no match hook and its deliver hook receives every active
-observer.
+Choose observers in `onObservationMatch` when an observer's args and the call settle it. Choose them
+in `onObservationDeliver` when choosing compares observers with each other or produces part of the
+payload. An HTTP request goes to the most specific of the route patterns that fit its path, and that
+route's path parameters go into the request its target receives, so `http::on-request` sets no match
+hook and its deliver hook receives every active observer.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -771,9 +1091,9 @@ and the call fails with `OBSERVER_NOT_ACTIVE`. The observer becomes active after
 call. `accepted()` fails for an observer rejected first, such as one whose match key function
 throws, and the task then sends nothing.
 
-The target receives the payload as given, with the observer's registration metadata, so send it in
-the shape the function documents for its targets. Here each observer of `tmux::on-changed` names a
-session in its args, and gets that session's current state when it is added:
+The target receives the payload as given, with the observer's registration metadata. Send what your
+function's targets expect. Here each observer of `tmux::on-changed` names a session in its args, and
+gets that session's current state when it is added:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -915,7 +1235,7 @@ them with `observable: false`. Every `observe` of them fails with `NOT_OBSERVABL
 
 A function id has one host per namespace: the engine rejects a second registration of the same id
 with `FUNCTION_NAMESPACE_CONFLICT`. Observer hooks therefore run once per observer, in that host,
-and a cron job or a database trigger is set up once however many instances of the worker run.
+and a database trigger is set up once however many instances of the worker run.
 
 A second instance refused with `FUNCTION_NAMESPACE_CONFLICT` logs it and keeps serving its other
 functions. It does not register the function again. When the host disconnects, the function's
@@ -966,8 +1286,8 @@ To reject an observer from `onObserverAdded`, throw `new ObserveRejection(code, 
 
 ## Examples
 
-These four functions are how the database, cron, http and queue workers host their events. Each
-handler returns the event it is called with, each function is private, and the hooks do the rest.
+These three functions are how the database, http and queue workers host their events. Each handler
+returns the event it is called with, each function is private, and the hooks do the rest.
 
 ### Database changes
 
@@ -1271,175 +1591,6 @@ worker.observe(
     args: { db: "primary", table: "orders", ops: ["insert", "update"] },
   },
   "orders::project",
-);
-```
-
-### Cron schedules
-
-`cron::on-tick` starts the expression's job in `onObserverAdded`, and its `onObservationMatch`
-predicate gives each tick to the observers of that expression. The scheduler runs one job per
-distinct expression and stops it with its last observer. Its args are `{ expression }`.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    type CronTick = { expression: string; scheduled_time: string; actual_time: string };
-
-    worker
-      .registerFunction("cron::on-tick", (tick: CronTick) => tick, {
-        request_format: CronTickSchema,
-        response_format: CronTickSchema,
-        args_format: CronArgsSchema,
-        private: true,
-      })
-      .onObserverAdded((obs) => {
-        const expression = obs.args.expression as string;
-        // throws INVALID_CRON_EXPRESSION
-        scheduler.retain(expression, (scheduled_time) =>
-          worker.call({
-            function_id: "cron::on-tick",
-            payload: { expression, scheduled_time, actual_time: new Date().toISOString() },
-          }),
-        );
-      })
-      .onObserverRemoved((obs) => scheduler.release(obs.args.expression as string))
-      .onObservationMatch((obs, call) => obs.args.expression === call.input.expression);
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    # by id, before registering, so the hooks see every observer
-    @worker.on_observer_added("cron::on-tick")
-    def start(obs):
-        expression = obs.args["expression"]
-
-        async def tick(scheduled_time):
-            payload = {"expression": expression, "scheduled_time": scheduled_time, "actual_time": now()}
-            await worker.call_async({"function_id": "cron::on-tick", "payload": payload})
-
-        scheduler.retain(expression, tick)  # raises INVALID_CRON_EXPRESSION
-
-    @worker.on_observer_removed("cron::on-tick")
-    def stop(obs):
-        scheduler.release(obs.args["expression"])
-
-    worker.on_observation_match(
-        "cron::on-tick",
-        lambda obs, call: obs.args["expression"] == call.input["expression"],
-    )
-
-    worker.register_function(
-        "cron::on-tick",
-        lambda tick: tick,
-        request_format=CRON_TICK_SCHEMA,
-        response_format=CRON_TICK_SCHEMA,
-        args_format=CRON_ARGS_SCHEMA,
-        private=True,
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{Error, Match, Observer, RegisterFunction};
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-    use serde_json::json;
-
-    #[derive(Deserialize, JsonSchema)]
-    struct CronArgs {
-        expression: String,
-    }
-
-    #[derive(Serialize, Deserialize, JsonSchema)]
-    struct CronTick {
-        expression: String,
-        scheduled_time: String,
-        actual_time: String,
-    }
-
-    // by id, before registering, so the hooks see every observer
-    let (jobs, client) = (scheduler.clone(), worker.clone());
-    worker.on_observer_added_for("cron::on-tick", move |obs: Observer| {
-        let (scheduler, worker) = (jobs.clone(), client.clone());
-        async move {
-            let CronArgs { expression } = obs.args()?;
-            // rejects with INVALID_CRON_EXPRESSION
-            scheduler.retain(&expression, move |scheduled_time: String| {
-                let (worker, expression) = (worker.clone(), expression.clone());
-                async move {
-                    let tick = CronTick { expression, scheduled_time, actual_time: now() };
-                    let _ = worker.call(CallRequest::new("cron::on-tick", json!(tick))).await;
-                }
-            })?;
-            Ok(())
-        }
-    });
-    let jobs = scheduler.clone();
-    worker.on_observer_removed_for("cron::on-tick", move |obs: Observer| {
-        let scheduler = jobs.clone();
-        async move {
-            if let Ok(CronArgs { expression }) = obs.args() {
-                scheduler.release(&expression);
-            }
-        }
-    });
-    worker.on_observation_match_for(
-        "cron::on-tick",
-        Match::predicate(|obs, call| obs.args_value()["expression"] == call.input["expression"]),
-    );
-
-    worker.register_function(
-        "cron::on-tick",
-        RegisterFunction::new(|tick: CronTick| Ok::<_, Error>(tick))
-            .args_format::<CronArgs>()
-            .private(),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    type cronTick struct {
-        Expression    string `json:"expression"`
-        ScheduledTime string `json:"scheduled_time"`
-        ActualTime    string `json:"actual_time"`
-    }
-
-    // by id, before registering, so the hooks see every observer
-    worker.OnObserverAddedFor("cron::on-tick", func(ctx context.Context, obs *iii.Observer) error {
-        expression, _ := obs.Args["expression"].(string)
-        // returns INVALID_CRON_EXPRESSION
-        return scheduler.Retain(expression, func(scheduledTime string) {
-            tick, _ := json.Marshal(cronTick{Expression: expression, ScheduledTime: scheduledTime, ActualTime: now()})
-            worker.Call(context.Background(), iii.CallRequest{FunctionID: "cron::on-tick", Payload: tick})
-        })
-    })
-    worker.OnObserverRemovedFor("cron::on-tick", func(ctx context.Context, obs *iii.Observer) {
-        expression, _ := obs.Args["expression"].(string)
-        scheduler.Release(expression)
-    })
-    worker.OnObservationMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-        var tick cronTick
-        _ = json.Unmarshal(call.Input, &tick)
-        return obs.Args["expression"] == tick.Expression
-    }))
-
-    worker.RegisterFunction("cron::on-tick", iii.Identity,
-        iii.FunctionOptions{ArgsFormat: cronArgsSchema, Private: true})
-    ```
-
-  </Tab>
-</Tabs>
-
-A consumer runs a function every five minutes:
-
-```typescript
-worker.observe(
-  { function_id: "cron::on-tick", args: { expression: "0 */5 * * * * *" }, deliver: "input" },
-  "reports::refresh",
 );
 ```
 
@@ -1866,6 +2017,4 @@ The SDK and the engine both advertise the `observe.v2` feature. Against an engin
 functions that declare `args_format`, `private: true` or `observable: false`, or that set
 `onObservationMatch` or `onObservationDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED`
 once for each. The SDK registers them when the worker connects to an engine with `observe.v2`. Every
-other function and `call` work. `observe` works against a 0.25 engine, which advertises
-`observe.v1`. Against an engine older than 0.25, which has no observers, the observer turns `error`
-with `UNSUPPORTED`, and `ready()` fails with it.
+other function and `call` work.

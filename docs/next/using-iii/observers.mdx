@@ -162,10 +162,10 @@ The examples on this page react to `orders::create`, a function that another wor
 ### What can be observed
 
 The observed function can be any function on the engine: one that your team wrote, or one a worker
-hosts to expose something that happens, such as an HTTP request (`http::on-request`), a cron tick
-(`cron::on-tick`) or a row change (`database::on-row-changed`). The target is any registered
-function. Any worker can observe any function, private ones included, unless the function is
-registered with `observable: false` or RBAC restricts it (see [Authorization](#authorization)).
+hosts to expose something that happens, such as an HTTP request (`http::on-request`), a queue
+message (`queue::on-message`) or a row change (`database::on-row-changed`). The target is any
+registered function. Any worker can observe any function, private ones included, unless the function
+is registered with `observable: false` or RBAC restricts it (see [Authorization](#authorization)).
 
 What an observer receives is typically the function's return value, unless the worker that hosts the
 function overrides it. If unsure, refer to that worker's documentation.
@@ -194,10 +194,10 @@ function overrides it. If unsure, refer to that worker's documentation.
 ## Args and filters
 
 An observer can carry `args` and `filters`. `args` go to the worker that hosts the function, which
-reads them to set something up for the observer (a route, a schedule, a database trigger, a queue
-consumer) and to filter which calls the observer receives. This is custom logic: each function
-defines the `args` its use case needs. `filters` are standard: the iii engine applies them to each
-call, the same way for every function.
+reads them to set something up for the observer (a route, a database trigger, a queue consumer) and
+to filter which calls the observer receives. This is custom logic: each function defines the `args`
+its use case needs. `filters` are standard: the iii engine applies them to each call, the same way
+for every function.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -1090,7 +1090,7 @@ When an observer cannot be created, it becomes `error`, and `ready()` fails with
 | `OBSERVE_REJECTED`     | The hosting worker's `onObserverAdded` threw an error other than `ObserveRejection`.                                                                                                                                    |
 
 A worker can also reject an observer with its own code, which its documentation lists (for example
-`HTTP_ROUTE_CONFLICT` or `INVALID_CRON_EXPRESSION`).
+`HTTP_ROUTE_CONFLICT` or `UNKNOWN_DB`).
 
 ## Observed call size
 
@@ -1359,7 +1359,7 @@ To change or deny observers in the RBAC configuration, see
 - With a 0.25 engine, observers work. A function registered with `args_format`, `private: true`, or
   `observable: false`, or that sets `onObservationMatch` or `onObservationDeliver`, needs a 0.26
   engine: the SDK does not register it on a 0.25 engine, so its observers stay `pending`. The event
-  functions of workers such as `http`, `cron` and `queue` are such functions.
+  functions of workers such as `http` and `queue` are such functions.
 - Functions hosted by workers on older SDKs are observable. The engine evaluates the filters of
   every routed call, whichever SDK hosts the function, and the hosting SDK reports its own local
   calls.
