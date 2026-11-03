@@ -115,9 +115,9 @@ worker.observe(
 
 ## Know when a function is observed
 
-`FunctionRef.isObserved()` (`is_observed()` in Python and Rust, `IsObserved()` in Go) returns true
-when the function has at least 1 active observer. It costs one atomic load, so call it before you
-build an event, and skip the event when the function has no observers.
+`FunctionRef.isObserved()` returns true when the function has at least 1 active observer. It costs
+one atomic load, so call it before you build an event, and skip the event when the function has no
+observers.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -346,14 +346,9 @@ The hook names in each SDK:
 | Match, one function     | `onObservationMatch(id, hook)`   | `on_observation_match(id, hook)`   | `on_observation_match_for(id, rule)`   | `OnObservationMatchFor(id, rule)`   |
 | Deliver, one function   | `onObservationDeliver(id, hook)` | `on_observation_deliver(id, hook)` | `on_observation_deliver_for(id, hook)` | `OnObservationDeliverFor(id, hook)` |
 
-- The `FunctionRef` has the same methods with the id filled in.
-- In Node, Rust and Go each method returns its receiver, so calls chain. In Python each returns the
-  hook, so it also works as a decorator, and `on_observer_added("id")` without a hook is a decorator
-  factory.
-- Added, removed and deliver hooks can be sync or async in Node and Python. A match predicate and
-  key functions are sync, since they run on every call.
-- In Rust a hook is an async closure or a type that implements `AddedHook`, `RemovedHook` or
-  `DeliverHook`.
+The `FunctionRef` has the same methods with the id filled in. Each method returns its receiver, so
+calls chain. Added, removed and deliver hooks can be sync or async. A match predicate and key
+functions are sync, since they run on every call.
 
 An observation match hook is a predicate or a pair of key functions (see
 [Match observers to calls](#match-observers-to-calls)):
@@ -365,12 +360,7 @@ An observation match hook is a predicate or a pair of key functions (see
 | Rust           | `Match::predicate(f)`                      | `Match::keys(observer_keys, call_keys)`        |
 | Go             | `iii.MatchFunc(f)`                         | `iii.MatchKeys(observerKeys, callKeys)`        |
 
-Pass `null` (`None` in Python, `nil` in Go) to remove a hook. Rust removes hooks with `clear_*`
-methods: `clear_observer_added()`, `clear_observer_removed()`, `clear_observation_match()` and
-`clear_observation_deliver()` on the `FunctionRef`; `clear_observer_added_for(id)`,
-`clear_observer_removed_for(id)`, `clear_observation_match_for(id)` and
-`clear_observation_deliver_for(id)` on the client; and `clear_observer_added()` and
-`clear_observer_removed()` on the client for the worker-wide hooks.
+Pass `null` to remove a hook.
 
 Removing a hook puts back what iii does by default (see the tables at the top of this page).
 
@@ -413,10 +403,9 @@ a mistyped id.
 ### When hooks take effect
 
 The SDK acknowledges no observer of a function before the call that registered the function has
-returned. So a hook set by id before `registerFunction` runs for every observer. In Node and the
-browser, a hook chained on the `registerFunction` result, or set later in the same synchronous
-block, does too, since inbound messages run on the event loop. In Python, Rust and Go, set hooks by
-id before registering: a hook set on the returned function can come after observers were accepted.
+returned. So set hooks by id before `registerFunction`: they run for every observer. In Node, a hook
+chained on the `registerFunction` result, or set later in the same synchronous block, runs for every
+observer too, since inbound messages run on the event loop.
 
 A hook set once a function already has active observers is caught up: the SDK runs it for each of
 them at once, a throw late-rejects that observer, and the SDK logs one warning naming the function
@@ -439,8 +428,7 @@ for (const obs of feeds.observers()) {
 }
 ```
 
-`FunctionRef.observers()` (`observers()` in Python and Rust, `Observers()` in Go, or
-`worker.Observers(id)` on the Go client) returns the active observers of the function.
+`FunctionRef.observers()` returns the active observers of the function.
 
 ## Choose who gets each call
 
@@ -590,7 +578,7 @@ keeps an index from keys to observers, so a call costs one lookup per key. Here 
   </Tab>
 </Tabs>
 
-- Each key function returns a string or an array of strings (`Keys` in Rust, `[]string` in Go).
+- Each key function returns a string or an array of strings.
 - The SDK computes an observer's keys once, when it is accepted, and files the observer under each.
   It unfiles the observer when it is removed. An observer whose key function throws is rejected with
   `OBSERVE_REJECTED`.
@@ -604,10 +592,9 @@ of every table under `"primary|*|insert"`, and gives a change the keys `"primary
 observers. Keys suit sources whose observers each get a slice of many calls: row changes by table,
 frames by session, messages by subscriber.
 
-`isObserved(call)` (`is_observed(call)` in Python, `is_observed_for(&call)` in Rust,
-`IsObservedFor(call)` in Go) is true when an observer is filed under one of the call's keys: one
-hash lookup per key. A source uses it to skip building an event that no observer gets. On a function
-without keys, the call is ignored.
+`isObserved(call)` is true when an observer is filed under one of the call's keys: one hash lookup
+per key. A source uses it to skip building an event that no observer gets. On a function without
+keys, the call is ignored.
 
 ### Deliver calls yourself
 
@@ -743,8 +730,8 @@ A call that names an observer runs that observer's target and resolves to the ta
 - The call takes no metadata. The target's metadata argument is the observer's registration
   metadata, as on iii's delivery. `call` refuses a call through an observer that names metadata
   before sending anything, with the error "a call through an observer takes no metadata; its target
-  receives the observer's metadata". `null` (Python `None`) is no metadata. Put anything the target
-  needs from the call in the payload.
+  receives the observer's metadata". `null` is no metadata. Put anything the target needs from the
+  call in the payload.
 - The host calls through an observer wherever it needs to once the observer is active: in the
   function's deliver hook, or to
   [send one observer its initial state](#send-an-observer-its-initial-state).
@@ -916,8 +903,7 @@ Any function can be private; event sources are the common case.
 ### Functions nobody may observe
 
 Some functions must stay unobserved, for example because their input carries credentials. Register
-them with `observable: false` (`observable=False` in Python, `.observable(false)` in Rust, the
-`Observable` field in Go). Every `observe` of them fails with `NOT_OBSERVABLE`.
+them with `observable: false`. Every `observe` of them fails with `NOT_OBSERVABLE`.
 
 ### One host per function
 
@@ -941,9 +927,7 @@ the host's name is refused with `WORKER_NAMESPACE_CONFLICT`, and its SDK stops w
 
 Hooks get an `Observer`: the record of what the consumer asked for. Who observes, the observer's
 metadata and its policy stay with the engine. The object stays the same for the full life of the
-observer, so the worker can keep it, for example in a map. In Go and Rust, when the engine announces
-the observer again with other filters, target, `capture` or `on`, the SDK serves a new value with
-that view (equal by id in Rust), and a value kept from before keeps the old view.
+observer, so the worker can keep it, for example in a map.
 
 | Member                  | Meaning                                                                                                                             |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -957,15 +941,7 @@ that view (equal by id in Rust), and a value kept from before keeps the old view
 | `accepted()`            | Resolves once the SDK has acknowledged the observer. See [Send an observer its initial state](#send-an-observer-its-initial-state). |
 | `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                    |
 
-To reject an observer from `onObserverAdded`, throw `new ObserveRejection(code, message)`
-(`raise ObserveRejection(code, message)` in Python, `ObserveRejection::new(code, message)` in Rust,
-`iii.ObserveRejection(code, message)` in Go).
-
-Language specifics: Rust passes `Observer` by value as a cheap, cloneable handle, with `id()`,
-`args::<T>()`, `args_value()` and an async `accepted()`; Go has `ID`, `Args` (a map),
-`DecodeArgs(&v)`, `Matches(call)` and `Accepted(ctx)`, which returns an error at once when given the
-hook's own `ctx`. Python's `accepted()` blocks the calling thread, and `accepted_async()` is its
-awaitable form, for hooks and other async code.
+To reject an observer from `onObserverAdded`, throw `new ObserveRejection(code, message)`.
 
 ## The `Call` object
 
@@ -981,10 +957,6 @@ awaitable form, for hooks and other async code.
 | `error`         | `{ code, message }`, what the handler threw.                                                |
 | `caller`        | Who made the call. See [Caller and causality](../using-iii/observers#caller-and-causality). |
 | `metadata`      | The call's metadata.                                                                        |
-
-Language specifics: Python's `Call` is a dataclass; Rust's is a struct with `input: Value` and
-`output: Option<Value>`, and `Call { input, ..Call::default() }` builds one for `is_observed_for`;
-Go's has `Input` and `Output` as `json.RawMessage`.
 
 ## Examples
 

@@ -622,8 +622,7 @@ The default `capture` does not include `error`. To give the target the error, ad
 ### Metadata
 
 The observer's `metadata` option, set in the [policy](#policy-and-metadata), reaches the target
-function as its second argument on every activation (the `metadata` parameter in Python,
-`MetadataFromContext(ctx)` in Go).
+function as its second argument on every activation.
 
 <Note title="Two kinds of metadata">
   The envelope's `metadata` field is the metadata of the observed call, present when `capture`
@@ -725,18 +724,13 @@ the `iii.observer.dropped.total` metric, by function and reason.
 
 `observe` returns a handle with the observer's `id` and `state`, and three methods:
 
-- `ready()` resolves when the observer is `active`. It rejects with the reason's code when the
-  observer turns `error` or `disposed` first (`ObserveRejection` in Node and Python, `Error::Remote`
-  carrying the code in Rust, `*iii.ObserveRejectionError` in Go). In Python, `ready()` blocks; use
-  `ready_async()` in asyncio code.
-- `onStateChange(listener)` (`on_state_change` in Python and Rust, `OnStateChange` in Go) reports
-  each state change with its reason, and returns a way to unsubscribe. Listeners run outside the
-  connection's read path, so a listener can call the worker.
-- `dispose()` (`Dispose(ctx)` in Go) removes the observer. A disposed observer is not replayed. When
-  the engine refused the `observe`, `dispose()` sends nothing. In Node, Python and Go, `dispose()`
-  returns at once. In Rust, it returns when the engine confirms the dispose, or after 5 seconds
-  without an answer. A Rust `dispose()` of a refused `observe` returns at once, and one called
-  before the refusal arrives returns when the refusal arrives.
+- `ready()` resolves when the observer is `active`. It rejects with an `ObserveRejection` that
+  carries the reason's code when the observer turns `error` or `disposed` first.
+- `onStateChange(listener)` reports each state change with its reason, and returns a function that
+  unsubscribes. Listeners run outside the connection's read path, so a listener can call the worker.
+- `dispose()` removes the observer. The SDK does not replay a disposed observer after a reconnect.
+  On an observer the engine refused, `dispose()` has nothing to remove and makes no request to the
+  engine.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -871,8 +865,8 @@ the event, and `deliver: "input"` and `deliver: "output"` both give the target t
 calls never fail: an observer with `on: "error"` is accepted, but its target never runs. Their
 `request_format` is closed at the top level, so an `input.*` filter path that is not in the event
 fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a worker fails with
-`FORBIDDEN`. The SDKs export their ids as `EngineSources`, for example
-`EngineSources.WORKERS_CHANGED` in Node.
+`FORBIDDEN`. The SDK exports their ids as `EngineSources`, for example
+`EngineSources.WORKERS_CHANGED`.
 
 <Tabs>
   <Tab title="Node / TypeScript">
