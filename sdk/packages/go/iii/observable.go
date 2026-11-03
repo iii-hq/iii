@@ -27,9 +27,12 @@ const observeHookTimeout = 30 * time.Second
 // defaultCapture is what an absent capture means.
 var defaultCapture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
 
-// errObserverRemoved is what Accepted returns for an observer removed before the SDK
-// accepted it.
-var errObserverRemoved = errors.New("iii: observer removed before it was accepted")
+// errNotActive is what Accepted returns for an observer removed, or whose function was
+// released, before the SDK accepted it: it never became active. OBSERVER_NOT_ACTIVE is
+// the code the Node, Python and Rust SDKs report for it.
+func errNotActive(message string) error {
+	return &ObserveRejectionError{Code: "OBSERVER_NOT_ACTIVE", Message: message}
+}
 
 // errAcceptedInAddedHook is what Accepted returns when it is called with the ctx of the
 // observer's own added hook, which the ack waits for.
@@ -532,7 +535,7 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 		// released (a conflict, a withdrawal, an unregister) while its hooks ran, even
 		// if registered again since: as removed, no ack
 		f.mu.Unlock()
-		obs.settle(errObserverRemoved)
+		obs.settle(errNotActive(fmt.Sprintf("%s was released before observer %s was accepted", f.functionID, obs.id)))
 		f.tearDown(obs)
 		return
 	}
@@ -660,7 +663,7 @@ func (f *functionObservers) remove(id string) {
 	delete(f.known, id)
 	f.deactivateLocked(obs)
 	f.mu.Unlock()
-	obs.settle(errObserverRemoved)
+	obs.settle(errNotActive(fmt.Sprintf("observer %s of %s was removed before it was accepted", obs.id, f.functionID)))
 	f.tearDown(obs)
 }
 
@@ -964,7 +967,8 @@ func (o *Observer) Matches(call *Call) bool {
 // with a call of its own function whose metadata is {"for_observer": <obs.ID>}. The
 // function's [MatchHook] gives that call to this observer alone, and iii delivers it
 // like every call. It returns an *[ObserveRejectionError] when the observer is rejected
-// first, an error when it is removed first, and ctx's error when ctx is done first.
+// first (code OBSERVER_NOT_ACTIVE when it is removed, or its function released, first),
+// and ctx's error when ctx is done first.
 // Once accepted, it returns nil at once.
 //
 // The ack waits for the observer's added hooks to return, so an added hook that sends

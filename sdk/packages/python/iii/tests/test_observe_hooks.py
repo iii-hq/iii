@@ -1039,3 +1039,28 @@ def test_against_an_engine_without_observe_hooks_are_inactive_and_logged_once(
     assert len(inactive) == 1
     assert "hooked::fn" in inactive[0].getMessage()
     assert client._functions["plain::fn"].observe.local_dispatch is False  # no functionregistered: no local dispatch
+
+
+def test_accepted_is_not_active_when_the_function_is_released_during_the_added_hook(
+    engine: FakeEngine, connect: Any
+) -> None:
+    # As in the Node, Rust and Go SDKs: the observer never became active.
+    client = connect(engine)
+    entered, release = threading.Event(), threading.Event()
+    seen: list[Observer] = []
+
+    async def hold(obs: Observer) -> None:
+        seen.append(obs)
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+
+    client.on_observer_added("feed::fn", hold)
+    ref = client.register_function("feed::fn", lambda d: d)
+    engine.deliver(function_registered("feed::fn", [observer_info("o1", "t")]))
+    assert entered.wait(5), "the added hook never ran"
+    ref.unregister()
+    release.set()
+    with pytest.raises(ObserveRejection) as raised:
+        seen[0].accepted(timeout=5)
+    assert raised.value.code == "OBSERVER_NOT_ACTIVE"

@@ -470,7 +470,7 @@ func defaultWorkerName() string {
 func (c *Client) Address() string { return c.url }
 
 // ConnectionState returns the current state of the connection to the engine. It
-// mirrors getConnectionState in the Node SDK; [Client.OnConnectionStateChange] reports
+// mirrors getConnectionState in the Node SDK; [Client.AddConnectionStateListener] reports
 // every change.
 func (c *Client) ConnectionState() ConnectionState {
 	c.mu.Lock()

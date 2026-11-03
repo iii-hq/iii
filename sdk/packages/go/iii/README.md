@@ -107,7 +107,7 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Engine address | `iii.EngineURLFromEnv() string` | `III_URL`, trimmed, else `DefaultEngineURL` (`ws://127.0.0.1:49134`). `New("")` and `RegisterWorker("")` use it. |
 | Connect | `client.Connect(ctx) error` | Start the lifecycle if needed and block until connected. |
 | Wait for registration | `client.WaitUntilRegistered(ctx) error` | Block until the engine acknowledged the worker on the current connection. |
-| Connection state | `client.ConnectionState() ConnectionState`, `client.OnConnectionStateChange(listener) (unsubscribe func())` | The current state, and every change (`connecting`, `connected`, `reconnecting`, `disconnected`, `failed`) in order. |
+| Connection state | `client.ConnectionState() ConnectionState`, `client.AddConnectionStateListener(listener) (unsubscribe func())` | The current state, and every change (`connecting`, `connected`, `reconnecting`, `disconnected`, `failed`) in order. |
 | Worker id | `client.WorkerID() string` | The id the engine assigned (empty before the first acknowledgement). |
 | Register function (typed) | `iii.RegisterFunctionTyped[Req, Resp](client, id, handler, opts...) (*FunctionRef, error)` | Register a function with request/response schemas inferred from the types. |
 | Register function | `client.RegisterFunction(id, handler, opts...) (*FunctionRef, error)` | Register a function the engine can invoke by name. `iii.Identity` returns its input: the handler of an event source. |
@@ -631,7 +631,7 @@ Follow the connection, or wait for the engine to accept the worker before callin
 
 ```go
 client := iii.RegisterWorker("")
-unsubscribe := client.OnConnectionStateChange(func(state iii.ConnectionState) {
+unsubscribe := client.AddConnectionStateListener(func(state iii.ConnectionState) {
 	log.Printf("engine link: %s", state) // current state first, then every change
 })
 defer unsubscribe()
