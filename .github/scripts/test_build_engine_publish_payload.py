@@ -26,10 +26,10 @@ INTERFACE = {
 }
 
 
-def _repo(tmp_path: pathlib.Path) -> pathlib.Path:
+def _repo(tmp_path: pathlib.Path, version: str = "0.26.0") -> pathlib.Path:
     (tmp_path / "engine").mkdir()
     (tmp_path / "engine/Cargo.toml").write_text(
-        '[package]\nname = "iii"\nversion = "0.26.0"\n', encoding="utf-8"
+        f'[package]\nname = "iii"\nversion = "{version}"\n', encoding="utf-8"
     )
     worker_dir = tmp_path / "engine/src/workers/stream"
     worker_dir.mkdir(parents=True)
@@ -55,6 +55,22 @@ def test_payload_publishes_function_rows_only(tmp_path: pathlib.Path) -> None:
     assert payload["functions"] == INTERFACE["functions"]
     assert payload["worker_name"] == "iii-stream"
     assert payload["version"] == "0.26.0"
+    assert payload["iii_engine_version"] == ">=0.26.0"
+
+
+def test_prerelease_engine_requires_its_base_version(tmp_path: pathlib.Path) -> None:
+    payload = build.build_payload(
+        repo_root=_repo(tmp_path, "0.26.0-rc.3"),
+        worker="iii-stream",
+        worker_dir=pathlib.Path("engine/src/workers/stream"),
+        expected_version="",
+        registry_tag="next",
+        repo_url="https://github.com/iii-hq/iii",
+        interface=INTERFACE,
+    )
+
+    assert payload["version"] == "0.26.0-rc.3"
+    assert payload["iii_engine_version"] == ">=0.26.0"
 
 
 def test_function_rows_state_every_observe_field() -> None:
