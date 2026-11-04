@@ -1406,20 +1406,321 @@ function's targets expect.
   </Tab>
 </Tabs>
 
+## Call a target through its observer
+
+iii delivers a call to every matched observer and does not wait for the targets. When the worker
+that hosts a function must reach one observer on its own, it makes a call that names that observer.
+The call runs that observer's target and resolves to the target's result.
+
+In one line, the call is:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const response = await worker.call({ observer: obs, payload: request }); // the target's result
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    response = worker.call({"observer": obs, "payload": request})  # the target's result
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    let response = iii.call(CallRequest::observer(&obs, request)).await?; // the target's result
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    response, err := worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: request}) // the target's result
+    ```
+
+  </Tab>
+</Tabs>
+
+The http worker does this for every request. `http::on-request` returns its input, one observer with
+`{ method, path }` args declares one route, and the deliver hook picks the route of the request and
+calls through that route's observer. The target's return value is the response. The full flow:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { ObserveRejection, registerWorker } from "iii-sdk";
+
+    const worker = registerWorker("ws://127.0.0.1:49134", { workerName: "http" });
+
+    type RouteArgs = { method: string; path: string };
+    const routes = new Map<string, string>(); // "GET /orders/:id" -> observer id
+    const routeKey = (args: RouteArgs) => `${args.method} ${args.path}`;
+
+    // one call is one request: the handler returns its input
+    worker.registerFunction("http::on-request", (request: unknown) => request, {
+      args_format: {
+        type: "object",
+        properties: { method: { type: "string" }, path: { type: "string" } },
+        required: ["method", "path"],
+      },
+      private: true,
+    });
+
+    worker.onObserverAdded("http::on-request", (obs) => {
+      const key = routeKey(obs.args as RouteArgs);
+      if (routes.has(key)) throw new ObserveRejection("HTTP_ROUTE_CONFLICT", `${key} is taken`);
+      routes.set(key, obs.id);
+    });
+
+    worker.onObserverRemoved("http::on-request", (obs) => {
+      for (const [key, id] of routes) if (id === obs.id) routes.delete(key);
+    });
+
+    worker.onObservationDeliver("http::on-request", async (call, observers) => {
+      const request = call.input as RouteArgs;
+      const obs = observers.find((o) => o.id === routes.get(routeKey(request)));
+      if (!obs) return { status_code: 404, body: "NOT_FOUND" };
+      if (!obs.matches(call)) return { status_code: 422, body: "FILTERS_NOT_MET" };
+      return worker.call({ observer: obs, payload: call.input }); // the target's result
+    });
+
+    // the server: one call per request, and its result is the HTTP response
+    const response = await worker.call({
+      function_id: "http::on-request",
+      payload: { method: "GET", path: "/orders/:id" },
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import ObserveRejection, register_worker
+
+    worker = register_worker(os.environ["III_URL"])
+
+    routes: dict[str, str] = {}  # "GET /orders/:id" -> observer id
+
+    def route_key(args):
+        return f"{args['method']} {args['path']}"
+
+    ROUTE_ARGS = {
+        "type": "object",
+        "properties": {"method": {"type": "string"}, "path": {"type": "string"}},
+        "required": ["method", "path"],
+    }
+
+    # one call is one request: the handler returns its input
+    worker.register_function("http::on-request", lambda request: request, args_format=ROUTE_ARGS, private=True)
+
+    @worker.on_observer_added("http::on-request")
+    def add_route(obs):
+        key = route_key(obs.args)
+        if key in routes:
+            raise ObserveRejection("HTTP_ROUTE_CONFLICT", f"{key} is taken")
+        routes[key] = obs.id
+
+    @worker.on_observer_removed("http::on-request")
+    def remove_route(obs):
+        for key, obs_id in list(routes.items()):
+            if obs_id == obs.id:
+                del routes[key]
+
+    @worker.on_observation_deliver("http::on-request")
+    def deliver(call, observers):
+        obs = next((o for o in observers if o.id == routes.get(route_key(call.input))), None)
+        if obs is None:
+            return {"status_code": 404, "body": "NOT_FOUND"}
+        if not obs.matches(call):
+            return {"status_code": 422, "body": "FILTERS_NOT_MET"}
+        return worker.call({"observer": obs, "payload": call.input})  # the target's result
+
+    # the server: one call per request, and its result is the HTTP response
+    response = worker.call(
+        {"function_id": "http::on-request", "payload": {"method": "GET", "path": "/orders/:id"}}
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use iii_sdk::{
+        AddedHook, Call, CallRequest, DeliverHook, Error, IIIClient, ObserveRejection, Observer,
+        RegisterFunction, RemovedHook,
+    };
+    use serde_json::{json, Value};
+    use tokio::sync::RwLock;
+
+    #[derive(serde::Deserialize, schemars::JsonSchema)]
+    struct RouteArgs {
+        method: String,
+        path: String,
+    }
+
+    struct Hooks {
+        routes: Arc<RwLock<HashMap<String, String>>>, // "GET /orders/:id" -> observer id
+        iii: Arc<IIIClient>,
+    }
+
+    #[async_trait::async_trait]
+    impl AddedHook for Hooks {
+        async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+            let args: RouteArgs = obs
+                .args()
+                .map_err(|e| ObserveRejection::new("INVALID_ARGS", e.to_string()))?;
+            let key = format!("{} {}", args.method, args.path);
+            let mut routes = self.routes.write().await;
+            if routes.contains_key(&key) {
+                return Err(ObserveRejection::new(
+                    "HTTP_ROUTE_CONFLICT",
+                    format!("{key} is taken"),
+                ));
+            }
+            routes.insert(key, obs.id().to_string());
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemovedHook for Hooks {
+        async fn on_removed(&self, obs: Observer) {
+            self.routes.write().await.retain(|_, id| id != obs.id());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DeliverHook for Hooks {
+        async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+            let key = format!(
+                "{} {}",
+                call.input["method"].as_str().unwrap_or_default(),
+                call.input["path"].as_str().unwrap_or_default()
+            );
+            let id = self.routes.read().await.get(&key).cloned();
+            let Some(obs) = id.and_then(|id| observers.into_iter().find(|o| o.id() == id)) else {
+                return Ok(json!({ "status_code": 404, "body": "NOT_FOUND" }));
+            };
+            if !obs.matches(&call) {
+                return Ok(json!({ "status_code": 422, "body": "FILTERS_NOT_MET" }));
+            }
+            // the route target's result is the response
+            self.iii.call(CallRequest::observer(&obs, call.input)).await
+        }
+    }
+
+    // start-up: the hooks are set before the function registers, so they run for every observer
+    let hooks = Hooks {
+        routes: Arc::new(RwLock::new(HashMap::new())),
+        iii: iii.clone(),
+    };
+    iii.on_observer_added_for("http::on-request", hooks.clone());
+    iii.on_observer_removed_for("http::on-request", hooks.clone());
+    iii.on_observation_deliver_for("http::on-request", hooks);
+    iii.register_function(
+        "http::on-request",
+        RegisterFunction::new(|request: Value| Ok::<_, Error>(request))
+            .args_format::<RouteArgs>()
+            .private(),
+    );
+
+    // the server: one call per request, and its result is the HTTP response
+    let response = iii
+        .call(CallRequest::new(
+            "http::on-request",
+            json!({ "method": "GET", "path": "/orders/:id" }),
+        ))
+        .await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+        "context"
+        "encoding/json"
+
+        iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    type routeArgs struct {
+        Method string `json:"method"`
+        Path   string `json:"path"`
+    }
+
+    func main() {
+        worker := iii.RegisterWorker(iii.DefaultEngineURL)
+        routes := map[string]string{} // "GET /orders/:id" -> observer id
+        key := func(a routeArgs) string { return a.Method + " " + a.Path }
+
+        // one call is one request: the handler returns its input
+        _, _ = worker.RegisterFunction("http::on-request", iii.Identity, iii.RegisterFunctionOptions{
+            ArgsFormat: json.RawMessage(`{"type":"object","properties":{"method":{"type":"string"},"path":{"type":"string"}},"required":["method","path"]}`),
+            Private:    true,
+        })
+
+        worker.OnObserverAddedFor("http::on-request", func(ctx context.Context, obs *iii.Observer) error {
+            var args routeArgs
+            if err := obs.DecodeArgs(&args); err != nil {
+                return err
+            }
+            k := key(args)
+            if _, taken := routes[k]; taken {
+                return iii.ObserveRejection("HTTP_ROUTE_CONFLICT", k+" is taken")
+            }
+            routes[k] = obs.ID
+            return nil
+        })
+
+        worker.OnObserverRemovedFor("http::on-request", func(ctx context.Context, obs *iii.Observer) {
+            for k, id := range routes {
+                if id == obs.ID {
+                    delete(routes, k)
+                }
+            }
+        })
+
+        worker.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+            var req routeArgs
+            _ = json.Unmarshal(call.Input, &req)
+            for _, obs := range observers {
+                if obs.ID != routes[key(req)] {
+                    continue
+                }
+                if !obs.Matches(call) {
+                    return map[string]any{"status_code": 422, "body": "FILTERS_NOT_MET"}, nil
+                }
+                // the route target's result is the response
+                return worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+            }
+            return map[string]any{"status_code": 404, "body": "NOT_FOUND"}, nil
+        })
+
+        // the server: one call per request, and its result is the HTTP response
+        response, err := worker.Call(context.Background(), iii.CallRequest{
+            FunctionID: "http::on-request",
+            Payload:    json.RawMessage(`{"method":"GET","path":"/orders/:id"}`),
+        })
+        _ = response
+        _ = err
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+Only the worker that hosts the observer's function may make such a call. The observer's policy,
+metadata and the loop guard still apply.
+
 ## Registration options
 
-These options of `registerFunction` describe the function to the engine:
-
-| Option                    | Default | Meaning                                                                                                                             |
-| ------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `description`, `metadata` | none    | Shown in discovery and the console.                                                                                                 |
-| `request_format`          | none    | The JSON Schema of the call's input.                                                                                                |
-| `response_format`         | none    | The JSON Schema of the handler's return value: what observers observe.                                                              |
-| `args_format`             | none    | The JSON Schema of observers' `args`. The engine validates `args` against it (`INVALID_ARGS`). A function without it takes no args. |
-| `private`                 | `false` | Only this worker may call the function. Other workers may observe it. See [Private functions](#private-functions).                  |
-| `observable`              | `true`  | `false`: no worker may observe the function (`NOT_OBSERVABLE`).                                                                     |
-
-An `args_format` that is not a valid JSON Schema fails the registration with `INVALID_ARGS_FORMAT`.
+`registerFunction` takes the options that describe a function to the engine; the
+[SDK references](../reference/sdk-node) list them. Three of them change what observation means:
 
 ### Private functions
 
@@ -1439,28 +1740,22 @@ expresses that:
 
 Any function can be private; event sources are the common case.
 
-### Functions no worker may observe
+### Prevent function observation
 
 Some functions must stay unobserved, for example because their input carries credentials. Register
 them with `observable: false`. Every `observe` of them fails with `NOT_OBSERVABLE`.
 
 ### One host per function
 
-A function id has one host per namespace: the engine rejects a second registration of the same id
-with `FUNCTION_NAMESPACE_CONFLICT`. Observer hooks therefore run once per observer, in that host,
-and a database trigger is set up once however many instances of the worker run.
+A function id has one host per namespace, the worker that registers it and runs its handler (see
+[Namespaces](../using-iii/namespaces)). Observer hooks therefore run once per observer, in that
+host.
 
-A second instance refused with `FUNCTION_NAMESPACE_CONFLICT` logs it and keeps serving its other
-functions. It does not register the function again. When the host disconnects, the function's
-observers go `pending`, and the next worker that registers the function (the host restarted, or
-another instance) receives the current observers, runs its hooks for each, and they become active
-again.
-
-Run one instance of a worker that hosts an event source, and let the platform that runs it restart
-it. Stop the old instance before the new one starts (`strategy: Recreate` in Kubernetes): an
-instance started while the old one runs is refused the function, and nothing hosts it once the old
-one stops. The engine also admits one live worker per worker name and namespace: an instance under
-the host's name is refused with `WORKER_NAMESPACE_CONFLICT`, and its SDK stops without reconnecting.
+When the host disconnects, the observers of its functions go `pending`. The next worker that
+registers the function receives those observers and runs its hooks for each one: the added hook, or
+the worker-level pair, so the setup runs again in the new host. An observer becomes active again
+once its hook returns. Run one instance of a worker that hosts an event source, and let the platform
+restart it: stop the old instance before the new one starts (`strategy: Recreate` in Kubernetes).
 
 ## The `Observer` object
 
