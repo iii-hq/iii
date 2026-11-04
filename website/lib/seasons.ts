@@ -3,7 +3,8 @@
  * time, so a mark turns itself on and off without a deploy. `?season=<name>` previews one on any date, and
  * `?season=off` turns them off; the choice sticks for the rest of the browsing session.
  */
-export const SEASONS = ['thanksgiving'] as const
+/** In priority order: when two seasons overlap (Diwali falls in early November), the first one shows. */
+export const SEASONS = ['diwali', 'thanksgiving'] as const
 export type Season = (typeof SEASONS)[number]
 
 /** US Thanksgiving: the fourth Thursday of November. */
@@ -31,8 +32,33 @@ export function thanksgivingWindow(year: number): { start: Date; end: Date } {
   }
 }
 
-/** The season showing on `date`, if any. */
+/**
+ * Diwali follows the Hindu lunar calendar, so its dates come from a table: the five-day festival from Dhanteras to
+ * Bhai Dooj, inclusive (Diwali itself, Lakshmi Puja, is the third day). Source: Drik Panchang's Diwali calendar,
+ * drikpanchang.com/diwali/diwali-puja-calendar.html, New Delhi. Add a year here to keep it running.
+ */
+const DIWALI: Record<number, { from: [month: number, day: number]; to: [month: number, day: number] }> = {
+  2026: { from: [11, 6], to: [11, 11] },
+  2027: { from: [10, 27], to: [10, 31] },
+  2028: { from: [10, 15], to: [10, 19] },
+  2029: { from: [11, 4], to: [11, 7] },
+  2030: { from: [10, 24], to: [10, 28] },
+}
+
+/** The Diwali festival in `year`, start inclusive and end exclusive, or null for a year not in the table. */
+export function diwaliWindow(year: number): { start: Date; end: Date } | null {
+  const days = DIWALI[year]
+  if (!days) return null
+  return {
+    start: new Date(year, days.from[0] - 1, days.from[1]),
+    end: new Date(year, days.to[0] - 1, days.to[1] + 1),
+  }
+}
+
+/** The season showing on `date`, if any; Diwali wins where it overlaps Thanksgiving. */
 export function seasonOn(date: Date): Season | null {
+  const diwali = diwaliWindow(date.getFullYear())
+  if (diwali && date >= diwali.start && date < diwali.end) return 'diwali'
   const { start, end } = thanksgivingWindow(date.getFullYear())
   if (date >= start && date < end) return 'thanksgiving'
   return null

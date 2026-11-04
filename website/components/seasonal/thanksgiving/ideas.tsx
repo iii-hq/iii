@@ -1,14 +1,16 @@
 'use client'
 
-import { type ComponentType, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-import { CubeMark } from './cube-mark'
+import { CubeMark } from '../shared/cube-mark'
+import { INK, type MarkProps } from '../shared/mark-svg'
+import type { Idea } from '../shared/season-link'
 import { FACES } from './faces'
-import { ChorusMark, GobbleMark, INK, type MarkProps, StrutMark, TrotMark } from './marks'
+import { ChorusMark, GobbleMark, StrutMark, TrotMark } from './marks'
 
 /** The Halloween cube turn showing the pixel turkey. */
 export function TurkeyCubeMark({ on, size, still }: MarkProps) {
-  return <CubeMark on={on || !!still} face={0} size={size} ink={INK} />
+  return <CubeMark on={on || !!still} faces={FACES} face={0} size={size} ink={INK} />
 }
 
 /** The cube turn with a rotating cast: turkey, pumpkin pie, maple leaf, corn. Each play shows the next face. */
@@ -19,19 +21,7 @@ export function LineupCubeMark({ on, size, still }: MarkProps) {
     if (wasOn.current && !on) setFace((n) => (n + 1) % FACES.length)
     wasOn.current = on
   }, [on])
-  return <CubeMark on={on || !!still} face={face} size={size} ink={INK} />
-}
-
-export type Idea = {
-  id: string
-  name: string
-  Mark: ComponentType<MarkProps>
-  /** How long an autoplay holds the mark on. */
-  showMs: number
-  /** How long one play runs once started, even if `on` drops; only play-once ideas need it. */
-  playMs: number
-  /** After `on` drops, how long until the mark is back at rest and the next idea can take over. */
-  settleMs: number
+  return <CubeMark on={on || !!still} faces={FACES} face={face} size={size} ink={INK} />
 }
 
 /** The six ideas the site rotates through during Thanksgiving week, in order. */
