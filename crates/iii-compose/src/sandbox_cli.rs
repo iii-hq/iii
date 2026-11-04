@@ -6,8 +6,8 @@
 
 //! `iii sandbox`: one Compose container's VM, run through its sandbox adapter.
 //!
-//! Compose starts `iii sandbox run` as the `scripts.run` of a container that lists the adapter in
-//! `start_after`, and hands it what it needs in the environment ([`Context`]). The command boots
+//! Compose starts `iii sandbox run` as the `scripts.run` of a container whose worker sets
+//! `runtime.base_image`, and hands it what it needs in the environment ([`Context`]). The command boots
 //! the VM through the adapter's `worker::*` functions, prints the guest's output as its own, stops
 //! the VM when it is asked to stop, and exits with the VM's code. Compose supervises it like any
 //! other process. Only a `path://` container can opt in so far: a package's `scripts.run` is
@@ -221,7 +221,7 @@ impl Context {
 }
 
 const STARTED_BY_COMPOSE: &str = "`iii sandbox` runs as the `scripts.run` of a Compose container \
-                                  that lists its sandbox adapter in `start_after`";
+                                  whose worker sets `runtime.base_image`";
 
 fn present<'a>(vars: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
     vars.get(name)
@@ -950,7 +950,7 @@ mod tests {
         vars.remove(TOKEN_ENV);
         let error = Context::from_vars(&vars, None).unwrap_err();
         assert!(
-            error.contains(TOKEN_ENV) && error.contains("start_after"),
+            error.contains(TOKEN_ENV) && error.contains("runtime.base_image"),
             "{error}"
         );
     }

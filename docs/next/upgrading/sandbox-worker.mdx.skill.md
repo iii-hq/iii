@@ -42,8 +42,9 @@ containers:
       - node
 ```
 
-Delete the `iii-sandbox` entry. If it was the only entry, delete the `workers:` key too: an empty
-key fails with `INVALID_COMPOSE_FILE`. Add that container and keep the keys you had
+Delete the `iii-sandbox` entry. If it was the only entry, write `workers: {}`: an empty `workers:`
+key fails with `INVALID_COMPOSE_FILE`, and an `engine:` key with nothing under it means Compose starts
+no engine and attaches to whichever one holds its address. Add that container and keep the keys you had
 (`image_allowlist`, `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
 
@@ -53,6 +54,11 @@ the range to `'^0.3'`, and run `iii compose --up` again, or run a bare `iii call
 which rewrites the range to `^0.3` and [updates every other package
 worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token, and
 `iii sandbox run` refuses to start.
+
+Before 0.3.1, a VM worker whose directory contains the compose file, such as `path://.`, can read the
+project's token, and its disk keeps those bytes after the upgrade. If you ran one, stop Compose and
+run `iii compose --up` once you are on 0.3.1, which replaces the token. Updating or restarting the
+adapter keeps it.
 
 `engine.sandbox.adapter` names the adapter's function prefix and defaults to `sandbox-libkrun`, so you
 can leave the section out. `engine.sandbox.namespace` names the namespace the adapter runs in and
