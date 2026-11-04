@@ -288,14 +288,17 @@ fn arm_compose_engine_lifeline() -> anyhow::Result<()> {
         .spawn(|| {
             let mut stdin = std::io::stdin().lock();
             let mut byte = [0_u8; 1];
-            loop {
+            let code = loop {
                 match stdin.read(&mut byte) {
-                    Ok(0) => std::process::exit(0),
+                    Ok(0) => break 0,
                     Ok(_) => continue,
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => std::process::exit(1),
+                    Err(_) => break 1,
                 }
-            }
+            };
+            // `exit` skips the drops that remove this process's `iii ps` markers.
+            iii_compose::ps::retract_process_markers();
+            std::process::exit(code)
         })?;
     Ok(())
 }

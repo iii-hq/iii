@@ -2298,6 +2298,9 @@ impl IIIClient {
 
                     tokio::spawn(run_reporter(iii.clone()));
                     iii.run_connection(rx).await;
+                    // A fatal rejection also ends the loop, and the worker is no
+                    // longer live. After a shutdown there is nothing left to take.
+                    iii.inner.marker.lock_or_recover().take();
 
                     if otel_active {
                         telemetry::shutdown_otel().await;
@@ -4625,6 +4628,50 @@ mod tests {
         // `iii call` exits right after this, without joining the thread.
         iii.shutdown_async().await;
         assert!(!path.exists(), "{} outlived shutdown_async", path.display());
+    }
+
+    #[tokio::test]
+    async fn a_fatal_rejection_removes_the_worker_marker() {
+        let iii = client_with_timings(
+            "127.0.0.1:1".parse().unwrap(),
+            ConnTimings {
+                retry_delay: Duration::from_millis(10),
+                ..ConnTimings::default()
+            },
+        );
+        let path = iii
+            .inner
+            .marker
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .0
+            .clone()
+            .expect("HOME must be writable for this test");
+        assert!(path.exists());
+
+        let payload = json!({
+            "type": "registrationrejected",
+            "code": "WORKER_NAMESPACE_CONFLICT",
+            "namespace": "orders",
+            "worker_name": "checkout",
+            "owner_worker_id": "worker-abc",
+        })
+        .to_string();
+        iii.handle_message(&payload).unwrap();
+
+        // No shutdown: the application keeps the client after the rejection.
+        let thread = iii
+            .inner
+            .connection_thread
+            .lock_or_recover()
+            .take()
+            .unwrap();
+        tokio::task::spawn_blocking(move || thread.join())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!path.exists(), "{} outlived the rejection", path.display());
     }
 
     type Handshake = (String, tokio_tungstenite::tungstenite::http::HeaderMap);

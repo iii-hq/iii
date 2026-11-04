@@ -115,6 +115,25 @@ pub fn announce_engine(url: &str) -> Option<MarkerGuard> {
     Some(MarkerGuard(path))
 }
 
+/// Removes every marker of this process, for an exit that skips their owners'
+/// drops (`std::process::exit` while the listeners and the engine's own SDK
+/// clients, such as bridge adapters, still run).
+pub fn retract_process_markers() {
+    let Some(entries) = run_dir().and_then(|dir| std::fs::read_dir(dir).ok()) else {
+        return;
+    };
+    // The trailing dash keeps pid 12 from matching pid 123's markers.
+    let pid = std::process::id();
+    let prefixes = [format!("engine-{pid}-"), format!("worker-{pid}-")];
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(|name| {
+            name.ends_with(".json") && prefixes.iter().any(|prefix| name.starts_with(prefix))
+        }) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Every iii process this user runs, engines first, grouped by compose file.
 pub fn scan() -> Vec<IiiProcess> {
     let mut system = System::new();
