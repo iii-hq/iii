@@ -826,6 +826,12 @@ after it reconnects.
 These hooks run per call. An observation is one call of the function reaching, or being considered
 for, one observer.
 
+<Note>
+  An observer's args and the call settle the choice in
+  [`onObservationMatch`](#match-observers-to-calls). Choose in `onObservationDeliver` when the
+  choice compares observers with each other, or when making it produces part of the payload.
+</Note>
+
 #### `onObservationMatch(obs, call)`
 
 By default, every call is observed by every observer. Override it to select, for one call, which
@@ -998,11 +1004,11 @@ deliver the call yourself and change what is returned to the caller.
 #### Match observers to calls
 
 `onObservationMatch` selects, for each call, which observers get it, so a function can route its
-calls by the args of its observers. iii does everything else as usual: each observer's `on`,
-filters, policy and `deliver` still apply.
-
-A predicate receives the observer and the call, and returns a boolean: `true` when that observer
-gets this call, `false` when it does not.
+calls by the args of its observers. The predicate receives the observer and the call, and returns a
+boolean: `true` when that observer gets this call, `false` when it does not. The SDK calls it once
+for each active observer, before that observer's `on` and filters; a predicate that throws counts as
+no match for that observer. iii does everything else as usual: each observer's `on`, filters, policy
+and `deliver` still apply.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -1055,30 +1061,6 @@ gets this call, `false` when it does not.
 
   </Tab>
 </Tabs>
-
-The SDK calls the predicate once for each active observer. It runs before that observer's `on` and
-filters. A predicate that throws counts as no match for that observer, and the SDK logs the error
-once per function.
-
-#### Deliver calls yourself
-
-`onObservationDeliver` carries out a call's observations: it hands the call to its observers and
-returns their answer to the caller. It is for a function whose observers' answers matter, or whose
-calls each go to one observer. The hook receives the call and the observers that matched it (by
-`onObservationMatch`, or every active observer), as a snapshot taken when the call started. What it
-returns (or throws) is what the caller gets back; iii delivers nothing for that function. The hook
-runs inside the function's invocation, so calls it makes have that invocation as their caller.
-
-The hook applies each observer's `on` and filters with `obs.matches(call)` and runs its target with
-a [call through the observer](#call-through-an-observer). With both hooks set, the deliver hook
-receives only the observers the match hook matched. The queue worker's `queue::on-message` files
-each message under its subscriber's key, so its deliver hook receives that one observer.
-
-<Note>
-  An observer's args and the call settle the choice in
-  [`onObservationMatch`](#match-observers-to-calls). Choose in `onObservationDeliver` when the
-  choice compares observers with each other, or when making it produces part of the payload.
-</Note>
 
 ## Producing events with observers
 
@@ -1252,105 +1234,11 @@ Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
 observer's filters match.
 
-### Call through an observer
-
-A call that names an observer runs that observer's target and resolves to the target's result:
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { CallAction } from "iii-sdk";
-
-    const observers = rowChanged.observers();
-    const obs = observers[0]; // an active observer of database::on-row-changed
-    const payload = { db: "primary", table: "orders", op: "insert", row: { id: 1 } };
-
-    const result = await worker.call({ observer: obs, payload }); // the target's result
-    await worker.call({ observer: obs, payload, action: CallAction.Void() }); // fire-and-forget
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    from iii import CallAction
-
-    obs = row_changed.observers()[0]  # an active observer of database::on-row-changed
-    payload = {"db": "primary", "table": "orders", "op": "insert", "row": {"id": 1}}
-
-    result = await worker.call_async({"observer": obs, "payload": payload})  # the target's result
-    await worker.call_async({"observer": obs, "payload": payload, "action": CallAction.Void()})  # fire-and-forget
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{CallAction, CallRequest};
-
-    use serde_json::json;
-
-    let observers = row_changed.observers();
-    let obs = &observers[0]; // an active observer of database::on-row-changed
-    let payload = json!({ "db": "primary", "table": "orders", "op": "insert", "row": { "id": 1 } });
-
-    let result = worker.call(CallRequest::observer(obs, payload.clone())).await?; // the target's result
-    worker.call(CallRequest::observer(obs, payload).action(CallAction::Void)).await?; // fire-and-forget
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import (
-        "encoding/json"
-        "fmt"
-    )
-
-    observers := rowChanged.Observers()
-    obs := observers[0] // an active observer of database::on-row-changed
-    payload, _ := json.Marshal(map[string]any{"db": "primary", "table": "orders", "op": "insert", "row": map[string]any{"id": 1}})
-
-    result, err := worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload}) // the target's result
-    fmt.Println(string(result), err)
-
-    worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload, Action: iii.VoidAction()}) // fire-and-forget
-    ```
-
-  </Tab>
-</Tabs>
-
-- Only the worker that hosts the observer's function may call through it.
-- The engine checks that the observer exists, that the caller hosts its function, and that the
-  observer is active. Then it routes the call to the observer's stored target and applies the
-  observer's policy (`max_fires`, expiry, `max_in_flight`), metadata, and loop guard, as for iii's
-  delivery.
-- The call takes no metadata. The target's metadata argument is the observer's registration
-  metadata, as on iii's delivery. `call` refuses a call through an observer that names metadata
-  before sending anything, with the error "a call through an observer takes no metadata; its target
-  receives the observer's metadata". `null` is no metadata. Put anything the target needs from the
-  call in the payload.
-- The host calls through an observer wherever it needs to once the observer is active: in the
-  function's deliver hook, or to
-  [send one observer its initial state](#send-an-observer-its-initial-state).
-
-A call through an observer fails with the target's own error, or with one of these codes:
-
-| Code                  | When                                                                                                                   |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `NOT_FUNCTION_OWNER`  | This worker does not host the observer's function.                                                                     |
-| `OBSERVER_NOT_FOUND`  | The engine has no observer with this id.                                                                               |
-| `OBSERVER_NOT_ACTIVE` | The observer is not active yet (for example, inside `onObserverAdded`), or it was removed or rejected before the call. |
-| `LOOP_GUARD`          | The call is deeper than `observers.max_observe_depth`.                                                                 |
-| `OVERFLOW`            | The observer has `max_in_flight` calls running.                                                                        |
-| `TIMEOUT`             | The target did not answer within `observers.activation_timeout_ms` (30 s by default).                                  |
-
-A target that goes away suspends the observer, so a call through it fails with `OBSERVER_NOT_ACTIVE`
-until the target is registered again. A fire-and-forget call that the engine refuses is dropped and
-counted as a drop under its code, with a `debug` log.
-
 ### Send an observer its initial state
 
 A source sends one observer something of its own, such as its current state when the observer is
-added or an event it missed, by [calling through that observer](#call-through-an-observer). The call
-runs that observer's target and no other.
+added or an event it missed, by calling through that observer. The call runs that observer's target
+and no other.
 
 `obs.accepted()` resolves once the SDK has acknowledged the observer. A call made after it resolves
 reaches an active observer, since the engine handles a connection's messages in order, as long as

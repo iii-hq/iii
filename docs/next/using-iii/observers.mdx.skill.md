@@ -632,9 +632,10 @@ function as its second argument on every activation.
 ### The target function's return value
 
 The iii engine does not use the return values of target functions. However, an observable function
-can use [`onObservationDeliver`](../creating-workers/observable-functions#deliver-calls-yourself) to
-get that return value from the target function and use it, for example to answer an HTTP request or
-to acknowledge a queue message. The function's documentation says what its target functions must
+can use
+[`onObservationDeliver`](../creating-workers/observable-functions#onobservationdelivercall-observers)
+to get that return value from the target function and use it, for example to answer an HTTP request
+or to acknowledge a queue message. The function's documentation says what its target functions must
 return. Likewise, observers of a target function receive the return value as the `output` of its
 call. See [Chain reactions](#chain-reactions).
 
