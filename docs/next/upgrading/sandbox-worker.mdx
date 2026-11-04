@@ -50,6 +50,10 @@ Delete the `iii-sandbox` entry, add that container, and keep the keys you had (`
 `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
 
+A file that already declares the adapter at `version: '^0.2'` stays on 0.2, because Compose does not
+change a range you wrote. Change it to `'^0.3'`. On 0.2, observers can read the project's token, and
+`iii sandbox run` refuses to start.
+
 `engine.sandbox.adapter` names the adapter's function prefix and defaults to `sandbox-libkrun`, so you
 can leave the section out. `engine.sandbox.namespace` names the namespace the adapter runs in and
 defaults to the project's namespace. See [Compose](../using-iii/compose#engine-fields).

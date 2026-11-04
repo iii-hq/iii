@@ -819,10 +819,10 @@ variables, not the host's environment. Compose pulls the VM's image before it st
 the pull does not count against `startup_timeout`. Removing the container still removes the VM's
 state.
 
-A VM gets a copy of its worker's directory, and Compose's state beside the compose file holds the
-project's token. So a VM worker whose directory contains the compose file, such as `path://.`, can
-read that token. Keep the compose file outside the worker's directory, or set `III_COMPOSE_STATE_DIR`
-to move the state.
+A VM gets a copy of its worker's directory without the `.iii` directory, which holds Compose's state
+and the project's token. `sandbox-libkrun` before 0.3.1 copies `.iii` too, so on those versions a VM
+worker whose directory contains the compose file, such as `path://.`, can read that token. Keep the
+compose file outside the worker's directory, or set `III_COMPOSE_STATE_DIR` to move the state.
 
 The adapter must support sandbox contract 1.2. `iii sandbox run` exits with code 125 and names what
 is missing otherwise. `iii call compose::update worker=<container key>@latest` moves a `package://`
