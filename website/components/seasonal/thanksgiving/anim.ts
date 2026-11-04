@@ -87,10 +87,10 @@ export function useTimeline(
 }
 
 /**
- * Seconds since `active` last turned on (times `speed`), ticking every frame; 0 while inactive. Drives idle loops
- * like blinking, so it only runs while a mark is held fully on.
+ * Seconds since `active` last turned on, ticking every frame; 0 while inactive. Drives idle loops like blinking, so it
+ * only runs while a mark is held fully on.
  */
-export function useClock(active: boolean, speed = 1): number {
+export function useClock(active: boolean): number {
   const [now, setNow] = useState(0)
   useEffect(() => {
     if (!active) {
@@ -100,12 +100,12 @@ export function useClock(active: boolean, speed = 1): number {
     const start = performance.now()
     let frame = 0
     const tick = (time: number) => {
-      setNow(((time - start) / 1000) * speed)
+      setNow((time - start) / 1000)
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(frame)
-  }, [active, speed])
+  }, [active])
   return now
 }
 

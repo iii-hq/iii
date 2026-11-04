@@ -28,10 +28,6 @@ export type MarkProps = {
   size: number
   /** Freeze on the frame a reduced-motion reader would see. */
   still?: boolean
-  /** Pin the timeline to this progress (0..1) instead of playing it; the lab's scrubber. */
-  t?: number
-  /** Playback rate; 0.25 is slow motion. */
-  speed?: number
 }
 
 /** oklch(0.97 0 0), the dark theme's foreground. */
@@ -53,12 +49,6 @@ export const TIP = '#f6d48c'
 
 export const COLS = [0, 1, 2] as const
 export const colX = (col: number) => col * 6
-
-/** Resolves which frame to draw: the still, a scrubbed position, or the live timeline. */
-export function frame(live: number, { still, t }: Pick<MarkProps, 'still' | 't'>) {
-  if (still) return 1
-  return t ?? live
-}
 
 /** An SVG canvas whose 0..16 box is exactly `size` px, with `pad` units of room on every side for things to spill. */
 export function MarkSvg({
@@ -144,11 +134,11 @@ function Feather({
   )
 }
 
-export function StrutMark({ on, size, still, t: scrub, speed = 1 }: MarkProps) {
-  const live = useTimeline(on, { duration: 1.15 / speed })
-  const t = frame(live, { still, t: scrub })
-  const idle = on && t === 1 && !still && scrub === undefined
-  const clock = useClock(idle, speed)
+export function StrutMark({ on, size, still }: MarkProps) {
+  const live = useTimeline(on, { duration: 1.15 })
+  const t = still ? 1 : live
+  const idle = on && t === 1 && !still
+  const clock = useClock(idle)
 
   const fan = easeInOut(seg(t, 0, 0.5))
   const tint = easeOut(seg(t, 0, 0.3))
@@ -261,11 +251,11 @@ export function StrutMark({ on, size, still, t: scrub, speed = 1 }: MarkProps) {
 const GOBBLE_PERIOD = 1.9
 const PECK = 0.42
 
-export function GobbleMark({ on, size, still, t: scrub, speed = 1 }: MarkProps) {
-  const live = useTimeline(on, { duration: 0.9 / speed })
-  const t = frame(live, { still, t: scrub })
-  const idle = on && t === 1 && !still && scrub === undefined
-  const clock = useClock(idle, speed)
+export function GobbleMark({ on, size, still }: MarkProps) {
+  const live = useTimeline(on, { duration: 0.9 })
+  const t = still ? 1 : live
+  const idle = on && t === 1 && !still
+  const clock = useClock(idle)
 
   const tint = easeOut(seg(t, 0, 0.45))
   const wattle = easeOut(seg(t, 0.45, 0.8))
@@ -340,9 +330,9 @@ function SideTurkey({ step }: { step: number }) {
 
 const GAPS = [5, 11]
 
-export function TrotMark({ on, size, still, t: scrub, speed = 1 }: MarkProps) {
-  const live = useTimeline(on, { duration: 2.8 / speed, oneshot: true })
-  const t = scrub ?? live
+export function TrotMark({ on, size, still }: MarkProps) {
+  const live = useTimeline(on, { duration: 2.8, oneshot: true })
+  const t = live
   const walking = !still && t > 0
 
   const x = still ? 8 : lerp(-7, 23, t)
@@ -412,11 +402,11 @@ function TurkeyHead({ col, t, clock }: { col: number; t: number; clock: number }
   )
 }
 
-export function ChorusMark({ on, size, still, t: scrub, speed = 1 }: MarkProps) {
-  const live = useTimeline(on, { duration: 1.1 / speed })
-  const t = frame(live, { still, t: scrub })
-  const idle = on && t === 1 && !still && scrub === undefined
-  const clock = useClock(idle, speed)
+export function ChorusMark({ on, size, still }: MarkProps) {
+  const live = useTimeline(on, { duration: 1.1 })
+  const t = still ? 1 : live
+  const idle = on && t === 1 && !still
+  const clock = useClock(idle)
 
   return (
     <MarkSvg size={size}>
