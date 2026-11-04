@@ -13,11 +13,20 @@ export function thanksgivingDay(year: number): Date {
   return new Date(year, 10, firstThursday + 21)
 }
 
-/** Thanksgiving week: from the Monday before Thanksgiving to the end of the Sunday after it. End is exclusive. */
+/**
+ * Years whose Thanksgiving mark starts before Thanksgiving week. 2026 starts on Nov 5 so the team can see it on the
+ * live site; it still ends with the week, on its own.
+ */
+const EARLY_START: Record<number, Date> = { 2026: new Date(2026, 10, 5) }
+
+/**
+ * Thanksgiving week: from the Monday before Thanksgiving (or the year's early start) to the end of the Sunday after
+ * it. End is exclusive.
+ */
 export function thanksgivingWindow(year: number): { start: Date; end: Date } {
   const day = thanksgivingDay(year)
   return {
-    start: new Date(year, 10, day.getDate() - 3),
+    start: EARLY_START[year] ?? new Date(year, 10, day.getDate() - 3),
     end: new Date(year, 10, day.getDate() + 4),
   }
 }
@@ -41,12 +50,6 @@ export function seasonFromQuery(search: string): Season | null | undefined {
 
 const OVERRIDE_KEY = 'iii-season'
 
-/**
- * TEMPORARY, for the team preview: shows this season every day, ignoring the date window. Set back to `null` before
- * merging so the mark only appears during Thanksgiving week. `?season=off` still turns it off.
- */
-const ALWAYS_ON: Season | null = 'thanksgiving'
-
 /** The season to show in this browser right now: a preview override from the URL or session, else the date. */
 export function currentSeason(): Season | null {
   try {
@@ -62,5 +65,5 @@ export function currentSeason(): Season | null {
   } catch {
     // Storage blocked: fall back to the date.
   }
-  return ALWAYS_ON ?? seasonOn(new Date())
+  return seasonOn(new Date())
 }

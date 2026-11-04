@@ -15,9 +15,10 @@ test("thanksgivingDay is the fourth Thursday of November", () => {
   }
 })
 
-test("seasonOn covers Monday before to Sunday after Thanksgiving, inclusive", () => {
-  assert.equal(seasonOn(day(2026, 11, 22, 23)), null)
-  assert.equal(seasonOn(day(2026, 11, 23, 0)), "thanksgiving")
+test("2026 starts early on Nov 5 and still ends after Thanksgiving week, on its own", () => {
+  assert.equal(seasonOn(day(2026, 11, 4, 23)), null)
+  assert.equal(seasonOn(day(2026, 11, 5, 0)), "thanksgiving")
+  assert.equal(seasonOn(day(2026, 11, 22)), "thanksgiving")
   assert.equal(seasonOn(day(2026, 11, 26)), "thanksgiving")
   assert.equal(seasonOn(day(2026, 11, 29, 23)), "thanksgiving")
   assert.equal(seasonOn(day(2026, 11, 30, 0)), null)
@@ -25,12 +26,12 @@ test("seasonOn covers Monday before to Sunday after Thanksgiving, inclusive", ()
 
 test("seasonOn is off the rest of the year", () => {
   assert.equal(seasonOn(day(2026, 10, 31)), null)
-  assert.equal(seasonOn(day(2026, 11, 4)), null)
   assert.equal(seasonOn(day(2026, 12, 25)), null)
   assert.equal(seasonOn(day(2027, 7, 4)), null)
+  assert.equal(seasonOn(day(2027, 11, 5)), null)
 })
 
-test("seasonOn follows the date in other years", () => {
+test("other years cover Monday before to Sunday after Thanksgiving, inclusive", () => {
   assert.equal(seasonOn(day(2027, 11, 22)), "thanksgiving")
   assert.equal(seasonOn(day(2027, 11, 21)), null)
   assert.equal(seasonOn(day(2027, 11, 28, 23)), "thanksgiving")
