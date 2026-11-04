@@ -419,6 +419,14 @@ worker. Those remain declared until they are removed explicitly.
 `compose::restart worker=state` stops that specified worker and starts it again. All other workers,
 including dependencies, are left unchanged.
 
+The sandbox adapter is the one exception, because a VM worker ends with the adapter that hosts it.
+`compose::restart worker=sandbox-libkrun` restarts the adapter and then each VM worker it was
+running, dependencies first, without spending any of their `restart` attempts. The response names
+those workers in `affected_workers`. A VM worker that does not come back fails the operation when it
+is `required`, and is listed in `not_required_failures` when it is not. If the adapter itself does
+not come back, no VM worker is started. A sandbox that was running under the adapter does not come
+back.
+
 `compose::restart` without a worker argument restarts the entire compose project. It is
 approximately the equivalent of `compose::down` followed by `compose::up`.
 

@@ -881,7 +881,8 @@ fn prepare_failed(
     {
         message.push_str(&format!(
             ". If {} was added after the adapter started, restart the adapter, which \
-             stops every VM: iii call compose::restart worker={adapter_key}",
+             restarts every VM worker and ends every sandbox: iii call compose::restart \
+             worker={adapter_key}",
             dir.display()
         ));
     }
@@ -1337,7 +1338,7 @@ pub(crate) mod tests {
         ComposeFile::parse(text, dir.join("worker-compose.yaml")).unwrap()
     }
 
-    fn manifest(dir: &Path, worker: &str, text: &str) {
+    pub(crate) fn manifest(dir: &Path, worker: &str, text: &str) {
         std::fs::create_dir_all(dir.join(worker)).unwrap();
         std::fs::write(dir.join(worker).join("iii.worker.yaml"), text).unwrap();
     }
@@ -1814,7 +1815,11 @@ pub(crate) mod tests {
             .to_string()
     }
 
-    fn status(state: State, exit_code: Option<i32>, signal: Option<i32>) -> WorkerStatus {
+    pub(crate) fn status(
+        state: State,
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+    ) -> WorkerStatus {
         WorkerStatus {
             vm_id: "v".into(),
             instance: 1,
@@ -2118,7 +2123,7 @@ pub(crate) mod tests {
     }
 
     /// [`fake_engine`]'s address, for an [`EngineClient`].
-    async fn fake_engine_url(
+    pub(crate) async fn fake_engine_url(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
         String,
@@ -2178,7 +2183,8 @@ pub(crate) mod tests {
                         };
                         let function = message["function_id"].as_str().unwrap_or_default();
                         if message["type"] != "invokefunction"
-                            || function.starts_with("engine::workers::")
+                            || (function.starts_with("engine::workers::")
+                                && function != "engine::workers::list")
                         {
                             continue;
                         }
@@ -2231,7 +2237,7 @@ pub(crate) mod tests {
         serde_json::json!({ "error": { "code": "invocation_failed", "message": message } })
     }
 
-    fn not_found() -> serde_json::Value {
+    pub(crate) fn not_found() -> serde_json::Value {
         serde_json::json!({ "error": { "code": "function_not_found", "message": "gone" } })
     }
 

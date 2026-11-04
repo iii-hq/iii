@@ -506,6 +506,10 @@ fn record_start_failure(
 /// connection to this worker sees it drop. Compose does not restart the
 /// dependents to hide that, because deciding which of them can tolerate it is
 /// not compose's to make.
+///
+/// The VMs of a sandbox adapter leave no such choice: they end with it. So an
+/// operator's restart of the adapter goes on to them, in
+/// [`Project::restart_one`](crate::project::Project::restart_one).
 pub async fn restart_one(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,

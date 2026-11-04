@@ -36,7 +36,7 @@ use crate::{
     config::{ComposeFile, RestartConfig},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::{self, Child, Children, LifecycleCtx, OpResult},
+    lifecycle::{self, Child, Children, LifecycleCtx, OpResult, OpStatus},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     restart,
@@ -1212,17 +1212,74 @@ impl Project {
 
     /// Bounces one container. See [`lifecycle::restart_one`] for why this does
     /// not take the container's graph with it.
+    ///
+    /// The sandbox adapter is the exception: its VMs end with it, so restarting
+    /// it is the operator's act on them too. They follow it under this one lock,
+    /// so the reaper never sees them gone and their restart budget pays nothing.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
         let mut inner = self.inner.lock().await;
+        let vms = self.vms_hosted_by(&inner, key).await;
         inner.restarts.operator_took_control(Some(key));
-        let result = self
-            .restart_one_locked(&mut inner, key, operation_id, None)
+        for vm in &vms {
+            inner.restarts.operator_took_control(Some(vm));
+        }
+        let mut result = self
+            .restart_one_locked(&mut inner, key, operation_id.clone(), None)
             .await;
+
+        let ready = result
+            .containers
+            .iter()
+            .any(|result| result.container == key && result.state == ChildStatus::Ready);
+        if ready {
+            for vm in &vms {
+                let bounced = self
+                    .restart_one_locked(&mut inner, vm, operation_id.clone(), None)
+                    .await;
+                result.changed |= bounced.changed;
+                result.containers.extend(bounced.containers);
+                if bounced.status == OpStatus::Failed {
+                    result.status = OpStatus::Failed;
+                    result.primary_error = result.primary_error.or(bounced.primary_error);
+                }
+            }
+        } else if !vms.is_empty() {
+            daemon_line(
+                &self.project_namespace,
+                &format!(
+                    "{key} did not come back, so these were not restarted: {}",
+                    vms.join(", ")
+                ),
+                Tone::Warn,
+            );
+        }
 
         let snapshot = inner.state.clone();
         drop(inner);
         let _ = self.store.save(&snapshot);
         result
+    }
+
+    /// The VMs running under `key`, dependencies first; none unless `key` is
+    /// this project's adapter.
+    async fn vms_hosted_by(&self, inner: &Inner, key: &str) -> Vec<String> {
+        let file = self.file.read().await;
+        let adapter = crate::sandbox::adapter_name(&file);
+        if !crate::sandbox::adapter_key(&file, adapter)
+            .is_ok_and(|found| found.as_deref() == Some(key))
+        {
+            return Vec::new();
+        }
+        file.start_order()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|vm| {
+                matches!(
+                    inner.children.get(vm),
+                    Some(Child::Vm(hosted)) if hosted.record.adapter == adapter
+                )
+            })
+            .collect()
     }
 
     async fn restart_one_locked(
@@ -1631,5 +1688,336 @@ mod restart_backoff_tests {
             ),
             (false, false)
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod adapter_restart_tests {
+    use iii_sandbox_contract::{
+        AdapterInfo, CONTRACT_MAJOR, ContractVersion, SandboxErrorCode, State,
+    };
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        daemon::MutationOutcome,
+        sandbox::tests::{answered, fake_engine_url, manifest, not_found, refused, status},
+    };
+
+    /// Writes its pid for the stand-in engine, which calls it registered while
+    /// that pid lives. A `fail` file beside it makes its next start fail.
+    const RUN: &str = "test -e fail && exit 1\necho $$ > pid\nexec sleep 60\n";
+
+    #[derive(Default)]
+    struct Adapter {
+        boots: u64,
+        /// VM id to (instance, pid of the adapter that booted it).
+        live: BTreeMap<String, (u64, u32)>,
+        started: Vec<String>,
+        refuse_starts: bool,
+    }
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        adapter: Arc<std::sync::Mutex<Adapter>>,
+        project: Arc<Project>,
+    }
+
+    fn alive(dir: &Path, worker: &str) -> Option<u32> {
+        std::fs::read_to_string(dir.join(worker).join("pid"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+            .filter(|pid| crate::process::is_running(*pid))
+    }
+
+    /// `sb` adapts VMs `vm` and `web`, the latter declared first but started
+    /// after the former, beside the plain worker `api`. All of them are up.
+    async fn fixture(policy: &str) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        for (worker, text) in [
+            ("sb", "name: sandbox-libkrun\nscripts: {start: sh run.sh}\n"),
+            ("api", "scripts: {start: sh run.sh}\n"),
+            (
+                "vm",
+                "runtime: {base_image: python}\nscripts: {start: run}\n",
+            ),
+            (
+                "web",
+                "runtime: {base_image: python}\nscripts: {start: run}\n",
+            ),
+        ] {
+            manifest(dir.path(), worker, text);
+            std::fs::write(dir.path().join(worker).join("run.sh"), RUN).unwrap();
+        }
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  \
+                 web: {{worker: path://./web, start_after: [vm]{policy}}}\n  \
+                 vm: {{worker: path://./vm{policy}}}\n  \
+                 sb: {{worker: path://./sb}}\n  \
+                 api: {{worker: path://./api}}\n"
+            ),
+        )
+        .unwrap();
+
+        let adapter = Arc::new(std::sync::Mutex::new(Adapter::default()));
+        let (state, root) = (adapter.clone(), dir.path().to_path_buf());
+        let (url, _called) = fake_engine_url(move |function, payload| {
+            let mut adapter = state.lock().unwrap();
+            let host = alive(&root, "sb");
+            // The lifeline: a VM does not outlive the adapter that booted it.
+            adapter
+                .live
+                .retain(|_, (_, booted_by)| host == Some(*booted_by));
+            let vm_id = payload["vm_id"].as_str().unwrap_or_default();
+            let booted = adapter
+                .live
+                .get(vm_id)
+                .is_some_and(|(instance, _)| payload["instance"].as_u64() == Some(*instance));
+            match function {
+                "engine::workers::list" => {
+                    let workers = ["sb", "api"]
+                        .into_iter()
+                        .filter(|worker| alive(&root, worker).is_some())
+                        .chain(adapter.live.keys().map(String::as_str))
+                        .map(|worker| json!({ "name": worker, "namespace": "shop" }))
+                        .collect::<Vec<_>>();
+                    answered(json!({ "workers": workers }))
+                }
+                "engine::functions::list" => answered(json!({ "functions": [] })),
+                "configuration::get" => {
+                    json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+                }
+                "configuration::migration-capabilities" => {
+                    answered(json!({ "source_priority_archive_revision": 1 }))
+                }
+                "configuration::migrate" => answered(json!({ "action": "missing" })),
+                _ if host.is_none() => not_found(),
+                "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
+                    adapter: "sandbox-libkrun".into(),
+                    adapter_version: "1.0.0".into(),
+                    contract: ContractVersion {
+                        major: CONTRACT_MAJOR,
+                        minor: 0,
+                    },
+                    features: Vec::new(),
+                }),
+                "sandbox-libkrun::worker::prepare" => answered(json!({})),
+                "sandbox-libkrun::worker::start" if adapter.refuse_starts => {
+                    refused(SandboxErrorCode::S501, 0)
+                }
+                "sandbox-libkrun::worker::start" => {
+                    let name = payload["worker_name"].as_str().unwrap().to_string();
+                    adapter.boots += 1;
+                    let instance = adapter.boots;
+                    adapter.live.insert(name.clone(), (instance, host.unwrap()));
+                    adapter.started.push(name.clone());
+                    answered(json!({ "vm_id": name, "instance": instance }))
+                }
+                "sandbox-libkrun::worker::status" if booted => {
+                    answered(status(State::Running, None, None))
+                }
+                "sandbox-libkrun::worker::stop" if booted => {
+                    adapter.live.remove(vm_id);
+                    answered(status(State::Stopped, None, Some(15)))
+                }
+                "sandbox-libkrun::worker::status" | "sandbox-libkrun::worker::stop" => {
+                    refused(SandboxErrorCode::S504, 0)
+                }
+                _ => not_found(),
+            }
+        })
+        .await;
+
+        let engine = Arc::new(EngineClient::connect(&url, "t", "shop"));
+        while !engine.is_connected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let project = Project::open(
+            &format!("adapter-restart-{}", uuid::Uuid::new_v4()),
+            "shop".into(),
+            ComposeFile::load(&path).unwrap(),
+            engine,
+            url,
+        )
+        .await
+        .unwrap();
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        adapter.lock().unwrap().started.clear();
+        Fixture {
+            dir,
+            adapter,
+            project,
+        }
+    }
+
+    impl Fixture {
+        /// Past the 1s poll of a VM a restart left behind, then a supervision
+        /// tick, which is what would count that VM as crashed.
+        async fn supervise(&self) {
+            tokio::time::sleep(Duration::from_millis(1300)).await;
+            self.project.reap_unexpected_exits().await;
+        }
+
+        async fn state_of(&self, key: &str) -> ChildStatus {
+            self.project
+                .status()
+                .await
+                .into_iter()
+                .find(|status| status.container == key)
+                .unwrap()
+                .state
+        }
+
+        async fn spent(&self) -> Vec<String> {
+            let inner = self.project.inner.lock().await;
+            inner.restarts.attempts.keys().cloned().collect()
+        }
+
+        fn started(&self) -> Vec<String> {
+            self.adapter.lock().unwrap().started.clone()
+        }
+
+        fn alive(&self, worker: &str) -> Option<u32> {
+            alive(self.dir.path(), worker)
+        }
+    }
+
+    fn containers(result: &OpResult) -> Vec<&str> {
+        result
+            .containers
+            .iter()
+            .map(|result| result.container.as_str())
+            .collect()
+    }
+
+    /// The reply `compose::restart` gives for `result`.
+    fn reply(result: &OpResult, worker: &str) -> serde_json::Value {
+        serde_json::to_value(MutationOutcome::from_operations(
+            result.status,
+            result.changed,
+            Some(worker),
+            None,
+            None,
+            std::iter::once(result),
+        ))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn restarting_the_adapter_brings_its_vms_back_and_spends_no_budget() {
+        let fixture = fixture("").await;
+        let before = fixture.alive("sb");
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+        fixture.supervise().await;
+
+        assert_eq!(fixture.state_of("vm").await, ChildStatus::Ready);
+        assert_eq!(fixture.state_of("web").await, ChildStatus::Ready);
+        assert_ne!(fixture.alive("sb"), before);
+        assert_eq!(fixture.spent().await, Vec::<String>::new());
+        assert_eq!(fixture.started(), ["vm", "web"], "dependencies first");
+        assert_eq!(result.status, OpStatus::Ok, "{result:?}");
+        assert_eq!(containers(&result), ["sb", "vm", "web"]);
+        assert_eq!(
+            reply(&result, "sb")["affected_workers"],
+            json!(["vm", "web"])
+        );
+        fixture.project.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn adapter_restarts_never_give_up_on_a_vm_that_always_restarts() {
+        let fixture = fixture(", restart: always").await;
+
+        for _ in 0..6 {
+            let result = fixture.project.restart_one("sb", "restart".into()).await;
+            assert_eq!(result.status, OpStatus::Ok, "{result:?}");
+            fixture.supervise().await;
+        }
+
+        assert_eq!(fixture.state_of("vm").await, ChildStatus::Ready);
+        assert_eq!(fixture.state_of("web").await, ChildStatus::Ready);
+        assert_eq!(fixture.spent().await, Vec::<String>::new());
+        fixture.project.shutdown().await;
+    }
+
+    /// Only the adapter's restart reaches beyond the container it names.
+    #[tokio::test]
+    async fn any_other_restart_touches_only_the_container_it_names() {
+        let fixture = fixture("").await;
+        let (adapter, web) = (
+            fixture.alive("sb"),
+            fixture.adapter.lock().unwrap().live["web"],
+        );
+
+        let api = fixture.alive("api");
+        let result = fixture.project.restart_one("api", "restart".into()).await;
+        assert_eq!(containers(&result), ["api"]);
+        assert_ne!(fixture.alive("api"), api);
+        assert_eq!(fixture.started(), Vec::<String>::new());
+
+        let api = fixture.alive("api");
+        let result = fixture.project.restart_one("vm", "restart".into()).await;
+        assert_eq!(containers(&result), ["vm"]);
+        assert_eq!(fixture.started(), ["vm"]);
+        assert_eq!(reply(&result, "vm").get("affected_workers"), None);
+
+        assert_eq!(fixture.alive("api"), api);
+        assert_eq!(fixture.alive("sb"), adapter);
+        assert_eq!(fixture.adapter.lock().unwrap().live["web"], web);
+        fixture.project.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_adapter_that_does_not_come_back_leaves_its_vms_unattempted() {
+        let fixture = fixture("").await;
+        std::fs::write(fixture.dir.path().join("sb").join("fail"), "").unwrap();
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+
+        assert_eq!(containers(&result), ["sb"]);
+        assert_eq!(reply(&result, "sb")["not_required_failures"], json!(["sb"]));
+        assert_eq!(fixture.state_of("sb").await, ChildStatus::Failed);
+        assert_eq!(fixture.started(), Vec::<String>::new());
+        fixture.project.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_required_vm_that_does_not_come_back_fails_the_restart_that_took_it() {
+        let fixture = fixture(", required: true").await;
+        fixture.adapter.lock().unwrap().refuse_starts = true;
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+
+        assert_eq!(result.status, OpStatus::Failed, "{result:?}");
+        let reply = reply(&result, "sb");
+        assert_eq!(reply["affected_workers"], json!(["vm", "web"]));
+        assert_eq!(reply["error"]["code"], "SPAWN_FAILED");
+        assert!(fixture.alive("sb").is_some());
+        assert_eq!(fixture.state_of("vm").await, ChildStatus::Failed);
+        fixture.project.shutdown().await;
+    }
+
+    /// `status: ok` means every required worker is up, so the reply names the
+    /// rest, as it does for a VM restarted by name.
+    #[tokio::test]
+    async fn a_vm_that_is_not_required_and_does_not_come_back_is_named_in_the_reply() {
+        let fixture = fixture("").await;
+        fixture.adapter.lock().unwrap().refuse_starts = true;
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+
+        assert_eq!(result.status, OpStatus::Ok, "{result:?}");
+        let reply = reply(&result, "sb");
+        assert_eq!(reply["affected_workers"], json!(["vm", "web"]));
+        assert_eq!(reply["not_required_failures"], json!(["vm", "web"]));
+        assert_eq!(fixture.state_of("vm").await, ChildStatus::Failed);
+        fixture.project.shutdown().await;
     }
 }
