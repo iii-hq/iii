@@ -1474,7 +1474,7 @@ impl Daemon {
                     crate::report::daemon_line(
                         &format!(
                             "{key}: not updated, because no updated dependency graph includes it any more; \
-                             update it with compose::update worker={key} or remove it"
+                             update it with compose::update worker={key}@latest or remove it"
                         ),
                         true,
                     );
@@ -2294,8 +2294,8 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 ///
 /// `compose::add worker=X` resolves X's whole dependency graph. Only nodes not
 /// yet declared are added, plus what the caller explicitly asked for: a pin the
-/// operator wrote stays theirs, and `compose::update worker=<dep>` is how a
-/// version moves. A declared dependency whose pin differs from what the
+/// operator wrote stays theirs, and `compose::update worker=<dep>@<version>` is
+/// how a version moves. A declared dependency whose pin differs from what the
 /// registry resolved is logged, never rewritten or forced into the lock.
 fn keep_declared_dependencies(
     wanted: Vec<crate::edit::NewContainer>,
@@ -2321,7 +2321,7 @@ fn keep_declared_dependencies(
                 crate::report::daemon_line(
                     &format!(
                         "{}: kept the declared version {} (the registry resolved {resolved} for this \
-                         add); run compose::update worker={} to move it",
+                         add); run compose::update worker={}@{resolved} to move it",
                         worker.key,
                         existing.version.as_deref().unwrap_or("unpinned"),
                         worker.key

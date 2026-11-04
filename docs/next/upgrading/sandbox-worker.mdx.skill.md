@@ -50,20 +50,27 @@ Delete the `iii-sandbox` entry, add that container, and keep the keys you had (`
 can leave the section out. `engine.sandbox.namespace` names the namespace the adapter runs in and
 defaults to the project's namespace. See [Compose](../using-iii/compose#engine-fields).
 
-## Re-enter stored configuration
+## Configuration stored under `iii-sandbox`
 
-Compose does not move a configuration entry that you stored under `iii-sandbox`, from the console or
-with `configuration::set`. Read it in its template form:
+0.25 read its sandbox settings only from the engine config, and the previous section moves those to
+`config_override`. There is normally nothing stored to move: 0.25 never registered the id
+`iii-sandbox`, so a plain `configuration::set` failed with `NOT_REGISTERED`, and the console's
+Configuration page did not list it. To check, read it in its template form:
 
 ```bash
 iii call configuration::get --json '{"id": "iii-sandbox", "raw": true}'
 ```
 
-Copy the keys it prints into the `config_override` of the `sandbox-libkrun` container, as in the
-previous section. Do not store them under the adapter's id, `<namespace>-sandbox-libkrun`: Compose
-sets that entry in memory each time it starts the adapter, and storing it with `configuration::set`
-fails with `NOT_REGISTERED`. A running project reads the edited file on `compose::restart` without
-a `worker` argument. Check the adapter before you delete the old entry.
+A `NOT_FOUND` error means there is nothing to do. An entry exists only if someone added it by hand,
+for example with `configuration::register` and then `configuration::set`. Compose does not move it,
+and it never applied on 0.25, because the sandbox daemon read only its own config file. Review it
+before you copy any key into `config_override`: there, values such as `image_allowlist` take effect
+for the first time.
+
+Do not store those keys under the adapter's id, `<namespace>-sandbox-libkrun`: Compose sets that
+entry in memory each time it starts the adapter, and storing it with `configuration::set` fails with
+`NOT_REGISTERED`. A running project reads the edited file on `compose::restart` without a `worker`
+argument. Check the adapter before you delete the old entry.
 
 ## Change adapter settings
 

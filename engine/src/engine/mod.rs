@@ -2952,7 +2952,7 @@ impl Engine {
             message_type = %removed,
             replacement = %replacement,
             "dropping `{removed}` frames from worker {name} ({runtime} SDK {version}): \
-             this engine has no such message; run compose::update worker={name}"
+             this engine has no such message; run compose::update worker={name}@latest"
         );
     }
 
@@ -9047,7 +9047,10 @@ mod tests {
             logs.contains("from worker cron (node SDK 0.25.4)"),
             "{logs}"
         );
-        assert!(logs.contains("run compose::update worker=cron"), "{logs}");
+        assert!(
+            logs.contains("run compose::update worker=cron@latest"),
+            "{logs}"
+        );
     }
 
     /// The worker's name and SDK reach the registry after the removed frame is
@@ -9093,7 +9096,10 @@ mod tests {
             logs.contains("from worker cron (node SDK 0.25.4)"),
             "{logs}"
         );
-        assert!(logs.contains("run compose::update worker=cron"), "{logs}");
+        assert!(
+            logs.contains("run compose::update worker=cron@latest"),
+            "{logs}"
+        );
         assert!(logs.contains("`registertrigger`"), "{logs}");
         assert!(logs.contains("replacement="), "{logs}");
     }
