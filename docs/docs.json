@@ -135,6 +135,7 @@
                   {
                     "group": "Common Workers",
                     "pages": [
+                      "next/creating-workers/database",
                       "next/creating-workers/http",
                       "next/creating-workers/queues",
                       "next/creating-workers/observability",

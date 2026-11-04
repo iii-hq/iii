@@ -236,3 +236,195 @@ call the endpoint:
 # call the exposed function
 curl -X POST "$HTTP_WORKER_URL/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
 ```
+
+## How the worker hosts requests
+
+The handler returns the request it is called with, the function is private, and the
+[hooks](./observable-functions#hooks) do the rest.
+
+`http::on-request` adds a route in `onObserverAdded`, and its `onObservationDeliver` routes each
+request to one observer. That target's result is the response, and the observers observe the
+request. Its args are `{ method, path, middleware_function_ids?, public_webhook? }`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    const routes = new RouteTable();
+
+    worker
+      .registerFunction("http::on-request", (request: HttpRequest) => request, {
+        request_format: HttpRequestSchema,
+        response_format: HttpRequestSchema,
+        args_format: HttpRouteArgsSchema,
+        private: true,
+      })
+      .onObserverAdded((obs) => routes.add(obs)) // throws HTTP_ROUTE_CONFLICT
+      .onObserverRemoved((obs) => routes.remove(obs.id))
+      .onObservationDeliver<HttpResponse>(async (call) => {
+        const match = routes.match(call.input.method, call.input.path); // /users/:id → path_params
+        if (!match) return { status_code: 404 };
+        if (!match.obs.matches(call)) return { status_code: 422 };
+        await runMiddleware(match, call.input);
+        return worker.call({
+          observer: match.obs,
+          payload: { ...call.input, path_params: match.params },
+        });
+      });
+
+    // each request is a call of http::on-request, and its result is the response
+    server.on("request", async (req, res) =>
+      send(res, await worker.call({ function_id: "http::on-request", payload: toHttpRequest(req) })),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    routes = RouteTable()
+
+    # by id, before registering, so the hooks see every observer
+    @worker.on_observer_added("http::on-request")
+    def add_route(obs):
+        routes.add(obs)  # raises HTTP_ROUTE_CONFLICT
+
+    @worker.on_observer_removed("http::on-request")
+    def remove_route(obs):
+        routes.remove(obs.id)
+
+    @worker.on_observation_deliver("http::on-request")
+    async def route(call, observers):
+        match = routes.match(call.input["method"], call.input["path"])  # /users/:id → path_params
+        if match is None:
+            return {"status_code": 404}
+        if not match.obs.matches(call):
+            return {"status_code": 422}
+        await run_middleware(match, call.input)
+        payload = {**call.input, "path_params": match.params}
+        return await worker.call_async({"observer": match.obs, "payload": payload})
+
+    worker.register_function(
+        "http::on-request",
+        lambda request: request,
+        request_format=HTTP_REQUEST_SCHEMA,
+        response_format=HTTP_REQUEST_SCHEMA,
+        args_format=HTTP_ROUTE_ARGS_SCHEMA,
+        private=True,
+    )
+
+    # each request is a call of http::on-request, and its result is the response
+    async def handle(req):
+        request = to_http_request(req)
+        return await worker.call_async({"function_id": "http::on-request", "payload": request})
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::CallRequest;
+    use iii_sdk::{
+        AddedHook, Call, DeliverHook, Error, ObserveRejection, Observer, RegisterFunction,
+        RemovedHook,
+    };
+    use serde_json::{json, Value};
+
+    /// The route table, shared by its hooks, and the client to call targets with.
+    #[derive(Clone)]
+    struct Routes { /* table, worker: IIIClient */ }
+
+    #[async_trait::async_trait]
+    impl AddedHook for Routes {
+        async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+            self.add(obs) // HTTP_ROUTE_CONFLICT
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemovedHook for Routes {
+        async fn on_removed(&self, obs: Observer) {
+            self.remove(obs.id());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DeliverHook for Routes {
+        async fn on_deliver(&self, call: Call, _observers: Vec<Observer>) -> Result<Value, Error> {
+            let request: HttpRequest = serde_json::from_value(call.input.clone())
+                .map_err(|e| Error::Handler(e.to_string()))?;
+            let Some(route) = self.matches(&request.method, &request.path) else {
+                return Ok(json!({ "status_code": 404 }));
+            };
+            if !route.obs.matches(&call) {
+                return Ok(json!({ "status_code": 422 }));
+            }
+            run_middleware(&route, &request).await?;
+            let payload = json!(HttpRequest { path_params: route.params.clone(), ..request });
+            self.worker.call(CallRequest::observer(&route.obs, payload)).await
+        }
+    }
+
+    // by id, before registering, so the hooks see every observer
+    worker.on_observer_added_for("http::on-request", routes.clone());
+    worker.on_observer_removed_for("http::on-request", routes.clone());
+    worker.on_observation_deliver_for("http::on-request", routes.clone());
+
+    worker.register_function(
+        "http::on-request",
+        RegisterFunction::new(|request: HttpRequest| Ok::<_, Error>(request))
+            .args_format::<HttpRouteArgs>()
+            .private(),
+    );
+
+    // each request is a call of http::on-request, and its result is the response
+    let request = json!(to_http_request(req));
+    let response = worker.call(CallRequest::new("http::on-request", request)).await?;
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // by id, before registering, so the hooks see every observer
+    worker.OnObserverAddedFor("http::on-request", func(ctx context.Context, obs *iii.Observer) error {
+        return routes.Add(obs) // HTTP_ROUTE_CONFLICT
+    })
+    worker.OnObserverRemovedFor("http::on-request", func(ctx context.Context, obs *iii.Observer) {
+        routes.Remove(obs.ID)
+    })
+    worker.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+        var req httpRequest
+        if err := json.Unmarshal(call.Input, &req); err != nil {
+            return nil, err
+        }
+        match := routes.Match(req.Method, req.Path) // /users/:id → path_params
+        if match == nil {
+            return map[string]int{"status_code": 404}, nil
+        }
+        if !match.Obs.Matches(call) {
+            return map[string]int{"status_code": 422}, nil
+        }
+        if err := runMiddleware(ctx, match, req); err != nil {
+            return nil, err
+        }
+        req.PathParams = match.Params
+        payload, _ := json.Marshal(req)
+        return worker.Call(ctx, iii.CallRequest{Observer: match.Obs, Payload: payload})
+    })
+
+    worker.RegisterFunction("http::on-request", iii.Identity,
+        iii.FunctionOptions{ArgsFormat: httpRouteArgsSchema, Private: true})
+
+    // each request is a call of http::on-request, and its result is the response
+    response, err := worker.Call(ctx, iii.CallRequest{FunctionID: "http::on-request", Payload: toHTTPRequest(r)})
+    ```
+
+  </Tab>
+</Tabs>
+
+The request and the response pass by reference between the server and the hook, since the function
+is private. Every request is a call of `http::on-request` in traces. A consumer adds a route:
+
+```typescript
+worker.observe(
+  { function_id: "http::on-request", args: { method: "GET", path: "/orders/:id" } },
+  "orders::get",
+);
+```

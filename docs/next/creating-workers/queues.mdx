@@ -521,3 +521,219 @@ iii call iii::queue::discard_message topic=emails message_id=0b9c…
 ```json
 { "queue": "emails", "message_id": "0b9c…", "redriven": 1 }
 ```
+
+## How the worker hosts messages
+
+The handler returns the message it is called with, the function is private, and the
+[hooks](./observable-functions#hooks) do the rest.
+
+Each observer of `queue::on-message` is a subscriber with its own consumer, retries and group. A
+message is a call of the function with the subscriber's observer id in its metadata. Its
+`onObservationMatch` files each subscriber under its observer id and gives the message that id as
+its key, so the deliver hook receives the subscriber's observer, and the target's result
+acknowledges the message. Its args are
+`{ topic, max_retries?, backoff_ms?, queue_config?, group? }`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { ObserveRejection } from "iii-sdk";
+
+    worker
+      .registerFunction("queue::on-message", (message: QueueMessage) => message, {
+        request_format: QueueMessageSchema,
+        response_format: QueueMessageSchema,
+        args_format: SubscriberSpecSchema,
+        private: true,
+      })
+      .onObserverAdded((obs) => consumers.start(obs.id, obs.args)) // INVALID_ARGS, OBSERVER_ID_CONFLICT
+      .onObserverRemoved((obs) => consumers.stop(obs.id))
+      .onObservationMatch({
+        observer: (obs) => obs.id, // each subscriber is filed under its observer id
+        call: (call) => (call.metadata?.subscriber as string | undefined) ?? [],
+      })
+      .onObservationDeliver<unknown>(async (call, [obs]) => {
+        // an error retries the message, then dead-letters it
+        if (!obs) throw new ObserveRejection("OBSERVER_NOT_ACTIVE", "subscriber removed");
+        if (!obs.matches(call)) return null; // a filter miss acknowledges the message
+        return worker.call({ observer: obs, payload: call.input });
+      });
+
+    // each consumer calls the function with its subscriber's observer id
+    consumers.onMessage((subscriber, message) =>
+      worker.call({ function_id: "queue::on-message", payload: message, metadata: { subscriber } }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import ObserveRejection
+
+    # by id, before registering, so the hooks see every observer
+    @worker.on_observer_added("queue::on-message")
+    async def start(obs):
+        await consumers.start(obs.id, obs.args)  # INVALID_ARGS, OBSERVER_ID_CONFLICT
+
+    @worker.on_observer_removed("queue::on-message")
+    async def stop(obs):
+        await consumers.stop(obs.id)
+
+    worker.on_observation_match(
+        "queue::on-message",
+        observer=lambda obs: obs.id,  # each subscriber is filed under its observer id
+        call=lambda call: (call.metadata or {}).get("subscriber", []),
+    )
+
+    @worker.on_observation_deliver("queue::on-message")
+    async def deliver(call, observers):
+        if not observers:
+            # an error retries the message, then dead-letters it
+            raise ObserveRejection("OBSERVER_NOT_ACTIVE", "subscriber removed")
+        obs = observers[0]
+        if not obs.matches(call):
+            return None  # a filter miss acknowledges the message
+        return await worker.call_async({"observer": obs, "payload": call.input})
+
+    worker.register_function(
+        "queue::on-message",
+        lambda message: message,
+        request_format=QUEUE_MESSAGE_SCHEMA,
+        response_format=QUEUE_MESSAGE_SCHEMA,
+        args_format=SUBSCRIBER_SPEC_SCHEMA,
+        private=True,
+    )
+
+    # each consumer calls the function with its subscriber's observer id
+    async def on_queue_message(subscriber, message):
+        await worker.call_async({
+            "function_id": "queue::on-message",
+            "payload": message,
+            "metadata": {"subscriber": subscriber},
+        })
+
+    consumers.on_message(on_queue_message)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::CallRequest;
+    use iii_sdk::{
+        AddedHook, Call, DeliverHook, Error, Keys, Match, ObserveRejection, Observer,
+        RegisterFunction, RemovedHook,
+    };
+    use serde_json::{json, Value};
+
+    /// One consumer per subscriber, and the client to call targets with.
+    #[derive(Clone)]
+    struct Subscribers { /* consumers, worker: IIIClient */ }
+
+    #[async_trait::async_trait]
+    impl AddedHook for Subscribers {
+        async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
+            self.consumers.start(obs.id(), obs.args()?).await // INVALID_ARGS, OBSERVER_ID_CONFLICT
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemovedHook for Subscribers {
+        async fn on_removed(&self, obs: Observer) {
+            self.consumers.stop(obs.id()).await;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl DeliverHook for Subscribers {
+        async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
+            // the subscriber's observer, matched by its key
+            let Some(obs) = observers.first() else {
+                // an error retries the message, then dead-letters it
+                return Err(ObserveRejection::new("OBSERVER_NOT_ACTIVE", "subscriber removed").into());
+            };
+            if !obs.matches(&call) {
+                return Ok(Value::Null); // a filter miss acknowledges the message
+            }
+            self.worker.call(CallRequest::observer(obs, call.input.clone())).await
+        }
+    }
+
+    // by id, before registering, so the hooks see every observer
+    worker.on_observer_added_for("queue::on-message", subscribers.clone());
+    worker.on_observer_removed_for("queue::on-message", subscribers.clone());
+    worker.on_observation_match_for(
+        "queue::on-message",
+        Match::keys(
+            // each subscriber is filed under its observer id
+            |obs| Keys::from(obs.id()),
+            |call| Keys::from(call.metadata.as_ref().and_then(|m| m["subscriber"].as_str())),
+        ),
+    );
+    worker.on_observation_deliver_for("queue::on-message", subscribers.clone());
+
+    worker.register_function(
+        "queue::on-message",
+        RegisterFunction::new(|message: QueueMessage| Ok::<_, Error>(message))
+            .args_format::<SubscriberSpec>()
+            .private(),
+    );
+
+    // each consumer calls the function with its subscriber's observer id
+    let request = CallRequest::new("queue::on-message", message)
+        .metadata(json!({ "subscriber": subscriber }));
+    let outcome = worker.call(request).await; // Ok acknowledges; Err retries, then dead-letters
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // by id, before registering, so the hooks see every observer
+    worker.OnObserverAddedFor("queue::on-message", func(ctx context.Context, obs *iii.Observer) error {
+        return consumers.Start(ctx, obs.ID, obs.Args) // INVALID_ARGS, OBSERVER_ID_CONFLICT
+    })
+    worker.OnObserverRemovedFor("queue::on-message", func(ctx context.Context, obs *iii.Observer) {
+        consumers.Stop(ctx, obs.ID)
+    })
+    worker.OnObservationMatchFor("queue::on-message", iii.MatchKeys(
+        // each subscriber is filed under its observer id
+        func(obs *iii.Observer) []string { return []string{obs.ID} },
+        func(call *iii.Call) []string {
+            var meta struct {
+                Subscriber string `json:"subscriber"`
+            }
+            _ = json.Unmarshal(call.Metadata, &meta)
+            return []string{meta.Subscriber}
+        },
+    ))
+    worker.OnObservationDeliverFor("queue::on-message", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+        if len(observers) == 0 {
+            // an error retries the message, then dead-letters it
+            return nil, &iii.InvocationError{Code: "OBSERVER_NOT_ACTIVE", Message: "subscriber removed"}
+        }
+        obs := observers[0]
+        if !obs.Matches(call) {
+            return nil, nil // a filter miss acknowledges the message
+        }
+        return worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+    })
+
+    worker.RegisterFunction("queue::on-message", iii.Identity,
+        iii.FunctionOptions{ArgsFormat: subscriberSpecSchema, Private: true})
+
+    // each consumer calls the function with its subscriber's observer id
+    meta, _ := json.Marshal(map[string]string{"subscriber": subscriber})
+    _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "queue::on-message", Payload: message, Metadata: meta})
+    // nil acknowledges; an error retries, then dead-letters
+    ```
+
+  </Tab>
+</Tabs>
+
+Filters read the message as `input`. A consumer subscribes to a topic:
+
+```typescript
+worker.observe(
+  { function_id: "queue::on-message", args: { topic: "orders.created", max_retries: 3 } },
+  "orders::process",
+);
+```
