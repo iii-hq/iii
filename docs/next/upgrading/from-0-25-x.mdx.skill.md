@@ -271,7 +271,7 @@ function is observable, so it has no replacement. For the model, see
 A compose file that still lists `iii-sandbox` under `engine.workers` fails `iii compose --up` with
 `SANDBOX_CONFIG_MOVED`, and a `config.yaml` that lists it makes the engine refuse to start with
 `UNSUPPORTED_CONFIG_WORKERS`. [Upgrading to the sandbox worker](./sandbox-worker) covers the move,
-stored sandbox configuration, and the binaries and VM state that 0.25 left behind.
+any entry stored under `iii-sandbox`, and the binaries and VM state that 0.25 left behind.
 
 An `rbac` config that sets `on_trigger_registration_function_id` without
 `on_observer_registration_function_id`, or `on_trigger_type_registration_function_id` without

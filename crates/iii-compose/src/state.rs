@@ -156,6 +156,9 @@ pub struct DaemonState {
     /// 0600 file so a restarted daemon hands the same value to an adopted
     /// adapter, and given to the adapter container only. `None` in state
     /// written before it existed.
+    // shortcut: sandbox-libkrun hides this file from a VM whose worker directory holds it only from
+    // 0.3.1 on, and only under a directory named `.iii`, move the token out of the project directory
+    // if older versions must stay supported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_token: Option<String>,
 }

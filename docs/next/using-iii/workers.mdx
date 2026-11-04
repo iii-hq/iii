@@ -78,12 +78,13 @@ before adding it.
 iii call -n dev compose::status file=worker-compose.yaml
 iii compose logs state --follow --namespace dev
 iii call -n dev compose::restart file=worker-compose.yaml worker=state
-iii call -n dev compose::update file=worker-compose.yaml worker=state
+iii call -n dev compose::update file=worker-compose.yaml worker=state@latest
 iii call -n dev compose::down file=worker-compose.yaml
 ```
 
-`compose::restart worker=` restarts one container. `compose::update worker=` edits the package pin
-and restarts the project. `compose::down` stops containers in reverse dependency order.
+`compose::restart worker=` restarts one container. `compose::update worker=<name>@<selector>` edits
+the package pin and restarts the project. `compose::down` stops containers in reverse dependency
+order.
 
 Use `engine::workers::list` and `engine::workers::info` for the engine's live connection view. Use
 `compose::status` for process ownership, PID, and the last supervisor error. Use

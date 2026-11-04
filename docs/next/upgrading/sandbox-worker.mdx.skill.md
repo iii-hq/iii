@@ -35,35 +35,56 @@ with `SANDBOX_CONFIG_MOVED`. The error prints the replacement with your old bloc
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.2'
+    version: '^0.3'
     config_override:
       image_allowlist:
       - python
       - node
 ```
 
-Delete the `iii-sandbox` entry, add that container, and keep the keys you had (`image_allowlist`,
-`custom_images`, the `default_*` limits, and the rest): they are the same under
+Delete the `iii-sandbox` entry. If it was the only entry, write `workers: {}`: an empty `workers:`
+key fails with `INVALID_COMPOSE_FILE`, and an `engine:` key with nothing under it means Compose starts
+no engine and attaches to whichever one holds its address. Add that container and keep the keys you had
+(`image_allowlist`, `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
+
+A file that already declares the adapter at `version: '^0.2'` stays on 0.2 across `compose::up`,
+`compose::restart`, and `compose::update worker=sandbox-libkrun`. To move it, stop Compose, change
+the range to `'^0.3'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
+which rewrites the range to `^0.3` and [updates every other package
+worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token, and
+`iii sandbox run` refuses to start.
+
+Before 0.3.1, a VM worker whose directory contains the compose file, such as `path://.`, can read the
+project's token, and its disk keeps those bytes after the upgrade. If you ran one, stop Compose and
+run `iii compose --up` once you are on 0.3.1, which replaces the token. Updating or restarting the
+adapter keeps it.
 
 `engine.sandbox.adapter` names the adapter's function prefix and defaults to `sandbox-libkrun`, so you
 can leave the section out. `engine.sandbox.namespace` names the namespace the adapter runs in and
 defaults to the project's namespace. See [Compose](../using-iii/compose#engine-fields).
 
-## Re-enter stored configuration
+## Configuration stored under `iii-sandbox`
 
-Compose does not move a configuration entry that you stored under `iii-sandbox`, from the console or
-with `configuration::set`. Read it in its template form:
+0.25 read its sandbox settings only from the engine config, and the previous section moves those to
+`config_override`. There is normally nothing stored to move: 0.25 never registered the id
+`iii-sandbox`, so a plain `configuration::set` failed with `NOT_REGISTERED`, and the console's
+Configuration page did not list it. To check, read it in its template form:
 
 ```bash
 iii call configuration::get --json '{"id": "iii-sandbox", "raw": true}'
 ```
 
-Copy the keys it prints into the `config_override` of the `sandbox-libkrun` container, as in the
-previous section. Do not store them under the adapter's id, `<namespace>-sandbox-libkrun`: Compose
-sets that entry in memory each time it starts the adapter, and storing it with `configuration::set`
-fails with `NOT_REGISTERED`. A running project reads the edited file on `compose::restart` without
-a `worker` argument. Check the adapter before you delete the old entry.
+A `NOT_FOUND` error means there is nothing to do. An entry exists only if someone added it by hand,
+for example with `configuration::register` and then `configuration::set`. Compose does not move it,
+and it never applied on 0.25, because the sandbox daemon read only its own config file. Review it
+before you copy any key into `config_override`: there, values such as `image_allowlist` take effect
+for the first time.
+
+Do not store those keys under the adapter's id, `<namespace>-sandbox-libkrun`: Compose sets that
+entry in memory each time it starts the adapter, and storing it with `configuration::set` fails with
+`NOT_REGISTERED`. A running project reads the edited file on `compose::restart` without a `worker`
+argument. Check the adapter before you delete the old entry.
 
 ## Change adapter settings
 
@@ -110,7 +131,7 @@ one container. Write a `worker-compose.yaml` that declares the adapter:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.2'
+    version: '^0.3'
 ```
 
 It has no `engine:` section, so Compose attaches to your engine instead of starting one. Start it
@@ -139,9 +160,10 @@ starts. A declared worker outside the compose directory, such as `path://../shar
 
 The adapter reads its roots only when it starts. A `path://` VM worker outside the compose
 directory that you add while it runs, for example with `compose::add`, fails with `SPAWN_FAILED`
-and the adapter's S501, which names the roots and links its entry. The error ends with the command
-that restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which stops every
-VM. Run it, or move the worker under the compose directory.
+and the adapter's S501, which names the roots and links its entry. The error names the command that
+restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which restarts each VM
+worker it was running and ends every sandbox. The worker that failed was not running, so start it
+afterwards with `iii call compose::up`. Or move the worker under the compose directory.
 
 ## Supported hosts
 

@@ -36,7 +36,7 @@ use crate::{
     error::{ComposeError, Result},
     hooks,
     logs::LogStore,
-    manifest::{StartSpec, VmSpec, resolve_start},
+    manifest::{StartSpec, VmSpec},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report, restart,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
@@ -506,6 +506,11 @@ fn record_start_failure(
 /// connection to this worker sees it drop. Compose does not restart the
 /// dependents to hide that, because deciding which of them can tolerate it is
 /// not compose's to make.
+///
+/// The VMs of a sandbox adapter leave no such choice: they end with it. So an
+/// operator's restart of the adapter goes on to them, in
+/// [`Project::restart_one`](crate::project::Project::restart_one), and so does
+/// an edit's, in [`Project::reconcile_file`](crate::project::Project::reconcile_file).
 pub async fn restart_one(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -620,12 +625,19 @@ async fn restart_one_scoped(
     // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
-    let Some(released) = ctx
-        .shutdown
-        .signal()
-        .run(await_name_release(ctx, key))
-        .await
-    else {
+    //
+    // The VM of a dead `iii sandbox run` stays up under the name. A supervised
+    // retry has no release to wait for, as its command reattaches; a restart
+    // someone asked for, after an edit say, boots that VM anew.
+    let released = async {
+        if retry.is_none() {
+            crate::sandbox::stop_own_vm(ctx, key).await;
+        } else if crate::sandbox::own_vm_running(ctx, key).await.is_some() {
+            return Ok(());
+        }
+        await_name_release(ctx, key).await
+    };
+    let Some(released) = ctx.shutdown.signal().run(released).await else {
         report::plan_done();
         return None;
     };
@@ -774,7 +786,10 @@ async fn remove_one_scoped(
     // holds: a first boot that failed left no VM in it, a new daemon no record
     // at all. A failure only leaves the state behind, so the removal succeeds.
     let vm = records.remove(key).and_then(|record| record.vm);
-    if vm.is_some() || crate::sandbox::is_vm(ctx.file, key) {
+    if vm.is_some()
+        || crate::sandbox::is_vm(ctx.file, key)
+        || crate::sandbox::runs_own_vm(ctx.file, key)
+    {
         let (adapter, namespace) = vm.map_or_else(
             || {
                 let adapter = crate::sandbox::adapter_name(ctx.file);
@@ -891,11 +906,22 @@ async fn down_scoped(
     let mut results = Vec::new();
     for key in order {
         if !children.contains_key(&key) {
-            report::unchanged(&key, "not running");
+            // The VM of a killed `iii sandbox run` stays up until its lease ends, and the
+            // next `up` would reattach to it.
+            let changed = crate::sandbox::stop_own_vm(ctx, &key).await;
+            if changed {
+                let _ = await_name_release(ctx, &key).await;
+                if let Some(record) = records.get_mut(&key) {
+                    record.status = ChildStatus::Stopped;
+                }
+                report::stopped(&key);
+            } else {
+                report::unchanged(&key, "not running");
+            }
             results.push(ContainerResult {
                 container: key,
                 state: ChildStatus::Stopped,
-                changed: false,
+                changed,
                 error: None,
             });
             continue;
@@ -1092,8 +1118,12 @@ async fn start_one_until_shutdown(
     // one already is before we spawn, that check would pass on the *stranger*:
     // the container would be reported ready in milliseconds while the process
     // we started loses the `(namespace, worker_name)` lease and dies rejected.
-    // Refuse instead, and say who is holding the name.
-    if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))? {
+    // Refuse instead, and say who is holding the name. The guest of a VM that
+    // outlived its `iii sandbox run` is no stranger: the command started below
+    // reattaches to it, and that registration is the readiness it is after.
+    if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))?
+        && wait_or_interrupt!(crate::sandbox::own_vm_running(ctx, key)).is_none()
+    {
         return Err(ComposeError::ContainerNameTaken {
             container: key.to_string(),
             namespace: ctx.project_namespace.to_string(),
@@ -1167,7 +1197,10 @@ async fn start_one_until_shutdown(
                 ),
             }
         }
-        crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
+        crate::config::WorkerSource::Path { .. } => (
+            crate::sandbox::resolve_start(ctx.file, key, container)?,
+            None,
+        ),
     };
 
     report::starting(key, "configuring");
@@ -1184,6 +1217,14 @@ async fn start_one_until_shutdown(
         key,
         ctx.sandbox_token,
         ctx.package_cache,
+        &mut user_env,
+    )?;
+    crate::sandbox::layer_own_vm_env(
+        ctx.file,
+        key,
+        ctx.sandbox_token,
+        ctx.state_dir,
+        ctx.project_namespace,
         &mut user_env,
     )?;
     let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;
@@ -1228,6 +1269,17 @@ async fn start_one_until_shutdown(
     let plan = spawn_plan(&spawn_ctx);
     let child = match plan.command() {
         Some(command) => {
+            // Its image pull stays out of the startup timeout, which starts with the process, as
+            // it does for a VM booted below.
+            if crate::sandbox::runs_own_vm(ctx.file, key) {
+                report::starting(key, "preparing VM runtime");
+                if let Some(operation) = operation_id.and_then(crate::operation::active) {
+                    operation
+                        .emit(Some(key), "preparing", "preparing VM runtime")
+                        .await;
+                }
+                wait_or_interrupt!(crate::sandbox::prepare_own_vm(ctx, key))?;
+            }
             if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
                 return Err(StartFailure::Interrupted);
             }
@@ -1375,6 +1427,55 @@ async fn stop_one(
     }
 
     true
+}
+
+/// Stops `key` for the `up` that follows to start it again. That `up` refuses a name the engine
+/// still holds, and is the one to report it if the wait here runs out.
+pub(crate) async fn stop_for_up(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+) {
+    stop_one(ctx, children, records, key).await;
+    let _ = await_name_release(ctx, key).await;
+}
+
+/// Settles the VMs of an adapter that did not come back from its restart. They
+/// ended with it, but an absent adapter leaves them `Unknown`, which counts as
+/// running: in `children` they would read `ready`, then be `already running` to
+/// the `up` after the fix and a crash to the tick after that. So they go now and
+/// that `up` boots them.
+pub(crate) async fn fail_vms_of_lost_adapter(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    adapter: &str,
+    vms: &[String],
+    result: &mut OpResult,
+) {
+    for vm in vms.iter().rev() {
+        stop_for_up(ctx, children, records, vm).await;
+    }
+    for vm in vms {
+        let error = ComposeError::SpawnFailed {
+            container: vm.clone(),
+            message: format!("its sandbox adapter '{adapter}' did not come back"),
+        };
+        record_start_failure(records, vm, &error);
+        let error = OpError::from(&error);
+        if is_required(ctx.file, vm) {
+            result.status = OpStatus::Failed;
+            result.primary_error.get_or_insert_with(|| error.clone());
+        }
+        result.containers.push(ContainerResult {
+            container: vm.clone(),
+            state: ChildStatus::Failed,
+            changed: true,
+            error: Some(error),
+        });
+    }
+    result.changed = true;
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.

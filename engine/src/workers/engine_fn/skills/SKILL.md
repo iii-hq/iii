@@ -224,7 +224,7 @@ iii call -n dev compose::add worker=state
 iii call -n dev compose::status file=worker-compose.yaml
 iii call -n dev compose::logs file=worker-compose.yaml worker=state tail=100
 iii call -n dev compose::restart file=worker-compose.yaml worker=state
-iii call -n dev compose::update file=worker-compose.yaml worker=state
+iii call -n dev compose::update file=worker-compose.yaml worker=state@latest
 iii call -n dev compose::down file=worker-compose.yaml
 ```
 

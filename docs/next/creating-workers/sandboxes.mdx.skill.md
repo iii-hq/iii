@@ -17,7 +17,7 @@ engine:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: "^0.2"
+    version: "^0.3"
     config_override:
       image_allowlist: [python, node]
 ```

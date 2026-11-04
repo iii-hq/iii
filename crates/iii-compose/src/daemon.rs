@@ -331,7 +331,7 @@ fn stale_graph_members(
 /// was asked for. That worker is a graph root in the lock and belongs to the
 /// operator like a hand-written declaration, so only marked containers that
 /// are not graph roots count as generated.
-fn generated_dependencies(
+pub(crate) fn generated_dependencies(
     text: &str,
     compose: &crate::ComposeFile,
     graphs: &BTreeMap<String, BTreeSet<String>>,
@@ -1474,7 +1474,7 @@ impl Daemon {
                     crate::report::daemon_line(
                         &format!(
                             "{key}: not updated, because no updated dependency graph includes it any more; \
-                             update it with compose::update worker={key} or remove it"
+                             update it with compose::update worker={key}@latest or remove it"
                         ),
                         true,
                     );
@@ -1514,7 +1514,11 @@ impl Daemon {
         let yaml_changed = yaml_changed || adapter.is_some();
         let topology_changed = runtime_topology_changed(&compose, &current);
         for (root, nodes) in resolved_graphs {
-            prepared.replace_graph(&root, nodes);
+            // Updating a generated adapter asks for a version, not for the adapter: a graph root
+            // would keep it after the last VM.
+            if !(generated.contains(&root) && generated_adapter.as_ref() == Some(&root)) {
+                prepared.replace_graph(&root, nodes);
+            }
         }
         let package_changed = selected_versions
             .keys()
@@ -2164,20 +2168,14 @@ struct MutationError {
 
 impl From<&crate::lifecycle::OpError> for MutationError {
     fn from(error: &crate::lifecycle::OpError) -> Self {
-        let message = if error.code == "CHILD_EXITED_BEFORE_REGISTRATION" {
-            "Worker exited before registration".to_string()
-        } else {
-            error
+        Self {
+            code: error.code.clone(),
+            message: error
                 .message
                 .split(". It last said:\n")
                 .next()
                 .unwrap_or(&error.message)
-                .to_string()
-        };
-
-        Self {
-            code: error.code.clone(),
-            message,
+                .to_string(),
         }
     }
 }
@@ -2294,8 +2292,8 @@ fn open_private_temp(path: &Path) -> std::io::Result<std::fs::File> {
 ///
 /// `compose::add worker=X` resolves X's whole dependency graph. Only nodes not
 /// yet declared are added, plus what the caller explicitly asked for: a pin the
-/// operator wrote stays theirs, and `compose::update worker=<dep>` is how a
-/// version moves. A declared dependency whose pin differs from what the
+/// operator wrote stays theirs, and `compose::update worker=<dep>@<version>` is
+/// how a version moves. A declared dependency whose pin differs from what the
 /// registry resolved is logged, never rewritten or forced into the lock.
 fn keep_declared_dependencies(
     wanted: Vec<crate::edit::NewContainer>,
@@ -2321,7 +2319,7 @@ fn keep_declared_dependencies(
                 crate::report::daemon_line(
                     &format!(
                         "{}: kept the declared version {} (the registry resolved {resolved} for this \
-                         add); run compose::update worker={} to move it",
+                         add); run compose::update worker={}@{resolved} to move it",
                         worker.key,
                         existing.version.as_deref().unwrap_or("unpinned"),
                         worker.key
@@ -4134,7 +4132,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.2.3"),
+            Some("0.3.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4144,7 +4142,7 @@ containers:
         .unwrap();
         assert_eq!(
             lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
-            Some("0.2.3"),
+            Some("0.3.0"),
             "{lock:?}"
         );
         let held = daemon.project(&path).await.unwrap().held_file().await;
@@ -4174,7 +4172,7 @@ containers:
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "graph": [{
                         "name": "sandbox-libkrun",
-                        "version": "0.2.3",
+                        "version": "0.3.0",
                         "type": "binary",
                         "binaries": { (crate::registry::host_targets()[0]): {
                             "sha256": digest,
@@ -4238,7 +4236,7 @@ containers:
     /// restarts the adapter this same removal stopped.
     #[test]
     fn a_vm_is_removed_before_the_adapter_it_boots_through() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -4257,7 +4255,7 @@ containers:
 
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -4281,7 +4279,7 @@ containers:
     #[test]
     fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
         let compose = ComposeFile::parse(
-            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.2'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.3'}\n  app: {worker: package://app, version: 1.0.0}\n",
             Path::new("worker-compose.yaml"),
         )
         .unwrap();
@@ -4297,7 +4295,7 @@ containers:
             .collect();
         assert_eq!(
             versions,
-            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.2"))])
+            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.3"))])
         );
     }
 
@@ -4333,7 +4331,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.2.3"),
+            Some("0.3.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4408,10 +4406,141 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.2.3"),
+            Some("0.3.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+        daemon.shutdown().await;
+    }
+
+    /// Through the lock the real `compose::add`s write: an adapter asked for by
+    /// name, before or after a VM generated it, outlives the last VM, whose
+    /// removal would otherwise destroy its live sandboxes. One only a VM asked
+    /// for goes with it.
+    #[tokio::test]
+    async fn only_an_adapter_no_one_named_goes_with_the_last_vm() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let uri = server.uri();
+        // Each edit is on disk long before its start gives up on the engine that
+        // is not listening, so it gets 10s, and the rows run at once.
+        let bound = std::time::Duration::from_secs(10);
+        futures::future::join_all(
+            [
+                (&["iii-sandbox", "./vm"][..], true),
+                (&["./vm", "iii-sandbox"][..], true),
+                (&["./vm"][..], false),
+            ]
+            .map(|(adds, kept)| {
+                let uri = uri.clone();
+                async move {
+                    // An empty `containers:` is not a project, so one container that is no VM.
+                    let (dir, path) = vm_project(
+                        "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+                    );
+                    std::fs::create_dir(dir.path().join("api")).unwrap();
+                    let daemon = Daemon::start(
+                        "ws://127.0.0.1:1/ws".to_string(),
+                        format!("by-name-adapter-{}", uuid::Uuid::new_v4()),
+                        None,
+                        EnginePolicy::External,
+                    );
+                    for worker in adds {
+                        let _ = tokio::time::timeout(
+                            bound,
+                            crate::registry::TEST_REGISTRY.scope(
+                                uri.clone(),
+                                daemon.add(Some(&path), &[worker.to_string()], "add".into()),
+                            ),
+                        )
+                        .await;
+                    }
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(text.contains("sandbox-libkrun:"), "{adds:?}: {text}");
+                    assert!(text.contains("vm:"), "{adds:?}: {text}");
+
+                    let _ = tokio::time::timeout(
+                        bound,
+                        crate::registry::TEST_REGISTRY.scope(
+                            uri.clone(),
+                            daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
+                        ),
+                    )
+                    .await;
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains("vm:"), "{adds:?}: {text}");
+                    assert_eq!(text.contains("sandbox-libkrun:"), kept, "{adds:?}: {text}");
+                    // The next removal reads this lock: the root must outlive this one.
+                    assert_eq!(
+                        crate::lockfile::graphs(&path)
+                            .unwrap()
+                            .contains_key("sandbox-libkrun"),
+                        kept,
+                        "{adds:?}"
+                    );
+                    daemon.shutdown().await;
+                }
+            }),
+        )
+        .await;
+    }
+
+    /// An update that names a generated adapter, as a refusal of `iii sandbox
+    /// run` advises, asks for a version and not for the adapter.
+    #[tokio::test]
+    async fn an_update_by_name_leaves_a_generated_adapter_generated() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let bound = std::time::Duration::from_secs(10);
+        // An empty `containers:` is not a project, so one container that is no VM.
+        let (dir, path) = vm_project(
+            "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        );
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("update-by-name-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        // Each edit is on disk long before its start gives up on the engine that
+        // is not listening.
+        let registry = &crate::registry::TEST_REGISTRY;
+        let _ = tokio::time::timeout(
+            bound,
+            registry.scope(
+                server.uri(),
+                daemon.add(Some(&path), &["./vm".to_string()], "add".into()),
+            ),
+        )
+        .await;
+        let _ = tokio::time::timeout(
+            bound,
+            registry.scope(
+                server.uri(),
+                daemon.update(
+                    Some(&path),
+                    &["sandbox-libkrun@latest".to_string()],
+                    "update".into(),
+                ),
+            ),
+        )
+        .await;
+        assert!(
+            !crate::lockfile::graphs(&path)
+                .unwrap()
+                .contains_key("sandbox-libkrun"),
+            "the update made the adapter a root"
+        );
+
+        let _ = tokio::time::timeout(
+            bound,
+            registry.scope(
+                server.uri(),
+                daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
+            ),
+        )
+        .await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("sandbox-libkrun:"), "{text}");
         daemon.shutdown().await;
     }
 
@@ -4598,7 +4727,7 @@ mod mutation_outcome_tests {
         assert_eq!(encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
         assert_eq!(
             encoded["error"]["message"],
-            "Worker exited before registration"
+            "container 'tailscale' exited with 1 before it registered"
         );
         assert!(encoded.get("workers").is_none());
         let encoded = encoded.to_string();

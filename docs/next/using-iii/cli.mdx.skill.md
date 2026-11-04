@@ -46,7 +46,7 @@ The `iii cloud` command group manages hosted deployments. See
 inside `worker-compose.yaml`; update one with `compose::update`:
 
 ```bash
-iii call -n dev compose::update worker=state
+iii call -n dev compose::update worker=state@latest
 iii call -n dev compose::update worker=state@0.22.2
 ```
 
